@@ -9,7 +9,8 @@ export class ChatPanel {
   private readonly _panel: vscode.WebviewPanel;
   private readonly _extensionUri: vscode.Uri;
   private readonly _lollmsAPI: LollmsAPI;
-  private _contextManager: ContextManager;
+  private _contextManager!: ContextManager;
+
 
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI) {
     const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;

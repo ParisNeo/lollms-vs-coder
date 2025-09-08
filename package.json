@@ -27,6 +27,14 @@
       {
         "command": "lollms-vs-coder.removeFileFromContext",
         "title": "Remove File from Lollms AI Context"
+      },
+      {
+        "command": "lollms-vs-coder.generateCommitMessage",
+        "title": "Generate Git Commit Message with Lollms AI"
+      },
+      {
+        "command": "lollms-vs-coder.commitWithAIMessage",
+        "title": "Commit Staged Changes Using AI Commit Message"
       }
     ],
     "configuration": {

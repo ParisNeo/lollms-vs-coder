@@ -4,11 +4,25 @@
   "description": "AI-powered Visual Studio Code extension using Lollms OpenAI-compatible interface for smart coding, debugging, real-time enhancements, context management, and git commit message generation.",
   "version": "0.0.1",
   "publisher": "parisneo",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/parisneo/lollms-vs-coder"
+  },
   "engines": {
-    "vscode": "^1.70.0"
+    "vscode": "^1.70.0",
+    "node": ">=16.0.0"
   },
   "categories": [
+    "Machine Learning",
     "Other"
+  ],
+  "keywords": [
+    "ai",
+    "lollms",
+    "coding-assistant",
+    "git-integration",
+    "openai-compatible"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -119,18 +133,26 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "pretest": "npm run compile",
-    "test": "node ./out/test/runTest.js"
+    "pretest": "npm run compile && npm audit",
+    "test": "node ./out/test/runTest.js",
+    "security-audit": "npm audit --audit-level moderate",
+    "clean": "rimraf out node_modules package-lock.json"
   },
   "devDependencies": {
-    "@types/marked": "^5.0.2",
-    "@types/node-fetch": "^2.6.13",
-    "@types/vscode": "^1.70.0",
-    "eslint": "^8.0.0",
-    "typescript": "^5.0.0"
+    "@types/marked": "5.0.2",
+    "@types/node-fetch": "2.6.13",
+    "@types/vscode": "1.103.0",
+    "typescript": "5.9.2"
   },
   "dependencies": {
-    "marked": "^16.2.1",
-    "node-fetch": "^2.7.0"
+    "marked": "16.2.1",
+    "node-fetch": "2.7.0"
+  },
+  "overrides": {
+    "eslint": {
+      "chalk": ">=5.0.0",
+      "debug": ">=4.3.5",
+      "ansi-styles": ">=6.0.0"
+    }
   }
 }

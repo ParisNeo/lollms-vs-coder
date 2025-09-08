@@ -20,7 +20,23 @@
         "command": "lollms-vs-coder.startChat",
         "title": "Lollms: Start Chat"
       }
-    ]
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Lollms VS Coder Configuration",
+      "properties": {
+        "lollmsVsCoder.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API key for authenticating with the Lollms API."
+        },
+        "lollmsVsCoder.apiHost": {
+          "type": "string",
+          "default": "http://localhost:9642",
+          "description": "URL of the Lollms API server (including protocol and port)."
+        }
+      }
+    },    
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

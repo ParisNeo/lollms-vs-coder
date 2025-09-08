@@ -82,6 +82,14 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   context.subscriptions.push(generateCommitCommand, commitWithAICommand);
+  
+  const statusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+  statusBar.text = '$(rocket) Lollms Chat';
+  statusBar.command = 'lollms-vs-coder.startChat';
+  statusBar.tooltip = 'Start Lollms AI Chat';
+  statusBar.show();
+
+  context.subscriptions.push(statusBar);
 }
 
 export function deactivate() {}

@@ -36,7 +36,24 @@
           "description": "URL of the Lollms API server (including protocol and port)."
         }
       }
-    },    
+    },  
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "lollmsSettings",
+          "title": "Lollms Settings",
+          "icon": "media/lollms-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "lollmsSettings": [
+        {
+          "id": "lollmsConfigView",
+          "name": "Configuration"
+        }
+      ]
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { LollmsAPI } from './lollmsAPI';
+import { LollmsAPI, ChatMessage } from './lollmsAPI';
 
 const execAsync = promisify(exec);
 
@@ -40,7 +40,7 @@ export class GitIntegration {
       return 'No staged changes detected.';
     }
 
-    const prompt = [
+    const prompt: ChatMessage[] =  [
       { role: 'system', content: 'You are an AI assistant that writes concise, clear, and conventional git commit messages based on git diffs.' },
       { role: 'user', content: `Generate a concise git commit message based on the following diff:\n${diff}` }
     ];

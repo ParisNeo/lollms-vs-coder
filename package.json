@@ -3,6 +3,7 @@
   "displayName": "Lollms VS Coder",
   "description": "AI-powered Visual Studio Code extension using Lollms OpenAI-compatible interface for smart coding, debugging, real-time enhancements, context management, and git commit message generation.",
   "version": "0.0.1",
+  "publisher": "parisneo",
   "engines": {
     "vscode": "^1.70.0"
   },
@@ -10,7 +11,6 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:lollms-vs-coder.startChat",
     "onStartupFinished"
   ],
   "main": "./out/extension.js",
@@ -22,19 +22,36 @@
       },
       {
         "command": "lollms-vs-coder.addFileToContext",
-        "title": "Add File to Lollms AI Context"
+        "title": "Lollms: Add File to AI Context"
       },
       {
         "command": "lollms-vs-coder.removeFileFromContext",
-        "title": "Remove File from Lollms AI Context"
+        "title": "Lollms: Remove File from AI Context"
       },
       {
         "command": "lollms-vs-coder.generateCommitMessage",
-        "title": "Generate Git Commit Message with Lollms AI"
+        "title": "Lollms: Generate Git Commit Message"
       },
       {
         "command": "lollms-vs-coder.commitWithAIMessage",
-        "title": "Commit Staged Changes Using AI Commit Message"
+        "title": "Lollms: Commit Staged Changes with AI Message"
+      },
+      {
+        "command": "lollmsApi.recreateClient",
+        "title": "Recreate LollmsAPI Client"
+      },
+      {
+        "command": "lollms-vs-coder.toggleFileContext",
+        "title": "Toggle in AI Context"
+      },
+      {
+        "command": "lollms-vs-coder.refreshTree",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "lollms-vs-coder.cycleFileState",
+        "title": "Cycle AI Context State"
       }
     ],
     "configuration": {
@@ -46,13 +63,18 @@
           "default": "",
           "description": "API key for authenticating with the Lollms API."
         },
-        "lollmsVsCoder.apiHost": {
+        "lollmsVsCoder.apiUrl": {
           "type": "string",
           "default": "http://localhost:9642",
           "description": "URL of the Lollms API server (including protocol and port)."
+        },
+        "lollmsVsCoder.modelName": {
+          "type": "string",
+          "default": "ollama/mistral",
+          "description": "Name of the model to use"
         }
       }
-    },  
+    },
     "viewsContainers": {
       "activitybar": [
         {
@@ -65,8 +87,30 @@
     "views": {
       "lollmsSettings": [
         {
-          "id": "lollmsConfigView",
+          "id": "lollmsSettings.lollmsConfigView",
+          "type": "webview",
           "name": "Configuration"
+        },
+        {
+          "id": "lollmsSettings.fileTreeView",
+          "name": "AI Context Files",
+          "when": "workspaceFolderCount > 0"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "lollms-vs-coder.refreshTree",
+          "when": "view == lollmsSettings.fileTreeView",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "lollms-vs-coder.cycleFileState",
+          "when": "view == lollmsSettings.fileTreeView && viewItem == file",
+          "group": "inline"
         }
       ]
     }
@@ -79,9 +123,14 @@
     "test": "node ./out/test/runTest.js"
   },
   "devDependencies": {
+    "@types/marked": "^5.0.2",
+    "@types/node-fetch": "^2.6.13",
     "@types/vscode": "^1.70.0",
-    "typescript": "^5.0.0",
-    "eslint": "^8.0.0"
+    "eslint": "^8.0.0",
+    "typescript": "^5.0.0"
   },
-  "dependencies": {}
+  "dependencies": {
+    "marked": "^16.2.1",
+    "node-fetch": "^2.7.0"
+  }
 }

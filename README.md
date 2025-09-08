@@ -44,7 +44,7 @@ Configure the Lollms API connection via the sidebar **Lollms Settings** panel or
 ```
 {
   "lollmsVsCoder.apiKey": "<YOUR_LOLLMS_API_KEY>",
-  "lollmsVsCoder.apiHost": "http://localhost:9642"
+  "lollmsVsCoder.apiUrl": "http://localhost:9642"
 }
 ```
 

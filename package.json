@@ -19,6 +19,14 @@
       {
         "command": "lollms-vs-coder.startChat",
         "title": "Lollms: Start Chat"
+      },
+      {
+        "command": "lollms-vs-coder.addFileToContext",
+        "title": "Add File to Lollms AI Context"
+      },
+      {
+        "command": "lollms-vs-coder.removeFileFromContext",
+        "title": "Remove File from Lollms AI Context"
       }
     ],
     "configuration": {

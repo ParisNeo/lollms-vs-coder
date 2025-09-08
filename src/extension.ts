@@ -13,7 +13,7 @@ export function activate(context: vscode.ExtensionContext) {
     apiUrl: `${apiHost}/v1/chat/completions`,
     apiKey: apiKey
   });
-
+  
   const startChatCommand = vscode.commands.registerCommand('lollms-vs-coder.startChat', () => {
     ChatPanel.createOrShow(context.extensionUri, lollmsAPI);
   });
@@ -29,7 +29,7 @@ export function activate(context: vscode.ExtensionContext) {
     )
   );
 
-    const contextManager = new ContextManager(context);
+  const contextManager = new ContextManager(context);
 
   const addFileCommand = vscode.commands.registerCommand('lollms-vs-coder.addFileToContext', () => {
     const editor = vscode.window.activeTextEditor;
@@ -50,6 +50,38 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   context.subscriptions.push(addFileCommand, removeFileCommand);
+
+  const gitIntegration = new GitIntegration(lollmsAPI);
+
+  const generateCommitCommand = vscode.commands.registerCommand('lollms-vs-coder.generateCommitMessage', async () => {
+    if (!(await gitIntegration.isGitRepo())) {
+      vscode.window.showErrorMessage('This workspace is not a git repository.');
+      return;
+    }
+    const message = await gitIntegration.generateCommitMessage();
+    if (message) {
+      vscode.window.showInformationMessage('AI Commit Message: ' + message);
+      // Optionally, copy to clipboard or show input box for editing
+      await vscode.env.clipboard.writeText(message);
+      vscode.window.showInformationMessage('Commit message copied to clipboard.');
+    }
+  });
+
+  const commitWithAICommand = vscode.commands.registerCommand('lollms-vs-coder.commitWithAIMessage', async () => {
+    if (!(await gitIntegration.isGitRepo())) {
+      vscode.window.showErrorMessage('This workspace is not a git repository.');
+      return;
+    }
+    const message = await gitIntegration.generateCommitMessage();
+    if (message) {
+      const confirmed = await vscode.window.showQuickPick(['Yes', 'No'], { placeHolder: `Commit with message:\n\n${message}\n\nConfirm?` });
+      if (confirmed === 'Yes') {
+        await gitIntegration.commitWithMessage(message);
+      }
+    }
+  });
+
+  context.subscriptions.push(generateCommitCommand, commitWithAICommand);
 }
 
 export function deactivate() {}

@@ -19,6 +19,15 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   context.subscriptions.push(startChatCommand);
+
+  const configProvider = new ConfigViewProvider(context.extensionUri);
+
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(
+      ConfigViewProvider.viewType,
+      configProvider
+    )
+  );
 }
 
 export function deactivate() {}

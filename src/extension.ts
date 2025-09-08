@@ -5,10 +5,13 @@ import { LollmsAPI } from './lollmsAPI';
 export function activate(context: vscode.ExtensionContext) {
   console.log('Lollms VS Coder is now active!');
 
-  // Initialize Lollms API with config (example - to replace with actual config management)
+  const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+  const apiKey = config.get<string>('apiKey') || '';
+  const apiHost = config.get<string>('apiHost') || 'http://localhost:9642';
+
   const lollmsAPI = new LollmsAPI({
-    apiUrl: 'http://localhost:9642/v1/chat/completions',
-    apiKey: 'YOUR_API_KEY_HERE'
+    apiUrl: `${apiHost}/v1/chat/completions`,
+    apiKey: apiKey
   });
 
   const startChatCommand = vscode.commands.registerCommand('lollms-vs-coder.startChat', () => {

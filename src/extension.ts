@@ -28,6 +28,28 @@ export function activate(context: vscode.ExtensionContext) {
       configProvider
     )
   );
+
+    const contextManager = new ContextManager(context);
+
+  const addFileCommand = vscode.commands.registerCommand('lollms-vs-coder.addFileToContext', () => {
+    const editor = vscode.window.activeTextEditor;
+    if (editor) {
+      contextManager.addFileToContext(editor.document.uri);
+    } else {
+      vscode.window.showInformationMessage('No active editor file to add.');
+    }
+  });
+
+  const removeFileCommand = vscode.commands.registerCommand('lollms-vs-coder.removeFileFromContext', () => {
+    const editor = vscode.window.activeTextEditor;
+    if (editor) {
+      contextManager.removeFileFromContext(editor.document.uri);
+    } else {
+      vscode.window.showInformationMessage('No active editor file to remove.');
+    }
+  });
+
+  context.subscriptions.push(addFileCommand, removeFileCommand);
 }
 
 export function deactivate() {}

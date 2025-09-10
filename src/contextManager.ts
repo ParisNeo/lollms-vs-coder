@@ -3,10 +3,17 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { FileTreeProvider } from './commands/fileTreeProvider';
+import jimp from 'jimp';
+
+export interface ContextResult {
+  text: string;
+  images: { filePath: string; data: string }[];
+}
 
 export class ContextManager {
   private fileTreeProvider?: FileTreeProvider;
   private context: vscode.ExtensionContext;
+  private imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'];
 
   constructor(context: vscode.ExtensionContext) {
     this.context = context;
@@ -29,82 +36,74 @@ export class ContextManager {
     return this.fileTreeProvider;
   }
 
-  async getContextContent(): Promise<string> {
-    console.log('Getting context content...');
-    
+  async getContextContent(): Promise<ContextResult> {
+    const result: ContextResult = { text: '', images: [] };
+
     if (!this.fileTreeProvider) {
-      console.log('No file tree provider available');
-      return this.getNoWorkspaceMessage();
+      result.text = this.getNoWorkspaceMessage();
+      return result;
+    }
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) {
+      result.text = this.getNoWorkspaceMessage();
+      return result;
     }
 
     const contextFiles = this.fileTreeProvider.getContextFiles();
-    const treeOnlyFiles = this.fileTreeProvider.getTreeOnlyFiles();
-    
-    console.log('Context files count:', contextFiles.length);
-    console.log('Tree only files count:', treeOnlyFiles.length);
-    console.log('Context files list:', contextFiles);
-    
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (!workspaceFolder) {
-      console.log('No workspace folder available');
-      return this.getNoWorkspaceMessage();
-    }
-
-    let content = '# Project Context\n\n';
-    
-    // Add workspace info
-    content += `**Workspace:** ${path.basename(workspaceFolder.uri.fsPath)}\n`;
-    content += `**Path:** ${workspaceFolder.uri.fsPath}\n\n`;
-    
-    // Show project structure first
+    let content = `# Project Context\n\n**Workspace:** ${path.basename(workspaceFolder.uri.fsPath)}\n\n`;
     content += await this.generateProjectTree();
     content += '\n';
-    
-    // Then show file contents
+
     if (contextFiles.length > 0) {
       content += `## File Contents (${contextFiles.length} files)\n\n`;
-
       for (const filePath of contextFiles) {
         try {
           const fullPath = vscode.Uri.joinPath(workspaceFolder.uri, filePath);
-          console.log('Reading file:', fullPath.fsPath);
-          
-          const fileStats = await vscode.workspace.fs.stat(fullPath);
-          if (fileStats.type === vscode.FileType.File) {
-            const fileContent = await vscode.workspace.fs.readFile(fullPath);
-            const textContent = Buffer.from(fileContent).toString('utf8');
+          const ext = path.extname(filePath).toLowerCase();
+
+          if (this.imageExtensions.includes(ext)) {
+            const fileBytes = await vscode.workspace.fs.readFile(fullPath);
+            const image = await jimp.read(Buffer.from(fileBytes));
             
-            content += `### ${filePath}\n\n`;
-            const language = this.getLanguageFromExtension(filePath);
-            content += '```'
-            content += textContent;
+            const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+            const maxSize = config.get<number>('maxImageSize') || 1024;
+
+            if (maxSize > 0 && (image.getWidth() > maxSize || image.getHeight() > maxSize)) {
+                image.scaleToFit(maxSize, maxSize);
+            }
+            
+            const base64 = await image.getBase64Async(image.getMIME());
+            result.images.push({ filePath, data: base64 });
+            content += `### \`${filePath}\`\n\n*Image included in context*\n\n`;
+
+          } else {
+            let fileContent: string | undefined;
+            const openDocument = vscode.workspace.textDocuments.find(doc => doc.uri.fsPath === fullPath.fsPath);
+            
+            if (openDocument) {
+              fileContent = openDocument.getText();
+            } else {
+              const fileBytes = await vscode.workspace.fs.readFile(fullPath);
+              fileContent = Buffer.from(fileBytes).toString('utf8');
+            }
+
+            content += `### \`${filePath}\`\n\n`;
+            const language = path.extname(filePath).substring(1);
+            content += '```' + language + '\n';
+            content += fileContent;
             content += '\n```\n\n';
-            
-            console.log(`Added file ${filePath} (${textContent.length} chars)`);
           }
+
         } catch (error) {
-          console.error(`Error reading file ${filePath}:`, error);
-          content += `### ${filePath}\n\n`;
-          content += `⚠️ **Error reading file:** ${error}\n\n`;
+          content += `### ${filePath}\n\n⚠️ **Error reading file:** ${error}\n\n`;
         }
       }
     } else {
-      content += '## File Contents\n\n';
-      content += '**No files are currently included in the context.** Use the file tree in the Lollms Settings sidebar to add files.\n\n';
+      content += '## File Contents\n\n**No files are currently included in the context.**\n\n';
     }
 
-    // Add tree-only files section
-    if (treeOnlyFiles.length > 0) {
-      content += `## Files in Tree Only (${treeOnlyFiles.length} files)\n\n`;
-      content += '*These files are visible in the project structure but their content is excluded:*\n\n';
-      treeOnlyFiles.forEach(file => {
-        content += `- \`${file}\`\n`;
-      });
-      content += '\n';
-    }
-
-    console.log('Generated context content length:', content.length);
-    return content;
+    result.text = content;
+    return result;
   }
 
   private async generateProjectTree(): Promise<string> {
@@ -180,61 +179,6 @@ export class ContextManager {
 
     console.log('Generated project tree');
     return tree;
-  }
-
-  private getLanguageFromExtension(filePath: string): string {
-    const ext = path.extname(filePath).toLowerCase().substring(1);
-    const langMap: { [key: string]: string } = {
-      'ts': 'typescript',
-      'tsx': 'typescript',
-      'js': 'javascript',
-      'jsx': 'javascript',
-      'py': 'python',
-      'java': 'java',
-      'cpp': 'cpp',
-      'cxx': 'cpp',
-      'cc': 'cpp',
-      'c': 'c',
-      'h': 'c',
-      'hpp': 'cpp',
-      'cs': 'csharp',
-      'php': 'php',
-      'rb': 'ruby',
-      'go': 'go',
-      'rs': 'rust',
-      'html': 'html',
-      'htm': 'html',
-      'css': 'css',
-      'scss': 'scss',
-      'sass': 'sass',
-      'less': 'less',
-      'json': 'json',
-      'xml': 'xml',
-      'yaml': 'yaml',
-      'yml': 'yaml',
-      'md': 'markdown',
-      'markdown': 'markdown',
-      'sh': 'bash',
-      'bash': 'bash',
-      'zsh': 'bash',
-      'fish': 'fish',
-      'sql': 'sql',
-      'vue': 'vue',
-      'svelte': 'svelte',
-      'dart': 'dart',
-      'kt': 'kotlin',
-      'swift': 'swift',
-      'scala': 'scala',
-      'r': 'r',
-      'dockerfile': 'dockerfile',
-      'makefile': 'makefile',
-      'cmake': 'cmake',
-      'toml': 'toml',
-      'ini': 'ini',
-      'cfg': 'ini',
-      'conf': 'ini'
-    };
-    return langMap[ext] || '';
   }
 
   private getNoWorkspaceMessage(): string {

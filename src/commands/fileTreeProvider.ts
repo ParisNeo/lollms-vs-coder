@@ -2,216 +2,183 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 
+export type PathState = 'included' | 'tree-only' | 'fully-excluded';
+
 export class FileTreeProvider implements vscode.TreeDataProvider<FileItem> {
     private _onDidChangeTreeData: vscode.EventEmitter<FileItem | undefined | null | void> = new vscode.EventEmitter<FileItem | undefined | null | void>();
     readonly onDidChangeTreeData: vscode.Event<FileItem | undefined | null | void> = this._onDidChangeTreeData.event;
   
-    private contextFiles: Set<string> = new Set(); // Files with full content
-    private treeOnlyFiles: Set<string> = new Set(); // Files shown in tree but no content
-    private excludedFiles: Set<string> = new Set(); // Files completely excluded
+    private contextFiles: Set<string> = new Set();
+    private treeOnlyFiles: Set<string> = new Set();
+    private fullyExcludedPaths: Set<string> = new Set();
     
-    private excludedExtensions = ['.exe', '.dll', '.bin', '.obj', '.o', '.so', '.dylib', '.a'];
-    private excludedFolders = ['node_modules', '.git', 'dist', 'build', 'out', '.vscode'];
+    private defaultExcludedExtensions = ['.exe', '.dll', '.bin', '.obj', '.o', '.so', '.dylib', '.a', '.vsix'];
+    private imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg'];
+    private defaultExcludedFolders = ['node_modules', '.git', 'dist', 'build', 'out'];
   
     constructor(private workspaceRoot: string, private context: vscode.ExtensionContext) {
-      // Load saved states
-      const savedContext = context.workspaceState.get<string[]>('aiContextFiles', []);
-      const savedTreeOnly = context.workspaceState.get<string[]>('aiTreeOnlyFiles', []);
-      const savedExcluded = context.workspaceState.get<string[]>('aiExcludedFiles', []);
-      
-      this.contextFiles = new Set(savedContext);
-      this.treeOnlyFiles = new Set(savedTreeOnly);
-      this.excludedFiles = new Set(savedExcluded);
-      
-      // Add all eligible files by default if no saved state
-      if (savedContext.length === 0 && savedTreeOnly.length === 0 && savedExcluded.length === 0) {
-        this.initializeDefaultContext();
-      }
+      this.contextFiles = new Set(context.workspaceState.get<string[]>('aiContextFiles', []));
+      this.treeOnlyFiles = new Set(context.workspaceState.get<string[]>('aiTreeOnlyFiles', []));
+      this.fullyExcludedPaths = new Set(context.workspaceState.get<string[]>('aiFullyExcludedPaths', []));
     }
   
-    private async initializeDefaultContext() {
-      const allFiles = await this.getAllWorkspaceFiles();
-      allFiles.forEach(file => this.contextFiles.add(file));
-      this._onDidChangeTreeData.fire();
+    refresh(): void {
+        this._onDidChangeTreeData.fire();
     }
 
-  private async getAllWorkspaceFiles(): Promise<string[]> {
-    const files: string[] = [];
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (!workspaceFolder) return files;
-
-    const scanDirectory = async (dirPath: string, relativePath: string = ''): Promise<void> => {
-      const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
-      
-      for (const entry of entries) {
-        const fullPath = path.join(dirPath, entry.name);
-        const relPath = path.join(relativePath, entry.name);
-
-        if (entry.isDirectory()) {
-          if (!this.excludedFolders.includes(entry.name) && !entry.name.startsWith('.')) {
-            await scanDirectory(fullPath, relPath);
-          }
-        } else if (entry.isFile()) {
-          const ext = path.extname(entry.name);
-          if (!this.excludedExtensions.includes(ext) && !entry.name.startsWith('.')) {
-            files.push(relPath);
-          }
-        }
-      }
-    };
-
-    await scanDirectory(workspaceFolder.uri.fsPath);
-    return files;
-  }
-
-  refresh(): void {
-    this._onDidChangeTreeData.fire();
-  }
-
-  getTreeItem(element: FileItem): vscode.TreeItem {
-    return element;
-  }
-
-  getChildren(element?: FileItem): Thenable<FileItem[]> {
-    if (!this.workspaceRoot) {
-      vscode.window.showInformationMessage('No workspace folder found');
-      return Promise.resolve([]);
+    getTreeItem(element: FileItem): vscode.TreeItem {
+        return element;
     }
 
-    if (element) {
-      return Promise.resolve(this.getFilesInDirectory(element.resourceUri!.fsPath, element.relativePath));
-    } else {
-      return Promise.resolve(this.getFilesInDirectory(this.workspaceRoot, ''));
+    getChildren(element?: FileItem): Thenable<FileItem[]> {
+        if (!this.workspaceRoot) return Promise.resolve([]);
+        const dirPath = element ? element.resourceUri!.fsPath : this.workspaceRoot;
+        const relativePath = element ? element.relativePath : '';
+        return Promise.resolve(this.getDirectoryContents(dirPath, relativePath));
     }
-  }
 
-  private getFilesInDirectory(dirPath: string, relativePath: string): FileItem[] {
-    const items: FileItem[] = [];
-    
-    try {
-      const entries = fs.readdirSync(dirPath, { withFileTypes: true });
-      
-      for (const entry of entries) {
-        const fullPath = path.join(dirPath, entry.name);
-        const relPath = path.join(relativePath, entry.name);
+    private getDirectoryContents(dirPath: string, relativePath: string): FileItem[] {
+        if (!fs.existsSync(dirPath)) return [];
+        const items: FileItem[] = [];
+        try {
+            const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+            for (const entry of entries) {
+                const relPath = path.join(relativePath, entry.name);
 
-        if (entry.isDirectory() && !this.excludedFolders.includes(entry.name) && !entry.name.startsWith('.')) {
-          const item = new FileItem(
-            entry.name,
-            relPath,
-            vscode.Uri.file(fullPath),
-            vscode.TreeItemCollapsibleState.Collapsed,
-            'folder'
-          );
-          items.push(item);
-        } else if (entry.isFile()) {
-          const ext = path.extname(entry.name);
-          if (!this.excludedExtensions.includes(ext) && !entry.name.startsWith('.')) {
-            // Skip if file is completely excluded
-            if (!this.excludedFiles.has(relPath)) {
-              const fileState = this.getFileState(relPath);
-              const item = new FileItem(
-                entry.name,
-                relPath,
-                vscode.Uri.file(fullPath),
-                vscode.TreeItemCollapsibleState.None,
-                'file',
-                fileState
-              );
-              items.push(item);
+                if (this.defaultExcludedFolders.includes(entry.name)) continue;
+                if (entry.name.startsWith('.') && entry.name !== '.vscode') continue;
+                
+                const fullPath = path.join(dirPath, entry.name);
+                const state = this.getPathState(relPath);
+
+                if (entry.isDirectory()) {
+                    items.push(new FileItem(entry.name, relPath, vscode.Uri.file(fullPath), vscode.TreeItemCollapsibleState.Collapsed, 'folder', state));
+                } else if (entry.isFile()) {
+                    const ext = path.extname(entry.name).toLowerCase();
+                    if (!this.defaultExcludedExtensions.includes(ext)) {
+                        const isImage = this.imageExtensions.includes(ext);
+                        items.push(new FileItem(entry.name, relPath, vscode.Uri.file(fullPath), vscode.TreeItemCollapsibleState.None, isImage ? 'image' : 'file', state));
+                    }
+                }
             }
-          }
+        } catch (error) { console.error(`Error reading directory ${dirPath}:`, error); }
+
+        return items.sort((a, b) => {
+            if (a.type === 'folder' && b.type !== 'folder') return -1;
+            if (a.type !== 'folder' && b.type === 'folder') return 1;
+            return a.label!.toString().localeCompare(b.label!.toString());
+        });
+    }
+
+    private getPathState(relPath: string): PathState {
+        if (this.fullyExcludedPaths.has(relPath)) return 'fully-excluded';
+        if (this.contextFiles.has(relPath)) return 'included';
+        if (this.treeOnlyFiles.has(relPath)) return 'tree-only';
+        
+        // Check if a parent is fully excluded
+        let parent = path.dirname(relPath);
+        while (parent !== '.') {
+            if (this.fullyExcludedPaths.has(parent)) return 'fully-excluded';
+            parent = path.dirname(parent);
         }
-      }
-    } catch (error) {
-      console.error('Error reading directory:', error);
+
+        return 'tree-only'; // Default state is visible but not in context
     }
 
-    return items.sort((a, b) => {
-      if (a.type === 'folder' && b.type === 'file') return -1;
-      if (a.type === 'file' && b.type === 'folder') return 1;
-      return a.label!.toString().localeCompare(b.label!.toString());
-    });
-  }
-
-  private getFileState(filePath: string): FileState {
-    if (this.contextFiles.has(filePath)) return 'included';
-    if (this.treeOnlyFiles.has(filePath)) return 'tree-only';
-    return 'excluded';
-  }
-
-  cycleFileState(item: FileItem) {
-    if (item.type !== 'file') return;
-
-    const currentState = this.getFileState(item.relativePath);
-    
-    // Remove from all sets first
-    this.contextFiles.delete(item.relativePath);
-    this.treeOnlyFiles.delete(item.relativePath);
-    this.excludedFiles.delete(item.relativePath);
-
-    // Cycle: included -> tree-only -> excluded -> included
-    switch (currentState) {
-      case 'included':
-        this.treeOnlyFiles.add(item.relativePath);
-        break;
-      case 'tree-only':
-        this.excludedFiles.add(item.relativePath);
-        break;
-      case 'excluded':
-        this.contextFiles.add(item.relativePath);
-        break;
-    }
-
-    this.saveState();
-    this._onDidChangeTreeData.fire();
-  }
-
-  private saveState() {
-    this.context.workspaceState.update('aiContextFiles', Array.from(this.contextFiles));
-    this.context.workspaceState.update('aiTreeOnlyFiles', Array.from(this.treeOnlyFiles));
-    this.context.workspaceState.update('aiExcludedFiles', Array.from(this.excludedFiles));
-  }
-
-  getContextFiles(): string[] {
-    return Array.from(this.contextFiles);
-  }
-
-  getTreeOnlyFiles(): string[] {
-    return Array.from(this.treeOnlyFiles);
-  }
-
-  getAllVisibleFiles(): string[] {
-    return [...Array.from(this.contextFiles), ...Array.from(this.treeOnlyFiles)];
-  }
-
-  toggleFileInContext(item: FileItem) {
-    if (item.type === 'file') {
-      if (this.contextFiles.has(item.relativePath)) {
+    async cycleFileState(item: FileItem) {
+        const currentState = this.getPathState(item.relativePath);
         this.contextFiles.delete(item.relativePath);
-      } else {
-        this.contextFiles.add(item.relativePath);
-      }
-      
-      // Save to workspace state
-      this.context.workspaceState.update('aiContextFiles', Array.from(this.contextFiles));
-      this._onDidChangeTreeData.fire();
+        this.treeOnlyFiles.delete(item.relativePath);
+        this.fullyExcludedPaths.delete(item.relativePath);
+
+        if (item.type === 'folder') {
+            if (currentState === 'fully-excluded') {
+                this.treeOnlyFiles.add(item.relativePath);
+            } else {
+                this.fullyExcludedPaths.add(item.relativePath);
+                await this.removeFolderFromContext(item); // Clean up children
+            }
+        } else { // File or Image
+            switch (currentState) {
+                case 'included':
+                    this.treeOnlyFiles.add(item.relativePath); break;
+                case 'tree-only':
+                    this.fullyExcludedPaths.add(item.relativePath); break;
+                case 'fully-excluded':
+                    this.contextFiles.add(item.relativePath);
+                    this.ensurePathIsVisible(item.relativePath);
+                    break;
+            }
+        }
+        this.saveState();
+        this.refresh();
     }
-  }
 
-  addFileToContext(filePath: string) {
-    this.contextFiles.add(filePath);
-    this.context.workspaceState.update('aiContextFiles', Array.from(this.contextFiles));
-    this._onDidChangeTreeData.fire();
-  }
+    private ensurePathIsVisible(relPath: string) {
+        let parent = path.dirname(relPath);
+        while (parent !== '.' && parent !== '/') {
+            if (this.fullyExcludedPaths.has(parent)) {
+                this.fullyExcludedPaths.delete(parent);
+                this.treeOnlyFiles.add(parent);
+            }
+            parent = path.dirname(parent);
+        }
+    }
 
-  removeFileFromContext(filePath: string) {
-    this.contextFiles.delete(filePath);
-    this.context.workspaceState.update('aiContextFiles', Array.from(this.contextFiles));
-    this._onDidChangeTreeData.fire();
-  }
+    async addFolderToContext(folderItem: FileItem) {
+        const files = await this.getAllFilesInFolder(folderItem.resourceUri.fsPath);
+        files.forEach(file => this.addFileToContext(file));
+        this.ensurePathIsVisible(folderItem.relativePath);
+        this.saveState();
+        this.refresh();
+        vscode.window.showInformationMessage(`Added ${files.length} files from '${folderItem.label}' to context.`);
+    }
+
+    async removeFolderFromContext(folderItem: FileItem) {
+        const files = await this.getAllFilesInFolder(folderItem.resourceUri.fsPath);
+        let removedCount = 0;
+        files.forEach(file => {
+            if(this.contextFiles.delete(file)) removedCount++;
+            this.treeOnlyFiles.delete(file);
+        });
+        this.saveState();
+        this.refresh();
+        vscode.window.showInformationMessage(`Removed ${removedCount} files from '${folderItem.label}' from context.`);
+    }
+
+    private async getAllFilesInFolder(dirPath: string): Promise<string[]> {
+        let files: string[] = [];
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0].uri.fsPath;
+        if (!workspaceRoot) return [];
+
+        try {
+            const entries = await fs.promises.readdir(dirPath, { withFileTypes: true });
+            for (const entry of entries) {
+                const fullPath = path.join(dirPath, entry.name);
+                const relPath = path.relative(workspaceRoot, fullPath);
+                if (this.getPathState(relPath) === 'fully-excluded') continue;
+                if (entry.isDirectory()) {
+                    files.push(...await this.getAllFilesInFolder(fullPath));
+                } else if (entry.isFile()) {
+                    files.push(relPath);
+                }
+            }
+        } catch (error) { console.error(`Error reading folder ${dirPath}:`, error); }
+        return files;
+    }
+
+    private saveState() {
+        this.context.workspaceState.update('aiContextFiles', Array.from(this.contextFiles));
+        this.context.workspaceState.update('aiTreeOnlyFiles', Array.from(this.treeOnlyFiles));
+        this.context.workspaceState.update('aiFullyExcludedPaths', Array.from(this.fullyExcludedPaths));
+    }
+
+    getContextFiles(): string[] { return Array.from(this.contextFiles); }
+    getTreeOnlyFiles(): string[] { return Array.from(this.treeOnlyFiles); }
+    getAllVisibleFiles(): string[] { return [...this.getContextFiles(), ...this.getTreeOnlyFiles()]; }
+    addFileToContext(filePath: string) { this.contextFiles.add(filePath); this.treeOnlyFiles.delete(filePath); this.fullyExcludedPaths.delete(filePath); this.ensurePathIsVisible(filePath); }
+    removeFileFromContext(filePath: string) { this.contextFiles.delete(filePath); }
 }
-export type FileState = 'included' | 'tree-only' | 'excluded';
 
 export class FileItem extends vscode.TreeItem {
   constructor(
@@ -219,45 +186,33 @@ export class FileItem extends vscode.TreeItem {
     public readonly relativePath: string,
     public readonly resourceUri: vscode.Uri,
     public readonly collapsibleState: vscode.TreeItemCollapsibleState,
-    public readonly type: 'file' | 'folder',
-    public readonly fileState?: FileState
+    public readonly type: 'file' | 'folder' | 'image',
+    public readonly state: PathState
   ) {
     super(label, collapsibleState);
-    
-    if (type === 'file' && fileState) {
-      this.tooltip = `${this.relativePath} - ${this.getStateDescription(fileState)}`;
-      this.contextValue = type;
-      
-      this.command = {
-        command: 'lollms-vs-coder.cycleFileState',
-        title: 'Cycle AI Context State',
-        arguments: [this]
-      };
-      
-      // Set icon based on state
-      this.iconPath = this.getStateIcon(fileState);
-    } else if (type === 'folder') {
-      this.tooltip = this.relativePath;
-      this.iconPath = vscode.ThemeIcon.Folder;
+    this.contextValue = type;
+    this.tooltip = `${this.relativePath} - ${this.getStateDescription()}`;
+    this.command = { command: 'lollms-vs-coder.cycleFileState', title: 'Cycle AI Context State', arguments: [this] };
+    this.iconPath = this.getStateIcon();
+  }
+
+  private getStateDescription(): string {
+    switch (this.state) {
+      case 'included': return 'Included in AI context (content + path)';
+      case 'tree-only': return 'Visible to AI (path only)';
+      case 'fully-excluded': return 'Hidden from AI (will not be sent in context)';
     }
   }
 
-  private getStateDescription(state: FileState): string {
-    switch (state) {
-      case 'included': return 'Included (tree + content)';
-      case 'tree-only': return 'Tree only (no content)';
-      case 'excluded': return 'Excluded';
-    }
-  }
-
-  private getStateIcon(state: FileState): vscode.ThemeIcon {
-    switch (state) {
+  private getStateIcon(): vscode.ThemeIcon {
+    switch (this.state) {
       case 'included':
-        return new vscode.ThemeIcon('check', new vscode.ThemeColor('charts.green'));
+        return new vscode.ThemeIcon('check', new vscode.ThemeColor('testing.iconPassed'));
       case 'tree-only':
-        return new vscode.ThemeIcon('eye', new vscode.ThemeColor('charts.yellow'));
-      case 'excluded':
-        return new vscode.ThemeIcon('circle-outline', new vscode.ThemeColor('charts.gray'));
+        const icon = this.type === 'folder' ? vscode.ThemeIcon.Folder : new vscode.ThemeIcon('eye');
+        return icon;
+      case 'fully-excluded':
+        return new vscode.ThemeIcon('circle-slash', new vscode.ThemeColor('testing.iconFailed'));
     }
   }
 }

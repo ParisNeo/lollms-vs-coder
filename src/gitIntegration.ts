@@ -12,20 +12,22 @@ export class GitIntegration {
     this.lollmsAPI = lollmsAPI;
   }
 
-  // Returns true if current workspace has a git repository
   public async isGitRepo(): Promise<boolean> {
+    const workspaceRoot = vscode.workspace.rootPath;
+    if (!workspaceRoot) return false;
     try {
-      await execAsync('git rev-parse --is-inside-work-tree', { cwd: vscode.workspace.rootPath });
+      await execAsync('git rev-parse --is-inside-work-tree', { cwd: workspaceRoot });
       return true;
     } catch {
       return false;
     }
   }
 
-  // Get staged git diff for commit message
   public async getGitStagedDiff(): Promise<string> {
+    const workspaceRoot = vscode.workspace.rootPath;
+    if (!workspaceRoot) return '';
     try {
-      const { stdout } = await execAsync('git diff --cached', { cwd: vscode.workspace.rootPath });
+      const { stdout } = await execAsync('git diff --cached', { cwd: workspaceRoot });
       return stdout || '';
     } catch (error) {
       vscode.window.showErrorMessage('Failed to get staged git diff.');
@@ -33,11 +35,11 @@ export class GitIntegration {
     }
   }
 
-  // Generate AI commit message based on staged diff
   public async generateCommitMessage(): Promise<string> {
     const diff = await this.getGitStagedDiff();
     if (!diff) {
-      return 'No staged changes detected.';
+      vscode.window.showInformationMessage('No staged changes detected.');
+      return '';
     }
 
     const prompt: ChatMessage[] =  [
@@ -46,7 +48,13 @@ export class GitIntegration {
     ];
 
     try {
-      const message = await this.lollmsAPI.sendChat(prompt);
+      const message = await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: "Lollms: Generating commit message...",
+        cancellable: false
+      }, async () => {
+        return await this.lollmsAPI.sendChat(prompt);
+      });
       return message.trim();
     } catch (error) {
       vscode.window.showErrorMessage('Error generating commit message: ' + (error as Error).message);
@@ -54,10 +62,11 @@ export class GitIntegration {
     }
   }
 
-  // Commit changes with the generated message
   public async commitWithMessage(message: string): Promise<void> {
+    const workspaceRoot = vscode.workspace.rootPath;
+    if (!workspaceRoot) return;
     try {
-      await execAsync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd: vscode.workspace.rootPath });
+      await execAsync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd: workspaceRoot });
       vscode.window.showInformationMessage('Committed changes with AI-generated message.');
     } catch (error) {
       vscode.window.showErrorMessage('Git commit failed: ' + (error as Error).message);

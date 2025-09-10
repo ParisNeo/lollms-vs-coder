@@ -5,19 +5,19 @@
 [![Languages](https://img.shields.io/github/languages/top/ParisNeo/lollms-vs-coder?style=flat-square)](https://github.com/ParisNeo/lollms-vs-coder) 
 [![Stars](https://img.shields.io/github/stars/ParisNeo/lollms-vs-coder?style=social)](https://github.com/ParisNeo/lollms-vs-coder/stargazers) 
 
-Lollms-vs-coder is an AI-powered Visual Studio Code extension leveraging Lollms's OpenAI-compatible interface for advanced code assistance, debugging, real-time enhancements, context management, and automated git commit message generation with full versioning support.
+Lollms-vs-coder is an AI-powered Visual Studio Code extension leveraging a Lollms-compatible API for advanced code assistance, inline autocompletion, context management, and automated git commit message generation.
 
 ---
 
 ## Features
 
-- Conversational AI chat interface integrated into VS Code for coding assistance and debugging.
-- Real-time code enhancement, generation from comments, and smart autocompletion.
-- Add or remove files from AI context for precise and efficient prompt crafting.
-- Auto-generate conventional git commit messages based on staged code changes.
-- Full versioning support: AI-assisted changes are tracked via Git commits.
-- Configurable API host and key with an easy-access UI on the sidebar.
-- Lightweight, fast, and customizable to fit your AI coding workflow.
+- **Conversational AI Chat:** An integrated chat panel for coding assistance and debugging, with full discussion history management.
+- **AI-Powered Code Actions:** Select code and apply AI actions like "Refactor", "Explain", or "Find Bugs" directly from the editor.
+- **Inline Autocomplete:** Get single-line, "ghost text" code suggestions as you type (optional) or trigger them manually with a status bar button.
+- **Smart Context Management:** A sidebar file tree lets you control which files are included in the AI's context for more accurate and relevant responses.
+- **Customizable Prompts:** Comes with a set of useful, protected default prompts and allows you to create, edit, and organize your own.
+- **Git Integration:** Auto-generate conventional git commit messages based on your staged changes.
+- **Configurable:** Easily configure the API host, key, and model from the settings UI.
 
 ---
 
@@ -39,12 +39,14 @@ Use the VS Code Extension Development Host to launch and test.
 
 ## Configuration
 
-Configure the Lollms API connection via the sidebar **Lollms Settings** panel or by manually editing your VS Code settings:
+Configure the Lollms API connection via the sidebar or by manually editing your VS Code settings. The most important settings are:
 
 ```
 {
+  "lollmsVsCoder.apiUrl": "http://localhost:9642",
   "lollmsVsCoder.apiKey": "<YOUR_LOLLMS_API_KEY>",
-  "lollmsVsCoder.apiUrl": "http://localhost:9642"
+  "lollmsVsCoder.modelName": "<YOUR_MODEL_NAME>",
+  "lollmsVsCoder.enableInlineSuggestions": false // Set to true to enable automatic ghost-text suggestions
 }
 ```
 
@@ -52,32 +54,24 @@ Configure the Lollms API connection via the sidebar **Lollms Settings** panel or
 
 ## Usage
 
-- Use the **Lollms: Start Chat** command or the status bar button to open the AI chat panel.
-- Add or remove active files from AI context via command palette commands:
-  - `Lollms: Add File to AI Context`
-  - `Lollms: Remove File from AI Context`
-- Generate AI-suggested commit messages:
-  - `Lollms: Generate Git Commit Message`
-  - `Lollms: Commit Staged Changes with AI Message`
+- **Start Chat:** Click the **$(comment-discussion) Lollms Chat** button in the status bar.
+- **Use Code Actions:** Select code, and a **Lollms Actions...** link will appear above it.
+- **Manual Autocomplete:** Click the **$(sparkle) Lollms** button in the status bar to get a single-line completion.
+- **Manage Context:** Use the **AI Context Files** view in the Lollms sidebar to control which files the AI can see.
+- **Generate Commit Messages:** Click the sparkle icon in the Source Control panel's title bar.
+- **Get Help:** Open the command palette and run `Lollms: Show Help`.
 
 ---
 
 ## Contributing
 
-Contributions, issues, and feature requests are welcome! Feel free to check [issues page](https://github.com/ParisNeo/lollms-vs-coder/issues) if you want to contribute.
+Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](https://github.com/ParisNeo/lollms-vs-coder/issues).
 
 ---
 
 ## License
 
 This project is licensed under the Apache-2.0 License - see the [LICENSE](https://github.com/ParisNeo/lollms-vs-coder/blob/main/LICENSE) file for details.
-
----
-
-## Links & Resources
-
-- [Lollms GitHub](https://github.com/ParisNeo/lollms) - For Lollms API and backend info
-- [VS Code Extension API](https://code.visualstudio.com/api) - Official docs and guidelines
 
 ---
 

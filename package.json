@@ -2,157 +2,129 @@
   "name": "lollms-vs-coder",
   "displayName": "Lollms VS Coder",
   "description": "AI-powered Visual Studio Code extension using Lollms OpenAI-compatible interface for smart coding, debugging, real-time enhancements, context management, and git commit message generation.",
-  "version": "0.0.1",
+  "version": "0.1.3",
   "publisher": "parisneo",
   "license": "MIT",
+  "icon": "media/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/parisneo/lollms-vs-coder"
   },
   "engines": {
-    "vscode": "^1.70.0",
+    "vscode": "^1.74.0",
     "node": ">=16.0.0"
   },
   "categories": [
     "Machine Learning",
     "Other"
   ],
-  "keywords": [
-    "ai",
-    "lollms",
-    "coding-assistant",
-    "git-integration",
-    "openai-compatible"
-  ],
+  "main": "./out/extension.js",
   "activationEvents": [
     "onStartupFinished"
   ],
-  "main": "./out/extension.js",
   "contributes": {
     "commands": [
-      {
-        "command": "lollms-vs-coder.startChat",
-        "title": "Lollms: Start Chat"
-      },
-      {
-        "command": "lollms-vs-coder.addFileToContext",
-        "title": "Lollms: Add File to AI Context"
-      },
-      {
-        "command": "lollms-vs-coder.removeFileFromContext",
-        "title": "Lollms: Remove File from AI Context"
-      },
-      {
-        "command": "lollms-vs-coder.generateCommitMessage",
-        "title": "Lollms: Generate Git Commit Message"
-      },
-      {
-        "command": "lollms-vs-coder.commitWithAIMessage",
-        "title": "Lollms: Commit Staged Changes with AI Message"
-      },
-      {
-        "command": "lollmsApi.recreateClient",
-        "title": "Recreate LollmsAPI Client"
-      },
-      {
-        "command": "lollms-vs-coder.toggleFileContext",
-        "title": "Toggle in AI Context"
-      },
-      {
-        "command": "lollms-vs-coder.refreshTree",
-        "title": "Refresh",
-        "icon": "$(refresh)"
-      },
-      {
-        "command": "lollms-vs-coder.cycleFileState",
-        "title": "Cycle AI Context State"
-      }
+        { "command": "lollms-vs-coder.startChat", "title": "Lollms: Start Chat" },
+        { "command": "lollms-vs-coder.triggerCodeAction", "title": "Lollms Actions..." },
+        { "command": "lollms-vs-coder.triggerInlineSuggestion", "title": "Lollms: Autocomplete" },
+        { "command": "lollms-vs-coder.addFileToContext", "title": "Lollms: Add File to AI Context" },
+        { "command": "lollms-vs-coder.removeFileFromContext", "title": "Lollms: Remove File from AI Context" },
+        { "command": "lollms-vs-coder.generateCommitMessage", "title": "Lollms: Generate Commit Message", "icon": "$(sparkle)" },
+        { "command": "lollms-vs-coder.commitWithAIMessage", "title": "Lollms: Commit Staged Changes with AI Message" },
+        { "command": "lollmsApi.recreateClient", "title": "Recreate LollmsAPI Client" },
+        { "command": "lollms-vs-coder.refreshTree", "title": "Refresh" },
+        { "command": "lollms-vs-coder.cycleFileState", "title": "Cycle AI Context State" },
+        { "command": "lollms-vs-coder.addFolderToContext", "title": "Lollms: Add Folder to Context" },
+        { "command": "lollms-vs-coder.removeFolderFromContext", "title": "Lollms: Remove Folder from Context" },
+        { "command": "lollms-vs-coder.showConfigView", "title": "Lollms: Open Settings" },
+        { "command": "lollms-vs-coder.showHelp", "title": "Lollms: Show Help" },
+        { "command": "lollms-vs-coder.exportContextContent", "title": "Lollms: Export Context to Clipboard" },
+        { "command": "lollms-vs-coder.saveNewFile", "title": "Lollms: Save New File" },
+        { "command": "lollms-vs-coder.executeScript", "title": "Lollms: Execute Script" },
+        { "command": "lollms-vs-coder.newDiscussion", "title": "New Discussion", "icon": "$(add)" },
+        { "command": "lollms-vs-coder.deleteDiscussion", "title": "Delete", "icon": "$(trash)" },
+        { "command": "lollms-vs-coder.switchDiscussion", "title": "Switch Discussion" },
+        { "command": "lollms-vs-coder.refreshDiscussions", "title": "Refresh", "icon": "$(refresh)" },
+        { "command": "lollms-vs-coder.renameDiscussion", "title": "Rename", "icon": "$(edit)" },
+        { "command": "lollms-vs-coder.generateDiscussionTitle", "title": "Generate Title with AI", "icon": "$(sparkle)" },
+        { "command": "lollms-vs-coder.createDiscussionGroup", "title": "New Discussion Group", "icon": "$(new-folder)" },
+        { "command": "lollms-vs-coder.renameDiscussionGroup", "title": "Rename", "icon": "$(edit)" },
+        { "command": "lollms-vs-coder.deleteDiscussionGroup", "title": "Delete", "icon": "$(trash)" },
+        { "command": "lollms-vs-coder.moveDiscussionToGroup", "title": "Move to Group...", "icon": "$(folder)" },
+        { "command": "lollms-vs-coder.runScript", "title": "Lollms: Run Script" },
+        { "command": "lollms-vs-coder.refreshPrompts", "title": "Refresh", "icon": "$(refresh)" },
+        { "command": "lollms-vs-coder.createPrompt", "title": "New Prompt", "icon": "$(add)" },
+        { "command": "lollms-vs-coder.editPrompt", "title": "Edit", "icon": "$(edit)" },
+        { "command": "lollms-vs-coder.deletePrompt", "title": "Delete", "icon": "$(trash)" },
+        { "command": "lollms-vs-coder.useChatPrompt", "title": "Use Chat Prompt" },
+        { "command": "lollms-vs-coder.createPromptGroup", "title": "New Prompt Group", "icon": "$(new-folder)" },
+        { "command": "lollms-vs-coder.renamePromptGroup", "title": "Rename", "icon": "$(edit)" },
+        { "command": "lollms-vs-coder.deletePromptGroup", "title": "Delete", "icon": "$(trash)" },
+        { "command": "lollms-vs-coder.movePromptToGroup", "title": "Move to Group...", "icon": "$(folder)" },
+        { "command": "lollms-vs-coder.saveMessageAsPrompt", "title": "Save as Prompt" },
+        { "command": "lollms-vs-coder.importPrompts", "title": "Import Prompts...", "icon": "$(folder-opened)" },
+        { "command": "lollms-vs-coder.exportPrompts", "title": "Export Prompts...", "icon": "$(save)" },
+        { "command": "lollms-vs-coder.editPromptsFile", "title": "Edit Prompts JSON File" }
     ],
     "configuration": {
-      "type": "object",
-      "title": "Lollms VS Coder Configuration",
-      "properties": {
-        "lollmsVsCoder.apiKey": {
-          "type": "string",
-          "default": "",
-          "description": "API key for authenticating with the Lollms API."
-        },
-        "lollmsVsCoder.apiUrl": {
-          "type": "string",
-          "default": "http://localhost:9642",
-          "description": "URL of the Lollms API server (including protocol and port)."
-        },
-        "lollmsVsCoder.modelName": {
-          "type": "string",
-          "default": "ollama/mistral",
-          "description": "Name of the model to use"
+        "type": "object",
+        "title": "Lollms VS Coder Configuration",
+        "properties": {
+          "lollmsVsCoder.enableCodeActions": { "type": "boolean", "default": true, "description": "Enable the Lollms CodeLens actions (e.g., 'Lollms Actions...') above selected code." },
+          "lollmsVsCoder.enableInlineSuggestions": { "type": "boolean", "default": false, "description": "Enable single-line, inline code suggestions as you type (experimental)." },
+          "lollmsVsCoder.disableSslVerification": { "type": "boolean", "default": false, "description": "Disable SSL certificate verification for API requests. Use with caution for servers with self-signed certificates." },
+          "lollmsVsCoder.apiKey": { "type": "string", "default": "", "description": "API key for authenticating with the Lollms API." },
+          "lollmsVsCoder.apiUrl": { "type": "string", "default": "http://localhost:9642", "description": "URL of the Lollms API server (including protocol and port)." },
+          "lollmsVsCoder.modelName": { "type": "string", "default": "ollama/mistral", "description": "Name of the model to use" }
         }
+      },
+      "viewsContainers": {
+        "activitybar": [ { "id": "lollmsSettings", "title": "Lollms", "icon": "media/lollms-icon.svg" } ]
+      },
+      "views": {
+        "lollmsSettings": [
+          { "id": "lollmsDiscussionsView", "name": "Discussions", "when": "workspaceFolderCount > 0" },
+          { "id": "lollmsChatPromptsView", "name": "Chat Prompts", "when": "workspaceFolderCount > 0" },
+          { "id": "lollmsCodeActionsView", "name": "Code Actions", "when": "workspaceFolderCount > 0" },
+          { "id": "lollmsSettings.fileTreeView", "name": "AI Context Files", "when": "workspaceFolderCount > 0" }
+        ]
+      },
+      "menus": {
+        "scm/title": [ { "command": "lollms-vs-coder.generateCommitMessage", "when": "scmProvider == 'git'", "group": "navigation@2" } ],
+        "view/title": [
+          { "command": "lollms-vs-coder.newDiscussion", "when": "view == lollmsDiscussionsView", "group": "navigation@1" },
+          { "command": "lollms-vs-coder.createDiscussionGroup", "when": "view == lollmsDiscussionsView", "group": "navigation@2" },
+          { "command": "lollms-vs-coder.refreshDiscussions", "when": "view == lollmsDiscussionsView", "group": "navigation@3" },
+          { "command": "lollms-vs-coder.showHelp", "when": "view == lollmsDiscussionsView", "group": "navigation@98", "icon": "$(question)" },
+          { "command": "lollms-vs-coder.showConfigView", "when": "view == lollmsDiscussionsView", "group": "navigation@99", "icon": "$(settings-gear)" },
+          { "command": "lollms-vs-coder.createPrompt", "when": "view == lollmsChatPromptsView || view == lollmsCodeActionsView", "group": "navigation@1" },
+          { "command": "lollms-vs-coder.createPromptGroup", "when": "view == lollmsChatPromptsView || view == lollmsCodeActionsView", "group": "navigation@2" },
+          { "command": "lollms-vs-coder.refreshPrompts", "when": "view == lollmsChatPromptsView || view == lollmsCodeActionsView", "group": "navigation@3" },
+          { "command": "lollms-vs-coder.importPrompts", "when": "view == lollmsChatPromptsView || view == lollmsCodeActionsView", "group": "navigation@4" },
+          { "command": "lollms-vs-coder.exportPrompts", "when": "view == lollmsChatPromptsView || view == lollmsCodeActionsView", "group": "navigation@5" },
+          { "command": "lollms-vs-coder.refreshTree", "when": "view == lollmsSettings.fileTreeView", "group": "navigation@1" },
+          { "command": "lollms-vs-coder.exportContextContent", "when": "view == lollmsSettings.fileTreeView", "group": "navigation@2" }
+        ],
+        "view/item/context": [
+            { "command": "lollms-vs-coder.cycleFileState", "when": "view == lollmsSettings.fileTreeView && (viewItem == 'file' || viewItem == 'image' || viewItem == 'folder')", "group": "inline" },
+            { "command": "lollms-vs-coder.addFolderToContext", "when": "view == lollmsSettings.fileTreeView && viewItem == 'folder'", "group": "1_modification" },
+            { "command": "lollms-vs-coder.removeFolderFromContext", "when": "view == lollmsSettings.fileTreeView && viewItem == 'folder'", "group": "1_modification" },
+            { "command": "lollms-vs-coder.renameDiscussion", "when": "view == lollmsDiscussionsView && viewItem == 'discussion'", "group": "1_modification" },
+            { "command": "lollms-vs-coder.generateDiscussionTitle", "when": "view == lollmsDiscussionsView && viewItem == 'discussion'", "group": "1_modification" },
+            { "command": "lollms-vs-coder.moveDiscussionToGroup", "when": "view == lollmsDiscussionsView && viewItem == 'discussion'", "group": "2_move" },
+            { "command": "lollms-vs-coder.deleteDiscussion", "when": "view == lollmsDiscussionsView && viewItem == 'discussion'", "group": "9_delete" },
+            { "command": "lollms-vs-coder.renameDiscussionGroup", "when": "view == lollmsDiscussionsView && viewItem == 'discussionGroup'", "group": "1_modification" },
+            { "command": "lollms-vs-coder.deleteDiscussionGroup", "when": "view == lollmsDiscussionsView && viewItem == 'discussionGroup'", "group": "9_delete" },
+            { "command": "lollms-vs-coder.editPrompt", "when": "(view == lollmsChatPromptsView || view == lollmsCodeActionsView) && viewItem == 'prompt'", "group": "1_modification" },
+            { "command": "lollms-vs-coder.movePromptToGroup", "when": "(view == lollmsChatPromptsView || view == lollmsCodeActionsView) && viewItem == 'prompt'", "group": "2_move" },
+            { "command": "lollms-vs-coder.deletePrompt", "when": "(view == lollmsChatPromptsView || view == lollmsCodeActionsView) && viewItem == 'prompt'", "group": "9_delete" },
+            { "command": "lollms-vs-coder.renamePromptGroup", "when": "(view == lollmsChatPromptsView || view == lollmsCodeActionsView) && viewItem == 'promptGroup'", "group": "1_modification" },
+            { "command": "lollms-vs-coder.deletePromptGroup", "when": "(view == lollmsChatPromptsView || view == lollmsCodeActionsView) && viewItem == 'promptGroup'", "group": "9_delete" }
+        ]
       }
-    },
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "lollmsSettings",
-          "title": "Lollms Settings",
-          "icon": "media/lollms-icon.svg"
-        }
-      ]
-    },
-    "views": {
-      "lollmsSettings": [
-        {
-          "id": "lollmsSettings.lollmsConfigView",
-          "type": "webview",
-          "name": "Configuration"
-        },
-        {
-          "id": "lollmsSettings.fileTreeView",
-          "name": "AI Context Files",
-          "when": "workspaceFolderCount > 0"
-        }
-      ]
-    },
-    "menus": {
-      "view/title": [
-        {
-          "command": "lollms-vs-coder.refreshTree",
-          "when": "view == lollmsSettings.fileTreeView",
-          "group": "navigation"
-        }
-      ],
-      "view/item/context": [
-        {
-          "command": "lollms-vs-coder.cycleFileState",
-          "when": "view == lollmsSettings.fileTreeView && viewItem == file",
-          "group": "inline"
-        }
-      ]
-    }
   },
-  "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./",
-    "pretest": "npm run compile && npm audit",
-    "test": "node ./out/test/runTest.js",
-    "security-audit": "npm audit --audit-level moderate",
-    "clean": "rimraf out node_modules package-lock.json"
-  },
-  "devDependencies": {
-    "@types/marked": "5.0.2",
-    "@types/node-fetch": "2.6.13",
-    "@types/vscode": "1.103.0",
-    "typescript": "5.9.2"
-  },
-  "dependencies": {
-    "marked": "16.2.1",
-    "node-fetch": "2.7.0"
-  },
-  "overrides": {
-    "eslint": {
-      "chalk": ">=5.0.0",
-      "debug": ">=4.3.5",
-      "ansi-styles": ">=6.0.0"
-    }
-  }
+  "scripts": { "vscode:prepublish": "npm run compile", "compile": "tsc -p ./", "watch": "tsc -watch -p ./", "package": "vsce package", "pretest": "npm run compile && npm audit", "test": "node ./out/test/runTest.js", "security-audit": "npm audit --audit-level moderate", "clean": "rimraf out node_modules package-lock.json" },
+  "devDependencies": { "@types/jimp": "^0.2.28", "@types/marked": "5.0.2", "@types/node-fetch": "2.6.13", "@types/vscode": "1.74.0", "typescript": "5.9.2", "vsce": "^2.15.0" },
+  "dependencies": { "jimp": "^0.22.10", "marked": "16.2.1", "node-fetch": "2.7.0" },
+  "overrides": { "eslint": { "chalk": ">=5.0.0", "debug": ">=4.3.5", "ansi-styles": ">=6.0.0" } }
 }

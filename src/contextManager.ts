@@ -113,7 +113,7 @@ export class ContextManager {
       return '## Project Structure\n\n*No project structure available - no workspace folder found.*\n';
     }
 
-    const allVisibleFiles = this.fileTreeProvider.getAllVisibleFiles();
+    const allVisibleFiles = await this.fileTreeProvider.getAllVisibleFiles();
     console.log('All visible files count:', allVisibleFiles.length);
     
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -203,10 +203,10 @@ Currently operating without project context.
 
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (workspaceFolder) {
-      const relativePath = vscode.workspace.asRelativePath(uri);
-      this.fileTreeProvider.addFileToContext(relativePath);
-      vscode.window.showInformationMessage(`Added ${relativePath} to AI context`);
-      console.log(`Added file to context: ${relativePath}`);
+        const relativePath = vscode.workspace.asRelativePath(uri, false);
+        this.fileTreeProvider.addFileToContext(relativePath);
+        vscode.window.showInformationMessage(`Added ${path.basename(uri.fsPath)} to AI context`);
+        console.log(`Added file to context: ${relativePath}`);
     }
   }
 
@@ -218,25 +218,24 @@ Currently operating without project context.
 
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (workspaceFolder) {
-      const relativePath = vscode.workspace.asRelativePath(uri);
-      this.fileTreeProvider.removeFileFromContext(relativePath);
-      vscode.window.showInformationMessage(`Removed ${relativePath} from AI context`);
-      console.log(`Removed file from context: ${relativePath}`);
+        const relativePath = vscode.workspace.asRelativePath(uri, false);
+        this.fileTreeProvider.removeFileFromContext(relativePath);
+        vscode.window.showInformationMessage(`Removed ${path.basename(uri.fsPath)} from AI context`);
+        console.log(`Removed file from context: ${relativePath}`);
     }
   }
 
   // Get summary of current context for debugging
-  getContextSummary(): string {
+  async getContextSummary(): Promise<string> {
     if (!this.fileTreeProvider) {
       return 'No FileTreeProvider available';
     }
 
     const contextFiles = this.fileTreeProvider.getContextFiles();
-    const treeOnlyFiles = this.fileTreeProvider.getTreeOnlyFiles();
+    const allVisibleFiles = await this.fileTreeProvider.getAllVisibleFiles();
     
     return `Context Summary:
 - Files with content: ${contextFiles.length}
-- Files tree-only: ${treeOnlyFiles.length}
-- Total visible files: ${contextFiles.length + treeOnlyFiles.length}`;
+- Total visible files for tree: ${allVisibleFiles.length}`;
   }
 }

@@ -12,9 +12,10 @@ export class FileTreeProvider implements vscode.TreeDataProvider<FileItem> {
     private treeOnlyFiles: Set<string> = new Set();
     private fullyExcludedPaths: Set<string> = new Set();
     
-    private defaultExcludedExtensions = ['.exe', '.dll', '.bin', '.obj', '.o', '.so', '.dylib', '.a', '.vsix'];
-    private imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg'];
-    private defaultExcludedFolders = ['node_modules', '.git', 'dist', 'build', 'out'];
+    // Enhanced exclusion lists
+    private binaryFileExtensions = new Set(['.exe', '.dll', '.bin', '.obj', '.o', '.so', '.dylib', '.a', '.vsix', '.nupkg', '.jar', '.class', '.pyc', '.pyo', '.pyd', '.egg', '.whl']);
+    private imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg']);
+    private excludedFolders = new Set(['node_modules', '.git', 'dist', 'build', 'out', '__pycache__', '.pytest_cache', '.mypy_cache', 'egg-info']);
   
     constructor(private workspaceRoot: string, private context: vscode.ExtensionContext) {
       this.contextFiles = new Set(context.workspaceState.get<string[]>('aiContextFiles', []));
@@ -45,7 +46,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<FileItem> {
             for (const entry of entries) {
                 const relPath = path.join(relativePath, entry.name);
 
-                if (this.defaultExcludedFolders.includes(entry.name)) continue;
+                if (this.excludedFolders.has(entry.name)) continue;
                 if (entry.name.startsWith('.') && entry.name !== '.vscode') continue;
                 
                 const fullPath = path.join(dirPath, entry.name);
@@ -55,8 +56,10 @@ export class FileTreeProvider implements vscode.TreeDataProvider<FileItem> {
                     items.push(new FileItem(entry.name, relPath, vscode.Uri.file(fullPath), vscode.TreeItemCollapsibleState.Collapsed, 'folder', state));
                 } else if (entry.isFile()) {
                     const ext = path.extname(entry.name).toLowerCase();
-                    if (!this.defaultExcludedExtensions.includes(ext)) {
-                        const isImage = this.imageExtensions.includes(ext);
+                    const isImage = this.imageExtensions.has(ext);
+                    const isBinary = this.binaryFileExtensions.has(ext);
+                    
+                    if (!isBinary || isImage) {
                         items.push(new FileItem(entry.name, relPath, vscode.Uri.file(fullPath), vscode.TreeItemCollapsibleState.None, isImage ? 'image' : 'file', state));
                     }
                 }
@@ -64,53 +67,53 @@ export class FileTreeProvider implements vscode.TreeDataProvider<FileItem> {
         } catch (error) { console.error(`Error reading directory ${dirPath}:`, error); }
 
         return items.sort((a, b) => {
-            if (a.type === 'folder' && b.type !== 'folder') return -1;
-            if (a.type !== 'folder' && b.type === 'folder') return 1;
+            const aIsDir = a.collapsibleState !== vscode.TreeItemCollapsibleState.None;
+            const bIsDir = b.collapsibleState !== vscode.TreeItemCollapsibleState.None;
+            if (aIsDir && !bIsDir) return -1;
+            if (!aIsDir && bIsDir) return 1;
             return a.label!.toString().localeCompare(b.label!.toString());
         });
     }
 
     private getPathState(relPath: string): PathState {
         if (this.fullyExcludedPaths.has(relPath)) return 'fully-excluded';
-        if (this.contextFiles.has(relPath)) return 'included';
-        if (this.treeOnlyFiles.has(relPath)) return 'tree-only';
         
         // Check if a parent is fully excluded
         let parent = path.dirname(relPath);
-        while (parent !== '.') {
+        while (parent !== '.' && parent !== '/') {
             if (this.fullyExcludedPaths.has(parent)) return 'fully-excluded';
             parent = path.dirname(parent);
         }
 
+        if (this.contextFiles.has(relPath)) return 'included';
+        if (this.treeOnlyFiles.has(relPath)) return 'tree-only';
+        
         return 'tree-only'; // Default state is visible but not in context
     }
 
     async cycleFileState(item: FileItem) {
         const currentState = this.getPathState(item.relativePath);
+        
+        // Clear old state
         this.contextFiles.delete(item.relativePath);
         this.treeOnlyFiles.delete(item.relativePath);
         this.fullyExcludedPaths.delete(item.relativePath);
 
-        if (item.type === 'folder') {
-            if (currentState === 'fully-excluded') {
+        // Determine and set next state
+        switch (currentState) {
+            case 'included': // Next is tree-only
                 this.treeOnlyFiles.add(item.relativePath);
-            } else {
+                break;
+            case 'tree-only': // Next is fully-excluded
                 this.fullyExcludedPaths.add(item.relativePath);
-                await this.removeFolderFromContext(item); // Clean up children
-            }
-        } else { // File or Image
-            switch (currentState) {
-                case 'included':
-                    this.treeOnlyFiles.add(item.relativePath); break;
-                case 'tree-only':
-                    this.fullyExcludedPaths.add(item.relativePath); break;
-                case 'fully-excluded':
-                    this.contextFiles.add(item.relativePath);
-                    this.ensurePathIsVisible(item.relativePath);
-                    break;
-            }
+                break;
+            case 'fully-excluded': // Next is included
+                this.contextFiles.add(item.relativePath);
+                this.ensurePathIsVisible(item.relativePath); // Make sure parents are not excluded
+                break;
         }
-        this.saveState();
+
+        await this.saveState();
         this.refresh();
     }
 
@@ -125,11 +128,28 @@ export class FileTreeProvider implements vscode.TreeDataProvider<FileItem> {
         }
     }
 
+    async addFileToContext(relPath: string) {
+        this.contextFiles.add(relPath);
+        this.treeOnlyFiles.delete(relPath);
+        this.fullyExcludedPaths.delete(relPath);
+        this.ensurePathIsVisible(relPath);
+        await this.saveState();
+        this.refresh();
+    }
+    
+    async removeFileFromContext(relPath: string) {
+        if (this.contextFiles.delete(relPath)) {
+            this.treeOnlyFiles.add(relPath); // Move to tree-only instead of removing completely
+            await this.saveState();
+            this.refresh();
+        }
+    }
+
     async addFolderToContext(folderItem: FileItem) {
         const files = await this.getAllFilesInFolder(folderItem.resourceUri.fsPath);
-        files.forEach(file => this.addFileToContext(file));
+        files.forEach(fileRelPath => this.addFileToContext(fileRelPath));
         this.ensurePathIsVisible(folderItem.relativePath);
-        this.saveState();
+        await this.saveState();
         this.refresh();
         vscode.window.showInformationMessage(`Added ${files.length} files from '${folderItem.label}' to context.`);
     }
@@ -137,18 +157,20 @@ export class FileTreeProvider implements vscode.TreeDataProvider<FileItem> {
     async removeFolderFromContext(folderItem: FileItem) {
         const files = await this.getAllFilesInFolder(folderItem.resourceUri.fsPath);
         let removedCount = 0;
-        files.forEach(file => {
-            if(this.contextFiles.delete(file)) removedCount++;
-            this.treeOnlyFiles.delete(file);
+        files.forEach(fileRelPath => {
+            if(this.contextFiles.delete(fileRelPath)) {
+                this.treeOnlyFiles.add(fileRelPath);
+                removedCount++;
+            }
         });
-        this.saveState();
+        await this.saveState();
         this.refresh();
         vscode.window.showInformationMessage(`Removed ${removedCount} files from '${folderItem.label}' from context.`);
     }
 
     private async getAllFilesInFolder(dirPath: string): Promise<string[]> {
         let files: string[] = [];
-        const workspaceRoot = vscode.workspace.workspaceFolders?.[0].uri.fsPath;
+        const workspaceRoot = this.workspaceRoot;
         if (!workspaceRoot) return [];
 
         try {
@@ -157,27 +179,33 @@ export class FileTreeProvider implements vscode.TreeDataProvider<FileItem> {
                 const fullPath = path.join(dirPath, entry.name);
                 const relPath = path.relative(workspaceRoot, fullPath);
                 if (this.getPathState(relPath) === 'fully-excluded') continue;
+                if (this.excludedFolders.has(entry.name)) continue;
+                
                 if (entry.isDirectory()) {
                     files.push(...await this.getAllFilesInFolder(fullPath));
                 } else if (entry.isFile()) {
-                    files.push(relPath);
+                    const ext = path.extname(entry.name).toLowerCase();
+                    if (!this.binaryFileExtensions.has(ext) || this.imageExtensions.has(ext)) {
+                        files.push(relPath);
+                    }
                 }
             }
         } catch (error) { console.error(`Error reading folder ${dirPath}:`, error); }
         return files;
     }
 
-    private saveState() {
-        this.context.workspaceState.update('aiContextFiles', Array.from(this.contextFiles));
-        this.context.workspaceState.update('aiTreeOnlyFiles', Array.from(this.treeOnlyFiles));
-        this.context.workspaceState.update('aiFullyExcludedPaths', Array.from(this.fullyExcludedPaths));
+    private async saveState() {
+        await this.context.workspaceState.update('aiContextFiles', Array.from(this.contextFiles));
+        await this.context.workspaceState.update('aiTreeOnlyFiles', Array.from(this.treeOnlyFiles));
+        await this.context.workspaceState.update('aiFullyExcludedPaths', Array.from(this.fullyExcludedPaths));
     }
 
     getContextFiles(): string[] { return Array.from(this.contextFiles); }
-    getTreeOnlyFiles(): string[] { return Array.from(this.treeOnlyFiles); }
-    getAllVisibleFiles(): string[] { return [...this.getContextFiles(), ...this.getTreeOnlyFiles()]; }
-    addFileToContext(filePath: string) { this.contextFiles.add(filePath); this.treeOnlyFiles.delete(filePath); this.fullyExcludedPaths.delete(filePath); this.ensurePathIsVisible(filePath); }
-    removeFileFromContext(filePath: string) { this.contextFiles.delete(filePath); }
+    
+    public async getAllVisibleFiles(): Promise<string[]> {
+        if (!this.workspaceRoot) return [];
+        return this.getAllFilesInFolder(this.workspaceRoot);
+    }
 }
 
 export class FileItem extends vscode.TreeItem {
@@ -191,16 +219,24 @@ export class FileItem extends vscode.TreeItem {
   ) {
     super(label, collapsibleState);
     this.contextValue = type;
-    this.tooltip = `${this.relativePath} - ${this.getStateDescription()}`;
-    this.command = { command: 'lollms-vs-coder.cycleFileState', title: 'Cycle AI Context State', arguments: [this] };
+    this.tooltip = `${this.relativePath}\nState: ${this.getStateDescription()}`;
+    
+    // Set the icon based on the state.
     this.iconPath = this.getStateIcon();
+
+    // For files and images, a single click should open them.
+    // The state can be changed via the context menu or the inline action icon on hover.
+    if (type === 'file' || type === 'image') {
+        this.command = { command: 'vscode.open', title: 'Open File', arguments: [this.resourceUri] };
+    }
+    // For folders, we do not set a command to preserve the default expand/collapse behavior.
   }
 
   private getStateDescription(): string {
     switch (this.state) {
-      case 'included': return 'Included in AI context (content + path)';
-      case 'tree-only': return 'Visible to AI (path only)';
-      case 'fully-excluded': return 'Hidden from AI (will not be sent in context)';
+      case 'included': return 'Included in AI context (content and path sent to AI)';
+      case 'tree-only': return 'Visible in tree (path sent to AI, content is not)';
+      case 'fully-excluded': return 'Excluded from AI context';
     }
   }
 
@@ -209,10 +245,13 @@ export class FileItem extends vscode.TreeItem {
       case 'included':
         return new vscode.ThemeIcon('check', new vscode.ThemeColor('testing.iconPassed'));
       case 'tree-only':
-        const icon = this.type === 'folder' ? vscode.ThemeIcon.Folder : new vscode.ThemeIcon('eye');
-        return icon;
+        // For 'tree-only' state, use the default file/folder icons provided by the theme.
+        return this.type === 'folder' ? vscode.ThemeIcon.Folder : vscode.ThemeIcon.File;
       case 'fully-excluded':
-        return new vscode.ThemeIcon('circle-slash', new vscode.ThemeColor('testing.iconFailed'));
+        return new vscode.ThemeIcon('circle-slash', new vscode.ThemeColor('disabledForeground'));
+      default:
+        // Fallback to a default file icon if state is unknown.
+        return vscode.ThemeIcon.File;
     }
   }
 }

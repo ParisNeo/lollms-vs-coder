@@ -18,6 +18,9 @@ import { HelpPanel } from './commands/helpPanel';
 import { PromptBuilderPanel, parsePlaceholders } from './commands/promptBuilderPanel';
 import { CodeActionProvider } from './commands/codeActions';
 import { LollmsInlineCompletionProvider } from './commands/inlineSuggestions';
+import { AgentManager } from './agentManager';
+import { InlineDiffProvider } from './commands/inlineDiffProvider';
+import { InfoPanel } from './commands/infoPanel';
 
 interface GitExtension { getAPI(version: 1): API; }
 interface API { repositories: Repository[]; }
@@ -41,6 +44,86 @@ async function handleCopilotConflict(context: vscode.ExtensionContext) {
     }
 }
 
+async function buildCodeActionPrompt(
+    promptTemplate: string, 
+    editor: vscode.TextEditor, 
+    extensionUri: vscode.Uri,
+    contextManager: ContextManager
+): Promise<{ systemPrompt: string, userPrompt: string } | null> {
+    
+    // --- Build User Prompt ---
+    const selection = editor.selection;
+    const document = editor.document;
+
+    const placeholders = parsePlaceholders(promptTemplate);
+    let processedTemplate = promptTemplate;
+    if (placeholders.length > 0) {
+        const formData = await PromptBuilderPanel.createOrShow(extensionUri, placeholders);
+        if (formData === null) return null; // User cancelled
+        placeholders.forEach(p => {
+            const value = formData[p.name] ?? '';
+            processedTemplate = processedTemplate.replace(p.fullMatch, String(value));
+        });
+    }
+
+    const userInstruction = processedTemplate.replace('{{SELECTED_CODE}}', '').trim();
+
+    const selectedText = document.getText(selection);
+    const fileName = path.basename(document.fileName);
+    const languageId = document.languageId;
+
+    const startLine = Math.max(0, selection.start.line - 10);
+    const endLine = Math.min(document.lineCount - 1, selection.end.line + 10);
+
+    const beforeRange = new vscode.Range(new vscode.Position(startLine, 0), selection.start);
+    const afterRange = new vscode.Range(selection.end, new vscode.Position(endLine, document.lineAt(endLine).text.length));
+
+    const codeBefore = document.getText(beforeRange);
+    const codeAfter = document.getText(afterRange);
+    
+    let userPrompt = `I am working on the file \`${fileName}\` which is a \`${languageId}\` file.\n\n`;
+
+    if (codeBefore.trim()) {
+        userPrompt += `Here is the code immediately BEFORE my selection:\n\`\`\`${languageId}\n${codeBefore}\n\`\`\`\n\n`;
+    }
+
+    userPrompt += `Here is the code I have selected that you need to modify:\n\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\n`;
+
+    if (codeAfter.trim()) {
+        userPrompt += `Here is the code immediately AFTER my selection:\n\`\`\`${languageId}\n${codeAfter}\n\`\`\`\n\n`;
+    }
+
+    userPrompt += `My instruction is: **${userInstruction}**`;
+    
+    // --- Build System Prompt ---
+    let systemPrompt = `You are an automated code modification tool. You will be given a block of code and an instruction. Your ONLY output must be the complete, modified code block, with the instruction applied.
+- PRESERVE original indentation and formatting.
+- DO NOT add any explanations, comments, or conversational text.
+- DO NOT use placeholders like "...".
+- Your entire response MUST be a single markdown code block containing the full, modified code.`;
+
+    // Add project context to system prompt
+    const projectTree = await contextManager.getFileTreeProvider()?.getAllVisibleFiles();
+    if (projectTree && projectTree.length > 0) {
+        const filteredTree = projectTree.filter(f => !f.includes('node_modules') && !f.includes('__pycache__') && !/venv/i.test(f)).slice(0, 30).join('\n');
+        systemPrompt += `\n\nFor context, here is a summary of the project structure:\n<project_tree>\n${filteredTree}\n</project_tree>`;
+    }
+
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (workspaceFolders && workspaceFolders.length > 0) {
+        try {
+            const readmeUri = vscode.Uri.joinPath(workspaceFolders[0].uri, 'README.md');
+            const readmeContent = await vscode.workspace.fs.readFile(readmeUri);
+            const readmeSnippet = Buffer.from(readmeContent).toString('utf8').split('\n').slice(0, 20).join('\n');
+            systemPrompt += `\n\nHere is a snippet from the project's README.md for high-level context:\n<readme>\n${readmeSnippet}\n</readme>`;
+        } catch (error) {
+            // README.md not found, which is fine.
+        }
+    }
+
+    return { systemPrompt, userPrompt };
+}
+
 export function activate(context: vscode.ExtensionContext) {
     console.log('Lollms VS Coder is now active!');
     handleCopilotConflict(context);
@@ -56,11 +139,22 @@ export function activate(context: vscode.ExtensionContext) {
     const contextManager = new ContextManager(context);
     const scriptRunner = new ScriptRunner();
     const promptManager = new PromptManager(context.globalStorageUri);
+    const gitIntegration = new GitIntegration(lollmsAPI);
 
     const chatPromptTreeProvider = new ChatPromptTreeProvider(promptManager);
     const codeActionTreeProvider = new CodeActionTreeProvider(promptManager);
     vscode.window.registerTreeDataProvider('lollmsChatPromptsView', chatPromptTreeProvider);
     vscode.window.registerTreeDataProvider('lollmsCodeActionsView', codeActionTreeProvider);
+
+    const inlineDiffProvider = new InlineDiffProvider();
+    context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, inlineDiffProvider));
+    
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.acceptDiff', () => {
+        inlineDiffProvider.accept();
+    }));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.rejectDiff', () => {
+        inlineDiffProvider.reject();
+    }));
 
     const codeActionProvider = new CodeActionProvider();
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file', language: '*' }, codeActionProvider));
@@ -101,42 +195,24 @@ export function activate(context: vscode.ExtensionContext) {
         });
     }));
 
-    const usePromptLogic = async (content: string) => {
-        const editor = vscode.window.activeTextEditor;
-        const selectedText = editor && !editor.selection.isEmpty ? editor.document.getText(editor.selection) : '';
-        const placeholders = parsePlaceholders(content);
-        let finalContent = content;
-    
-        if (placeholders.length > 0) {
-            const formData = await PromptBuilderPanel.createOrShow(context.extensionUri, placeholders);
-            if (formData === null) return null;
-            placeholders.forEach(p => {
-                const value = formData[p.name] ?? '';
-                finalContent = finalContent.replace(p.fullMatch, String(value));
-            });
-        }
-    
-        if (finalContent.includes('{{SELECTED_CODE}}')) {
-            if (selectedText) {
-                finalContent = finalContent.replace('{{SELECTED_CODE}}', `\n\`\`\`\n${selectedText}\n\`\`\``);
-            } else {
-                finalContent = finalContent.replace('{{SELECTED_CODE}}', '');
-            }
-        }
-        return finalContent;
-    };
-
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refreshPrompts', () => {
         chatPromptTreeProvider.refresh();
         codeActionTreeProvider.refresh();
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.useChatPrompt', async (prompt: Prompt) => {
-        const finalContent = await usePromptLogic(prompt.content);
-        if (finalContent !== null) {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) {
+            vscode.window.showInformationMessage("Please open an editor to use this feature.");
+            return;
+        }
+        const promptData = await buildCodeActionPrompt(prompt.content, editor, context.extensionUri, contextManager);
+        if (promptData !== null) {
             if (ChatPanel.currentPanel) {
-                ChatPanel.currentPanel.setInputText(finalContent);
-                ChatPanel.currentPanel['_panel'].reveal();
+                // For chat prompts, we combine system and user for simplicity in the chat view
+                const fullPromptText = `${promptData.systemPrompt}\n\n${promptData.userPrompt}`;
+                ChatPanel.currentPanel.setInputText(fullPromptText);
+                ChatPanel.currentPanel._panel.reveal();
             } else {
                 vscode.window.showInformationMessage("Please open a chat panel first to use a prompt.");
             }
@@ -150,61 +226,97 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
     
-        let targetPrompt = prompt;
+        let targetPrompt: Prompt | undefined = prompt;
         if (!targetPrompt) {
             const codePrompts = await promptManager.getCodeActionPrompts();
-            if (codePrompts.length === 0) {
-                vscode.window.showErrorMessage("No Code Action prompts found. Create one by adding '{{SELECTED_CODE}}' to a prompt's content.");
-                return;
-            }
+            const items = codePrompts.map(p => ({ label: p.title, description: p.content, prompt: p }));
             const selection = await vscode.window.showQuickPick(
-                codePrompts.map(p => ({ label: p.title, description: p.content, prompt: p })),
+                [...items, { label: "$(edit) Custom Prompt...", description: "Enter a one-time instruction", prompt: undefined as any }],
                 { placeHolder: "Select a Lollms code action" }
             );
+
             if (!selection) return;
-            targetPrompt = selection.prompt;
+    
+            if (!selection.prompt) {
+                const customPromptContent = await vscode.window.showInputBox({
+                    prompt: "Enter your custom prompt for the selected code",
+                    placeHolder: "e.g., 'add comments to this function'"
+                });
+                if (!customPromptContent) return;
+    
+                const actionType = await vscode.window.showQuickPick(
+                    [
+                        { label: 'Modify Code', description: 'AI will suggest code changes', type: 'generation' as const },
+                        { label: 'Ask Question about Code', description: 'AI will answer a question', type: 'information' as const }
+                    ],
+                    { placeHolder: 'Select the type of code action' }
+                );
+                if (!actionType) return;
+                
+                targetPrompt = {
+                    id: 'custom',
+                    title: 'Custom Action',
+                    content: `${customPromptContent}\n{{SELECTED_CODE}}`,
+                    type: 'code_action',
+                    action_type: actionType.type,
+                    groupId: null
+                };
+            } else {
+                targetPrompt = selection.prompt;
+            }
         }
     
-        const finalContent = await usePromptLogic(targetPrompt.content);
-        if (finalContent === null) return;
+        if (!targetPrompt) { return; }
+
+        const promptData = await buildCodeActionPrompt(targetPrompt.content, editor, context.extensionUri, contextManager);
+        if (promptData === null) return;
+        const { systemPrompt, userPrompt } = promptData;
     
         await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
             title: `Lollms: Applying "${targetPrompt.title}"...`,
-            cancellable: false
-        }, async (progress) => {
-            const responseText = await lollmsAPI.sendChat([{ role: 'user', content: finalContent }]);
+            cancellable: true
+        }, async (progress, token) => {
+
+            const responseText = await lollmsAPI.sendChat([
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt }
+            ]);
             
+            if (token.isCancellationRequested) { return; }
+
             if (targetPrompt?.action_type === 'information') {
-                vscode.window.showInformationMessage(responseText, { modal: true });
+                InfoPanel.createOrShow(context.extensionUri, targetPrompt.title, responseText);
             } else {
-                const codeBlockRegex = /```(?:[\w-]*)\n([\s\S]+?)\n```/;
+                const codeBlockRegex = /```(?:[\w-]*)\n([\s\S]+?)\n```/s;
                 const match = responseText.match(codeBlockRegex);
-                const modifiedCode = match ? match[1] : responseText;
 
-                const originalContent = editor.document.getText();
-                const selectionRange = editor.selection;
-                
-                const contentBefore = editor.document.getText(new vscode.Range(new vscode.Position(0, 0), selectionRange.start));
-                const contentAfter = editor.document.getText(new vscode.Range(selectionRange.end, new vscode.Position(editor.document.lineCount, 0)));
-                
-                const fullModifiedContent = contentBefore + modifiedCode + contentAfter;
-
-                const tempDirUri = vscode.Uri.joinPath(context.extensionUri, 'temp');
-                await vscode.workspace.fs.createDirectory(tempDirUri);
+                if (!match || !match[1]) {
+                    vscode.window.showErrorMessage("Lollms failed to provide a valid code block. Please try your request again.");
+                    return;
+                }
     
-                const originalUri = editor.document.uri;
-                const tempOriginalUri = vscode.Uri.joinPath(tempDirUri, `original_${path.basename(originalUri.fsPath)}`);
-                await vscode.workspace.fs.writeFile(tempOriginalUri, Buffer.from(originalContent, 'utf8'));
-
-                const modifiedUri = vscode.Uri.joinPath(tempDirUri, `modified_${path.basename(originalUri.fsPath)}`);
-                await vscode.workspace.fs.writeFile(modifiedUri, Buffer.from(fullModifiedContent, 'utf8'));
-
-                vscode.commands.executeCommand('vscode.diff', tempOriginalUri, modifiedUri, `Original ↔ AI Suggestion (${targetPrompt?.title})`);
+                const modifiedCode = match[1];
+                inlineDiffProvider.showDiff(editor, editor.selection, modifiedCode);
             }
         });
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.saveInfoToFile', async (content: string) => {
+        try {
+            const fileUri = await vscode.window.showSaveDialog({
+                title: 'Save Information',
+                filters: { 'Markdown files': ['md'], 'Text files': ['txt'] }
+            });
+            if (fileUri) {
+                await vscode.workspace.fs.writeFile(fileUri, Buffer.from(content, 'utf8'));
+                vscode.window.showInformationMessage(`✅ Information saved to ${path.basename(fileUri.fsPath)}`);
+            }
+        } catch (error: any) {
+            vscode.window.showErrorMessage(`Failed to save file: ${error.message}`);
+        }
+    }));
+    
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.createPrompt', async (item?: PromptGroupItem) => {
         const title = await vscode.window.showInputBox({ prompt: 'Enter Prompt Title' });
         if (!title) return;
@@ -386,18 +498,28 @@ export function activate(context: vscode.ExtensionContext) {
         const discussionTreeProvider = new DiscussionTreeProvider(discussionManager);
         vscode.window.registerTreeDataProvider('lollmsDiscussionsView', discussionTreeProvider);
         context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refreshDiscussions', () => discussionTreeProvider.refresh()));
+        
+        const setupChatPanel = (panel: ChatPanel) => {
+            if (!panel.agentManager) {
+                panel.agentManager = new AgentManager(panel, lollmsAPI, contextManager, gitIntegration);
+            }
+            panel.setContextManager(contextManager);
+        };
+
         context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussion', async (item?: DiscussionGroupItem) => {
             const groupId = item instanceof DiscussionGroupItem ? item.group.id : null;
             const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager);
-            panel.setContextManager(contextManager);
+            setupChatPanel(panel);
             await panel.startNewDiscussion(groupId);
             discussionTreeProvider.refresh();
         }));
+        
         context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.switchDiscussion', async (discussionId: string) => {
             const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager);
-            panel.setContextManager(contextManager);
+            setupChatPanel(panel);
             await panel.loadDiscussion(discussionId);
         }));
+        
         context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deleteDiscussion', async (item: DiscussionItem) => {
             const confirm = await vscode.window.showWarningMessage(`Are you sure you want to delete "${item.discussion.title}"?`, { modal: true }, 'Delete');
             if (confirm === 'Delete') {
@@ -504,7 +626,6 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage('LollmsAPI client reconfigured successfully.');
     }));
 
-    const gitIntegration = new GitIntegration(lollmsAPI);
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateCommitMessage', async () => {
         if (!(await gitIntegration.isGitRepo())) { vscode.window.showErrorMessage('This workspace is not a git repository.'); return; }
         const message = await gitIntegration.generateCommitMessage();
@@ -539,9 +660,38 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     const saveCodeCommand = vscode.commands.registerCommand('lollms-vs-coder.saveCodeToFile', async (code: string, language?: string) => {
-        const document = await vscode.workspace.openTextDocument({ content: code, language });
-        await vscode.window.showTextDocument(document);
+        const languageToFileFilter = (lang?: string): { [name: string]: string[] } => {
+            if (!lang) return { 'All files': ['*'] };
+            switch (lang.toLowerCase()) {
+                case 'python': return { 'Python files': ['py'] };
+                case 'javascript': return { 'JavaScript files': ['js'] };
+                case 'typescript': return { 'TypeScript files': ['ts'] };
+                case 'html': return { 'HTML files': ['html'] };
+                case 'css': return { 'CSS files': ['css'] };
+                case 'json': return { 'JSON files': ['json'] };
+                case 'markdown': return { 'Markdown files': ['md'] };
+                case 'shell':
+                case 'bash':
+                case 'sh': return { 'Shell scripts': ['sh'] };
+                default: return { [`${lang.toUpperCase()} files`]: [lang], 'All files': ['*'] };
+            }
+        };
+
+        try {
+            const fileUri = await vscode.window.showSaveDialog({
+                title: 'Save Code Snippet',
+                filters: languageToFileFilter(language)
+            });
+
+            if (fileUri) {
+                await vscode.workspace.fs.writeFile(fileUri, Buffer.from(code, 'utf8'));
+                vscode.window.showInformationMessage(`✅ Code saved to ${path.basename(fileUri.fsPath)}`);
+            }
+        } catch (error: any) {
+            vscode.window.showErrorMessage(`Failed to save file: ${error.message}`);
+        }
     });
+    
     const applyDiffCommand = vscode.commands.registerCommand('lollms-vs-coder.applyDiff', async (diffContent: string) => {
         try { await applyDiff(diffContent); vscode.window.showInformationMessage('Diff applied successfully.'); } 
         catch (error: any) { vscode.window.showErrorMessage(`Failed to apply diff: ${error.message}`); }

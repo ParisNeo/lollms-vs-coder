@@ -17,6 +17,7 @@ export interface ChatMessageContentPart {
 }
 
 export interface ChatMessage {
+  id?: string; // Optional for API requests, but used internally
   role: 'user' | 'assistant' | 'system';
   content: string | ChatMessageContentPart[];
 }
@@ -43,6 +44,9 @@ export class LollmsAPI {
   async sendChat(messages: ChatMessage[], signal?: AbortSignal): Promise<string> {
     const isHttps = this.apiUrl.startsWith('https');
 
+    // Make sure messages sent to the API don't have our internal ID
+    const apiMessages = messages.map(({ id, ...rest }) => rest);
+
     const options: RequestInit = {
       method: 'POST',
       headers: {
@@ -51,7 +55,7 @@ export class LollmsAPI {
       },
       body: JSON.stringify({
         model: this.modelName,
-        messages: messages
+        messages: apiMessages
       }),
       signal: signal,
     };

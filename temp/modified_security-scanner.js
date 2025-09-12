@@ -228,24 +228,22 @@ class NodeModulesScanners {
         }
     }
 
-    // Function to check if the given content is minified or not
-    function isMinified(content) {
-        // Split the content into lines using newline character (\n) as delimiter
+    isMinified(content) {
         const lines = content.split('\n');
-
-        // Calculate the average line length by dividing the total content length by the number of lines
         const avgLineLength = content.length / lines.length;
-
-        // Check if the average line length is greater than 300 characters, or if the content starts with '/*! ', or if the number of lines is less than 10 but the total content length is more than 1000 characters
-        return (avgLineLength > 300 || content.includes('/*! ') || (lines.length < 10 && content.length > 1000));
+        return (
+            avgLineLength > 300 ||
+            content.includes('/*! ') ||
+            (lines.length < 10 && content.length > 1000)
+        );
     }
 
     extractPackageName(filePath) {
-        const parts = filePath.split(path.sep);
-        const nodeModulesIndex = parts.findIndex(part => part === 'node_modules');
-        return nodeModulesIndex !== -1 && parts[nodeModulesIndex + 1] 
-            ? parts[nodeModulesIndex + 1] 
-            : 'unknown';
+        // const parts = filePath.split(path.sep);
+        // const nodeModulesIndex = parts.findIndex(part => part === 'node_modules');
+        // return nodeModulesIndex !== -1 && parts[nodeModulesIndex + 1]
+        //     ? parts[nodeModulesIndex + 1]
+        //     : 'unknown';
     }
 
     addFinding(severity, message, filePath, context) {

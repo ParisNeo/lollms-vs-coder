@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "Lollms VS Coder",
   "description": "AI-powered Visual Studio Code extension using Lollms OpenAI-compatible interface for smart coding, debugging, real-time enhancements, context management, and git commit message generation.",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -29,7 +29,7 @@
         { "command": "lollms-vs-coder.triggerInlineSuggestion", "title": "Lollms: Autocomplete" },
         { "command": "lollms-vs-coder.addFileToContext", "title": "Lollms: Add File to AI Context" },
         { "command": "lollms-vs-coder.removeFileFromContext", "title": "Lollms: Remove File from AI Context" },
-        { "command": "lollms-vs-coder.generateCommitMessage", "title": "Lollms: Generate Commit Message", "icon": "$(sparkle)" },
+        { "command": "lollms-vs-coder.generateCommitMessage", "title": "Lollms: Generate Commit Message", "icon": { "light": "media/lollms-icon.svg", "dark": "media/lollms-icon.svg" } },
         { "command": "lollms-vs-coder.commitWithAIMessage", "title": "Lollms: Commit Staged Changes with AI Message" },
         { "command": "lollmsApi.recreateClient", "title": "Recreate LollmsAPI Client" },
         { "command": "lollms-vs-coder.refreshTree", "title": "Refresh" },
@@ -90,7 +90,13 @@
         ]
       },
       "menus": {
-        "scm/title": [ { "command": "lollms-vs-coder.generateCommitMessage", "when": "scmProvider == 'git'", "group": "navigation@2" } ],
+        "scm/title": [
+          {
+            "command": "lollms-vs-coder.generateCommitMessage",
+            "when": "scmProvider == 'git'",
+            "group": "navigation"
+          }
+        ],
         "view/title": [
           { "command": "lollms-vs-coder.newDiscussion", "when": "view == lollmsDiscussionsView", "group": "navigation@1" },
           { "command": "lollms-vs-coder.createDiscussionGroup", "when": "view == lollmsDiscussionsView", "group": "navigation@2" },

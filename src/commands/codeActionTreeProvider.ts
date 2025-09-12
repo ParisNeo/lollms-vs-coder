@@ -1,12 +1,14 @@
 import * as vscode from 'vscode';
-import { PromptManager } from '../promptManager';
+import { PromptManager, Prompt, PromptGroup } from '../promptManager';
 import { PromptItem, PromptGroupItem } from './treeItems';
 
 export class CodeActionTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     private _onDidChangeTreeData: vscode.EventEmitter<vscode.TreeItem | undefined | null | void> = new vscode.EventEmitter<vscode.TreeItem | undefined | null | void>();
     readonly onDidChangeTreeData: vscode.Event<vscode.TreeItem | undefined | null | void> = this._onDidChangeTreeData.event;
 
-    constructor(private promptManager: PromptManager) {}
+    constructor(private promptManager: PromptManager) {
+        this.promptManager.getData().then(() => this.refresh());
+    }
 
     refresh(): void {
         this._onDidChangeTreeData.fire();
@@ -27,9 +29,9 @@ export class CodeActionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
         }
 
         if (!element) {
-            const groups = data.groups.map(g => new PromptGroupItem(g, vscode.TreeItemCollapsibleState.Collapsed));
+            const groups = data.groups.map(g => new PromptGroupItem(g));
             const ungroupedPrompts = codeActionPrompts
-                .filter(p => p.groupId === null)
+                .filter(p => !p.groupId || !data.groups.some(g => g.id === p.groupId))
                 .map(p => new PromptItem(p));
             
             return [...groups, ...ungroupedPrompts];

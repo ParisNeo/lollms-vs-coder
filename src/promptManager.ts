@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
 import * as fs from 'fs';
 
 export interface Prompt {
@@ -19,150 +18,91 @@ export interface PromptGroup {
 }
 
 export interface PromptData {
+    version: number;
     prompts: Prompt[];
     groups: PromptGroup[];
 }
 
-const defaultPrompts: PromptData = {
-    prompts: [
-        // --- CHAT PROMPTS ---
-        { 
-            id: 'default-chat-1', 
-            groupId: null, 
-            title: 'Ask a Question', 
-            description: 'Ask a general question about the selected code',
-            content: 'I have a question about this code:\n\n{{SELECTED_CODE}}\n\n[Your question here]', 
-            type: 'chat',
-            is_default: true
-        },
-
-        // --- CODE ACTION PROMPTS (GENERATION) ---
-        { 
-            id: 'default-code-1', 
-            groupId: null, 
-            title: 'Refactor Code', 
-            description: 'Improve readability and efficiency', 
-            content: 'Refactor the following code to improve its readability and efficiency. Only provide the refactored code block as a direct replacement.\n\n{{SELECTED_CODE}}', 
-            type: 'code_action', 
-            action_type: 'generation',
-            is_default: true
-        },
-        { 
-            id: 'default-code-2', 
-            groupId: null, 
-            title: 'Add Comments', 
-            description: 'Add inline and block comments to the code', 
-            content: 'Add concise, helpful comments to the following code. Explain complex parts. Only provide the commented code block as a direct replacement.\n\n{{SELECTED_CODE}}', 
-            type: 'code_action', 
-            action_type: 'generation',
-            is_default: true
-        },
-        { 
-            id: 'default-code-3', 
-            groupId: null, 
-            title: 'Write Unit Tests', 
-            description: 'Generate unit tests for the selected code', 
-            content: 'Write unit tests for the following code. Use the most popular testing framework for the language. Only provide the test code block.\n\n{{SELECTED_CODE}}', 
-            type: 'code_action', 
-            action_type: 'generation',
-            is_default: true
-        },
-        { 
-            id: 'default-code-4', 
-            groupId: null, 
-            title: 'Optimize Performance', 
-            description: 'Rewrite the code to be more performant', 
-            content: 'Optimize the following code for maximum performance. Focus on algorithmic efficiency and language-specific best practices. Only provide the optimized code block.\n\n{{SELECTED_CODE}}', 
-            type: 'code_action', 
-            action_type: 'generation',
-            is_default: true
-        },
-
-        // --- CODE ACTION PROMPTS (INFORMATION) ---
-        { 
-            id: 'default-info-1', 
-            groupId: null, 
-            title: 'Explain Code', 
-            description: 'Get a detailed explanation of the code', 
-            content: 'Provide a detailed, step-by-step explanation of what the following code does. Describe its purpose, logic, inputs, and outputs.\n\n{{SELECTED_CODE}}', 
-            type: 'code_action', 
-            action_type: 'information',
-            is_default: true
-        },
-        { 
-            id: 'default-info-2', 
-            groupId: null, 
-            title: 'Find Bugs', 
-            description: 'Analyze the code for potential bugs and errors', 
-            content: 'Analyze the following code for potential bugs, logic errors, or security vulnerabilities. Describe any issues you find and suggest fixes.\n\n{{SELECTED_CODE}}', 
-            type: 'code_action', 
-            action_type: 'information',
-            is_default: true
-        },
-        { 
-            id: 'default-info-3', 
-            groupId: null, 
-            title: 'Generate Documentation', 
-            description: 'Create a docblock for the selected function/class', 
-            content: 'Generate a comprehensive documentation block (e.g., JSDoc, DocString) for the following code. Include descriptions for the function, parameters, and return value.\n\n{{SELECTED_CODE}}', 
-            type: 'code_action', 
-            action_type: 'information',
-            is_default: true
-        },
-    ],
-    groups: []
-};
+const DEFAULT_PROMPTS: Prompt[] = [
+    { id: 'default-explain', groupId: null, title: 'Explain Selection', description: 'Explains the selected code snippet.', content: 'Explain the following code:\n\n{{SELECTED_CODE}}', type: 'code_action', action_type: 'information', is_default: true },
+    { id: 'default-refactor', groupId: null, title: 'Refactor Selection', description: 'Refactors code for readability and performance.', content: 'Refactor the following code to improve readability and performance. Only output the modified code in a single code block.', type: 'code_action', action_type: 'generation', is_default: true },
+    { id: 'default-bug-finder', groupId: null, title: 'Find Bugs', description: 'Analyzes code for bugs and vulnerabilities.', content: 'Analyze the following code for potential bugs or security vulnerabilities and suggest fixes. Explain each issue clearly.', type: 'code_action', action_type: 'information', is_default: true },
+    { id: 'default-doc', groupId: null, title: 'Generate Documentation', description: 'Adds documentation to the selected code.', content: 'Generate documentation (e.g., JSDoc, TSDoc, docstrings) for the following code. Only output the modified code with the added documentation.', type: 'code_action', action_type: 'generation', is_default: true }
+];
 
 export class PromptManager {
+    private storagePath: vscode.Uri;
     private promptsFilePath: vscode.Uri;
     private data: PromptData | null = null;
 
-    constructor(storageUri: vscode.Uri) {
-        this.promptsFilePath = vscode.Uri.joinPath(storageUri, 'prompts.json');
+    constructor(globalStorageUri: vscode.Uri) {
+        this.storagePath = globalStorageUri;
+        this.promptsFilePath = vscode.Uri.joinPath(this.storagePath, 'prompts.json');
+        this.initialize();
+    }
+
+    private async initialize() {
+        try {
+            await vscode.workspace.fs.stat(this.storagePath);
+        } catch {
+            await vscode.workspace.fs.createDirectory(this.storagePath);
+        }
+
+        try {
+            await vscode.workspace.fs.stat(this.promptsFilePath);
+        } catch {
+            await this.resetToDefaults();
+        }
+    }
+
+    private async resetToDefaults() {
+        const defaultData: PromptData = {
+            version: 1,
+            groups: [],
+            prompts: DEFAULT_PROMPTS
+        };
+        await this.saveData(defaultData);
+        this.data = defaultData;
     }
 
     public getPromptsFilePath(): vscode.Uri {
         return this.promptsFilePath;
     }
 
-    private async createDefaultPromptsFile(): Promise<PromptData> {
-        await vscode.workspace.fs.writeFile(this.promptsFilePath, Buffer.from(JSON.stringify(defaultPrompts, null, 2), 'utf8'));
-        return defaultPrompts;
-    }
-
     public async getData(): Promise<PromptData> {
         if (this.data) {
             return this.data;
         }
-    
-        let loadedData: PromptData;
-    
+
         try {
-            const fileContents = await vscode.workspace.fs.readFile(this.promptsFilePath);
-            const parsedData = JSON.parse(fileContents.toString());
+            const fileContent = await vscode.workspace.fs.readFile(this.promptsFilePath);
+            const loadedData = JSON.parse(fileContent.toString());
             
-            if (typeof parsedData === 'object' && parsedData !== null && Array.isArray(parsedData.prompts) && Array.isArray(parsedData.groups)) {
-                 loadedData = parsedData;
-            } else {
-                loadedData = await this.createDefaultPromptsFile();
+            // Handle migration if necessary
+            if (!loadedData.version) {
+                loadedData.prompts.forEach((p: any) => {
+                    p.type = p.content.includes('{{SELECTED_CODE}}') ? 'code_action' : 'chat';
+                    if (p.type === 'code_action' && !p.action_type) {
+                        p.action_type = 'generation'; // Default for old prompts
+                    }
+                });
+                loadedData.version = 1;
+                await this.saveData(loadedData);
             }
-    
+
+            this.data = loadedData;
+            return this.data as PromptData;
         } catch (error) {
-            if (error instanceof vscode.FileSystemError && error.code === 'FileNotFound' || error instanceof SyntaxError) {
-                loadedData = await this.createDefaultPromptsFile();
-            } else {
-                console.error('Error reading prompts file:', error);
-                loadedData = { prompts: [], groups: [] };
-            }
+            console.error("Error reading prompts file, resetting to defaults:", error);
+            await this.resetToDefaults();
+            return this.data!;
         }
-        
-        this.data = loadedData;
-        return this.data;
     }
 
     public async saveData(data: PromptData): Promise<void> {
         this.data = data;
-        await vscode.workspace.fs.writeFile(this.promptsFilePath, Buffer.from(JSON.stringify(data, null, 2), 'utf8'));
+        const fileContent = Buffer.from(JSON.stringify(data, null, 2), 'utf8');
+        await vscode.workspace.fs.writeFile(this.promptsFilePath, fileContent);
     }
     
     public async getChatPrompts(): Promise<Prompt[]> {

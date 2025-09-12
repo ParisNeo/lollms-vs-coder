@@ -3,28 +3,36 @@ import { Prompt, PromptGroup } from '../promptManager';
 
 export class PromptItem extends vscode.TreeItem {
     constructor(
-        public readonly prompt: Prompt,
-        public readonly collapsibleState: vscode.TreeItemCollapsibleState = vscode.TreeItemCollapsibleState.None
+        public readonly prompt: Prompt
     ) {
-        super(prompt.is_default ? `$(lock) ${prompt.title}` : prompt.title, collapsibleState);
+        super(prompt.title, vscode.TreeItemCollapsibleState.None);
         this.id = prompt.id;
-        this.tooltip = `Type: ${prompt.type}\nAction: ${prompt.action_type || 'N/A'}\n\n${prompt.content}`;
-        this.description = this.prompt.description || '';
+        this.contextValue = 'prompt';
+        this.tooltip = `▶ ${this.prompt.title}\n\n${this.prompt.content}`;
         
-        // Use a different context value for default prompts to hide certain actions
-        this.contextValue = prompt.is_default ? 'defaultPrompt' : 'prompt';
+        // Use description if available, otherwise truncate content
+        this.description = this.prompt.description || (this.prompt.content.substring(0, 40).replace(/\r?\n|\r/g, ' ') + '...');
+        
+        if (this.prompt.is_default) {
+            this.iconPath = new vscode.ThemeIcon('lock');
+        } else {
+            this.iconPath = new vscode.ThemeIcon(this.prompt.type === 'code_action' ? 'wrench' : 'comment');
+        }
 
-        if (prompt.type === 'chat') {
+        // The command is set to trigger the appropriate action when the item is clicked
+        if (this.prompt.type === 'chat') {
             this.command = {
                 command: 'lollms-vs-coder.useChatPrompt',
                 title: 'Use Chat Prompt',
-                arguments: [this.prompt],
+                arguments: [this.prompt]
             };
-        } else if (prompt.type === 'code_action') {
+        } else if (this.prompt.type === 'code_action') {
+            // For code actions, clicking it might not be the primary way to trigger it,
+            // but we can set it for consistency. The main trigger is via CodeLens/command palette.
             this.command = {
                 command: 'lollms-vs-coder.triggerCodeAction',
-                title: 'Trigger Code Action',
-                arguments: [this.prompt],
+                title: 'Use Code Action',
+                arguments: [this.prompt]
             };
         }
     }
@@ -32,12 +40,11 @@ export class PromptItem extends vscode.TreeItem {
 
 export class PromptGroupItem extends vscode.TreeItem {
     constructor(
-        public readonly group: PromptGroup,
-        public readonly collapsibleState: vscode.TreeItemCollapsibleState
+        public readonly group: PromptGroup
     ) {
-        super(group.title, collapsibleState);
+        super(group.title, vscode.TreeItemCollapsibleState.Expanded);
         this.id = group.id;
         this.contextValue = 'promptGroup';
-        this.iconPath = new vscode.ThemeIcon('folder');
+        this.iconPath = vscode.ThemeIcon.Folder;
     }
 }

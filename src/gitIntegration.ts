@@ -4,6 +4,7 @@ import { promisify } from 'util';
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
 
 const execAsync = promisify(exec);
+const MAX_DIFF_LENGTH = 8000; // Set a reasonable character limit for the diff
 
 export class GitIntegration {
   private lollmsAPI: LollmsAPI;
@@ -23,28 +24,52 @@ export class GitIntegration {
     }
   }
 
-  public async getGitStagedDiff(): Promise<string> {
+  private async _getDiff(args: string): Promise<string> {
     const workspaceRoot = vscode.workspace.rootPath;
     if (!workspaceRoot) return '';
     try {
-      const { stdout } = await execAsync('git diff --cached', { cwd: workspaceRoot });
+      const { stdout } = await execAsync(`git diff ${args}`, { cwd: workspaceRoot });
       return stdout || '';
     } catch (error) {
-      vscode.window.showErrorMessage('Failed to get staged git diff.');
+      // Errors are expected if there are no changes, so we can often ignore them.
       return '';
     }
   }
-
+  
   public async generateCommitMessage(): Promise<string> {
-    const diff = await this.getGitStagedDiff();
+    let diff = await this._getDiff('--cached'); // Staged changes
+    let diffSource = "staged";
+    
     if (!diff) {
-      vscode.window.showInformationMessage('No staged changes detected.');
+      diff = await this._getDiff(''); // Unstaged changes
+      diffSource = "unstaged";
+    }
+
+    if (!diff) {
+      vscode.window.showInformationMessage('No staged or unstaged changes detected.');
       return '';
     }
 
+    let promptContent: string;
+
+    if (diff.length > MAX_DIFF_LENGTH) {
+      const fileNames = (await this._getDiff(`${diff === await this._getDiff('--cached') ? '--cached' : ''} --name-only`)).trim().split('\n');
+      let summary = `Generate a concise git commit message based on the following changes. The full diff is too large, so here is a summary:\n\n**Changed Files:**\n- ${fileNames.join('\n- ')}\n\n`;
+      
+      // Add snippets from the first few files
+      summary += "**Change Snippets:**\n";
+      for (const file of fileNames.slice(0, 5)) { // Limit to 5 snippets for brevity
+          const fileDiff = await this._getDiff(`${diff === await this._getDiff('--cached') ? '--cached' : ''} -- "${file}"`);
+          summary += `--- Diff for ${file} ---\n\`\`\`diff\n${fileDiff.substring(0, 300)}...\n\`\`\`\n`;
+      }
+      promptContent = summary;
+    } else {
+      promptContent = `Generate a concise git commit message based on the following diff of ${diffSource} changes:\n\`\`\`diff\n${diff}\n\`\`\``;
+    }
+
     const prompt: ChatMessage[] =  [
-      { role: 'system', content: 'You are an AI assistant that writes concise, clear, and conventional git commit messages based on git diffs.' },
-      { role: 'user', content: `Generate a concise git commit message based on the following diff:\n${diff}` }
+      { role: 'system', content: 'You are an AI assistant that writes concise, clear, and conventional git commit messages based on git diffs. Your response should be only the commit message itself, without any conversational text or markdown formatting.' },
+      { role: 'user', content: promptContent }
     ];
 
     try {

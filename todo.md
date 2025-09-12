@@ -1,0 +1,5 @@
+- when adding a folder, just add its children and don't attempt to add the folder itself to the discussion as content
+- verify why no context is in discussion
+- when in a discussion, then we go to another page and come back to the discussion, the content is lost fix that
+- Add custom prompt to code selection
+- at first run, the templates are empty. make sure they are repopulated and handle migration from previous installations.

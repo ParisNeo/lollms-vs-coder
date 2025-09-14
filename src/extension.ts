@@ -21,29 +21,11 @@ import { LollmsInlineCompletionProvider } from './commands/inlineSuggestions';
 import { AgentManager } from './agentManager';
 import { InlineDiffProvider } from './commands/inlineDiffProvider';
 import { InfoPanel } from './commands/infoPanel';
+import { CustomActionModal } from './commands/customActionModal';
 
 interface GitExtension { getAPI(version: 1): API; }
 interface API { repositories: Repository[]; }
 interface Repository { inputBox: { value: string }; }
-
-async function handleCopilotConflict(context: vscode.ExtensionContext) {
-    const copilotConflictResolved = context.globalState.get('lollms.copilotConflictResolved');
-    if (copilotConflictResolved) return;
-
-    const copilotExtension = vscode.extensions.getExtension('github.copilot');
-    if (copilotExtension && copilotExtension.isActive) {
-        const selection = await vscode.window.showWarningMessage(
-            'Lollms VS Coder detected that GitHub Copilot is active. To prevent conflicts, we recommend disabling Copilot for this workspace.',
-            { modal: true }, 'Disable Copilot in Workspace', 'Dismiss'
-        );
-        if (selection === 'Disable Copilot in Workspace') {
-            await vscode.commands.executeCommand('workbench.extensions.action.disableWorkspace', 'github.copilot');
-            vscode.window.showInformationMessage('GitHub Copilot has been disabled for this workspace.');
-        }
-        await context.globalState.update('lollms.copilotConflictResolved', true);
-    }
-}
-
 async function buildCodeActionPrompt(
     promptTemplate: string, 
     editor: vscode.TextEditor, 
@@ -51,7 +33,6 @@ async function buildCodeActionPrompt(
     contextManager: ContextManager
 ): Promise<{ systemPrompt: string, userPrompt: string } | null> {
     
-    // --- Build User Prompt ---
     const selection = editor.selection;
     const document = editor.document;
 
@@ -59,7 +40,7 @@ async function buildCodeActionPrompt(
     let processedTemplate = promptTemplate;
     if (placeholders.length > 0) {
         const formData = await PromptBuilderPanel.createOrShow(extensionUri, placeholders);
-        if (formData === null) return null; // User cancelled
+        if (formData === null) return null;
         placeholders.forEach(p => {
             const value = formData[p.name] ?? '';
             processedTemplate = processedTemplate.replace(p.fullMatch, String(value));
@@ -67,70 +48,72 @@ async function buildCodeActionPrompt(
     }
 
     const userInstruction = processedTemplate.replace('{{SELECTED_CODE}}', '').trim();
-
     const selectedText = document.getText(selection);
     const fileName = path.basename(document.fileName);
     const languageId = document.languageId;
-
     const startLine = Math.max(0, selection.start.line - 10);
     const endLine = Math.min(document.lineCount - 1, selection.end.line + 10);
-
     const beforeRange = new vscode.Range(new vscode.Position(startLine, 0), selection.start);
     const afterRange = new vscode.Range(selection.end, new vscode.Position(endLine, document.lineAt(endLine).text.length));
-
     const codeBefore = document.getText(beforeRange);
     const codeAfter = document.getText(afterRange);
     
     let userPrompt = `I am working on the file \`${fileName}\` which is a \`${languageId}\` file.\n\n`;
 
     if (codeBefore.trim()) {
-        userPrompt += `Here is the code immediately BEFORE my selection:\n\`\`\`${languageId}\n${codeBefore}\n\`\`\`\n\n`;
+        userPrompt += `==== CONTEXT BEFORE (DO NOT INCLUDE IN OUTPUT) ====\n\`\`\`${languageId}\n${codeBefore}\n\`\`\`\n\n`;
     }
 
-    userPrompt += `Here is the code I have selected that you need to modify:\n\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\n`;
+    userPrompt += `==== SELECTED CODE TO MODIFY (MODIFY THIS ONLY) ====\n\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\n`;
 
     if (codeAfter.trim()) {
-        userPrompt += `Here is the code immediately AFTER my selection:\n\`\`\`${languageId}\n${codeAfter}\n\`\`\`\n\n`;
+        userPrompt += `==== CONTEXT AFTER (DO NOT INCLUDE IN OUTPUT) ====\n\`\`\`${languageId}\n${codeAfter}\n\`\`\`\n\n`;
     }
 
-    userPrompt += `My instruction is: **${userInstruction}**`;
+    userPrompt += `INSTRUCTION: **${userInstruction}**\n\n`;
+    userPrompt += `⚠️ CRITICAL: Your response must contain ONLY the modified selected code block. Do not include any BEFORE or AFTER context code in your response.`;
     
-    // --- Build System Prompt ---
-    let systemPrompt = `You are an automated code modification tool. You will be given a block of code and an instruction. Your ONLY output must be the complete, modified code block, with the instruction applied.
-- PRESERVE original indentation and formatting.
-- DO NOT add any explanations, comments, or conversational text.
-- DO NOT use placeholders like "...".
-- Your entire response MUST be a single markdown code block containing the full, modified code.`;
+    let systemPrompt = `You are a surgical code modification tool. You must modify ONLY the selected code block and return ONLY that modified block.
 
-    // Add project context to system prompt
-    const projectTree = await contextManager.getFileTreeProvider()?.getAllVisibleFiles();
-    if (projectTree && projectTree.length > 0) {
-        const filteredTree = projectTree.filter(f => !f.includes('node_modules') && !f.includes('__pycache__') && !/venv/i.test(f)).slice(0, 30).join('\n');
-        systemPrompt += `\n\nFor context, here is a summary of the project structure:\n<project_tree>\n${filteredTree}\n</project_tree>`;
-    }
+## STRICT OUTPUT RULES
+- Return ONLY the modified selected code in a single markdown code block
+- NEVER include BEFORE context code in your response
+- NEVER include AFTER context code in your response
+- NEVER add explanations, comments, or text outside the code block
+- The first line of your response must be the opening code fence: \`\`\`${languageId}
+- The last line of your response must be the closing code fence: \`\`\`
 
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (workspaceFolders && workspaceFolders.length > 0) {
-        try {
-            const readmeUri = vscode.Uri.joinPath(workspaceFolders[0].uri, 'README.md');
-            const readmeContent = await vscode.workspace.fs.readFile(readmeUri);
-            const readmeSnippet = Buffer.from(readmeContent).toString('utf8').split('\n').slice(0, 20).join('\n');
-            systemPrompt += `\n\nHere is a snippet from the project's README.md for high-level context:\n<readme>\n${readmeSnippet}\n</readme>`;
-        } catch (error) {
-            // README.md not found, which is fine.
-        }
-    }
+## INPUT UNDERSTANDING
+You receive three sections:
+1. **CONTEXT BEFORE**: Reference only - helps you understand the code structure
+2. **SELECTED CODE**: The ONLY code you should modify and return
+3. **CONTEXT AFTER**: Reference only - helps ensure compatibility
 
+## MODIFICATION REQUIREMENTS
+- Apply the instruction precisely to the selected code only
+- Preserve original indentation and formatting style
+- Maintain compatibility with the surrounding context
+- Keep all variable names, imports, and structure unless instructed otherwise
+- Ensure the modified code is syntactically correct
+
+## FORBIDDEN ACTIONS
+- Do NOT return any BEFORE context code
+- Do NOT return any AFTER context code  
+- Do NOT add explanatory text
+- Do NOT use placeholder comments like "// rest of code"
+- Do NOT include line numbers or file headers
+
+Your entire response must be executable code that can directly replace the selected text.`;
+    
     return { systemPrompt, userPrompt };
 }
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('Lollms VS Coder is now active!');
-    handleCopilotConflict(context);
 
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     let lollmsAPI = new LollmsAPI({
-        apiUrl: `${config.get<string>('apiUrl') || 'http://localhost:9642'}/v1/chat/completions`,
+        apiUrl: config.get<string>('apiUrl') || 'http://localhost:9642',
         apiKey: config.get<string>('apiKey')?.trim() || '',
         modelName: config.get<string>('modelName') || 'ollama/mistral',
         disableSslVerification: config.get<boolean>('disableSslVerification') || false
@@ -142,83 +125,180 @@ export function activate(context: vscode.ExtensionContext) {
     const gitIntegration = new GitIntegration(lollmsAPI);
 
     const chatPromptTreeProvider = new ChatPromptTreeProvider(promptManager);
+    context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsChatPromptsView', chatPromptTreeProvider));
     const codeActionTreeProvider = new CodeActionTreeProvider(promptManager);
-    vscode.window.registerTreeDataProvider('lollmsChatPromptsView', chatPromptTreeProvider);
-    vscode.window.registerTreeDataProvider('lollmsCodeActionsView', codeActionTreeProvider);
+    context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsCodeActionsView', codeActionTreeProvider));
 
     const inlineDiffProvider = new InlineDiffProvider();
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, inlineDiffProvider));
     
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.acceptDiff', () => {
-        inlineDiffProvider.accept();
-    }));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.rejectDiff', () => {
-        inlineDiffProvider.reject();
-    }));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.acceptDiff', () => inlineDiffProvider.accept()));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.rejectDiff', () => inlineDiffProvider.reject()));
 
     const codeActionProvider = new CodeActionProvider();
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file', language: '*' }, codeActionProvider));
     
-    const inlineProvider = new LollmsInlineCompletionProvider(lollmsAPI);
     if (config.get<boolean>('enableInlineSuggestions')) {
+        const inlineProvider = new LollmsInlineCompletionProvider(lollmsAPI);
         context.subscriptions.push(
             vscode.languages.registerInlineCompletionItemProvider({ pattern: '**' }, inlineProvider)
         );
     }
-
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.editPromptsFile', async () => {
-        const promptsFilePath = promptManager.getPromptsFilePath();
-        const document = await vscode.workspace.openTextDocument(promptsFilePath);
-        await vscode.window.showTextDocument(document);
-    }));
-
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.triggerInlineSuggestion', async () => {
-        const editor = vscode.window.activeTextEditor;
-        if (!editor) return;
     
-        await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Window,
-            title: "Lollms: Thinking...",
-            cancellable: false
-        }, async (progress) => {
-            const suggestion = await inlineProvider.triggerSuggestion(editor.document, editor.selection.active);
-            if (suggestion) {
-                editor.edit(editBuilder => {
-                    const position = editor.selection.active;
-                    const lineEnd = editor.document.lineAt(position.line).range.end;
-                    const rangeToReplace = new vscode.Range(position, lineEnd);
-                    editBuilder.replace(rangeToReplace, suggestion);
-                });
-            } else {
-                vscode.window.showInformationMessage("No suggestion found.");
-            }
-        });
-    }));
+    let discussionView: vscode.TreeView<vscode.TreeItem> | undefined;
+    let discussionCommands: vscode.Disposable[] = [];
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refreshPrompts', () => {
-        chatPromptTreeProvider.refresh();
-        codeActionTreeProvider.refresh();
-    }));
+    function registerDiscussionViewProvider() {
+        discussionCommands.forEach(cmd => cmd.dispose());
+        discussionCommands = [];
+        if (discussionView) {
+            discussionView.dispose();
+        }
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.useChatPrompt', async (prompt: Prompt) => {
-        const editor = vscode.window.activeTextEditor;
-        if (!editor) {
-            vscode.window.showInformationMessage("Please open an editor to use this feature.");
-            return;
+        if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+            const workspaceRoot = vscode.workspace.workspaceFolders[0].uri;
+            const discussionManager = new DiscussionManager(workspaceRoot, lollmsAPI);
+            const discussionTreeProvider = new DiscussionTreeProvider(discussionManager);
+            discussionView = vscode.window.createTreeView('lollmsDiscussionsView', { treeDataProvider: discussionTreeProvider });
+
+            const setupChatPanel = (panel: ChatPanel) => {
+                if (!panel.agentManager) {
+                    panel.agentManager = new AgentManager(panel, lollmsAPI, contextManager, gitIntegration, context.extensionUri);
+                }
+                panel.setContextManager(contextManager);
+            };
+
+            discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussion', async (item?: DiscussionGroupItem) => {
+                const groupId = item instanceof DiscussionGroupItem ? item.group.id : null;
+                const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager);
+                setupChatPanel(panel);
+                await panel.startNewDiscussion(groupId);
+                discussionTreeProvider.refresh();
+            }));
+
+            discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.switchDiscussion', async (discussionId: string) => {
+                const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager);
+                setupChatPanel(panel);
+                await panel.loadDiscussion(discussionId);
+            }));
+            
+            discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.deleteDiscussion', async (item: DiscussionItem) => {
+                const confirm = await vscode.window.showWarningMessage(`Are you sure you want to delete "${item.discussion.title}"?`, { modal: true }, 'Delete');
+                if (confirm === 'Delete') {
+                    await discussionManager.deleteDiscussion(item.discussion.id);
+                    discussionTreeProvider.refresh();
+                    if (ChatPanel.currentPanel && ChatPanel.currentPanel.getCurrentDiscussionId() === item.discussion.id) {
+                        ChatPanel.currentPanel.dispose();
+                    }
+                }
+            }));
+
+            discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.renameDiscussion', async (item: DiscussionItem) => {
+                const newTitle = await vscode.window.showInputBox({ prompt: "Enter new discussion title", value: item.discussion.title });
+                if (newTitle && newTitle !== item.discussion.title) {
+                    item.discussion.title = newTitle;
+                    await discussionManager.saveDiscussion(item.discussion);
+                    discussionTreeProvider.refresh();
+                }
+            }));
+
+            discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.generateDiscussionTitle', async (item: DiscussionItem) => {
+                const title = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Lollms: Generating discussion title...", cancellable: false }, async () => await discussionManager.generateDiscussionTitle(item.discussion));
+                if (title) {
+                    item.discussion.title = title;
+                    await discussionManager.saveDiscussion(item.discussion);
+                    discussionTreeProvider.refresh();
+                }
+            }));
+
+            discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.createDiscussionGroup', async () => {
+                const title = await vscode.window.showInputBox({ prompt: "Enter group title" });
+                if (!title) return;
+                const description = await vscode.window.showInputBox({ prompt: "Enter group description (optional)" });
+                const groups = await discussionManager.getGroups();
+                groups.push({ id: Date.now().toString(), title, description: description || '', timestamp: Date.now() });
+                await discussionManager.saveGroups(groups);
+                discussionTreeProvider.refresh();
+            }));
+
+            discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.renameDiscussionGroup', async (item: DiscussionGroupItem) => {
+                const newTitle = await vscode.window.showInputBox({ prompt: "Enter new group title", value: item.group.title });
+                if (newTitle && newTitle !== item.group.title) {
+                    const groups = await discussionManager.getGroups();
+                    const groupToUpdate = groups.find(g => g.id === item.group.id);
+                    if (groupToUpdate) {
+                        groupToUpdate.title = newTitle;
+                        await discussionManager.saveGroups(groups);
+                        discussionTreeProvider.refresh();
+                    }
+                }
+            }));
+
+            discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.deleteDiscussionGroup', async (item: DiscussionGroupItem) => {
+                const confirm = await vscode.window.showWarningMessage(`Delete group "${item.group.title}"? Discussions inside will become ungrouped.`, { modal: true }, 'Delete');
+                if (confirm === 'Delete') {
+                    await discussionManager.deleteGroup(item.group.id);
+                    discussionTreeProvider.refresh();
+                }
+            }));
+
+            discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.moveDiscussionToGroup', async (item: DiscussionItem) => {
+                const groups = await discussionManager.getGroups();
+                const items = [{ id: null, label: " (No Group)" }, ...groups.map(g => ({ id: g.id, label: g.title, description: g.description }))];
+                const selected = await vscode.window.showQuickPick(items, { placeHolder: "Select a group to move the discussion to" });
+                if (selected) {
+                    const discussion = await discussionManager.getDiscussion(item.discussion.id);
+                    if (discussion) {
+                        discussion.groupId = selected.id;
+                        await discussionManager.saveDiscussion(discussion);
+                        discussionTreeProvider.refresh();
+                    }
+                }
+            }));
+
+            discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.refreshDiscussions', () => discussionTreeProvider.refresh()));
+            
+            discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.startChat', () => vscode.commands.executeCommand('lollms-vs-coder.newDiscussion')));
+        } else {
+             discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.startChat', () => {
+                vscode.window.showInformationMessage("Please open a folder in VS Code to use Lollms persistent chat.");
+            }));
         }
-        const promptData = await buildCodeActionPrompt(prompt.content, editor, context.extensionUri, contextManager);
-        if (promptData !== null) {
-            if (ChatPanel.currentPanel) {
-                // For chat prompts, we combine system and user for simplicity in the chat view
-                const fullPromptText = `${promptData.systemPrompt}\n\n${promptData.userPrompt}`;
-                ChatPanel.currentPanel.setInputText(fullPromptText);
-                ChatPanel.currentPanel._panel.reveal();
-            } else {
-                vscode.window.showInformationMessage("Please open a chat panel first to use a prompt.");
-            }
-        }
-    }));
+        context.subscriptions.push(...discussionCommands);
+    }
     
+    let fileTreeView: vscode.TreeView<FileItem> | undefined;
+    let fileTreeCommands: vscode.Disposable[] = [];
+
+    function registerFileTreeProvider() {
+        fileTreeCommands.forEach(cmd => cmd.dispose());
+        fileTreeCommands = [];
+        if (fileTreeView) {
+            fileTreeView.dispose();
+        }
+
+        contextManager.reinitializeFileTreeProvider();
+        const fileTreeProvider = contextManager.getFileTreeProvider();
+
+        if (fileTreeProvider) {
+            fileTreeView = vscode.window.createTreeView('lollmsSettings.fileTreeView', { treeDataProvider: fileTreeProvider, showCollapseAll: true });
+            
+            fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.cycleFileState', (item: FileItem) => fileTreeProvider.cycleFileState(item)));
+            fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.addFolderToContext', (item: FileItem) => fileTreeProvider.addFolderToContext(item)));
+            fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.removeFolderFromContext', (item: FileItem) => fileTreeProvider.removeFolderFromContext(item)));
+            fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.refreshTree', () => fileTreeProvider.refresh()));
+            
+            context.subscriptions.push(...fileTreeCommands);
+        }
+    }
+    
+    registerFileTreeProvider();
+    registerDiscussionViewProvider();
+    context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
+        registerFileTreeProvider();
+        registerDiscussionViewProvider();
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.triggerCodeAction', async (prompt?: Prompt) => {
         const editor = vscode.window.activeTextEditor;
         if (!editor || editor.selection.isEmpty) {
@@ -238,27 +318,32 @@ export function activate(context: vscode.ExtensionContext) {
             if (!selection) return;
     
             if (!selection.prompt) {
-                const customPromptContent = await vscode.window.showInputBox({
-                    prompt: "Enter your custom prompt for the selected code",
-                    placeHolder: "e.g., 'add comments to this function'"
-                });
-                if (!customPromptContent) return;
+                const customActionData = await CustomActionModal.createOrShow(context.extensionUri);
+                if (!customActionData) return;
     
-                const actionType = await vscode.window.showQuickPick(
-                    [
-                        { label: 'Modify Code', description: 'AI will suggest code changes', type: 'generation' as const },
-                        { label: 'Ask Question about Code', description: 'AI will answer a question', type: 'information' as const }
-                    ],
-                    { placeHolder: 'Select the type of code action' }
-                );
-                if (!actionType) return;
+                if (customActionData.save && customActionData.title) {
+                    const data = await promptManager.getData();
+                    const newPrompt: Prompt = {
+                        id: Date.now().toString(),
+                        groupId: null,
+                        title: customActionData.title,
+                        content: `${customActionData.prompt}\n{{SELECTED_CODE}}`,
+                        type: 'code_action',
+                        action_type: customActionData.actionType
+                    };
+                    data.prompts.push(newPrompt);
+                    await promptManager.saveData(data);
+                    chatPromptTreeProvider.refresh();
+                    codeActionTreeProvider.refresh();
+                    vscode.window.showInformationMessage(`Prompt "${customActionData.title}" saved!`);
+                }
                 
                 targetPrompt = {
                     id: 'custom',
-                    title: 'Custom Action',
-                    content: `${customPromptContent}\n{{SELECTED_CODE}}`,
+                    title: customActionData.save ? customActionData.title : 'Custom Action',
+                    content: `${customActionData.prompt}\n{{SELECTED_CODE}}`,
                     type: 'code_action',
-                    action_type: actionType.type,
+                    action_type: customActionData.actionType,
                     groupId: null
                 };
             } else {
@@ -277,7 +362,6 @@ export function activate(context: vscode.ExtensionContext) {
             title: `Lollms: Applying "${targetPrompt.title}"...`,
             cancellable: true
         }, async (progress, token) => {
-
             const responseText = await lollmsAPI.sendChat([
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: userPrompt }
@@ -341,7 +425,7 @@ export function activate(context: vscode.ExtensionContext) {
                 { placeHolder: 'Select the type of code action' }
             );
 
-            if (!actionType) return; // User cancelled
+            if (!actionType) return;
             newPrompt.action_type = actionType.type;
         }
 
@@ -376,7 +460,7 @@ export function activate(context: vscode.ExtensionContext) {
                     { placeHolder: 'Select the type of code action' }
                 );
     
-                if (!actionType) return; // User cancelled
+                if (!actionType) return;
                 promptToUpdate.action_type = actionType.type;
             } else {
                 delete promptToUpdate.action_type;
@@ -402,7 +486,7 @@ export function activate(context: vscode.ExtensionContext) {
             codeActionTreeProvider.refresh();
         }
     }));
-    
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.saveMessageAsPrompt', async (content: string) => {
         const title = await vscode.window.showInputBox({ prompt: 'Enter a title for your new prompt' });
         if (!title) return;
@@ -413,21 +497,8 @@ export function activate(context: vscode.ExtensionContext) {
             groupId: null,
             title,
             content,
-            type: content.includes('{{SELECTED_CODE}}') ? 'code_action' : 'chat'
+            type: 'chat'
         };
-
-        if (newPrompt.type === 'code_action') {
-            const actionType = await vscode.window.showQuickPick(
-                [
-                    { label: 'Modify Code', description: 'AI will suggest code changes (shows a diff)', type: 'generation' as const },
-                    { label: 'Ask Question about Code', description: 'AI will answer a question (shows in a message box)', type: 'information' as const }
-                ],
-                { placeHolder: 'Select the type of code action' }
-            );
-
-            if (!actionType) return; // User cancelled
-            newPrompt.action_type = actionType.type;
-        }
 
         data.prompts.push(newPrompt);
         await promptManager.saveData(data);
@@ -492,114 +563,14 @@ export function activate(context: vscode.ExtensionContext) {
         }
     }));
     
-    if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
-        const workspaceRoot = vscode.workspace.workspaceFolders[0].uri;
-        const discussionManager = new DiscussionManager(workspaceRoot, lollmsAPI);
-        const discussionTreeProvider = new DiscussionTreeProvider(discussionManager);
-        vscode.window.registerTreeDataProvider('lollmsDiscussionsView', discussionTreeProvider);
-        context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refreshDiscussions', () => discussionTreeProvider.refresh()));
-        
-        const setupChatPanel = (panel: ChatPanel) => {
-            if (!panel.agentManager) {
-                panel.agentManager = new AgentManager(panel, lollmsAPI, contextManager, gitIntegration);
-            }
-            panel.setContextManager(contextManager);
-        };
-
-        context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussion', async (item?: DiscussionGroupItem) => {
-            const groupId = item instanceof DiscussionGroupItem ? item.group.id : null;
-            const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager);
-            setupChatPanel(panel);
-            await panel.startNewDiscussion(groupId);
-            discussionTreeProvider.refresh();
-        }));
-        
-        context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.switchDiscussion', async (discussionId: string) => {
-            const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager);
-            setupChatPanel(panel);
-            await panel.loadDiscussion(discussionId);
-        }));
-        
-        context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deleteDiscussion', async (item: DiscussionItem) => {
-            const confirm = await vscode.window.showWarningMessage(`Are you sure you want to delete "${item.discussion.title}"?`, { modal: true }, 'Delete');
-            if (confirm === 'Delete') {
-                await discussionManager.deleteDiscussion(item.discussion.id);
-                discussionTreeProvider.refresh();
-                if (ChatPanel.currentPanel && ChatPanel.currentPanel.getCurrentDiscussionId() === item.discussion.id) {
-                    ChatPanel.currentPanel.dispose();
-                }
-            }
-        }));
-        context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.renameDiscussion', async (item: DiscussionItem) => {
-            const newTitle = await vscode.window.showInputBox({ prompt: "Enter new discussion title", value: item.discussion.title });
-            if (newTitle && newTitle !== item.discussion.title) {
-                item.discussion.title = newTitle;
-                await discussionManager.saveDiscussion(item.discussion);
-                discussionTreeProvider.refresh();
-            }
-        }));
-        context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateDiscussionTitle', async (item: DiscussionItem) => {
-            const title = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Lollms: Generating discussion title...", cancellable: false }, async () => await discussionManager.generateDiscussionTitle(item.discussion));
-            if (title) {
-                item.discussion.title = title;
-                await discussionManager.saveDiscussion(item.discussion);
-                discussionTreeProvider.refresh();
-            }
-        }));
-        context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.createDiscussionGroup', async () => {
-            const title = await vscode.window.showInputBox({ prompt: "Enter group title" });
-            if (!title) return;
-            const description = await vscode.window.showInputBox({ prompt: "Enter group description (optional)" });
-            const groups = await discussionManager.getGroups();
-            groups.push({ id: Date.now().toString(), title, description: description || '', timestamp: Date.now() });
-            await discussionManager.saveGroups(groups);
-            discussionTreeProvider.refresh();
-        }));
-        context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.renameDiscussionGroup', async (item: DiscussionGroupItem) => {
-            const newTitle = await vscode.window.showInputBox({ prompt: "Enter new group title", value: item.group.title });
-            if (newTitle && newTitle !== item.group.title) {
-                const groups = await discussionManager.getGroups();
-                const groupToUpdate = groups.find(g => g.id === item.group.id);
-                if (groupToUpdate) {
-                    groupToUpdate.title = newTitle;
-                    await discussionManager.saveGroups(groups);
-                    discussionTreeProvider.refresh();
-                }
-            }
-        }));
-        context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deleteDiscussionGroup', async (item: DiscussionGroupItem) => {
-            const confirm = await vscode.window.showWarningMessage(`Delete group "${item.group.title}"? Discussions inside will become ungrouped.`, { modal: true }, 'Delete');
-            if (confirm === 'Delete') {
-                await discussionManager.deleteGroup(item.group.id);
-                discussionTreeProvider.refresh();
-            }
-        }));
-        context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.moveDiscussionToGroup', async (item: DiscussionItem) => {
-            const groups = await discussionManager.getGroups();
-            const items = [{ id: null, label: " (No Group)" }, ...groups.map(g => ({ id: g.id, label: g.title, description: g.description }))];
-            const selected = await vscode.window.showQuickPick(items, { placeHolder: "Select a group to move the discussion to" });
-            if (selected) {
-                const discussion = await discussionManager.getDiscussion(item.discussion.id);
-                if (discussion) {
-                    discussion.groupId = selected.id;
-                    await discussionManager.saveDiscussion(discussion);
-                    discussionTreeProvider.refresh();
-                }
-            }
-        }));
-        context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.startChat', () => { vscode.commands.executeCommand('lollms-vs-coder.newDiscussion'); }));
-    } else {
-        context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.startChat', () => {
-            vscode.window.showInformationMessage("Please open a folder in VS Code to use Lollms persistent chat.");
-        }));
-    }
-
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.runScript', (code: string, language: string) => {
         if (ChatPanel.currentPanel) { scriptRunner.runScript(code, language, ChatPanel.currentPanel); }
         else { vscode.window.showErrorMessage("No active Lollms chat panel to show script output."); }
     }));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showConfigView', () => { SettingsPanel.createOrShow(context.extensionUri); }));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showHelp', () => { HelpPanel.createOrShow(context.extensionUri); }));
+    
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showConfigView', () => SettingsPanel.createOrShow(context.extensionUri)));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showHelp', () => HelpPanel.createOrShow(context.extensionUri)));
+    
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.exportContextContent', async () => {
         try {
             const content = await contextManager.getContextContent();
@@ -607,6 +578,7 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.window.showInformationMessage('Lollms: Project context copied to clipboard.');
         } catch (error: any) { vscode.window.showErrorMessage(`Failed to export context: ${error.message}`); }
     }));
+    
     context.subscriptions.push(vscode.commands.registerCommand('lollmsSettings.fetchModels', async (apiUrl, apiKey) => {
         const fetch = require('node-fetch');
         try {
@@ -616,16 +588,7 @@ export function activate(context: vscode.ExtensionContext) {
             return (await response.json()).data || [];
         } catch (err) { console.error('Error fetching models in extension:', err); return []; }
     }));
-    context.subscriptions.push(vscode.commands.registerCommand('lollmsApi.recreateClient', async (newConfig) => {
-        lollmsAPI = new LollmsAPI({ 
-            apiKey: newConfig.apiKey, 
-            apiUrl: `${newConfig.apiUrl}/v1/chat/completions`, 
-            modelName: newConfig.modelName,
-            disableSslVerification: newConfig.disableSslVerification
-        });
-        vscode.window.showInformationMessage('LollmsAPI client reconfigured successfully.');
-    }));
-
+    
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateCommitMessage', async () => {
         if (!(await gitIntegration.isGitRepo())) { vscode.window.showErrorMessage('This workspace is not a git repository.'); return; }
         const message = await gitIntegration.generateCommitMessage();
@@ -639,6 +602,7 @@ export function activate(context: vscode.ExtensionContext) {
             }
         }
     }));
+    
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.commitWithAIMessage', async () => {
         if (!(await gitIntegration.isGitRepo())) { vscode.window.showErrorMessage('This workspace is not a git repository.'); return; }
         const message = await gitIntegration.generateCommitMessage();
@@ -647,17 +611,6 @@ export function activate(context: vscode.ExtensionContext) {
             if (confirmed === 'Yes') { await gitIntegration.commitWithMessage(message); }
         }
     }));
-
-    if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
-        const fileTreeProvider = contextManager.getFileTreeProvider();
-        if (fileTreeProvider) {
-            vscode.window.createTreeView('lollmsSettings.fileTreeView', { treeDataProvider: fileTreeProvider, showCollapseAll: true });
-            context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.cycleFileState', (item: FileItem) => fileTreeProvider.cycleFileState(item)));
-            context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.addFolderToContext', (item: FileItem) => fileTreeProvider.addFolderToContext(item)));
-            context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.removeFolderFromContext', (item: FileItem) => fileTreeProvider.removeFolderFromContext(item)));
-            context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refreshTree', () => fileTreeProvider.refresh()));
-        }
-    }
 
     const saveCodeCommand = vscode.commands.registerCommand('lollms-vs-coder.saveCodeToFile', async (code: string, language?: string) => {
         const languageToFileFilter = (lang?: string): { [name: string]: string[] } => {
@@ -705,14 +658,63 @@ export function activate(context: vscode.ExtensionContext) {
     chatStatusBar.show();
     context.subscriptions.push(chatStatusBar);
 
-    const autocompleteStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
-    autocompleteStatusBar.text = `$(sparkle) Lollms`;
-    autocompleteStatusBar.command = 'lollms-vs-coder.triggerInlineSuggestion';
-    autocompleteStatusBar.tooltip = 'Lollms: Autocomplete';
-    autocompleteStatusBar.show();
-    context.subscriptions.push(autocompleteStatusBar);
+    const modelStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+    modelStatusBarItem.command = 'lollms-vs-coder.selectModel';
+    modelStatusBarItem.tooltip = 'Lollms: Select Active Model';
     
+    function updateModelStatus() {
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const modelName = config.get('modelName') as string || 'Not Set';
+        modelStatusBarItem.text = `$(chip) ${modelName}`;
+        modelStatusBarItem.show();
+    }
+    updateModelStatus();
+    context.subscriptions.push(modelStatusBarItem);
+    
+    context.subscriptions.push(vscode.commands.registerCommand('lollmsApi.recreateClient', async () => {
+        const newConfig = vscode.workspace.getConfiguration('lollmsVsCoder');
+        lollmsAPI = new LollmsAPI({ 
+            apiKey: newConfig.get<string>('apiKey')?.trim() || '',
+            apiUrl: newConfig.get<string>('apiUrl') || 'http://localhost:9642',
+            modelName: newConfig.get<string>('modelName') || 'ollama/mistral',
+            disableSslVerification: newConfig.get<boolean>('disableSslVerification') || false
+        });
+        updateModelStatus();
+        vscode.window.showInformationMessage('LollmsAPI client reconfigured successfully.');
+    }));
+    
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.selectModel', async () => {
+        try {
+            const models = await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: "Fetching available models...",
+                cancellable: false
+            }, () => lollmsAPI.getModels());
+
+            if (!models || models.length === 0) {
+                vscode.window.showWarningMessage("No models found or could not connect to Lollms API.");
+                return;
+            }
+
+            const modelItems = models.map(m => ({ label: m.id }));
+            const selectedModel = await vscode.window.showQuickPick(modelItems, {
+                placeHolder: "Select a model to use"
+            });
+
+            if (selectedModel) {
+                const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+                await config.update('modelName', selectedModel.label, vscode.ConfigurationTarget.Global);
+            }
+        } catch (error: any) {
+            vscode.window.showErrorMessage(`Failed to fetch models: ${error.message}`);
+        }
+    }));
+
+    vscode.workspace.onDidChangeConfiguration(e => {
+        if (e.affectsConfiguration('lollmsVsCoder.modelName') || e.affectsConfiguration('lollmsVsCoder.apiUrl')) {
+            vscode.commands.executeCommand('lollmsApi.recreateClient');
+        }
+    });
+
     console.log('Extension activation complete.');
 }
-
-export function deactivate() {}

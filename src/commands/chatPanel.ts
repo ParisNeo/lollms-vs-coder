@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { LollmsAPI, ChatMessage, ChatMessageContentPart } from '../lollmsAPI';
+import { LollmsAPI, ChatMessage } from '../lollmsAPI';
 import { ContextManager, ContextResult } from '../contextManager';
 import { Discussion, DiscussionManager } from '../discussionManager';
 import { AgentManager } from '../agentManager';
@@ -28,7 +28,10 @@ export class ChatPanel {
       column || vscode.ViewColumn.One,
       {
         enableScripts: true,
-        localResourceRoots: [extensionUri],
+        localResourceRoots: [
+            extensionUri,
+            vscode.Uri.joinPath(extensionUri, 'node_modules', '@vscode/codicons', 'dist')
+        ],
         retainContextWhenHidden: true
       }
     );
@@ -56,11 +59,14 @@ export class ChatPanel {
     this._panel.webview.postMessage({ command: 'updateAgentMode', isActive });
   }
 
+  public displayPlan(plan: any): void {
+      this._panel.webview.postMessage({ command: 'displayPlan', plan: plan });
+  }
+
   public async loadDiscussion(id: string): Promise<void> {
     const discussion = await this._discussionManager.getDiscussion(id);
     if (discussion) {
         let needsSave = false;
-        // Data migration: Ensure all messages have IDs
         discussion.messages.forEach(msg => {
             if (!msg.id) {
                 msg.id = Date.now().toString() + Math.random().toString(36).substring(2);
@@ -92,7 +98,6 @@ export class ChatPanel {
   public async addMessageToDiscussion(message: ChatMessage): Promise<void> {
     if (!this._currentDiscussion) return;
     
-    // Assign a unique ID if it doesn't have one
     if (!message.id) {
         message.id = Date.now().toString() + Math.random().toString(36).substring(2);
     }
@@ -117,13 +122,15 @@ export class ChatPanel {
   }
 
   private _getHtmlForWebview(webview: vscode.Webview): string {
+    const codiconsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'node_modules', '@vscode/codicons', 'dist', 'codicon.css'));
+
     return `<!DOCTYPE html>
     <html lang="en">
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
         <title>Lollms Chat</title>
-        
+        <link href="${codiconsUri}" rel="stylesheet" />
         <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
         
         <style>
@@ -132,7 +139,7 @@ export class ChatPanel {
                 --code-border: #3e3e3e;
             }
             body { 
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif; 
+                font-family: var(--vscode-font-family); 
                 padding: 10px;
                 margin: 0;
                 background-color: var(--vscode-editor-background);
@@ -199,7 +206,7 @@ export class ChatPanel {
                 padding: 16px !important;
                 display: block;
                 overflow-x: auto;
-                font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+                font-family: var(--vscode-editor-font-family);
                 font-size: 13px;
                 line-height: 1.5;
                 color: #D4D4D4;
@@ -270,6 +277,16 @@ export class ChatPanel {
                 cursor: pointer;
                 font-weight: 600;
             }
+            .input-area button:disabled {
+                background-color: var(--vscode-button-secondaryBackground);
+                cursor: not-allowed;
+                opacity: 0.6;
+            }
+            .input-container input:disabled {
+                background-color: var(--vscode-input-background);
+                cursor: not-allowed;
+                opacity: 0.6;
+            }
             .loading .message-content {
                 display: flex;
                 align-items: center;
@@ -307,26 +324,6 @@ export class ChatPanel {
             .msg-action-btn:hover {
                 opacity: 1;
             }
-            .edit-container {
-                display: none;
-                flex-direction: column;
-                gap: 8px;
-            }
-            .edit-container textarea {
-                width: 100%;
-                box-sizing: border-box;
-                height: 120px;
-            }
-            .edit-actions {
-                display: flex;
-                justify-content: flex-end;
-                gap: 8px;
-            }
-            .edit-actions button {
-                width: auto;
-                padding: 4px 12px;
-                font-size: 0.9em;
-            }
             .agent-mode-toggle {
                 display: flex;
                 align-items: center;
@@ -361,6 +358,61 @@ export class ChatPanel {
             }
             input:checked + .slider { background-color: var(--vscode-button-background); }
             input:checked + .slider:before { transform: translateX(14px); }
+            
+            .plan-container {
+                border: 1px solid var(--vscode-panel-border);
+                border-radius: 8px;
+                margin-top: 10px;
+                background-color: var(--vscode-sideBar-background);
+            }
+            .plan-header {
+                padding: 10px 15px;
+                font-weight: 600;
+                border-bottom: 1px solid var(--vscode-panel-border);
+                cursor: pointer;
+            }
+            .plan-objective {
+                font-size: 0.9em;
+                font-weight: normal;
+                color: var(--vscode-descriptionForeground);
+                margin-top: 5px;
+            }
+            .plan-tasks {
+                padding: 5px 15px 15px 15px;
+                max-height: 400px;
+                overflow-y: auto;
+            }
+            .plan-task {
+                display: flex;
+                align-items: center;
+                padding: 8px 0;
+                border-bottom: 1px solid var(--vscode-editorWidget-background);
+            }
+            .plan-task:last-child { border-bottom: none; }
+            .task-status {
+                width: 24px;
+                text-align: center;
+                margin-right: 10px;
+                font-size: 16px;
+            }
+            .task-status .codicon-sync~.spin {
+                animation: spin 1.5s linear infinite;
+            }
+            .task-status .codicon-check { color: var(--vscode-testing-iconPassed); }
+            .task-status .codicon-error { color: var(--vscode-testing-iconFailed); }
+            .task-status .codicon-circle-large-filled { 
+                color: var(--vscode-descriptionForeground); 
+                font-size: 12px;
+                vertical-align: middle;
+             }
+            
+            .task-description { flex: 1; }
+            .task-details {
+                font-size: 0.8em;
+                color: var(--vscode-descriptionForeground);
+                margin-top: 3px;
+                font-family: var(--vscode-editor-font-family);
+            }
         </style>
         
         <script src="https://cdn.jsdelivr.net/npm/marked@5.1.1/marked.min.js"></script>
@@ -392,7 +444,6 @@ export class ChatPanel {
             const messageInput = document.getElementById('messageInput');
             const sendButton = document.getElementById('sendButton');
             const agentModeCheckbox = document.getElementById('agentModeCheckbox');
-            const executableLanguages = ['python', 'javascript', 'typescript', 'bash', 'sh', 'shell'];
 
             marked.setOptions({
                 breaks: true,
@@ -416,28 +467,11 @@ export class ChatPanel {
                 const contentDiv = document.createElement('div');
                 contentDiv.className = 'message-content';
                 contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(content));
-                
-                const editContainer = document.createElement('div');
-                editContainer.className = 'edit-container';
-                editContainer.innerHTML = \`
-                    <textarea class="edit-textarea"></textarea>
-                    <div class="edit-actions">
-                        <button class="cancel-edit-btn">Cancel</button>
-                        <button class="save-edit-btn">Save</button>
-                    </div>
-                \`;
-                
+
                 const actionsDiv = document.createElement('div');
                 actionsDiv.className = 'message-actions';
 
                 if (role === 'user' || role === 'assistant' || role === 'system') {
-                    const editBtn = document.createElement('button');
-                    editBtn.className = 'msg-action-btn';
-                    editBtn.innerHTML = '📝';
-                    editBtn.title = 'Edit Message';
-                    editBtn.onclick = () => startEdit(message.id);
-                    actionsDiv.appendChild(editBtn);
-                    
                     const deleteBtn = document.createElement('button');
                     deleteBtn.className = 'msg-action-btn';
                     deleteBtn.innerHTML = '🗑️';
@@ -457,7 +491,6 @@ export class ChatPanel {
                 
                 messageDiv.appendChild(headerDiv);
                 messageDiv.appendChild(contentDiv);
-                messageDiv.appendChild(editContainer);
                 messageDiv.appendChild(actionsDiv);
                 messagesDiv.appendChild(messageDiv);
                 
@@ -465,44 +498,60 @@ export class ChatPanel {
                 messagesDiv.scrollTop = messagesDiv.scrollHeight;
             }
 
-            function startEdit(messageId) {
-                const messageDiv = document.querySelector(\`[data-message-id="\${messageId}"]\`);
-                if (!messageDiv) return;
-                vscode.postMessage({ command: 'getRawMessageContent', messageId });
-            }
-
-            function showEditUI(messageId, rawContent) {
-                const messageDiv = document.querySelector(\`[data-message-id="\${messageId}"]\`);
-                if (!messageDiv) return;
-
-                const contentDiv = messageDiv.querySelector('.message-content');
-                const editContainer = messageDiv.querySelector('.edit-container');
-                const textarea = editContainer.querySelector('.edit-textarea');
-                
-                textarea.value = rawContent;
-                contentDiv.style.display = 'none';
-                editContainer.style.display = 'flex';
-
-                editContainer.querySelector('.save-edit-btn').onclick = () => saveEdit(messageId);
-                editContainer.querySelector('.cancel-edit-btn').onclick = () => cancelEdit(messageId);
-            }
-
-            function cancelEdit(messageId) {
-                const messageDiv = document.querySelector(\`[data-message-id="\${messageId}"]\`);
-                if (!messageDiv) return;
-                messageDiv.querySelector('.message-content').style.display = 'block';
-                messageDiv.querySelector('.edit-container').style.display = 'none';
-            }
-
-            function saveEdit(messageId) {
-                const messageDiv = document.querySelector(\`[data-message-id="\${messageId}"]\`);
-                if (!messageDiv) return;
-                const newContent = messageDiv.querySelector('.edit-textarea').value;
-                vscode.postMessage({ command: 'editMessage', messageId, newContent });
-            }
-
             function requestDelete(messageId) {
                 vscode.postMessage({ command: 'requestDeleteMessage', messageId });
+            }
+            
+            function getStatusIcon(status) {
+                switch(status) {
+                    case 'pending': return '<span class="codicon codicon-circle-large-filled"></span>';
+                    case 'in_progress': return '<span class="codicon codicon-sync spin"></span>';
+                    case 'completed': return '<span class="codicon codicon-check"></span>';
+                    case 'failed': return '<span class="codicon codicon-error"></span>';
+                    default: return '<span class="codicon codicon-circle-slash"></span>';
+                }
+            }
+            
+            function renderPlan(plan) {
+                let planHtml = \`
+                    <div class="plan-header" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'">
+                        📝 Agent Execution Plan
+                        <div class="plan-objective">\${plan.objective}</div>
+                    </div>
+                    <div class="plan-tasks">
+                \`;
+
+                plan.tasks.forEach(task => {
+                    planHtml += \`
+                        <div class="plan-task" data-task-id="\${task.id}">
+                            <div class="task-status">\${getStatusIcon(task.status)}</div>
+                            <div class="task-description">
+                                <strong>\${task.id}. \${task.description}</strong>
+                                <div class="task-details">\${task.action}</div>
+                            </div>
+                        </div>
+                    \`;
+                });
+
+                planHtml += '</div>';
+                return planHtml;
+            }
+
+            function displayPlan(plan) {
+                let planContainer = document.getElementById('plan-container');
+                if (!planContainer) {
+                    const messageDiv = document.createElement('div');
+                    messageDiv.className = 'message system-message';
+                    messageDiv.innerHTML = \`
+                        <div class="message-header">Agent Plan</div>
+                        <div class="plan-container" id="plan-container"></div>
+                    \`;
+                    messagesDiv.appendChild(messageDiv);
+                    planContainer = document.getElementById('plan-container');
+                }
+                
+                planContainer.innerHTML = renderPlan(plan);
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
             }
 
             function enhanceCodeBlocks(container) {
@@ -520,21 +569,6 @@ export class ChatPanel {
                     
                     const actions = document.createElement('div');
                     actions.className = 'code-actions';
-                    
-                    if (executableLanguages.includes(language)) {
-                        const runBtn = document.createElement('button');
-                        runBtn.className = 'code-action-btn';
-                        runBtn.innerHTML = '🚀 Run';
-                        runBtn.title = 'Run Script';
-                        runBtn.onclick = () => {
-                            vscode.postMessage({
-                                command: 'runScript',
-                                content: codeContent,
-                                language: language
-                            });
-                        };
-                        actions.appendChild(runBtn);
-                    }
 
                     const copyBtn = document.createElement('button');
                     copyBtn.className = 'code-action-btn';
@@ -580,6 +614,9 @@ export class ChatPanel {
                 const messageText = messageInput.value.trim();
                 if (!messageText) return;
 
+                sendButton.disabled = true;
+                messageInput.disabled = true;
+
                 if (agentModeCheckbox.checked) {
                     vscode.postMessage({ command: 'runAgent', objective: messageText });
                 } else {
@@ -619,9 +656,18 @@ export class ChatPanel {
                     const tempUserMsg = document.querySelector('[data-message-id^="temp-"]');
                     if (tempUserMsg && message.message.role !== 'user') tempUserMsg.remove();
                     
-                    sendButton.disabled = false;
-                    messageInput.focus();
+                    if (!agentModeCheckbox.checked) {
+                        sendButton.disabled = false;
+                        messageInput.disabled = false;
+                        messageInput.focus();
+                    }
                     addMessage(message.message);
+                    break;
+                case 'displayPlan':
+                    if (loadingIndicator) {
+                        loadingIndicator.remove();
+                    }
+                    displayPlan(message.plan);
                     break;
                 case 'loadDiscussion':
                     if (loadingIndicator) loadingIndicator.remove();
@@ -630,22 +676,21 @@ export class ChatPanel {
                         message.messages.forEach(msg => addMessage(msg));
                     }
                     sendButton.disabled = false;
+                    messageInput.disabled = false;
                     messageInput.focus();
                     break;
                 case 'updateAgentMode':
                     agentModeCheckbox.checked = message.isActive;
+                    if (!message.isActive) {
+                        sendButton.disabled = false;
+                        messageInput.disabled = false;
+                        messageInput.focus();
+                    }
                     break;
-                case 'rawMessageContent':
-                    showEditUI(message.messageId, message.content);
-                    break;
-                case 'setInputText':
-                    messageInput.value = message.text;
-                    messageInput.focus();
-                    break;
-
                 case 'error':
                     if (loadingIndicator) loadingIndicator.remove();
                     sendButton.disabled = false;
+                    messageInput.disabled = false;
                     addMessage({ role: 'system', content: '❌ Error: ' + message.content });
                     break;
               }
@@ -674,7 +719,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
 
 **CRITICAL INSTRUCTIONS:**
 1.  DO NOT apologize or use conversational filler.
-2.  DO NOT use placeholders or omit any part of the code (e.g., "...rest of the code...").
+2.  DO NOT use placeholders or omit any part of the code.
 3.  Your response MUST contain the full, runnable script in a single markdown code block.
 4.  After the code block, briefly explain the specific change you made to fix the error.`;
     }
@@ -754,26 +799,11 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
   }
 
-  private async editMessage(messageId: string, newContent: string) {
-    if (!this._currentDiscussion) return;
-    
-    const message = this._currentDiscussion.messages.find(msg => msg.id === messageId);
-    if (message) {
-        message.content = newContent;
-        this._currentDiscussion.timestamp = Date.now();
-        await this._discussionManager.saveDiscussion(this._currentDiscussion);
-
-        this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
-        vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
-    }
-  }
-
   private _setWebviewMessageListener(webview: vscode.Webview) {
     webview.onDidReceiveMessage(async (message) => {
       switch (message.command) {
         case 'sendMessage':
           await this.sendMessage(message.message);
-          this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion?.messages || [] });
           break;
         case 'toggleAgentMode':
           this.agentManager.toggleAgentMode();
@@ -791,18 +821,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
                 await this.deleteMessage(message.messageId);
             }
             break;
-        case 'editMessage':
-          await this.editMessage(message.messageId, message.newContent);
-          break;
-        case 'getRawMessageContent':
-            const msg = this._currentDiscussion?.messages.find(m => m.id === message.messageId);
-            if (msg && typeof msg.content === 'string') {
-                this._panel.webview.postMessage({ command: 'rawMessageContent', messageId: msg.id, content: msg.content });
-            }
-            break;
-        case 'runScript':
-          vscode.commands.executeCommand('lollms-vs-coder.runScript', message.content, message.language);
-          break;
         case 'saveMessageAsPrompt':
           vscode.commands.executeCommand('lollms-vs-coder.saveMessageAsPrompt', message.content);
           break;

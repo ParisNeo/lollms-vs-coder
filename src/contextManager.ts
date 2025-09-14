@@ -1,5 +1,3 @@
-// src/contextManager.ts
-
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { FileTreeProvider } from './commands/fileTreeProvider';
@@ -17,18 +15,15 @@ export class ContextManager {
 
   constructor(context: vscode.ExtensionContext) {
     this.context = context;
-    console.log('ContextManager constructor called');
-    this.initializeFileTreeProvider();
+    this.reinitializeFileTreeProvider();
   }
 
-  private initializeFileTreeProvider() {
+  public reinitializeFileTreeProvider() {
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (workspaceFolder) {
-      console.log('Initializing FileTreeProvider for workspace:', workspaceFolder.uri.fsPath);
       this.fileTreeProvider = new FileTreeProvider(workspaceFolder.uri.fsPath, this.context);
-      console.log('FileTreeProvider initialized successfully');
     } else {
-      console.log('No workspace folder found - ContextManager will have limited functionality');
+      this.fileTreeProvider = undefined;
     }
   }
 
@@ -107,14 +102,12 @@ export class ContextManager {
   }
 
   private async generateProjectTree(): Promise<string> {
-    console.log('Generating project tree...');
     
     if (!this.fileTreeProvider) {
       return '## Project Structure\n\n*No project structure available - no workspace folder found.*\n';
     }
 
     const allVisibleFiles = await this.fileTreeProvider.getAllVisibleFiles();
-    console.log('All visible files count:', allVisibleFiles.length);
     
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder) {
@@ -131,7 +124,6 @@ export class ContextManager {
     tree += '```'
     tree += path.basename(workspaceFolder.uri.fsPath) + '/\n';
 
-    // Build nested file structure
     const fileTree: { [key: string]: any } = {};
     
     allVisibleFiles.forEach(filePath => {
@@ -148,11 +140,9 @@ export class ContextManager {
       });
     });
 
-    // Generate tree string representation
     const generateTreeString = (obj: any, prefix: string = '', isLast: boolean = true): string => {
       let result = '';
       const keys = Object.keys(obj).sort((a, b) => {
-        // Directories first, then files
         const aIsDir = obj[a] !== null;
         const bIsDir = obj[b] !== null;
         if (aIsDir && !bIsDir) return -1;
@@ -177,7 +167,6 @@ export class ContextManager {
     tree += generateTreeString(fileTree);
     tree += '```\n';
 
-    console.log('Generated project tree');
     return tree;
   }
 
@@ -193,49 +182,5 @@ To use Lollms with your project files:
 
 Currently operating without project context.
 `;
-  }
-
-  addFileToContext(uri: vscode.Uri) {
-    if (!this.fileTreeProvider) {
-      vscode.window.showWarningMessage('No workspace folder available to add files to context.');
-      return;
-    }
-
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (workspaceFolder) {
-        const relativePath = vscode.workspace.asRelativePath(uri, false);
-        this.fileTreeProvider.addFileToContext(relativePath);
-        vscode.window.showInformationMessage(`Added ${path.basename(uri.fsPath)} to AI context`);
-        console.log(`Added file to context: ${relativePath}`);
-    }
-  }
-
-  removeFileFromContext(uri: vscode.Uri) {
-    if (!this.fileTreeProvider) {
-      vscode.window.showWarningMessage('No workspace folder available to remove files from context.');
-      return;
-    }
-
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (workspaceFolder) {
-        const relativePath = vscode.workspace.asRelativePath(uri, false);
-        this.fileTreeProvider.removeFileFromContext(relativePath);
-        vscode.window.showInformationMessage(`Removed ${path.basename(uri.fsPath)} from AI context`);
-        console.log(`Removed file from context: ${relativePath}`);
-    }
-  }
-
-  // Get summary of current context for debugging
-  async getContextSummary(): Promise<string> {
-    if (!this.fileTreeProvider) {
-      return 'No FileTreeProvider available';
-    }
-
-    const contextFiles = this.fileTreeProvider.getContextFiles();
-    const allVisibleFiles = await this.fileTreeProvider.getAllVisibleFiles();
-    
-    return `Context Summary:
-- Files with content: ${contextFiles.length}
-- Total visible files for tree: ${allVisibleFiles.length}`;
   }
 }

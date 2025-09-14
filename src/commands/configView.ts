@@ -9,7 +9,8 @@ export class SettingsPanel {
     apiKey: '',
     apiUrl: '',
     modelName: '',
-    disableSslVerification: false
+    disableSslVerification: false,
+    agentMaxRetries: 1
   };
 
   public static createOrShow(extensionUri: vscode.Uri) {
@@ -42,6 +43,7 @@ export class SettingsPanel {
     this._pendingConfig.apiUrl = config.get<string>('apiUrl') || 'http://localhost:9642';
     this._pendingConfig.modelName = config.get<string>('modelName') || '';
     this._pendingConfig.disableSslVerification = config.get<boolean>('disableSslVerification') || false;
+    this._pendingConfig.agentMaxRetries = config.get<number>('agentMaxRetries') || 1;
 
     this._panel.webview.html = this._getHtml(this._panel.webview, this._pendingConfig);
     this._setWebviewMessageListener(this._panel.webview);
@@ -72,6 +74,7 @@ export class SettingsPanel {
                 await config.update('apiUrl', this._pendingConfig.apiUrl, vscode.ConfigurationTarget.Global);
                 await config.update('modelName', this._pendingConfig.modelName, vscode.ConfigurationTarget.Global);
                 await config.update('disableSslVerification', this._pendingConfig.disableSslVerification, vscode.ConfigurationTarget.Global);
+                await config.update('agentMaxRetries', this._pendingConfig.agentMaxRetries, vscode.ConfigurationTarget.Global);
   
                 vscode.window.showInformationMessage('Configuration saved. Recreating LollmsAPI...');
                 await vscode.commands.executeCommand('lollmsApi.recreateClient', this._pendingConfig);
@@ -108,8 +111,8 @@ export class SettingsPanel {
       );
   }
 
-  private _getHtml(webview: vscode.Webview, config: { apiKey: string; apiUrl: string; modelName: string, disableSslVerification: boolean }) {
-    const { apiKey, apiUrl, modelName, disableSslVerification } = config;
+  private _getHtml(webview: vscode.Webview, config: { apiKey: string; apiUrl: string; modelName: string, disableSslVerification: boolean, agentMaxRetries: number }) {
+    const { apiKey, apiUrl, modelName, disableSslVerification, agentMaxRetries } = config;
 
     return `<!DOCTYPE html>
         <html lang="en">
@@ -132,7 +135,7 @@ export class SettingsPanel {
               h1 { font-weight: 300; text-align: center; margin-bottom: 2em; }
               h2 { font-weight: 400; border-bottom: 1px solid var(--vscode-panel-border); padding-bottom: 5px; margin-top: 2em; }
               label { display: block; margin-top: 14px; margin-bottom: 5px; font-weight: 600; font-size: 0.9em; color: var(--vscode-description-foreground); }
-              input[type="text"], input[list] {
+              input[type="text"], input[type="number"], input[list] {
                 width: 100%; padding: 8px; border: 1px solid var(--vscode-input-border);
                 border-radius: 4px; background: var(--vscode-input-background);
                 color: var(--vscode-input-foreground); font-size: 0.9em; box-sizing: border-box;
@@ -176,6 +179,11 @@ export class SettingsPanel {
               </div>
               <p class="help-text">Useful for local servers with self-signed certificates.</p>
 
+              <h2>Agent Configuration</h2>
+              <label for="agentMaxRetries">Agent Self-Correction Retries</label>
+              <input type="number" id="agentMaxRetries" value="${agentMaxRetries}" min="0" max="5" />
+              <p class="help-text">Number of times the agent will try to fix a failed task before asking for help.</p>
+              
               <h2>Advanced</h2>
               <p class="help-text">For advanced customization, you can directly edit the JSON file that stores your prompt library.</p>
               <button id="editPromptsBtn" class="secondary-button">Edit Prompts JSON</button>
@@ -192,6 +200,7 @@ export class SettingsPanel {
                 const modelSelectInput = document.getElementById('modelSelect');
                 const modelsDatalist = document.getElementById('modelsList');
                 const disableSslCheckbox = document.getElementById('disableSsl');
+                const agentMaxRetriesInput = document.getElementById('agentMaxRetries');
 
                 function postTempUpdate(key, value) {
                   vscode.postMessage({ command: 'updateTempValue', key, value });
@@ -201,6 +210,7 @@ export class SettingsPanel {
                 apiUrlInput.addEventListener('input', e => postTempUpdate('apiUrl', e.target.value));
                 modelSelectInput.addEventListener('input', e => postTempUpdate('modelName', e.target.value));
                 disableSslCheckbox.addEventListener('change', e => postTempUpdate('disableSslVerification', e.target.checked));
+                agentMaxRetriesInput.addEventListener('input', e => postTempUpdate('agentMaxRetries', parseInt(e.target.value, 10)));
                 
                 document.getElementById('refreshModels').addEventListener('click', () => {
                   modelsDatalist.innerHTML = '';

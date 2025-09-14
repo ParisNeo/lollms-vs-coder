@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "Lollms VS Coder",
   "description": "AI-powered Visual Studio Code extension using Lollms OpenAI-compatible interface for smart coding, debugging, real-time enhancements, context management, and git commit message generation.",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -132,7 +132,7 @@
         ]
       }
   },
-  "scripts": { "vscode:prepublish": "npm run compile", "compile": "tsc -p ./", "watch": "tsc -watch -p ./", "package": "vsce package", "pretest": "npm run compile && npm audit", "test": "node ./out/test/runTest.js", "security-audit": "npm audit --audit-level moderate", "clean": "rimraf out node_modules package-lock.json" },
+  "scripts": { "vscode:prepublish": "npm run compile", "compile": "tsc -p ./", "watch": "tsc -watch -p ./", "package": "npx @vscode/vsce package", "pretest": "npm run compile && npm audit", "test": "node ./out/test/runTest.js", "security-audit": "npm audit --audit-level moderate", "clean": "rimraf out node_modules package-lock.json" },
   "devDependencies": { "@types/jimp": "^0.2.28", "@types/marked": "5.0.2", "@types/node-fetch": "2.6.13", "@types/vscode": "1.74.0", "typescript": "5.9.2", "@vscode/vsce": "^2.26.0" },
   "dependencies": { "@vscode/codicons": "^0.0.35", "jimp": "^0.22.10", "marked": "16.2.1", "node-fetch": "2.7.0" },
   "overrides": { "eslint": { "chalk": ">=5.0.0", "debug": ">=4.3.5", "ansi-styles": ">=6.0.0" } }

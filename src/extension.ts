@@ -612,6 +612,68 @@ export function activate(context: vscode.ExtensionContext) {
         }
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string) => {
+        if (!vscode.workspace.workspaceFolders) {
+            vscode.window.showErrorMessage('Please open a workspace folder to apply file changes.');
+            return;
+        }
+        const workspaceRoot = vscode.workspace.workspaceFolders[0].uri;
+        const fileUri = vscode.Uri.joinPath(workspaceRoot, filePath);
+    
+        try {
+            let fileExists = false;
+            try {
+                await vscode.workspace.fs.stat(fileUri);
+                fileExists = true;
+            } catch {
+                // File doesn't exist, which is fine.
+            }
+    
+            if (fileExists) {
+                const confirm = await vscode.window.showWarningMessage(
+                    `Are you sure you want to overwrite '${filePath}'?`,
+                    { modal: true },
+                    'Overwrite'
+                );
+                if (confirm !== 'Overwrite') {
+                    vscode.window.showInformationMessage('Apply operation cancelled.');
+                    return;
+                }
+            }
+    
+            const dirUri = vscode.Uri.joinPath(fileUri, '..');
+            await vscode.workspace.fs.createDirectory(dirUri);
+    
+            await vscode.workspace.fs.writeFile(fileUri, Buffer.from(content, 'utf8'));
+            vscode.window.showInformationMessage(`✅ Successfully applied changes to ${filePath}`);
+    
+            await vscode.window.showTextDocument(fileUri);
+    
+        } catch (error: any) {
+            vscode.window.showErrorMessage(`Failed to apply file content: ${error.message}`);
+        }
+    }));
+    
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyPatchContent', async (filePath: string, patchContent: string) => {
+        try {
+            let finalPatch = patchContent;
+            if (!patchContent.trim().startsWith('--- a/')) {
+                finalPatch = `--- a/${filePath}\n+++ b/${filePath}\n${patchContent}`;
+            }
+    
+            await applyDiff(finalPatch);
+            vscode.window.showInformationMessage(`✅ Patch successfully applied to ${filePath}`);
+    
+            if (vscode.workspace.workspaceFolders) {
+                 const fileUri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, filePath);
+                 await vscode.window.showTextDocument(fileUri);
+            }
+    
+        } catch (error: any) {
+            vscode.window.showErrorMessage(`Failed to apply patch: ${error.message}`);
+        }
+    }));
+
     const saveCodeCommand = vscode.commands.registerCommand('lollms-vs-coder.saveCodeToFile', async (code: string, language?: string) => {
         const languageToFileFilter = (lang?: string): { [name: string]: string[] } => {
             if (!lang) return { 'All files': ['*'] };

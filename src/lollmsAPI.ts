@@ -15,6 +15,15 @@ export interface ChatMessage {
   content: string | any[];
 }
 
+export interface TokenizeResponse {
+    tokens: number[];
+    count: number;
+}
+
+export interface ContextSizeResponse {
+    context_size: number;
+}
+
 export class LollmsAPI {
   private config: LollmsConfig;
   private httpsAgent: https.Agent;
@@ -52,6 +61,62 @@ export class LollmsAPI {
     }
     const data = await response.json();
     return data.data || [];
+  }
+
+  public async tokenize(text: string): Promise<TokenizeResponse> {
+    const tokenizeUrl = `${this.baseUrl}/v1/tokenize`;
+    const isHttps = tokenizeUrl.startsWith('https');
+
+    const options: RequestInit = {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${this.config.apiKey}`
+        },
+        body: JSON.stringify({
+            model: this.config.modelName,
+            text: text
+        }),
+    };
+
+    if (isHttps) {
+        options.agent = this.httpsAgent;
+    }
+
+    const response = await fetch(tokenizeUrl, options);
+    if (!response.ok) {
+        const errorBody = await response.text();
+        console.error('Lollms Tokenize API Error Body:', errorBody);
+        throw new Error(`Failed to tokenize text: ${response.status} ${response.statusText}`);
+    }
+    return await response.json() as TokenizeResponse;
+  }
+
+  public async getContextSize(): Promise<ContextSizeResponse> {
+    const contextSizeUrl = `${this.baseUrl}/v1/context_size`;
+    const isHttps = contextSizeUrl.startsWith('https');
+    const options: RequestInit = {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${this.config.apiKey}`
+        },
+        body: JSON.stringify({
+            model: this.config.modelName,
+        }),
+    };
+
+    if (isHttps) {
+        options.agent = this.httpsAgent;
+    }
+
+    const response = await fetch(contextSizeUrl, options);
+    if (!response.ok) {
+        const errorBody = await response.text();
+        console.error('Lollms Context Size API Error Body:', errorBody);
+        throw new Error(`Failed to get context size: ${response.status} ${response.statusText}`);
+    }
+    return await response.json() as ContextSizeResponse;
   }
 
   async sendChat(messages: ChatMessage[], signal?: AbortSignal): Promise<string> {

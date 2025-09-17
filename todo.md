@@ -1,5 +1,10 @@
-- when adding a folder, just add its children and don't attempt to add the folder itself to the discussion as content
-- verify why no context is in discussion
-- when in a discussion, then we go to another page and come back to the discussion, the content is lost fix that
-- Add custom prompt to code selection
-- at first run, the templates are empty. make sure they are repopulated and handle migration from previous installations.
+- OK when adding a folder, just add its children and don't attempt to add the folder itself to the discussion as content
+- OK verify why no context is in discussion
+- OK when in a discussion, then we go to another page and come back to the discussion, the content is lost fix that
+- OK Add custom prompt to code selection
+- OK at first run, the templates are empty. make sure they are repopulated and handle migration from previous installations.
+
+- add the possibility to copy the message as markdown
+- if there is a .gitignore, apply it to the context selection
+- fuse generate code and rewrite code
+- add stop generation

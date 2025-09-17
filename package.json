@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "Lollms VS Coder",
   "description": "AI-powered Visual Studio Code extension using Lollms OpenAI-compatible interface for smart coding, debugging, real-time enhancements, context management, and git commit message generation.",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",

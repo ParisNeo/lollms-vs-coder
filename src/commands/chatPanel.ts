@@ -330,7 +330,7 @@ export class ChatPanel {
             }
             .input-area {
                 display: flex;
-                align-items: flex-start;
+                align-items: flex-end;
                 gap: 10px;
             }
             .input-container {
@@ -357,9 +357,10 @@ export class ChatPanel {
             }
             .bottom-controls {
                 display: flex;
+                gap: 10px;
                 align-items: flex-end;
             }
-            .bottom-controls button {
+            #sendButton {
                 padding: 10px 20px;
                 background-color: var(--vscode-button-background);
                 color: var(--vscode-button-foreground);
@@ -367,9 +368,8 @@ export class ChatPanel {
                 border-radius: 6px;
                 cursor: pointer;
                 font-weight: 600;
-                height: 42px; /* Match textarea height */
             }
-            .bottom-controls button:disabled {
+            #sendButton:disabled {
                 background-color: var(--vscode-button-secondaryBackground);
                 cursor: not-allowed;
                 opacity: 0.6;
@@ -418,7 +418,7 @@ export class ChatPanel {
                 margin-right: 15px;
                 font-size: 0.9em;
                 color: var(--vscode-descriptionForeground);
-                padding-top: 10px;
+                margin-bottom: 5px; /* Aligns toggle text with textarea */
             }
             .switch {
                 position: relative;
@@ -571,6 +571,20 @@ export class ChatPanel {
             }
             .welcome-message li {
                 margin-bottom: 5px;
+            }
+            #logButton {
+                padding: 0 12px;
+                height: 42px;
+                line-height: 42px;
+                background-color: var(--vscode-button-secondaryBackground);
+                color: var(--vscode-button-secondaryForeground);
+                border: none;
+                border-radius: 6px;
+                cursor: pointer;
+                font-size: 1.2em;
+            }
+            #logButton:hover {
+                background-color: var(--vscode-button-secondaryHoverBackground);
             }
             .log-modal {
                 display: none; position: fixed; z-index: 1000;
@@ -733,13 +747,17 @@ export class ChatPanel {
                         actionsDiv.appendChild(deleteBtn);
                     }
 
-                    if (role === 'assistant') {
+                    if (role === 'assistant' || role === 'user') {
                         const regenerateBtn = document.createElement('button');
                         regenerateBtn.className = 'msg-action-btn';
                         regenerateBtn.innerHTML = '🔄';
-                        regenerateBtn.title = 'Regenerate Response';
+                        regenerateBtn.title = 'Regenerate';
                         regenerateBtn.onclick = () => {
-                            vscode.postMessage({ command: 'regenerateResponse' });
+                            if (role === 'assistant') {
+                                vscode.postMessage({ command: 'regenerateResponse' });
+                            } else { // role === 'user'
+                                vscode.postMessage({ command: 'regenerateFromMessage', messageId: message.id });
+                            }
                         };
                         actionsDiv.appendChild(regenerateBtn);
                     }
@@ -1256,6 +1274,35 @@ I hope this helps!
     await this.sendMessage({ role: 'user', content: lastUserMessageContent });
   }
 
+  private async regenerateFromMessage(messageId: string) {
+    if (!this._currentDiscussion) return;
+
+    const messageIndex = this._currentDiscussion.messages.findIndex(m => m.id === messageId);
+
+    if (messageIndex === -1) {
+        vscode.window.showErrorMessage("Could not find the message to regenerate from.");
+        return;
+    }
+
+    const targetMessage = this._currentDiscussion.messages[messageIndex];
+    if (targetMessage.role !== 'user' || typeof targetMessage.content !== 'string') {
+        vscode.window.showErrorMessage("Can only regenerate from a user's text message.");
+        return;
+    }
+    const messageContent = targetMessage.content;
+    
+    // Remove the target message and everything after it
+    this._currentDiscussion.messages.splice(messageIndex);
+    
+    await this._discussionManager.saveDiscussion(this._currentDiscussion);
+    
+    // Reload the webview with the truncated history
+    this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
+
+    // Resend the original message prompt
+    await this.sendMessage({ role: 'user', content: messageContent });
+  }
+
   private async deleteMessage(messageId: string, showConfirmation: boolean = true) {
     if (!this._currentDiscussion) return;
 
@@ -1301,6 +1348,9 @@ I hope this helps!
         case 'regenerateResponse':
           await this.regenerateResponse();
           break;
+        case 'regenerateFromMessage':
+            await this.regenerateFromMessage(message.messageId);
+            break;
         case 'applyFile':
             vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', message.filePath, message.content);
             break;

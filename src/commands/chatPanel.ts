@@ -13,6 +13,8 @@ export class ChatPanel {
   private _discussionManager!: DiscussionManager;
   private _currentDiscussion: Discussion | null = null;
   public agentManager!: AgentManager;
+  private _lastApiRequest: ChatMessage[] | null = null;
+  private _lastApiResponse: string | null = null;
 
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, discussionManager: DiscussionManager): ChatPanel {
     const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
@@ -328,39 +330,47 @@ export class ChatPanel {
             }
             .input-area {
                 display: flex;
-                align-items: center;
+                align-items: flex-start;
                 gap: 10px;
             }
             .input-container {
                 display: flex;
                 flex-grow: 1;
             }
-            .input-container textarea, .input-container input {
+            .input-container textarea {
                 flex: 1;
-                padding: 12px;
+                padding: 10px;
                 border: 1px solid var(--vscode-input-border);
                 background-color: var(--vscode-input-background);
                 color: var(--vscode-input-foreground);
                 border-radius: 6px;
                 font-size: 14px;
                 font-family: var(--vscode-font-family);
+                resize: none;
+                line-height: 1.6;
+                max-height: 200px;
             }
-            .input-area button {
-                padding: 12px 20px;
+            .input-container textarea:disabled {
+                background-color: var(--vscode-input-background);
+                cursor: not-allowed;
+                opacity: 0.6;
+            }
+            .bottom-controls {
+                display: flex;
+                align-items: flex-end;
+            }
+            .bottom-controls button {
+                padding: 10px 20px;
                 background-color: var(--vscode-button-background);
                 color: var(--vscode-button-foreground);
                 border: none;
                 border-radius: 6px;
                 cursor: pointer;
                 font-weight: 600;
+                height: 42px; /* Match textarea height */
             }
-            .input-area button:disabled {
+            .bottom-controls button:disabled {
                 background-color: var(--vscode-button-secondaryBackground);
-                cursor: not-allowed;
-                opacity: 0.6;
-            }
-            .input-container input:disabled {
-                background-color: var(--vscode-input-background);
                 cursor: not-allowed;
                 opacity: 0.6;
             }
@@ -408,6 +418,7 @@ export class ChatPanel {
                 margin-right: 15px;
                 font-size: 0.9em;
                 color: var(--vscode-descriptionForeground);
+                padding-top: 10px;
             }
             .switch {
                 position: relative;
@@ -561,6 +572,32 @@ export class ChatPanel {
             .welcome-message li {
                 margin-bottom: 5px;
             }
+            .log-modal {
+                display: none; position: fixed; z-index: 1000;
+                left: 0; top: 0; width: 100%; height: 100%;
+                overflow: auto; background-color: rgba(0,0,0,0.6);
+            }
+            .log-modal-content {
+                background-color: var(--vscode-editor-background);
+                margin: 5% auto; padding: 20px;
+                border: 1px solid var(--vscode-panel-border);
+                width: 80%; max-width: 900px; border-radius: 8px;
+                display: flex; flex-direction: column; max-height: 80vh;
+            }
+            .log-modal-header {
+                display: flex; justify-content: space-between; align-items: center;
+                border-bottom: 1px solid var(--vscode-panel-border);
+                padding-bottom: 10px; margin-bottom: 15px;
+            }
+            .log-modal-header h2 { margin: 0; }
+            .log-modal-close { font-size: 24px; font-weight: bold; cursor: pointer; }
+            .log-modal-body { flex: 1; overflow-y: auto; }
+            .log-section h3 { margin-top: 0; }
+            .log-section pre {
+                white-space: pre-wrap; word-wrap: break-word;
+                background-color: var(--vscode-textCodeBlock-background);
+                padding: 10px; border-radius: 4px;
+            }
         </style>
         
         <script src="https://cdn.jsdelivr.net/npm/marked@5.1.1/marked.min.js"></script>
@@ -576,7 +613,7 @@ export class ChatPanel {
             </div>
             <div class="messages" id="messages">
                 <div id="context-container"></div>
-                <div class="welcome-message" id="welcome-message">
+                <div class="welcome-message" id="welcome-message" style="display: none;">
                     <p>👋 Welcome to Lollms Chat! Here are some tips:</p>
                     <ul>
                         <li>Ask me to write code, explain concepts, or debug issues.</li>
@@ -594,9 +631,31 @@ export class ChatPanel {
                     </label>
                 </div>
                 <div class="input-container">
-                    <input type="text" id="messageInput" placeholder="Enter your objective..." />
+                    <textarea id="messageInput" placeholder="Enter your message (Shift+Enter for new line)..." rows="1"></textarea>
                 </div>
-                <button id="sendButton">Send</button>
+                <div class="bottom-controls">
+                    <button id="sendButton">Send</button>
+                    <button id="logButton" title="View Last Request/Response Log">📜</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="logModal" class="log-modal">
+            <div class="log-modal-content">
+                <div class="log-modal-header">
+                    <h2>AI Communication Log</h2>
+                    <span class="log-modal-close" id="closeLogButton">&times;</span>
+                </div>
+                <div class="log-modal-body">
+                    <div class="log-section">
+                        <h3>Request Payload (Messages sent to AI)</h3>
+                        <pre id="requestPayload"></pre>
+                    </div>
+                    <div class="log-section">
+                        <h3>Raw Response</h3>
+                        <pre id="rawResponse"></pre>
+                    </div>
+                </div>
             </div>
         </div>
 
@@ -611,29 +670,48 @@ export class ChatPanel {
             const tokenProgressLabel = document.getElementById('tokenProgressLabel');
             const welcomeMessage = document.getElementById('welcome-message');
 
+            const logButton = document.getElementById('logButton');
+            const logModal = document.getElementById('logModal');
+            const closeLogButton = document.getElementById('closeLogButton');
+            const requestPayloadDiv = document.getElementById('requestPayload');
+            const rawResponseDiv = document.getElementById('rawResponse');
+
             marked.setOptions({
                 breaks: true,
                 gfm: true,
                 headerIds: false,
                 mangle: false
             });
+            
+            logButton.addEventListener('click', () => {
+                vscode.postMessage({ command: 'requestLog' });
+            });
+            closeLogButton.addEventListener('click', () => {
+                logModal.style.display = 'none';
+            });
+            window.addEventListener('click', (event) => {
+                if (event.target === logModal) {
+                    logModal.style.display = 'none';
+                }
+            });
 
             function addMessage(message) {
                 const role = message.role;
                 const content = typeof message.content === 'string' ? message.content : (message.content[0]?.text || '[Unsupported Content]');
                 
-                const existingMsgDiv = document.querySelector(\`[data-message-id='\${message.id}']\`);
+                const existingMsgDiv = document.querySelector(\`.message-wrapper[data-message-id='\${message.id}']\`);
                 if(existingMsgDiv) {
                     const contentDiv = existingMsgDiv.querySelector('.message-content');
-                    if(contentDiv) contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(content));
-                    enhanceCodeBlocks(contentDiv);
+                    if(contentDiv) {
+                         contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(content));
+                         enhanceCodeBlocks(contentDiv);
+                    }
                     return;
                 }
 
                 const messageDiv = document.createElement('div');
                 messageDiv.className = \`message \${role}-message\`;
-                messageDiv.dataset.messageId = message.id;
-
+                
                 const headerDiv = document.createElement('div');
                 headerDiv.className = 'message-header';
                 headerDiv.textContent = role;
@@ -655,6 +733,17 @@ export class ChatPanel {
                         actionsDiv.appendChild(deleteBtn);
                     }
 
+                    if (role === 'assistant') {
+                        const regenerateBtn = document.createElement('button');
+                        regenerateBtn.className = 'msg-action-btn';
+                        regenerateBtn.innerHTML = '🔄';
+                        regenerateBtn.title = 'Regenerate Response';
+                        regenerateBtn.onclick = () => {
+                            vscode.postMessage({ command: 'regenerateResponse' });
+                        };
+                        actionsDiv.appendChild(regenerateBtn);
+                    }
+
                     const saveBtn = document.createElement('button');
                     saveBtn.className = 'msg-action-btn';
                     saveBtn.innerHTML = '💾';
@@ -663,6 +752,26 @@ export class ChatPanel {
                         vscode.postMessage({ command: 'saveMessageAsPrompt', content: content });
                     };
                     actionsDiv.appendChild(saveBtn);
+
+                    const copyMarkdownBtn = document.createElement('button');
+                    copyMarkdownBtn.className = 'msg-action-btn';
+                    copyMarkdownBtn.innerHTML = '📋';
+                    copyMarkdownBtn.title = 'Copy as Markdown';
+                    copyMarkdownBtn.onclick = async () => {
+                        await navigator.clipboard.writeText(content);
+                        copyMarkdownBtn.innerHTML = '✅';
+                        setTimeout(() => { copyMarkdownBtn.innerHTML = '📋'; }, 2000);
+                    };
+                    actionsDiv.appendChild(copyMarkdownBtn);
+
+                    const exportMarkdownBtn = document.createElement('button');
+                    exportMarkdownBtn.className = 'msg-action-btn';
+                    exportMarkdownBtn.innerHTML = '📄';
+                    exportMarkdownBtn.title = 'Export as Markdown';
+                    exportMarkdownBtn.onclick = () => {
+                        vscode.postMessage({ command: 'saveMarkdownToFile', content: content });
+                    };
+                    actionsDiv.appendChild(exportMarkdownBtn);
                 }
                 
                 messageDiv.appendChild(headerDiv);
@@ -670,6 +779,8 @@ export class ChatPanel {
                 messageDiv.appendChild(actionsDiv);
                 
                 const messageWrapper = document.createElement('div');
+                messageWrapper.className = 'message-wrapper';
+                messageWrapper.dataset.messageId = message.id;
                 messageWrapper.appendChild(messageDiv);
                 messagesDiv.appendChild(messageWrapper);
                 
@@ -764,7 +875,7 @@ export class ChatPanel {
                 planContainer.innerHTML = renderPlan(plan);
                 messagesDiv.scrollTop = messagesDiv.scrollHeight;
             }
-
+            
             function enhanceCodeBlocks(container) {
                 container.querySelectorAll('pre').forEach(pre => {
                     const codeBlock = pre.querySelector('code');
@@ -792,9 +903,10 @@ export class ChatPanel {
 
                     const previousElement = pre.previousElementSibling;
                     if (previousElement && previousElement.tagName === 'P') {
-                        const text = previousElement.textContent || '';
-                        const fileMatch = text.match(/^\\s*File:\\s*(.+)$/im);
-                        const patchMatch = text.match(/^Patch: (.+)$/);
+                        const text = (previousElement.textContent || '').trim();
+                        
+                        const fileMatch = text.match(/^File:\\s*(.+)$/i);
+                        const patchMatch = text.match(/^Patch:\\s*(.+)$/i);
 
                         let matchInfo = null;
                         if (fileMatch) {
@@ -866,16 +978,17 @@ export class ChatPanel {
 
                 sendButton.disabled = true;
                 messageInput.disabled = true;
-
+                
+                const userMessage = { role: 'user', content: messageText };
                 if (agentModeCheckbox.checked) {
+                    addMessage(userMessage);
                     vscode.postMessage({ command: 'runAgent', objective: messageText });
-                    addMessage({ role: 'user', content: messageText, id: 'temp-' + Date.now() });
                 } else {
-                    const userMessage = { role: 'user', content: messageText };
                     vscode.postMessage({ command: 'sendMessage', message: userMessage });
                 }
                 
                 messageInput.value = '';
+                messageInput.style.height = 'auto';
             }
             
             agentModeCheckbox.addEventListener('change', () => {
@@ -889,6 +1002,11 @@ export class ChatPanel {
                 sendMessage();
               }
             });
+            
+            messageInput.addEventListener('input', () => {
+                messageInput.style.height = 'auto';
+                messageInput.style.height = (messageInput.scrollHeight) + 'px';
+            });
 
             window.addEventListener('message', event => {
               const message = event.data;
@@ -898,10 +1016,14 @@ export class ChatPanel {
                 case 'showLoading':
                     showLoadingIndicator();
                     break;
+                case 'showLog':
+                    requestPayloadDiv.textContent = JSON.stringify(message.request, null, 2) || 'No request data available.';
+                    rawResponseDiv.textContent = message.response || 'No response data available.';
+                    logModal.style.display = 'block';
+                    break;
                 case 'addMessage':
-                    if (loadingIndicator) {
-                        loadingIndicator.remove();
-                    }
+                    if (loadingIndicator) loadingIndicator.remove();
+                    
                     if (!agentModeCheckbox.checked) {
                         sendButton.disabled = false;
                         messageInput.disabled = false;
@@ -910,20 +1032,19 @@ export class ChatPanel {
                     addMessage(message.message);
                     break;
                 case 'displayPlan':
-                    if (loadingIndicator) {
-                        loadingIndicator.remove();
-                    }
+                    if (loadingIndicator) loadingIndicator.remove();
                     displayPlan(message.plan);
                     break;
                 case 'loadDiscussion':
                     if (loadingIndicator) loadingIndicator.remove();
                     
-                    const messageWrappers = messagesDiv.querySelectorAll('.message-wrapper');
-                    messageWrappers.forEach(el => el.remove());
+                    const messagesToRemove = messagesDiv.querySelectorAll('.message-wrapper, .message.system-message');
+                    messagesToRemove.forEach(el => {
+                        if (el.id !== 'plan-container') {
+                           el.remove();
+                        }
+                    });
 
-                    const systemMessages = messagesDiv.querySelectorAll('.system-message');
-                    systemMessages.forEach(el => el.parentElement.remove());
-                    
                     if (Array.isArray(message.messages) && message.messages.length > 0) {
                         welcomeMessage.style.display = 'none';
                         message.messages.forEach(msg => addMessage(msg));
@@ -999,23 +1120,41 @@ Your task is to re-analyze your previous code suggestion in light of this new er
       const apiMessages: ChatMessage[] = [];
       const systemPrompt = `You are Lollms, a helpful AI coding assistant integrated into VS Code.
 
-**CRITICAL INSTRUCTIONS FOR FILE MODIFICATIONS:**
-1.  **For new files OR full file modifications, you MUST provide the FULL and COMPLETE content of the file.** Do not use placeholders, comments like "// ...", or omit any code.
-2.  **To specify the file path for a code block, you MUST prepend it with a special line in this exact format:**
-    \`\`\`
-    File: path/to/your/file.ext
-    \`\`\`
-    (The extension will detect this and show an "Apply to File" button.)
+**RESPONSE FORMATTING RULES:**
 
-**CRITICAL INSTRUCTIONS FOR PATCHES (ADVANCED):**
-1.  If you want to provide a patch instead of the full file, generate a standard \`.diff\` formatted text.
-2.  **To specify the file path for a patch, you MUST prepend the code block with a special line in this exact format:**
-    \`\`\`
-    Patch: path/to/your/file.ext
-    \`\`\`
-    (The extension will detect this and show an "Apply Patch" button.)
+**1. For File Modifications (Creating or Overwriting):**
+- You MUST prefix your response with a single line in this EXACT format: \`File: path/to/the/file.ext\`
+- This line MUST be on its own, followed by a newline.
+- Immediately after, provide the COMPLETE and FULL file content in a single markdown code block.
+- DO NOT add any conversational text or explanations before the \`File:\` line or after the code block.
 
-Be helpful, concise, and use emojis to make the conversation more engaging. Respond in Markdown.`;
+--- CORRECT EXAMPLE ---
+File: src/app.js
+\`\`\`javascript
+console.log("Hello, World!");
+\`\`\`
+--- END CORRECT EXAMPLE ---
+
+--- INCORRECT EXAMPLE ---
+Of course! Here is the file:
+File: src/app.js
+\`\`\`javascript
+console.log("Hello, World!");
+\`\`\`
+I hope this helps!
+--- END INCORRECT EXAMPLE ---
+
+**2. For Patches (Advanced):**
+- You MUST prefix your response with a single line: \`Patch: path/to/the/file.ext\`
+- Follow this with the content in a standard \`.diff\` format inside a code block.
+
+**3. For General Conversation (When NOT editing a file):**
+- Respond naturally in Markdown. Do NOT use the \`File:\` or \`Patch:\` prefixes.
+
+**BEHAVIOR:**
+- Prioritize following the formatting rules above all else.
+- Your primary function is to provide code that works with the VS Code extension.
+- Be helpful and concise.`;
       apiMessages.push({ role: 'system', content: systemPrompt });
 
       if (includeProjectContext) {
@@ -1027,13 +1166,16 @@ Be helpful, concise, and use emojis to make the conversation more engaging. Resp
 
       apiMessages.push(...messages);
       
+      this._lastApiRequest = apiMessages;
       const responseText = await this._lollmsAPI.sendChat(apiMessages);
+      this._lastApiResponse = responseText;
       const assistantMessage: ChatMessage = { role: 'assistant', content: responseText };
       
       await this.addMessageToDiscussion(assistantMessage);
       
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
+      this._lastApiResponse = errorMessage;
       const errorResponseMessage: ChatMessage = { role: 'system', content: `Sorry, I encountered an error: ${errorMessage}` };
       await this.addMessageToDiscussion(errorResponseMessage);
     }
@@ -1047,18 +1189,20 @@ Be helpful, concise, and use emojis to make the conversation more engaging. Resp
 
     await vscode.workspace.saveAll();
     
-    const isFirstMessage = this._currentDiscussion.messages.length === 0;
+    const isFirstMessage = this._currentDiscussion.messages.filter(m => m.role !== 'system').length === 0;
 
-    userMessage.id = Date.now().toString() + Math.random().toString(36).substring(2);
-
+    // This is the single point where we add the new message to the discussion.
+    if (!userMessage.id) {
+        userMessage.id = Date.now().toString() + Math.random().toString(36).substring(2);
+    }
     this._currentDiscussion.messages.push(userMessage);
     this._currentDiscussion.timestamp = Date.now();
     await this._discussionManager.saveDiscussion(this._currentDiscussion);
     
-    // Immediately reload the discussion to show the user's new message
-    this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
+    // Update the webview with just the new message, then show loading.
+    this._panel.webview.postMessage({ command: 'addMessage', message: userMessage });
     this._panel.webview.postMessage({ command: 'showLoading' });
-    
+
     vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
 
     await this._updateContextAndTokens();
@@ -1076,6 +1220,40 @@ Be helpful, concise, and use emojis to make the conversation more engaging. Resp
     }
 
     await this._callApiWithMessages(this._currentDiscussion.messages);
+  }
+
+  private async regenerateResponse() {
+    if (!this._currentDiscussion || this._currentDiscussion.messages.length < 1) return;
+
+    const lastAssistantMsgIndex = this._currentDiscussion.messages.map(m => m.role).lastIndexOf('assistant');
+    if (lastAssistantMsgIndex === -1) {
+        vscode.window.showInformationMessage("No assistant message found to regenerate.");
+        return;
+    }
+
+    const lastUserMsgIndex = this._currentDiscussion.messages
+        .slice(0, lastAssistantMsgIndex)
+        .map(m => m.role)
+        .lastIndexOf('user');
+    
+    if (lastUserMsgIndex === -1) {
+        vscode.window.showInformationMessage("Could not find the user message for this response.");
+        return;
+    }
+
+    const lastUserMessage = this._currentDiscussion.messages[lastUserMsgIndex];
+    if (!lastUserMessage || typeof lastUserMessage.content !== 'string') {
+        vscode.window.showErrorMessage("Failed to get content of last user message.");
+        return;
+    };
+    const lastUserMessageContent = lastUserMessage.content;
+    
+    this._currentDiscussion.messages.splice(lastUserMsgIndex);
+    
+    await this._discussionManager.saveDiscussion(this._currentDiscussion);
+    this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
+
+    await this.sendMessage({ role: 'user', content: lastUserMessageContent });
   }
 
   private async deleteMessage(messageId: string, showConfirmation: boolean = true) {
@@ -1113,6 +1291,16 @@ Be helpful, concise, and use emojis to make the conversation more engaging. Resp
         case 'requestDeleteMessage':
             await this.deleteMessage(message.messageId);
             break;
+        case 'requestLog':
+          this._panel.webview.postMessage({ 
+              command: 'showLog', 
+              request: this._lastApiRequest, 
+              response: this._lastApiResponse 
+          });
+          break;
+        case 'regenerateResponse':
+          await this.regenerateResponse();
+          break;
         case 'applyFile':
             vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', message.filePath, message.content);
             break;
@@ -1124,6 +1312,9 @@ Be helpful, concise, and use emojis to make the conversation more engaging. Resp
           break;
         case 'saveCodeToFile':
             vscode.commands.executeCommand('lollms-vs-coder.saveCodeToFile', message.content, message.language);
+            break;
+        case 'saveMarkdownToFile':
+            vscode.commands.executeCommand('lollms-vs-coder.saveMarkdownToFile', message.content);
             break;
       }
     });

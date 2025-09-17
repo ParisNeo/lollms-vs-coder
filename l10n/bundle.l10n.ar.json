@@ -1,0 +1,132 @@
+{
+    "displayName": "Lollms VS Coder",
+    "description": "امتداد Visual Studio Code مدعوم بالذكاء الاصطناعي يستخدم واجهة Lollms المتوافقة مع OpenAI للبرمجة الذكية وتصحيح الأخطاء والتحسينات في الوقت الحقيقي وإدارة السياق وإنشاء رسائل git commit.",
+    "command.startChat.title": "Lollms: بدء الدردشة",
+    "command.triggerCodeAction.title": "إجراءات Lollms...",
+    "command.triggerInlineSuggestion.title": "Lollms: إكمال تلقائي",
+    "command.selectModel.title": "Lollms: تحديد نموذج",
+    "command.addFileToContext.title": "Lollms: إضافة ملف إلى سياق الذكاء الاصطناعي",
+    "command.removeFileFromContext.title": "Lollms: إزالة ملف من سياق الذكاء الاصطناعي",
+    "command.generateCommitMessage.title": "Lollms: إنشاء رسالة Commit",
+    "command.commitWithAIMessage.title": "Lollms: تثبيت التغييرات المرحلية برسالة من الذكاء الاصطناعي",
+    "command.recreateClient.title": "إعادة إنشاء عميل LollmsAPI",
+    "command.refresh.title": "تحديث",
+    "command.cycleFileState.title": "تبديل حالة سياق الذكاء الاصطناعي",
+    "command.addFolderToContext.title": "Lollms: إضافة مجلد إلى السياق",
+    "command.removeFolderFromContext.title": "Lollms: إزالة مجلد من السياق",
+    "command.showConfigView.title": "Lollms: فتح الإعدادات",
+    "command.showHelp.title": "Lollms: إظهار المساعدة",
+    "command.exportContextContent.title": "Lollms: تصدير السياق إلى الحافظة",
+    "command.saveNewFile.title": "Lollms: حفظ ملف جديد",
+    "command.executeScript.title": "Lollms: تنفيذ البرنامج النصي",
+    "command.newDiscussion.title": "مناقشة جديدة",
+    "command.delete.title": "حذف",
+    "command.switchDiscussion.title": "تبديل المناقشة",
+    "command.rename.title": "إعادة تسمية",
+    "command.generateDiscussionTitle.title": "إنشاء عنوان بواسطة الذكاء الاصطناعي",
+    "command.createDiscussionGroup.title": "مجموعة مناقشة جديدة",
+    "command.moveDiscussionToGroup.title": "نقل إلى مجموعة...",
+    "command.runScript.title": "Lollms: تشغيل البرنامج النصي",
+    "command.createPrompt.title": "موجه جديد",
+    "command.edit.title": "تعديل",
+    "command.useChatPrompt.title": "استخدام موجه الدردشة",
+    "command.createPromptGroup.title": "مجموعة موجهات جديدة",
+    "command.movePromptToGroup.title": "نقل إلى مجموعة...",
+    "command.saveMessageAsPrompt.title": "حفظ كموجه",
+    "command.importPrompts.title": "استيراد الموجهات...",
+    "command.exportPrompts.title": "تصدير الموجهات...",
+    "command.editPromptsFile.title": "تعديل ملف JSON للموجهات",
+    "config.title": "تكوين Lollms VS Coder",
+    "config.enableCodeActions.description": "تمكين إجراءات Lollms CodeLens (على سبيل المثال، 'إجراءات Lollms...') فوق الكود المحدد.",
+    "config.enableInlineSuggestions.description": "تمكين اقتراحات التعليمات البرمجية المضمنة أحادية السطر أثناء الكتابة (تجريبي).",
+    "config.disableSslVerification.description": "تعطيل التحقق من شهادة SSL لطلبات واجهة برمجة التطبيقات. استخدم بحذر للخوادم ذات الشهادات الموقعة ذاتيًا.",
+    "config.apiKey.description": "مفتاح API للمصادقة مع Lollms API.",
+    "config.apiUrl.description": "عنوان URL لخادم Lollms API (بما في ذلك البروتوكول والمنفذ).",
+    "config.modelName.description": "اسم النموذج المراد استخدامه",
+    "config.agentMaxRetries.description": "الحد الأقصى لعدد المرات التي سيحاول فيها وكيل الذكاء الاصطناعي إصلاح مهمة فاشلة من تلقاء نفسه قبل طلب تدخل المستخدم.",
+    "config.globalSystemPrompt.description": "موجه نظام مخصص يتم إلحاقه بكل طلب إلى الذكاء الاصطناعي. يمكنك استخدام عناصر نائبة ديناميكية مثل {{date}} و {{time}} و {{datetime}}.",
+    "config.language.description": "يؤثر على لغة استجابة الذكاء الاصطناعي. تتبع واجهة مستخدم الإضافة لغة عرض VS Code.",
+    "views.container.title": "Lollms",
+    "view.discussions.name": "المناقشات",
+    "view.chatPrompts.name": "موجهات الدردشة",
+    "view.codeActions.name": "إجراءات الكود",
+    "view.fileTreeView.name": "ملفات سياق الذكاء الاصطناعي",
+    "prompt.confirmDelete": "هل أنت متأكد من أنك تريد حذف \"{0}\"؟",
+    "prompt.enterNewDiscussionTitle": "أدخل عنوان المناقشة الجديد",
+    "progress.generatingDiscussionTitle": "Lollms: جارٍ إنشاء عنوان المناقشة...",
+    "prompt.enterGroupTitle": "أدخل عنوان المجموعة",
+    "prompt.enterGroupDescription": "أدخل وصف المجموعة (اختياري)",
+    "prompt.confirmDeleteGroup": "حذف المجموعة \"{0}\"؟ ستصبح المناقشات بداخلها غير مجمعة.",
+    "label.noGroup": "(لا توجد مجموعة)",
+    "prompt.selectGroupForMove": "حدد مجموعة لنقل المناقشة إليها",
+    "info.openFolderToUseChat": "يرجى فتح مجلد في VS Code لاستخدام دردشة Lollms المستمرة.",
+    "info.selectCodeForAction": "يرجى تحديد كود لتطبيق إجراء عليه.",
+    "label.customPrompt": "$(edit) موجه مخصص...",
+    "description.customPrompt": "أدخل تعليمة لمرة واحدة",
+    "prompt.selectCodeAction": "حدد إجراء كود Lollms",
+    "info.promptSaved": "تم حفظ الموجه \"{0}\"!",
+    "title.customAction": "إجراء مخصص",
+    "progress.applyingAction": "Lollms: جارٍ تطبيق \"{0}\"...",
+    "error.invalidCodeBlock": "فشل Lollms في توفير كتلة كود صالحة. يرجى إعادة محاولة طلبك.",
+    "title.saveInformation": "حفظ المعلومات",
+    "filter.markdownFiles": "ملفات ماركداون",
+    "filter.textFiles": "ملفات نصية",
+    "info.infoSaved": "✅ تم حفظ المعلومات في {0}",
+    "error.failedToSaveFile": "فشل حفظ الملف: {0}",
+    "prompt.enterPromptTitle": "أدخل عنوان الموجه",
+    "prompt.enterPromptContent": "أدخل محتوى الموجه",
+    "label.modifyCode": "تعديل الكود",
+    "description.modifyCode": "سيقترح الذكاء الاصطناعي تغييرات على الكود (يعرض فرقًا)",
+    "label.askQuestion": "طرح سؤال حول الكود",
+    "description.askQuestion": "سيجيب الذكاء الاصطناعي على سؤال (يظهر في مربع رسالة)",
+    "prompt.selectCodeActionType": "حدد نوع إجراء الكود",
+    "info.defaultPromptNoEdit": "لا يمكن تعديل الموجهات الافتراضية.",
+    "prompt.enterNewTitle": "أدخل العنوان الجديد",
+    "prompt.enterNewContent": "أدخل المحتوى الجديد",
+    "info.defaultPromptNoDelete": "لا يمكن حذف الموجهات الافتراضية.",
+    "prompt.confirmDeletePrompt": "حذف الموجه \"{0}\"؟",
+    "prompt.enterPromptTitleForSave": "أدخل عنوانًا لموجهك الجديد",
+    "prompt.enterPromptGroupTitle": "أدخل عنوان مجموعة الموجه",
+    "prompt.selectGroup": "حدد مجموعة",
+    "error.noActiveChatPanel": "لا توجد لوحة دردشة Lollms نشطة لعرض إخراج البرنامج النصي.",
+    "info.contextCopied": "Lollms: تم نسخ سياق المشروع إلى الحافظة.",
+    "error.failedToExportContext": "فشل تصدير السياق: {0}",
+    "error.notGitRepository": "مساحة العمل هذه ليست مستودع git.",
+    "error.gitExtensionNotFound": "لم يتم العثور على امتداد VS Code Git.",
+    "prompt.confirmCommit": "التثبيت بالرسالة:\n\n{0}\n\nتأكيد؟",
+    "label.yes": "نعم",
+    "label.no": "لا",
+    "error.openWorkspaceToApplyChanges": "يرجى فتح مجلد مساحة عمل لتطبيق تغييرات الملف.",
+    "prompt.confirmOverwrite": "هل أنت متأكد من أنك تريد الكتابة فوق '{0}'؟",
+    "label.overwrite": "الكتابة فوق",
+    "info.applyOperationCancelled": "تم إلغاء عملية التطبيق.",
+    "info.applySuccess": "✅ تم تطبيق التغييرات بنجاح على {0}",
+    "error.failedToApplyFileContent": "فشل تطبيق محتوى الملف: {0}",
+    "info.patchApplySuccess": "✅ تم تطبيق التصحيح بنجاح على {0}",
+    "error.failedToApplyPatch": "فشل تطبيق التصحيح: {0}",
+    "title.saveCodeSnippet": "حفظ مقتطف الكود",
+    "filter.allFiles": "كل الملفات",
+    "filter.languageFiles": "ملفات {0}",
+    "filter.javascriptFiles": "ملفات جافا سكريبت",
+    "filter.typescriptFiles": "ملفات تايب سكريبت",
+    "filter.htmlFiles": "ملفات HTML",
+    "filter.cssFiles": "ملفات CSS",
+    "filter.jsonFiles": "ملفات JSON",
+    "filter.pythonFiles": "ملفات بايثون",
+    "filter.shellScripts": "نصوص شل",
+    "info.codeSaved": "✅ تم حفظ الكود في {0}",
+    "info.diffApplied": "تم تطبيق الفرق بنجاح.",
+    "error.failedToApplyDiff": "فشل تطبيق الفرق: {0}",
+    "tooltip.startNewDiscussion": "بدء مناقشة Lollms جديدة",
+    "tooltip.selectModel": "Lollms: تحديد النموذج النشط",
+    "label.notSet": "غير محدد",
+    "info.apiReconfigured": "تمت إعادة تكوين عميل LollmsAPI بنجاح.",
+    "progress.fetchingModels": "جارٍ جلب النماذج المتاحة...",
+    "info.noModelsFound": "لم يتم العثور على نماذج أو لا يمكن الاتصال بـ Lollms API.",
+    "error.failedToFetchModels": "فشل جلب النماذج: {0}",
+    "welcome.title": "👋 مرحبًا بك في دردشة Lollms! إليك ما يمكنك فعله:",
+    "welcome.item1": "اطلب مني كتابة تعليمات برمجية أو شرح مفاهيم أو تصحيح الأخطاء.",
+    "welcome.item2": "لإنشاء ملف أو تحديثه ، اطلب مني وسأقدم الكود الكامل. ابحث عن زر ⚙️ <strong>تطبيق</strong> لحفظ التغييرات.",
+    "welcome.item3": "استخدم عرض <strong>ملفات سياق الذكاء الاصطناعي</strong> في الشريط الجانبي للتحكم في الملفات التي يمكنني رؤيتها.",
+    "welcome.item4": "قم بتبديل 🤖 <strong>وضع الوكيل</strong> لإعطائي هدفًا معقدًا. سأقوم بإنشاء خطة وتنفيذها خطوة بخطوة."
+}

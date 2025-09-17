@@ -188,8 +188,14 @@ export function activate(context: vscode.ExtensionContext) {
             }));
             
             discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.deleteDiscussion', async (item: DiscussionItem) => {
-                const confirm = await vscode.window.showWarningMessage(vscode.l10n.t('prompt.confirmDelete', item.discussion.title), { modal: true }, vscode.l10n.t('command.delete.title'));
-                if (confirm === vscode.l10n.t('command.delete.title')) {
+                const deleteButton = { title: vscode.l10n.t('command.delete.title'), id: 'delete' };
+                const confirm = await vscode.window.showWarningMessage(
+                    vscode.l10n.t('prompt.confirmDelete', item.discussion.title), 
+                    { modal: true }, 
+                    deleteButton
+                );
+            
+                if (confirm?.id === 'delete') {
                     await discussionManager.deleteDiscussion(item.discussion.id);
                     discussionTreeProvider.refresh();
                     if (ChatPanel.currentPanel && ChatPanel.currentPanel.getCurrentDiscussionId() === item.discussion.id) {
@@ -240,8 +246,14 @@ export function activate(context: vscode.ExtensionContext) {
             }));
 
             discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.deleteDiscussionGroup', async (item: DiscussionGroupItem) => {
-                const confirm = await vscode.window.showWarningMessage(vscode.l10n.t('prompt.confirmDeleteGroup', item.group.title), { modal: true }, vscode.l10n.t('command.delete.title'));
-                if (confirm === vscode.l10n.t('command.delete.title')) {
+                const deleteButton = { title: vscode.l10n.t('command.delete.title'), id: 'delete' };
+                const confirm = await vscode.window.showWarningMessage(
+                    vscode.l10n.t('prompt.confirmDeleteGroup', item.group.title), 
+                    { modal: true }, 
+                    deleteButton
+                );
+            
+                if (confirm?.id === 'delete') {
                     await discussionManager.deleteGroup(item.group.id);
                     discussionTreeProvider.refresh();
                 }
@@ -482,8 +494,14 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.window.showInformationMessage(vscode.l10n.t("info.defaultPromptNoDelete"));
             return;
         }
-        const confirm = await vscode.window.showWarningMessage(vscode.l10n.t('prompt.confirmDeletePrompt', item.prompt.title), { modal: true }, vscode.l10n.t('command.delete.title'));
-        if (confirm === vscode.l10n.t('command.delete.title')) {
+        const deleteButton = { title: vscode.l10n.t('command.delete.title'), id: 'delete' };
+        const confirm = await vscode.window.showWarningMessage(
+            vscode.l10n.t('prompt.confirmDeletePrompt', item.prompt.title), 
+            { modal: true }, 
+            deleteButton
+        );
+    
+        if (confirm?.id === 'delete') {
             const data = await promptManager.getData();
             data.prompts = data.prompts.filter(p => p.id !== item.id);
             await promptManager.saveData(data);
@@ -537,8 +555,14 @@ export function activate(context: vscode.ExtensionContext) {
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deletePromptGroup', async (item: PromptGroupItem) => {
-        const confirm = await vscode.window.showWarningMessage(vscode.l10n.t('prompt.confirmDeleteGroup', item.group.title), { modal: true }, vscode.l10n.t('command.delete.title'));
-        if (confirm === vscode.l10n.t('command.delete.title')) {
+        const deleteButton = { title: vscode.l10n.t('command.delete.title'), id: 'delete' };
+        const confirm = await vscode.window.showWarningMessage(
+            vscode.l10n.t('prompt.confirmDeleteGroup', item.group.title), 
+            { modal: true }, 
+            deleteButton
+        );
+    
+        if (confirm?.id === 'delete') {
             const data = await promptManager.getData();
             data.groups = data.groups.filter(g => g.id !== item.group.id);
             data.prompts.forEach(p => {
@@ -635,12 +659,14 @@ export function activate(context: vscode.ExtensionContext) {
             }
     
             if (fileExists) {
+                const overwriteButton = { title: vscode.l10n.t('label.overwrite'), id: 'overwrite' };
                 const confirm = await vscode.window.showWarningMessage(
                     vscode.l10n.t("prompt.confirmOverwrite", filePath),
                     { modal: true },
-                    vscode.l10n.t('label.overwrite')
+                    overwriteButton
                 );
-                if (confirm !== vscode.l10n.t('label.overwrite')) {
+            
+                if (confirm?.id !== 'overwrite') {
                     vscode.window.showInformationMessage(vscode.l10n.t('info.applyOperationCancelled'));
                     return;
                 }
@@ -798,7 +824,7 @@ export function activate(context: vscode.ExtensionContext) {
         } catch (error: any) {
             vscode.window.showErrorMessage(vscode.l10n.t('error.failedToFetchModels', error.message));
         }
-    }));
+    }));    
 
     vscode.workspace.onDidChangeConfiguration(e => {
         if (e.affectsConfiguration('lollmsVsCoder.modelName') || e.affectsConfiguration('lollmsVsCoder.apiUrl')) {

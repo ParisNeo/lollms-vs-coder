@@ -3,6 +3,7 @@ import { LollmsAPI, ChatMessage } from '../lollmsAPI';
 import { ContextManager, ContextResult } from '../contextManager';
 import { Discussion, DiscussionManager } from '../discussionManager';
 import { AgentManager } from '../agentManager';
+import { getProcessedGlobalSystemPrompt } from '../utils';
 
 export class ChatPanel {
   public static currentPanel: ChatPanel | undefined;
@@ -195,6 +196,11 @@ export class ChatPanel {
 
   private _getHtmlForWebview(webview: vscode.Webview): string {
     const codiconsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'node_modules', '@vscode/codicons', 'dist', 'codicon.css'));
+    const welcomeTitle = vscode.l10n.t("welcome.title");
+    const welcomeItem1 = vscode.l10n.t("welcome.item1");
+    const welcomeItem2 = vscode.l10n.t("welcome.item2");
+    const welcomeItem3 = vscode.l10n.t("welcome.item3");
+    const welcomeItem4 = vscode.l10n.t("welcome.item4");
 
     return `<!DOCTYPE html>
     <html lang="en">
@@ -628,11 +634,12 @@ export class ChatPanel {
             <div class="messages" id="messages">
                 <div id="context-container"></div>
                 <div class="welcome-message" id="welcome-message" style="display: none;">
-                    <p>👋 Welcome to Lollms Chat! Here are some tips:</p>
+                    <p>${welcomeTitle}</p>
                     <ul>
-                        <li>Ask me to write code, explain concepts, or debug issues.</li>
-                        <li>To create or update a file, ask me and I'll provide the full code. Look for the ⚙️ <strong>Apply</strong> button to save the changes.</li>
-                        <li>Use the <strong>AI Context Files</strong> view in the sidebar to control which files I can see.</li>
+                        <li>${welcomeItem1}</li>
+                        <li>${welcomeItem2}</li>
+                        <li>${welcomeItem3}</li>
+                        <li>${welcomeItem4}</li>
                     </ul>
                 </div>
             </div>
@@ -1136,6 +1143,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
   private async _callApiWithMessages(messages: ChatMessage[], includeProjectContext: boolean = true) {
     try {
       const apiMessages: ChatMessage[] = [];
+      const globalPrompt = getProcessedGlobalSystemPrompt();
       const systemPrompt = `You are Lollms, a helpful AI coding assistant integrated into VS Code.
 
 **RESPONSE FORMATTING RULES:**
@@ -1172,7 +1180,9 @@ I hope this helps!
 **BEHAVIOR:**
 - Prioritize following the formatting rules above all else.
 - Your primary function is to provide code that works with the VS Code extension.
-- Be helpful and concise.`;
+- Be helpful and concise.
+
+User preferences: ${globalPrompt}`;
       apiMessages.push({ role: 'system', content: systemPrompt });
 
       if (includeProjectContext) {

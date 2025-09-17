@@ -8,6 +8,7 @@ import * as path from 'path';
 import { exec } from 'child_process';
 import { InfoPanel } from './commands/infoPanel';
 import { Plan, PlanParser } from './planParser';
+import { getProcessedGlobalSystemPrompt } from './utils';
 
 interface Task {
     id: number;
@@ -355,6 +356,7 @@ export class AgentManager {
     }
     
     private getCoderSystemPrompt(customPrompt: string, plan: Plan, projectContext: string): ChatMessage {
+        const globalPrompt = getProcessedGlobalSystemPrompt();
         return {
             role: 'system',
             content: `You are a code generation AI. You will be given instructions and context to write or modify a file.
@@ -371,6 +373,9 @@ ${customPrompt}
 ${plan.scratchpad}
 - **Project Structure & Context:**
 ${projectContext}
+
+
+User preferences: ${globalPrompt}
 `
         };
     }

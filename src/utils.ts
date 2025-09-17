@@ -64,3 +64,22 @@ export async function applyDiff(diffContent: string) {
     // Save the document after applying changes
     await document.save();
 }
+
+export function getProcessedGlobalSystemPrompt(): string {
+    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+    const globalPrompt = config.get<string>('globalSystemPrompt');
+    if (!globalPrompt || globalPrompt.trim() === '') {
+        return '';
+    }
+
+    const now = new Date();
+    const date = now.toISOString().split('T')[0];
+    const time = now.toTimeString().split(' ')[0];
+    
+    let processedPrompt = globalPrompt
+        .replace(/{{date}}/g, date)
+        .replace(/{{time}}/g, time)
+        .replace(/{{datetime}}/g, `${date} ${time}`);
+
+    return processedPrompt.trim() + '\n\n';
+}

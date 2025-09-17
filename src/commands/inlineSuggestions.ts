@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { LollmsAPI, ChatMessage } from '../lollmsAPI';
+import { getProcessedGlobalSystemPrompt } from '../utils';
 
 export class LollmsInlineCompletionProvider implements vscode.InlineCompletionItemProvider {
     private api: LollmsAPI;
@@ -82,9 +83,12 @@ ${truncatedBefore}
 Code after cursor:
 ${truncatedAfter}`;
 
-        const messages: ChatMessage[] = [
-            { role: 'user', content: prompt }
-        ];
+        const globalPrompt = getProcessedGlobalSystemPrompt();
+        const messages: ChatMessage[] = [];
+        if (globalPrompt) {
+            messages.push({ role: 'system', content: globalPrompt });
+        }
+        messages.push({ role: 'user', content: prompt });
 
         try {
             const response = await this.api.sendChat(messages, signal);

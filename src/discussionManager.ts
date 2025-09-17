@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
+import { getProcessedGlobalSystemPrompt } from './utils';
 
 export interface Discussion {
     id: string;
@@ -124,10 +125,11 @@ export class DiscussionManager {
             return null;
         }
     
+        const globalPrompt = getProcessedGlobalSystemPrompt();
         const prompt: ChatMessage[] = [
             { 
                 role: 'system', 
-                content: "You are an expert at summarizing conversations. Based on the following messages, generate a concise and descriptive title (5 words or less). Do not add any prefixes like 'Title:' or use quotation marks. Just return the plain text of the title." 
+                content: `You are an expert at summarizing conversations. Based on the following messages, generate a concise and descriptive title (5 words or less). Do not add any prefixes like 'Title:' or use quotation marks. Just return the plain text of the title.\n\nUser preferences: ${globalPrompt}` 
             },
             ...discussion.messages.slice(0, 4) // Use first few messages for context
         ];

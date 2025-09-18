@@ -43,6 +43,7 @@
     "config.apiKey.description": "API-Schlüssel zur Authentifizierung bei der Lollms-API.",
     "config.apiUrl.description": "URL des Lollms-API-Servers (einschließlich Protokoll und Port).",
     "config.modelName.description": "Name des zu verwendenden Modells",
+    "config.requestTimeout.description": "Das Zeitlimit in Millisekunden für API-Anfragen. Erhöhen Sie diesen Wert, wenn lange Antworten zu Zeitüberschreitungen führen.",
     "config.agentMaxRetries.description": "Die maximale Anzahl, wie oft der KI-Agent versucht, eine fehlgeschlagene Aufgabe selbst zu beheben, bevor er den Benutzer um Hilfe bittet.",
     "config.globalSystemPrompt.description": "Ein benutzerdefinierter System-Prompt, der jeder Anfrage an die KI vorangestellt wird. Sie können dynamische Platzhalter wie {{date}}, {{time}} und {{datetime}} verwenden.",
     "config.language.description": "Beeinflusst die Antwortsprache der KI. Die Benutzeroberfläche der Erweiterung folgt der Anzeigesprache von VS Code.",

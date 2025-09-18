@@ -43,6 +43,7 @@
     "config.apiKey.description": "API key for authenticating with the Lollms API.",
     "config.apiUrl.description": "URL of the Lollms API server (including protocol and port).",
     "config.modelName.description": "Name of the model to use",
+    "config.requestTimeout.description": "The timeout in milliseconds for API requests. Increase this if long responses are timing out.",
     "config.agentMaxRetries.description": "The maximum number of times the AI agent will try to fix a failed task on its own before asking for user intervention.",
     "config.globalSystemPrompt.description": "A custom system prompt to be prepended to every request to the AI. You can use dynamic placeholders like {{date}}, {{time}}, and {{datetime}}.",
     "config.language.description": "Influences the AI's response language. The extension UI follows VS Code's display language setting.",

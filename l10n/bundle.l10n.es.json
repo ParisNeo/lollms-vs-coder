@@ -43,6 +43,7 @@
     "config.apiKey.description": "Clave de API para autenticarse con la API de Lollms.",
     "config.apiUrl.description": "URL del servidor de la API de Lollms (incluyendo protocolo y puerto).",
     "config.modelName.description": "Nombre del modelo a utilizar",
+    "config.requestTimeout.description": "El tiempo de espera en milisegundos para las solicitudes de la API. Auméntelo si las respuestas largas se agotan.",
     "config.agentMaxRetries.description": "El número máximo de veces que el agente de IA intentará corregir una tarea fallida por su cuenta antes de solicitar la intervención del usuario.",
     "config.globalSystemPrompt.description": "Un prompt de sistema personalizado que se antepondrá a cada solicitud a la IA. Puede usar marcadores de posición dinámicos como {{date}}, {{time}} y {{datetime}}.",
     "config.language.description": "Influye en el idioma de respuesta de la IA. La interfaz de usuario de la extensión sigue el idioma de visualización de VS Code.",

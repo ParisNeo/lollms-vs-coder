@@ -1,6 +1,7 @@
 import fetch, { RequestInit, AbortError } from 'node-fetch';
 import * as https from 'https';
 import { URL } from 'url';
+import * as vscode from 'vscode';
 
 export interface LollmsConfig {
   apiUrl: string;
@@ -125,7 +126,8 @@ export class LollmsAPI {
     const apiMessages = messages.map(({ id, ...rest }) => rest);
     
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 120000);
+    const timeoutDuration = vscode.workspace.getConfiguration('lollmsVsCoder').get<number>('requestTimeout') || 600000;
+    const timeout = setTimeout(() => controller.abort(), timeoutDuration);
 
     if (signal) {
         signal.addEventListener('abort', () => controller.abort());
@@ -164,7 +166,7 @@ export class LollmsAPI {
             if (signal?.aborted) {
                 throw error;
             } else {
-                throw new Error("Request to Lollms API timed out after 2 minutes.");
+                throw new Error(`Request to Lollms API timed out after ${timeoutDuration / 1000} seconds.`);
             }
         }
         throw error;

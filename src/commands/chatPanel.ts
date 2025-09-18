@@ -4,6 +4,12 @@ import { ContextManager, ContextResult } from '../contextManager';
 import { Discussion, DiscussionManager } from '../discussionManager';
 import { AgentManager } from '../agentManager';
 import { getProcessedGlobalSystemPrompt } from '../utils';
+import * as path from 'path';
+import pdf from 'pdf-parse';
+import mammoth from 'mammoth';
+import * as ExcelJS from 'exceljs';
+import { Readable } from 'stream';
+
 
 export class ChatPanel {
   public static currentPanel: ChatPanel | undefined;
@@ -16,6 +22,8 @@ export class ChatPanel {
   public agentManager!: AgentManager;
   private _lastApiRequest: ChatMessage[] | null = null;
   private _lastApiResponse: string | null = null;
+  private _currentRequestController: AbortController | null = null;
+
 
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, discussionManager: DiscussionManager): ChatPanel {
     const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
@@ -49,9 +57,11 @@ export class ChatPanel {
     this._lollmsAPI = lollmsAPI;
     this._discussionManager = discussionManager;
 
-    this._panel.webview.html = this._getHtmlForWebview(this._panel.webview);
-    this._setWebviewMessageListener(this._panel.webview);
     this._panel.onDidDispose(() => this.dispose(), null, []);
+    this._getHtmlForWebview(this._panel.webview).then(html => {
+        this._panel.webview.html = html;
+        this._setWebviewMessageListener(this._panel.webview);
+    });
   }
 
   public setContextManager(contextManager: ContextManager) {
@@ -104,7 +114,18 @@ export class ChatPanel {
         this._panel.webview.postMessage({ command: 'updateContext', context: context.text });
 
         const discussionContent = this._currentDiscussion.messages
-            .map(msg => typeof msg.content === 'string' ? msg.content : '')
+            .map(msg => {
+                if (typeof msg.content === 'string') {
+                    return msg.content;
+                }
+                if (Array.isArray(msg.content)) {
+                    return msg.content
+                        .filter(item => item.type === 'text' && typeof item.text === 'string')
+                        .map(item => item.text)
+                        .join('\n');
+                }
+                return '';
+            })
             .join('\n');
         
         const fullTextToTokenize = context.text + '\n' + discussionContent;
@@ -123,21 +144,38 @@ export class ChatPanel {
             contextSize: contextSize
         });
 
-        const warningMessageId = 'context-limit-warning';
-        const existingWarning = this._currentDiscussion.messages.find(m => m.id === warningMessageId);
+        const fullLimitWarningId = 'context-limit-warning';
+        const quarterLimitWarningId = 'context-quarter-limit-warning';
+
+        const hasFullWarning = this._currentDiscussion.messages.some(m => m.id === fullLimitWarningId);
+        const hasQuarterWarning = this._currentDiscussion.messages.some(m => m.id === quarterLimitWarningId);
 
         if (totalTokens > contextSize) {
-            const warningMessage: ChatMessage = {
-                id: warningMessageId,
+            if (hasQuarterWarning) {
+                await this.deleteMessage(quarterLimitWarningId, false);
+            }
+            const message: ChatMessage = {
+                id: fullLimitWarningId,
                 role: 'system',
                 content: `⚠️ **Warning:** The discussion size (${totalTokens} tokens) has exceeded the model's context limit (${contextSize} tokens). The earliest messages may not be included in the context.`
             };
-            if (!existingWarning) {
-                this.addMessageToDiscussion(warningMessage);
+            await this.addMessageToDiscussion(message);
+        } else if (totalTokens > (contextSize * 0.75)) {
+            if (hasFullWarning) {
+                await this.deleteMessage(fullLimitWarningId, false);
             }
+            const message: ChatMessage = {
+                id: quarterLimitWarningId,
+                role: 'system',
+                content: `⚠️ **Warning:** The discussion size (${totalTokens} tokens) has exceeded 75% of the model's context limit (${contextSize} tokens). Very long responses may be truncated.`
+            };
+            await this.addMessageToDiscussion(message);
         } else {
-            if (existingWarning) {
-                this.deleteMessage(warningMessageId, false);
+            if (hasFullWarning) {
+                await this.deleteMessage(fullLimitWarningId, false);
+            }
+            if (hasQuarterWarning) {
+                await this.deleteMessage(quarterLimitWarningId, false);
             }
         }
 
@@ -194,918 +232,21 @@ export class ChatPanel {
     this._panel.dispose();
   }
 
-  private _getHtmlForWebview(webview: vscode.Webview): string {
+  private async _getHtmlForWebview(webview: vscode.Webview): Promise<string> {
+    const templatePath = vscode.Uri.joinPath(this._extensionUri, 'src', 'commands', 'chatPanel.html');
+    const templateContent = await vscode.workspace.fs.readFile(templatePath);
+    let html = Buffer.from(templateContent).toString('utf8');
+
     const codiconsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'node_modules', '@vscode/codicons', 'dist', 'codicon.css'));
-    const welcomeTitle = vscode.l10n.t("welcome.title");
-    const welcomeItem1 = vscode.l10n.t("welcome.item1");
-    const welcomeItem2 = vscode.l10n.t("welcome.item2");
-    const welcomeItem3 = vscode.l10n.t("welcome.item3");
-    const welcomeItem4 = vscode.l10n.t("welcome.item4");
+    
+    html = html.replace(/{{codiconsUri}}/g, codiconsUri.toString());
+    html = html.replace(/{{welcomeTitle}}/g, vscode.l10n.t("welcome.title"));
+    html = html.replace(/{{welcomeItem1}}/g, vscode.l10n.t("welcome.item1"));
+    html = html.replace(/{{welcomeItem2}}/g, vscode.l10n.t("welcome.item2"));
+    html = html.replace(/{{welcomeItem3}}/g, vscode.l10n.t("welcome.item3"));
+    html = html.replace(/{{welcomeItem4}}/g, vscode.l10n.t("welcome.item4"));
 
-    return `<!DOCTYPE html>
-    <html lang="en">
-    <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Lollms Chat</title>
-        <link href="${codiconsUri}" rel="stylesheet" />
-        <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
-        
-        <style>
-            :root {
-                --code-bg: #1e1e1e;
-                --code-border: #3e3e3e;
-            }
-            body { 
-                font-family: var(--vscode-font-family); 
-                padding: 10px;
-                margin: 0;
-                background-color: var(--vscode-editor-background);
-                color: var(--vscode-editor-foreground);
-            }
-            .chat-container {
-                height: 100vh;
-                display: flex;
-                flex-direction: column;
-            }
-            .messages {
-                flex: 1;
-                overflow-y: auto;
-                padding: 10px;
-                border: 1px solid var(--vscode-panel-border);
-                background-color: var(--vscode-panel-background);
-                margin-bottom: 10px;
-                border-radius: 6px;
-            }
-            .message {
-                margin-bottom: 15px;
-                padding: 12px;
-                border-radius: 8px;
-                position: relative;
-            }
-            .user-message {
-                background-color: var(--vscode-inputOption-activeBackground);
-                border-left: 4px solid var(--vscode-inputOption-activeBorder);
-            }
-            .assistant-message {
-                background-color: var(--vscode-textBlockQuote-background);
-                border-left: 4px solid var(--vscode-textBlockQuote-border);
-            }
-            .system-message {
-                background-color: var(--vscode-editor-background);
-                border: 1px dashed var(--vscode-panel-border);
-                font-size: 0.9em;
-                opacity: 0.8;
-            }
-            .message-header {
-                font-weight: 600;
-                margin-bottom: 8px;
-                color: var(--vscode-textPreformat-foreground);
-                font-size: 0.9em;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-            }
-            .message-content {
-                line-height: 1.6;
-                word-wrap: break-word;
-            }
-            .message-content pre {
-                position: relative;
-                background-color: var(--code-bg) !important;
-                border: 1px solid var(--code-border);
-                border-radius: 8px;
-                margin: 12px 0;
-                padding: 0;
-                overflow: hidden;
-                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-            }
-            .message-content pre code {
-                background: transparent !important;
-                padding: 16px !important;
-                display: block;
-                overflow-x: auto;
-                font-family: var(--vscode-editor-font-family);
-                font-size: 13px;
-                line-height: 1.5;
-                color: #D4D4D4;
-            }
-            .code-header {
-                background-color: var(--vscode-editorGroupHeader-tabsBackground);
-                padding: 8px 16px;
-                font-size: 12px;
-                font-weight: 600;
-                color: var(--vscode-tab-activeForeground);
-                border-bottom: 1px solid var(--code-border);
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-            }
-            .language-label {
-                background-color: var(--vscode-badge-background);
-                color: var(--vscode-badge-foreground);
-                padding: 2px 8px;
-                border-radius: 12px;
-                font-size: 11px;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-            }
-            .code-actions {
-                display: flex;
-                gap: 8px;
-            }
-            .code-action-btn, .msg-action-btn {
-                background-color: var(--vscode-button-secondaryBackground);
-                color: var(--vscode-button-secondaryForeground);
-                border: 1px solid transparent;
-                border-radius: 4px;
-                padding: 4px 8px;
-                cursor: pointer;
-                font-size: 11px;
-                font-weight: 500;
-                transition: background-color 0.2s;
-            }
-            .code-action-btn:hover, .msg-action-btn:hover {
-                background-color: var(--vscode-button-secondaryHoverBackground);
-            }
-            .apply-btn {
-                background-color: var(--vscode-button-background);
-                color: var(--vscode-button-foreground);
-            }
-            .apply-btn:hover {
-                background-color: var(--vscode-button-hoverBackground);
-            }
-            .input-area {
-                display: flex;
-                align-items: flex-end;
-                gap: 10px;
-            }
-            .input-container {
-                display: flex;
-                flex-grow: 1;
-            }
-            .input-container textarea {
-                flex: 1;
-                padding: 10px;
-                border: 1px solid var(--vscode-input-border);
-                background-color: var(--vscode-input-background);
-                color: var(--vscode-input-foreground);
-                border-radius: 6px;
-                font-size: 14px;
-                font-family: var(--vscode-font-family);
-                resize: none;
-                line-height: 1.6;
-                max-height: 200px;
-            }
-            .input-container textarea:disabled {
-                background-color: var(--vscode-input-background);
-                cursor: not-allowed;
-                opacity: 0.6;
-            }
-            .bottom-controls {
-                display: flex;
-                gap: 10px;
-                align-items: flex-end;
-            }
-            #sendButton {
-                padding: 10px 20px;
-                background-color: var(--vscode-button-background);
-                color: var(--vscode-button-foreground);
-                border: none;
-                border-radius: 6px;
-                cursor: pointer;
-                font-weight: 600;
-            }
-            #sendButton:disabled {
-                background-color: var(--vscode-button-secondaryBackground);
-                cursor: not-allowed;
-                opacity: 0.6;
-            }
-            .loading .message-content {
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                gap: 10px;
-                font-style: italic;
-                color: var(--vscode-descriptionForeground);
-            }
-            .spinner {
-                border: 2px solid var(--vscode-panel-border);
-                border-top: 2px solid var(--vscode-focusBorder);
-                border-radius: 50%;
-                width: 16px;
-                height: 16px;
-                animation: spin 1s linear infinite;
-            }
-            @keyframes spin {
-                0% { transform: rotate(0deg); }
-                100% { transform: rotate(360deg); }
-            }
-            .message-actions {
-                display: none;
-                position: absolute;
-                top: 5px;
-                right: 5px;
-                gap: 5px;
-            }
-            .message:hover .message-actions {
-                display: flex;
-            }
-            .msg-action-btn {
-                background: var(--vscode-sideBar-background);
-                opacity: 0.7;
-            }
-            .msg-action-btn:hover {
-                opacity: 1;
-            }
-            .agent-mode-toggle {
-                display: flex;
-                align-items: center;
-                gap: 8px;
-                margin-right: 15px;
-                font-size: 0.9em;
-                color: var(--vscode-descriptionForeground);
-                margin-bottom: 5px; /* Aligns toggle text with textarea */
-            }
-            .switch {
-                position: relative;
-                display: inline-block;
-                width: 34px;
-                height: 20px;
-            }
-            .switch input { display: none; }
-            .slider {
-                position: absolute;
-                cursor: pointer;
-                top: 0; left: 0; right: 0; bottom: 0;
-                background-color: #ccc;
-                transition: .4s;
-                border-radius: 20px;
-            }
-            .slider:before {
-                position: absolute;
-                content: "";
-                height: 12px; width: 12px;
-                left: 4px; bottom: 4px;
-                background-color: white;
-                transition: .4s;
-                border-radius: 50%;
-            }
-            input:checked + .slider { background-color: var(--vscode-button-background); }
-            input:checked + .slider:before { transform: translateX(14px); }
-            
-            .plan-container {
-                border: 1px solid var(--vscode-panel-border);
-                border-radius: 8px;
-                margin-top: 10px;
-                background-color: var(--vscode-sideBar-background);
-            }
-            .plan-header {
-                padding: 10px 15px;
-                font-weight: 600;
-                border-bottom: 1px solid var(--vscode-panel-border);
-                cursor: pointer;
-            }
-            .plan-objective {
-                font-size: 0.9em;
-                font-weight: normal;
-                color: var(--vscode-descriptionForeground);
-                margin-top: 5px;
-            }
-            .plan-tasks {
-                padding: 5px 15px 15px 15px;
-                max-height: 400px;
-                overflow-y: auto;
-            }
-            .plan-task {
-                display: flex;
-                align-items: center;
-                padding: 8px 0;
-                border-bottom: 1px solid var(--vscode-editorWidget-background);
-            }
-            .plan-task:last-child { border-bottom: none; }
-            .task-status {
-                width: 24px;
-                text-align: center;
-                margin-right: 10px;
-                font-size: 16px;
-            }
-            .task-status .codicon-sync~.spin {
-                animation: spin 1.5s linear infinite;
-            }
-            .task-status .codicon-check { color: var(--vscode-testing-iconPassed); }
-            .task-status .codicon-error { color: var(--vscode-testing-iconFailed); }
-            .task-status .codicon-circle-large-filled { 
-                color: var(--vscode-descriptionForeground); 
-                font-size: 12px;
-                vertical-align: middle;
-             }
-            
-            .task-description { flex: 1; }
-            .task-details {
-                font-size: 0.8em;
-                color: var(--vscode-descriptionForeground);
-                margin-top: 3px;
-                font-family: var(--vscode-editor-font-family);
-            }
-            #context-container { margin-bottom: 15px; }
-            #context-container details {
-                border: 1px solid var(--vscode-panel-border);
-                border-radius: 6px;
-                background-color: var(--vscode-sideBar-background);
-            }
-            #context-container summary {
-                padding: 10px;
-                cursor: pointer;
-                font-weight: 600;
-                list-style: none;
-            }
-            #context-container summary::-webkit-details-marker { display: none; }
-            #context-container summary:before { content: '▶'; margin-right: 8px; }
-            #context-container details[open] > summary:before { content: '▼'; }
-            .context-content {
-                padding: 0 10px 10px 10px;
-                background-color: var(--vscode-editor-background);
-                border-top: 1px solid var(--vscode-panel-border);
-                max-height: 300px;
-                overflow-y: auto;
-            }
-            .context-content pre {
-                white-space: pre-wrap;
-                word-wrap: break-word;
-                font-family: var(--vscode-editor-font-family);
-                font-size: 0.9em;
-                background-color: var(--vscode-textCodeBlock-background);
-                padding: 10px;
-                border-radius: 4px;
-            }
-            .token-progress-container {
-                position: relative;
-                width: 100%;
-                height: 20px;
-                background-color: var(--vscode-progressBar-background);
-                border-radius: 4px;
-                margin-bottom: 10px;
-                overflow: hidden;
-            }
-            .token-progress-bar {
-                height: 100%;
-                width: 0%;
-                transition: width 0.3s ease-in-out, background-color 0.3s ease-in-out;
-            }
-            .token-progress-label {
-                position: absolute;
-                top: 50%;
-                left: 50%;
-                transform: translate(-50%, -50%);
-                color: #ffffff;
-                font-size: 11px;
-                font-weight: 600;
-                text-shadow: 1px 1px 2px rgba(0,0,0,0.7);
-            }
-            .welcome-message {
-                padding: 15px;
-                background-color: var(--vscode-textBlockQuote-background);
-                border-radius: 6px;
-                margin-bottom: 15px;
-                font-size: 0.95em;
-                border-left: 4px solid var(--vscode-focusBorder);
-            }
-            .welcome-message ul {
-                padding-left: 20px;
-                margin-top: 10px;
-                margin-bottom: 0;
-            }
-            .welcome-message li {
-                margin-bottom: 5px;
-            }
-            #logButton {
-                padding: 0 12px;
-                height: 42px;
-                line-height: 42px;
-                background-color: var(--vscode-button-secondaryBackground);
-                color: var(--vscode-button-secondaryForeground);
-                border: none;
-                border-radius: 6px;
-                cursor: pointer;
-                font-size: 1.2em;
-            }
-            #logButton:hover {
-                background-color: var(--vscode-button-secondaryHoverBackground);
-            }
-            .log-modal {
-                display: none; position: fixed; z-index: 1000;
-                left: 0; top: 0; width: 100%; height: 100%;
-                overflow: auto; background-color: rgba(0,0,0,0.6);
-            }
-            .log-modal-content {
-                background-color: var(--vscode-editor-background);
-                margin: 5% auto; padding: 20px;
-                border: 1px solid var(--vscode-panel-border);
-                width: 80%; max-width: 900px; border-radius: 8px;
-                display: flex; flex-direction: column; max-height: 80vh;
-            }
-            .log-modal-header {
-                display: flex; justify-content: space-between; align-items: center;
-                border-bottom: 1px solid var(--vscode-panel-border);
-                padding-bottom: 10px; margin-bottom: 15px;
-            }
-            .log-modal-header h2 { margin: 0; }
-            .log-modal-close { font-size: 24px; font-weight: bold; cursor: pointer; }
-            .log-modal-body { flex: 1; overflow-y: auto; }
-            .log-section h3 { margin-top: 0; }
-            .log-section pre {
-                white-space: pre-wrap; word-wrap: break-word;
-                background-color: var(--vscode-textCodeBlock-background);
-                padding: 10px; border-radius: 4px;
-            }
-        </style>
-        
-        <script src="https://cdn.jsdelivr.net/npm/marked@5.1.1/marked.min.js"></script>
-        <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.5/dist/purify.min.js"></script>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
-    </head>
-    <body>
-        <div class="chat-container">
-            <div class="token-progress-container">
-                <div class="token-progress-bar" id="tokenProgressBar"></div>
-                <span class="token-progress-label" id="tokenProgressLabel">Calculating tokens...</span>
-            </div>
-            <div class="messages" id="messages">
-                <div id="context-container"></div>
-                <div class="welcome-message" id="welcome-message" style="display: none;">
-                    <p>${welcomeTitle}</p>
-                    <ul>
-                        <li>${welcomeItem1}</li>
-                        <li>${welcomeItem2}</li>
-                        <li>${welcomeItem3}</li>
-                        <li>${welcomeItem4}</li>
-                    </ul>
-                </div>
-            </div>
-            <div class="input-area">
-                <div class="agent-mode-toggle">
-                    <span>🤖 Agent</span>
-                    <label class="switch">
-                        <input type="checkbox" id="agentModeCheckbox">
-                        <span class="slider"></span>
-                    </label>
-                </div>
-                <div class="input-container">
-                    <textarea id="messageInput" placeholder="Enter your message (Shift+Enter for new line)..." rows="1"></textarea>
-                </div>
-                <div class="bottom-controls">
-                    <button id="sendButton">Send</button>
-                    <button id="logButton" title="View Last Request/Response Log">📜</button>
-                </div>
-            </div>
-        </div>
-
-        <div id="logModal" class="log-modal">
-            <div class="log-modal-content">
-                <div class="log-modal-header">
-                    <h2>AI Communication Log</h2>
-                    <span class="log-modal-close" id="closeLogButton">&times;</span>
-                </div>
-                <div class="log-modal-body">
-                    <div class="log-section">
-                        <h3>Request Payload (Messages sent to AI)</h3>
-                        <pre id="requestPayload"></pre>
-                    </div>
-                    <div class="log-section">
-                        <h3>Raw Response</h3>
-                        <pre id="rawResponse"></pre>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <script>
-            const vscode = acquireVsCodeApi();
-            const messagesDiv = document.getElementById('messages');
-            const messageInput = document.getElementById('messageInput');
-            const sendButton = document.getElementById('sendButton');
-            const agentModeCheckbox = document.getElementById('agentModeCheckbox');
-            const contextContainer = document.getElementById('context-container');
-            const tokenProgressBar = document.getElementById('tokenProgressBar');
-            const tokenProgressLabel = document.getElementById('tokenProgressLabel');
-            const welcomeMessage = document.getElementById('welcome-message');
-
-            const logButton = document.getElementById('logButton');
-            const logModal = document.getElementById('logModal');
-            const closeLogButton = document.getElementById('closeLogButton');
-            const requestPayloadDiv = document.getElementById('requestPayload');
-            const rawResponseDiv = document.getElementById('rawResponse');
-
-            marked.setOptions({
-                breaks: true,
-                gfm: true,
-                headerIds: false,
-                mangle: false
-            });
-            
-            logButton.addEventListener('click', () => {
-                vscode.postMessage({ command: 'requestLog' });
-            });
-            closeLogButton.addEventListener('click', () => {
-                logModal.style.display = 'none';
-            });
-            window.addEventListener('click', (event) => {
-                if (event.target === logModal) {
-                    logModal.style.display = 'none';
-                }
-            });
-
-            function addMessage(message) {
-                const role = message.role;
-                const content = typeof message.content === 'string' ? message.content : (message.content[0]?.text || '[Unsupported Content]');
-                
-                const existingMsgDiv = document.querySelector(\`.message-wrapper[data-message-id='\${message.id}']\`);
-                if(existingMsgDiv) {
-                    const contentDiv = existingMsgDiv.querySelector('.message-content');
-                    if(contentDiv) {
-                         contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(content));
-                         enhanceCodeBlocks(contentDiv);
-                    }
-                    return;
-                }
-
-                const messageDiv = document.createElement('div');
-                messageDiv.className = \`message \${role}-message\`;
-                
-                const headerDiv = document.createElement('div');
-                headerDiv.className = 'message-header';
-                headerDiv.textContent = role;
-                
-                const contentDiv = document.createElement('div');
-                contentDiv.className = 'message-content';
-                contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(content));
-
-                const actionsDiv = document.createElement('div');
-                actionsDiv.className = 'message-actions';
-
-                if (role !== 'system' || message.id !== 'context-limit-warning') {
-                     if (role === 'user' || role === 'assistant' || role === 'system') {
-                        const deleteBtn = document.createElement('button');
-                        deleteBtn.className = 'msg-action-btn';
-                        deleteBtn.innerHTML = '🗑️';
-                        deleteBtn.title = 'Delete Message';
-                        deleteBtn.onclick = () => requestDelete(message.id);
-                        actionsDiv.appendChild(deleteBtn);
-                    }
-
-                    if (role === 'assistant' || role === 'user') {
-                        const regenerateBtn = document.createElement('button');
-                        regenerateBtn.className = 'msg-action-btn';
-                        regenerateBtn.innerHTML = '🔄';
-                        regenerateBtn.title = 'Regenerate';
-                        regenerateBtn.onclick = () => {
-                            if (role === 'assistant') {
-                                vscode.postMessage({ command: 'regenerateResponse' });
-                            } else { // role === 'user'
-                                vscode.postMessage({ command: 'regenerateFromMessage', messageId: message.id });
-                            }
-                        };
-                        actionsDiv.appendChild(regenerateBtn);
-                    }
-
-                    const saveBtn = document.createElement('button');
-                    saveBtn.className = 'msg-action-btn';
-                    saveBtn.innerHTML = '💾';
-                    saveBtn.title = 'Save as Prompt';
-                    saveBtn.onclick = () => {
-                        vscode.postMessage({ command: 'saveMessageAsPrompt', content: content });
-                    };
-                    actionsDiv.appendChild(saveBtn);
-
-                    const copyMarkdownBtn = document.createElement('button');
-                    copyMarkdownBtn.className = 'msg-action-btn';
-                    copyMarkdownBtn.innerHTML = '📋';
-                    copyMarkdownBtn.title = 'Copy as Markdown';
-                    copyMarkdownBtn.onclick = async () => {
-                        await navigator.clipboard.writeText(content);
-                        copyMarkdownBtn.innerHTML = '✅';
-                        setTimeout(() => { copyMarkdownBtn.innerHTML = '📋'; }, 2000);
-                    };
-                    actionsDiv.appendChild(copyMarkdownBtn);
-
-                    const exportMarkdownBtn = document.createElement('button');
-                    exportMarkdownBtn.className = 'msg-action-btn';
-                    exportMarkdownBtn.innerHTML = '📄';
-                    exportMarkdownBtn.title = 'Export as Markdown';
-                    exportMarkdownBtn.onclick = () => {
-                        vscode.postMessage({ command: 'saveMarkdownToFile', content: content });
-                    };
-                    actionsDiv.appendChild(exportMarkdownBtn);
-                }
-                
-                messageDiv.appendChild(headerDiv);
-                messageDiv.appendChild(contentDiv);
-                messageDiv.appendChild(actionsDiv);
-                
-                const messageWrapper = document.createElement('div');
-                messageWrapper.className = 'message-wrapper';
-                messageWrapper.dataset.messageId = message.id;
-                messageWrapper.appendChild(messageDiv);
-                messagesDiv.appendChild(messageWrapper);
-                
-                enhanceCodeBlocks(contentDiv);
-                messagesDiv.scrollTop = messagesDiv.scrollHeight;
-            }
-            
-            function updateContext(contextText) {
-                if (contextText && contextText.trim() !== '') {
-                    contextContainer.innerHTML = \`
-                        <details>
-                            <summary>View AI Context</summary>
-                            <div class="context-content">
-                                <pre><code>\${DOMPurify.sanitize(contextText)}</code></pre>
-                            </div>
-                        </details>
-                    \`;
-                } else {
-                    contextContainer.innerHTML = '';
-                }
-            }
-
-            function updateTokenProgress(totalTokens, contextSize) {
-                if (typeof totalTokens !== 'number' || typeof contextSize !== 'number' || contextSize === 0) {
-                    tokenProgressLabel.textContent = \`Tokens: \${totalTokens} / \${contextSize}\`;
-                    tokenProgressBar.style.width = '0%';
-                    tokenProgressBar.style.backgroundColor = 'hsl(120, 70%, 40%)';
-                    return;
-                }
-
-                const percentage = (totalTokens / contextSize) * 100;
-                tokenProgressBar.style.width = Math.min(percentage, 100) + '%';
-                
-                const hue = 120 * (1 - (Math.min(percentage, 100) / 100));
-                tokenProgressBar.style.backgroundColor = \`hsl(\${hue}, 70%, 40%)\`;
-
-                tokenProgressLabel.textContent = \`Tokens: \${totalTokens} / \${contextSize}\`;
-            }
-            
-            function requestDelete(messageId) {
-                vscode.postMessage({ command: 'requestDeleteMessage', messageId });
-            }
-            
-            function getStatusIcon(status) {
-                switch(status) {
-                    case 'pending': return '<span class="codicon codicon-circle-large-filled"></span>';
-                    case 'in_progress': return '<span class="codicon codicon-sync spin"></span>';
-                    case 'completed': return '<span class="codicon codicon-check"></span>';
-                    case 'failed': return '<span class="codicon codicon-error"></span>';
-                    default: return '<span class="codicon codicon-circle-slash"></span>';
-                }
-            }
-            
-            function renderPlan(plan) {
-                let planHtml = \`
-                    <div class="plan-header" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'">
-                        📝 Agent Execution Plan
-                        <div class="plan-objective">\${plan.objective}</div>
-                    </div>
-                    <div class="plan-tasks">
-                \`;
-
-                plan.tasks.forEach(task => {
-                    planHtml += \`
-                        <div class="plan-task" data-task-id="\${task.id}">
-                            <div class="task-status">\${getStatusIcon(task.status)}</div>
-                            <div class="task-description">
-                                <strong>\${task.id}. \${task.description}</strong>
-                                <div class="task-details">\${task.action}</div>
-                            </div>
-                        </div>
-                    \`;
-                });
-
-                planHtml += '</div>';
-                return planHtml;
-            }
-
-            function displayPlan(plan) {
-                let planContainer = document.getElementById('plan-container');
-                if (!planContainer) {
-                    const messageDiv = document.createElement('div');
-                    messageDiv.className = 'message system-message';
-                    messageDiv.innerHTML = \`
-                        <div class="message-header">Agent Plan</div>
-                        <div class="plan-container" id="plan-container"></div>
-                    \`;
-                    messagesDiv.appendChild(messageDiv);
-                    planContainer = document.getElementById('plan-container');
-                }
-                
-                planContainer.innerHTML = renderPlan(plan);
-                messagesDiv.scrollTop = messagesDiv.scrollHeight;
-            }
-            
-            function enhanceCodeBlocks(container) {
-                container.querySelectorAll('pre').forEach(pre => {
-                    const codeBlock = pre.querySelector('code');
-                    if (!codeBlock) return;
-            
-                    const preWrapper = pre.parentElement;
-                    let header = pre.previousElementSibling;
-                    if(header && header.classList.contains('code-header')){
-                        header.remove();
-                    }
-
-                    header = document.createElement('div');
-                    header.className = 'code-header';
-                    
-                    const codeContent = codeBlock.innerText;
-                    
-                    let language = [...codeBlock.classList]
-                        .find(c => c.startsWith('language-'))
-                        ?.replace('language-', '').toLowerCase() || '';
-
-                    header.innerHTML = \`<span class="language-label">\${language || 'text'}</span>\`;
-                    
-                    const actions = document.createElement('div');
-                    actions.className = 'code-actions';
-
-                    const previousElement = pre.previousElementSibling;
-                    if (previousElement && previousElement.tagName === 'P') {
-                        const text = (previousElement.textContent || '').trim();
-                        
-                        const fileMatch = text.match(/^File:\\s*(.+)$/i);
-                        const patchMatch = text.match(/^Patch:\\s*(.+)$/i);
-
-                        let matchInfo = null;
-                        if (fileMatch) {
-                            matchInfo = { type: 'applyFile', path: fileMatch[1].trim(), label: 'Apply to File' };
-                        } else if (patchMatch) {
-                            matchInfo = { type: 'applyPatch', path: patchMatch[1].trim(), label: 'Apply Patch' };
-                        }
-
-                        if (matchInfo) {
-                            previousElement.style.display = 'none';
-                            const applyBtn = document.createElement('button');
-                            applyBtn.className = 'code-action-btn apply-btn';
-                            applyBtn.innerHTML = '⚙️ ' + matchInfo.label;
-                            applyBtn.title = \`Write changes to \${matchInfo.path}\`;
-                            applyBtn.onclick = () => {
-                                vscode.postMessage({
-                                    command: matchInfo.type,
-                                    filePath: matchInfo.path,
-                                    content: codeBlock.innerText
-                                });
-                            };
-                            actions.insertBefore(applyBtn, actions.firstChild);
-                        }
-                    }
-
-                    const copyBtn = document.createElement('button');
-                    copyBtn.className = 'code-action-btn';
-                    copyBtn.innerHTML = '📋 Copy';
-                    copyBtn.title = 'Copy Code';
-                    copyBtn.onclick = async () => {
-                        await navigator.clipboard.writeText(codeContent);
-                        copyBtn.innerHTML = '✅ Copied!';
-                        setTimeout(() => { copyBtn.innerHTML = '📋 Copy'; }, 2000);
-                    };
-                    actions.appendChild(copyBtn);
-
-                    const saveBtn = document.createElement('button');
-                    saveBtn.className = 'code-action-btn';
-                    saveBtn.innerHTML = '💾 Save';
-                    saveBtn.title = 'Save to File';
-                    saveBtn.onclick = () => {
-                        vscode.postMessage({
-                            command: 'saveCodeToFile',
-                            content: codeContent,
-                            language: language
-                        });
-                    };
-                    actions.appendChild(saveBtn);
-                    
-                    header.appendChild(actions);
-                    pre.parentNode.insertBefore(header, pre);
-                    
-                    Prism.highlightElement(codeBlock);
-                });
-            }
-
-            function showLoadingIndicator() {
-                const loadingDiv = document.createElement('div');
-                loadingDiv.className = 'message assistant-message loading';
-                loadingDiv.id = 'loading-message';
-                loadingDiv.innerHTML = \`<div class="message-header">Lollms</div><div class="message-content"><div class="spinner"></div><span>🤔 Thinking...</span></div>\`;
-                messagesDiv.appendChild(loadingDiv);
-                messagesDiv.scrollTop = messagesDiv.scrollHeight;
-            }
-
-            function sendMessage() {
-                const messageText = messageInput.value.trim();
-                if (!messageText) return;
-
-                sendButton.disabled = true;
-                messageInput.disabled = true;
-                
-                const userMessage = { role: 'user', content: messageText };
-                if (agentModeCheckbox.checked) {
-                    addMessage(userMessage);
-                    vscode.postMessage({ command: 'runAgent', objective: messageText });
-                } else {
-                    vscode.postMessage({ command: 'sendMessage', message: userMessage });
-                }
-                
-                messageInput.value = '';
-                messageInput.style.height = 'auto';
-            }
-            
-            agentModeCheckbox.addEventListener('change', () => {
-                vscode.postMessage({ command: 'toggleAgentMode' });
-            });
-
-            sendButton.addEventListener('click', sendMessage);
-            messageInput.addEventListener('keypress', (e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-              }
-            });
-            
-            messageInput.addEventListener('input', () => {
-                messageInput.style.height = 'auto';
-                messageInput.style.height = (messageInput.scrollHeight) + 'px';
-            });
-
-            window.addEventListener('message', event => {
-              const message = event.data;
-              const loadingIndicator = document.getElementById('loading-message');
-
-              switch(message.command) {
-                case 'showLoading':
-                    showLoadingIndicator();
-                    break;
-                case 'showLog':
-                    requestPayloadDiv.textContent = JSON.stringify(message.request, null, 2) || 'No request data available.';
-                    rawResponseDiv.textContent = message.response || 'No response data available.';
-                    logModal.style.display = 'block';
-                    break;
-                case 'addMessage':
-                    if (loadingIndicator) loadingIndicator.remove();
-                    
-                    if (!agentModeCheckbox.checked) {
-                        sendButton.disabled = false;
-                        messageInput.disabled = false;
-                        messageInput.focus();
-                    }
-                    addMessage(message.message);
-                    break;
-                case 'displayPlan':
-                    if (loadingIndicator) loadingIndicator.remove();
-                    displayPlan(message.plan);
-                    break;
-                case 'loadDiscussion':
-                    if (loadingIndicator) loadingIndicator.remove();
-                    
-                    const messagesToRemove = messagesDiv.querySelectorAll('.message-wrapper, .message.system-message');
-                    messagesToRemove.forEach(el => {
-                        if (el.id !== 'plan-container') {
-                           el.remove();
-                        }
-                    });
-
-                    if (Array.isArray(message.messages) && message.messages.length > 0) {
-                        welcomeMessage.style.display = 'none';
-                        message.messages.forEach(msg => addMessage(msg));
-                    } else {
-                        welcomeMessage.style.display = 'block';
-                    }
-
-                    sendButton.disabled = false;
-                    messageInput.disabled = false;
-                    messageInput.focus();
-                    break;
-                case 'updateContext':
-                    updateContext(message.context);
-                    break;
-                case 'updateTokenProgress':
-                    updateTokenProgress(message.totalTokens, message.contextSize);
-                    break;
-                case 'updateAgentMode':
-                    agentModeCheckbox.checked = message.isActive;
-                    if (!message.isActive) {
-                        sendButton.disabled = false;
-                        messageInput.disabled = false;
-                        messageInput.focus();
-                    }
-                    break;
-                case 'error':
-                    if (loadingIndicator) loadingIndicator.remove();
-                    sendButton.disabled = false;
-                    messageInput.disabled = false;
-                    addMessage({ role: 'system', content: '❌ Error: ' + message.content });
-                    break;
-              }
-            });
-        </script>
-    </body>
-    </html>`;
+    return html;
   }
 
   public async analyzeExecutionResult(code: string, language: string, output: string, exitCode: number | null) {
@@ -1141,6 +282,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
   }
 
   private async _callApiWithMessages(messages: ChatMessage[], includeProjectContext: boolean = true) {
+    this._currentRequestController = new AbortController();
     try {
       const apiMessages: ChatMessage[] = [];
       const globalPrompt = getProcessedGlobalSystemPrompt();
@@ -1195,17 +337,22 @@ User preferences: ${globalPrompt}`;
       apiMessages.push(...messages);
       
       this._lastApiRequest = apiMessages;
-      const responseText = await this._lollmsAPI.sendChat(apiMessages);
+      const responseText = await this._lollmsAPI.sendChat(apiMessages, this._currentRequestController.signal);
       this._lastApiResponse = responseText;
       const assistantMessage: ChatMessage = { role: 'assistant', content: responseText };
       
       await this.addMessageToDiscussion(assistantMessage);
       
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
-      this._lastApiResponse = errorMessage;
-      const errorResponseMessage: ChatMessage = { role: 'system', content: `Sorry, I encountered an error: ${errorMessage}` };
-      await this.addMessageToDiscussion(errorResponseMessage);
+    } catch (error: any) {
+        const isAbortError = error.name === 'AbortError' || (error instanceof Error && error.message.includes('aborted'));
+        if (!isAbortError) { // Don't show an error message if the user cancelled it
+            const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
+            this._lastApiResponse = errorMessage;
+            const errorResponseMessage: ChatMessage = { role: 'system', content: `Sorry, I encountered an error: ${errorMessage}` };
+            await this.addMessageToDiscussion(errorResponseMessage);
+        }
+    } finally {
+        this._currentRequestController = null;
     }
   }
 
@@ -1295,7 +442,7 @@ User preferences: ${globalPrompt}`;
     }
 
     const targetMessage = this._currentDiscussion.messages[messageIndex];
-    if (targetMessage.role !== 'user' || typeof targetMessage.content !== 'string') {
+    if (targetMessage.role !== 'user' || typeof targetMessage.content !== 'string' && !Array.isArray(targetMessage.content)) {
         vscode.window.showErrorMessage("Can only regenerate from a user's text message.");
         return;
     }
@@ -1310,7 +457,7 @@ User preferences: ${globalPrompt}`;
     this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
 
     // Resend the original message prompt
-    await this.sendMessage({ role: 'user', content: messageContent });
+    await this.sendMessage({ role: 'user', content: messageContent as string });
   }
 
   private async deleteMessage(messageId: string, showConfirmation: boolean = true) {
@@ -1318,7 +465,7 @@ User preferences: ${globalPrompt}`;
 
     if (showConfirmation) {
         const confirm = await vscode.window.showWarningMessage(
-            'Are you sure you want to delete this message?',
+            'Are you sure you want to delete this message or attachment?',
             { modal: true },
             'Delete'
         );
@@ -1333,18 +480,114 @@ User preferences: ${globalPrompt}`;
     vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
   }
 
+  private async _handleFileAttachment(name: string, dataUrl: string, isImage: boolean) {
+    let chatMessage: ChatMessage;
+    const attachmentId = 'attachment_' + Date.now().toString() + Math.random().toString(36).substring(2);
+
+    if (isImage) {
+        chatMessage = {
+            id: attachmentId,
+            role: 'system',
+            content: [
+                { type: 'text', text: `Attached image: ${name}` },
+                { type: 'image_url', image_url: { url: dataUrl } }
+            ]
+        };
+    } else {
+        let extractedText = '';
+        let warning = '';
+        try {
+            const extension = path.extname(name).toLowerCase();
+            const base64Data = dataUrl.split(',')[1];
+            const buffer = Buffer.from(base64Data, 'base64');
+
+            switch (extension) {
+                case '.pdf':
+                    const data = await pdf(buffer);
+                    extractedText = data.text;
+                    break;
+                case '.docx':
+                    const docxResult = await mammoth.extractRawText({ buffer });
+                    extractedText = docxResult.value;
+                    break;
+                case '.xlsx':
+                    const workbook = new ExcelJS.Workbook();
+                    const stream = new Readable();
+                    stream.push(buffer);
+                    stream.push(null);
+                    await workbook.xlsx.read(stream);
+                    
+                    let fullText = '';
+                    workbook.eachSheet((worksheet) => {
+                        fullText += `--- Sheet: ${worksheet.name} ---\n`;
+                        worksheet.eachRow({ includeEmpty: false }, (row) => {
+                            const values = row.values as ExcelJS.CellValue[];
+                            const cleanValues = values.slice(1).map(v => (v === null || v === undefined) ? '' : v.toString());
+                            fullText += cleanValues.join(', ') + '\n';
+                        });
+                        fullText += '\n';
+                    });
+                    extractedText = fullText;
+                    break;
+                case '.pptx':
+                    warning = `\n\n**Warning**: Content extraction for PPTX files is not supported.`;
+                    extractedText = '(Content not displayed for .pptx)';
+                    break;
+                default:
+                    extractedText = buffer.toString('utf8');
+                    break;
+            }
+        } catch (error: any) {
+            extractedText = `Error parsing file: ${error.message}`;
+        }
+        
+        const fileContentBlock = `\`\`\`\n${extractedText}\n\`\`\`${warning}`;
+
+        chatMessage = {
+            id: attachmentId,
+            role: 'system',
+            content: [
+                { type: 'text', text: `Attached file: ${name}` },
+                { type: 'text', text: fileContentBlock }
+            ]
+        };
+    }
+    await this.addMessageToDiscussion(chatMessage);
+  }
+
   private _setWebviewMessageListener(webview: vscode.Webview) {
     webview.onDidReceiveMessage(async (message) => {
       switch (message.command) {
         case 'sendMessage':
           await this.sendMessage(message.message);
           break;
+        case 'stopGeneration':
+            if (this._currentRequestController) {
+                this._currentRequestController.abort();
+                this._currentRequestController = null;
+                // Immediately send feedback to the UI
+                const stopMessage: ChatMessage = {
+                    role: 'system',
+                    content: '🛑 Generation stopped by user.'
+                };
+                await this.addMessageToDiscussion(stopMessage);
+            }
+            // Ensure UI is re-enabled even if there's no active request
+            this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion?.messages || [] });
+            break;
         case 'toggleAgentMode':
           this.agentManager.toggleAgentMode();
           break;
         case 'runAgent':
           await this.agentManager.run(message.objective, this._currentDiscussion?.messages || []);
           break;
+        case 'loadFile':
+            const { name, content, isImage } = message.file;
+            await this._handleFileAttachment(name, content, isImage);
+            break;
+        case 'saveCurrentPrompt':
+            vscode.commands.executeCommand('lollms-vs-coder.saveCurrentPrompt', message.text);
+            break;
         case 'requestDeleteMessage':
             await this.deleteMessage(message.messageId);
             break;

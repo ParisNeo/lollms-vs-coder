@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -78,6 +78,7 @@
           "lollmsVsCoder.apiKey": { "type": "string", "default": "", "description": "%config.apiKey.description%" },
           "lollmsVsCoder.apiUrl": { "type": "string", "default": "http://localhost:9642", "description": "%config.apiUrl.description%" },
           "lollmsVsCoder.modelName": { "type": "string", "default": "ollama/mistral", "description": "%config.modelName.description%" },
+          "lollmsVsCoder.requestTimeout": { "type": "number", "default": 600000, "description": "%config.requestTimeout.description%" },
           "lollmsVsCoder.agentMaxRetries": { "type": "number", "default": 1, "description": "%config.agentMaxRetries.description%" },
           "lollmsVsCoder.globalSystemPrompt": {
             "type": "string",
@@ -145,7 +146,7 @@
       }
   },
   "scripts": { "vscode:prepublish": "npm run compile", "compile": "tsc -p ./", "watch": "tsc -watch -p ./", "package": "npx @vscode/vsce package", "pretest": "npm run compile && npm audit", "test": "node ./out/test/runTest.js", "security-audit": "npm audit --audit-level moderate", "clean": "rimraf out node_modules package-lock.json" },
-  "devDependencies": { "@types/jimp": "^0.2.28", "@types/marked": "5.0.2", "@types/node-fetch": "2.6.13", "@types/vscode": "1.74.0", "typescript": "5.9.2", "@vscode/vsce": "^2.26.0" },
-  "dependencies": { "@vscode/codicons": "^0.0.35", "jimp": "^0.22.10", "marked": "16.2.1", "node-fetch": "2.7.0" },
+  "devDependencies": { "@types/jimp": "^0.2.28", "@types/marked": "5.0.2", "@types/node-fetch": "2.6.13", "@types/pdf-parse": "^1.1.4", "@types/vscode": "1.74.0", "typescript": "5.9.2", "@vscode/vsce": "^2.26.0" },
+  "dependencies": { "@vscode/codicons": "^0.0.35", "exceljs": "^4.4.0", "jimp": "^0.22.10", "mammoth": "^1.7.2", "marked": "16.2.1", "node-fetch": "2.7.0", "pdf-parse": "^1.1.1" },
   "overrides": { "eslint": { "chalk": ">=5.0.0", "debug": ">=4.3.5", "ansi-styles": ">=6.0.0" } }
 }

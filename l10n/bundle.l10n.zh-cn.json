@@ -43,6 +43,7 @@
     "config.apiKey.description": "用于向Lollms API进行身份验证的API密钥。",
     "config.apiUrl.description": "Lollms API服务器的URL（包括协议和端口）。",
     "config.modelName.description": "要使用的模型的名称",
+    "config.requestTimeout.description": "API请求的超时时间（以毫秒为单位）。如果长响应超时，请增加此值。",
     "config.agentMaxRetries.description": "AI代理在请求用户干预之前将尝试自行修复失败任务的最大次数。",
     "config.globalSystemPrompt.description": "一个自定义的系统提示，将被添加到每个对AI的请求之前。您可以使用像{{date}}，{{time}}和{{datetime}}这样的动态占位符。",
     "config.language.description": "影响 AI 的响应语言。扩展 UI 遵循 VS Code 的显示语言设置。",

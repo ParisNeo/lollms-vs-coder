@@ -10,6 +10,7 @@ export class SettingsPanel {
     apiUrl: '',
     modelName: '',
     disableSslVerification: false,
+    requestTimeout: 600000,
     agentMaxRetries: 1,
     globalSystemPrompt: '',
     language: 'auto'
@@ -45,6 +46,7 @@ export class SettingsPanel {
     this._pendingConfig.apiUrl = config.get<string>('apiUrl') || 'http://localhost:9642';
     this._pendingConfig.modelName = config.get<string>('modelName') || '';
     this._pendingConfig.disableSslVerification = config.get<boolean>('disableSslVerification') || false;
+    this._pendingConfig.requestTimeout = config.get<number>('requestTimeout') || 600000;
     this._pendingConfig.agentMaxRetries = config.get<number>('agentMaxRetries') || 1;
     this._pendingConfig.globalSystemPrompt = config.get<string>('globalSystemPrompt') || '';
     this._pendingConfig.language = config.get<string>('language') || 'auto';
@@ -78,6 +80,7 @@ export class SettingsPanel {
                 await config.update('apiUrl', this._pendingConfig.apiUrl, vscode.ConfigurationTarget.Global);
                 await config.update('modelName', this._pendingConfig.modelName, vscode.ConfigurationTarget.Global);
                 await config.update('disableSslVerification', this._pendingConfig.disableSslVerification, vscode.ConfigurationTarget.Global);
+                await config.update('requestTimeout', this._pendingConfig.requestTimeout, vscode.ConfigurationTarget.Global);
                 await config.update('agentMaxRetries', this._pendingConfig.agentMaxRetries, vscode.ConfigurationTarget.Global);
                 await config.update('globalSystemPrompt', this._pendingConfig.globalSystemPrompt, vscode.ConfigurationTarget.Global);
                 await config.update('language', this._pendingConfig.language, vscode.ConfigurationTarget.Global);
@@ -97,7 +100,8 @@ export class SettingsPanel {
                   const models: Array<{ id: string }> | undefined = await vscode.commands.executeCommand(
                     'lollmsSettings.fetchModels',
                     this._pendingConfig.apiUrl,
-                    this._pendingConfig.apiKey
+                    this._pendingConfig.apiKey,
+                    this._pendingConfig.disableSslVerification
                   );
                   this._panel.webview.postMessage({ command: 'modelsList', models: models || [] });
                 } catch (e) {
@@ -117,8 +121,8 @@ export class SettingsPanel {
       );
   }
 
-  private _getHtml(webview: vscode.Webview, config: { apiKey: string; apiUrl: string; modelName: string, disableSslVerification: boolean, agentMaxRetries: number, globalSystemPrompt: string, language: string }) {
-    const { apiKey, apiUrl, modelName, disableSslVerification, agentMaxRetries, globalSystemPrompt, language } = config;
+  private _getHtml(webview: vscode.Webview, config: { apiKey: string; apiUrl: string; modelName: string, disableSslVerification: boolean, requestTimeout: number, agentMaxRetries: number, globalSystemPrompt: string, language: string }) {
+    const { apiKey, apiUrl, modelName, disableSslVerification, requestTimeout, agentMaxRetries, globalSystemPrompt, language } = config;
 
     return `<!DOCTYPE html>
         <html lang="en">
@@ -193,6 +197,9 @@ export class SettingsPanel {
               <input list="modelsList" id="modelSelect" name="modelSelect" value="${modelName}" placeholder="Enter or select a model" autocomplete="off" />
               <datalist id="modelsList"></datalist>
               <button id="refreshModels" type="button" class="secondary-button">Refresh Models</button>
+              <label for="requestTimeout">Request Timeout (ms)</label>
+              <input type="number" id="requestTimeout" value="${requestTimeout}" min="1000" step="1000" />
+              <p class="help-text">Increase this if large generations are timing out. Default is 600000 (10 minutes).</p>
 
               <div class="checkbox-container">
                   <input type="checkbox" id="disableSsl" ${disableSslVerification ? 'checked' : ''}>
@@ -226,6 +233,7 @@ export class SettingsPanel {
                 const apiUrlInput = document.getElementById('apiUrl');
                 const modelSelectInput = document.getElementById('modelSelect');
                 const modelsDatalist = document.getElementById('modelsList');
+                const requestTimeoutInput = document.getElementById('requestTimeout');
                 const disableSslCheckbox = document.getElementById('disableSsl');
                 const agentMaxRetriesInput = document.getElementById('agentMaxRetries');
                 const globalSystemPromptTextarea = document.getElementById('globalSystemPrompt');
@@ -238,6 +246,7 @@ export class SettingsPanel {
                 apiKeyInput.addEventListener('input', e => postTempUpdate('apiKey', e.target.value));
                 apiUrlInput.addEventListener('input', e => postTempUpdate('apiUrl', e.target.value));
                 modelSelectInput.addEventListener('input', e => postTempUpdate('modelName', e.target.value));
+                requestTimeoutInput.addEventListener('input', e => postTempUpdate('requestTimeout', parseInt(e.target.value, 10)));
                 disableSslCheckbox.addEventListener('change', e => postTempUpdate('disableSslVerification', e.target.checked));
                 agentMaxRetriesInput.addEventListener('input', e => postTempUpdate('agentMaxRetries', parseInt(e.target.value, 10)));
                 globalSystemPromptTextarea.addEventListener('input', e => postTempUpdate('globalSystemPrompt', e.target.value));

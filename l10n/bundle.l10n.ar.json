@@ -43,6 +43,7 @@
     "config.apiKey.description": "مفتاح API للمصادقة مع Lollms API.",
     "config.apiUrl.description": "عنوان URL لخادم Lollms API (بما في ذلك البروتوكول والمنفذ).",
     "config.modelName.description": "اسم النموذج المراد استخدامه",
+    "config.requestTimeout.description": "المهلة الزمنية بالمللي ثانية لطلبات واجهة برمجة التطبيقات. قم بزيادة هذا إذا كانت الاستجابات الطويلة تنتهي مهلتها.",
     "config.agentMaxRetries.description": "الحد الأقصى لعدد المرات التي سيحاول فيها وكيل الذكاء الاصطناعي إصلاح مهمة فاشلة من تلقاء نفسه قبل طلب تدخل المستخدم.",
     "config.globalSystemPrompt.description": "موجه نظام مخصص يتم إلحاقه بكل طلب إلى الذكاء الاصطناعي. يمكنك استخدام عناصر نائبة ديناميكية مثل {{date}} و {{time}} و {{datetime}}.",
     "config.language.description": "يؤثر على لغة استجابة الذكاء الاصطناعي. تتبع واجهة مستخدم الإضافة لغة عرض VS Code.",

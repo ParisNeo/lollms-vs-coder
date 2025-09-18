@@ -47,6 +47,7 @@ export class AgentManager {
             this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🤖 **Agent Mode Activated.** Using model: \`${this.lollmsApi.getModelName()}\`. Please provide your goal.` });
         } else {
             this.chatPanel.addMessageToDiscussion({ role: 'system', content: '🤖 **Agent Mode Deactivated.**' });
+            this.chatPanel.displayPlan(null); // Clear the plan view
         }
     }
 
@@ -55,14 +56,23 @@ export class AgentManager {
 
         this.chatHistory = [...fullChatHistory];
         this.chatHistory.push({ role: 'user', content: initialObjective });
-
-        this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🎯 **Objective:** ${initialObjective}\n\n🧠 Thinking... Generating a plan.` });
         
+        this.chatPanel.displayPlan({ 
+            objective: initialObjective,
+            scratchpad: "🧠 Thinking... Generating the initial execution plan.",
+            tasks: []
+        });
+
         try {
             const planResult = await this.planParser.generateAndParsePlan(initialObjective);
             
             if (!planResult.plan) {
-                this.chatPanel.addMessageToDiscussion({ role: 'system', content: `❌ **Error:** Could not generate a valid plan, even after self-correction attempts. Please try rephrasing your objective.\n\n**Final Raw Response from Model:**\n\`\`\`\n${planResult.rawResponse}\n\`\`\`` });
+                 const failedPlanState = {
+                    objective: initialObjective,
+                    scratchpad: `❌ **Plan Generation Failed:** Could not generate a valid plan, even after self-correction attempts. \n\n**Error:** ${planResult.error}\n\n**Final Raw Response from Model:**\n\`\`\`\n${planResult.rawResponse}\n\`\`\``,
+                    tasks: []
+                };
+                this.chatPanel.displayPlan(failedPlanState);
                 this.deactivateAgent();
                 return;
             }
@@ -108,7 +118,6 @@ export class AgentManager {
                     const maxRetries = vscode.workspace.getConfiguration('lollmsVsCoder').get<number>('agentMaxRetries') || 1;
                     if (task.retries < maxRetries) {
                         task.retries++;
-                        this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🧠 **Task ${task.id} Failed.** Attempting to self-correct (Attempt ${task.retries}/${maxRetries})...` });
                         const revisionSucceeded = await this.revisePlanForFailure(task);
                         if (!revisionSucceeded) {
                             this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🛑 **Execution Halted:** Failed to generate a revised plan.` });
@@ -150,6 +159,9 @@ export class AgentManager {
     private async revisePlanForFailure(failedTask: Task): Promise<boolean> {
         if (!this.currentPlan) return false;
         
+        this.currentPlan.scratchpad += `\n\n---\n⚠️ **Task ${failedTask.id} Failed.** Attempting to self-correct (Attempt ${failedTask.retries})...\n---`;
+        this.chatPanel.displayPlan(this.currentPlan);
+
         const planResult = await this.planParser.generateAndParsePlan(
             this.currentPlan.objective,
             this.currentPlan,
@@ -158,7 +170,8 @@ export class AgentManager {
         );
 
         if (!planResult.plan) {
-            this.chatPanel.addMessageToDiscussion({ role: 'system', content: `❌ **Error:** The fixer agent's response was invalid.\n\n**Raw Response:**\n${planResult.rawResponse}` });
+            this.currentPlan.scratchpad += `\n\n❌ **Self-Correction Failed:** The fixer agent's response was invalid.\n\n**Raw Response:**\n${planResult.rawResponse}`;
+            this.chatPanel.displayPlan(this.currentPlan);
             return false;
         }
 

@@ -72,11 +72,14 @@ export class ChatPanel {
     this._panel.webview.postMessage({ command: 'updateAgentMode', isActive });
   }
 
-  public displayPlan(plan: any): void {
+  public displayPlan(plan: any | null): void {
       this._panel.webview.postMessage({ command: 'displayPlan', plan: plan });
   }
 
   public async loadDiscussion(id: string): Promise<void> {
+    if (this._currentRequestController) {
+        this._currentRequestController.abort();
+    }
     const discussion = await this._discussionManager.getDiscussion(id);
     if (discussion) {
         let needsSave = false;
@@ -94,15 +97,20 @@ export class ChatPanel {
         this._currentDiscussion = discussion;
         this._panel.title = this._currentDiscussion.title;
         this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
+        this.displayPlan(null); // Clear plan when switching discussions
         this._updateContextAndTokens();
     }
   }
 
   public async startNewDiscussion(groupId: string | null = null): Promise<void> {
+    if (this._currentRequestController) {
+        this._currentRequestController.abort();
+    }
     this._currentDiscussion = this._discussionManager.createNewDiscussion(groupId);
     await this._discussionManager.saveDiscussion(this._currentDiscussion);
     this._panel.title = this._currentDiscussion.title;
     this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
+    this.displayPlan(null); // Clear plan for new discussion
     this._updateContextAndTokens();
   }
   
@@ -213,7 +221,7 @@ export class ChatPanel {
     this._currentDiscussion.timestamp = Date.now();
     await this._discussionManager.saveDiscussion(this._currentDiscussion);
     
-    if (message.role === 'system') {
+    if (message.role === 'system' || message.role === 'assistant') {
         this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
     } else {
         this._panel.webview.postMessage({ command: 'addMessage', message: message });
@@ -245,6 +253,15 @@ export class ChatPanel {
     html = html.replace(/{{welcomeItem2}}/g, vscode.l10n.t("welcome.item2"));
     html = html.replace(/{{welcomeItem3}}/g, vscode.l10n.t("welcome.item3"));
     html = html.replace(/{{welcomeItem4}}/g, vscode.l10n.t("welcome.item4"));
+
+    // Add new localization strings for the plan view
+    html = html.replace(/{{planTitle}}/g, vscode.l10n.t("plan.title", "Execution Plan"));
+    html = html.replace(/{{planObjective}}/g, vscode.l10n.t("plan.objective", "Objective"));
+    html = html.replace(/{{planDetails}}/g, vscode.l10n.t("plan.details", "Details"));
+    html = html.replace(/{{planStatusPending}}/g, vscode.l10n.t("plan.status.pending", "Pending"));
+    html = html.replace(/{{planStatusInProgress}}/g, vscode.l10n.t("plan.status.inProgress", "In Progress"));
+    html = html.replace(/{{planStatusCompleted}}/g, vscode.l10n.t("plan.status.completed", "Completed"));
+    html = html.replace(/{{planStatusFailed}}/g, vscode.l10n.t("plan.status.failed", "Failed"));
 
     return html;
   }
@@ -345,12 +362,15 @@ User preferences: ${globalPrompt}`;
       
     } catch (error: any) {
         const isAbortError = error.name === 'AbortError' || (error instanceof Error && error.message.includes('aborted'));
-        if (!isAbortError) { // Don't show an error message if the user cancelled it
-            const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
-            this._lastApiResponse = errorMessage;
-            const errorResponseMessage: ChatMessage = { role: 'system', content: `Sorry, I encountered an error: ${errorMessage}` };
-            await this.addMessageToDiscussion(errorResponseMessage);
+        if (isAbortError) {
+            // Abort is now handled by the initiator (stop button, new discussion), so we just return silently.
+            return;
         }
+
+        const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
+        this._lastApiResponse = errorMessage;
+        const errorResponseMessage: ChatMessage = { role: 'system', content: `Sorry, I encountered an error: ${errorMessage}` };
+        await this.addMessageToDiscussion(errorResponseMessage);
     } finally {
         this._currentRequestController = null;
     }
@@ -564,16 +584,15 @@ User preferences: ${globalPrompt}`;
         case 'stopGeneration':
             if (this._currentRequestController) {
                 this._currentRequestController.abort();
-                this._currentRequestController = null;
-                // Immediately send feedback to the UI
                 const stopMessage: ChatMessage = {
                     role: 'system',
                     content: '🛑 Generation stopped by user.'
                 };
                 await this.addMessageToDiscussion(stopMessage);
+            } else {
+                // If there's no active request, the UI might be stuck. Reset it.
+                this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion?.messages || [] });
             }
-            // Ensure UI is re-enabled even if there's no active request
-            this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion?.messages || [] });
             break;
         case 'toggleAgentMode':
           this.agentManager.toggleAgentMode();
@@ -581,6 +600,9 @@ User preferences: ${globalPrompt}`;
         case 'runAgent':
           await this.agentManager.run(message.objective, this._currentDiscussion?.messages || []);
           break;
+        case 'displayPlan':
+            this.displayPlan(message.plan);
+            break;
         case 'loadFile':
             const { name, content, isImage } = message.file;
             await this._handleFileAttachment(name, content, isImage);

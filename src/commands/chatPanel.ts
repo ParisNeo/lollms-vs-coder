@@ -379,9 +379,6 @@ User preferences: ${globalPrompt}`;
     this._currentDiscussion.timestamp = Date.now();
     await this._discussionManager.saveDiscussion(this._currentDiscussion);
     
-    // [FIX] The user's message is no longer sent back to the webview from here.
-    // The client-side JS is now the single source of truth for adding the user's message to the UI.
-
     vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
 
     await this._updateContextAndTokens();
@@ -566,11 +563,9 @@ User preferences: ${globalPrompt}`;
         case 'sendMessage':
           await this.sendMessage(message.message);
           break;
-        case 'resendMessage': // A special command for regeneration
+        case 'resendMessage':
           const userMessage = message.message;
-          // Manually add to UI first
           this._panel.webview.postMessage({ command: 'addMessage', message: userMessage });
-          // Then process it
           await this.sendMessage(userMessage);
           break;
         case 'stopGeneration':
@@ -589,6 +584,7 @@ User preferences: ${globalPrompt}`;
           this.agentManager.toggleAgentMode();
           break;
         case 'runAgent':
+          await this.sendMessage(message.message);
           await this.agentManager.run(message.objective, this._currentDiscussion?.messages || []);
           break;
         case 'displayPlan':
@@ -617,10 +613,10 @@ User preferences: ${globalPrompt}`;
         case 'regenerateFromMessage':
             await this.regenerateFromMessage(message.messageId);
             break;
-        case 'applyFile':
+        case 'applyFileContent':
             vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', message.filePath, message.content);
             break;
-        case 'applyPatch':
+        case 'applyPatchContent':
             vscode.commands.executeCommand('lollms-vs-coder.applyPatchContent', message.filePath, message.content);
             break;
         case 'saveMessageAsPrompt':

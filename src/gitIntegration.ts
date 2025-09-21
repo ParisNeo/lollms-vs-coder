@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
-import { getProcessedGlobalSystemPrompt } from './utils';
+import { getProcessedGlobalSystemPrompt, stripThinkingTags } from './utils';
 
 const execAsync = promisify(exec);
 const MAX_DIFF_LENGTH = 8000; // Set a reasonable character limit for the diff
@@ -75,14 +75,17 @@ export class GitIntegration {
     ];
 
     try {
-      const message = await vscode.window.withProgress({
+      const rawMessage = await vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification,
         title: "Lollms: Generating commit message...",
         cancellable: false
       }, async () => {
         return await this.lollmsAPI.sendChat(prompt);
       });
-      return message.trim();
+
+      const cleanMessage = stripThinkingTags(rawMessage);
+      return cleanMessage.trim();
+      
     } catch (error) {
       vscode.window.showErrorMessage('Error generating commit message: ' + (error as Error).message);
       return '';

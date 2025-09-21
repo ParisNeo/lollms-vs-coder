@@ -52,6 +52,7 @@ export class ContextManager {
     const includedFiles = contextFiles.filter(p => !p.endsWith(path.sep));
     if (includedFiles.length > 0) {
       content += `## File Contents (${includedFiles.length} files)\n\n`;
+      content += `Warining: Only some files contents are shown here. If you need more file contents, don't hesistate to ask the user to select more files that you need to see.\n\n`;
       for (const filePath of contextFiles) {
         try {
           const fullPath = vscode.Uri.joinPath(workspaceFolder.uri, filePath);

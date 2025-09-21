@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
-import { getProcessedGlobalSystemPrompt } from './utils';
+import { getProcessedGlobalSystemPrompt, stripThinkingTags } from './utils';
 
 export interface Discussion {
     id: string;
@@ -135,8 +135,9 @@ export class DiscussionManager {
         ];
     
         try {
-            const title = await this.lollmsAPI.sendChat(prompt);
-            return title.trim().replace(/["']/g, ''); // Clean up quotes
+            const rawTitle = await this.lollmsAPI.sendChat(prompt);
+            const cleanTitle = stripThinkingTags(rawTitle); // Clean the response
+            return cleanTitle.trim().replace(/["']/g, ''); // Clean up quotes
         } catch (error) {
             console.error("Failed to generate discussion title:", error);
             return null;

@@ -83,3 +83,8 @@ export function getProcessedGlobalSystemPrompt(): string {
 
     return processedPrompt.trim() + '\n\n';
 }
+
+export function stripThinkingTags(responseText: string): string {
+    const thinkRegex = /<(think|thinking)>[\s\S]*?<\/\1>/g;
+    return responseText.replace(thinkRegex, '').trim();
+}

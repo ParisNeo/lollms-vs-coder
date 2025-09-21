@@ -209,21 +209,19 @@ export class ChatPanel {
         message.id = Date.now().toString() + Math.random().toString(36).substring(2);
     }
     
-    const existingMessage = this._currentDiscussion.messages.find(m => m.id === message.id);
-    if(existingMessage){
-        if(existingMessage.content === message.content) return;
-        existingMessage.content = message.content;
+    const existingMessageIndex = this._currentDiscussion.messages.findIndex(m => m.id === message.id);
+    if (existingMessageIndex !== -1) {
+        if (this._currentDiscussion.messages[existingMessageIndex].content === message.content) return;
+        this._currentDiscussion.messages[existingMessageIndex] = message;
     } else {
         this._currentDiscussion.messages.push(message);
     }
 
-
     this._currentDiscussion.timestamp = Date.now();
     await this._discussionManager.saveDiscussion(this._currentDiscussion);
     
-    if (message.role === 'system' || message.role === 'assistant') {
-        this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
-    } else {
+    // Only post back messages that didn't originate from the user to avoid duplication
+    if (message.role !== 'user') {
         this._panel.webview.postMessage({ command: 'addMessage', message: message });
     }
 
@@ -253,15 +251,6 @@ export class ChatPanel {
     html = html.replace(/{{welcomeItem2}}/g, vscode.l10n.t("welcome.item2"));
     html = html.replace(/{{welcomeItem3}}/g, vscode.l10n.t("welcome.item3"));
     html = html.replace(/{{welcomeItem4}}/g, vscode.l10n.t("welcome.item4"));
-
-    // Add new localization strings for the plan view
-    html = html.replace(/{{planTitle}}/g, vscode.l10n.t("plan.title", "Execution Plan"));
-    html = html.replace(/{{planObjective}}/g, vscode.l10n.t("plan.objective", "Objective"));
-    html = html.replace(/{{planDetails}}/g, vscode.l10n.t("plan.details", "Details"));
-    html = html.replace(/{{planStatusPending}}/g, vscode.l10n.t("plan.status.pending", "Pending"));
-    html = html.replace(/{{planStatusInProgress}}/g, vscode.l10n.t("plan.status.inProgress", "In Progress"));
-    html = html.replace(/{{planStatusCompleted}}/g, vscode.l10n.t("plan.status.completed", "Completed"));
-    html = html.replace(/{{planStatusFailed}}/g, vscode.l10n.t("plan.status.failed", "Failed"));
 
     return html;
   }
@@ -363,7 +352,6 @@ User preferences: ${globalPrompt}`;
     } catch (error: any) {
         const isAbortError = error.name === 'AbortError' || (error instanceof Error && error.message.includes('aborted'));
         if (isAbortError) {
-            // Abort is now handled by the initiator (stop button, new discussion), so we just return silently.
             return;
         }
 
@@ -386,17 +374,13 @@ User preferences: ${globalPrompt}`;
     
     const isFirstMessage = this._currentDiscussion.messages.filter(m => m.role !== 'system').length === 0;
 
-    // This is the single point where we add the new message to the discussion.
-    if (!userMessage.id) {
-        userMessage.id = Date.now().toString() + Math.random().toString(36).substring(2);
-    }
+    // The client generates the ID. We trust it's there.
     this._currentDiscussion.messages.push(userMessage);
     this._currentDiscussion.timestamp = Date.now();
     await this._discussionManager.saveDiscussion(this._currentDiscussion);
     
-    // Update the webview with just the new message, then show loading.
-    this._panel.webview.postMessage({ command: 'addMessage', message: userMessage });
-    this._panel.webview.postMessage({ command: 'showLoading' });
+    // [FIX] The user's message is no longer sent back to the webview from here.
+    // The client-side JS is now the single source of truth for adding the user's message to the UI.
 
     vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
 
@@ -448,7 +432,9 @@ User preferences: ${globalPrompt}`;
     await this._discussionManager.saveDiscussion(this._currentDiscussion);
     this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
 
-    await this.sendMessage({ role: 'user', content: lastUserMessageContent });
+    // Re-send the message. The client will handle UI updates.
+    const messageId = 'user_' + Date.now().toString() + Math.random().toString(36).substring(2);
+    this._panel.webview.postMessage({ command: 'resendMessage', message: {id: messageId, role: 'user', content: lastUserMessageContent }});
   }
 
   private async regenerateFromMessage(messageId: string) {
@@ -466,18 +452,17 @@ User preferences: ${globalPrompt}`;
         vscode.window.showErrorMessage("Can only regenerate from a user's text message.");
         return;
     }
-    const messageContent = targetMessage.content;
+    const messageContent = targetMessage.content as string;
     
-    // Remove the target message and everything after it
     this._currentDiscussion.messages.splice(messageIndex);
     
     await this._discussionManager.saveDiscussion(this._currentDiscussion);
     
-    // Reload the webview with the truncated history
     this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
 
-    // Resend the original message prompt
-    await this.sendMessage({ role: 'user', content: messageContent as string });
+    // Re-send the message. The client will handle UI updates.
+    const newMessageId = 'user_' + Date.now().toString() + Math.random().toString(36).substring(2);
+    this._panel.webview.postMessage({ command: 'resendMessage', message: {id: newMessageId, role: 'user', content: messageContent }});
   }
 
   private async deleteMessage(messageId: string, showConfirmation: boolean = true) {
@@ -581,6 +566,13 @@ User preferences: ${globalPrompt}`;
         case 'sendMessage':
           await this.sendMessage(message.message);
           break;
+        case 'resendMessage': // A special command for regeneration
+          const userMessage = message.message;
+          // Manually add to UI first
+          this._panel.webview.postMessage({ command: 'addMessage', message: userMessage });
+          // Then process it
+          await this.sendMessage(userMessage);
+          break;
         case 'stopGeneration':
             if (this._currentRequestController) {
                 this._currentRequestController.abort();
@@ -590,7 +582,6 @@ User preferences: ${globalPrompt}`;
                 };
                 await this.addMessageToDiscussion(stopMessage);
             } else {
-                // If there's no active request, the UI might be stuck. Reset it.
                 this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion?.messages || [] });
             }
             break;

@@ -49,48 +49,55 @@ export class ContextManager {
     content += await this.generateProjectTree();
     content += '\n';
 
-    if (contextFiles.length > 0) {
-      content += `## File Contents (${contextFiles.length} files)\n\n`;
+    const includedFiles = contextFiles.filter(p => !p.endsWith(path.sep));
+    if (includedFiles.length > 0) {
+      content += `## File Contents (${includedFiles.length} files)\n\n`;
       for (const filePath of contextFiles) {
         try {
           const fullPath = vscode.Uri.joinPath(workspaceFolder.uri, filePath);
-          const ext = path.extname(filePath).toLowerCase();
+          const stat = await vscode.workspace.fs.stat(fullPath);
 
-          if (this.imageExtensions.includes(ext)) {
-            const fileBytes = await vscode.workspace.fs.readFile(fullPath);
-            const image = await jimp.read(Buffer.from(fileBytes));
-            
-            const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-            const maxSize = config.get<number>('maxImageSize') || 1024;
+          // FIX: Only attempt to read content if the path points to a file.
+          if (stat.type === vscode.FileType.File) {
+            const ext = path.extname(filePath).toLowerCase();
 
-            if (maxSize > 0 && (image.getWidth() > maxSize || image.getHeight() > maxSize)) {
-                image.scaleToFit(maxSize, maxSize);
-            }
-            
-            const base64 = await image.getBase64Async(image.getMIME());
-            result.images.push({ filePath, data: base64 });
-            content += `### \`${filePath}\`\n\n*Image included in context*\n\n`;
-
-          } else {
-            let fileContent: string | undefined;
-            const openDocument = vscode.workspace.textDocuments.find(doc => doc.uri.fsPath === fullPath.fsPath);
-            
-            if (openDocument) {
-              fileContent = openDocument.getText();
-            } else {
+            if (this.imageExtensions.includes(ext)) {
               const fileBytes = await vscode.workspace.fs.readFile(fullPath);
-              fileContent = Buffer.from(fileBytes).toString('utf8');
-            }
+              const image = await jimp.read(Buffer.from(fileBytes));
+              
+              const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+              const maxSize = config.get<number>('maxImageSize') || 1024;
 
-            content += `### \`${filePath}\`\n\n`;
-            const language = path.extname(filePath).substring(1);
-            content += '```' + language + '\n';
-            content += fileContent;
-            content += '\n```\n\n';
+              if (maxSize > 0 && (image.getWidth() > maxSize || image.getHeight() > maxSize)) {
+                  image.scaleToFit(maxSize, maxSize);
+              }
+              
+              const base64 = await image.getBase64Async(image.getMIME());
+              result.images.push({ filePath, data: base64 });
+              content += `### \`${filePath}\`\n\n*Image included in context*\n\n`;
+
+            } else {
+              let fileContent: string | undefined;
+              const openDocument = vscode.workspace.textDocuments.find(doc => doc.uri.fsPath === fullPath.fsPath);
+              
+              if (openDocument) {
+                fileContent = openDocument.getText();
+              } else {
+                const fileBytes = await vscode.workspace.fs.readFile(fullPath);
+                fileContent = Buffer.from(fileBytes).toString('utf8');
+              }
+
+              content += `### \`${filePath}\`\n\n`;
+              const language = path.extname(filePath).substring(1);
+              content += '```' + language + '\n';
+              content += fileContent;
+              content += '\n```\n\n';
+            }
           }
+          // If it's a directory, we simply ignore it here. Its presence is noted in the project tree.
 
         } catch (error) {
-          content += `### ${filePath}\n\n⚠️ **Error reading file:** ${error}\n\n`;
+          content += `### ${filePath}\n\n⚠️ **Error processing entry:** ${error}\n\n`;
         }
       }
     } else {

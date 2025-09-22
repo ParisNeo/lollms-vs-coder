@@ -12,3 +12,4 @@
 - add tokens progressbar
 - when refreshing remove any selected files that do not exist anymore
 - .vue files are not loading
+- when using File: syntax, the LLM needs to provide full code without any placeholder

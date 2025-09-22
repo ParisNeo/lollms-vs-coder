@@ -11,3 +11,4 @@
 - add firewall with rules for execution
 - add tokens progressbar
 - when refreshing remove any selected files that do not exist anymore
+- .vue files are not loading

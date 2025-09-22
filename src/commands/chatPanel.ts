@@ -3,7 +3,7 @@ import { LollmsAPI, ChatMessage } from '../lollmsAPI';
 import { ContextManager, ContextResult } from '../contextManager';
 import { Discussion, DiscussionManager } from '../discussionManager';
 import { AgentManager } from '../agentManager';
-import { getProcessedGlobalSystemPrompt } from '../utils';
+import { getProcessedSystemPrompt } from '../utils';
 import * as path from 'path';
 import pdf from 'pdf-parse';
 import mammoth from 'mammoth';
@@ -291,47 +291,10 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     this._currentRequestController = new AbortController();
     try {
       const apiMessages: ChatMessage[] = [];
-      const globalPrompt = getProcessedGlobalSystemPrompt();
-      const systemPrompt = `You are Lollms, a helpful AI coding assistant integrated into VS Code.
-
-**RESPONSE FORMATTING RULES:**
-
-**1. For File Modifications (Creating or Overwriting):**
-- You MUST prefix your response with a single line in this EXACT format: \`File: path/to/the/file.ext\`
-- This line MUST be on its own, followed by a newline.
-- Immediately after, provide the COMPLETE and FULL file content in a single markdown code block.
-- DO NOT add any conversational text or explanations before the \`File:\` line or after the code block.
-
---- CORRECT EXAMPLE ---
-File: src/app.js
-\`\`\`javascript
-console.log("Hello, World!");
-\`\`\`
---- END CORRECT EXAMPLE ---
-
---- INCORRECT EXAMPLE ---
-Of course! Here is the file:
-File: src/app.js
-\`\`\`javascript
-console.log("Hello, World!");
-\`\`\`
-I hope this helps!
---- END INCORRECT EXAMPLE ---
-
-**2. For Patches (Advanced):**
-- You MUST prefix your response with a single line: \`Patch: path/to/the/file.ext\`
-- Follow this with the content in a standard \`.diff\` format inside a code block.
-
-**3. For General Conversation (When NOT editing a file):**
-- Respond naturally in Markdown. Do NOT use the \`File:\` or \`Patch:\` prefixes.
-
-**BEHAVIOR:**
-- Prioritize following the formatting rules above all else.
-- Your primary function is to provide code that works with the VS Code extension.
-- Be helpful and concise.
-
-User preferences: ${globalPrompt}`;
-      apiMessages.push({ role: 'system', content: systemPrompt });
+      const systemPrompt = getProcessedSystemPrompt('chat');
+      if (systemPrompt) {
+        apiMessages.push({ role: 'system', content: systemPrompt });
+      }
 
       if (includeProjectContext) {
         const context: ContextResult = this._contextManager ? await this._contextManager.getContextContent() : { text: '', images: [] };
@@ -482,6 +445,33 @@ User preferences: ${globalPrompt}`;
     vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
   }
 
+  private async editMessage(messageId: string) {
+    if (!this._currentDiscussion) return;
+
+    const messageIndex = this._currentDiscussion.messages.findIndex(m => m.id === messageId);
+    if (messageIndex === -1 || this._currentDiscussion.messages[messageIndex].role !== 'user') {
+        return;
+    }
+
+    const messageContent = typeof this._currentDiscussion.messages[messageIndex].content === 'string' 
+        ? this._currentDiscussion.messages[messageIndex].content 
+        : '';
+
+    await this.deleteMessage(messageId, false);
+    this.setInputText(messageContent);
+  }
+
+  private async updateMessage(messageId: string, newContent: string) {
+    if (!this._currentDiscussion) return;
+
+    const messageIndex = this._currentDiscussion.messages.findIndex(m => m.id === messageId);
+    if (messageIndex !== -1) {
+        this._currentDiscussion.messages[messageIndex].content = newContent;
+        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+        await this._updateContextAndTokens();
+    }
+  }
+
   private async _handleFileAttachment(name: string, dataUrl: string, isImage: boolean) {
     let chatMessage: ChatMessage;
     const attachmentId = 'attachment_' + Date.now().toString() + Math.random().toString(36).substring(2);
@@ -612,6 +602,12 @@ User preferences: ${globalPrompt}`;
           break;
         case 'regenerateFromMessage':
             await this.regenerateFromMessage(message.messageId);
+            break;
+        case 'editMessage':
+            await this.editMessage(message.messageId);
+            break;
+        case 'updateMessage':
+            await this.updateMessage(message.messageId, message.newContent);
             break;
         case 'applyFileContent':
             vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', message.filePath, message.content);

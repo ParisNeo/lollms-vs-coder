@@ -39,6 +39,21 @@ export class LollmsAPI {
     this.baseUrl = `${url.protocol}//${url.host}`;
   }
 
+  public updateConfig(newConfig: LollmsConfig) {
+    this.config = newConfig;
+    this.httpsAgent = new https.Agent({
+        rejectUnauthorized: !this.config.disableSslVerification,
+    });
+    try {
+        const url = new URL(this.config.apiUrl);
+        this.baseUrl = `${url.protocol}//${url.host}`;
+    } catch (error) {
+        console.error("Invalid API URL provided:", this.config.apiUrl);
+        // Handle invalid URL, maybe default to a safe value or show an error
+        this.baseUrl = ''; // Prevent further requests with a bad URL
+    }
+  }
+
   public getModelName(): string {
       return this.config.modelName;
   }
@@ -121,6 +136,9 @@ export class LollmsAPI {
   }
 
   async sendChat(messages: ChatMessage[], signal?: AbortSignal): Promise<string> {
+    if (!this.baseUrl) {
+        throw new Error("Lollms API URL is not configured correctly. Please check the settings.");
+    }
     const chatUrl = `${this.baseUrl}/v1/chat/completions`;
     const isHttps = chatUrl.startsWith('https');
     const apiMessages = messages.map(({ id, ...rest }) => rest);

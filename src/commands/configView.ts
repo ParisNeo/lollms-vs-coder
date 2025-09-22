@@ -12,7 +12,8 @@ export class SettingsPanel {
     disableSslVerification: false,
     requestTimeout: 600000,
     agentMaxRetries: 1,
-    globalSystemPrompt: '',
+    chatSystemPrompt: '',
+    agentSystemPrompt: '',
     language: 'auto'
   };
 
@@ -48,7 +49,8 @@ export class SettingsPanel {
     this._pendingConfig.disableSslVerification = config.get<boolean>('disableSslVerification') || false;
     this._pendingConfig.requestTimeout = config.get<number>('requestTimeout') || 600000;
     this._pendingConfig.agentMaxRetries = config.get<number>('agentMaxRetries') || 1;
-    this._pendingConfig.globalSystemPrompt = config.get<string>('globalSystemPrompt') || '';
+    this._pendingConfig.chatSystemPrompt = config.get<string>('chatSystemPrompt') || '';
+    this._pendingConfig.agentSystemPrompt = config.get<string>('agentSystemPrompt') || '';
     this._pendingConfig.language = config.get<string>('language') || 'auto';
 
     this._panel.webview.html = this._getHtml(this._panel.webview, this._pendingConfig);
@@ -82,7 +84,8 @@ export class SettingsPanel {
                 await config.update('disableSslVerification', this._pendingConfig.disableSslVerification, vscode.ConfigurationTarget.Global);
                 await config.update('requestTimeout', this._pendingConfig.requestTimeout, vscode.ConfigurationTarget.Global);
                 await config.update('agentMaxRetries', this._pendingConfig.agentMaxRetries, vscode.ConfigurationTarget.Global);
-                await config.update('globalSystemPrompt', this._pendingConfig.globalSystemPrompt, vscode.ConfigurationTarget.Global);
+                await config.update('chatSystemPrompt', this._pendingConfig.chatSystemPrompt, vscode.ConfigurationTarget.Global);
+                await config.update('agentSystemPrompt', this._pendingConfig.agentSystemPrompt, vscode.ConfigurationTarget.Global);
                 await config.update('language', this._pendingConfig.language, vscode.ConfigurationTarget.Global);
   
                 vscode.window.showInformationMessage('Configuration saved. Recreating LollmsAPI...');
@@ -121,8 +124,8 @@ export class SettingsPanel {
       );
   }
 
-  private _getHtml(webview: vscode.Webview, config: { apiKey: string; apiUrl: string; modelName: string, disableSslVerification: boolean, requestTimeout: number, agentMaxRetries: number, globalSystemPrompt: string, language: string }) {
-    const { apiKey, apiUrl, modelName, disableSslVerification, requestTimeout, agentMaxRetries, globalSystemPrompt, language } = config;
+  private _getHtml(webview: vscode.Webview, config: any) {
+    const { apiKey, apiUrl, modelName, disableSslVerification, requestTimeout, agentMaxRetries, chatSystemPrompt, agentSystemPrompt, language } = config;
 
     return `<!DOCTYPE html>
         <html lang="en">
@@ -139,9 +142,9 @@ export class SettingsPanel {
               }
               .container {
                 padding: 2em; height: 100%; box-sizing: border-box;
-                display: flex; flex-direction: column; max-width: 600px; margin: 0 auto;
+                display: flex; flex-direction: column; max-width: 800px; margin: 0 auto;
               }
-              .form-content { flex-grow: 1; overflow-y: auto; }
+              .form-content { flex-grow: 1; overflow-y: auto; padding-right: 15px; }
               h1 { font-weight: 300; text-align: center; margin-bottom: 2em; }
               h2 { font-weight: 400; border-bottom: 1px solid var(--vscode-panel-border); padding-bottom: 5px; margin-top: 2em; }
               label { display: block; margin-top: 14px; margin-bottom: 5px; font-weight: 600; font-size: 0.9em; color: var(--vscode-description-foreground); }
@@ -212,10 +215,14 @@ export class SettingsPanel {
               <input type="number" id="agentMaxRetries" value="${agentMaxRetries}" min="0" max="5" />
               <p class="help-text">Number of times the agent will try to fix a failed task before asking for help.</p>
               
-              <h2>Global Persona / System Prompt</h2>
-              <label for="globalSystemPrompt">Global System Prompt</label>
-              <textarea id="globalSystemPrompt" rows="4" placeholder="e.g., Always respond in French. Today's date is {{date}}.">${globalSystemPrompt}</textarea>
-              <p class="help-text">A custom prompt prepended to every request. Supports placeholders: <code>{{date}}</code>, <code>{{time}}</code>, <code>{{datetime}}</code>.</p>
+              <h2>System Prompts / Personas</h2>
+              <label for="chatSystemPrompt">Chat Mode System Prompt</label>
+              <textarea id="chatSystemPrompt" rows="8" placeholder="e.g., You are a helpful AI assistant.">${chatSystemPrompt}</textarea>
+              <p class="help-text">Defines the AI's persona and rules for the main chat window. Supports placeholders: <code>{{date}}</code>, <code>{{time}}</code>, <code>{{datetime}}</code>.</p>
+              
+              <label for="agentSystemPrompt">Agent Mode System Prompt</label>
+              <textarea id="agentSystemPrompt" rows="6" placeholder="e.g., You are a sub-agent that follows instructions.">${agentSystemPrompt}</textarea>
+              <p class="help-text">Defines the persona for AI agents performing autonomous tasks (like generating code). Supports placeholders: <code>{{date}}</code>, <code>{{time}}</code>, <code>{{datetime}}</code>.</p>
               
               <h2>Advanced</h2>
               <p class="help-text">For advanced customization, you can directly edit the JSON file that stores your prompt library.</p>
@@ -228,28 +235,34 @@ export class SettingsPanel {
             const vscode = acquireVsCodeApi();
             
             window.addEventListener('DOMContentLoaded', () => {
-                const languageSelect = document.getElementById('language');
-                const apiKeyInput = document.getElementById('apiKey');
-                const apiUrlInput = document.getElementById('apiUrl');
-                const modelSelectInput = document.getElementById('modelSelect');
+                const fields = {
+                    language: document.getElementById('language'),
+                    apiKey: document.getElementById('apiKey'),
+                    apiUrl: document.getElementById('apiUrl'),
+                    modelName: document.getElementById('modelSelect'),
+                    requestTimeout: document.getElementById('requestTimeout'),
+                    disableSslVerification: document.getElementById('disableSsl'),
+                    agentMaxRetries: document.getElementById('agentMaxRetries'),
+                    chatSystemPrompt: document.getElementById('chatSystemPrompt'),
+                    agentSystemPrompt: document.getElementById('agentSystemPrompt')
+                };
+                
                 const modelsDatalist = document.getElementById('modelsList');
-                const requestTimeoutInput = document.getElementById('requestTimeout');
-                const disableSslCheckbox = document.getElementById('disableSsl');
-                const agentMaxRetriesInput = document.getElementById('agentMaxRetries');
-                const globalSystemPromptTextarea = document.getElementById('globalSystemPrompt');
 
                 function postTempUpdate(key, value) {
                   vscode.postMessage({ command: 'updateTempValue', key, value });
                 }
 
-                languageSelect.addEventListener('change', e => postTempUpdate('language', e.target.value));
-                apiKeyInput.addEventListener('input', e => postTempUpdate('apiKey', e.target.value));
-                apiUrlInput.addEventListener('input', e => postTempUpdate('apiUrl', e.target.value));
-                modelSelectInput.addEventListener('input', e => postTempUpdate('modelName', e.target.value));
-                requestTimeoutInput.addEventListener('input', e => postTempUpdate('requestTimeout', parseInt(e.target.value, 10)));
-                disableSslCheckbox.addEventListener('change', e => postTempUpdate('disableSslVerification', e.target.checked));
-                agentMaxRetriesInput.addEventListener('input', e => postTempUpdate('agentMaxRetries', parseInt(e.target.value, 10)));
-                globalSystemPromptTextarea.addEventListener('input', e => postTempUpdate('globalSystemPrompt', e.target.value));
+                for (const key in fields) {
+                    const element = fields[key];
+                    const eventType = element.type === 'checkbox' ? 'change' : 'input';
+                    const valueGetter = () => {
+                        if (element.type === 'checkbox') return element.checked;
+                        if (element.type === 'number') return parseInt(element.value, 10);
+                        return element.value;
+                    };
+                    element.addEventListener(eventType, () => postTempUpdate(key, valueGetter()));
+                }
                 
                 document.getElementById('refreshModels').addEventListener('click', () => {
                   modelsDatalist.innerHTML = '';

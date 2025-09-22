@@ -81,8 +81,8 @@
             padding: 12px;
             border-radius: 8px;
             position: relative;
-            max-width: 95%;
-            width: fit-content;
+            width: 95%;
+            max-width: 100%;
         }
         .user-message {
             background-color: var(--vscode-inputOption-activeBackground);
@@ -322,23 +322,26 @@
         input:checked + .slider { background-color: var(--vscode-button-background); }
         input:checked + .slider:before { transform: translateX(14px); }
         
-        #plan-container {
-            border: 1px solid var(--vscode-panel-border);
-            border-radius: 8px;
-            margin-bottom: 15px;
-            background-color: var(--vscode-sideBar-background);
+        .plan-wrapper {
             width: 95%;
             align-self: center;
+            margin-bottom: 15px;
+        }
+        .plan-container-details {
+            border: 1px solid var(--vscode-panel-border);
+            border-radius: 8px;
+            background-color: var(--vscode-sideBar-background);
         }
         .plan-header {
             padding: 10px 15px;
             font-weight: 600;
-            border-bottom: 1px solid var(--vscode-panel-border);
             cursor: pointer;
             display: flex;
             align-items: center;
             gap: 8px;
+            list-style: none;
         }
+        .plan-header::-webkit-details-marker { display: none; }
         .plan-header::before {
             content: '▶';
             transition: transform 0.2s;
@@ -352,6 +355,7 @@
             font-weight: normal;
             color: var(--vscode-descriptionForeground);
             margin-top: 5px;
+            padding: 0 15px 10px 15px;
         }
         .plan-body {
             padding: 5px 15px 15px 15px;
@@ -488,6 +492,53 @@
             border-radius: 6px;
             margin-bottom: 10px;
         }
+        .edit-overlay {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            padding: 12px;
+            background-color: var(--vscode-editor-background);
+        }
+        .edit-textarea {
+            flex: 1;
+            resize: none;
+            border: 1px solid var(--vscode-input-border);
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            padding: 8px;
+            font-family: var(--vscode-font-family);
+            font-size: 14px;
+            line-height: 1.6;
+            outline: none;
+            border-radius: 4px;
+        }
+        .edit-buttons {
+            display: flex;
+            gap: 8px;
+            justify-content: flex-end;
+        }
+        .edit-save-btn, .edit-cancel-btn {
+            padding: 6px 12px;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 500;
+        }
+        .edit-save-btn {
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+        }
+        .edit-cancel-btn {
+            background-color: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+        }
+        .edit-save-btn:hover {
+            background-color: var(--vscode-button-hoverBackground);
+        }
+        .edit-cancel-btn:hover {
+            background-color: var(--vscode-button-secondaryHoverBackground);
+        }
     </style>
     
 </head>
@@ -514,8 +565,6 @@
                     <li>{{welcomeItem4}}</li>
                 </ul>
             </div>
-
-            <div id="plan-container" class="plan-container" style="display: none;"></div>
 
             <div id="chat-messages-container"></div>
 
@@ -563,7 +612,6 @@
         const contextContainer = document.getElementById('context-container');
         const attachmentsContainer = document.getElementById('attachments-container');
         const welcomeMessage = document.getElementById('welcome-message');
-        const planContainer = document.getElementById('plan-container');
 
         const searchBar = document.getElementById('search-bar');
         const searchInput = document.getElementById('searchInput');
@@ -581,6 +629,78 @@
             headerIds: false,
             mangle: false
         });
+        
+        function processThinkTags(content) {
+            const thoughts = [];
+            const thinkRegex = /<(think|thinking)>([\s\S]*?)<\/\1>/g;
+            const processedContent = content.replace(thinkRegex, (match, tag, thoughtContent) => {
+                thoughts.push(thoughtContent);
+                return ''; // Remove the block from the main content
+            });
+            return { thoughts, processedContent: processedContent.trim() };
+        }
+
+        function startEdit(messageDiv, messageId, role) {
+            const contentDiv = messageDiv.querySelector('.message-content');
+            const originalContent = messageDiv.dataset.originalContent;
+            const editOverlay = document.createElement('div');
+            editOverlay.className = 'edit-overlay';
+            editOverlay.innerHTML = `
+                <textarea class="edit-textarea">${originalContent}</textarea>
+                <div class="edit-buttons">
+                    <button class="edit-cancel-btn">Cancel</button>
+                    <button class="edit-save-btn">Save</button>
+                </div>
+            `;
+            contentDiv.style.display = 'none';
+            messageDiv.appendChild(editOverlay);
+            const textarea = editOverlay.querySelector('.edit-textarea');
+            textarea.addEventListener('input', () => {
+                textarea.style.height = 'auto';
+                textarea.style.height = textarea.scrollHeight + 'px';
+            });
+            setTimeout(() => { // ensure it's rendered to calc scrollHeight
+                textarea.style.height = 'auto';
+                textarea.style.height = textarea.scrollHeight + 'px';
+            }, 0);
+            const saveBtn = editOverlay.querySelector('.edit-save-btn');
+            const cancelBtn = editOverlay.querySelector('.edit-cancel-btn');
+            saveBtn.onclick = () => saveEdit(messageDiv, contentDiv, editOverlay, textarea.value, messageId, role);
+            cancelBtn.onclick = () => {
+                editOverlay.remove();
+                contentDiv.style.display = 'block';
+            };
+            textarea.focus();
+        }
+
+        function saveEdit(messageDiv, contentDiv, editOverlay, newContent, messageId, role) {
+            // Remove existing thoughts
+            messageDiv.querySelectorAll('.thinking-collapsible').forEach(el => el.remove());
+            let processedContent = newContent;
+            let thoughts = [];
+            if (role === 'assistant') {
+                const res = processThinkTags(newContent);
+                thoughts = res.thoughts;
+                processedContent = res.processedContent;
+            }
+            if (thoughts.length > 0) {
+                thoughts.forEach(thought => {
+                    const details = document.createElement('details');
+                    details.className = 'info-collapsible thinking-collapsible';
+                    details.innerHTML = `
+                        <summary>🤔 Thinking Process</summary>
+                        <div class="collapsible-content">${DOMPurify.sanitize(marked.parse(thought))}</div>
+                    `;
+                    messageDiv.insertBefore(details, contentDiv);
+                });
+            }
+            contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(processedContent));
+            enhanceCodeBlocks(messageDiv.parentElement);
+            messageDiv.dataset.originalContent = newContent;
+            editOverlay.remove();
+            contentDiv.style.display = 'block';
+            vscode.postMessage({ command: 'updateMessage', messageId, newContent });
+        }
         
         function addMessage(message) {
             if (message.id && message.id.startsWith('attachment_')) {
@@ -658,49 +778,57 @@
             attachmentsContainer.appendChild(details);
         }
 
-        function processThinkTags(content) {
-            const thoughts = [];
-            const thinkRegex = /<(think|thinking)>([\s\S]*?)<\/\1>/g;
-            const processedContent = content.replace(thinkRegex, (match, tag, thoughtContent) => {
-                thoughts.push(thoughtContent);
-                return ''; // Remove the block from the main content
-            });
-            return { thoughts, processedContent: processedContent.trim() };
-        }
-
         function addChatMessage(message) {
             const role = message.role;
-            let content = message.content;
+            let rawContent = message.content;
+            let displayContent = message.content;
+            let thoughtElements = [];
+            if (role === 'assistant') {
+                const { thoughts, processedContent } = processThinkTags(rawContent);
+                displayContent = processedContent;
+                thoughtElements = thoughts.map(thought => {
+                    const details = document.createElement('details');
+                    details.className = 'info-collapsible thinking-collapsible';
+                    details.innerHTML = `
+                        <summary>🤔 Thinking Process</summary>
+                        <div class="collapsible-content">${DOMPurify.sanitize(marked.parse(thought))}</div>
+                    `;
+                    return details;
+                });
+            }
             
             const existingMsgWrapper = chatMessagesContainer.querySelector(`.message-wrapper[data-message-id='${message.id}']`);
             if (existingMsgWrapper) {
-                const contentDiv = existingMsgWrapper.querySelector('.message-content');
-                if (contentDiv) {
-                    contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(content));
-                    enhanceCodeBlocks(contentDiv);
+                const messageDiv = existingMsgWrapper.querySelector('.message');
+                const contentDiv = messageDiv.querySelector('.message-content');
+                // Remove existing thoughts
+                messageDiv.querySelectorAll('.thinking-collapsible').forEach(el => el.remove());
+                let updateRawContent = message.content;
+                let updateDisplayContent = message.content;
+                let updateThoughtElements = [];
+                if (role === 'assistant') {
+                    const { thoughts, processedContent } = processThinkTags(updateRawContent);
+                    updateDisplayContent = processedContent;
+                    updateThoughtElements = thoughts.map(thought => {
+                        const details = document.createElement('details');
+                        details.className = 'info-collapsible thinking-collapsible';
+                        details.innerHTML = `
+                            <summary>🤔 Thinking Process</summary>
+                            <div class="collapsible-content">${DOMPurify.sanitize(marked.parse(thought))}</div>
+                        `;
+                        return details;
+                    });
                 }
+                updateThoughtElements.forEach(el => messageDiv.insertBefore(el, contentDiv));
+                contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(updateDisplayContent));
+                messageDiv.dataset.originalContent = updateRawContent;
+                enhanceCodeBlocks(existingMsgWrapper);
                 return;
             }
 
             const messageWrapper = document.createElement('div');
             messageWrapper.className = 'message-wrapper';
             messageWrapper.dataset.messageId = message.id;
-
-            let thoughtsHtml = '';
-            if (role === 'assistant') {
-                const { thoughts, processedContent } = processThinkTags(content);
-                content = processedContent;
-                if (thoughts.length > 0) {
-                    thoughts.forEach(thought => {
-                        thoughtsHtml += `
-                            <details class="info-collapsible thinking-collapsible">
-                                <summary>🤔 Thinking Process</summary>
-                                <div class="collapsible-content">${DOMPurify.sanitize(marked.parse(thought))}</div>
-                            </details>
-                        `;
-                    });
-                }
-            }
 
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${role}-message`;
@@ -709,18 +837,55 @@
             headerDiv.className = 'message-header';
             headerDiv.textContent = role;
             
+            messageDiv.appendChild(headerDiv);
+
+            thoughtElements.forEach(el => messageDiv.appendChild(el));
+
             const contentDiv = document.createElement('div');
             contentDiv.className = 'message-content';
-            contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(content));
+            contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(displayContent));
 
-            messageDiv.appendChild(headerDiv);
-            messageDiv.innerHTML += thoughtsHtml; // Add thoughts right after the header
+            messageDiv.dataset.originalContent = rawContent;
+
+            // Add message actions
+            const actions = document.createElement('div');
+            actions.className = 'message-actions';
+
+            const copyBtn = document.createElement('button');
+            copyBtn.className = 'msg-action-btn';
+            copyBtn.innerHTML = '📋';
+            copyBtn.title = 'Copy Message';
+            copyBtn.onclick = async () => {
+                await navigator.clipboard.writeText(rawContent);
+                copyBtn.innerHTML = '✅';
+                setTimeout(() => { copyBtn.innerHTML = '📋'; }, 2000);
+            };
+
+            const deleteBtn = document.createElement('button');
+            deleteBtn.className = 'msg-action-btn';
+            deleteBtn.innerHTML = '🗑️';
+            deleteBtn.title = 'Delete Message';
+            deleteBtn.onclick = () => vscode.postMessage({ command: 'requestDeleteMessage', messageId: message.id });
+
+            actions.appendChild(copyBtn);
+            actions.appendChild(deleteBtn);
+
+            if (role !== 'system') {
+                const editBtn = document.createElement('button');
+                editBtn.className = 'msg-action-btn';
+                editBtn.innerHTML = '✏️';
+                editBtn.title = 'Edit Message';
+                editBtn.onclick = () => startEdit(messageDiv, message.id, role);
+                actions.insertBefore(editBtn, actions.firstChild);
+            }
+
             messageDiv.appendChild(contentDiv);
+            messageDiv.appendChild(actions);
             
             messageWrapper.appendChild(messageDiv);
             chatMessagesContainer.appendChild(messageWrapper);
             
-            enhanceCodeBlocks(messageWrapper); // Enhance code blocks within the entire wrapper
+            enhanceCodeBlocks(messageWrapper);
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
         
@@ -897,15 +1062,123 @@
             messageInput.style.height = (messageInput.scrollHeight) + 'px';
         });
 
-        function clearSearch() { /* ... function unchanged ... */ }
-        function performSearch() { /* ... function unchanged ... */ }
-        function updateSearchCount() { /* ... function unchanged ... */ }
-        function navigateSearch(direction) { /* ... function unchanged ... */ }
+        function clearSearch() {
+            searchMatches = [];
+            currentMatchIndex = -1;
+            document.querySelectorAll('mark').forEach(mark => {
+                const textNode = document.createTextNode(mark.textContent);
+                mark.parentNode.replaceChild(textNode, mark);
+            });
+            updateSearchCount();
+        }
+
+        function performSearch() {
+            const query = searchInput.value.trim();
+            if (!query) {
+                clearSearch();
+                return;
+            }
+
+            // Remove existing highlights
+            document.querySelectorAll('mark').forEach(mark => {
+                const textNode = document.createTextNode(mark.textContent);
+                mark.parentNode.replaceChild(textNode, mark);
+            });
+
+            searchMatches = [];
+            const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const regex = new RegExp(`(${escapedQuery})`, 'gi');
+
+            document.querySelectorAll('.message-content').forEach(content => {
+                const walker = document.createTreeWalker(
+                    content,
+                    NodeFilter.SHOW_TEXT,
+                    {
+                        acceptNode: function(node) {
+                            let parent = node.parentElement;
+                            while (parent) {
+                                if (parent.tagName === 'CODE' || parent.tagName === 'PRE') {
+                                    return NodeFilter.FILTER_REJECT;
+                                }
+                                parent = parent.parentElement;
+                            }
+                            return NodeFilter.FILTER_ACCEPT;
+                        }
+                    }
+                );
+
+                let node;
+                while (node = walker.nextNode()) {
+                    const text = node.nodeValue;
+                    const fragments = text.split(regex);
+                    if (fragments.length > 1) {
+                        const fragment = document.createDocumentFragment();
+                        for (let i = 0; i < fragments.length; i++) {
+                            if (i % 2 === 0) {
+                                // Text part
+                                fragment.appendChild(document.createTextNode(fragments[i]));
+                            } else {
+                                // Match part
+                                const mark = document.createElement('mark');
+                                mark.appendChild(document.createTextNode(fragments[i]));
+                                fragment.appendChild(mark);
+                                searchMatches.push(mark);
+                            }
+                        }
+                        node.parentNode.replaceChild(fragment, node);
+                    }
+                }
+            });
+
+            currentMatchIndex = -1;
+            updateSearchCount();
+            if (searchMatches.length > 0) {
+                navigateSearch(1);
+            }
+        }
+
+        function updateSearchCount() {
+            if (searchMatches.length === 0) {
+                searchResultsCount.textContent = '';
+            } else {
+                searchResultsCount.textContent = `${currentMatchIndex + 1} of ${searchMatches.length}`;
+            }
+        }
+
+        function navigateSearch(direction) {
+            if (searchMatches.length === 0) return;
+
+            // Remove current highlight
+            if (currentMatchIndex >= 0 && searchMatches[currentMatchIndex]) {
+                searchMatches[currentMatchIndex].classList.remove('current-match');
+            }
+
+            currentMatchIndex += direction;
+            if (currentMatchIndex >= searchMatches.length) {
+                currentMatchIndex = 0;
+            }
+            if (currentMatchIndex < 0) {
+                currentMatchIndex = searchMatches.length - 1;
+            }
+
+            if (searchMatches[currentMatchIndex]) {
+                searchMatches[currentMatchIndex].classList.add('current-match');
+                searchMatches[currentMatchIndex].scrollIntoView({
+                    behavior: 'smooth',
+                    block: 'center'
+                });
+            }
+
+            updateSearchCount();
+        }
         
         function displayPlan(plan) {
-            planContainer.innerHTML = '';
+            const existingPlan = chatMessagesContainer.querySelector('.plan-wrapper');
+            if (existingPlan) {
+                existingPlan.remove();
+            }
+
             if (!plan) {
-                planContainer.style.display = 'none';
                 return;
             }
             
@@ -936,9 +1209,11 @@
                     ${DOMPurify.sanitize(marked.parse(plan.scratchpad))}
                 </div>
             ` : '';
-
-            planContainer.innerHTML = `
-                <details open>
+            
+            const planWrapper = document.createElement('div');
+            planWrapper.className = 'plan-wrapper';
+            planWrapper.innerHTML = `
+                <details class="plan-container-details" open>
                     <summary class="plan-header">📝 Agent Execution Plan</summary>
                     <div class="plan-body">
                        <div class="plan-objective"><b>Objective:</b> ${DOMPurify.sanitize(plan.objective)}</div>
@@ -947,11 +1222,39 @@
                     </div>
                 </details>
             `;
-            planContainer.style.display = 'block';
+            
+            chatMessagesContainer.appendChild(planWrapper);
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
 
-        document.addEventListener('keydown', e => { /* ... function unchanged ... */ });
+        document.addEventListener('keydown', e => {
+            if (e.ctrlKey || e.metaKey) {
+                if (e.key === 'f' || e.key === 'F') {
+                    e.preventDefault();
+                    searchBar.style.display = 'flex';
+                    searchInput.focus();
+                    searchInput.select();
+                }
+            }
+
+            if (searchBar.style.display !== 'none') {
+                if (e.key === 'Escape') {
+                    e.preventDefault();
+                    searchBar.style.display = 'none';
+                    clearSearch();
+                    messageInput.focus();
+                } else if (e.key === 'Enter') {
+                    e.preventDefault();
+                    navigateSearch(1);
+                } else if (e.key === 'ArrowDown') {
+                    e.preventDefault();
+                    navigateSearch(1);
+                } else if (e.key === 'ArrowUp') {
+                    e.preventDefault();
+                    navigateSearch(-1);
+                }
+            }
+        });
 
         searchInput.addEventListener('input', performSearch);
         searchNextBtn.addEventListener('click', () => navigateSearch(1));
@@ -959,6 +1262,7 @@
         searchCloseBtn.addEventListener('click', () => {
             searchBar.style.display = 'none';
             clearSearch();
+            messageInput.focus();
         });
 
         window.addEventListener('message', event => {
@@ -977,7 +1281,8 @@
             case 'loadDiscussion':
                 attachmentsContainer.innerHTML = '';
                 chatMessagesContainer.innerHTML = '';
-                planContainer.style.display = 'none';
+                const existingPlan = chatMessagesContainer.querySelector('.plan-wrapper');
+                if (existingPlan) { existingPlan.remove(); }
 
                 let hasChatContent = false;
                 if (Array.isArray(message.messages) && message.messages.length > 0) {
@@ -1008,7 +1313,11 @@
                 break;
             case 'error':
                 setGeneratingState(false);
-                addChatMessage({ role: 'system', content: '❌ Error: ' + message.content });
+                addChatMessage({ id: 'error_' + Date.now(), role: 'system', content: '❌ Error: ' + message.content });
+                break;
+            case 'setInputText':
+                messageInput.value = message.text;
+                messageInput.focus();
                 break;
           }
         });

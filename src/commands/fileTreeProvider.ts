@@ -4,7 +4,7 @@ import * as fs from 'fs';
 
 export type PathState = 'included' | 'tree-only' | 'fully-excluded';
 
-export class FileTreeProvider implements vscode.TreeDataProvider<FileItem> {
+export class FileTreeProvider implements vscode.TreeDataProvider<FileItem>, vscode.Disposable {
     private _onDidChangeTreeData: vscode.EventEmitter<FileItem | undefined | null | void> = new vscode.EventEmitter<FileItem | undefined | null | void>();
     readonly onDidChangeTreeData: vscode.Event<FileItem | undefined | null | void> = this._onDidChangeTreeData.event;
   
@@ -12,17 +12,53 @@ export class FileTreeProvider implements vscode.TreeDataProvider<FileItem> {
     private treeOnlyFiles: Set<string> = new Set();
     private fullyExcludedPaths: Set<string> = new Set();
     
-    // Enhanced exclusion lists
     private binaryFileExtensions = new Set(['.exe', '.dll', '.bin', '.obj', '.o', '.so', '.dylib', '.a', '.vsix', '.nupkg', '.jar', '.class', '.pyc', '.pyo', '.pyd', '.egg', '.whl']);
     private imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg']);
     private excludedFolders = new Set(['node_modules', '.git', 'dist', 'build', 'out', '__pycache__', '.pytest_cache', '.mypy_cache', 'egg-info']);
   
+    private watcher: vscode.FileSystemWatcher;
+
     constructor(private workspaceRoot: string, private context: vscode.ExtensionContext) {
       this.contextFiles = new Set(context.workspaceState.get<string[]>('aiContextFiles', []));
       this.treeOnlyFiles = new Set(context.workspaceState.get<string[]>('aiTreeOnlyFiles', []));
       this.fullyExcludedPaths = new Set(context.workspaceState.get<string[]>('aiFullyExcludedPaths', []));
+
+      // Initialize the file watcher
+      this.watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(this.workspaceRoot, '**/*'));
+      
+      this.watcher.onDidCreate(() => this.refresh());
+      this.watcher.onDidChange(() => this.refresh());
+      this.watcher.onDidDelete(uri => this.handleFileDelete(uri));
     }
   
+    private async handleFileDelete(uri: vscode.Uri): Promise<void> {
+        const relPath = path.relative(this.workspaceRoot, uri.fsPath).replace(/\\/g, '/');
+        
+        let stateChanged = false;
+        if (this.contextFiles.has(relPath)) {
+            this.contextFiles.delete(relPath);
+            stateChanged = true;
+        }
+        if (this.treeOnlyFiles.has(relPath)) {
+            this.treeOnlyFiles.delete(relPath);
+            stateChanged = true;
+        }
+        if (this.fullyExcludedPaths.has(relPath)) {
+            this.fullyExcludedPaths.delete(relPath);
+            stateChanged = true;
+        }
+
+        if (stateChanged) {
+            await this.saveState();
+        }
+        
+        this.refresh();
+    }
+
+    public dispose(): void {
+        this.watcher.dispose();
+    }
+
     refresh(): void {
         this._onDidChangeTreeData.fire();
     }

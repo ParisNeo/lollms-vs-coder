@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
-import { getProcessedGlobalSystemPrompt, stripThinkingTags } from './utils';
+import { getProcessedSystemPrompt, stripThinkingTags } from './utils';
 
 const execAsync = promisify(exec);
 const MAX_DIFF_LENGTH = 8000; // Set a reasonable character limit for the diff
@@ -68,9 +68,9 @@ export class GitIntegration {
       promptContent = `Generate a concise git commit message based on the following diff of ${diffSource} changes:\n\`\`\`diff\n${diff}\n\`\`\``;
     }
 
-    const globalPrompt = getProcessedGlobalSystemPrompt();
+    const chatPersonaPrompt = getProcessedSystemPrompt('chat');
     const prompt: ChatMessage[] =  [
-      { role: 'system', content: `You are an AI assistant that writes concise, clear, and conventional git commit messages based on git diffs. Your response should be only the commit message itself, without any conversational text or markdown formatting.\n\nUser preferences: ${globalPrompt}` },
+      { role: 'system', content: `You are an AI assistant that writes concise, clear, and conventional git commit messages based on git diffs. Your response should be only the commit message itself, without any conversational text or markdown formatting.\n\nUser preferences: ${chatPersonaPrompt}` },
       { role: 'user', content: promptContent }
     ];
 

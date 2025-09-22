@@ -1,12 +1,12 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { LollmsAPI } from './lollmsAPI';
+import { LollmsAPI, LollmsConfig } from './lollmsAPI';
 import { ChatPanel } from './commands/chatPanel';
 import { SettingsPanel } from './commands/configView';
 import { ContextManager } from './contextManager';
 import { GitIntegration } from './gitIntegration';
-import { applyDiff, getProcessedGlobalSystemPrompt } from './utils';
-import { FileItem } from './commands/fileTreeProvider';
+import { applyDiff, getProcessedSystemPrompt } from './utils';
+import { FileTreeProvider, FileItem } from './commands/fileTreeProvider';
 import { DiscussionManager } from './discussionManager';
 import { DiscussionTreeProvider, DiscussionItem, DiscussionGroupItem } from './commands/discussionTreeProvider';
 import { ScriptRunner } from './scriptRunner';
@@ -74,7 +74,7 @@ async function buildCodeActionPrompt(
     userPrompt += `INSTRUCTION: **${userInstruction}**\n\n`;
     userPrompt += `⚠️ CRITICAL: Your response must contain ONLY the modified selected code block. Do not include any BEFORE or AFTER context code in your response.`;
     
-    const globalPrompt = getProcessedGlobalSystemPrompt();
+    const agentPersonaPrompt = getProcessedSystemPrompt('agent');
     let systemPrompt = `You are a surgical code modification tool. You must modify ONLY the selected code block and return ONLY that modified block.
 
 ## STRICT OUTPUT RULES
@@ -108,7 +108,7 @@ You receive three sections:
 Your entire response must be executable code that can directly replace the selected text.
 
 
-User preferences: ${globalPrompt}
+User preferences: ${agentPersonaPrompt}
 `;
     
     return { systemPrompt, userPrompt };
@@ -286,25 +286,30 @@ export function activate(context: vscode.ExtensionContext) {
     }
     
     let fileTreeView: vscode.TreeView<FileItem> | undefined;
+    let fileTreeProvider: FileTreeProvider | undefined;
     let fileTreeCommands: vscode.Disposable[] = [];
 
     function registerFileTreeProvider() {
+        // Dispose of previous resources
         fileTreeCommands.forEach(cmd => cmd.dispose());
         fileTreeCommands = [];
         if (fileTreeView) {
             fileTreeView.dispose();
         }
+        if (fileTreeProvider) {
+            fileTreeProvider.dispose(); // Dispose the provider and its watcher
+        }
 
         contextManager.reinitializeFileTreeProvider();
-        const fileTreeProvider = contextManager.getFileTreeProvider();
+        fileTreeProvider = contextManager.getFileTreeProvider();
 
         if (fileTreeProvider) {
             fileTreeView = vscode.window.createTreeView('lollmsSettings.fileTreeView', { treeDataProvider: fileTreeProvider, showCollapseAll: true });
             
-            fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.cycleFileState', (item: FileItem) => fileTreeProvider.cycleFileState(item)));
-            fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.addFolderToContext', (item: FileItem) => fileTreeProvider.addFolderToContext(item)));
-            fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.removeFolderFromContext', (item: FileItem) => fileTreeProvider.removeFolderFromContext(item)));
-            fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.refreshTree', () => fileTreeProvider.refresh()));
+            fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.cycleFileState', (item: FileItem) => fileTreeProvider!.cycleFileState(item)));
+            fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.addFolderToContext', (item: FileItem) => fileTreeProvider!.addFolderToContext(item)));
+            fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.removeFolderFromContext', (item: FileItem) => fileTreeProvider!.removeFolderFromContext(item)));
+            fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.refreshTree', () => fileTreeProvider!.refresh()));
             
             context.subscriptions.push(...fileTreeCommands);
         }
@@ -800,13 +805,14 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(modelStatusBarItem);
     
     context.subscriptions.push(vscode.commands.registerCommand('lollmsApi.recreateClient', async () => {
-        const newConfig = vscode.workspace.getConfiguration('lollmsVsCoder');
-        lollmsAPI = new LollmsAPI({ 
-            apiKey: newConfig.get<string>('apiKey')?.trim() || '',
-            apiUrl: newConfig.get<string>('apiUrl') || 'http://localhost:9642',
-            modelName: newConfig.get<string>('modelName') || 'ollama/mistral',
-            disableSslVerification: newConfig.get<boolean>('disableSslVerification') || false
-        });
+        const newConfigValues = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const newConfig: LollmsConfig = {
+            apiKey: newConfigValues.get<string>('apiKey')?.trim() || '',
+            apiUrl: newConfigValues.get<string>('apiUrl') || 'http://localhost:9642',
+            modelName: newConfigValues.get<string>('modelName') || 'ollama/mistral',
+            disableSslVerification: newConfigValues.get<boolean>('disableSslVerification') || false
+        };
+        lollmsAPI.updateConfig(newConfig);
         updateModelStatus();
         vscode.window.showInformationMessage(vscode.l10n.t('info.apiReconfigured'));
     }));
@@ -838,11 +844,14 @@ export function activate(context: vscode.ExtensionContext) {
         }
     }));    
 
-    vscode.workspace.onDidChangeConfiguration(e => {
-        if (e.affectsConfiguration('lollmsVsCoder.modelName') || e.affectsConfiguration('lollmsVsCoder.apiUrl')) {
+    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+        if (e.affectsConfiguration('lollmsVsCoder.modelName') || 
+            e.affectsConfiguration('lollmsVsCoder.apiUrl') ||
+            e.affectsConfiguration('lollmsVsCoder.apiKey') ||
+            e.affectsConfiguration('lollmsVsCoder.disableSslVerification')) {
             vscode.commands.executeCommand('lollmsApi.recreateClient');
         }
-    });
+    }));
 
     console.log('Extension activation complete.');
 }

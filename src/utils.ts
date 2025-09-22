@@ -65,10 +65,12 @@ export async function applyDiff(diffContent: string) {
     await document.save();
 }
 
-export function getProcessedGlobalSystemPrompt(): string {
+export function getProcessedSystemPrompt(promptType: 'chat' | 'agent'): string {
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-    const globalPrompt = config.get<string>('globalSystemPrompt');
-    if (!globalPrompt || globalPrompt.trim() === '') {
+    const promptKey = promptType === 'chat' ? 'chatSystemPrompt' : 'agentSystemPrompt';
+    const systemPrompt = config.get<string>(promptKey);
+    
+    if (!systemPrompt || systemPrompt.trim() === '') {
         return '';
     }
 
@@ -76,7 +78,7 @@ export function getProcessedGlobalSystemPrompt(): string {
     const date = now.toISOString().split('T')[0];
     const time = now.toTimeString().split(' ')[0];
     
-    let processedPrompt = globalPrompt
+    let processedPrompt = systemPrompt
         .replace(/{{date}}/g, date)
         .replace(/{{time}}/g, time)
         .replace(/{{datetime}}/g, `${date} ${time}`);

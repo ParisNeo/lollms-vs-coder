@@ -1,6 +1,19 @@
+Of course! Here is the updated changelog for version **0.3.7**, incorporating the recent fixes and improvements.
+
 # Changelog
 
 All notable changes to the "Lollms VS Coder" extension will be documented in this file.
+
+## [0.3.7] - 2025-09-24
+
+### ✨ Features
+
+-   **Enhanced Jupyter Notebook Support**: When `.ipynb` files are added to the context, they are now intelligently parsed. Instead of sending raw JSON, the extension extracts and formats code and markdown cells into a clean, readable format for the AI.
+
+### 🐛 Bug Fixes & Polish
+
+-   **Fixed Critical "Apply" Button Bug**: The "Apply" button on AI-generated file content now works reliably. It correctly creates or overwrites the target file, makes the change **undoable** (you can use `Ctrl+Z`), and automatically switches the editor to view the modified file.
+-   **Fixed File Context Recognition**: The "AI Context Files" tree now correctly recognizes and displays `.vue` files and other text-based formats like `.ipynb` (Jupyter Notebooks), allowing them to be properly included in the AI's context.
 
 ## [0.3.6] - 2025-09-24
 

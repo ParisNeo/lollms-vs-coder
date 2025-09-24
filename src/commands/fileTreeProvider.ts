@@ -1,3 +1,4 @@
+// src/commands/fileTreeProvider.ts
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -11,8 +12,12 @@ export class FileTreeProvider implements vscode.TreeDataProvider<FileItem>, vsco
     private contextFiles: Set<string> = new Set();
     private treeOnlyFiles: Set<string> = new Set();
     private fullyExcludedPaths: Set<string> = new Set();
-    
     private binaryFileExtensions = new Set(['.exe', '.dll', '.bin', '.obj', '.o', '.so', '.dylib', '.a', '.vsix', '.nupkg', '.jar', '.class', '.pyc', '.pyo', '.pyd', '.egg', '.whl']);
+    private knownTextFileExtensions = new Set([
+        '.txt', '.md', '.json', '.xml', '.html', '.css', '.js', '.ts', '.py', '.java', '.c', '.cpp', '.h', '.hpp', '.cs', '.go', '.rs', '.php', '.rb', '.swift', '.kt', '.scala', '.pl', '.pm', '.sh', '.bat',
+        '.vue', // Explicitly support .vue files
+        '.ipynb' // Explicitly support Jupyter notebooks
+    ]);
     private imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg']);
     private excludedFolders = new Set(['node_modules', '.git', 'dist', 'build', 'out', '__pycache__', '.pytest_cache', '.mypy_cache', 'egg-info']);
   
@@ -130,7 +135,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<FileItem>, vsco
                 } else if (entry.isFile()) {
                     const ext = path.extname(entry.name).toLowerCase();
                     const isImage = this.imageExtensions.has(ext);
-                    const isBinary = this.binaryFileExtensions.has(ext);
+                    const isBinary = this.binaryFileExtensions.has(ext) && !this.knownTextFileExtensions.has(ext);
                     
                     if (!isBinary || isImage) {
                         items.push(new FileItem(entry.name, relPath, vscode.Uri.file(fullPath), vscode.TreeItemCollapsibleState.None, isImage ? 'image' : 'file', state));
@@ -279,10 +284,11 @@ export class FileTreeProvider implements vscode.TreeDataProvider<FileItem>, vsco
                         items.push(relPath);
                     }
                     items.push(...await this.getAllFilesInFolder(fullPath, includeFolders));
+
                 } else if (entry.isFile()) {
                     const ext = path.extname(entry.name).toLowerCase();
                     const isImage = this.imageExtensions.has(ext);
-                    const isBinary = this.binaryFileExtensions.has(ext);
+                    const isBinary = this.binaryFileExtensions.has(ext) && !this.knownTextFileExtensions.has(ext);
                     if (!isBinary || isImage) {
                         items.push(relPath);
                     }

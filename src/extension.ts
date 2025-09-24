@@ -23,12 +23,13 @@ import { InlineDiffProvider } from './commands/inlineDiffProvider';
 import { InfoPanel } from './commands/infoPanel';
 import { CustomActionModal } from './commands/customActionModal';
 import * as https from 'https';
+import { exec } from 'child_process'; // Import 'exec' for direct command execution
 
 interface GitExtension { getAPI(version: 1): API; }
 interface API { repositories: Repository[]; }
 interface Repository { inputBox: { value: string }; }
 
-let executionOutput = ''; // To store output from the debug session
+// The global executionOutput variable and debug listeners are no longer needed and have been removed.
 
 async function buildCodeActionPrompt(
     promptTemplate: string, 
@@ -711,58 +712,31 @@ export function activate(context: vscode.ExtensionContext) {
         const fileUri = vscode.Uri.joinPath(workspaceRoot, filePath);
     
         try {
-            let fileExists = false;
+            let document: vscode.TextDocument;
             try {
-                await vscode.workspace.fs.stat(fileUri);
-                fileExists = true;
-            } catch {
-                // File doesn't exist, which is fine.
+                // Try to open the document. This will fail if it doesn't exist.
+                document = await vscode.workspace.openTextDocument(fileUri);
+            } catch (error) {
+                // If the file doesn't exist, create it as an undoable action.
+                const edit = new vscode.WorkspaceEdit();
+                edit.createFile(fileUri, { ignoreIfExists: true });
+                await vscode.workspace.applyEdit(edit);
+                // Now that the file is created (empty), open it.
+                document = await vscode.workspace.openTextDocument(fileUri);
             }
-    
-            if (fileExists) {
-                const overwriteButton = { title: vscode.l10n.t('label.overwrite'), id: 'overwrite' };
-                const confirm = await vscode.window.showWarningMessage(
-                    vscode.l10n.t("prompt.confirmOverwrite", filePath),
-                    { modal: true },
-                    overwriteButton
-                );
-            
-                if (confirm?.id !== 'overwrite') {
-                    vscode.window.showInformationMessage(vscode.l10n.t('info.applyOperationCancelled'));
-                    return;
-                }
-            }
-        } catch (error: any) {
-            vscode.window.showErrorMessage(vscode.l10n.t('error.failedToCheckFileExistence', error.message));
-            return;
-        }
-    }));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string) => {
-        if (!vscode.workspace.workspaceFolders) {
-            vscode.window.showErrorMessage(vscode.l10n.t('error.openWorkspaceToApplyChanges'));
-            return;
-        }
-        const workspaceRoot = vscode.workspace.workspaceFolders[0].uri;
-        const fileUri = vscode.Uri.joinPath(workspaceRoot, filePath);
-    
-        try {
-            const dirUri = vscode.Uri.joinPath(fileUri, '..');
-            await vscode.workspace.fs.createDirectory(dirUri);
-    
-            const edit = new vscode.WorkspaceEdit();
-            // Create a new file if it doesn't exist, otherwise replace its content.
-            // The `overwrite: true` handles both cases and makes the operation undoable.
-            edit.createFile(fileUri, { overwrite: true, ignoreIfExists: false });
-            edit.insert(fileUri, new vscode.Position(0, 0), content);
-            
-            await vscode.workspace.applyEdit(edit);
-            
-            const document = await vscode.workspace.openTextDocument(fileUri);
-            await document.save();
-            
-            vscode.window.showInformationMessage(vscode.l10n.t('info.applySuccess', filePath));
-            await vscode.window.showTextDocument(fileUri);
-    
+
+            const editor = await vscode.window.showTextDocument(document);
+
+            // Calculate the range of the entire document to be replaced.
+            // For a new file, this will be an empty range at the start.
+            const fullRange = new vscode.Range(
+                document.positionAt(0),
+                document.positionAt(document.getText().length)
+            );
+
+            // Use the InlineDiffProvider to show the changes for user confirmation.
+            await inlineDiffProvider.showDiff(editor, fullRange, content);
+
         } catch (error: any) {
             vscode.window.showErrorMessage(vscode.l10n.t('error.failedToApplyFileContent', error.message));
         }
@@ -921,46 +895,12 @@ export function activate(context: vscode.ExtensionContext) {
 
     // ================== Execution Logic ==================
 
-    // Register the Debug Adapter Tracker to capture output
-    context.subscriptions.push(vscode.debug.registerDebugAdapterTrackerFactory('*', {
-        createDebugAdapterTracker(session: vscode.DebugSession) {
-            return {
-                onWillStartSession: () => {
-                    executionOutput = ''; // Reset output on new session
-                },
-                onDidSendMessage: (message) => {
-                    if (message.type === 'event' && message.event === 'output' && message.body.category === 'stdout') {
-                        executionOutput += message.body.output;
-                    }
-                    if (message.type === 'event' && message.event === 'output' && message.body.category === 'stderr') {
-                        executionOutput += message.body.output;
-                    }
-                },
-            };
-        }
-    }));
-
-    // Listener for when a debug session terminates
-    context.subscriptions.push(vscode.debug.onDidTerminateDebugSession(async (session) => {
-        if ((global as any).wasExecutionTriggeredByLollms) {
-            (global as any).wasExecutionTriggeredByLollms = false; // Reset flag
-            
-            if (ChatPanel.currentPanel) {
-                const errorPatterns = ['error:', 'exception:', 'traceback (most recent call last):', 'uncaught', 'unhandled', 'segmentation fault'];
-                const success = !errorPatterns.some(pattern => executionOutput.toLowerCase().includes(pattern));
-
-                await ChatPanel.currentPanel.handleProjectExecutionResult(executionOutput, success);
-                executionOutput = ''; // Clear after processing
-            }
-        }
-    }));
-
     // Register the executeProject command
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.executeProject', async () => {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         if (!workspaceFolder) {
             vscode.window.showErrorMessage("Please open a project folder to execute.");
-            if(ChatPanel.currentPanel) ChatPanel.currentPanel.addMessageToDiscussion({role:'system', content: 'Execution failed: No workspace folder open.'});
+            if (ChatPanel.currentPanel) ChatPanel.currentPanel.addMessageToDiscussion({ role: 'system', content: 'Execution failed: No workspace folder open.' });
             return;
         }
 
@@ -975,12 +915,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
 
         if (!launchConfig.configurations || launchConfig.configurations.length === 0) {
-            launchConfig.configurations.push({
-                name: 'Lollms Default Run',
-                request: 'launch',
-                type: 'node',
-                program: ''
-            });
+            launchConfig.configurations.push({ name: 'Lollms Default Run', request: 'launch', type: 'node', program: '' });
         }
 
         let mainConfig = launchConfig.configurations[0];
@@ -1003,15 +938,35 @@ export function activate(context: vscode.ExtensionContext) {
                 vscode.window.showInformationMessage(`Set '${relativePath}' as the entry point in launch.json.`);
             } else {
                 vscode.window.showInformationMessage("Execution cancelled as no entry point was selected.");
-                if(ChatPanel.currentPanel) ChatPanel.currentPanel.addMessageToDiscussion({role:'system', content: 'Execution cancelled by user.'});
+                if (ChatPanel.currentPanel) ChatPanel.currentPanel.addMessageToDiscussion({ role: 'system', content: 'Execution cancelled by user.' });
                 return;
             }
         }
         
-        (global as any).wasExecutionTriggeredByLollms = true;
-        vscode.debug.startDebugging(workspaceFolder, mainConfig.name);
-    }));
+        const programPath = mainConfig.program.replace('${workspaceFolder}', workspaceFolder.uri.fsPath);
+        let executable = '';
+        switch (mainConfig.type) {
+            case 'python': executable = 'python'; break;
+            case 'node': executable = 'node'; break;
+            default:
+                vscode.window.showErrorMessage(`Unsupported launch configuration type for direct execution: ${mainConfig.type}`);
+                if (ChatPanel.currentPanel) ChatPanel.currentPanel.addMessageToDiscussion({ role: 'system', content: `Execution failed: Unsupported launch type '${mainConfig.type}'.` });
+                return;
+        }
 
+        const command = `${executable} "${programPath}"`;
+        if (ChatPanel.currentPanel) {
+            await ChatPanel.currentPanel.addMessageToDiscussion({ role: 'system', content: `🚀 Executing command: \`${command}\`` });
+        }
+
+        exec(command, { cwd: workspaceFolder.uri.fsPath }, (error, stdout, stderr) => {
+            if (ChatPanel.currentPanel) {
+                const output = stdout + stderr;
+                const success = !error;
+                ChatPanel.currentPanel.handleProjectExecutionResult(output, success);
+            }
+        });
+    }));
 
     console.log('Extension activation complete.');
 }

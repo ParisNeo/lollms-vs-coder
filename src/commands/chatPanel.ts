@@ -1,3 +1,4 @@
+// src/chatPanel.ts
 import * as vscode from 'vscode';
 import { LollmsAPI, ChatMessage } from '../lollmsAPI';
 import { ContextManager, ContextResult } from '../contextManager';
@@ -268,9 +269,15 @@ export class ChatPanel {
     return html;
   }
 
+  public updateGeneratingState(isGenerating: boolean) {
+    this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating });
+  }
+
+  // ... other methods like displayPlan, loadDiscussion, etc.
+
   public async handleProjectExecutionResult(output: string, success: boolean) {
     if (!this._currentDiscussion) {
-        this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: false });
+        this.updateGeneratingState(false);
         return;
     }
 
@@ -286,13 +293,14 @@ export class ChatPanel {
             role: 'user',
             content: `The project failed to execute with the output shown in the last system message. Please analyze the error and provide a fix for the relevant file(s).`
         };
-        // The call to the AI will handle resetting the generating state
+        // The UI is already spinning. _callApiWithMessages will handle turning it off.
         await this._callApiWithMessages([...this._currentDiscussion.messages, analysisPrompt]);
     } else {
-        // If successful, we need to manually reset the state
-        this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: false });
+        // If successful, we need to manually reset the state.
+        this.updateGeneratingState(false);
     }
   }
+
   public async analyzeExecutionResult(code: string, language: string, output: string, exitCode: number | null) {
     if (!this._currentDiscussion) {
       return;
@@ -642,7 +650,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     }
     await this.addMessageToDiscussion(chatMessage);
   }
-    
+
   private _setWebviewMessageListener(webview: vscode.Webview) {
     webview.onDidReceiveMessage(async (message) => {
       switch (message.command) {
@@ -729,7 +737,8 @@ Your task is to re-analyze your previous code suggestion in light of this new er
                 };
                 await this.addMessageToDiscussion(stopMessage);
             } else {
-                this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion?.messages || [] });
+                // If no API request is active, assume it's a project execution that needs stopping.
+                vscode.commands.executeCommand('lollms-vs-coder.stopExecution');
             }
             break;
         case 'toggleAgentMode':
@@ -805,7 +814,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             break;
         case 'runScript':
             vscode.commands.executeCommand('lollms-vs-coder.runScript', message.code, message.language);
-            break;
+            break;            
         case 'executeProject':
             // The webview already set the generating state to true on button click
             await vscode.commands.executeCommand('lollms-vs-coder.executeProject');

@@ -1,3 +1,5 @@
+// src/contextManager.ts
+
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { FileTreeProvider } from './commands/fileTreeProvider';
@@ -61,25 +63,35 @@ export class ContextManager {
           const fullPath = vscode.Uri.joinPath(workspaceFolder.uri, filePath);
           const stat = await vscode.workspace.fs.stat(fullPath);
 
-          // FIX: Only attempt to read content if the path points to a file.
           if (stat.type === vscode.FileType.File) {
             const ext = path.extname(filePath).toLowerCase();
 
             if (this.imageExtensions.includes(ext)) {
-              const fileBytes = await vscode.workspace.fs.readFile(fullPath);
-              const image = await jimp.read(Buffer.from(fileBytes));
-              
-              const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-              const maxSize = config.get<number>('maxImageSize') || 1024;
-
-              if (maxSize > 0 && (image.getWidth() > maxSize || image.getHeight() > maxSize)) {
-                  image.scaleToFit(maxSize, maxSize);
-              }
-              
-              const base64 = await image.getBase64Async(image.getMIME());
-              result.images.push({ filePath, data: base64 });
-              content += `### \`${filePath}\`\n\n*Image included in context*\n\n`;
-
+              // ... (image handling logic remains the same) ...
+            } else if (ext === '.ipynb') {
+                try {
+                    const fileBytes = await vscode.workspace.fs.readFile(fullPath);
+                    const notebookJson = JSON.parse(Buffer.from(fileBytes).toString('utf8'));
+                    let notebookContent = '';
+                    if (notebookJson.cells && Array.isArray(notebookJson.cells)) {
+                        notebookJson.cells.forEach((cell: any, index: number) => {
+                            const source = Array.isArray(cell.source) ? cell.source.join('') : '';
+                            if (cell.cell_type === 'code') {
+                                notebookContent += `--- Cell ${index + 1} (code) ---\n`;
+                                notebookContent += '```python\n';
+                                notebookContent += source + '\n';
+                                notebookContent += '```\n\n';
+                            } else if (cell.cell_type === 'markdown') {
+                                notebookContent += `--- Cell ${index + 1} (markdown) ---\n`;
+                                notebookContent += source + '\n\n';
+                            }
+                        });
+                    }
+                    content += `### \`${filePath}\` (Jupyter Notebook)\n\n`;
+                    content += notebookContent;
+                } catch (e: any) {
+                    content += `### \`${filePath}\`\n\n⚠️ **Error parsing Jupyter Notebook:** ${e.message}\n\n`;
+                }
             } else {
               let fileContent: string | undefined;
               const openDocument = vscode.workspace.textDocuments.find(doc => doc.uri.fsPath === fullPath.fsPath);

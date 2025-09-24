@@ -102,10 +102,11 @@ Your task is to generate a NEW set of tasks to recover from this failure and com
         return markdownMatch[1]; // captured JSON content as string [web:5][web:8][web:9]
       }
 
+
       const firstBrace = text.indexOf('{');
       const lastBrace = text.lastIndexOf('}');
       if (firstBrace !== -1 && lastBrace > firstBrace) {
-        return text.substring(firstBrace, lastBrace + 1); // string slice [web:5][web:8][web:9]
+        return text.substring(firstBrace, lastBrace + 1);
       }
 
       return null;
@@ -137,6 +138,10 @@ Your task is to correct the JSON. You MUST provide ONLY the fixed, valid JSON ob
 1.  **JSON ONLY:** Your entire response MUST be a single, valid JSON object.
 2.  **MARKDOWN BLOCK:** The JSON object MUST be enclosed in a \`\`\`json code block.
 3.  **NO EXTRA TEXT:** Do not add any conversational text, apologies, or explanations before or after the JSON block. Your response must begin with \`\`\`json and end with \`\`\`.
+4.  **OS COMPATIBILITY:** All shell commands and scripts (\`execute_command\`, script file content in \`rewrite_file\`) **MUST** be compatible with the OS specified in the user's context (e.g., \`OS: win32\`).
+    -   For **win32**, use PowerShell or CMD/Batch commands.
+    -   For **linux** or **darwin**, use Bash/shell commands.
+    -   **DO NOT** generate \`bash\` scripts for a \`win32\` environment.
 
 **JSON SCHEMA DEFINITION:**
 
@@ -165,6 +170,8 @@ Your task is to correct the JSON. You MUST provide ONLY the fixed, valid JSON ob
         *   \`parameters: { "path": "string", "code": "string" }\` (Use "{{tasks[ID].result}}" to reference output from a previous 'generate_code' task)
     *   \`action: "request_user_input"\`
         *   \`parameters: { "question": "string" }\`
+    *   \`action: "set_launch_entrypoint"\`
+        *   \`parameters: { "file_path": "string" }\` (Sets the main file for execution in .vscode/launch.json)
     *   \`action: "create_python_environment"\`
         *   \`parameters: { "env_name": "string" }\`
     *   \`action: "set_vscode_python_interpreter"\`
@@ -177,6 +184,8 @@ Your task is to correct the JSON. You MUST provide ONLY the fixed, valid JSON ob
 2.  **task_type: "agentic_action"**
     *   \`action: "generate_code"\`
         *   \`parameters: { "file_path": "string", "system_prompt": "string", "user_prompt": "string" }\`
+    *   \`action: "auto_select_context_files"\`
+        *   \`parameters: { "objective": "string" }\` (Triggers an AI to select relevant files and add them to the context)
 
 **ABSOLUTE REQUIREMENTS:**
 - Every task object in the "tasks" array **MUST** contain all keys: "id", "task_type", "action", "description", "parameters".

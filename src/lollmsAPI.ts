@@ -135,7 +135,7 @@ export class LollmsAPI {
     return await response.json() as ContextSizeResponse;
   }
 
-  async sendChat(messages: ChatMessage[], signal?: AbortSignal): Promise<string> {
+  async sendChat(messages: ChatMessage[], signal?: AbortSignal, modelOverride?: string): Promise<string> {
     if (!this.baseUrl) {
         throw new Error("Lollms API URL is not configured correctly. Please check the settings.");
     }
@@ -159,7 +159,7 @@ export class LollmsAPI {
             'Authorization': `Bearer ${this.config.apiKey}`
           },
           body: JSON.stringify({
-            model: this.config.modelName,
+            model: modelOverride || this.config.modelName,
             messages: apiMessages
           }),
           signal: controller.signal,

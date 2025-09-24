@@ -9,6 +9,7 @@ import pdf from 'pdf-parse';
 import mammoth from 'mammoth';
 import * as ExcelJS from 'exceljs';
 import { Readable } from 'stream';
+import { InfoPanel } from './infoPanel';
 
 
 export class ChatPanel {
@@ -120,6 +121,7 @@ export class ChatPanel {
     try {
         const context = await this._contextManager.getContextContent();
         this._panel.webview.postMessage({ command: 'updateContext', context: context.text });
+        this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
 
         const discussionContent = this._currentDiscussion.messages
             .map(msg => {
@@ -255,6 +257,27 @@ export class ChatPanel {
     return html;
   }
 
+  public async handleProjectExecutionResult(output: string, success: boolean) {
+    if (!this._currentDiscussion) {
+        return;
+    }
+
+    const resultMessage: ChatMessage = {
+        role: 'system',
+        content: `**Project Execution Result (Success: ${success})**\n\n\`\`\`\n${output || '(No output)'}\n\`\`\``
+    };
+
+    await this.addMessageToDiscussion(resultMessage);
+    
+    if (!success) {
+        const analysisPrompt: ChatMessage = {
+            role: 'user',
+            content: `The project failed to execute with the output shown in the last system message. Please analyze the error and provide a fix for the relevant file(s).`
+        };
+        await this._callApiWithMessages([...this._currentDiscussion.messages, analysisPrompt]);
+    }
+  }
+
   public async analyzeExecutionResult(code: string, language: string, output: string, exitCode: number | null) {
     if (!this._currentDiscussion) {
       return;
@@ -290,20 +313,42 @@ Your task is to re-analyze your previous code suggestion in light of this new er
   private async _callApiWithMessages(messages: ChatMessage[], includeProjectContext: boolean = true) {
     this._currentRequestController = new AbortController();
     try {
-      const apiMessages: ChatMessage[] = [];
-      const systemPrompt = getProcessedSystemPrompt('chat');
-      if (systemPrompt) {
-        apiMessages.push({ role: 'system', content: systemPrompt });
-      }
-
-      if (includeProjectContext) {
-        const context: ContextResult = this._contextManager ? await this._contextManager.getContextContent() : { text: '', images: [] };
-        if (context.text && context.text.trim().length > 0) {
-            apiMessages.push({ role: 'system', content: `## Project Context\n${context.text}` });
+        const apiMessages: ChatMessage[] = [];
+        const systemPrompt = getProcessedSystemPrompt('chat');
+        if (systemPrompt) {
+            apiMessages.push({ role: 'system', content: systemPrompt });
         }
-      }
 
-      apiMessages.push(...messages);
+        const messagesCopy = JSON.parse(JSON.stringify(messages));
+
+        if (includeProjectContext) {
+            const context: ContextResult = this._contextManager ? await this._contextManager.getContextContent() : { text: '', images: [] };
+            if (context.text && context.text.trim().length > 0) {
+                apiMessages.push({ role: 'system', content: `## Project Context\n${context.text}` });
+            }
+            if (context.images.length > 0) {
+                let lastUserMessage = null;
+                for (let i = messagesCopy.length - 1; i >= 0; i--) {
+                    if (messagesCopy[i].role === 'user') {
+                        lastUserMessage = messagesCopy[i];
+                        break;
+                    }
+                }
+                if (lastUserMessage) {
+                    if (typeof lastUserMessage.content === 'string') {
+                        lastUserMessage.content = [{ type: 'text', text: lastUserMessage.content }];
+                    }
+                    for (const image of context.images) {
+                        (lastUserMessage.content as any[]).push({
+                            type: 'image_url',
+                            image_url: { url: image.data, detail: "auto" }
+                        });
+                    }
+                }
+            }
+        }
+
+        apiMessages.push(...messagesCopy);
       
       this._lastApiRequest = apiMessages;
       const responseText = await this._lollmsAPI.sendChat(apiMessages, this._currentRequestController.signal);
@@ -326,6 +371,43 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         this._currentRequestController = null;
     }
   }
+
+  public async startDiscussionWithPrompt(prompt: string): Promise<void> {
+    if (this._currentRequestController) {
+        this._currentRequestController.abort();
+    }
+    
+    this._currentDiscussion = this._discussionManager.createNewDiscussion();
+
+    const userMessage: ChatMessage = {
+        id: 'user_' + Date.now().toString() + Math.random().toString(36).substring(2),
+        role: 'user',
+        content: prompt
+    };
+    this._currentDiscussion.messages.push(userMessage);
+    this._currentDiscussion.timestamp = Date.now();
+    await this._discussionManager.saveDiscussion(this._currentDiscussion);
+
+    this._panel.title = this._currentDiscussion.title;
+    this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
+    this.displayPlan(null);
+    
+    vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
+
+    await this._updateContextAndTokens();
+
+    (async () => {
+        const newTitle = await this._discussionManager.generateDiscussionTitle(this._currentDiscussion!);
+        if (newTitle && this._currentDiscussion) {
+            this._currentDiscussion.title = newTitle;
+            this._panel.title = newTitle;
+            await this._discussionManager.saveDiscussion(this._currentDiscussion);
+            vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
+        }
+    })();
+
+    await this._callApiWithMessages(this._currentDiscussion.messages);
+}
 
   public async sendMessage(userMessage: ChatMessage) {
     if (!this._currentDiscussion) {
@@ -479,7 +561,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     if (isImage) {
         chatMessage = {
             id: attachmentId,
-            role: 'system',
+            role: 'user',
             content: [
                 { type: 'text', text: `Attached image: ${name}` },
                 { type: 'image_url', image_url: { url: dataUrl } }
@@ -538,10 +620,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         chatMessage = {
             id: attachmentId,
             role: 'system',
-            content: [
-                { type: 'text', text: `Attached file: ${name}` },
-                { type: 'text', text: fileContentBlock }
-            ]
+            content: `Attached file: **${name}**\n\n${fileContentBlock}`
         };
     }
     await this.addMessageToDiscussion(chatMessage);
@@ -590,13 +669,39 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         case 'requestDeleteMessage':
             await this.deleteMessage(message.messageId);
             break;
+        case 'removeFileFromContext':
+            vscode.commands.executeCommand('lollms-vs-coder.removeFileFromContext', message.filePath);
+            break;
         case 'requestLog':
-          this._panel.webview.postMessage({ 
-              command: 'showLog', 
-              request: this._lastApiRequest, 
-              response: this._lastApiResponse 
-          });
-          break;
+          if (!this._lastApiRequest && !this._lastApiResponse) {
+            InfoPanel.createOrShow(this._extensionUri, 'Lollms API Log', 'No log data available for the last interaction.');
+            return;
+          }
+
+          let logContent = `# Last Lollms API Interaction\n\n`;
+          logContent += `**Note:** This log shows the most recent API request and response. It may not correspond to older messages in the chat history.\n\n`;
+          logContent += `## ➡️ Request Sent to Lollms\n\n`;
+          
+          if (this._lastApiRequest) {
+            this._lastApiRequest.forEach(msg => {
+              logContent += `### Role: \`${msg.role}\`\n`;
+              const content = (typeof msg.content === 'string') ? msg.content : JSON.stringify(msg.content, null, 2);
+              logContent += `\`\`\`\n${content}\n\`\`\`\n\n`;
+            });
+          } else {
+            logContent += `*No request data available.*\n\n`;
+          }
+
+          logContent += `## ⬅️ Raw Response from Lollms\n\n`;
+
+          if (this._lastApiResponse) {
+            logContent += `\`\`\`\n${this._lastApiResponse}\n\`\`\`\n`;
+          } else {
+            logContent += `*No response data available.*\n`;
+          }
+
+          InfoPanel.createOrShow(this._extensionUri, 'Lollms API Log', logContent);
+          return;
         case 'regenerateResponse':
           await this.regenerateResponse();
           break;
@@ -614,6 +719,12 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             break;
         case 'applyPatchContent':
             vscode.commands.executeCommand('lollms-vs-coder.applyPatchContent', message.filePath, message.content);
+            break;
+        case 'runScript':
+            vscode.commands.executeCommand('lollms-vs-coder.runScript', message.code, message.language);
+            break;
+        case 'executeProject':
+            vscode.commands.executeCommand('lollms-vs-coder.executeProject');
             break;
         case 'saveMessageAsPrompt':
           vscode.commands.executeCommand('lollms-vs-coder.saveMessageAsPrompt', message.content);

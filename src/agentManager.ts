@@ -299,6 +299,51 @@ export class AgentManager {
                     if (!command) return { success: false, output: "Error: 'command' argument is required." };
                     return await this.runCommand(command);
                 
+                case 'set_launch_entrypoint':
+                        if (!task.parameters.file_path) {
+                            return { success: false, output: "Error: 'file_path' parameter is required." };
+                        }
+                        const root = vscode.workspace.workspaceFolders?.[0];
+                        if (!root) {
+                            return { success: false, output: "Error: No active workspace folder." };
+                        }
+                        const launchJsonPath = vscode.Uri.joinPath(root.uri, '.vscode', 'launch.json');
+                        let launchConfig;
+                
+                        try {
+                            const fileContent = await vscode.workspace.fs.readFile(launchJsonPath);
+                            launchConfig = JSON.parse(fileContent.toString());
+                        } catch (error) {
+                            // File doesn't exist, create a default one
+                            await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(root.uri, '.vscode'));
+                            launchConfig = {
+                                version: '0.2.0',
+                                configurations: []
+                            };
+                        }
+                
+                        if (!launchConfig.configurations || !Array.isArray(launchConfig.configurations)) {
+                             launchConfig.configurations = [];
+                        }
+                
+                        if (launchConfig.configurations.length === 0) {
+                            launchConfig.configurations.push({
+                                name: 'Run Lollms Project',
+                                request: 'launch',
+                                type: 'node', // A reasonable default
+                                program: ''
+                            });
+                        }
+                        
+                        launchConfig.configurations[0].program = `\${workspaceFolder}/${task.parameters.file_path}`;
+                        
+                        try {
+                            await vscode.workspace.fs.writeFile(launchJsonPath, Buffer.from(JSON.stringify(launchConfig, null, 4), 'utf8'));
+                            return { success: true, output: `Successfully set launch.json entry point to '${task.parameters.file_path}'.` };
+                        } catch (error: any) {
+                            return { success: false, output: `Error writing to launch.json: ${error.message}` };
+                        }
+
                 default:
                     return { success: false, output: `Error: Unknown simple action '${task.action}'.` };
             }
@@ -342,6 +387,28 @@ export class AgentManager {
                     return { success: true, output: responseText.trim() };
                 } else {
                     return { success: false, output: `Coder agent failed to produce a valid code block or any content. Full response:\n${responseText}` };
+                }
+            
+            case 'auto_select_context_files':
+                if (!task.parameters.objective) {
+                    return { success: false, output: "Error: 'objective' parameter is required for auto-selecting files." };
+                }
+            
+                const fileTreeProvider = this.contextManager.getFileTreeProvider();
+                if (!fileTreeProvider) {
+                    return { success: false, output: "Error: File Tree Provider is not available." };
+                }
+                
+                const fileList = await this.contextManager.getAutoSelectionForContext(task.parameters.objective);
+            
+                if (fileList && fileList.length > 0) {
+                    await fileTreeProvider.addFilesToContext(fileList);
+                    const fileListString = fileList.map(f => `- ${f}`).join('\n');
+                    return { success: true, output: `Successfully added ${fileList.length} files to the context:\n${fileListString}` };
+                } else if (fileList) {
+                    return { success: true, output: "AI did not select any files for the given objective." };
+                } else {
+                    return { success: false, output: "AI failed to select files. The operation was aborted." };
                 }
 
             default:

@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as os from 'os';
 
 export async function applyDiff(diffContent: string) {
     const workspaceFolders = vscode.workspace.workspaceFolders;
@@ -68,22 +69,31 @@ export async function applyDiff(diffContent: string) {
 export function getProcessedSystemPrompt(promptType: 'chat' | 'agent'): string {
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const promptKey = promptType === 'chat' ? 'chatSystemPrompt' : 'agentSystemPrompt';
-    const systemPrompt = config.get<string>(promptKey);
+    let systemPrompt = config.get<string>(promptKey); // Make mutable
+    const noThinkMode = config.get<boolean>('noThinkMode') || false;
     
     if (!systemPrompt || systemPrompt.trim() === '') {
-        return '';
+        systemPrompt = '';
     }
 
     const now = new Date();
     const date = now.toISOString().split('T')[0];
     const time = now.toTimeString().split(' ')[0];
+    const platform = os.platform();
     
     let processedPrompt = systemPrompt
         .replace(/{{date}}/g, date)
         .replace(/{{time}}/g, time)
-        .replace(/{{datetime}}/g, `${date} ${time}`);
+        .replace(/{{datetime}}/g, `${date} ${time}`)
+        .replace(/{{os}}/g, platform);
 
-    return processedPrompt.trim() + '\n\n';
+    let finalPrompt = processedPrompt.trim();
+
+    if (noThinkMode) {
+        finalPrompt = `/no_think\n${finalPrompt}`;
+    }
+
+    return finalPrompt ? `${finalPrompt}\n\n` : '';
 }
 
 export function stripThinkingTags(responseText: string): string {

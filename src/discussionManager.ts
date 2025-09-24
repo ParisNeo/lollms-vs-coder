@@ -125,19 +125,74 @@ export class DiscussionManager {
             return null;
         }
     
-        const chatPersonaPrompt = getProcessedSystemPrompt('chat');
-        const prompt: ChatMessage[] = [
-            { 
-                role: 'system', 
-                content: `You are an expert at summarizing conversations. Based on the following messages, generate a concise and descriptive title (5 words or less). Do not add any prefixes like 'Title:' or use quotation marks. Just return the plain text of the title.\n\nUser preferences: ${chatPersonaPrompt}` 
-            },
-            ...discussion.messages.slice(0, 4) // Use first few messages for context
-        ];
+        const systemPrompt: ChatMessage = {
+            role: 'system',
+            content: `You are an expert at summarizing conversations. Your task is to generate a concise, descriptive title (5 words or less) based on the provided conversation.
+
+**CRITICAL INSTRUCTIONS:**
+1.  **JSON ONLY:** Your entire response MUST be a single, valid JSON object inside a \`\`\`json markdown block.
+2.  **NO EXTRA TEXT:** Do not add any conversational text or explanations outside the JSON block.
+3.  **SCHEMA:** The JSON object must have a single key: "title".
+4.  **DO NOT ANSWER THE PROMPT:** Your sole purpose is to create the title.
+
+**Example Conversation:**
+User: "how do I build a snake game in python?"
+
+**Example Response:**
+\`\`\`json
+{
+  "title": "Python Snake Game Implementation"
+}
+\`\`\`
+`
+        };
+    
+        const userMessages = discussion.messages.filter(m => m.role === 'user').slice(0, 2);
+        if (userMessages.length === 0) return null;
+    
+        const conversationForTitle = userMessages
+            .map(m => `**${m.role}:** ${typeof m.content === 'string' ? m.content.substring(0, 500) : JSON.stringify(m.content)}`)
+            .join('\n\n');
+    
+        const userPrompt: ChatMessage = {
+            role: 'user',
+            content: `Generate a title for this conversation:\n\n${conversationForTitle}`
+        };
     
         try {
-            const rawTitle = await this.lollmsAPI.sendChat(prompt);
-            const cleanTitle = stripThinkingTags(rawTitle); // Clean the response
-            return cleanTitle.trim().replace(/["']/g, ''); // Clean up quotes
+            const rawResponse = await this.lollmsAPI.sendChat([systemPrompt, userPrompt]);
+            const cleanResponse = stripThinkingTags(rawResponse);
+    
+            const jsonMatch = cleanResponse.match(/```json\s*([\s\S]+?)\s*```/);
+            let jsonString = null;
+            if (jsonMatch && jsonMatch[1]) {
+                jsonString = jsonMatch[1];
+            } else {
+                const firstBrace = cleanResponse.indexOf('{');
+                const lastBrace = cleanResponse.lastIndexOf('}');
+                if (firstBrace !== -1 && lastBrace > firstBrace) {
+                    jsonString = cleanResponse.substring(firstBrace, lastBrace + 1);
+                }
+            }
+    
+            if (jsonString) {
+                try {
+                    const parsed = JSON.parse(jsonString);
+                    if (parsed && typeof parsed.title === 'string' && parsed.title.trim() !== '') {
+                        return parsed.title.trim().replace(/["']/g, '');
+                    }
+                } catch (e) {
+                    console.warn("Could not parse JSON from title generation response, falling back to plain text.", e);
+                }
+            }
+            
+            console.warn("AI did not return valid JSON for title generation. Using first line of response instead. Raw response:", rawResponse);
+            const firstLine = cleanResponse.split('\n')[0].trim();
+            if (firstLine.length > 80 || firstLine.includes('```')) {
+                return "Untitled Discussion"; // A safe default if the response looks like an answer
+            }
+            return firstLine.replace(/["']/g, '');
+    
         } catch (error) {
             console.error("Failed to generate discussion title:", error);
             return null;

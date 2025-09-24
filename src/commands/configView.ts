@@ -10,8 +10,13 @@ export class SettingsPanel {
     apiUrl: '',
     modelName: '',
     disableSslVerification: false,
+    noThinkMode: false,
     requestTimeout: 600000,
     agentMaxRetries: 1,
+    maxImageSize: 1024,
+    enableCodeInspector: true,
+    inspectorModelName: '',
+    codeInspectorSystemPrompt: '',
     chatSystemPrompt: '',
     agentSystemPrompt: '',
     language: 'auto'
@@ -47,8 +52,13 @@ export class SettingsPanel {
     this._pendingConfig.apiUrl = config.get<string>('apiUrl') || 'http://localhost:9642';
     this._pendingConfig.modelName = config.get<string>('modelName') || '';
     this._pendingConfig.disableSslVerification = config.get<boolean>('disableSslVerification') || false;
+    this._pendingConfig.noThinkMode = config.get<boolean>('noThinkMode') || false;
     this._pendingConfig.requestTimeout = config.get<number>('requestTimeout') || 600000;
     this._pendingConfig.agentMaxRetries = config.get<number>('agentMaxRetries') || 1;
+    this._pendingConfig.maxImageSize = config.get<number>('maxImageSize') || 1024;
+    this._pendingConfig.enableCodeInspector = config.get<boolean>('enableCodeInspector') || true;
+    this._pendingConfig.inspectorModelName = config.get<string>('inspectorModelName') || '';
+    this._pendingConfig.codeInspectorSystemPrompt = config.get<string>('codeInspectorSystemPrompt') || '';
     this._pendingConfig.chatSystemPrompt = config.get<string>('chatSystemPrompt') || '';
     this._pendingConfig.agentSystemPrompt = config.get<string>('agentSystemPrompt') || '';
     this._pendingConfig.language = config.get<string>('language') || 'auto';
@@ -82,8 +92,13 @@ export class SettingsPanel {
                 await config.update('apiUrl', this._pendingConfig.apiUrl, vscode.ConfigurationTarget.Global);
                 await config.update('modelName', this._pendingConfig.modelName, vscode.ConfigurationTarget.Global);
                 await config.update('disableSslVerification', this._pendingConfig.disableSslVerification, vscode.ConfigurationTarget.Global);
+                await config.update('noThinkMode', this._pendingConfig.noThinkMode, vscode.ConfigurationTarget.Global);
                 await config.update('requestTimeout', this._pendingConfig.requestTimeout, vscode.ConfigurationTarget.Global);
                 await config.update('agentMaxRetries', this._pendingConfig.agentMaxRetries, vscode.ConfigurationTarget.Global);
+                await config.update('maxImageSize', this._pendingConfig.maxImageSize, vscode.ConfigurationTarget.Global);
+                await config.update('enableCodeInspector', this._pendingConfig.enableCodeInspector, vscode.ConfigurationTarget.Global);
+                await config.update('inspectorModelName', this._pendingConfig.inspectorModelName, vscode.ConfigurationTarget.Global);
+                await config.update('codeInspectorSystemPrompt', this._pendingConfig.codeInspectorSystemPrompt, vscode.ConfigurationTarget.Global);
                 await config.update('chatSystemPrompt', this._pendingConfig.chatSystemPrompt, vscode.ConfigurationTarget.Global);
                 await config.update('agentSystemPrompt', this._pendingConfig.agentSystemPrompt, vscode.ConfigurationTarget.Global);
                 await config.update('language', this._pendingConfig.language, vscode.ConfigurationTarget.Global);
@@ -125,7 +140,7 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, modelName, disableSslVerification, requestTimeout, agentMaxRetries, chatSystemPrompt, agentSystemPrompt, language } = config;
+    const { apiKey, apiUrl, modelName, disableSslVerification, noThinkMode, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorSystemPrompt, chatSystemPrompt, agentSystemPrompt, language } = config;
 
     return `<!DOCTYPE html>
         <html lang="en">
@@ -209,20 +224,44 @@ export class SettingsPanel {
                   <label for="disableSsl">Disable SSL Verification</label>
               </div>
               <p class="help-text">Useful for local servers with self-signed certificates.</p>
+              
+              <div class="checkbox-container">
+                  <input type="checkbox" id="noThinkMode" ${noThinkMode ? 'checked' : ''}>
+                  <label for="noThinkMode">Enable /no_think Mode</label>
+              </div>
+              <p class="help-text">Prefixes all system prompts with the /no_think command for models that support it.</p>
+              
+              <label for="maxImageSize">Max Image Size (px)</label>
+              <input type="number" id="maxImageSize" value="${maxImageSize}" min="0" step="128" />
+              <p class="help-text">Resize images to this maximum dimension before sending. 0 disables resizing.</p>
 
               <h2>Agent Configuration</h2>
               <label for="agentMaxRetries">Agent Self-Correction Retries</label>
               <input type="number" id="agentMaxRetries" value="${agentMaxRetries}" min="0" max="5" />
               <p class="help-text">Number of times the agent will try to fix a failed task before asking for help.</p>
               
+              <h2>Code Inspector</h2>
+                <div class="checkbox-container">
+                    <input type="checkbox" id="enableCodeInspector" ${enableCodeInspector ? 'checked' : ''}>
+                    <label for="enableCodeInspector">Enable Code Inspector</label>
+                </div>
+                <p class="help-text">Adds a button to AI-generated code blocks to check for bugs and vulnerabilities.</p>
+                
+                <label for="inspectorModelName">Inspector Model Name</label>
+                <input type="text" id="inspectorModelName" value="${inspectorModelName}" placeholder="Default: Same as chat model" autocomplete="off" />
+                <p class="help-text">Optional. Use a different, potentially stronger model for code inspection.</p>
+
+                <label for="codeInspectorSystemPrompt">Code Inspector System Prompt</label>
+                <textarea id="codeInspectorSystemPrompt" rows="8">${codeInspectorSystemPrompt}</textarea>
+
               <h2>System Prompts / Personas</h2>
               <label for="chatSystemPrompt">Chat Mode System Prompt</label>
               <textarea id="chatSystemPrompt" rows="8" placeholder="e.g., You are a helpful AI assistant.">${chatSystemPrompt}</textarea>
-              <p class="help-text">Defines the AI's persona and rules for the main chat window. Supports placeholders: <code>{{date}}</code>, <code>{{time}}</code>, <code>{{datetime}}</code>.</p>
+              <p class="help-text">Defines the AI's persona and rules for the main chat window. Supports placeholders: <code>{{date}}</code>, <code>{{time}}</code>, <code>{{datetime}}</code>, <code>{{os}}</code>.</p>
               
               <label for="agentSystemPrompt">Agent Mode System Prompt</label>
               <textarea id="agentSystemPrompt" rows="6" placeholder="e.g., You are a sub-agent that follows instructions.">${agentSystemPrompt}</textarea>
-              <p class="help-text">Defines the persona for AI agents performing autonomous tasks (like generating code). Supports placeholders: <code>{{date}}</code>, <code>{{time}}</code>, <code>{{datetime}}</code>.</p>
+              <p class="help-text">Defines the persona for AI agents performing autonomous tasks (like generating code). Supports placeholders: <code>{{date}}</code>, <code>{{time}}</code>, <code>{{datetime}}</code>, <code>{{os}}</code>.</p>
               
               <h2>Advanced</h2>
               <p class="help-text">For advanced customization, you can directly edit the JSON file that stores your prompt library.</p>
@@ -242,7 +281,12 @@ export class SettingsPanel {
                     modelName: document.getElementById('modelSelect'),
                     requestTimeout: document.getElementById('requestTimeout'),
                     disableSslVerification: document.getElementById('disableSsl'),
+                    noThinkMode: document.getElementById('noThinkMode'),
                     agentMaxRetries: document.getElementById('agentMaxRetries'),
+                    maxImageSize: document.getElementById('maxImageSize'),
+                    enableCodeInspector: document.getElementById('enableCodeInspector'),
+                    inspectorModelName: document.getElementById('inspectorModelName'),
+                    codeInspectorSystemPrompt: document.getElementById('codeInspectorSystemPrompt'),
                     chatSystemPrompt: document.getElementById('chatSystemPrompt'),
                     agentSystemPrompt: document.getElementById('agentSystemPrompt')
                 };

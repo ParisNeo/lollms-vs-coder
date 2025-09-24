@@ -118,17 +118,22 @@
             line-height: 1.6;
             word-wrap: break-word;
         }
-        .message-content pre {
-            position: relative;
-            background-color: var(--code-bg) !important;
+
+        .code-collapsible {
+            background-color: var(--code-bg);
             border: 1px solid var(--code-border);
             border-radius: 8px;
             margin: 12px 0;
-            padding: 0;
             overflow: hidden;
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
         }
-        .message-content pre code {
+        .code-collapsible > pre {
+            max-height: 450px;
+            overflow-y: auto;
+            margin: 0;
+            border-top: 1px solid var(--code-border);
+        }
+        .code-collapsible > pre > code {
             background: transparent !important;
             padding: 16px !important;
             display: block;
@@ -138,27 +143,36 @@
             line-height: 1.5;
             color: #D4D4D4;
         }
-        .code-header {
-            background-color: var(--vscode-editorGroupHeader-tabsBackground);
-            padding: 8px 16px;
-            font-size: 12px;
-            font-weight: 600;
-            color: var(--vscode-tab-activeForeground);
-            border-bottom: 1px solid var(--code-border);
+        .code-summary {
             display: flex;
-            justify-content: space-between;
             align-items: center;
+            gap: 12px;
+            padding: 8px 16px;
+            background-color: var(--vscode-editorGroupHeader-tabsBackground);
+            color: var(--vscode-tab-activeForeground);
+            cursor: pointer;
+            list-style: none;
         }
-        .language-label {
-            background-color: var(--vscode-badge-background);
-            color: var(--vscode-badge-foreground);
-            padding: 2px 8px;
-            border-radius: 12px;
-            font-size: 11px;
+        .code-summary::-webkit-details-marker {
+            display: none;
+        }
+        .code-summary::before {
+            content: '▼';
+            font-size: 0.9em;
+            transition: transform 0.2s;
+            color: var(--vscode-icon-foreground);
+        }
+        details[open] > .code-summary::before {
+            transform: rotate(-90deg);
+        }
+        .summary-lang-label {
+            font-weight: 600;
+            font-size: 12px;
             text-transform: uppercase;
             letter-spacing: 0.5px;
         }
         .code-actions {
+            margin-left: auto;
             display: flex;
             gap: 8px;
         }
@@ -619,6 +633,7 @@
             </div>
             <div class="input-area">
                 <button id="attachButton" title="Attach Files"><i class="codicon codicon-add"></i></button>
+                <button id="executeButton" title="Execute Project (F5)"><i class="codicon codicon-play"></i></button>
                 <textarea id="messageInput" placeholder="Enter your message (Shift+Enter for new line)..." rows="1"></textarea>
                 <div class="control-buttons">
                     <button id="sendButton" title="Send Message"><i class="codicon codicon-send"></i></button>
@@ -644,6 +659,7 @@
         const sendButton = document.getElementById('sendButton');
         const stopButton = document.getElementById('stopButton');
         const attachButton = document.getElementById('attachButton');
+        const executeButton = document.getElementById('executeButton');
         const fileInput = document.getElementById('fileInput');
         const agentModeCheckbox = document.getElementById('agentModeCheckbox');
         const agentModeToggle = document.querySelector('.agent-mode-toggle');
@@ -919,6 +935,22 @@
                 editBtn.onclick = () => startEdit(messageDiv, message.id, role);
                 actions.insertBefore(editBtn, actions.firstChild);
             }
+            
+            if (role === 'assistant') {
+                const savePromptBtn = document.createElement('button');
+                savePromptBtn.className = 'msg-action-btn';
+                savePromptBtn.innerHTML = '💾';
+                savePromptBtn.title = 'Save as Prompt';
+                savePromptBtn.onclick = () => vscode.postMessage({ command: 'saveMessageAsPrompt', content: rawContent });
+                actions.appendChild(savePromptBtn);
+
+                const logBtn = document.createElement('button');
+                logBtn.className = 'msg-action-btn';
+                logBtn.innerHTML = '📜';
+                logBtn.title = 'Show Log';
+                logBtn.onclick = () => vscode.postMessage({ command: 'requestLog' });
+                actions.appendChild(logBtn);
+            }
 
             messageDiv.appendChild(contentDiv);
             messageDiv.appendChild(actions);
@@ -956,29 +988,47 @@
         
         function enhanceCodeBlocks(container) {
             container.querySelectorAll('pre').forEach(pre => {
+                if (pre.parentElement.tagName === 'DETAILS') return; 
+
                 const codeBlock = pre.querySelector('code');
                 if (!codeBlock) return;
         
-                let header = pre.previousElementSibling;
-                if(header && header.classList.contains('code-header')){
-                    header.remove();
-                }
-
-                header = document.createElement('div');
-                header.className = 'code-header';
-                
                 const codeContent = codeBlock.innerText;
-                
                 let language = [...codeBlock.classList]
                     .find(c => c.startsWith('language-'))
-                    ?.replace('language-', '').toLowerCase() || '';
+                    ?.replace('language-', '').toLowerCase() || 'text';
 
-                header.innerHTML = `<span class="language-label">${language || 'text'}</span>`;
+                const details = document.createElement('details');
+                details.className = 'code-collapsible';
+                details.open = true;
+
+                const summary = document.createElement('summary');
+                summary.className = 'code-summary';
+
+                const langLabel = document.createElement('span');
+                langLabel.className = 'summary-lang-label';
+                langLabel.textContent = language.toUpperCase();
+                summary.appendChild(langLabel);
                 
                 const actions = document.createElement('div');
                 actions.className = 'code-actions';
 
-                // [NEW] Logic to find and add Apply button
+                const executableLanguages = ['bash', 'shell', 'sh', 'powershell', 'pwsh', 'cmd', 'bat', 'batch', 'python'];
+                if (executableLanguages.includes(language)) {
+                    const executeBtn = document.createElement('button');
+                    executeBtn.className = 'code-action-btn';
+                    executeBtn.innerHTML = '▶️ Execute';
+                    executeBtn.title = 'Execute Script';
+                    executeBtn.onclick = () => {
+                        vscode.postMessage({
+                            command: 'runScript',
+                            code: codeContent,
+                            language: language
+                        });
+                    };
+                    actions.appendChild(executeBtn);
+                }
+
                 const previousElement = pre.previousElementSibling;
                 if (previousElement && previousElement.tagName === 'P') {
                     const text = (previousElement.textContent || '').trim();
@@ -1019,8 +1069,11 @@
                 };
                 actions.appendChild(copyBtn);
 
-                header.appendChild(actions);
-                pre.parentNode.insertBefore(header, pre);
+                summary.appendChild(actions);
+
+                pre.parentNode.insertBefore(details, pre);
+                details.appendChild(summary);
+                details.appendChild(pre);
                 
                 Prism.highlightElement(codeBlock);
             });
@@ -1031,6 +1084,7 @@
             agentModeCheckbox.disabled = isGenerating;
             agentModeToggle.classList.toggle('disabled', isGenerating);
             attachButton.disabled = isGenerating;
+            executeButton.disabled = isGenerating;
 
             sendButton.style.display = isGenerating ? 'none' : 'flex';
             stopButton.style.display = isGenerating ? 'flex' : 'none';
@@ -1058,6 +1112,11 @@
         
         attachButton.addEventListener('click', () => {
             fileInput.click();
+        });
+
+        executeButton.addEventListener('click', () => {
+            setGeneratingState(true);
+            vscode.postMessage({ command: 'executeProject' });
         });
 
         fileInput.addEventListener('change', () => {

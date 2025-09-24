@@ -10,7 +10,7 @@ import mammoth from 'mammoth';
 import * as ExcelJS from 'exceljs';
 import { Readable } from 'stream';
 import { InfoPanel } from './infoPanel';
-
+import { stripThinkingTags } from '../utils'; // Make sure this is imported
 
 export class ChatPanel {
   public static currentPanel: ChatPanel | undefined;
@@ -77,11 +77,13 @@ export class ChatPanel {
       this._panel.webview.postMessage({ command: 'displayPlan', plan: plan });
   }
 
+  
   public async loadDiscussion(id: string): Promise<void> {
     if (this._currentRequestController) {
         this._currentRequestController.abort();
     }
     const discussion = await this._discussionManager.getDiscussion(id);
+
     if (discussion) {
         let needsSave = false;
         discussion.messages.forEach(msg => {
@@ -97,12 +99,20 @@ export class ChatPanel {
 
         this._currentDiscussion = discussion;
         this._panel.title = this._currentDiscussion.title;
-        this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
-        this.displayPlan(null); // Clear plan when switching discussions
+
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const isInspectorEnabled = config.get<boolean>('enableCodeInspector', true);
+
+        this._panel.webview.postMessage({ 
+            command: 'loadDiscussion', 
+            messages: this._currentDiscussion.messages,
+            isInspectorEnabled: isInspectorEnabled 
+        });
+        
+        this.displayPlan(null);
         this._updateContextAndTokens();
     }
   }
-
   public async startNewDiscussion(groupId: string | null = null): Promise<void> {
     if (this._currentRequestController) {
         this._currentRequestController.abort();
@@ -310,7 +320,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     await this._callApiWithMessages(messagesForApi, false);
   }
 
-  private async _callApiWithMessages(messages: ChatMessage[], includeProjectContext: boolean = true) {
+  private async _callApiWithMessages(messages: ChatMessage[], includeProjectContext: boolean = true, modelOverride?: string) {
     this._currentRequestController = new AbortController();
     try {
         const apiMessages: ChatMessage[] = [];
@@ -351,7 +361,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         apiMessages.push(...messagesCopy);
       
       this._lastApiRequest = apiMessages;
-      const responseText = await this._lollmsAPI.sendChat(apiMessages, this._currentRequestController.signal);
+      const responseText = await this._lollmsAPI.sendChat(apiMessages, this._currentRequestController.signal, modelOverride);
       this._lastApiResponse = responseText;
       const assistantMessage: ChatMessage = { role: 'assistant', content: responseText };
       
@@ -625,13 +635,79 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     }
     await this.addMessageToDiscussion(chatMessage);
   }
-
+  
   private _setWebviewMessageListener(webview: vscode.Webview) {
     webview.onDidReceiveMessage(async (message) => {
       switch (message.command) {
         case 'sendMessage':
           await this.sendMessage(message.message);
           break;
+        case 'inspectCode':
+            const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+            if (!config.get('enableCodeInspector')) return;
+
+            await this.addMessageToDiscussion({ role: 'system', content: '🔍 Inspecting code...' });
+
+            const inspectorModel = config.get<string>('inspectorModelName') || undefined;
+            const systemPrompt = config.get<string>('codeInspectorSystemPrompt');
+
+            if (!systemPrompt) {
+                this.addMessageToDiscussion({ role: 'system', content: '❌ Inspection failed: Inspector system prompt is not configured.' });
+                return;
+            }
+
+            const inspectionMessages: ChatMessage[] = [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: `Inspect the following ${message.language} code block:\n\n\`\`\`${message.language}\n${message.code}\n\`\`\`` }
+            ];
+
+            try {
+                const response = await this._lollmsAPI.sendChat(inspectionMessages, undefined, inspectorModel);
+                const cleanResponse = stripThinkingTags(response);
+
+                if (cleanResponse.trim().toUpperCase() === 'OK') {
+                    await this.addMessageToDiscussion({ role: 'system', content: '✅ **Inspector:** Code is OK.' });
+                } else if (cleanResponse.startsWith('**🚨 CRITICAL ALERT:')) {
+                    await this.addMessageToDiscussion({ role: 'system', content: `🔴 ${cleanResponse}` });
+                } else if (cleanResponse.startsWith('**⚠️ VULNERABILITY DETECTED:')) {
+                    await this.addMessageToDiscussion({ role: 'system', content: `🟠 ${cleanResponse}` });
+                } else {
+                    // Assume it's a code fix
+                    const codeBlockRegex = /```(?:[\w-]*)\n([\s\S]+?)\n```/s;
+                    const match = cleanResponse.match(codeBlockRegex);
+                    if (match && match[1] && this._currentDiscussion) {
+                        const newCode = match[1];
+                        const originalMessageIndex = this._currentDiscussion.messages.findIndex(m => m.id === message.messageId);
+                        
+                        if (originalMessageIndex > -1) {
+                            const originalMessage = this._currentDiscussion.messages[originalMessageIndex];
+                            // Replace the old code block with the new one
+                            const originalCodeBlock = `\`\`\`${message.language}\n${message.code}\n\`\`\``;
+                            const newCodeBlock = `\`\`\`${message.language}\n${newCode}\n\`\`\``;
+                            
+                            if (typeof originalMessage.content === 'string') {
+                                originalMessage.content = originalMessage.content.replace(originalCodeBlock, newCodeBlock);
+                            }
+                            
+                            await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                            await this.addMessageToDiscussion({ role: 'system', content: '✅ **Inspector:** Found issues and corrected the code above.' });
+                            
+                            // Reload the discussion in the webview to show the updated message
+                            this._panel.webview.postMessage({ 
+                                command: 'loadDiscussion', 
+                                messages: this._currentDiscussion.messages,
+                                isInspectorEnabled: true 
+                            });
+                        }
+                    } else {
+                        // If no code block is found, just post the AI's text response
+                        await this.addMessageToDiscussion({ role: 'system', content: `**Inspector Analysis:**\n${cleanResponse}` });
+                    }
+                }
+            } catch (error: any) {
+                await this.addMessageToDiscussion({ role: 'system', content: `❌ Inspection failed: ${error.message}` });
+            }
+            break;
         case 'resendMessage':
           const userMessage = message.message;
           this._panel.webview.postMessage({ command: 'addMessage', message: userMessage });

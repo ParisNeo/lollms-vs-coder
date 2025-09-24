@@ -19,6 +19,8 @@
     "command.exportContextContent.title": "Lollms: Export Context to Clipboard",
     "command.saveNewFile.title": "Lollms: Save New File",
     "command.executeScript.title": "Lollms: Execute Script",
+    "command.inspectCode.title": "Lollms: Inspect Code",
+    "command.autoSelectContextFiles.title": "Lollms: Auto-Select Context Files",
     "command.newDiscussion.title": "New Discussion",
     "command.delete.title": "Delete",
     "command.switchDiscussion.title": "Switch Discussion",
@@ -131,5 +133,8 @@
     "welcome.item1": "Ask me to write code, explain concepts, or debug issues.",
     "welcome.item2": "To create or update a file, ask me and I'll provide the full code. Look for the ⚙️ <strong>Apply</strong> button to save the changes.",
     "welcome.item3": "Use the <strong>AI Context Files</strong> view in the sidebar to control which files I can see.",
-    "welcome.item4": "Toggle 🤖 <strong>Agent Mode</strong> to give me a complex objective. I'll create a plan and execute it step-by-step."
+    "welcome.item4": "Toggle 🤖 <strong>Agent Mode</strong> to give me a complex objective. I'll create a plan and execute it step-by-step.",
+    "prompt.enterObjectiveForSelection": "Enter the objective for AI file selection",
+    "progress.aiSelectingFiles": "Lollms: AI is selecting relevant files...",
+    "info.aiSelectedFiles": "Lollms: AI selected {0} file(s) and started a new discussion."
 }

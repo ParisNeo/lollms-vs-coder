@@ -602,7 +602,6 @@
             transition: background-color 0.2s;
         }
     </style>
-    
 </head>
 <body>
     <div class="chat-container">
@@ -1417,8 +1416,12 @@
 
           switch(message.command) {
             case 'addMessage':
+                // The AI has finished, re-enable controls
                 setGeneratingState(false);
                 addMessage(message.message);
+                break;
+            case 'setGeneratingState':
+                setGeneratingState(message.isGenerating);
                 break;
             case 'displayPlan':
                 const isFinished = !message.plan || message.plan.tasks.every(t => t.status === 'completed' || t.status === 'failed');

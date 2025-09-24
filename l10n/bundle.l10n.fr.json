@@ -19,6 +19,8 @@
     "command.exportContextContent.title": "Lollms: Exporter le Contexte vers le Presse-papiers",
     "command.saveNewFile.title": "Lollms: Enregistrer un Nouveau Fichier",
     "command.executeScript.title": "Lollms: Exécuter le Script",
+    "command.inspectCode.title": "Lollms: Inspecter le Code",
+    "command.autoSelectContextFiles.title": "Lollms: Sélection Automatique des Fichiers de Contexte",
     "command.newDiscussion.title": "Nouvelle Discussion",
     "command.delete.title": "Supprimer",
     "command.switchDiscussion.title": "Changer de Discussion",
@@ -130,5 +132,8 @@
     "welcome.item1": "Demandez-moi d'écrire du code, d'expliquer des concepts ou de déboguer des problèmes.",
     "welcome.item2": "Pour créer ou mettre à jour un fichier, demandez-le-moi et je fournirai le code complet. Cherchez le bouton ⚙️ <strong>Appliquer</strong> pour enregistrer les modifications.",
     "welcome.item3": "Utilisez la vue <strong>Fichiers de Contexte IA</strong> dans la barre latérale pour contrôler les fichiers que je peux voir.",
-    "welcome.item4": "Activez le 🤖 <strong>Mode Agent</strong> pour me donner un objectif complexe. Je créerai un plan et l'exécuterai étape par étape."
+    "welcome.item4": "Activez le 🤖 <strong>Mode Agent</strong> pour me donner un objectif complexe. Je créerai un plan et l'exécuterai étape par étape.",
+    "prompt.enterObjectiveForSelection": "Entrez l'objectif pour la sélection de fichiers par l'IA",
+    "progress.aiSelectingFiles": "Lollms: L'IA sélectionne les fichiers pertinents...",
+    "info.aiSelectedFiles": "Lollms: L'IA a sélectionné {0} fichier(s) et a démarré une nouvelle discussion."
 }

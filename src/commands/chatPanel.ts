@@ -12,6 +12,7 @@ import { Readable } from 'stream';
 import { InfoPanel } from './infoPanel';
 import { stripThinkingTags } from '../utils'; // Make sure this is imported
 
+
 export class ChatPanel {
   public static currentPanel: ChatPanel | undefined;
   public readonly _panel: vscode.WebviewPanel;
@@ -269,6 +270,7 @@ export class ChatPanel {
 
   public async handleProjectExecutionResult(output: string, success: boolean) {
     if (!this._currentDiscussion) {
+        this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: false });
         return;
     }
 
@@ -284,10 +286,13 @@ export class ChatPanel {
             role: 'user',
             content: `The project failed to execute with the output shown in the last system message. Please analyze the error and provide a fix for the relevant file(s).`
         };
+        // The call to the AI will handle resetting the generating state
         await this._callApiWithMessages([...this._currentDiscussion.messages, analysisPrompt]);
+    } else {
+        // If successful, we need to manually reset the state
+        this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: false });
     }
   }
-
   public async analyzeExecutionResult(code: string, language: string, output: string, exitCode: number | null) {
     if (!this._currentDiscussion) {
       return;
@@ -361,11 +366,11 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         apiMessages.push(...messagesCopy);
       
       this._lastApiRequest = apiMessages;
-      const responseText = await this._lollmsAPI.sendChat(apiMessages, this._currentRequestController.signal, modelOverride);
-      this._lastApiResponse = responseText;
-      const assistantMessage: ChatMessage = { role: 'assistant', content: responseText };
-      
-      await this.addMessageToDiscussion(assistantMessage);
+        const responseText = await this._lollmsAPI.sendChat(apiMessages, this._currentRequestController.signal, modelOverride);
+        this._lastApiResponse = responseText;
+        const assistantMessage: ChatMessage = { role: 'assistant', content: responseText };
+        
+        await this.addMessageToDiscussion(assistantMessage);
       
     } catch (error: any) {
         const isAbortError = error.name === 'AbortError' || (error instanceof Error && error.message.includes('aborted'));
@@ -379,6 +384,8 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         await this.addMessageToDiscussion(errorResponseMessage);
     } finally {
         this._currentRequestController = null;
+        // This ensures the button is reset even if the API call fails
+        this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: false });
     }
   }
 
@@ -418,7 +425,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
 
     await this._callApiWithMessages(this._currentDiscussion.messages);
 }
-
   public async sendMessage(userMessage: ChatMessage) {
     if (!this._currentDiscussion) {
         vscode.window.showErrorMessage("No active discussion. Please start a new one.");
@@ -449,6 +455,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             }
         })();
     }
+
 
     await this._callApiWithMessages(this._currentDiscussion.messages);
   }
@@ -635,7 +642,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     }
     await this.addMessageToDiscussion(chatMessage);
   }
-  
+    
   private _setWebviewMessageListener(webview: vscode.Webview) {
     webview.onDidReceiveMessage(async (message) => {
       switch (message.command) {
@@ -800,7 +807,8 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             vscode.commands.executeCommand('lollms-vs-coder.runScript', message.code, message.language);
             break;
         case 'executeProject':
-            vscode.commands.executeCommand('lollms-vs-coder.executeProject');
+            // The webview already set the generating state to true on button click
+            await vscode.commands.executeCommand('lollms-vs-coder.executeProject');
             break;
         case 'saveMessageAsPrompt':
           vscode.commands.executeCommand('lollms-vs-coder.saveMessageAsPrompt', message.content);

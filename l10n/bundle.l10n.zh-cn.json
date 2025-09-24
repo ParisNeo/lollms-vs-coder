@@ -19,6 +19,8 @@
     "command.exportContextContent.title": "Lollms: 将上下文导出到剪贴板",
     "command.saveNewFile.title": "Lollms: 保存新文件",
     "command.executeScript.title": "Lollms: 执行脚本",
+    "command.inspectCode.title": "Lollms: 检查代码",
+    "command.autoSelectContextFiles.title": "Lollms: 自动选择上下文文件",
     "command.newDiscussion.title": "新讨论",
     "command.delete.title": "删除",
     "command.switchDiscussion.title": "切换讨论",
@@ -130,5 +132,8 @@
     "welcome.item1": "叫我编写代码、解释概念或调试问题。",
     "welcome.item2": "要创建或更新文件，请告诉我，我将提供完整的代码。寻找 ⚙️ <strong>应用</strong> 按钮来保存更改。",
     "welcome.item3": "使用侧边栏中的 <strong>AI 上下文文件</strong> 视图来控制我可以看到哪些文件。",
-    "welcome.item4": "切换 🤖 <strong>代理模式</strong> 给我一个复杂的目标。我将制定一个计划并逐步执行它。"
+    "welcome.item4": "切换 🤖 <strong>代理模式</strong> 给我一个复杂的目标。我将制定一个计划并逐步执行它。",
+    "prompt.enterObjectiveForSelection": "输入AI文件选择的目标",
+    "progress.aiSelectingFiles": "Lollms: AI正在选择相关文件...",
+    "info.aiSelectedFiles": "Lollms: AI选择了 {0} 个文件并开始了新的讨论。"
 }

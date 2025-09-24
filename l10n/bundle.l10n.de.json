@@ -19,6 +19,8 @@
     "command.exportContextContent.title": "Lollms: Kontext in Zwischenablage exportieren",
     "command.saveNewFile.title": "Lollms: Neue Datei speichern",
     "command.executeScript.title": "Lollms: Skript ausführen",
+    "command.inspectCode.title": "Lollms: Code überprüfen",
+    "command.autoSelectContextFiles.title": "Lollms: Kontextdateien automatisch auswählen",
     "command.newDiscussion.title": "Neue Diskussion",
     "command.delete.title": "Löschen",
     "command.switchDiscussion.title": "Diskussion wechseln",
@@ -130,5 +132,8 @@
     "welcome.item1": "Bitten Sie mich, Code zu schreiben, Konzepte zu erklären oder Probleme zu debuggen.",
     "welcome.item2": "Um eine Datei zu erstellen oder zu aktualisieren, fragen Sie mich und ich stelle den vollständigen Code bereit. Suchen Sie nach der Schaltfläche ⚙️ <strong>Anwenden</strong>, um die Änderungen zu speichern.",
     "welcome.item3": "Verwenden Sie die Ansicht <strong>KI-Kontextdateien</strong> in der Seitenleiste, um zu steuern, welche Dateien ich sehen kann.",
-    "welcome.item4": "Aktivieren Sie den 🤖 <strong>Agentenmodus</strong>, um mir ein komplexes Ziel zu geben. Ich erstelle einen Plan und führe ihn Schritt für Schritt aus."
+    "welcome.item4": "Aktivieren Sie den 🤖 <strong>Agentenmodus</strong>, um mir ein komplexes Ziel zu geben. Ich erstelle einen Plan und führe ihn Schritt für Schritt aus.",
+    "prompt.enterObjectiveForSelection": "Geben Sie das Ziel für die KI-Dateiauswahl ein",
+    "progress.aiSelectingFiles": "Lollms: KI wählt relevante Dateien aus...",
+    "info.aiSelectedFiles": "Lollms: KI hat {0} Datei(en) ausgewählt und eine neue Diskussion gestartet."
 }

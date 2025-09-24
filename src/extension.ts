@@ -732,20 +732,42 @@ export function activate(context: vscode.ExtensionContext) {
                     return;
                 }
             }
+        } catch (error: any) {
+            vscode.window.showErrorMessage(vscode.l10n.t('error.failedToCheckFileExistence', error.message));
+            return;
+        }
+    }));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string) => {
+        if (!vscode.workspace.workspaceFolders) {
+            vscode.window.showErrorMessage(vscode.l10n.t('error.openWorkspaceToApplyChanges'));
+            return;
+        }
+        const workspaceRoot = vscode.workspace.workspaceFolders[0].uri;
+        const fileUri = vscode.Uri.joinPath(workspaceRoot, filePath);
     
+        try {
             const dirUri = vscode.Uri.joinPath(fileUri, '..');
             await vscode.workspace.fs.createDirectory(dirUri);
     
-            await vscode.workspace.fs.writeFile(fileUri, Buffer.from(content, 'utf8'));
+            const edit = new vscode.WorkspaceEdit();
+            // Create a new file if it doesn't exist, otherwise replace its content.
+            // The `overwrite: true` handles both cases and makes the operation undoable.
+            edit.createFile(fileUri, { overwrite: true, ignoreIfExists: false });
+            edit.insert(fileUri, new vscode.Position(0, 0), content);
+            
+            await vscode.workspace.applyEdit(edit);
+            
+            const document = await vscode.workspace.openTextDocument(fileUri);
+            await document.save();
+            
             vscode.window.showInformationMessage(vscode.l10n.t('info.applySuccess', filePath));
-    
             await vscode.window.showTextDocument(fileUri);
     
         } catch (error: any) {
             vscode.window.showErrorMessage(vscode.l10n.t('error.failedToApplyFileContent', error.message));
         }
     }));
-    
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyPatchContent', async (filePath: string, patchContent: string) => {
         try {
             let finalPatch = patchContent;
@@ -765,7 +787,7 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.window.showErrorMessage(vscode.l10n.t('error.failedToApplyPatch', error.message));
         }
     }));
-
+    
     const saveCodeCommand = vscode.commands.registerCommand('lollms-vs-coder.saveCodeToFile', async (code: string, language?: string) => {
         const languageToFileFilter = (lang?: string): { [name: string]: string[] } => {
             if (!lang) return { [vscode.l10n.t('filter.allFiles')]: ['*'] };

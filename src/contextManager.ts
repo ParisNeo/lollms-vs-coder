@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { FileTreeProvider } from './commands/fileTreeProvider';
 import jimp from 'jimp';
+import { LollmsAPI } from './lollmsAPI';
 
 export interface ContextResult {
   text: string;
@@ -11,10 +12,12 @@ export interface ContextResult {
 export class ContextManager {
   private fileTreeProvider?: FileTreeProvider;
   private context: vscode.ExtensionContext;
+  private lollmsAPI: LollmsAPI;
   private imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'];
 
-  constructor(context: vscode.ExtensionContext) {
+  constructor(context: vscode.ExtensionContext, lollmsAPI: LollmsAPI) {
     this.context = context;
+    this.lollmsAPI = lollmsAPI;
     this.reinitializeFileTreeProvider();
   }
 
@@ -108,7 +111,79 @@ export class ContextManager {
     result.text = content;
     return result;
   }
+  
+  public async getAutoSelectionForContext(userPrompt: string): Promise<string[] | null> {
+    if (!this.fileTreeProvider) {
+        vscode.window.showErrorMessage("File Tree Provider not available.");
+        return null;
+    }
 
+    const projectTree = await this.generateProjectTree();
+
+    const systemPrompt = `You are an expert AI assistant specializing in analyzing user prompts to determine which files in a project are relevant for context.
+Your task is to review the user's objective and the provided project file tree.
+Based on this information, you must identify the most relevant files.
+
+**CRITICAL INSTRUCTIONS:**
+1.  **JSON ONLY:** Your entire response MUST be a single, valid JSON array of strings.
+2.  **NO EXTRA TEXT:** Do not add any conversational text, explanations, apologies, or markdown formatting. Your response must begin with \`[\` and end with \`]\`.
+3.  **FILE PATHS:** The strings in the array must be the exact relative paths of the files as they appear in the project tree.
+4.  **RELEVANCE:** Select only the files that are most likely to be needed to accomplish the user's objective. Do not select irrelevant files.
+5.  **DO NOT ANSWER:** Do not answer the user's prompt or provide any other information. Your sole purpose is to output the JSON array of file paths.
+
+Example Response:
+[
+  "src/commands/chatPanel.ts",
+  "src/extension.ts",
+  "package.json"
+]`;
+    
+    const fullUserPrompt = `**User Objective:**
+"${userPrompt}"
+
+**Project File Tree:**
+${projectTree}
+
+Based on the objective and the file tree, which files are the most relevant? Return your answer as a JSON array of file paths.`;
+
+    try {
+        const responseText = await this.lollmsAPI.sendChat([
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: fullUserPrompt }
+        ]);
+
+        const jsonString = this.extractJsonArray(responseText);
+        if (!jsonString) {
+            throw new Error(`No valid JSON array found in the AI's response. Raw response: ${responseText}`);
+        }
+
+        const fileList = JSON.parse(jsonString);
+
+        if (Array.isArray(fileList) && fileList.every(item => typeof item === 'string')) {
+            return fileList;
+        } else {
+            throw new Error("The AI's response was not a valid array of strings.");
+        }
+
+    } catch (error: any) {
+        vscode.window.showErrorMessage(vscode.l10n.t('error.aiFailedToSelectFiles', error.message));
+        return null;
+    }
+  }
+
+  private extractJsonArray(text: string): string | null {
+    const markdownMatch = text.match(/```json\s*([\s\S]+?)\s*```/);
+    if (markdownMatch && markdownMatch[1]) {
+        return markdownMatch[1];
+    }
+    const firstBracket = text.indexOf('[');
+    const lastBracket = text.lastIndexOf(']');
+    if (firstBracket !== -1 && lastBracket > firstBracket) {
+        return text.substring(firstBracket, lastBracket + 1);
+    }
+    return null;
+  }
+  
   private async generateProjectTree(): Promise<string> {
     
     if (!this.fileTreeProvider) {

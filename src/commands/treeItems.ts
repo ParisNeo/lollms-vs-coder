@@ -42,7 +42,7 @@ export class PromptGroupItem extends vscode.TreeItem {
     constructor(
         public readonly group: PromptGroup
     ) {
-        super(group.title, vscode.TreeItemCollapsibleState.Expanded);
+        super(group.title, vscode.TreeItemCollapsibleState.Collapsed);
         this.id = group.id;
         this.contextValue = 'promptGroup';
         this.iconPath = vscode.ThemeIcon.Folder;

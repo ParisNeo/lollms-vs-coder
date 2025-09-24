@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -34,13 +34,14 @@
         { "command": "lollms-vs-coder.generateCommitMessage", "title": "%command.generateCommitMessage.title%" },
         { "command": "lollms-vs-coder.commitWithAIMessage", "title": "%command.commitWithAIMessage.title%" },
         { "command": "lollmsApi.recreateClient", "title": "%command.recreateClient.title%" },
-        { "command": "lollms-vs-coder.refreshTree", "title": "%command.refresh.title%" },
+        { "command": "lollms-vs-coder.refreshTree", "title": "%command.refresh.title%", "icon": "$(refresh)" },
         { "command": "lollms-vs-coder.cycleFileState", "title": "%command.cycleFileState.title%", "icon": "$(sync)" },
         { "command": "lollms-vs-coder.addFolderToContext", "title": "%command.addFolderToContext.title%" },
         { "command": "lollms-vs-coder.removeFolderFromContext", "title": "%command.removeFolderFromContext.title%" },
         { "command": "lollms-vs-coder.showConfigView", "title": "%command.showConfigView.title%", "icon": "$(gear)" },
         { "command": "lollms-vs-coder.showHelp", "title": "%command.showHelp.title%", "icon": "$(question)" },
-        { "command": "lollms-vs-coder.exportContextContent", "title": "%command.exportContextContent.title%" },
+        { "command": "lollms-vs-coder.exportContextContent", "title": "%command.exportContextContent.title%", "icon": "$(clippy)" },
+        { "command": "lollms-vs-coder.autoSelectContextFiles", "title": "%command.autoSelectContextFiles.title%", "icon": "$(wand)" },
         { "command": "lollms-vs-coder.saveNewFile", "title": "%command.saveNewFile.title%" },
         { "command": "lollms-vs-coder.executeScript", "title": "%command.executeScript.title%" },
         { "command": "lollms-vs-coder.newDiscussion", "title": "%command.newDiscussion.title%", "icon": "$(add)" },
@@ -104,9 +105,9 @@
       "views": {
         "lollmsSettings": [
           { "id": "lollmsDiscussionsView", "name": "%view.discussions.name%", "when": "workspaceFolderCount > 0" },
+          { "id": "lollmsSettings.fileTreeView", "name": "%view.fileTreeView.name%", "when": "workspaceFolderCount > 0" },
           { "id": "lollmsChatPromptsView", "name": "%view.chatPrompts.name%", "when": "workspaceFolderCount > 0" },
-          { "id": "lollmsCodeActionsView", "name": "%view.codeActions.name%", "when": "workspaceFolderCount > 0" },
-          { "id": "lollmsSettings.fileTreeView", "name": "%view.fileTreeView.name%", "when": "workspaceFolderCount > 0" }
+          { "id": "lollmsCodeActionsView", "name": "%view.codeActions.name%", "when": "workspaceFolderCount > 0" }
         ]
       },
       "menus": {
@@ -126,10 +127,11 @@
           { "command": "lollms-vs-coder.refreshPrompts", "when": "view == lollmsChatPromptsView || view == lollmsCodeActionsView", "group": "navigation@3" },
           { "command": "lollms-vs-coder.importPrompts", "when": "view == lollmsChatPromptsView || view == lollmsCodeActionsView", "group": "navigation@4" },
           { "command": "lollms-vs-coder.exportPrompts", "when": "view == lollmsChatPromptsView || view == lollmsCodeActionsView", "group": "navigation@5" },
-          { "command": "lollms-vs-coder.refreshTree", "when": "view == lollmsSettings.fileTreeView", "group": "navigation@1", "icon": "$(refresh)" },
-          { "command": "lollms-vs-coder.exportContextContent", "when": "view == lollmsSettings.fileTreeView", "group": "navigation@2", "icon": "$(clippy)" },
-          { "command": "lollms-vs-coder.showHelp", "when": "view == lollmsDiscussionsView || view == lollmsChatPromptsView || view == lollmsCodeActionsView || view == lollmsSettings.fileTreeView", "group": "navigation@98", "icon": "$(question)" },
-          { "command": "lollms-vs-coder.showConfigView", "when": "view == lollmsDiscussionsView || view == lollmsChatPromptsView || view == lollmsCodeActionsView || view == lollmsSettings.fileTreeView", "group": "navigation@99", "icon": "$(gear)" }
+          { "command": "lollms-vs-coder.autoSelectContextFiles", "when": "view == lollmsSettings.fileTreeView", "group": "navigation@1" },
+          { "command": "lollms-vs-coder.refreshTree", "when": "view == lollmsSettings.fileTreeView", "group": "navigation@2" },
+          { "command": "lollms-vs-coder.exportContextContent", "when": "view == lollmsSettings.fileTreeView", "group": "navigation@3" },
+          { "command": "lollms-vs-coder.showHelp", "when": "view == lollmsDiscussionsView || view == lollmsChatPromptsView || view == lollmsCodeActionsView || view == lollmsSettings.fileTreeView", "group": "navigation@98" },
+          { "command": "lollms-vs-coder.showConfigView", "when": "view == lollmsDiscussionsView || view == lollmsChatPromptsView || view == lollmsCodeActionsView || view == lollmsSettings.fileTreeView", "group": "navigation@99" }
         ],
         "view/item/context": [
             { "command": "lollms-vs-coder.deleteDiscussion", "when": "view == lollmsDiscussionsView && viewItem == 'discussion'", "group": "inline" },

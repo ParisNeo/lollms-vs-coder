@@ -17,6 +17,7 @@
     "command.showConfigView.title": "Lollms: Open Settings",
     "command.showHelp.title": "Lollms: Show Help",
     "command.exportContextContent.title": "Lollms: Export Context to Clipboard",
+    "command.autoSelectContextFiles.title": "Lollms: Auto-Select Context Files",
     "command.saveNewFile.title": "Lollms: Save New File",
     "command.executeScript.title": "Lollms: Execute Script",
     "command.newDiscussion.title": "New Discussion",

@@ -58,8 +58,38 @@ export class FileTreeProvider implements vscode.TreeDataProvider<FileItem>, vsco
     public dispose(): void {
         this.watcher.dispose();
     }
+    
+    private async _pruneNonExistentFiles(): Promise<void> {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders) return;
+        const workspaceRoot = workspaceFolders[0].uri;
 
-    refresh(): void {
+        const allTrackedPaths = new Set([
+            ...this.contextFiles,
+            ...this.treeOnlyFiles,
+            ...this.fullyExcludedPaths,
+        ]);
+
+        let stateChanged = false;
+        for (const relPath of allTrackedPaths) {
+            try {
+                const fileUri = vscode.Uri.joinPath(workspaceRoot, relPath);
+                await vscode.workspace.fs.stat(fileUri);
+            } catch {
+                // File or directory does not exist, prune it
+                this.contextFiles.delete(relPath);
+                this.treeOnlyFiles.delete(relPath);
+                this.fullyExcludedPaths.delete(relPath);
+                stateChanged = true;
+            }
+        }
+        if (stateChanged) {
+            await this.saveState();
+        }
+    }
+
+    async refresh(): Promise<void> {
+        await this._pruneNonExistentFiles();
         this._onDidChangeTreeData.fire();
     }
 
@@ -139,9 +169,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<FileItem>, vsco
         let nextState: PathState;
 
         switch (currentState) {
-            case 'included':       nextState = 'tree-only'; break;
-            case 'tree-only':      nextState = 'fully-excluded'; break;
-            case 'fully-excluded': nextState = 'included'; break;
+            case 'tree-only':      nextState = 'included'; break;
+            case 'included':       nextState = 'fully-excluded'; break;
+            case 'fully-excluded': nextState = 'tree-only'; break;
         }
 
         if (item.type === 'folder') {
@@ -197,6 +227,15 @@ export class FileTreeProvider implements vscode.TreeDataProvider<FileItem>, vsco
     async addFileToContext(relPath: string) {
         this._setPathState(relPath, 'included');
         this.ensurePathIsVisible(relPath);
+        await this.saveState();
+        this.refresh();
+    }
+
+    async addFilesToContext(relPaths: string[]) {
+        for (const relPath of relPaths) {
+            this._setPathState(relPath, 'included');
+            this.ensurePathIsVisible(relPath);
+        }
         await this.saveState();
         this.refresh();
     }

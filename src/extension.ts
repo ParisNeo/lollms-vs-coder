@@ -125,7 +125,7 @@ export function activate(context: vscode.ExtensionContext) {
         disableSslVerification: config.get<boolean>('disableSslVerification') || false
     });
 
-    const contextManager = new ContextManager(context);
+    const contextManager = new ContextManager(context, lollmsAPI);
     const scriptRunner = new ScriptRunner();
     const promptManager = new PromptManager(context.globalStorageUri);
     const gitIntegration = new GitIntegration(lollmsAPI);
@@ -309,7 +309,7 @@ export function activate(context: vscode.ExtensionContext) {
             fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.cycleFileState', (item: FileItem) => fileTreeProvider!.cycleFileState(item)));
             fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.addFolderToContext', (item: FileItem) => fileTreeProvider!.addFolderToContext(item)));
             fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.removeFolderFromContext', (item: FileItem) => fileTreeProvider!.removeFolderFromContext(item)));
-            fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.refreshTree', () => fileTreeProvider!.refresh()));
+            fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.refreshTree', async () => await fileTreeProvider!.refresh()));
             
             context.subscriptions.push(...fileTreeCommands);
         }
@@ -320,6 +320,39 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
         registerFileTreeProvider();
         registerDiscussionViewProvider();
+    }));
+    
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.autoSelectContextFiles', async () => {
+        if (!fileTreeProvider) {
+            vscode.window.showInformationMessage("Please open a workspace folder to use this feature.");
+            return;
+        }
+
+        const objective = await vscode.window.showInputBox({
+            prompt: vscode.l10n.t('prompt.enterObjectiveForSelection'),
+            placeHolder: "e.g., 'Implement a new command to export discussions as markdown files'",
+            ignoreFocusOut: true,
+        });
+
+        if (!objective || objective.trim() === '') {
+            return;
+        }
+
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: vscode.l10n.t('progress.aiSelectingFiles'),
+            cancellable: false
+        }, async (progress) => {
+            const fileList = await contextManager.getAutoSelectionForContext(objective);
+
+            if (fileList && fileList.length > 0) {
+                await fileTreeProvider!.addFilesToContext(fileList);
+                vscode.window.showInformationMessage(vscode.l10n.t('info.aiSelectedFiles', fileList.length));
+            } else if (fileList) { // Empty array
+                 vscode.window.showInformationMessage("The AI did not select any files for the given objective.");
+            }
+            // If fileList is null, an error message has already been shown by the contextManager.
+        });
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.triggerCodeAction', async (prompt?: Prompt) => {

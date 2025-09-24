@@ -4,8 +4,8 @@
 - OK Add custom prompt to code selection
 - OK at first run, the templates are empty. make sure they are repopulated and handle migration from previous installations.
 - OK add the possibility to copy the message as markdown
+- OK add stop generation
 
-- add stop generation
 - if there is a .gitignore, apply it to the context selection
 - fuse generate code and rewrite code
 - add firewall with rules for execution

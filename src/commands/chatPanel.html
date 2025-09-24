@@ -11,6 +11,9 @@
         :root {
             --code-bg: #1e1e1e;
             --code-border: #3e3e3e;
+            --progress-green: #2ecc71;
+            --progress-yellow: #f1c40f;
+            --progress-red: #e74c3c;
         }
         body { 
             font-family: var(--vscode-font-family); 
@@ -187,9 +190,38 @@
         }
         .top-controls {
             display: flex;
-            justify-content: flex-end;
+            justify-content: space-between; /* Adjusted */
             align-items: center;
             margin-bottom: 8px;
+            gap: 15px; /* Added */
+        }
+        .token-progress {
+            flex-grow: 1; /* Added */
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .token-progress-container {
+            flex-grow: 1;
+            height: 6px;
+            background-color: var(--vscode-input-background);
+            border-radius: 3px;
+            overflow: hidden;
+            border: 1px solid var(--vscode-input-border);
+        }
+        .token-progress-bar {
+            height: 100%;
+            width: 0%;
+            border-radius: 3px;
+            transition: width 0.3s ease, background-color 0.3s ease;
+        }
+        .token-progress-bar.green { background-color: var(--progress-green); }
+        .token-progress-bar.yellow { background-color: var(--progress-yellow); }
+        .token-progress-bar.red { background-color: var(--progress-red); }
+        #token-count-label {
+            font-size: 0.85em;
+            color: var(--vscode-descriptionForeground);
+            white-space: nowrap;
         }
         .input-area {
             display: flex;
@@ -287,9 +319,9 @@
             display: flex;
             align-items: center;
             gap: 8px;
-            margin-right: 15px;
             font-size: 0.9em;
             color: var(--vscode-descriptionForeground);
+            white-space: nowrap; /* Prevent wrapping */
         }
         .agent-mode-toggle.disabled {
             opacity: 0.5;
@@ -571,6 +603,12 @@
         </div>
         <div class="input-area-wrapper">
             <div class="top-controls">
+                <div class="token-progress">
+                    <div class="token-progress-container">
+                        <div class="token-progress-bar" id="token-progress-bar"></div>
+                    </div>
+                    <span id="token-count-label">Tokens: 0 / 0</span>
+                </div>
                 <div class="agent-mode-toggle">
                     <span>🤖 Agent Mode</span>
                     <label class="switch">
@@ -612,6 +650,9 @@
         const contextContainer = document.getElementById('context-container');
         const attachmentsContainer = document.getElementById('attachments-container');
         const welcomeMessage = document.getElementById('welcome-message');
+        
+        const tokenProgressBar = document.getElementById('token-progress-bar');
+        const tokenCountLabel = document.getElementById('token-count-label');
 
         const searchBar = document.getElementById('search-bar');
         const searchInput = document.getElementById('searchInput');
@@ -1304,6 +1345,27 @@
                  break;
             case 'updateContext':
                 updateContext(message.context);
+                break;
+            case 'updateTokenProgress':
+                const { totalTokens, contextSize } = message;
+                if (typeof totalTokens === 'number' && typeof contextSize === 'number' && contextSize > 0) {
+                    const percentage = Math.min((totalTokens / contextSize) * 100, 100);
+                    tokenProgressBar.style.width = `${percentage}%`;
+                    
+                    tokenProgressBar.classList.remove('green', 'yellow', 'red');
+                    if (percentage > 90) {
+                        tokenProgressBar.classList.add('red');
+                    } else if (percentage > 75) {
+                        tokenProgressBar.classList.add('yellow');
+                    } else {
+                        tokenProgressBar.classList.add('green');
+                    }
+                    
+                    tokenCountLabel.textContent = `Tokens: ${totalTokens} / ${contextSize}`;
+                } else {
+                    tokenCountLabel.textContent = `Tokens: N/A`;
+                    tokenProgressBar.style.width = '0%';
+                }
                 break;
             case 'updateAgentMode':
                 agentModeCheckbox.checked = message.isActive;

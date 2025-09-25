@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
 import { getProcessedSystemPrompt, stripThinkingTags } from './utils';
+import { ProcessManager } from './processManager';
 
 export interface Discussion {
     id: string;
@@ -22,11 +23,13 @@ export class DiscussionManager {
     private discussionsDir: vscode.Uri;
     private groupsFile: vscode.Uri;
     private lollmsAPI: LollmsAPI;
+    private processManager: ProcessManager;
 
-    constructor(workspaceRoot: vscode.Uri, lollmsAPI: LollmsAPI) {
+    constructor(workspaceRoot: vscode.Uri, lollmsAPI: LollmsAPI, processManager: ProcessManager) {
         this.discussionsDir = vscode.Uri.joinPath(workspaceRoot, '.lollms', 'discussions');
         this.groupsFile = vscode.Uri.joinPath(workspaceRoot, '.lollms', 'discussion_groups.json');
         this.lollmsAPI = lollmsAPI;
+        this.processManager = processManager;
         this.initialize();
     }
 
@@ -84,6 +87,7 @@ export class DiscussionManager {
     }
 
     async deleteDiscussion(id: string): Promise<void> {
+        this.processManager.cancelForDiscussion(id);
         const filePath = vscode.Uri.joinPath(this.discussionsDir, `${id}.json`);
         try {
             await vscode.workspace.fs.delete(filePath);

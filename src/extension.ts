@@ -13,7 +13,7 @@ import { ScriptRunner } from './scriptRunner';
 import { PromptManager, Prompt } from './promptManager';
 import { ChatPromptTreeProvider } from './commands/chatPromptTreeProvider';
 import { CodeActionTreeProvider } from './commands/codeActionTreeProvider';
-import { PromptItem, PromptGroupItem } from './commands/treeItems';
+import { PromptItem, PromptGroupItem, ProcessItem } from './commands/treeItems';
 import { HelpPanel } from './commands/helpPanel';
 import { PromptBuilderPanel, parsePlaceholders } from './commands/promptBuilderPanel';
 import { CodeActionProvider } from './commands/codeActions';
@@ -23,6 +23,13 @@ import { InlineDiffProvider } from './commands/inlineDiffProvider';
 import { InfoPanel } from './commands/infoPanel';
 import { CustomActionModal } from './commands/customActionModal';
 import * as https from 'https';
+import { ProcessManager } from './processManager';
+import { ProcessTreeProvider } from './commands/processTreeProvider';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
+
 
 interface GitExtension { getAPI(version: 1): API; }
 interface API { repositories: Repository[]; }
@@ -118,6 +125,7 @@ User preferences: ${agentPersonaPrompt}
     return { systemPrompt, userPrompt };
 }
 
+
 export async function activate(context: vscode.ExtensionContext) {
     console.log('Lollms VS Coder is now active!');
 
@@ -143,7 +151,11 @@ export async function activate(context: vscode.ExtensionContext) {
     const scriptRunner = new ScriptRunner();
     const promptManager = new PromptManager(context.globalStorageUri);
     const gitIntegration = new GitIntegration(lollmsAPI);
+    const processManager = new ProcessManager();
 
+    const processTreeProvider = new ProcessTreeProvider(processManager);
+    context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsProcessView', processTreeProvider));
+    
     const chatPromptTreeProvider = new ChatPromptTreeProvider(promptManager);
     context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsChatPromptsView', chatPromptTreeProvider));
     const codeActionTreeProvider = new CodeActionTreeProvider(promptManager);
@@ -173,6 +185,8 @@ export async function activate(context: vscode.ExtensionContext) {
         if (!panel.agentManager) {
             panel.agentManager = new AgentManager(panel, lollmsAPI, contextManager, gitIntegration, context.extensionUri);
         }
+        panel.setProcessManager(processManager);
+        panel.agentManager.setProcessManager(processManager);
         panel.setContextManager(contextManager);
     };
 
@@ -185,7 +199,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
         if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
             const workspaceRoot = vscode.workspace.workspaceFolders[0].uri;
-            discussionManager = new DiscussionManager(workspaceRoot, lollmsAPI);
+            discussionManager = new DiscussionManager(workspaceRoot, lollmsAPI, processManager);
             const discussionTreeProvider = new DiscussionTreeProvider(discussionManager);
             discussionView = vscode.window.createTreeView('lollmsDiscussionsView', { treeDataProvider: discussionTreeProvider });
 
@@ -896,6 +910,10 @@ export async function activate(context: vscode.ExtensionContext) {
             vscode.commands.executeCommand('lollmsApi.recreateClient');
         }
     }));
+    
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.cancelProcess', (item: ProcessItem) => {
+        processManager.cancel(item.process.id);
+    }));
 
     // ================== Execution Logic ==================
 
@@ -969,21 +987,20 @@ export async function activate(context: vscode.ExtensionContext) {
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.executeProject', async () => {
+        if (!ChatPanel.currentPanel) {
+            vscode.window.showErrorMessage("Please open a Lollms chat panel to see the execution results.");
+            return;
+        }
+        const activeChatPanel = ChatPanel.currentPanel;
+
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         if (!workspaceFolder) {
             vscode.window.showErrorMessage("Please open a project folder to execute.");
-            if (ChatPanel.currentPanel) {
-                ChatPanel.currentPanel.addMessageToDiscussion({ role: 'system', content: 'Execution failed: No workspace folder open.' });
-                ChatPanel.currentPanel.updateGeneratingState(false);
-            }
+            activeChatPanel.addMessageToDiscussion({ role: 'system', content: 'Execution failed: No workspace folder open.' });
             return;
         }
-
-        if (lollmsExecutionTerminal) {
-            lollmsExecutionTerminal.dispose();
-        }
-        lollmsExecutionTerminal = vscode.window.createTerminal("Lollms Execution");
-        lollmsExecutionTerminal.show();
+        
+        activeChatPanel.updateGeneratingState(true);
 
         const launchJsonPath = vscode.Uri.joinPath(workspaceFolder.uri, '.vscode', 'launch.json');
         let launchConfig: any;
@@ -991,53 +1008,53 @@ export async function activate(context: vscode.ExtensionContext) {
             const fileContent = await vscode.workspace.fs.readFile(launchJsonPath);
             launchConfig = JSON.parse(fileContent.toString());
             if (!launchConfig.configurations || launchConfig.configurations.length === 0 || !launchConfig.configurations[0].program) {
-                throw new Error("No entry point configured.");
+                throw new Error("No valid entry point configured in launch.json.");
             }
-        } catch (error) {
+        } catch (error: any) {
             vscode.window.showErrorMessage('No project entry point is configured. Please set one using the "Set Entry Point" (target icon) button.');
-            if (ChatPanel.currentPanel) {
-                ChatPanel.currentPanel.updateGeneratingState(false);
-            }
+            activeChatPanel.handleProjectExecutionResult(`Failed to start: ${error.message}`, false);
             return;
         }
         
         let mainConfig = launchConfig.configurations[0];
-        let programPath = mainConfig.program;
-
-        if (programPath.startsWith('${workspaceFolder}')) {
-            const relativePart = programPath.substring('${workspaceFolder}'.length).replace(/^[/\\]/, '');
-            programPath = path.join(workspaceFolder.uri.fsPath, relativePart);
-        }
+        let programPath = mainConfig.program.replace('${workspaceFolder}', workspaceFolder.uri.fsPath);
 
         let command: string;
-
         if (mainConfig.type === 'python') {
             let pythonPath = 'python';
             if (pythonExtApi) {
                 const environment = await pythonExtApi.environments.getActiveEnvironmentPath(workspaceFolder.uri);
                 if (environment?.path) {
-                    pythonPath = environment.path;
+                    pythonPath = `"${environment.path}"`;
                 }
             }
-            command = `"${pythonPath}" -u "${programPath}"`;
+            command = `${pythonPath} -u "${programPath}"`;
         } else if (mainConfig.type === 'node') {
             command = `node "${programPath}"`;
         } else {
-            vscode.window.showErrorMessage(`Unsupported launch configuration type for direct execution: ${mainConfig.type}`);
-            if (ChatPanel.currentPanel) {
-                ChatPanel.currentPanel.addMessageToDiscussion({ role: 'system', content: `Execution failed: Unsupported launch type '${mainConfig.type}'.` });
-                ChatPanel.currentPanel.updateGeneratingState(false);
-            }
+            const errorMsg = `Unsupported launch configuration type for direct execution: ${mainConfig.type}`;
+            vscode.window.showErrorMessage(errorMsg);
+            activeChatPanel.handleProjectExecutionResult(errorMsg, false);
             return;
         }
-        
-        if (ChatPanel.currentPanel) {
-            await ChatPanel.currentPanel.addMessageToDiscussion({ role: 'system', content: `🚀 Executing in terminal: \`${command}\`` });
-        }
 
-        const exitCodeCommand = process.platform === 'win32' ? ' & echo LOLLMS_EXEC_EXIT_CODE:%errorlevel%' : '; echo "LOLLMS_EXEC_EXIT_CODE:$?"';
-        lollmsExecutionTerminal.sendText(command + exitCodeCommand, true);
+        await activeChatPanel.addMessageToDiscussion({ role: 'system', content: `🚀 Executing in background: \`${command}\`` });
+
+        try {
+            const { stdout, stderr } = await execAsync(command, { cwd: workspaceFolder.uri.fsPath });
+            const fullOutput = `STDOUT:\n${stdout}\n\nSTDERR:\n${stderr}`;
+            activeChatPanel.handleProjectExecutionResult(fullOutput, true);
+        } catch (error: any) {
+            const fullOutput = `STDOUT:\n${error.stdout}\n\nSTDERR:\n${error.stderr}`;
+            activeChatPanel.handleProjectExecutionResult(fullOutput, false);
+        }
     }));
 
     console.log('Extension activation complete.');
+}
+
+export function deactivate(): void {
+    if (lollmsExecutionTerminal) {
+        lollmsExecutionTerminal.dispose();
+    }
 }

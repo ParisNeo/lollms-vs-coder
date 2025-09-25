@@ -38,6 +38,7 @@
     "command.importPrompts.title": "Import Prompts...",
     "command.exportPrompts.title": "Export Prompts...",
     "command.editPromptsFile.title": "Edit Prompts JSON File",
+    "command.cancel.title": "Cancel",
     "config.title": "Lollms VS Coder Configuration",
     "config.enableCodeActions.description": "Enable the Lollms CodeLens actions (e.g., 'Lollms Actions...') above selected code.",
     "config.enableInlineSuggestions.description": "Enable single-line, inline code suggestions as you type (experimental).",
@@ -59,5 +60,6 @@
     "view.discussions.name": "Discussions",
     "view.chatPrompts.name": "Chat Prompts",
     "view.codeActions.name": "Code Actions",
-    "view.fileTreeView.name": "AI Context Files"
+    "view.fileTreeView.name": "AI Context Files",
+    "view.processes.name": "Running Processes"
 }

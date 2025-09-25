@@ -68,7 +68,8 @@
         { "command": "lollms-vs-coder.saveMessageAsPrompt", "title": "%command.saveMessageAsPrompt.title%" },
         { "command": "lollms-vs-coder.importPrompts", "title": "%command.importPrompts.title%", "icon": "$(folder-opened)" },
         { "command": "lollms-vs-coder.exportPrompts", "title": "%command.exportPrompts.title%", "icon": "$(save)" },
-        { "command": "lollms-vs-coder.editPromptsFile", "title": "%command.editPromptsFile.title%" }
+        { "command": "lollms-vs-coder.editPromptsFile", "title": "%command.editPromptsFile.title%" },
+        { "command": "lollms-vs-coder.cancelProcess", "title": "%command.cancel.title%", "icon": "$(stop-circle)" }
     ],
     "configuration": {
         "type": "object",
@@ -115,6 +116,7 @@
       "views": {
         "lollmsSettings": [
           { "id": "lollmsDiscussionsView", "name": "%view.discussions.name%", "when": "workspaceFolderCount > 0" },
+          { "id": "lollmsProcessView", "name": "%view.processes.name%", "when": "workspaceFolderCount > 0" },
           { "id": "lollmsSettings.fileTreeView", "name": "%view.fileTreeView.name%", "when": "workspaceFolderCount > 0" },
           { "id": "lollmsChatPromptsView", "name": "%view.chatPrompts.name%", "when": "workspaceFolderCount > 0" },
           { "id": "lollmsCodeActionsView", "name": "%view.codeActions.name%", "when": "workspaceFolderCount > 0" }
@@ -141,10 +143,11 @@
           { "command": "lollms-vs-coder.autoSelectContextFiles", "when": "view == lollmsSettings.fileTreeView", "group": "navigation@1" },
           { "command": "lollms-vs-coder.refreshTree", "when": "view == lollmsSettings.fileTreeView", "group": "navigation@2" },
           { "command": "lollms-vs-coder.exportContextContent", "when": "view == lollmsSettings.fileTreeView", "group": "navigation@3" },
-          { "command": "lollms-vs-coder.showHelp", "when": "view == lollmsDiscussionsView || view == lollmsChatPromptsView || view == lollmsCodeActionsView || view == lollmsSettings.fileTreeView", "group": "navigation@98" },
-          { "command": "lollms-vs-coder.showConfigView", "when": "view == lollmsDiscussionsView || view == lollmsChatPromptsView || view == lollmsCodeActionsView || view == lollmsSettings.fileTreeView", "group": "navigation@99" }
+          { "command": "lollms-vs-coder.showHelp", "when": "view == lollmsDiscussionsView || view == lollmsChatPromptsView || view == lollmsCodeActionsView || view == lollmsSettings.fileTreeView || view == lollmsProcessView", "group": "navigation@98" },
+          { "command": "lollms-vs-coder.showConfigView", "when": "view == lollmsDiscussionsView || view == lollmsChatPromptsView || view == lollmsCodeActionsView || view == lollmsSettings.fileTreeView || view == lollmsProcessView", "group": "navigation@99" }
         ],
         "view/item/context": [
+            { "command": "lollms-vs-coder.cancelProcess", "when": "view == lollmsProcessView && viewItem == 'process'", "group": "inline" },
             { "command": "lollms-vs-coder.deleteDiscussion", "when": "view == lollmsDiscussionsView && viewItem == 'discussion'", "group": "inline" },
             { "command": "lollms-vs-coder.cycleFileState", "when": "view == lollmsSettings.fileTreeView && (viewItem == 'file' || viewItem == 'image' || viewItem == 'folder')", "group": "inline" },
             { "command": "lollms-vs-coder.addFolderToContext", "when": "view == lollmsSettings.fileTreeView && viewItem == 'folder'", "group": "1_modification" },

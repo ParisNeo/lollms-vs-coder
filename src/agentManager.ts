@@ -9,6 +9,7 @@ import { exec } from 'child_process';
 import { InfoPanel } from './commands/infoPanel';
 import { Plan, PlanParser } from './planParser';
 import { getProcessedSystemPrompt } from './utils';
+import { ProcessManager } from './processManager';
 
 interface Task {
     id: number;
@@ -26,6 +27,7 @@ export class AgentManager {
     private currentPlan: Plan | null = null;
     private chatHistory: ChatMessage[] = [];
     private planParser: PlanParser;
+    private processManager?: ProcessManager;
 
     constructor(
         private chatPanel: ChatPanel,
@@ -35,6 +37,10 @@ export class AgentManager {
         private extensionUri: vscode.Uri
     ) {
         this.planParser = new PlanParser(this.lollmsApi, this.contextManager);
+    }
+
+    public setProcessManager(processManager: ProcessManager) {
+        this.processManager = processManager;
     }
 
     public getIsActive(): boolean {

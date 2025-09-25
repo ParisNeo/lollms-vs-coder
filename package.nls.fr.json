@@ -23,6 +23,7 @@
     "command.inspectCode.title": "Lollms: Inspecter le Code",
     "command.newDiscussion.title": "Nouvelle Discussion",
     "command.delete.title": "Supprimer",
+    "command.cancel.title": "Annuler",
     "command.switchDiscussion.title": "Changer de Discussion",
     "command.rename.title": "Renommer",
     "command.generateDiscussionTitle.title": "Générer un Titre avec l'IA",
@@ -57,6 +58,7 @@
     "config.language.description": "Influence la langue de réponse de l'IA. L'interface utilisateur de l'extension suit la langue d'affichage de VS Code.",
     "views.container.title": "Lollms",
     "view.discussions.name": "Discussions",
+    "view.processes.name": "Processus en Cours",
     "view.chatPrompts.name": "Prompts de Chat",
     "view.codeActions.name": "Actions de Code",
     "view.fileTreeView.name": "Fichiers de Contexte IA"

@@ -11,6 +11,7 @@ import * as ExcelJS from 'exceljs';
 import { Readable } from 'stream';
 import { InfoPanel } from './infoPanel';
 import { stripThinkingTags } from '../utils';
+import { ProcessManager } from '../processManager';
 
 
 export class ChatPanel {
@@ -24,9 +25,7 @@ export class ChatPanel {
   public agentManager!: AgentManager;
   private _lastApiRequest: ChatMessage[] | null = null;
   private _lastApiResponse: string | null = null;
-  private _currentRequestController: AbortController | null = null;
-  private _terminalOutput = '';
-  private _terminalOutputListener: vscode.Disposable | undefined;
+  private processManager!: ProcessManager;
 
 
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, discussionManager: DiscussionManager): ChatPanel {
@@ -65,7 +64,6 @@ export class ChatPanel {
     this._getHtmlForWebview(this._panel.webview).then(html => {
         this._panel.webview.html = html;
         this._setWebviewMessageListener(this._panel.webview);
-        this._startTerminalListener(); // Start listening for terminal output
     });
   }
 
@@ -73,8 +71,14 @@ export class ChatPanel {
     this._contextManager = contextManager;
   }
   
+  public setProcessManager(processManager: ProcessManager) {
+    this.processManager = processManager;
+  }
+  
   public updateGeneratingState(isGenerating: boolean) {
-    this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating });
+    const process = this._currentDiscussion ? this.processManager.getForDiscussion(this._currentDiscussion.id) : undefined;
+    const shouldBeGenerating = isGenerating || !!process;
+    this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: shouldBeGenerating });
   }
 
   public updateAgentMode(isActive: boolean) {
@@ -84,33 +88,8 @@ export class ChatPanel {
   public displayPlan(plan: any | null): void {
       this._panel.webview.postMessage({ command: 'displayPlan', plan: plan });
   }
-
-  private _startTerminalListener() {
-    // This listener will capture ALL terminal output and look for our special exit code.
-    this._terminalOutputListener = (vscode.window as any).onDidWriteTerminalData((e: any) => {
-        if (e.terminal.name === 'Lollms Execution') {
-            const data = e.data as string;
-            const exitCodeMatch = data.match(/LOLLMS_EXEC_EXIT_CODE:(\d+)/);
-
-            if (exitCodeMatch) {
-                const exitCode = parseInt(exitCodeMatch[1], 10);
-                // We remove the marker from the final output
-                const finalOutput = this._terminalOutput.replace(/LOLLMS_EXEC_EXIT_CODE:\d+/, '').trim();
-                this._terminalOutput = ''; // Reset for next run
-
-                const success = exitCode === 0;
-                this.handleProjectExecutionResult(finalOutput, success);
-            } else {
-                this._terminalOutput += data;
-            }
-        }
-    });
-  }
   
   public async loadDiscussion(id: string): Promise<void> {
-    if (this._currentRequestController) {
-        this._currentRequestController.abort();
-    }
     const discussion = await this._discussionManager.getDiscussion(id);
 
     if (discussion) {
@@ -139,18 +118,18 @@ export class ChatPanel {
         });
         
         this.displayPlan(null);
-        this._updateContextAndTokens();
+        const runningProcess = this.processManager.getForDiscussion(id);
+        this.updateGeneratingState(!!runningProcess);
+        await this._updateContextAndTokens();
     }
   }
   public async startNewDiscussion(groupId: string | null = null): Promise<void> {
-    if (this._currentRequestController) {
-        this._currentRequestController.abort();
-    }
     this._currentDiscussion = this._discussionManager.createNewDiscussion(groupId);
     await this._discussionManager.saveDiscussion(this._currentDiscussion);
     this._panel.title = this._currentDiscussion.title;
     this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
     this.displayPlan(null); // Clear plan for new discussion
+    this.updateGeneratingState(false);
     this._updateContextAndTokens();
   }
   
@@ -277,7 +256,6 @@ export class ChatPanel {
   public dispose() {
     ChatPanel.currentPanel = undefined;
     this._panel.dispose();
-    this._terminalOutputListener?.dispose();
   }
 
   private async _getHtmlForWebview(webview: vscode.Webview): Promise<string> {
@@ -315,7 +293,7 @@ export class ChatPanel {
             role: 'user',
             content: `The project failed to execute with the output shown in the last system message. Please analyze the error and provide a fix for the relevant file(s).`
         };
-        await this._callApiWithMessages([...this._currentDiscussion.messages, analysisPrompt]);
+        this._callApiWithMessages([...this._currentDiscussion.messages, analysisPrompt]);
     } else {
         this.updateGeneratingState(false);
     }
@@ -350,76 +328,85 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     const recentMessages = this._currentDiscussion.messages.slice(-6);
     const messagesForApi = [...recentMessages, analysisPrompt];
 
-    await this._callApiWithMessages(messagesForApi, false);
+    this._callApiWithMessages(messagesForApi, false);
   }
 
-  private async _callApiWithMessages(messages: ChatMessage[], includeProjectContext: boolean = true, modelOverride?: string) {
-    this._currentRequestController = new AbortController();
-    try {
-        const apiMessages: ChatMessage[] = [];
-        const systemPrompt = getProcessedSystemPrompt('chat');
-        if (systemPrompt) {
-            apiMessages.push({ role: 'system', content: systemPrompt });
-        }
+  private _callApiWithMessages(messages: ChatMessage[], includeProjectContext: boolean = true, modelOverride?: string) {
+    if (!this._currentDiscussion) return;
 
-        const messagesCopy = JSON.parse(JSON.stringify(messages));
-
-        if (includeProjectContext) {
-            const context: ContextResult = this._contextManager ? await this._contextManager.getContextContent() : { text: '', images: [] };
-            if (context.text && context.text.trim().length > 0) {
-                apiMessages.push({ role: 'system', content: `## Project Context\n${context.text}` });
-            }
-            if (context.images.length > 0) {
-                let lastUserMessage = null;
-                for (let i = messagesCopy.length - 1; i >= 0; i--) {
-                    if (messagesCopy[i].role === 'user') {
-                        lastUserMessage = messagesCopy[i];
-                        break;
-                    }
-                }
-                if (lastUserMessage) {
-                    if (typeof lastUserMessage.content === 'string') {
-                        lastUserMessage.content = [{ type: 'text', text: lastUserMessage.content }];
-                    }
-                    for (const image of context.images) {
-                        (lastUserMessage.content as any[]).push({
-                            type: 'image_url',
-                            image_url: { url: image.data, detail: "auto" }
-                        });
-                    }
-                }
-            }
-        }
-
-        apiMessages.push(...messagesCopy);
-      
-      this._lastApiRequest = apiMessages;
-        const responseText = await this._lollmsAPI.sendChat(apiMessages, this._currentRequestController.signal, modelOverride);
-        this._lastApiResponse = responseText;
-        const assistantMessage: ChatMessage = { role: 'assistant', content: responseText };
+    (async () => {
+        const { id, controller } = this.processManager.register(this._currentDiscussion!.id, 'Generating chat response...');
+        this.updateGeneratingState(true);
         
-        await this.addMessageToDiscussion(assistantMessage);
-      
-    } catch (error: any) {
-        const isAbortError = error.name === 'AbortError' || (error instanceof Error && error.message.includes('aborted'));
-        if (isAbortError) {
-            return;
-        }
+        try {
+            const apiMessages: ChatMessage[] = [];
+            const systemPrompt = getProcessedSystemPrompt('chat');
+            if (systemPrompt) {
+                apiMessages.push({ role: 'system', content: systemPrompt });
+            }
 
-        const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
-        this._lastApiResponse = errorMessage;
-        const errorResponseMessage: ChatMessage = { role: 'system', content: `Sorry, I encountered an error: ${errorMessage}` };
-        await this.addMessageToDiscussion(errorResponseMessage);
-    } finally {
-        this._currentRequestController = null;
-        this.updateGeneratingState(false);
-    }
+            const messagesCopy = JSON.parse(JSON.stringify(messages));
+
+            if (includeProjectContext) {
+                const context: ContextResult = this._contextManager ? await this._contextManager.getContextContent() : { text: '', images: [] };
+                if (context.text && context.text.trim().length > 0) {
+                    apiMessages.push({ role: 'system', content: `## Project Context\n${context.text}` });
+                }
+                if (context.images.length > 0) {
+                    let lastUserMessage = null;
+                    for (let i = messagesCopy.length - 1; i >= 0; i--) {
+                        if (messagesCopy[i].role === 'user') {
+                            lastUserMessage = messagesCopy[i];
+                            break;
+                        }
+                    }
+                    if (lastUserMessage) {
+                        if (typeof lastUserMessage.content === 'string') {
+                            lastUserMessage.content = [{ type: 'text', text: lastUserMessage.content }];
+                        }
+                        for (const image of context.images) {
+                            (lastUserMessage.content as any[]).push({
+                                type: 'image_url',
+                                image_url: { url: image.data, detail: "auto" }
+                            });
+                        }
+                    }
+                }
+            }
+
+            apiMessages.push(...messagesCopy);
+        
+        this._lastApiRequest = apiMessages;
+            const responseText = await this._lollmsAPI.sendChat(apiMessages, controller.signal, modelOverride);
+            this._lastApiResponse = responseText;
+            
+            if (controller.signal.aborted) { return; }
+            
+            const assistantMessage: ChatMessage = { role: 'assistant', content: responseText };
+            
+            await this.addMessageToDiscussion(assistantMessage);
+        
+        } catch (error: any) {
+            const isAbortError = error.name === 'AbortError' || (error instanceof Error && error.message.includes('aborted'));
+            if (isAbortError) {
+                console.log('Generation was aborted.');
+                return;
+            }
+
+            const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
+            this._lastApiResponse = errorMessage;
+            const errorResponseMessage: ChatMessage = { role: 'system', content: `Sorry, I encountered an error: ${errorMessage}` };
+            await this.addMessageToDiscussion(errorResponseMessage);
+        } finally {
+            this.processManager.unregister(id);
+            if (ChatPanel.currentPanel && this._currentDiscussion && ChatPanel.currentPanel.getCurrentDiscussionId() === this._currentDiscussion.id) {
+                this.updateGeneratingState(false);
+            }
+        }
+    })();
   }
 
   public async startDiscussionWithPrompt(prompt: string): Promise<void> {
-    if (this._currentRequestController) {
-        this._currentRequestController.abort();
-    }
     
     this._currentDiscussion = this._discussionManager.createNewDiscussion();
 
@@ -450,7 +437,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         }
     })();
 
-    await this._callApiWithMessages(this._currentDiscussion.messages);
+    this._callApiWithMessages(this._currentDiscussion.messages);
 }
   public async sendMessage(userMessage: ChatMessage) {
     if (!this._currentDiscussion) {
@@ -483,7 +470,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     }
 
 
-    await this._callApiWithMessages(this._currentDiscussion.messages);
+    this._callApiWithMessages(this._currentDiscussion.messages);
   }
 
   private async regenerateResponse() {
@@ -745,13 +732,16 @@ Your task is to re-analyze your previous code suggestion in light of this new er
           await this.sendMessage(userMessage);
           break;
         case 'stopGeneration':
-            if (this._currentRequestController) {
-                this._currentRequestController.abort();
-                const stopMessage: ChatMessage = {
-                    role: 'system',
-                    content: '🛑 Generation stopped by user.'
-                };
-                await this.addMessageToDiscussion(stopMessage);
+            if (this._currentDiscussion) {
+                const process = this.processManager.getForDiscussion(this._currentDiscussion.id);
+                if (process) {
+                    this.processManager.cancel(process.id);
+                    const stopMessage: ChatMessage = {
+                        role: 'system',
+                        content: '🛑 Generation stopped by user.'
+                    };
+                    await this.addMessageToDiscussion(stopMessage);
+                }
             } else {
                 vscode.commands.executeCommand('lollms-vs-coder.stopExecution');
             }
@@ -761,7 +751,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
           break;
         case 'runAgent':
           await this.sendMessage(message.message);
-          await this.agentManager.run(message.objective, this._currentDiscussion?.messages || []);
+          this.agentManager.run(message.objective, this._currentDiscussion?.messages || []);
           break;
         case 'displayPlan':
             this.displayPlan(message.plan);

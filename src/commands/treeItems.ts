@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { Prompt, PromptGroup } from '../promptManager';
+import { RunningProcess } from '../processManager';
 
 export class PromptItem extends vscode.TreeItem {
     constructor(
@@ -46,5 +47,25 @@ export class PromptGroupItem extends vscode.TreeItem {
         this.id = group.id;
         this.contextValue = 'promptGroup';
         this.iconPath = vscode.ThemeIcon.Folder;
+    }
+}
+
+export class ProcessItem extends vscode.TreeItem {
+    constructor(
+        public readonly process: RunningProcess
+    ) {
+        super(process.description, vscode.TreeItemCollapsibleState.None);
+        this.id = process.id;
+        this.contextValue = 'process';
+        this.iconPath = new vscode.ThemeIcon('sync~spin');
+        
+        const startTime = new Date(process.startTime).toLocaleTimeString();
+        this.tooltip = `Started: ${startTime}\nDiscussion ID: ${process.discussionId}`;
+
+        this.command = {
+            command: 'lollms-vs-coder.switchDiscussion',
+            title: 'Go to Discussion',
+            arguments: [process.discussionId]
+        };
     }
 }

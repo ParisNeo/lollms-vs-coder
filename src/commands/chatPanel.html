@@ -648,7 +648,8 @@
             </div>
             <div class="input-area">
                 <button id="attachButton" title="Attach Files"><i class="codicon codicon-add"></i></button>
-                <button id="executeButton" title="Execute Project (F5)"><i class="codicon codicon-play"></i></button>
+                <button id="setEntryPointButton" title="Set Project Entry Point"><i class="codicon codicon-target"></i></button>
+                <button id="executeButton" title="Execute Project"><i class="codicon codicon-play"></i></button>
                 <textarea id="messageInput" placeholder="Enter your message (Shift+Enter for new line)..." rows="1"></textarea>
                 <div class="control-buttons">
                     <button id="sendButton" title="Send Message"><i class="codicon codicon-send"></i></button>
@@ -677,6 +678,7 @@
         const stopButton = document.getElementById('stopButton');
         const attachButton = document.getElementById('attachButton');
         const executeButton = document.getElementById('executeButton');
+        const setEntryPointButton = document.getElementById('setEntryPointButton');
         const fileInput = document.getElementById('fileInput');
         const agentModeCheckbox = document.getElementById('agentModeCheckbox');
         const agentModeToggle = document.querySelector('.agent-mode-toggle');
@@ -1131,6 +1133,7 @@
             agentModeToggle.classList.toggle('disabled', isGenerating);
             attachButton.disabled = isGenerating;
             executeButton.disabled = isGenerating;
+            setEntryPointButton.disabled = isGenerating;
 
             sendButton.style.display = isGenerating ? 'none' : 'flex';
             stopButton.style.display = isGenerating ? 'flex' : 'none';
@@ -1163,6 +1166,10 @@
         executeButton.addEventListener('click', () => {
             setGeneratingState(true);
             vscode.postMessage({ command: 'executeProject' });
+        });
+        
+        setEntryPointButton.addEventListener('click', () => {
+            vscode.postMessage({ command: 'setEntryPoint' });
         });
 
         fileInput.addEventListener('change', () => {
@@ -1416,7 +1423,6 @@
 
           switch(message.command) {
             case 'addMessage':
-                // The AI has finished, re-enable controls
                 setGeneratingState(false);
                 addMessage(message.message);
                 break;

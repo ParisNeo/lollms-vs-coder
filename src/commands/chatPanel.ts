@@ -1,4 +1,3 @@
-// src/chatPanel.ts
 import * as vscode from 'vscode';
 import { LollmsAPI, ChatMessage } from '../lollmsAPI';
 import { ContextManager, ContextResult } from '../contextManager';
@@ -11,7 +10,7 @@ import mammoth from 'mammoth';
 import * as ExcelJS from 'exceljs';
 import { Readable } from 'stream';
 import { InfoPanel } from './infoPanel';
-import { stripThinkingTags } from '../utils'; // Make sure this is imported
+import { stripThinkingTags } from '../utils';
 
 
 export class ChatPanel {
@@ -26,6 +25,8 @@ export class ChatPanel {
   private _lastApiRequest: ChatMessage[] | null = null;
   private _lastApiResponse: string | null = null;
   private _currentRequestController: AbortController | null = null;
+  private _terminalOutput = '';
+  private _terminalOutputListener: vscode.Disposable | undefined;
 
 
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, discussionManager: DiscussionManager): ChatPanel {
@@ -64,11 +65,16 @@ export class ChatPanel {
     this._getHtmlForWebview(this._panel.webview).then(html => {
         this._panel.webview.html = html;
         this._setWebviewMessageListener(this._panel.webview);
+        this._startTerminalListener(); // Start listening for terminal output
     });
   }
 
   public setContextManager(contextManager: ContextManager) {
     this._contextManager = contextManager;
+  }
+  
+  public updateGeneratingState(isGenerating: boolean) {
+    this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating });
   }
 
   public updateAgentMode(isActive: boolean) {
@@ -79,6 +85,27 @@ export class ChatPanel {
       this._panel.webview.postMessage({ command: 'displayPlan', plan: plan });
   }
 
+  private _startTerminalListener() {
+    // This listener will capture ALL terminal output and look for our special exit code.
+    this._terminalOutputListener = (vscode.window as any).onDidWriteTerminalData((e: any) => {
+        if (e.terminal.name === 'Lollms Execution') {
+            const data = e.data as string;
+            const exitCodeMatch = data.match(/LOLLMS_EXEC_EXIT_CODE:(\d+)/);
+
+            if (exitCodeMatch) {
+                const exitCode = parseInt(exitCodeMatch[1], 10);
+                // We remove the marker from the final output
+                const finalOutput = this._terminalOutput.replace(/LOLLMS_EXEC_EXIT_CODE:\d+/, '').trim();
+                this._terminalOutput = ''; // Reset for next run
+
+                const success = exitCode === 0;
+                this.handleProjectExecutionResult(finalOutput, success);
+            } else {
+                this._terminalOutput += data;
+            }
+        }
+    });
+  }
   
   public async loadDiscussion(id: string): Promise<void> {
     if (this._currentRequestController) {
@@ -250,6 +277,7 @@ export class ChatPanel {
   public dispose() {
     ChatPanel.currentPanel = undefined;
     this._panel.dispose();
+    this._terminalOutputListener?.dispose();
   }
 
   private async _getHtmlForWebview(webview: vscode.Webview): Promise<string> {
@@ -269,12 +297,6 @@ export class ChatPanel {
     return html;
   }
 
-  public updateGeneratingState(isGenerating: boolean) {
-    this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating });
-  }
-
-  // ... other methods like displayPlan, loadDiscussion, etc.
-
   public async handleProjectExecutionResult(output: string, success: boolean) {
     if (!this._currentDiscussion) {
         this.updateGeneratingState(false);
@@ -293,20 +315,18 @@ export class ChatPanel {
             role: 'user',
             content: `The project failed to execute with the output shown in the last system message. Please analyze the error and provide a fix for the relevant file(s).`
         };
-        // The UI is already spinning. _callApiWithMessages will handle turning it off.
         await this._callApiWithMessages([...this._currentDiscussion.messages, analysisPrompt]);
     } else {
-        // If successful, we need to manually reset the state.
         this.updateGeneratingState(false);
     }
   }
-
+  
   public async analyzeExecutionResult(code: string, language: string, output: string, exitCode: number | null) {
     if (!this._currentDiscussion) {
       return;
     }
 
-    this._panel.webview.postMessage({ command: 'showLoading' });
+    this.updateGeneratingState(true);
 
     const success = exitCode === 0;
     let analysisPromptContent: string;
@@ -392,8 +412,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         await this.addMessageToDiscussion(errorResponseMessage);
     } finally {
         this._currentRequestController = null;
-        // This ensures the button is reset even if the API call fails
-        this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: false });
+        this.updateGeneratingState(false);
     }
   }
 
@@ -443,7 +462,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     
     const isFirstMessage = this._currentDiscussion.messages.filter(m => m.role !== 'system').length === 0;
 
-    // The client generates the ID. We trust it's there.
     this._currentDiscussion.messages.push(userMessage);
     this._currentDiscussion.timestamp = Date.now();
     await this._discussionManager.saveDiscussion(this._currentDiscussion);
@@ -499,7 +517,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     await this._discussionManager.saveDiscussion(this._currentDiscussion);
     this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
 
-    // Re-send the message. The client will handle UI updates.
     const messageId = 'user_' + Date.now().toString() + Math.random().toString(36).substring(2);
     this._panel.webview.postMessage({ command: 'resendMessage', message: {id: messageId, role: 'user', content: lastUserMessageContent }});
   }
@@ -527,7 +544,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     
     this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
 
-    // Re-send the message. The client will handle UI updates.
     const newMessageId = 'user_' + Date.now().toString() + Math.random().toString(36).substring(2);
     this._panel.webview.postMessage({ command: 'resendMessage', message: {id: newMessageId, role: 'user', content: messageContent }});
   }
@@ -650,7 +666,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     }
     await this.addMessageToDiscussion(chatMessage);
   }
-
+    
   private _setWebviewMessageListener(webview: vscode.Webview) {
     webview.onDidReceiveMessage(async (message) => {
       switch (message.command) {
@@ -737,7 +753,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
                 };
                 await this.addMessageToDiscussion(stopMessage);
             } else {
-                // If no API request is active, assume it's a project execution that needs stopping.
                 vscode.commands.executeCommand('lollms-vs-coder.stopExecution');
             }
             break;
@@ -814,10 +829,12 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             break;
         case 'runScript':
             vscode.commands.executeCommand('lollms-vs-coder.runScript', message.code, message.language);
-            break;            
+            break;
         case 'executeProject':
-            // The webview already set the generating state to true on button click
             await vscode.commands.executeCommand('lollms-vs-coder.executeProject');
+            break;
+        case 'setEntryPoint':
+            vscode.commands.executeCommand('lollms-vs-coder.setEntryPoint');
             break;
         case 'saveMessageAsPrompt':
           vscode.commands.executeCommand('lollms-vs-coder.saveMessageAsPrompt', message.content);

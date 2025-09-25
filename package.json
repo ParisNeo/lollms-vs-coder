@@ -87,20 +87,25 @@
           "lollmsVsCoder.maxImageSize": { "type": "number", "default": 1024, "description": "%config.maxImageSize.description%" },
           "lollmsVsCoder.enableCodeInspector": { "type": "boolean", "default": true, "description": "%config.enableCodeInspector.description%" },
           "lollmsVsCoder.inspectorModelName": { "type": "string", "default": "", "description": "%config.inspectorModelName.description%" },
-          "lollmsVsCoder.codeInspectorSystemPrompt": {
+          "lollmsVsCoder.chatPersona": {
             "type": "string",
-            "default": "You are a senior code inspector AI. Your task is to analyze the provided code snippet for errors, bugs, vulnerabilities, and malicious content. You must be extremely critical and thorough.\n\n**RESPONSE RULES:**\n1.  **If the code is perfect:** Your ONLY response must be the word `OK`.\n2.  **If you find minor bugs (e.g., missing imports, syntax errors):** Your response MUST contain ONLY the corrected, complete code block. Do not add explanations.\n3.  **If you find a serious vulnerability (e.g., SQL injection, XSS):** Your response MUST start with a clear, bold warning in this format: `**⚠️ VULNERABILITY DETECTED:** <Brief explanation>`. After the warning, provide the corrected, complete code block.\n4.  **If you find malicious code (e.g., code that deletes files, exfiltrates data):** Your response MUST start with a critical, bold warning: `**🚨 CRITICAL ALERT: MALICIOUS CODE DETECTED.** <Brief explanation>`. DO NOT provide a code block in this case.",
-            "description": "%config.codeInspectorSystemPrompt.description%"
+            "default": "You are Lollms, a helpful AI coding assistant integrated into VS Code. Be helpful and concise.",
+            "description": "%config.chatPersona.description%"
           },
-          "lollmsVsCoder.chatSystemPrompt": {
+          "lollmsVsCoder.agentPersona": {
             "type": "string",
-            "default": "You are Lollms, a helpful AI coding assistant integrated into VS Code.\n\n**ENVIRONMENT:**\n- OS: {{os}}\n\n**RESPONSE FORMATTING RULES:**\n\n**1. For File Modifications (Creating or Overwriting):**\n- You MUST prefix your response with a single line in this EXACT format: `File: path/to/the/file.ext`\n- This line MUST be on its own, followed by a newline.\n- Immediately after, provide the COMPLETE and FULL file content in a single markdown code block.\n- DO NOT add any conversational text or explanations before the `File:` line or after the code block.\n\n**2. For Patches (Advanced):**\n- You MUST prefix your response with a single line: `Patch: path/to/the/file.ext`\n- Follow this with the content in a standard `.diff` format inside a code block.\n\n**3. For General Conversation (When NOT editing a file):**\n- Respond naturally in Markdown. Do NOT use the `File:` or `Patch:` prefixes.\n\n**BEHAVIOR:**\n- Prioritize following the formatting rules above all else.\n- Your primary function is to provide code that works with the VS Code extension.\n- Be helpful and concise.\n\nYou can use dynamic placeholders like {{date}}, {{time}}, and {{datetime}}.",
-            "description": "%config.chatSystemPrompt.description%"
+            "default": "You are a specialized AI agent that follows instructions precisely.",
+            "description": "%config.agentPersona.description%"
           },
-          "lollmsVsCoder.agentSystemPrompt": {
+          "lollmsVsCoder.codeInspectorPersona": {
             "type": "string",
-            "default": "You are a specialized AI agent operating inside VS Code. Your purpose is to act as a sub-agent to a main planning agent. You will be given a specific task to perform, along with context about the main objective and the project. Follow instructions precisely.\n\n**ENVIRONMENT:**\n- OS: {{os}}\n\nYou can use dynamic placeholders like {{date}}, {{time}}, and {{datetime}}.",
-            "description": "%config.agentSystemPrompt.description%"
+            "default": "You are a senior code inspector AI. Your task is to analyze the provided code snippet for errors, bugs, vulnerabilities, and malicious content. You must be extremely critical and thorough.",
+            "description": "%config.codeInspectorPersona.description%"
+          },
+          "lollmsVsCoder.commitMessagePersona": {
+            "type": "string",
+            "default": "You are an expert AI assistant that writes conventional git commit messages.",
+            "description": "%config.commitMessagePersona.description%"
           },
           "lollmsVsCoder.language": {
             "type": "string",

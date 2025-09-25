@@ -16,9 +16,10 @@ export class SettingsPanel {
     maxImageSize: 1024,
     enableCodeInspector: true,
     inspectorModelName: '',
-    codeInspectorSystemPrompt: '',
-    chatSystemPrompt: '',
-    agentSystemPrompt: '',
+    codeInspectorPersona: '',
+    chatPersona: '',
+    agentPersona: '',
+    commitMessagePersona: '',
     language: 'auto'
   };
 
@@ -58,9 +59,10 @@ export class SettingsPanel {
     this._pendingConfig.maxImageSize = config.get<number>('maxImageSize') || 1024;
     this._pendingConfig.enableCodeInspector = config.get<boolean>('enableCodeInspector') || true;
     this._pendingConfig.inspectorModelName = config.get<string>('inspectorModelName') || '';
-    this._pendingConfig.codeInspectorSystemPrompt = config.get<string>('codeInspectorSystemPrompt') || '';
-    this._pendingConfig.chatSystemPrompt = config.get<string>('chatSystemPrompt') || '';
-    this._pendingConfig.agentSystemPrompt = config.get<string>('agentSystemPrompt') || '';
+    this._pendingConfig.codeInspectorPersona = config.get<string>('codeInspectorPersona') || '';
+    this._pendingConfig.chatPersona = config.get<string>('chatPersona') || '';
+    this._pendingConfig.agentPersona = config.get<string>('agentPersona') || '';
+    this._pendingConfig.commitMessagePersona = config.get<string>('commitMessagePersona') || '';
     this._pendingConfig.language = config.get<string>('language') || 'auto';
 
     this._panel.webview.html = this._getHtml(this._panel.webview, this._pendingConfig);
@@ -98,9 +100,10 @@ export class SettingsPanel {
                 await config.update('maxImageSize', this._pendingConfig.maxImageSize, vscode.ConfigurationTarget.Global);
                 await config.update('enableCodeInspector', this._pendingConfig.enableCodeInspector, vscode.ConfigurationTarget.Global);
                 await config.update('inspectorModelName', this._pendingConfig.inspectorModelName, vscode.ConfigurationTarget.Global);
-                await config.update('codeInspectorSystemPrompt', this._pendingConfig.codeInspectorSystemPrompt, vscode.ConfigurationTarget.Global);
-                await config.update('chatSystemPrompt', this._pendingConfig.chatSystemPrompt, vscode.ConfigurationTarget.Global);
-                await config.update('agentSystemPrompt', this._pendingConfig.agentSystemPrompt, vscode.ConfigurationTarget.Global);
+                await config.update('codeInspectorPersona', this._pendingConfig.codeInspectorPersona, vscode.ConfigurationTarget.Global);
+                await config.update('chatPersona', this._pendingConfig.chatPersona, vscode.ConfigurationTarget.Global);
+                await config.update('agentPersona', this._pendingConfig.agentPersona, vscode.ConfigurationTarget.Global);
+                await config.update('commitMessagePersona', this._pendingConfig.commitMessagePersona, vscode.ConfigurationTarget.Global);
                 await config.update('language', this._pendingConfig.language, vscode.ConfigurationTarget.Global);
   
                 vscode.window.showInformationMessage('Configuration saved. Recreating LollmsAPI...');
@@ -140,7 +143,7 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, modelName, disableSslVerification, noThinkMode, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorSystemPrompt, chatSystemPrompt, agentSystemPrompt, language } = config;
+    const { apiKey, apiUrl, modelName, disableSslVerification, noThinkMode, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, language } = config;
 
     return `<!DOCTYPE html>
         <html lang="en">
@@ -251,18 +254,23 @@ export class SettingsPanel {
                 <input type="text" id="inspectorModelName" value="${inspectorModelName}" placeholder="Default: Same as chat model" autocomplete="off" />
                 <p class="help-text">Optional. Use a different, potentially stronger model for code inspection.</p>
 
-                <label for="codeInspectorSystemPrompt">Code Inspector System Prompt</label>
-                <textarea id="codeInspectorSystemPrompt" rows="8">${codeInspectorSystemPrompt}</textarea>
+                <label for="codeInspectorPersona">Code Inspector Persona</label>
+                <textarea id="codeInspectorPersona" rows="4">${codeInspectorPersona}</textarea>
+                <p class="help-text">Customize the persona of the code inspector. This is added to a base prompt with the critical response rules.</p>
 
               <h2>System Prompts / Personas</h2>
-              <label for="chatSystemPrompt">Chat Mode System Prompt</label>
-              <textarea id="chatSystemPrompt" rows="8" placeholder="e.g., You are a helpful AI assistant.">${chatSystemPrompt}</textarea>
-              <p class="help-text">Defines the AI's persona and rules for the main chat window. Supports placeholders: <code>{{date}}</code>, <code>{{time}}</code>, <code>{{datetime}}</code>, <code>{{os}}</code>.</p>
+              <label for="chatPersona">Chat Mode Persona</label>
+              <textarea id="chatPersona" rows="6" placeholder="e.g., You are a helpful AI assistant.">${chatPersona}</textarea>
+              <p class="help-text">Define the AI's persona and rules for the main chat. This is added to a base prompt with the critical file-output rules. Supports placeholders: <code>{{date}}</code>, <code>{{os}}</code>.</p>
               
-              <label for="agentSystemPrompt">Agent Mode System Prompt</label>
-              <textarea id="agentSystemPrompt" rows="6" placeholder="e.g., You are a sub-agent that follows instructions.">${agentSystemPrompt}</textarea>
-              <p class="help-text">Defines the persona for AI agents performing autonomous tasks (like generating code). Supports placeholders: <code>{{date}}</code>, <code>{{time}}</code>, <code>{{datetime}}</code>, <code>{{os}}</code>.</p>
-              
+              <label for="agentPersona">Agent Mode Persona</label>
+              <textarea id="agentPersona" rows="4" placeholder="e.g., You are a sub-agent that follows instructions.">${agentPersona}</textarea>
+              <p class="help-text">Define the persona for AI agents performing autonomous tasks. Supports placeholders: <code>{{date}}</code>, <code>{{os}}</code>.</p>
+
+              <label for="commitMessagePersona">Git Commit Persona</label>
+              <textarea id="commitMessagePersona" rows="4" placeholder="e.g., You are an expert at writing conventional git commit messages.">${commitMessagePersona}</textarea>
+              <p class="help-text">Define the persona for the git commit message generator.</p>
+
               <h2>Advanced</h2>
               <p class="help-text">For advanced customization, you can directly edit the JSON file that stores your prompt library.</p>
               <button id="editPromptsBtn" class="secondary-button">Edit Prompts JSON</button>
@@ -286,9 +294,10 @@ export class SettingsPanel {
                     maxImageSize: document.getElementById('maxImageSize'),
                     enableCodeInspector: document.getElementById('enableCodeInspector'),
                     inspectorModelName: document.getElementById('inspectorModelName'),
-                    codeInspectorSystemPrompt: document.getElementById('codeInspectorSystemPrompt'),
-                    chatSystemPrompt: document.getElementById('chatSystemPrompt'),
-                    agentSystemPrompt: document.getElementById('agentSystemPrompt')
+                    codeInspectorPersona: document.getElementById('codeInspectorPersona'),
+                    chatPersona: document.getElementById('chatPersona'),
+                    agentPersona: document.getElementById('agentPersona'),
+                    commitMessagePersona: document.getElementById('commitMessagePersona')
                 };
                 
                 const modelsDatalist = document.getElementById('modelsList');

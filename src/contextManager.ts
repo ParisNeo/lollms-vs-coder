@@ -26,7 +26,7 @@ export class ContextManager {
   public reinitializeFileTreeProvider() {
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (workspaceFolder) {
-      this.fileTreeProvider = new FileTreeProvider(workspaceFolder.uri.fsPath, this.context);
+      this.fileTreeProvider = new FileTreeProvider(workspaceFolder.uri.fsPath, this.context, this.lollmsAPI, this);
     } else {
       this.fileTreeProvider = undefined;
     }

@@ -315,7 +315,7 @@ export async function activate(context: vscode.ExtensionContext) {
         context.subscriptions.push(...discussionCommands);
     }
     
-    let fileTreeView: vscode.TreeView<FileItem> | undefined;
+    let fileTreeView: vscode.TreeView<vscode.TreeItem> | undefined;
     let fileTreeProvider: FileTreeProvider | undefined;
     let fileTreeCommands: vscode.Disposable[] = [];
 
@@ -336,7 +336,15 @@ export async function activate(context: vscode.ExtensionContext) {
         if (fileTreeProvider) {
             fileTreeView = vscode.window.createTreeView('lollmsSettings.fileTreeView', { treeDataProvider: fileTreeProvider, showCollapseAll: true });
             
-            fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.cycleFileState', (item: FileItem) => fileTreeProvider!.cycleFileState(item)));
+            fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.cycleFileState', (item?: FileItem) => {
+                const targetItem = item || (fileTreeView?.selection[0] as FileItem);
+                if (targetItem && targetItem instanceof FileItem) {
+                    fileTreeProvider!.cycleFileState(targetItem);
+                } else {
+                    vscode.window.showWarningMessage("Lollms: Please select an item in the 'AI Context Files' view or click the icon next to it to change its state.");
+                }
+            }));
+
             fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.addFolderToContext', (item: FileItem) => fileTreeProvider!.addFolderToContext(item)));
             fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.removeFolderFromContext', (item: FileItem) => fileTreeProvider!.removeFolderFromContext(item)));
             fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.refreshTree', async () => await fileTreeProvider!.refresh()));
@@ -992,7 +1000,7 @@ export async function activate(context: vscode.ExtensionContext) {
             return;
         }
         const activeChatPanel = ChatPanel.currentPanel;
-
+    
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         if (!workspaceFolder) {
             vscode.window.showErrorMessage("Please open a project folder to execute.");
@@ -1001,7 +1009,7 @@ export async function activate(context: vscode.ExtensionContext) {
         }
         
         activeChatPanel.updateGeneratingState(true);
-
+    
         const launchJsonPath = vscode.Uri.joinPath(workspaceFolder.uri, '.vscode', 'launch.json');
         let launchConfig: any;
         try {
@@ -1018,7 +1026,7 @@ export async function activate(context: vscode.ExtensionContext) {
         
         let mainConfig = launchConfig.configurations[0];
         let programPath = mainConfig.program.replace('${workspaceFolder}', workspaceFolder.uri.fsPath);
-
+    
         let command: string;
         if (mainConfig.type === 'python') {
             let pythonPath = 'python';
@@ -1037,9 +1045,9 @@ export async function activate(context: vscode.ExtensionContext) {
             activeChatPanel.handleProjectExecutionResult(errorMsg, false);
             return;
         }
-
+    
         await activeChatPanel.addMessageToDiscussion({ role: 'system', content: `🚀 Executing in background: \`${command}\`` });
-
+    
         try {
             const { stdout, stderr } = await execAsync(command, { cwd: workspaceFolder.uri.fsPath });
             const fullOutput = `STDOUT:\n${stdout}\n\nSTDERR:\n${stderr}`;

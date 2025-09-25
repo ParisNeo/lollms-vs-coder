@@ -2,12 +2,34 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
+import { LollmsAPI } from '../lollmsAPI';
+import { ContextManager } from '../contextManager';
 
 export type PathState = 'included' | 'tree-only' | 'fully-excluded';
 
-export class FileTreeProvider implements vscode.TreeDataProvider<FileItem>, vscode.Disposable {
-    private _onDidChangeTreeData: vscode.EventEmitter<FileItem | undefined | null | void> = new vscode.EventEmitter<FileItem | undefined | null | void>();
-    readonly onDidChangeTreeData: vscode.Event<FileItem | undefined | null | void> = this._onDidChangeTreeData.event;
+class ContextProgressBarItem extends vscode.TreeItem {
+    constructor(currentTokens: number, maxTokens: number) {
+        super('', vscode.TreeItemCollapsibleState.None);
+
+        const percentage = maxTokens > 0 ? (currentTokens / maxTokens) : 0;
+        const barWidth = 20;
+        const filledBlocks = Math.round(percentage * barWidth);
+        const emptyBlocks = barWidth - filledBlocks;
+        
+        const bar = '█'.repeat(filledBlocks) + '░'.repeat(emptyBlocks);
+
+        this.label = `Context Size: ${bar}`;
+        this.description = `${currentTokens.toLocaleString()} / ${maxTokens.toLocaleString()} Tokens`;
+        this.tooltip = `The current context size is at ${Math.round(percentage * 100)}% of the model's limit.`;
+        this.iconPath = new vscode.ThemeIcon('dashboard');
+        this.contextValue = 'contextProgressBar';
+    }
+}
+
+
+export class FileTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem>, vscode.Disposable {
+    private _onDidChangeTreeData: vscode.EventEmitter<vscode.TreeItem | undefined | null | void> = new vscode.EventEmitter<vscode.TreeItem | undefined | null | void>();
+    readonly onDidChangeTreeData: vscode.Event<vscode.TreeItem | undefined | null | void> = this._onDidChangeTreeData.event;
   
     private contextFiles: Set<string> = new Set();
     private treeOnlyFiles: Set<string> = new Set();
@@ -23,7 +45,12 @@ export class FileTreeProvider implements vscode.TreeDataProvider<FileItem>, vsco
   
     private watcher: vscode.FileSystemWatcher;
 
-    constructor(private workspaceRoot: string, private context: vscode.ExtensionContext) {
+    constructor(
+        private workspaceRoot: string, 
+        private context: vscode.ExtensionContext,
+        private lollmsAPI: LollmsAPI,
+        private contextManager: ContextManager
+    ) {
       this.contextFiles = new Set(context.workspaceState.get<string[]>('aiContextFiles', []));
       this.treeOnlyFiles = new Set(context.workspaceState.get<string[]>('aiTreeOnlyFiles', []));
       this.fullyExcludedPaths = new Set(context.workspaceState.get<string[]>('aiFullyExcludedPaths', []));
@@ -98,15 +125,51 @@ export class FileTreeProvider implements vscode.TreeDataProvider<FileItem>, vsco
         this._onDidChangeTreeData.fire();
     }
 
-    getTreeItem(element: FileItem): vscode.TreeItem {
+    getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
         return element;
     }
 
-    getChildren(element?: FileItem): Thenable<FileItem[]> {
+    async getChildren(element?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
         if (!this.workspaceRoot) return Promise.resolve([]);
-        const dirPath = element ? element.resourceUri!.fsPath : this.workspaceRoot;
-        const relativePath = element ? element.relativePath : '';
-        return Promise.resolve(this.getDirectoryContents(dirPath, relativePath));
+
+        if (element) { // Children of a file/folder item
+            if (element instanceof FileItem) {
+                const dirPath = element.resourceUri!.fsPath;
+                const relativePath = element.relativePath;
+                return Promise.resolve(this.getDirectoryContents(dirPath, relativePath));
+            }
+            return Promise.resolve([]); // No children for progress bar
+        } else { // Root level
+            const progressBarItem = await this._createProgressBarItem();
+            const fileItems = this.getDirectoryContents(this.workspaceRoot, '');
+            
+            const items: vscode.TreeItem[] = [];
+            if (progressBarItem) {
+                items.push(progressBarItem);
+            }
+            items.push(...fileItems);
+            return items;
+        }
+    }
+
+    private async _createProgressBarItem(): Promise<ContextProgressBarItem | null> {
+        try {
+            const [contextResult, contextSizeResponse] = await Promise.all([
+                this.contextManager.getContextContent(),
+                this.lollmsAPI.getContextSize()
+            ]);
+    
+            const maxTokens = contextSizeResponse.context_size;
+            
+            // We only tokenize the text part for the progress bar calculation
+            const tokenizeResponse = await this.lollmsAPI.tokenize(contextResult.text);
+            const currentTokens = tokenizeResponse.count;
+    
+            return new ContextProgressBarItem(currentTokens, maxTokens);
+        } catch (error) {
+            console.error("Failed to create context progress bar:", error);
+            return null;
+        }
     }
 
     private getDirectoryContents(dirPath: string, relativePath: string): FileItem[] {

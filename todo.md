@@ -15,3 +15,8 @@
 - .vue files are not loading
 - when using File: syntax, the LLM needs to provide full code without any placeholder
 - some files like jupyter and vue files must be loadable
+- fix actions for py files
+- add inspection
+- add the possibility to activate/deactivate file rewrite/file patch
+- add the possibility to save selection
+- add the possibility to use personalities

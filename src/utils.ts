@@ -88,7 +88,16 @@ export function getProcessedSystemPrompt(promptType: 'chat' | 'agent' | 'inspect
     -   You MUST prefix your response with a single line: \`Patch: path/to/the/file.ext\`
     -   Follow this with the content in a standard \`.diff\` format inside a code block.
 3.  **For General Conversation (When NOT editing a file):**
-    -   Respond naturally in Markdown. Do NOT use the \`File:\` or \`Patch:\` prefixes.`;
+    -   Respond naturally in Markdown. Do NOT use the \`File:\` or \`Patch:\` prefixes.
+4.  **For Executable Commands:**
+    -   To suggest an action for the user to take, use the following syntax: \`[command:command_name]{"json_parameters"}\`
+    -   The extension will render this as a button for the user to click.
+    -   **Available Commands:**
+        -   \`createNotebook\`: Creates a new, unsaved Jupyter Notebook.
+            -   Example: \`[command:createNotebook]{"path": "analysis.ipynb", "cellContent": "# My New Analysis\\n\\nLet's start by importing pandas."}\`
+        -   \`gitCommit\`: Populates the Source Control commit message box.
+            -   Example: \`[command:gitCommit]{"message": "feat(api): Add new endpoint for user profiles"}\`
+    -   Use these commands when a direct action is more appropriate than just providing code or text.`;
             personaKey = 'chatPersona';
             break;
         

@@ -176,7 +176,7 @@
             display: flex;
             gap: 8px;
         }
-        .code-action-btn, .msg-action-btn {
+        .code-action-btn, .msg-action-btn, .lollms-command-btn {
             background-color: var(--vscode-button-secondaryBackground);
             color: var(--vscode-button-secondaryForeground);
             border: 1px solid transparent;
@@ -187,14 +187,22 @@
             font-weight: 500;
             transition: background-color 0.2s;
         }
-        .code-action-btn:hover, .msg-action-btn:hover {
+        .code-action-btn:hover, .msg-action-btn:hover, .lollms-command-btn:hover {
             background-color: var(--vscode-button-secondaryHoverBackground);
         }
-        .apply-btn {
+        .apply-btn, .lollms-command-btn {
             background-color: var(--vscode-button-background);
             color: var(--vscode-button-foreground);
+            font-size: 12px;
+            padding: 6px 12px;
         }
-        .apply-btn:hover {
+        .lollms-command-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin: 8px 0;
+        }
+        .apply-btn:hover, .lollms-command-btn:hover {
             background-color: var(--vscode-button-hoverBackground);
         }
         .input-area-wrapper {
@@ -585,22 +593,6 @@
         .edit-cancel-btn:hover {
             background-color: var(--vscode-button-secondaryHoverBackground);
         }
-        .code-actions {
-            margin-left: auto;
-            display: flex;
-            gap: 8px;
-        }
-        .code-action-btn, .msg-action-btn {
-            background-color: var(--vscode-button-secondaryBackground);
-            color: var(--vscode-button-secondaryForeground);
-            border: 1px solid transparent;
-            border-radius: 4px;
-            padding: 4px 8px;
-            cursor: pointer;
-            font-size: 11px;
-            font-weight: 500;
-            transition: background-color 0.2s;
-        }
     </style>
 </head>
 <body>
@@ -980,6 +972,7 @@
             chatMessagesContainer.appendChild(messageWrapper);
             
             enhanceCodeBlocks(messageWrapper);
+            enhanceWithCommandButtons(messageWrapper);
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
         
@@ -1005,6 +998,51 @@
                 case 'failed': return '<span class="codicon codicon-error"></span>';
                 default: return '<span class="codicon codicon-circle-slash"></span>';
             }
+        }
+        
+        function enhanceWithCommandButtons(container) {
+            const contentDivs = container.querySelectorAll('.message-content');
+            const commandRegex = /\[command:(\w+)\]({.*})/g;
+
+            contentDivs.forEach(contentDiv => {
+                contentDiv.innerHTML = contentDiv.innerHTML.replace(commandRegex, (match, command, paramsJson) => {
+                    try {
+                        const params = JSON.parse(paramsJson);
+                        let buttonText = command;
+                        let icon = 'zap'; // Default icon
+
+                        if (command === 'createNotebook') {
+                            buttonText = `Create Notebook: ${params.path || 'new_notebook.ipynb'}`;
+                            icon = 'new-file';
+                        } else if (command === 'gitCommit') {
+                            buttonText = `Prepare Commit: "${params.message.substring(0, 30)}..."`;
+                            icon = 'git-commit';
+                        }
+                        
+                        // Use single quotes for data attributes to handle JSON with double quotes
+                        return `<p><button class="lollms-command-btn" 
+                                    data-command='${command}' 
+                                    data-params='${JSON.stringify(params)}'>
+                                    <i class="codicon codicon-${icon}"></i> ${buttonText}
+                                </button></p>`;
+                    } catch (e) {
+                        console.error("Failed to parse command JSON:", e);
+                        return match; // Return original string if JSON is invalid
+                    }
+                });
+            });
+
+            // Add event listeners to the new buttons
+            container.querySelectorAll('.lollms-command-btn').forEach(button => {
+                button.addEventListener('click', () => {
+                    const command = button.dataset.command;
+                    const params = JSON.parse(button.dataset.params);
+                    vscode.postMessage({ 
+                        command: 'executeLollmsCommand', 
+                        details: { command, params }
+                    });
+                });
+            });
         }
         
         function enhanceCodeBlocks(container) {
@@ -1056,7 +1094,7 @@
                     actions.appendChild(inspectBtn);
                 }
 
-                const executableLanguages = ['bash', 'shell', 'sh', 'powershell', 'pwsh', 'cmd', 'bat', 'batch', 'python'];
+                const executableLanguages = ['bash', 'shell', 'sh', 'powershell', 'pwsh', 'cmd', 'bat', 'batch', 'python', 'py'];
                 if (executableLanguages.includes(language)) {
                     const executeBtn = document.createElement('button');
                     executeBtn.className = 'code-action-btn';

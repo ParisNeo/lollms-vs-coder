@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.3.7",
+  "version": "0.3.9",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -16,7 +16,8 @@
   },
   "categories": [
     "Machine Learning",
-    "Other"
+    "Other",
+    "Notebooks"
   ],
   "l10n": "./l10n",
   "main": "./out/extension.js",
@@ -69,7 +70,9 @@
         { "command": "lollms-vs-coder.importPrompts", "title": "%command.importPrompts.title%", "icon": "$(folder-opened)" },
         { "command": "lollms-vs-coder.exportPrompts", "title": "%command.exportPrompts.title%", "icon": "$(save)" },
         { "command": "lollms-vs-coder.editPromptsFile", "title": "%command.editPromptsFile.title%" },
-        { "command": "lollms-vs-coder.cancelProcess", "title": "%command.cancel.title%", "icon": "$(stop-circle)" }
+        { "command": "lollms-vs-coder.cancelProcess", "title": "%command.cancel.title%", "icon": "$(stop-circle)" },
+        { "command": "lollms-vs-coder.generateNextNotebookCell", "title": "%command.generateNextNotebookCell.title%" },
+        { "command": "lollms-vs-coder.enhanceNotebookCell", "title": "%command.enhanceNotebookCell.title%" }
     ],
     "configuration": {
         "type": "object",
@@ -169,7 +172,14 @@
             { "command": "lollms-vs-coder.renamePromptGroup", "when": "(view == lollmsChatPromptsView || view == lollmsCodeActionsView) && viewItem == 'promptGroup'", "group": "1_modification" },
             { "command": "lollms-vs-coder.deletePromptGroup", "when": "(view == lollmsChatPromptsView || view == lollmsCodeActionsView) && viewItem == 'promptGroup'", "group": "9_delete" }
         ]
+      },
+    "notebookCellStatusBar": [
+      {
+        "viewType": "jupyter-notebook",
+        "placement": "left",
+        "priority": 100
       }
+    ]
   },
   "scripts": { "vscode:prepublish": "npm run compile", "compile": "tsc -p ./", "watch": "tsc -watch -p ./", "package": "npx @vscode/vsce package", "pretest": "npm run compile && npm audit", "test": "node ./out/test/runTest.js", "security-audit": "npm audit --audit-level moderate", "clean": "rimraf out node_modules package-lock.json" },
   "devDependencies": { "@types/jimp": "^0.2.28", "@types/marked": "5.0.2", "@types/node-fetch": "2.6.13", "@types/pdf-parse": "^1.1.4", "@types/vscode": "1.74.0", "typescript": "5.9.2", "@vscode/vsce": "^2.26.0" },

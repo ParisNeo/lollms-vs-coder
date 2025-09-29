@@ -3,14 +3,13 @@ import { LollmsAPI, ChatMessage } from '../lollmsAPI';
 import { ContextManager, ContextResult } from '../contextManager';
 import { Discussion, DiscussionManager } from '../discussionManager';
 import { AgentManager } from '../agentManager';
-import { getProcessedSystemPrompt } from '../utils';
+import { getProcessedSystemPrompt, stripThinkingTags } from '../utils';
 import * as path from 'path';
 import pdf from 'pdf-parse';
 import mammoth from 'mammoth';
 import * as ExcelJS from 'exceljs';
 import { Readable } from 'stream';
 import { InfoPanel } from './infoPanel';
-import { stripThinkingTags } from '../utils';
 import { ProcessManager } from '../processManager';
 
 
@@ -499,7 +498,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     };
     const lastUserMessageContent = lastUserMessage.content;
     
-    this._currentDiscussion.messages.splice(lastUserMsgIndex);
+    this._currentDiscussion.messages.splice(lastAssistantMsgIndex);
     
     await this._discussionManager.saveDiscussion(this._currentDiscussion);
     this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
@@ -660,6 +659,14 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         case 'sendMessage':
           await this.sendMessage(message.message);
           break;
+        case 'executeLollmsCommand':
+            const { command, params } = message.details;
+            if (command === 'createNotebook') {
+                vscode.commands.executeCommand('lollms-vs-coder.createNotebook', params.path, params.cellContent);
+            } else if (command === 'gitCommit') {
+                vscode.commands.executeCommand('lollms-vs-coder.gitCommit', params.message);
+            }
+            break;
         case 'inspectCode':
             const config = vscode.workspace.getConfiguration('lollmsVsCoder');
             if (!config.get('enableCodeInspector')) return;
@@ -667,10 +674,10 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             await this.addMessageToDiscussion({ role: 'system', content: '🔍 Inspecting code...' });
 
             const inspectorModel = config.get<string>('inspectorModelName') || undefined;
-            const systemPrompt = config.get<string>('codeInspectorSystemPrompt');
+            const systemPrompt = getProcessedSystemPrompt('inspector');
 
             if (!systemPrompt) {
-                this.addMessageToDiscussion({ role: 'system', content: '❌ Inspection failed: Inspector system prompt is not configured.' });
+                this.addMessageToDiscussion({ role: 'system', content: '❌ Inspection failed: Inspector system prompt could not be generated.' });
                 return;
             }
 

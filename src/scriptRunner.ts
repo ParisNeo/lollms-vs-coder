@@ -29,6 +29,7 @@ export class ScriptRunner {
     const originalCode = code; 
 
     switch (language) {
+      case 'py':
       case 'python':
         fileExtension = '.py';
         command = `python -u`;

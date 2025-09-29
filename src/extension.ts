@@ -5,7 +5,7 @@ import { ChatPanel } from './commands/chatPanel';
 import { SettingsPanel } from './commands/configView';
 import { ContextManager } from './contextManager';
 import { GitIntegration } from './gitIntegration';
-import { applyDiff, getProcessedSystemPrompt } from './utils';
+import { applyDiff, getProcessedSystemPrompt, stripThinkingTags } from './utils';
 import { FileTreeProvider, FileItem } from './commands/fileTreeProvider';
 import { DiscussionManager } from './discussionManager';
 import { DiscussionTreeProvider, DiscussionItem, DiscussionGroupItem } from './commands/discussionTreeProvider';
@@ -27,6 +27,7 @@ import { ProcessManager } from './processManager';
 import { ProcessTreeProvider } from './commands/processTreeProvider';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { LollmsNotebookCellActionProvider } from './notebookTools';
 
 const execAsync = promisify(exec);
 
@@ -923,7 +924,89 @@ export async function activate(context: vscode.ExtensionContext) {
         processManager.cancel(item.process.id);
     }));
 
-    // ================== Execution Logic ==================
+    // ================== Notebook and Execution Logic ==================
+    context.subscriptions.push(vscode.notebooks.registerNotebookCellStatusBarItemProvider('jupyter-notebook', new LollmsNotebookCellActionProvider()));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.enhanceNotebookCell', async (cell: vscode.NotebookCell) => {
+        if (!cell) return;
+    
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Lollms: Enhancing cell...",
+            cancellable: true
+        }, async (progress, token) => {
+            const prompts = await promptManager.getCodeActionPrompts();
+            const refactorPrompt = prompts.find(p => p.id === 'default-refactor');
+            if (!refactorPrompt) {
+                vscode.window.showErrorMessage("Could not find the default refactor prompt.");
+                return;
+            }
+    
+            const cellContent = cell.document.getText();
+            const languageId = cell.document.languageId;
+            const systemPrompt = getProcessedSystemPrompt('agent'); // Using agent prompt for direct code tasks
+            const userPrompt = `${refactorPrompt.content.replace('{{SELECTED_CODE}}', '')}\n\n\`\`\`${languageId}\n${cellContent}\n\`\`\``;
+    
+            const responseText = await lollmsAPI.sendChat([
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt }
+            ]);
+    
+            if (token.isCancellationRequested) return;
+    
+            const codeBlockRegex = /```(?:[\w-]*)\n([\s\S]+?)\n```/s;
+            const match = responseText.match(codeBlockRegex);
+            const newCode = match ? match[1] : stripThinkingTags(responseText);
+    
+            if (newCode) {
+                const edit = new vscode.WorkspaceEdit();
+                const notebookEdit = vscode.NotebookEdit.replaceCells(
+                    new vscode.NotebookRange(cell.index, cell.index + 1),
+                    [new vscode.NotebookCellData(cell.kind, newCode, cell.document.languageId)]
+                );
+                edit.set(cell.notebook.uri, [notebookEdit]);
+                await vscode.workspace.applyEdit(edit);
+            }
+        });
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateNextNotebookCell', async (cell: vscode.NotebookCell) => {
+        if (!cell) return;
+    
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Lollms: Generating next cell...",
+            cancellable: true
+        }, async (progress, token) => {
+            const cellContent = cell.document.getText();
+            const cellType = cell.kind === vscode.NotebookCellKind.Markup ? 'markdown' : 'code';
+            const languageId = cell.document.languageId;
+    
+            const systemPrompt = getProcessedSystemPrompt('agent');
+            const userPrompt = `Based on the content of the previous ${cellType} cell (language: ${languageId}), generate the next logical code cell. Only output the code itself in a single markdown block.\n\n**Previous Cell Content:**\n\`\`\`${languageId}\n${cellContent}\n\`\`\``;
+    
+            const responseText = await lollmsAPI.sendChat([
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt }
+            ]);
+    
+            if (token.isCancellationRequested) return;
+    
+            const codeBlockRegex = /```(?:[\w-]*)\n([\s\S]+?)\n```/s;
+            const match = responseText.match(codeBlockRegex);
+            const newCode = match ? match[1] : stripThinkingTags(responseText);
+    
+            if (newCode) {
+                const edit = new vscode.WorkspaceEdit();
+                const notebookEdit = vscode.NotebookEdit.insertCells(
+                    cell.index + 1,
+                    [new vscode.NotebookCellData(vscode.NotebookCellKind.Code, newCode, languageId)]
+                );
+                edit.set(cell.notebook.uri, [notebookEdit]);
+                await vscode.workspace.applyEdit(edit);
+            }
+        });
+    }));
 
     context.subscriptions.push(vscode.window.onDidCloseTerminal(terminal => {
         if (lollmsExecutionTerminal && terminal === lollmsExecutionTerminal) {

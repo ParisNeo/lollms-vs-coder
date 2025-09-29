@@ -6,6 +6,7 @@
 - OK add the possibility to copy the message as markdown
 - OK add stop generation
 - OK add tokens progressbar
+- OK fix actions for py files
 
 - if there is a .gitignore, apply it to the context selection
 - fuse generate code and rewrite code
@@ -15,7 +16,6 @@
 - .vue files are not loading
 - when using File: syntax, the LLM needs to provide full code without any placeholder
 - some files like jupyter and vue files must be loadable
-- fix actions for py files
 - add inspection
 - add the possibility to activate/deactivate file rewrite/file patch
 - add the possibility to save selection

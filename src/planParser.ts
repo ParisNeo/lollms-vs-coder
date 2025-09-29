@@ -97,19 +97,18 @@ Your task is to generate a NEW set of tasks to recover from this failure and com
     }
 
     public extractJson(text: string): string | null {
-      const markdownMatch = text.match(/``````/);
-      if (markdownMatch && markdownMatch[1]) {
-        return markdownMatch[1]; // captured JSON content as string [web:5][web:8][web:9]
-      }
-
-
-      const firstBrace = text.indexOf('{');
-      const lastBrace = text.lastIndexOf('}');
-      if (firstBrace !== -1 && lastBrace > firstBrace) {
-        return text.substring(firstBrace, lastBrace + 1);
-      }
-
-      return null;
+        const markdownMatch = text.match(/```json\s*([\s\S]+?)\s*```/);
+        if (markdownMatch && markdownMatch[1]) {
+            return markdownMatch[1];
+        }
+    
+        const firstBrace = text.indexOf('{');
+        const lastBrace = text.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace > firstBrace) {
+            return text.substring(firstBrace, lastBrace + 1);
+        }
+    
+        return null;
     }
 
     private getCorrectionPrompt(faultyResponse: string, errorMessage: string): ChatMessage {

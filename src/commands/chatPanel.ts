@@ -74,10 +74,9 @@ export class ChatPanel {
     this.processManager = processManager;
   }
   
-  public updateGeneratingState(isGenerating: boolean) {
+  public updateGeneratingState() {
     const process = this._currentDiscussion ? this.processManager.getForDiscussion(this._currentDiscussion.id) : undefined;
-    const shouldBeGenerating = isGenerating || !!process;
-    this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: shouldBeGenerating });
+    this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: !!process });
   }
 
   public updateAgentMode(isActive: boolean) {
@@ -117,8 +116,7 @@ export class ChatPanel {
         });
         
         this.displayPlan(null);
-        const runningProcess = this.processManager.getForDiscussion(id);
-        this.updateGeneratingState(!!runningProcess);
+        this.updateGeneratingState();
         await this._updateContextAndTokens();
     }
   }
@@ -128,7 +126,7 @@ export class ChatPanel {
     this._panel.title = this._currentDiscussion.title;
     this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
     this.displayPlan(null); // Clear plan for new discussion
-    this.updateGeneratingState(false);
+    this.updateGeneratingState();
     this._updateContextAndTokens();
   }
   
@@ -276,7 +274,7 @@ export class ChatPanel {
 
   public async handleProjectExecutionResult(output: string, success: boolean) {
     if (!this._currentDiscussion) {
-        this.updateGeneratingState(false);
+        this.updateGeneratingState();
         return;
     }
 
@@ -294,7 +292,7 @@ export class ChatPanel {
         };
         this._callApiWithMessages([...this._currentDiscussion.messages, analysisPrompt]);
     } else {
-        this.updateGeneratingState(false);
+        this.updateGeneratingState();
     }
   }
   
@@ -303,7 +301,7 @@ export class ChatPanel {
       return;
     }
 
-    this.updateGeneratingState(true);
+    this.updateGeneratingState();
 
     const success = exitCode === 0;
     let analysisPromptContent: string;
@@ -335,7 +333,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
 
     (async () => {
         const { id, controller } = this.processManager.register(this._currentDiscussion!.id, 'Generating chat response...');
-        this.updateGeneratingState(true);
         
         try {
             const apiMessages: ChatMessage[] = [];
@@ -398,9 +395,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             await this.addMessageToDiscussion(errorResponseMessage);
         } finally {
             this.processManager.unregister(id);
-            if (ChatPanel.currentPanel && this._currentDiscussion && ChatPanel.currentPanel.getCurrentDiscussionId() === this._currentDiscussion.id) {
-                this.updateGeneratingState(false);
-            }
         }
     })();
   }
@@ -668,70 +662,75 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             }
             break;
         case 'inspectCode':
+            if (!this._currentDiscussion) return;
+            
             const config = vscode.workspace.getConfiguration('lollmsVsCoder');
             if (!config.get('enableCodeInspector')) return;
-
+        
             await this.addMessageToDiscussion({ role: 'system', content: '🔍 Inspecting code...' });
-
+        
             const inspectorModel = config.get<string>('inspectorModelName') || undefined;
             const systemPrompt = getProcessedSystemPrompt('inspector');
-
+        
             if (!systemPrompt) {
                 this.addMessageToDiscussion({ role: 'system', content: '❌ Inspection failed: Inspector system prompt could not be generated.' });
                 return;
             }
-
+        
             const inspectionMessages: ChatMessage[] = [
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: `Inspect the following ${message.language} code block:\n\n\`\`\`${message.language}\n${message.code}\n\`\`\`` }
             ];
+        
+            (async () => {
+                const { id, controller } = this.processManager.register(this._currentDiscussion!.id, 'Inspecting code...');
+                try {
+                    const response = await this._lollmsAPI.sendChat(inspectionMessages, controller.signal, inspectorModel);
+                    if(controller.signal.aborted) return;
 
-            try {
-                const response = await this._lollmsAPI.sendChat(inspectionMessages, undefined, inspectorModel);
-                const cleanResponse = stripThinkingTags(response);
-
-                if (cleanResponse.trim().toUpperCase() === 'OK') {
-                    await this.addMessageToDiscussion({ role: 'system', content: '✅ **Inspector:** Code is OK.' });
-                } else if (cleanResponse.startsWith('**🚨 CRITICAL ALERT:')) {
-                    await this.addMessageToDiscussion({ role: 'system', content: `🔴 ${cleanResponse}` });
-                } else if (cleanResponse.startsWith('**⚠️ VULNERABILITY DETECTED:')) {
-                    await this.addMessageToDiscussion({ role: 'system', content: `🟠 ${cleanResponse}` });
-                } else {
-                    // Assume it's a code fix
-                    const codeBlockRegex = /```(?:[\w-]*)\n([\s\S]+?)\n```/s;
-                    const match = cleanResponse.match(codeBlockRegex);
-                    if (match && match[1] && this._currentDiscussion) {
-                        const newCode = match[1];
-                        const originalMessageIndex = this._currentDiscussion.messages.findIndex(m => m.id === message.messageId);
-                        
-                        if (originalMessageIndex > -1) {
-                            const originalMessage = this._currentDiscussion.messages[originalMessageIndex];
-                            // Replace the old code block with the new one
-                            const originalCodeBlock = `\`\`\`${message.language}\n${message.code}\n\`\`\``;
-                            const newCodeBlock = `\`\`\`${message.language}\n${newCode}\n\`\`\``;
-                            
-                            if (typeof originalMessage.content === 'string') {
-                                originalMessage.content = originalMessage.content.replace(originalCodeBlock, newCodeBlock);
-                            }
-                            
-                            await this._discussionManager.saveDiscussion(this._currentDiscussion);
-                            await this.addMessageToDiscussion({ role: 'system', content: '✅ **Inspector:** Found issues and corrected the code above.' });
-                            
-                            // Reload the discussion in the webview to show the updated message
-                            this._panel.webview.postMessage({ 
-                                command: 'loadDiscussion', 
-                                messages: this._currentDiscussion.messages,
-                                isInspectorEnabled: true 
-                            });
-                        }
+                    const cleanResponse = stripThinkingTags(response);
+        
+                    if (cleanResponse.trim().toUpperCase() === 'OK') {
+                        await this.addMessageToDiscussion({ role: 'system', content: '✅ **Inspector:** Code is OK.' });
+                    } else if (cleanResponse.startsWith('**🚨 CRITICAL ALERT:')) {
+                        await this.addMessageToDiscussion({ role: 'system', content: `🔴 ${cleanResponse}` });
+                    } else if (cleanResponse.startsWith('**⚠️ VULNERABILITY DETECTED:')) {
+                        await this.addMessageToDiscussion({ role: 'system', content: `🟠 ${cleanResponse}` });
                     } else {
-                        // If no code block is found, just post the AI's text response
-                        await this.addMessageToDiscussion({ role: 'system', content: `**Inspector Analysis:**\n${cleanResponse}` });
+                        const codeBlockRegex = /```(?:[\w-]*)\n([\s\S]+?)\n```/s;
+                        const match = cleanResponse.match(codeBlockRegex);
+                        if (match && match[1] && this._currentDiscussion) {
+                            const newCode = match[1];
+                            const originalMessageIndex = this._currentDiscussion.messages.findIndex(m => m.id === message.messageId);
+                            
+                            if (originalMessageIndex > -1) {
+                                const originalMessage = this._currentDiscussion.messages[originalMessageIndex];
+                                const originalCodeBlock = `\`\`\`${message.language}\n${message.code}\n\`\`\``;
+                                const newCodeBlock = `\`\`\`${message.language}\n${newCode}\n\`\`\``;
+                                
+                                if (typeof originalMessage.content === 'string') {
+                                    originalMessage.content = originalMessage.content.replace(originalCodeBlock, newCodeBlock);
+                                }
+                                
+                                await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                                await this.addMessageToDiscussion({ role: 'system', content: '✅ **Inspector:** Found issues and corrected the code above.' });
+                                
+                                this._panel.webview.postMessage({ 
+                                    command: 'loadDiscussion', 
+                                    messages: this._currentDiscussion.messages,
+                                    isInspectorEnabled: true 
+                                });
+                            }
+                        } else {
+                            await this.addMessageToDiscussion({ role: 'system', content: `**Inspector Analysis:**\n${cleanResponse}` });
+                        }
                     }
+                } catch (error: any) {
+                    await this.addMessageToDiscussion({ role: 'system', content: `❌ Inspection failed: ${error.message}` });
+                } finally {
+                    this.processManager.unregister(id);
                 }
-            } catch (error: any) {
-                await this.addMessageToDiscussion({ role: 'system', content: `❌ Inspection failed: ${error.message}` });
-            }
+            })();
             break;
         case 'resendMessage':
           const userMessage = message.message;

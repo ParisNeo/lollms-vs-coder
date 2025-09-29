@@ -1001,6 +1001,8 @@
         }
         
         function enhanceWithCommandButtons(container) {
+            // This now uses event delegation, so we just create the buttons.
+            // The listener is on the container.
             const contentDivs = container.querySelectorAll('.message-content');
             const commandRegex = /\[command:(\w+)\]({.*})/g;
 
@@ -1019,44 +1021,30 @@
                             icon = 'git-commit';
                         }
                         
-                        // Use single quotes for data attributes to handle JSON with double quotes
                         return `<p><button class="lollms-command-btn" 
                                     data-command='${command}' 
-                                    data-params='${JSON.stringify(params)}'>
+                                    data-params='${paramsJson}'>
                                     <i class="codicon codicon-${icon}"></i> ${buttonText}
                                 </button></p>`;
                     } catch (e) {
                         console.error("Failed to parse command JSON:", e);
-                        return match; // Return original string if JSON is invalid
+                        return match;
                     }
-                });
-            });
-
-            // Add event listeners to the new buttons
-            container.querySelectorAll('.lollms-command-btn').forEach(button => {
-                button.addEventListener('click', () => {
-                    const command = button.dataset.command;
-                    const params = JSON.parse(button.dataset.params);
-                    vscode.postMessage({ 
-                        command: 'executeLollmsCommand', 
-                        details: { command, params }
-                    });
                 });
             });
         }
         
         function enhanceCodeBlocks(container) {
-            container.querySelectorAll('pre').forEach(pre => {
-                if (pre.parentElement.tagName === 'DETAILS') return; 
+            container.querySelectorAll('pre:not([data-enhanced])').forEach(pre => {
+                if (pre.parentElement.tagName === 'DETAILS' && !pre.parentElement.classList.contains('code-collapsible')) return; 
 
                 const codeBlock = pre.querySelector('code');
                 if (!codeBlock) return;
         
-                const codeContent = codeBlock.innerText;
                 let language = [...codeBlock.classList]
                     .find(c => c.startsWith('language-'))
                     ?.replace('language-', '').toLowerCase() || 'text';
-
+                
                 const details = document.createElement('details');
                 details.className = 'code-collapsible';
                 details.open = true;
@@ -1072,8 +1060,33 @@
                 const actions = document.createElement('div');
                 actions.className = 'code-actions';
 
+                // Add "Apply to File" button if applicable
+                const previousElement = pre.previousElementSibling;
+                if (previousElement && previousElement.tagName === 'P') {
+                    const text = (previousElement.textContent || '').trim();
+                    const fileMatch = text.match(/^File:\s*(.+)$/i);
+                    const patchMatch = text.match(/^(Patch|diff):\s*(.+)$/i);
+                    let matchInfo = null;
+
+                    if (fileMatch) {
+                        matchInfo = { type: 'applyFileContent', path: fileMatch[1].trim(), label: 'Apply to File' };
+                    } else if (patchMatch) {
+                        matchInfo = { type: 'applyPatchContent', path: patchMatch[2].trim(), label: 'Apply Patch' };
+                    }
+
+                    if (matchInfo) {
+                        previousElement.style.display = 'none';
+                        const applyBtn = document.createElement('button');
+                        applyBtn.className = 'code-action-btn apply-btn';
+                        applyBtn.innerHTML = '⚙️ ' + matchInfo.label;
+                        applyBtn.title = `Write changes to ${matchInfo.path}`;
+                        applyBtn.dataset.action = matchInfo.type;
+                        applyBtn.dataset.filePath = matchInfo.path;
+                        actions.appendChild(applyBtn);
+                    }
+                }
+
                 const messageWrapper = pre.closest('.message-wrapper');
-                const messageId = messageWrapper ? messageWrapper.dataset.messageId : null;
                 const messageDiv = messageWrapper ? messageWrapper.querySelector('.message') : null;
 
                 if (isInspectorEnabled && messageDiv && messageDiv.classList.contains('assistant-message')) {
@@ -1081,16 +1094,7 @@
                     inspectBtn.className = 'code-action-btn';
                     inspectBtn.innerHTML = '🔍 Inspect';
                     inspectBtn.title = 'Inspect code for bugs and vulnerabilities';
-                    inspectBtn.onclick = (e) => {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        vscode.postMessage({
-                            command: 'inspectCode',
-                            messageId: messageId,
-                            code: codeContent,
-                            language: language
-                        });
-                    };
+                    inspectBtn.dataset.action = 'inspectCode';
                     actions.appendChild(inspectBtn);
                 }
 
@@ -1100,58 +1104,16 @@
                     executeBtn.className = 'code-action-btn';
                     executeBtn.innerHTML = '▶️ Execute';
                     executeBtn.title = 'Execute Script';
-                    executeBtn.onclick = (e) => {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        vscode.postMessage({
-                            command: 'runScript',
-                            code: codeContent,
-                            language: language
-                        });
-                    };
+                    executeBtn.dataset.action = 'runScript';
+                    executeBtn.dataset.language = language;
                     actions.appendChild(executeBtn);
                 }
-
-                const previousElement = pre.previousElementSibling;
-                if (previousElement && previousElement.tagName === 'P') {
-                    const text = (previousElement.textContent || '').trim();
-                    const fileMatch = text.match(/^File:\s*(.+)$/i);
-                    const patchMatch = text.match(/^(Patch|diff):\s*(.+)$/i);
-                    let matchInfo = null;
-                    if (fileMatch) {
-                        matchInfo = { type: 'applyFileContent', path: fileMatch[1].trim(), label: 'Apply to File' };
-                    } else if (patchMatch) {
-                        matchInfo = { type: 'applyPatchContent', path: patchMatch[2].trim(), label: 'Apply Patch' };
-                    }
-
-                    if (matchInfo) {
-                        previousElement.style.display = 'none'; // Hide the directive line
-                        const applyBtn = document.createElement('button');
-                        applyBtn.className = 'code-action-btn apply-btn';
-                        applyBtn.innerHTML = '⚙️ ' + matchInfo.label;
-                        applyBtn.title = `Write changes to ${matchInfo.path}`;
-                        applyBtn.onclick = () => {
-                            vscode.postMessage({
-                                command: matchInfo.type,
-                                filePath: matchInfo.path,
-                                content: codeBlock.innerText
-                            });
-                        };
-                        actions.insertBefore(applyBtn, actions.firstChild);
-                    }
-                } 
 
                 const copyBtn = document.createElement('button');
                 copyBtn.className = 'code-action-btn';
                 copyBtn.innerHTML = '📋 Copy';
                 copyBtn.title = 'Copy Code';
-                copyBtn.onclick = async (e) => {
-                    e.stopPropagation();
-                    e.preventDefault();
-                    await navigator.clipboard.writeText(codeContent);
-                    copyBtn.innerHTML = '✅ Copied!';
-                    setTimeout(() => { copyBtn.innerHTML = '📋 Copy'; }, 2000);
-                };
+                copyBtn.dataset.action = 'copyCode';
                 actions.appendChild(copyBtn);
 
                 summary.appendChild(actions);
@@ -1159,6 +1121,7 @@
                 pre.parentNode.insertBefore(details, pre);
                 details.appendChild(summary);
                 details.appendChild(pre);
+                pre.dataset.enhanced = "true";
                 
                 Prism.highlightElement(codeBlock);
             });
@@ -1417,6 +1380,52 @@
             chatMessagesContainer.appendChild(planWrapper);
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
+
+        // Use event delegation for all dynamic buttons
+        chatMessagesContainer.addEventListener('click', (e) => {
+            const target = e.target.closest('button');
+            if (!target) return;
+
+            const codeCollapsible = target.closest('.code-collapsible');
+            const codeBlock = codeCollapsible ? codeCollapsible.querySelector('code') : null;
+            const codeContent = codeBlock ? codeBlock.innerText : null;
+            const messageWrapper = target.closest('.message-wrapper');
+            const messageId = messageWrapper ? messageWrapper.dataset.messageId : null;
+
+            const action = target.dataset.action;
+
+            if (action === 'copyCode' && codeContent) {
+                navigator.clipboard.writeText(codeContent);
+                target.innerHTML = '✅ Copied!';
+                setTimeout(() => { target.innerHTML = '📋 Copy'; }, 2000);
+            } else if (action === 'runScript' && codeContent) {
+                vscode.postMessage({
+                    command: 'runScript',
+                    code: codeContent,
+                    language: target.dataset.language
+                });
+            } else if (action === 'inspectCode' && codeContent) {
+                vscode.postMessage({
+                    command: 'inspectCode',
+                    messageId: messageId,
+                    code: codeContent,
+                    language: codeBlock.className.replace('language-', '').toLowerCase()
+                });
+            } else if ((action === 'applyFileContent' || action === 'applyPatchContent') && codeContent) {
+                vscode.postMessage({
+                    command: action,
+                    filePath: target.dataset.filePath,
+                    content: codeContent
+                });
+            } else if(target.classList.contains('lollms-command-btn')) {
+                 const command = target.dataset.command;
+                 const params = JSON.parse(target.dataset.params);
+                 vscode.postMessage({ 
+                     command: 'executeLollmsCommand', 
+                     details: { command, params }
+                 });
+            }
+        });
 
         document.addEventListener('keydown', e => {
             if (e.ctrlKey || e.metaKey) {

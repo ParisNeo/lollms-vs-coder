@@ -5,7 +5,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 export class ScriptRunner {
-  public runScript(code: string, language: string, panel: ChatPanel) {
+  private pythonExtApi: any;
+
+  constructor(pythonExtApi: any) {
+    this.pythonExtApi = pythonExtApi;
+  }
+
+  public async runScript(code: string, language: string, panel: ChatPanel) {
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder) {
         panel.addMessageToDiscussion({ role: 'system', content: 'Cannot execute script: No workspace folder is open.' });
@@ -32,7 +38,18 @@ export class ScriptRunner {
       case 'py':
       case 'python':
         fileExtension = '.py';
-        command = `python -u`;
+        let pythonPath = 'python'; // Fallback
+        if (this.pythonExtApi) {
+            try {
+                const environment = await this.pythonExtApi.environments.getActiveEnvironmentPath(workspaceFolder.uri);
+                if (environment?.path) {
+                    pythonPath = `"${environment.path}"`;
+                }
+            } catch (error) {
+                console.error("Failed to get Python interpreter path from extension API:", error);
+            }
+        }
+        command = `${pythonPath} -u`;
         break;
       case 'javascript':
         fileExtension = '.js';

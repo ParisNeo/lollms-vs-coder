@@ -4,54 +4,51 @@ export interface RunningProcess {
     id: string;
     discussionId: string;
     description: string;
-    controller: AbortController;
     startTime: number;
+    controller: AbortController;
 }
 
 export class ProcessManager {
     private processes: Map<string, RunningProcess> = new Map();
-    private _onDidChangeProcesses: vscode.EventEmitter<void> = new vscode.EventEmitter<void>();
-    readonly onDidChangeProcesses: vscode.Event<void> = this._onDidChangeProcesses.event;
+    private readonly _onDidProcessChange = new vscode.EventEmitter<void>();
+    public readonly onDidProcessChange: vscode.Event<void> = this._onDidProcessChange.event;
 
-    public register(discussionId: string, description: string): { id: string, controller: AbortController } {
-        const id = `${Date.now()}-${Math.random().toString(36).substring(2)}`;
+    public register(discussionId: string, description: string): RunningProcess {
+        const id = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
         const controller = new AbortController();
         const process: RunningProcess = {
             id,
             discussionId,
             description,
-            controller,
-            startTime: Date.now()
+            startTime: Date.now(),
+            controller
         };
         this.processes.set(id, process);
-        this._onDidChangeProcesses.fire();
         console.log(`[ProcessManager] Registered process ${id} for discussion ${discussionId}`);
-        return { id, controller };
+        this._onDidProcessChange.fire();
+        return process;
     }
 
     public unregister(id: string): void {
         if (this.processes.has(id)) {
             this.processes.delete(id);
-            this._onDidChangeProcesses.fire();
             console.log(`[ProcessManager] Unregistered process ${id}`);
+            this._onDidProcessChange.fire();
         }
     }
 
     public cancel(id: string): void {
         const process = this.processes.get(id);
         if (process) {
-            console.log(`[ProcessManager] Cancelling process ${id}`);
             process.controller.abort();
-            // The process should unregister itself in a finally block.
-            // But we can also remove it here to be safe.
-            this.unregister(id);
+            // The process will be unregistered in the 'finally' block of the API call
         }
     }
 
     public cancelForDiscussion(discussionId: string): void {
-        for (const [id, process] of this.processes.entries()) {
+        for (const process of this.processes.values()) {
             if (process.discussionId === discussionId) {
-                this.cancel(id);
+                this.cancel(process.id);
             }
         }
     }
@@ -63,10 +60,6 @@ export class ProcessManager {
             }
         }
         return undefined;
-    }
-    
-    public get(id: string): RunningProcess | undefined {
-        return this.processes.get(id);
     }
 
     public getAll(): RunningProcess[] {

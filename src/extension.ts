@@ -149,7 +149,7 @@ export async function activate(context: vscode.ExtensionContext) {
     });
 
     const contextManager = new ContextManager(context, lollmsAPI);
-    const scriptRunner = new ScriptRunner();
+    const scriptRunner = new ScriptRunner(pythonExtApi);
     const promptManager = new PromptManager(context.globalStorageUri);
     const gitIntegration = new GitIntegration(lollmsAPI);
     const processManager = new ProcessManager();
@@ -157,6 +157,14 @@ export async function activate(context: vscode.ExtensionContext) {
     const processTreeProvider = new ProcessTreeProvider(processManager);
     context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsProcessView', processTreeProvider));
     
+    // Connect ProcessManager events to UI updates
+    context.subscriptions.push(processManager.onDidProcessChange(() => {
+        processTreeProvider.refresh();
+        if (ChatPanel.currentPanel) {
+            ChatPanel.currentPanel.updateGeneratingState();
+        }
+    }));
+
     const chatPromptTreeProvider = new ChatPromptTreeProvider(promptManager);
     context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsChatPromptsView', chatPromptTreeProvider));
     const codeActionTreeProvider = new CodeActionTreeProvider(promptManager);
@@ -676,9 +684,12 @@ export async function activate(context: vscode.ExtensionContext) {
         }
     }));
     
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.runScript', (code: string, language: string) => {
-        if (ChatPanel.currentPanel) { scriptRunner.runScript(code, language, ChatPanel.currentPanel); }
-        else { vscode.window.showErrorMessage(vscode.l10n.t("error.noActiveChatPanel")); }
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.runScript', async (code: string, language: string) => {
+        if (ChatPanel.currentPanel) {
+            await scriptRunner.runScript(code, language, ChatPanel.currentPanel);
+        } else {
+            vscode.window.showErrorMessage(vscode.l10n.t("error.noActiveChatPanel"));
+        }
     }));
     
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showConfigView', () => SettingsPanel.createOrShow(context.extensionUri)));
@@ -1012,7 +1023,7 @@ export async function activate(context: vscode.ExtensionContext) {
         if (lollmsExecutionTerminal && terminal === lollmsExecutionTerminal) {
             lollmsExecutionTerminal = null;
             if (ChatPanel.currentPanel) {
-                ChatPanel.currentPanel.updateGeneratingState(false);
+                ChatPanel.currentPanel.updateGeneratingState();
             }
         }
     }));
@@ -1027,7 +1038,7 @@ export async function activate(context: vscode.ExtensionContext) {
                     content: '🛑 Execution stopped by user.'
                 };
                 ChatPanel.currentPanel.addMessageToDiscussion(stopMessage);
-                ChatPanel.currentPanel.updateGeneratingState(false);
+                ChatPanel.currentPanel.updateGeneratingState();
             }
         }
     }));
@@ -1091,7 +1102,7 @@ export async function activate(context: vscode.ExtensionContext) {
             return;
         }
         
-        activeChatPanel.updateGeneratingState(true);
+        activeChatPanel.updateGeneratingState();
     
         const launchJsonPath = vscode.Uri.joinPath(workspaceFolder.uri, '.vscode', 'launch.json');
         let launchConfig: any;

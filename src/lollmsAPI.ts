@@ -25,6 +25,28 @@ export interface ContextSizeResponse {
     context_size: number;
 }
 
+export interface ImageGenerationRequest {
+    prompt: string;
+    model?: string;
+    n?: number;
+    quality?: 'standard' | 'hd';
+    response_format?: 'url' | 'b64_json';
+    size?: string; // e.g., '1024x1024'
+    style?: 'vivid' | 'natural';
+}
+
+export interface ImageObject {
+    b64_json?: string;
+    url?: string;
+    revised_prompt?: string;
+}
+
+export interface ImageGenerationResponse {
+    created: number;
+    data: ImageObject[];
+}
+
+
 export class LollmsAPI {
   private config: LollmsConfig;
   private httpsAgent: https.Agent;
@@ -49,8 +71,7 @@ export class LollmsAPI {
         this.baseUrl = `${url.protocol}//${url.host}`;
     } catch (error) {
         console.error("Invalid API URL provided:", this.config.apiUrl);
-        // Handle invalid URL, maybe default to a safe value or show an error
-        this.baseUrl = ''; // Prevent further requests with a bad URL
+        this.baseUrl = ''; 
     }
   }
 
@@ -135,14 +156,49 @@ export class LollmsAPI {
     return await response.json() as ContextSizeResponse;
   }
 
-  async sendChat(messages: ChatMessage[], signal?: AbortSignal, modelOverride?: string): Promise<string> {
-    if (!this.baseUrl) {
-        throw new Error("Lollms API URL is not configured correctly. Please check the settings.");
+  async extractText(base64Data: string, fileName: string): Promise<string> {
+    const extractUrl = `${this.baseUrl}/v1/extract_text`;
+    const isHttps = extractUrl.startsWith('https');
+    const options: RequestInit = {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${this.config.apiKey}`
+        },
+        body: JSON.stringify({
+            file: base64Data,
+            filename: fileName // Pass filename for type detection on the backend
+        }),
+    };
+
+    if (isHttps) {
+        options.agent = this.httpsAgent;
     }
-    const chatUrl = `${this.baseUrl}/v1/chat/completions`;
-    const isHttps = chatUrl.startsWith('https');
-    const apiMessages = messages.map(({ id, ...rest }) => rest);
+
+    const response = await fetch(extractUrl, options);
+    if (!response.ok) {
+        const errorBody = await response.text();
+        console.error('Lollms Text Extraction API Error:', errorBody);
+        throw new Error(`Failed to extract text: ${response.status} ${response.statusText}`);
+    }
+    const data = await response.json();
+    return data.text || '';
+}
+
+  public async generateImage(prompt: string, signal?: AbortSignal): Promise<string> {
+    if (!this.baseUrl) {
+      throw new Error("Lollms API URL is not configured correctly.");
+    }
+    const imageUrl = `${this.baseUrl}/v1/images/generations`;
+    const isHttps = imageUrl.startsWith('https');
     
+    const requestBody: ImageGenerationRequest = {
+        prompt: prompt,
+        n: 1,
+        response_format: 'b64_json',
+        // Relying on server defaults for model, size, etc.
+    };
+
     const controller = new AbortController();
     const timeoutDuration = vscode.workspace.getConfiguration('lollmsVsCoder').get<number>('requestTimeout') || 600000;
     const timeout = setTimeout(() => controller.abort(), timeoutDuration);
@@ -153,43 +209,148 @@ export class LollmsAPI {
 
     try {
         const options: RequestInit = {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${this.config.apiKey}`
-          },
-          body: JSON.stringify({
-            model: modelOverride || this.config.modelName,
-            messages: apiMessages
-          }),
-          signal: controller.signal,
-        };
-
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${this.config.apiKey}`
+            },
+            body: JSON.stringify(requestBody),
+            signal: controller.signal,
+          };
+    
         if (isHttps) {
-          options.agent = this.httpsAgent;
+            options.agent = this.httpsAgent;
         }
 
-        const response = await fetch(chatUrl, options);
+        const response = await fetch(imageUrl, options);
 
         if (!response.ok) {
-          const errorBody = await response.text();
-          console.error('Lollms API Error Body:', errorBody);
-          throw new Error(`Lollms API error: ${response.status} ${response.statusText}`);
+            const errorBody = await response.text();
+            console.error('Lollms Image Generation API Error Body:', errorBody);
+            throw new Error(`Lollms Image API error: ${response.status} ${response.statusText} - ${errorBody}`);
         }
 
-        const data = await response.json();
-        return data.choices?.[0]?.message?.content || '';
+        const data: ImageGenerationResponse = await response.json();
+
+        if (data.data && data.data[0] && data.data[0].b64_json) {
+            return data.data[0].b64_json;
+        } else {
+            throw new Error('API response did not contain valid b64_json image data.');
+        }
+
     } catch (error) {
         if (error instanceof AbortError) {
             if (signal?.aborted) {
-                throw error;
+              throw error; // Propagate user-initiated abort
             } else {
-                throw new Error(`Request to Lollms API timed out after ${timeoutDuration / 1000} seconds.`);
+              throw new Error(`Image generation request timed out after ${timeoutDuration / 1000} seconds.`);
             }
-        }
-        throw error;
+          }
+          throw error;
     } finally {
         clearTimeout(timeout);
+    }
+  }
+
+  async sendChat(
+    messages: ChatMessage[],
+    onChunk?: ((chunk: string) => void) | null,
+    signal?: AbortSignal,
+    modelOverride?: string
+  ): Promise<string> {
+    if (!this.baseUrl) {
+      throw new Error("Lollms API URL is not configured correctly. Please check the settings.");
+    }
+    const chatUrl = `${this.baseUrl}/v1/chat/completions`;
+    const isHttps = chatUrl.startsWith('https');
+    const apiMessages = messages.map(({ id, ...rest }) => rest);
+    const stream = !!onChunk;
+
+    const controller = new AbortController();
+    const timeoutDuration = vscode.workspace.getConfiguration('lollmsVsCoder').get<number>('requestTimeout') || 600000;
+    const timeout = setTimeout(() => controller.abort(), timeoutDuration);
+
+    if (signal) {
+      signal.addEventListener('abort', () => controller.abort());
+    }
+
+    try {
+      const options: RequestInit = {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${this.config.apiKey}`
+        },
+        body: JSON.stringify({
+          model: modelOverride || this.config.modelName,
+          messages: apiMessages,
+          stream: stream
+        }),
+        signal: controller.signal,
+      };
+
+      if (isHttps) {
+        options.agent = this.httpsAgent;
+      }
+
+      const response = await fetch(chatUrl, options);
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        console.error('Lollms API Error Body:', errorBody);
+        throw new Error(`Lollms API error: ${response.status} ${response.statusText}`);
+      }
+      
+      if (stream && onChunk && response.body) {
+        let fullResponse = '';
+        let buffer = '';
+        
+        for await (const chunk of response.body) {
+            if(controller.signal.aborted) {
+                response.body.destroy();
+                throw new AbortError('Request was aborted');
+            }
+            buffer += chunk.toString();
+            let boundary = buffer.indexOf('\n\n');
+            while(boundary !== -1) {
+                const chunkStr = buffer.substring(0, boundary);
+                buffer = buffer.substring(boundary + 2);
+                if (chunkStr.startsWith('data: ')) {
+                    const data = chunkStr.substring(6);
+                    if (data.trim() === '[DONE]') {
+                        return fullResponse;
+                    }
+                    try {
+                        const parsed = JSON.parse(data);
+                        const content = parsed.choices?.[0]?.delta?.content;
+                        if (content) {
+                            fullResponse += content;
+                            onChunk(content);
+                        }
+                    } catch (e) {
+                        console.error('Error parsing stream chunk:', e);
+                    }
+                }
+                boundary = buffer.indexOf('\n\n');
+            }
+        }
+        return fullResponse;
+
+      } else {
+        const data = await response.json();
+        return data.choices?.[0]?.message?.content || '';
+      }
+    } catch (error) {
+      if (error instanceof AbortError) {
+        if (signal?.aborted) {
+          throw error; // Propagate user-initiated abort
+        } else {
+          throw new Error(`Request to Lollms API timed out after ${timeoutDuration / 1000} seconds.`);
+        }
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
     }
   }
 }

@@ -1,14 +1,12 @@
-# Folders to ignore
+# Exclude development and source files from the package
 .vscode/**
 .vscode-test/**
-node_modules/**
+out/test/**
 src/**
+node_modules/**
 
-# Files to ignore
+# Exclude build and configuration files
+**/*.map
+**/*.ts
 .gitignore
 tsconfig.json
-package-lock.json
-
-# Allow compiled output, but not its test files
-!out/
-out/test/**

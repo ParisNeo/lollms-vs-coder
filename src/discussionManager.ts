@@ -20,17 +20,20 @@ export interface DiscussionGroup {
 }
 
 export class DiscussionManager {
-    private discussionsDir: vscode.Uri;
-    private groupsFile: vscode.Uri;
+    private discussionsDir!: vscode.Uri;
+    private groupsFile!: vscode.Uri;
     private lollmsAPI: LollmsAPI;
     private processManager: ProcessManager;
 
-    constructor(workspaceRoot: vscode.Uri, lollmsAPI: LollmsAPI, processManager: ProcessManager) {
-        this.discussionsDir = vscode.Uri.joinPath(workspaceRoot, '.lollms', 'discussions');
-        this.groupsFile = vscode.Uri.joinPath(workspaceRoot, '.lollms', 'discussion_groups.json');
+    constructor(lollmsAPI: LollmsAPI, processManager: ProcessManager) {
         this.lollmsAPI = lollmsAPI;
         this.processManager = processManager;
-        this.initialize();
+    }
+
+    public async switchWorkspace(workspaceRoot: vscode.Uri) {
+        this.discussionsDir = vscode.Uri.joinPath(workspaceRoot, '.lollms', 'discussions');
+        this.groupsFile = vscode.Uri.joinPath(workspaceRoot, '.lollms', 'discussion_groups.json');
+        await this.initialize();
     }
 
     private async initialize() {
@@ -42,7 +45,7 @@ export class DiscussionManager {
     }
 
     createNewDiscussion(groupId: string | null = null): Discussion {
-        const id = Date.now().toString();
+        const id = Date.now().toString() + Math.random().toString(36).substring(2);
         return {
             id,
             title: 'New Discussion',
@@ -164,7 +167,7 @@ User: "how do I build a snake game in python?"
         };
     
         try {
-            const rawResponse = await this.lollmsAPI.sendChat([systemPrompt, userPrompt]);
+            const rawResponse = await this.lollmsAPI.sendChat([systemPrompt, userPrompt], null);
             const cleanResponse = stripThinkingTags(rawResponse);
     
             const jsonMatch = cleanResponse.match(/```json\s*([\s\S]+?)\s*```/);

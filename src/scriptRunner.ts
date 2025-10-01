@@ -11,8 +11,7 @@ export class ScriptRunner {
     this.pythonExtApi = pythonExtApi;
   }
 
-  public async runScript(code: string, language: string, panel: ChatPanel) {
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+  public async runScript(code: string, language: string, panel: ChatPanel, workspaceFolder: vscode.WorkspaceFolder) {
     if (!workspaceFolder) {
         panel.addMessageToDiscussion({ role: 'system', content: 'Cannot execute script: No workspace folder is open.' });
         return;

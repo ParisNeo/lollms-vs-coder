@@ -21,6 +21,7 @@
     "command.saveNewFile.title": "Lollms: حفظ ملف جديد",
     "command.executeScript.title": "Lollms: تنفيذ البرنامج النصي",
     "command.inspectCode.title": "Lollms: فحص الكود",
+    "command.generateAsset.title": "Lollms: إنشاء أصل...",
     "command.newDiscussion.title": "مناقشة جديدة",
     "command.delete.title": "حذف",
     "command.cancel.title": "إلغاء",

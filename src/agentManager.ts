@@ -28,6 +28,7 @@ export class AgentManager {
     private chatHistory: ChatMessage[] = [];
     private planParser: PlanParser;
     private processManager?: ProcessManager;
+    private currentWorkspaceFolder?: vscode.WorkspaceFolder;
 
     constructor(
         private chatPanel: ChatPanel,
@@ -57,8 +58,9 @@ export class AgentManager {
         }
     }
 
-    public async run(initialObjective: string, fullChatHistory: ChatMessage[]) {
+    public async run(initialObjective: string, fullChatHistory: ChatMessage[], workspaceFolder: vscode.WorkspaceFolder) {
         if (!this.isActive) return;
+        this.currentWorkspaceFolder = workspaceFolder;
 
         this.chatHistory = [...fullChatHistory];
         this.chatHistory.push({ role: 'user', content: initialObjective });
@@ -212,10 +214,10 @@ export class AgentManager {
                 let resolvedValue = value;
                 let match;
                 while ((match = regex.exec(value)) !== null) {
-                    const taskId = parseInt(match[1], 10);
+                    const taskId = parseInt(match, 10);
                     const sourceTask = this.currentPlan.tasks.find(t => t.id === taskId);
                     if (sourceTask && sourceTask.status === 'completed' && sourceTask.result !== null) {
-                        resolvedValue = resolvedValue.replace(match[0], sourceTask.result);
+                        resolvedValue = resolvedValue.replace(match, sourceTask.result);
                     } else {
                         throw new Error(`Could not resolve parameter: Source task ${taskId} has not completed successfully or has no result.`);
                     }
@@ -262,7 +264,7 @@ export class AgentManager {
 
                 case 'set_vscode_python_interpreter':
                     if (!env_name) return { success: false, output: "Error: 'env_name' is required." };
-                    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+                    const workspaceFolder = this.currentWorkspaceFolder;
                     if (!workspaceFolder) return { success: false, output: "Error: No active workspace folder."};
                     
                     const pythonExecutable = os.platform() === 'win32' 
@@ -293,7 +295,7 @@ export class AgentManager {
 
                 case 'rewrite_file':
                     if (!filePath || code === undefined) return { success: false, output: "Error: 'path' and 'code' are required." };
-                    const wsFolder = vscode.workspace.workspaceFolders?.[0];
+                    const wsFolder = this.currentWorkspaceFolder;
                     if (wsFolder) {
                         const fileUri = vscode.Uri.joinPath(wsFolder.uri, filePath);
                         await vscode.workspace.fs.writeFile(fileUri, Buffer.from(code, 'utf8'));
@@ -309,7 +311,7 @@ export class AgentManager {
                         if (!task.parameters.file_path) {
                             return { success: false, output: "Error: 'file_path' parameter is required." };
                         }
-                        const root = vscode.workspace.workspaceFolders?.[0];
+                        const root = this.currentWorkspaceFolder;
                         if (!root) {
                             return { success: false, output: "Error: No active workspace folder." };
                         }
@@ -341,7 +343,7 @@ export class AgentManager {
                             });
                         }
                         
-                        launchConfig.configurations[0].program = `\${workspaceFolder}/${task.parameters.file_path}`;
+                        launchConfig.configurations.program = `\${workspaceFolder}/${task.parameters.file_path}`;
                         
                         try {
                             await vscode.workspace.fs.writeFile(launchJsonPath, Buffer.from(JSON.stringify(launchConfig, null, 4), 'utf8'));
@@ -368,7 +370,7 @@ export class AgentManager {
                 const projectContext = await this.contextManager.getContextContent();
                 let userPromptContent = task.parameters.user_prompt || `Generate code for ${task.parameters.file_path}`;
 
-                const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+                const workspaceFolder = this.currentWorkspaceFolder;
                 const filePath = task.parameters.file_path;
                 if (workspaceFolder && filePath) {
                     try {
@@ -387,8 +389,8 @@ export class AgentManager {
                 const codeBlockRegex = /```(?:[\w-]*)\n([\s\S]+?)\n```/s;
                 const match = responseText.match(codeBlockRegex);
 
-                if (match && match[1]) {
-                    return { success: true, output: match[1].trim() };
+                if (match && match) {
+                    return { success: true, output: match.trim() };
                 } else if (responseText.trim().length > 0) {
                     return { success: true, output: responseText.trim() };
                 } else {
@@ -424,7 +426,11 @@ export class AgentManager {
 
     private async runCommand(command: string): Promise<{ success: boolean, output: string }> {
         return new Promise(resolve => {
-            exec(command, { cwd: vscode.workspace.workspaceFolders?.[0].uri.fsPath }, (error, stdout, stderr) => {
+            if (!this.currentWorkspaceFolder) {
+                resolve({ success: false, output: "Error: Agent has no active workspace folder to run command in." });
+                return;
+            }
+            exec(command, { cwd: this.currentWorkspaceFolder.uri.fsPath }, (error, stdout, stderr) => {
                 const output = `STDOUT:\n${stdout}\n\nSTDERR:\n${stderr}`;
                 if (error) {
                     resolve({ success: false, output: `Error during command execution:\n${output}\n\nError Object:\n${error.message}` });
@@ -438,6 +444,7 @@ export class AgentManager {
     private deactivateAgent() {
         this.isActive = false;
         this.currentPlan = null;
+        this.currentWorkspaceFolder = undefined;
         this.chatPanel.updateAgentMode(false);
     }
     

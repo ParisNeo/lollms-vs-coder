@@ -34,7 +34,7 @@ const execAsync = promisify(exec);
 
 interface GitExtension { getAPI(version: 1): API; }
 interface API { repositories: Repository[]; }
-interface Repository { inputBox: { value: string }; }
+interface Repository { inputBox: { value: string }; rootUri: vscode.Uri; }
 
 let lollmsExecutionTerminal: vscode.Terminal | null = null;
 let pythonExtApi: any = null; 
@@ -130,6 +130,8 @@ User preferences: ${agentPersonaPrompt}
 export async function activate(context: vscode.ExtensionContext) {
     console.log('Lollms VS Coder is now active!');
 
+    let activeWorkspaceFolder: vscode.WorkspaceFolder | undefined;
+
     const pythonExt = vscode.extensions.getExtension('ms-python.python');
     if (pythonExt) {
         if (!pythonExt.isActive) {
@@ -157,7 +159,6 @@ export async function activate(context: vscode.ExtensionContext) {
     const processTreeProvider = new ProcessTreeProvider(processManager);
     context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsProcessView', processTreeProvider));
     
-    // Connect ProcessManager events to UI updates
     context.subscriptions.push(processManager.onDidProcessChange(() => {
         processTreeProvider.refresh();
         if (ChatPanel.currentPanel) {
@@ -187,9 +188,16 @@ export async function activate(context: vscode.ExtensionContext) {
     }
     
     let discussionManager: DiscussionManager | undefined;
+    let discussionTreeProvider: DiscussionTreeProvider | undefined;
     let discussionView: vscode.TreeView<vscode.TreeItem> | undefined;
-    let discussionCommands: vscode.Disposable[] = [];
 
+    let fileTreeProvider: FileTreeProvider | undefined;
+    let fileTreeView: vscode.TreeView<vscode.TreeItem> | undefined;
+
+    const activeWorkspaceStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 98);
+    activeWorkspaceStatusBarItem.command = 'lollms-vs-coder.selectActiveWorkspace';
+    context.subscriptions.push(activeWorkspaceStatusBarItem);
+    
     const setupChatPanel = (panel: ChatPanel) => {
         if (!panel.agentManager) {
             panel.agentManager = new AgentManager(panel, lollmsAPI, contextManager, gitIntegration, context.extensionUri);
@@ -199,215 +207,208 @@ export async function activate(context: vscode.ExtensionContext) {
         panel.setContextManager(contextManager);
     };
 
-    function registerDiscussionViewProvider() {
-        discussionCommands.forEach(cmd => cmd.dispose());
-        discussionCommands = [];
-        if (discussionView) {
-            discussionView.dispose();
-        }
+    async function switchActiveWorkspace(folder: vscode.WorkspaceFolder) {
+        activeWorkspaceFolder = folder;
 
-        if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
-            const workspaceRoot = vscode.workspace.workspaceFolders[0].uri;
-            discussionManager = new DiscussionManager(workspaceRoot, lollmsAPI, processManager);
-            const discussionTreeProvider = new DiscussionTreeProvider(discussionManager);
-            discussionView = vscode.window.createTreeView('lollmsDiscussionsView', { treeDataProvider: discussionTreeProvider });
-
-            discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussion', async (item?: DiscussionGroupItem) => {
-                const groupId = item instanceof DiscussionGroupItem ? item.group.id : null;
-                const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager!);
-                setupChatPanel(panel);
-                await panel.startNewDiscussion(groupId);
-                discussionTreeProvider.refresh();
-            }));
-
-            discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.switchDiscussion', async (discussionId: string) => {
-                const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager!);
-                setupChatPanel(panel);
-                await panel.loadDiscussion(discussionId);
-            }));
-            
-            discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.deleteDiscussion', async (item: DiscussionItem) => {
-                const deleteButton = { title: vscode.l10n.t('command.delete.title'), id: 'delete' };
-                const confirm = await vscode.window.showWarningMessage(
-                    vscode.l10n.t('prompt.confirmDelete', item.discussion.title), 
-                    { modal: true }, 
-                    deleteButton
-                );
-            
-                if (confirm?.id === 'delete') {
-                    await discussionManager!.deleteDiscussion(item.discussion.id);
-                    discussionTreeProvider.refresh();
-                    if (ChatPanel.currentPanel && ChatPanel.currentPanel.getCurrentDiscussionId() === item.discussion.id) {
-                        ChatPanel.currentPanel.dispose();
-                    }
-                }
-            }));
-
-            discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.renameDiscussion', async (item: DiscussionItem) => {
-                const newTitle = await vscode.window.showInputBox({ prompt: vscode.l10n.t("prompt.enterNewDiscussionTitle"), value: item.discussion.title });
-                if (newTitle && newTitle !== item.discussion.title) {
-                    item.discussion.title = newTitle;
-                    await discussionManager!.saveDiscussion(item.discussion);
-                    discussionTreeProvider.refresh();
-                }
-            }));
-
-            discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.generateDiscussionTitle', async (item: DiscussionItem) => {
-                const title = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: vscode.l10n.t("progress.generatingDiscussionTitle"), cancellable: false }, async () => await discussionManager!.generateDiscussionTitle(item.discussion));
-                if (title) {
-                    item.discussion.title = title;
-                    await discussionManager!.saveDiscussion(item.discussion);
-                    discussionTreeProvider.refresh();
-                }
-            }));
-
-            discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.createDiscussionGroup', async () => {
-                const title = await vscode.window.showInputBox({ prompt: vscode.l10n.t("prompt.enterGroupTitle") });
-                if (!title) return;
-                const description = await vscode.window.showInputBox({ prompt: vscode.l10n.t("prompt.enterGroupDescription") });
-                const groups = await discussionManager!.getGroups();
-                groups.push({ id: Date.now().toString(), title, description: description || '', timestamp: Date.now() });
-                await discussionManager!.saveGroups(groups);
-                discussionTreeProvider.refresh();
-            }));
-
-            discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.renameDiscussionGroup', async (item: DiscussionGroupItem) => {
-                const newTitle = await vscode.window.showInputBox({ prompt: vscode.l10n.t("prompt.enterNewTitle"), value: item.group.title });
-                if (newTitle && newTitle !== item.group.title) {
-                    const groups = await discussionManager!.getGroups();
-                    const groupToUpdate = groups.find(g => g.id === item.group.id);
-                    if (groupToUpdate) {
-                        groupToUpdate.title = newTitle;
-                        await discussionManager!.saveGroups(groups);
-                        discussionTreeProvider.refresh();
-                    }
-                }
-            }));
-
-            discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.deleteDiscussionGroup', async (item: DiscussionGroupItem) => {
-                const deleteButton = { title: vscode.l10n.t('command.delete.title'), id: 'delete' };
-                const confirm = await vscode.window.showWarningMessage(
-                    vscode.l10n.t('prompt.confirmDeleteGroup', item.group.title), 
-                    { modal: true }, 
-                    deleteButton
-                );
-            
-                if (confirm?.id === 'delete') {
-                    await discussionManager!.deleteGroup(item.group.id);
-                    discussionTreeProvider.refresh();
-                }
-            }));
-
-            discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.moveDiscussionToGroup', async (item: DiscussionItem) => {
-                const groups = await discussionManager!.getGroups();
-                const items = [{ id: null, label: vscode.l10n.t("label.noGroup") }, ...groups.map(g => ({ id: g.id, label: g.title, description: g.description }))];
-                const selected = await vscode.window.showQuickPick(items, { placeHolder: vscode.l10n.t("prompt.selectGroupForMove") });
-                if (selected) {
-                    const discussion = await discussionManager!.getDiscussion(item.discussion.id);
-                    if (discussion) {
-                        discussion.groupId = selected.id;
-                        await discussionManager!.saveDiscussion(discussion);
-                        discussionTreeProvider.refresh();
-                    }
-                }
-            }));
-
-            discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.refreshDiscussions', () => discussionTreeProvider.refresh()));
-            
-            discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.startChat', () => vscode.commands.executeCommand('lollms-vs-coder.newDiscussion')));
+        if ((vscode.workspace.workspaceFolders?.length || 0) > 1) {
+            activeWorkspaceStatusBarItem.text = `$(root-folder) Lollms: ${folder.name}`;
+            activeWorkspaceStatusBarItem.tooltip = `Lollms is active in this workspace. Click to switch.`;
+            activeWorkspaceStatusBarItem.show();
         } else {
-             discussionManager = undefined;
-             discussionCommands.push(vscode.commands.registerCommand('lollms-vs-coder.startChat', () => {
-                vscode.window.showInformationMessage(vscode.l10n.t("info.openFolderToUseChat"));
-            }));
+            activeWorkspaceStatusBarItem.hide();
         }
-        context.subscriptions.push(...discussionCommands);
-    }
-    
-    let fileTreeView: vscode.TreeView<vscode.TreeItem> | undefined;
-    let fileTreeProvider: FileTreeProvider | undefined;
-    let fileTreeCommands: vscode.Disposable[] = [];
 
-    function registerFileTreeProvider() {
-        // Dispose of previous resources
-        fileTreeCommands.forEach(cmd => cmd.dispose());
-        fileTreeCommands = [];
-        if (fileTreeView) {
-            fileTreeView.dispose();
+        if (discussionManager) {
+            await discussionManager.switchWorkspace(folder.uri);
+            discussionTreeProvider?.refresh();
         }
+
         if (fileTreeProvider) {
-            fileTreeProvider.dispose(); // Dispose the provider and its watcher
+            await fileTreeProvider.switchWorkspace(folder.uri.fsPath);
+        }
+        
+        if(ChatPanel.currentPanel){
+            ChatPanel.currentPanel.dispose();
+            vscode.window.showInformationMessage(`Lollms workspace switched to '${folder.name}'. The chat panel has been closed to reflect the new context.`);
+        }
+    }
+
+    function initializeAndRegisterProviders() {
+        // Dispose any existing providers to prevent memory leaks
+        discussionView?.dispose();
+        fileTreeView?.dispose();
+
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders || workspaceFolders.length === 0) {
+            vscode.commands.executeCommand('setContext', 'lollms:hasWorkspace', false);
+            activeWorkspaceStatusBarItem.hide();
+            activeWorkspaceFolder = undefined;
+            discussionManager = undefined;
+            fileTreeProvider = undefined;
+            return;
         }
 
+        vscode.commands.executeCommand('setContext', 'lollms:hasWorkspace', true);
+        
+        const initialWorkspace = activeWorkspaceFolder 
+            ? (workspaceFolders.find(f => f.uri.toString() === activeWorkspaceFolder!.uri.toString()) || workspaceFolders[0])
+            : workspaceFolders[0];
+        
+        discussionManager = new DiscussionManager(lollmsAPI, processManager);
+        discussionTreeProvider = new DiscussionTreeProvider(discussionManager);
+        discussionView = vscode.window.createTreeView('lollmsDiscussionsView', { treeDataProvider: discussionTreeProvider });
+        
         contextManager.reinitializeFileTreeProvider();
         fileTreeProvider = contextManager.getFileTreeProvider();
-
         if (fileTreeProvider) {
             fileTreeView = vscode.window.createTreeView('lollmsSettings.fileTreeView', { treeDataProvider: fileTreeProvider, showCollapseAll: true });
-            
-            fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.cycleFileState', (item?: FileItem) => {
-                const targetItem = item || (fileTreeView?.selection[0] as FileItem);
-                if (targetItem && targetItem instanceof FileItem) {
-                    fileTreeProvider!.cycleFileState(targetItem);
-                } else {
-                    vscode.window.showWarningMessage("Lollms: Please select an item in the 'AI Context Files' view or click the icon next to it to change its state.");
-                }
-            }));
-
-            fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.addFolderToContext', (item: FileItem) => fileTreeProvider!.addFolderToContext(item)));
-            fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.removeFolderFromContext', (item: FileItem) => fileTreeProvider!.removeFolderFromContext(item)));
-            fileTreeCommands.push(vscode.commands.registerCommand('lollms-vs-coder.refreshTree', async () => await fileTreeProvider!.refresh()));
-            
-            context.subscriptions.push(...fileTreeCommands);
         }
+        
+        switchActiveWorkspace(initialWorkspace);
     }
     
-    registerFileTreeProvider();
-    registerDiscussionViewProvider();
+    initializeAndRegisterProviders();
+
     context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(() => {
-        registerFileTreeProvider();
-        registerDiscussionViewProvider();
+        initializeAndRegisterProviders();
     }));
     
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.autoSelectContextFiles', async () => {
-        if (!fileTreeProvider || !discussionManager) {
-            vscode.window.showInformationMessage("Please open a workspace folder to use this feature.");
+    context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(editor => {
+        const folders = vscode.workspace.workspaceFolders;
+        if (!editor || !folders || folders.length <= 1) return;
+        
+        const editorWorkspace = vscode.workspace.getWorkspaceFolder(editor.document.uri);
+        if (editorWorkspace && editorWorkspace.uri.toString() !== activeWorkspaceFolder?.uri.toString()) {
+            switchActiveWorkspace(editorWorkspace);
+        }
+    }));
+    
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.selectActiveWorkspace', async () => {
+        const picked = await vscode.window.showWorkspaceFolderPick();
+        if (picked && picked.uri.toString() !== activeWorkspaceFolder?.uri.toString()) {
+            await switchActiveWorkspace(picked);
+        }
+    }));
+    
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.startChat', () => {
+        if (!activeWorkspaceFolder || !discussionManager) {
+            vscode.window.showInformationMessage(vscode.l10n.t("info.openFolderToUseChat"));
             return;
         }
-
-        const objective = await vscode.window.showInputBox({
-            prompt: vscode.l10n.t('prompt.enterObjectiveForSelection'),
-            placeHolder: "e.g., 'Implement a new command to export discussions as markdown files'",
-            ignoreFocusOut: true,
-        });
-
-        if (!objective || objective.trim() === '') {
-            return;
-        }
-
-        await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: vscode.l10n.t('progress.aiSelectingFiles'),
-            cancellable: false
-        }, async (progress) => {
-            const fileList = await contextManager.getAutoSelectionForContext(objective);
-
-            if (fileList && fileList.length > 0) {
-                await fileTreeProvider!.addFilesToContext(fileList);
-                vscode.window.showInformationMessage(vscode.l10n.t('info.aiSelectedFiles', fileList.length));
-                
-                const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager!);
-                setupChatPanel(panel);
-                
-                await panel.startDiscussionWithPrompt(objective);
-
-            } else if (fileList) { // Empty array
-                 vscode.window.showInformationMessage("The AI did not select any files for the given objective.");
-            }
-            // If fileList is null, an error message has already been shown by the contextManager.
-        });
+        vscode.commands.executeCommand('lollms-vs-coder.newDiscussion');
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussion', async (item?: DiscussionGroupItem) => {
+        if (!discussionManager) return;
+        const groupId = item instanceof DiscussionGroupItem ? item.group.id : null;
+        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager);
+        setupChatPanel(panel);
+        await panel.startNewDiscussion(groupId);
+        discussionTreeProvider?.refresh();
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.switchDiscussion', async (discussionId: string) => {
+        if (!discussionManager) return;
+        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager);
+        setupChatPanel(panel);
+        await panel.loadDiscussion(discussionId);
+    }));
+
+    // This command is now called from the ChatPanel's message listener.
+    context.subscriptions.push(vscode.commands.registerCommand('lollms.runAgentCommand', (objective: string, messages: ChatMessage[]) => {
+        if (ChatPanel.currentPanel?.agentManager && activeWorkspaceFolder) {
+            ChatPanel.currentPanel.agentManager.run(objective, messages, activeWorkspaceFolder);
+        } else if (!activeWorkspaceFolder) {
+            vscode.window.showErrorMessage("Cannot run Agent: No active Lollms workspace.");
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deleteDiscussion', async (item: DiscussionItem) => {
+        if (!discussionManager) return;
+        const deleteButton = { title: vscode.l10n.t('command.delete.title'), id: 'delete' };
+        const confirm = await vscode.window.showWarningMessage(vscode.l10n.t('prompt.confirmDelete', item.discussion.title), { modal: true }, deleteButton);
+        if (confirm?.id === 'delete') {
+            await discussionManager.deleteDiscussion(item.discussion.id);
+            discussionTreeProvider?.refresh();
+            if (ChatPanel.currentPanel && ChatPanel.currentPanel.getCurrentDiscussionId() === item.discussion.id) {
+                ChatPanel.currentPanel.dispose();
+            }
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.renameDiscussion', async (item: DiscussionItem) => {
+        if (!discussionManager) return;
+        const newTitle = await vscode.window.showInputBox({ prompt: vscode.l10n.t("prompt.enterNewDiscussionTitle"), value: item.discussion.title });
+        if (newTitle && newTitle !== item.discussion.title) {
+            item.discussion.title = newTitle;
+            await discussionManager.saveDiscussion(item.discussion);
+            discussionTreeProvider?.refresh();
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateDiscussionTitle', async (item: DiscussionItem) => {
+        if (!discussionManager) return;
+        const title = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: vscode.l10n.t("progress.generatingDiscussionTitle"), cancellable: false }, async () => await discussionManager!.generateDiscussionTitle(item.discussion));
+        if (title) {
+            item.discussion.title = title;
+            await discussionManager.saveDiscussion(item.discussion);
+            discussionTreeProvider?.refresh();
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.createDiscussionGroup', async () => {
+        if (!discussionManager) return;
+        const title = await vscode.window.showInputBox({ prompt: vscode.l10n.t("prompt.enterGroupTitle") });
+        if (!title) return;
+        const description = await vscode.window.showInputBox({ prompt: vscode.l10n.t("prompt.enterGroupDescription") });
+        const groups = await discussionManager.getGroups();
+        groups.push({ id: Date.now().toString() + Math.random().toString(36).substring(2), title, description: description || '', timestamp: Date.now() });
+        await discussionManager.saveGroups(groups);
+        discussionTreeProvider?.refresh();
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.renameDiscussionGroup', async (item: DiscussionGroupItem) => {
+        if (!discussionManager) return;
+        const newTitle = await vscode.window.showInputBox({ prompt: vscode.l10n.t("prompt.enterNewTitle"), value: item.group.title });
+        if (newTitle && newTitle !== item.group.title) {
+            const groups = await discussionManager.getGroups();
+            const groupToUpdate = groups.find(g => g.id === item.group.id);
+            if (groupToUpdate) {
+                groupToUpdate.title = newTitle;
+                await discussionManager.saveGroups(groups);
+                discussionTreeProvider?.refresh();
+            }
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deleteDiscussionGroup', async (item: DiscussionGroupItem) => {
+        if (!discussionManager) return;
+        const deleteButton = { title: vscode.l10n.t('command.delete.title'), id: 'delete' };
+        const confirm = await vscode.window.showWarningMessage(vscode.l10n.t('prompt.confirmDeleteGroup', item.group.title), { modal: true }, deleteButton);
+    
+        if (confirm?.id === 'delete') {
+            await discussionManager.deleteGroup(item.group.id);
+            discussionTreeProvider?.refresh();
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.moveDiscussionToGroup', async (item: DiscussionItem) => {
+        if (!discussionManager) return;
+        const groups = await discussionManager.getGroups();
+        const items = [{ id: null, label: vscode.l10n.t("label.noGroup") }, ...groups.map(g => ({ id: g.id, label: g.title, description: g.description }))];
+        const selected = await vscode.window.showQuickPick(items, { placeHolder: vscode.l10n.t("prompt.selectGroupForMove") });
+        if (selected !== undefined) { // Check for undefined to handle Escape key
+            const discussion = await discussionManager.getDiscussion(item.discussion.id);
+            if (discussion) {
+                discussion.groupId = selected.id;
+                await discussionManager.saveDiscussion(discussion);
+                discussionTreeProvider?.refresh();
+            }
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refreshDiscussions', () => discussionTreeProvider?.refresh()));
+    
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.triggerCodeAction', async (prompt?: Prompt) => {
         const editor = vscode.window.activeTextEditor;
         if (!editor || editor.selection.isEmpty) {
@@ -433,7 +434,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 if (customActionData.save && customActionData.title) {
                     const data = await promptManager.getData();
                     const newPrompt: Prompt = {
-                        id: Date.now().toString(),
+                        id: Date.now().toString() + Math.random().toString(36).substring(2),
                         groupId: null,
                         title: customActionData.title,
                         content: `${customActionData.prompt}\n{{SELECTED_CODE}}`,
@@ -474,7 +475,7 @@ export async function activate(context: vscode.ExtensionContext) {
             const responseText = await lollmsAPI.sendChat([
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: userPrompt }
-            ]);
+            ], null, token);
             
             if (token.isCancellationRequested) { return; }
 
@@ -494,7 +495,55 @@ export async function activate(context: vscode.ExtensionContext) {
             }
         });
     }));
+    
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refreshTree', () => fileTreeProvider?.refresh()));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.cycleFileState', (item?: FileItem) => {
+        if (!fileTreeProvider) return;
+        const targetItem = item || (fileTreeView?.selection[0] as FileItem);
+        if (targetItem && targetItem instanceof FileItem) {
+            fileTreeProvider.cycleFileState(targetItem);
+        }
+    }));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.addFolderToContext', (item: FileItem) => fileTreeProvider?.addFolderToContext(item)));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.removeFolderFromContext', (item: FileItem) => fileTreeProvider?.removeFolderFromContext(item)));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.autoSelectContextFiles', async () => {
+        if (!fileTreeProvider || !discussionManager) {
+            vscode.window.showInformationMessage("Please open a workspace folder to use this feature.");
+            return;
+        }
+
+        const objective = await vscode.window.showInputBox({
+            prompt: vscode.l10n.t('prompt.enterObjectiveForSelection'),
+            placeHolder: "e.g., 'Implement a new command to export discussions as markdown files'",
+            ignoreFocusOut: true,
+        });
+
+        if (!objective || objective.trim() === '') {
+            return;
+        }
+
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: vscode.l10n.t('progress.aiSelectingFiles'),
+            cancellable: false
+        }, async (progress) => {
+            const fileList = await contextManager.getAutoSelectionForContext(objective);
+
+            if (fileList && fileList.length > 0) {
+                await fileTreeProvider!.addFilesToContext(fileList);
+                vscode.window.showInformationMessage(vscode.l10n.t('info.aiSelectedFiles', fileList.length));
+                
+                const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager!);
+                setupChatPanel(panel);
+                
+                await panel.startDiscussionWithPrompt(objective);
+
+            } else if (fileList) { 
+                 vscode.window.showInformationMessage("The AI did not select any files for the given objective.");
+            }
+        });
+    }));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.saveInfoToFile', async (content: string) => {
         try {
             const fileUri = await vscode.window.showSaveDialog({
@@ -683,10 +732,10 @@ export async function activate(context: vscode.ExtensionContext) {
             }
         }
     }));
-    
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.runScript', async (code: string, language: string) => {
-        if (ChatPanel.currentPanel) {
-            await scriptRunner.runScript(code, language, ChatPanel.currentPanel);
+        if (ChatPanel.currentPanel && activeWorkspaceFolder) {
+            await scriptRunner.runScript(code, language, ChatPanel.currentPanel, activeWorkspaceFolder);
         } else {
             vscode.window.showErrorMessage(vscode.l10n.t("error.noActiveChatPanel"));
         }
@@ -694,7 +743,61 @@ export async function activate(context: vscode.ExtensionContext) {
     
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showConfigView', () => SettingsPanel.createOrShow(context.extensionUri)));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showHelp', () => HelpPanel.createOrShow(context.extensionUri)));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateAsset', async () => {
+        if (!activeWorkspaceFolder) {
+            vscode.window.showErrorMessage("Please open a workspace folder to save the asset.");
+            return;
+        }
     
+        const prompt = await vscode.window.showInputBox({
+            prompt: "Describe the asset you want to generate",
+            placeHolder: "e.g., a modern, flat icon for a 'save' button",
+            title: "Generate Asset"
+        });
+    
+        if (!prompt) {
+            return;
+        }
+    
+        const fileUri = await vscode.window.showSaveDialog({
+            title: "Save Generated Asset",
+            defaultUri: vscode.Uri.joinPath(activeWorkspaceFolder.uri, 'asset.png'),
+            filters: {
+                'Images': ['png']
+            }
+        });
+    
+        if (!fileUri) {
+            return;
+        }
+    
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Lollms: Generating asset...",
+            cancellable: true
+        }, async (progress, token) => {
+            try {
+                const b64_json = await lollmsAPI.generateImage(prompt, token);
+                if (token.isCancellationRequested) {
+                    return;
+                }
+                const buffer = Buffer.from(b64_json, 'base64');
+                await vscode.workspace.fs.writeFile(fileUri, buffer);
+    
+                const openButton = "Open Image";
+                vscode.window.showInformationMessage(`✅ Asset saved to ${path.basename(fileUri.fsPath)}`, openButton).then(selection => {
+                    if (selection === openButton) {
+                        vscode.commands.executeCommand('vscode.open', fileUri);
+                    }
+                });
+    
+            } catch (error: any) {
+                vscode.window.showErrorMessage(`Failed to generate asset: ${error.message}`);
+            }
+        });
+    }));
+        
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.exportContextContent', async () => {
         try {
             const content = await contextManager.getContextContent();
@@ -724,36 +827,22 @@ export async function activate(context: vscode.ExtensionContext) {
         } catch (err) { console.error('Error fetching models in extension:', err); return []; }
     }));
     
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateCommitMessage', async () => {
-        if (!(await gitIntegration.isGitRepo())) { vscode.window.showErrorMessage(vscode.l10n.t('error.notGitRepository')); return; }
-        const message = await gitIntegration.generateCommitMessage();
-        if (message) {
-            const gitExtension = vscode.extensions.getExtension<GitExtension>('vscode.git');
-            if (!gitExtension) { vscode.window.showErrorMessage(vscode.l10n.t('error.gitExtensionNotFound')); return; }
-            const gitAPI = gitExtension.exports.getAPI(1);
-            if (gitAPI.repositories.length > 0) {
-                gitAPI.repositories[0].inputBox.value = message;
-                vscode.commands.executeCommand('workbench.view.scm');
-            }
-        }
-    }));
-    
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.commitWithAIMessage', async () => {
-        if (!(await gitIntegration.isGitRepo())) { vscode.window.showErrorMessage(vscode.l10n.t('error.notGitRepository')); return; }
-        const message = await gitIntegration.generateCommitMessage();
+        if (!activeWorkspaceFolder) { vscode.window.showErrorMessage("No active workspace for Git operations."); return; }
+        if (!(await gitIntegration.isGitRepo(activeWorkspaceFolder))) { vscode.window.showErrorMessage(vscode.l10n.t('error.notGitRepository')); return; }
+        const message = await gitIntegration.generateCommitMessage(activeWorkspaceFolder);
         if (message) {
             const confirmed = await vscode.window.showQuickPick([vscode.l10n.t('label.yes'), vscode.l10n.t('label.no')], { placeHolder: vscode.l10n.t('prompt.confirmCommit', message) });
-            if (confirmed === vscode.l10n.t('label.yes')) { await gitIntegration.commitWithMessage(message); }
+            if (confirmed === vscode.l10n.t('label.yes')) { await gitIntegration.commitWithMessage(message, activeWorkspaceFolder); }
         }
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string) => {
-        if (!vscode.workspace.workspaceFolders) {
+        if (!activeWorkspaceFolder) {
             vscode.window.showErrorMessage(vscode.l10n.t('error.openWorkspaceToApplyChanges'));
             return;
         }
-        const workspaceRoot = vscode.workspace.workspaceFolders[0].uri;
-        const fileUri = vscode.Uri.joinPath(workspaceRoot, filePath);
+        const fileUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, filePath);
     
         try {
             let document: vscode.TextDocument;
@@ -779,7 +868,7 @@ export async function activate(context: vscode.ExtensionContext) {
             vscode.window.showErrorMessage(vscode.l10n.t('error.failedToApplyFileContent', error.message));
         }
     }));
-
+    
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyPatchContent', async (filePath: string, patchContent: string) => {
         try {
             let finalPatch = patchContent;
@@ -862,6 +951,8 @@ export async function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(saveCodeCommand, applyDiffCommand);
 
+    // ================== Status Bar Items ==================
+    
     const chatStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     chatStatusBar.text = '$(comment-discussion) Lollms Chat';
     chatStatusBar.command = 'lollms-vs-coder.startChat';
@@ -937,7 +1028,6 @@ export async function activate(context: vscode.ExtensionContext) {
 
     // ================== Notebook and Execution Logic ==================
     context.subscriptions.push(vscode.notebooks.registerNotebookCellStatusBarItemProvider('jupyter-notebook', new LollmsNotebookCellActionProvider()));
-
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.enhanceNotebookCell', async (cell: vscode.NotebookCell) => {
         if (!cell) return;
     
@@ -1017,7 +1107,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 await vscode.workspace.applyEdit(edit);
             }
         });
-    }));
+    }));    
 
     context.subscriptions.push(vscode.window.onDidCloseTerminal(terminal => {
         if (lollmsExecutionTerminal && terminal === lollmsExecutionTerminal) {
@@ -1044,19 +1134,18 @@ export async function activate(context: vscode.ExtensionContext) {
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setEntryPoint', async () => {
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        if (!workspaceFolder) {
-            vscode.window.showErrorMessage("Please open a project folder to set an entry point.");
+        if (!activeWorkspaceFolder) {
+            vscode.window.showErrorMessage("Please select an active Lollms workspace to set an entry point.");
             return;
         }
 
-        const launchJsonPath = vscode.Uri.joinPath(workspaceFolder.uri, '.vscode', 'launch.json');
+        const launchJsonPath = vscode.Uri.joinPath(activeWorkspaceFolder.uri, '.vscode', 'launch.json');
         let launchConfig: any;
         try {
             const fileContent = await vscode.workspace.fs.readFile(launchJsonPath);
             launchConfig = JSON.parse(fileContent.toString());
         } catch (error) {
-            await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(workspaceFolder.uri, '.vscode'));
+            try { await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(activeWorkspaceFolder.uri, '.vscode')); } catch (e) {}
             launchConfig = { version: '0.2.0', configurations: [] };
         }
 
@@ -1072,11 +1161,12 @@ export async function activate(context: vscode.ExtensionContext) {
         const fileUris = await vscode.window.showOpenDialog({
             canSelectMany: false,
             openLabel: 'Select as Execution Entry Point',
-            title: 'Select the main file to run for the project'
+            title: 'Select the main file to run for the project',
+            defaultUri: activeWorkspaceFolder.uri
         });
 
         if (fileUris && fileUris[0]) {
-            const relativePath = path.relative(workspaceFolder.uri.fsPath, fileUris[0].fsPath).replace(/\\/g, '/');
+            const relativePath = path.relative(activeWorkspaceFolder.uri.fsPath, fileUris[0].fsPath).replace(/\\/g, '/');
             mainConfig.program = `\${workspaceFolder}/${relativePath}`;
             
             const ext = path.extname(relativePath).toLowerCase();
@@ -1084,7 +1174,7 @@ export async function activate(context: vscode.ExtensionContext) {
             if (ext === '.js' || ext === '.ts') { mainConfig.type = 'node'; }
 
             await vscode.workspace.fs.writeFile(launchJsonPath, Buffer.from(JSON.stringify(launchConfig, null, 4), 'utf8'));
-            vscode.window.showInformationMessage(`Set '${relativePath}' as the execution entry point.`);
+            vscode.window.showInformationMessage(`Set '${relativePath}' as the execution entry point for '${activeWorkspaceFolder.name}'.`);
         }
     }));
 
@@ -1150,8 +1240,7 @@ export async function activate(context: vscode.ExtensionContext) {
             const fullOutput = `STDOUT:\n${error.stdout}\n\nSTDERR:\n${error.stderr}`;
             activeChatPanel.handleProjectExecutionResult(fullOutput, false);
         }
-    }));
-
+    }));    
     console.log('Extension activation complete.');
 }
 

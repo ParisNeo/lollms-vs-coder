@@ -5,10 +5,6 @@ import { Discussion, DiscussionManager } from '../discussionManager';
 import { AgentManager } from '../agentManager';
 import { getProcessedSystemPrompt, stripThinkingTags } from '../utils';
 import * as path from 'path';
-import pdf from 'pdf-parse';
-import mammoth from 'mammoth';
-import * as ExcelJS from 'exceljs';
-import { Readable } from 'stream';
 import { InfoPanel } from './infoPanel';
 import { ProcessManager } from '../processManager';
 
@@ -42,8 +38,8 @@ export class ChatPanel {
       {
         enableScripts: true,
         localResourceRoots: [
-            extensionUri,
-            vscode.Uri.joinPath(extensionUri, 'node_modules', '@vscode/codicons', 'dist')
+            vscode.Uri.joinPath(extensionUri, 'out'),
+            vscode.Uri.joinPath(extensionUri, 'node_modules', '@vscode/codicons')
         ],
         retainContextWhenHidden: true
       }
@@ -117,7 +113,7 @@ export class ChatPanel {
         
         this.displayPlan(null);
         this.updateGeneratingState();
-        await this._updateContextAndTokens();
+        this._updateContextAndTokens();
     }
   }
   public async startNewDiscussion(groupId: string | null = null): Promise<void> {
@@ -130,88 +126,56 @@ export class ChatPanel {
     this._updateContextAndTokens();
   }
   
-  private async _updateContextAndTokens() {
+  private _updateContextAndTokens() {
     if (!this._contextManager || !this._currentDiscussion) return;
 
-    try {
-        const context = await this._contextManager.getContextContent();
-        this._panel.webview.postMessage({ command: 'updateContext', context: context.text });
-        this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
-
-        const discussionContent = this._currentDiscussion.messages
-            .map(msg => {
-                if (typeof msg.content === 'string') {
-                    return msg.content;
-                }
-                if (Array.isArray(msg.content)) {
-                    return msg.content
-                        .filter(item => item.type === 'text' && typeof item.text === 'string')
-                        .map(item => item.text)
-                        .join('\n');
-                }
-                return '';
-            })
-            .join('\n');
-        
-        const fullTextToTokenize = context.text + '\n' + discussionContent;
-
-        const [tokenizeResponse, contextSizeResponse] = await Promise.all([
-            this._lollmsAPI.tokenize(fullTextToTokenize),
-            this._lollmsAPI.getContextSize()
-        ]);
-        
-        const totalTokens = tokenizeResponse.count;
-        const contextSize = contextSizeResponse.context_size;
-
-        this._panel.webview.postMessage({
-            command: 'updateTokenProgress',
-            totalTokens: totalTokens,
-            contextSize: contextSize
-        });
-
-        const fullLimitWarningId = 'context-limit-warning';
-        const quarterLimitWarningId = 'context-quarter-limit-warning';
-
-        const hasFullWarning = this._currentDiscussion.messages.some(m => m.id === fullLimitWarningId);
-        const hasQuarterWarning = this._currentDiscussion.messages.some(m => m.id === quarterLimitWarningId);
-
-        if (totalTokens > contextSize) {
-            if (hasQuarterWarning) {
-                await this.deleteMessage(quarterLimitWarningId, false);
-            }
-            const message: ChatMessage = {
-                id: fullLimitWarningId,
-                role: 'system',
-                content: `⚠️ **Warning:** The discussion size (${totalTokens} tokens) has exceeded the model's context limit (${contextSize} tokens). The earliest messages may not be included in the context.`
-            };
-            await this.addMessageToDiscussion(message);
-        } else if (totalTokens > (contextSize * 0.75)) {
-            if (hasFullWarning) {
-                await this.deleteMessage(fullLimitWarningId, false);
-            }
-            const message: ChatMessage = {
-                id: quarterLimitWarningId,
-                role: 'system',
-                content: `⚠️ **Warning:** The discussion size (${totalTokens} tokens) has exceeded 75% of the model's context limit (${contextSize} tokens). Very long responses may be truncated.`
-            };
-            await this.addMessageToDiscussion(message);
-        } else {
-            if (hasFullWarning) {
-                await this.deleteMessage(fullLimitWarningId, false);
-            }
-            if (hasQuarterWarning) {
-                await this.deleteMessage(quarterLimitWarningId, false);
-            }
+    // This operation is now async and doesn't block the UI
+    (async () => {
+        try {
+            const context = await this._contextManager.getContextContent();
+            this._panel.webview.postMessage({ command: 'updateContext', context: context.text });
+            this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
+    
+            const discussionContent = this._currentDiscussion!.messages
+                .map(msg => {
+                    if (typeof msg.content === 'string') {
+                        return msg.content;
+                    }
+                    if (Array.isArray(msg.content)) {
+                        return msg.content
+                            .filter(item => item.type === 'text' && typeof item.text === 'string')
+                            .map(item => item.text)
+                            .join('\n');
+                    }
+                    return '';
+                })
+                .join('\n');
+            
+            const fullTextToTokenize = context.text + '\n' + discussionContent;
+    
+            const [tokenizeResponse, contextSizeResponse] = await Promise.all([
+                this._lollmsAPI.tokenize(fullTextToTokenize),
+                this._lollmsAPI.getContextSize()
+            ]);
+            
+            const totalTokens = tokenizeResponse.count;
+            const contextSize = contextSizeResponse.context_size;
+    
+            this._panel.webview.postMessage({
+                command: 'updateTokenProgress',
+                totalTokens: totalTokens,
+                contextSize: contextSize
+            });
+    
+        } catch (error) {
+            console.error("Failed to update tokens:", error);
+            this._panel.webview.postMessage({
+                command: 'updateTokenProgress',
+                totalTokens: 'Error',
+                contextSize: 'N/A'
+            });
         }
-
-    } catch (error) {
-        console.error("Failed to update tokens:", error);
-        this._panel.webview.postMessage({
-            command: 'updateTokenProgress',
-            totalTokens: 'Error',
-            contextSize: 'N/A'
-        });
-    }
+    })();
   }
 
 
@@ -237,7 +201,6 @@ export class ChatPanel {
     this._currentDiscussion.timestamp = Date.now();
     await this._discussionManager.saveDiscussion(this._currentDiscussion);
     
-    // Only post back messages that didn't originate from the user to avoid duplication
     if (message.role !== 'user') {
         this._panel.webview.postMessage({ command: 'addMessage', message: message });
     }
@@ -256,7 +219,7 @@ export class ChatPanel {
   }
 
   private async _getHtmlForWebview(webview: vscode.Webview): Promise<string> {
-    const templatePath = vscode.Uri.joinPath(this._extensionUri, 'src', 'commands', 'chatPanel.html');
+    const templatePath = vscode.Uri.joinPath(this._extensionUri, 'out', 'commands', 'chatPanel.html');
     const templateContent = await vscode.workspace.fs.readFile(templatePath);
     let html = Buffer.from(templateContent).toString('utf8');
 
@@ -330,72 +293,82 @@ Your task is to re-analyze your previous code suggestion in light of this new er
 
   private _callApiWithMessages(messages: ChatMessage[], includeProjectContext: boolean = true, modelOverride?: string) {
     if (!this._currentDiscussion) return;
-
+  
     (async () => {
-        const { id, controller } = this.processManager.register(this._currentDiscussion!.id, 'Generating chat response...');
-        
-        try {
-            const apiMessages: ChatMessage[] = [];
-            const systemPrompt = getProcessedSystemPrompt('chat');
-            if (systemPrompt) {
-                apiMessages.push({ role: 'system', content: systemPrompt });
-            }
-
-            const messagesCopy = JSON.parse(JSON.stringify(messages));
-
-            if (includeProjectContext) {
-                const context: ContextResult = this._contextManager ? await this._contextManager.getContextContent() : { text: '', images: [] };
-                if (context.text && context.text.trim().length > 0) {
-                    apiMessages.push({ role: 'system', content: `## Project Context\n${context.text}` });
-                }
-                if (context.images.length > 0) {
-                    let lastUserMessage = null;
-                    for (let i = messagesCopy.length - 1; i >= 0; i--) {
-                        if (messagesCopy[i].role === 'user') {
-                            lastUserMessage = messagesCopy[i];
-                            break;
-                        }
-                    }
-                    if (lastUserMessage) {
-                        if (typeof lastUserMessage.content === 'string') {
-                            lastUserMessage.content = [{ type: 'text', text: lastUserMessage.content }];
-                        }
-                        for (const image of context.images) {
-                            (lastUserMessage.content as any[]).push({
-                                type: 'image_url',
-                                image_url: { url: image.data, detail: "auto" }
-                            });
-                        }
-                    }
-                }
-            }
-
-            apiMessages.push(...messagesCopy);
-        
-        this._lastApiRequest = apiMessages;
-            const responseText = await this._lollmsAPI.sendChat(apiMessages, controller.signal, modelOverride);
-            this._lastApiResponse = responseText;
-            
-            if (controller.signal.aborted) { return; }
-            
-            const assistantMessage: ChatMessage = { role: 'assistant', content: responseText };
-            
-            await this.addMessageToDiscussion(assistantMessage);
-        
-        } catch (error: any) {
-            const isAbortError = error.name === 'AbortError' || (error instanceof Error && error.message.includes('aborted'));
-            if (isAbortError) {
-                console.log('Generation was aborted.');
-                return;
-            }
-
-            const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
-            this._lastApiResponse = errorMessage;
-            const errorResponseMessage: ChatMessage = { role: 'system', content: `Sorry, I encountered an error: ${errorMessage}` };
-            await this.addMessageToDiscussion(errorResponseMessage);
-        } finally {
-            this.processManager.unregister(id);
+      const { id: processId, controller } = this.processManager.register(this._currentDiscussion!.id, 'Generating chat response...');
+      
+      try {
+        const apiMessages: ChatMessage[] = [];
+        const systemPrompt = getProcessedSystemPrompt('chat');
+        if (systemPrompt) {
+          apiMessages.push({ role: 'system', content: systemPrompt });
         }
+  
+        const messagesCopy = JSON.parse(JSON.stringify(messages));
+  
+        if (includeProjectContext) {
+          const context: ContextResult = this._contextManager ? await this._contextManager.getContextContent() : { text: '', images: [] };
+          if (context.text && context.text.trim().length > 0) {
+            apiMessages.push({ role: 'system', content: `## Project Context\n${context.text}` });
+          }
+          if (context.images.length > 0) {
+            let lastUserMessage = null;
+            for (let i = messagesCopy.length - 1; i >= 0; i--) {
+                if (messagesCopy[i].role === 'user') {
+                    lastUserMessage = messagesCopy[i];
+                    break;
+                }
+            }
+            if (lastUserMessage) {
+                if (typeof lastUserMessage.content === 'string') {
+                    lastUserMessage.content = [{ type: 'text', text: lastUserMessage.content }];
+                }
+                for (const image of context.images) {
+                    (lastUserMessage.content as any[]).push({
+                        type: 'image_url',
+                        image_url: { url: image.data, detail: "auto" }
+                    });
+                }
+            }
+          }
+        }
+
+        apiMessages.push(...messagesCopy);
+  
+        this._lastApiRequest = apiMessages;
+  
+        const assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
+        const assistantMessage: ChatMessage = { id: assistantMessageId, role: 'assistant', content: '' };
+        this._panel.webview.postMessage({ command: 'addMessage', message: assistantMessage });
+  
+        const onChunk = (chunk: string) => {
+          if (controller.signal.aborted) return;
+          this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk: chunk });
+        };
+  
+        const fullResponseText = await this._lollmsAPI.sendChat(apiMessages, onChunk, controller.signal, modelOverride);
+        this._lastApiResponse = fullResponseText;
+  
+        if (controller.signal.aborted) { return; }
+        
+        assistantMessage.content = fullResponseText;
+        this._panel.webview.postMessage({ command: 'finalizeMessage', id: assistantMessageId, fullContent: fullResponseText });
+        await this.addMessageToDiscussion(assistantMessage);
+  
+      } catch (error: any) {
+        const isAbortError = error.name === 'AbortError' || (error instanceof Error && error.message.includes('aborted'));
+        if (isAbortError) {
+          console.log('Generation was aborted.');
+          return;
+        }
+  
+        const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
+        this._lastApiResponse = errorMessage;
+        const errorResponseMessage: ChatMessage = { role: 'system', content: `Sorry, I encountered an error: ${errorMessage}` };
+        await this.addMessageToDiscussion(errorResponseMessage);
+      } finally {
+        this.processManager.unregister(processId);
+      }
     })();
   }
 
@@ -418,7 +391,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     
     vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
 
-    await this._updateContextAndTokens();
+    this._updateContextAndTokens();
 
     (async () => {
         const newTitle = await this._discussionManager.generateDiscussionTitle(this._currentDiscussion!);
@@ -448,8 +421,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     
     vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
 
-    await this._updateContextAndTokens();
-
     if (isFirstMessage) {
         (async () => {
             const newTitle = await this._discussionManager.generateDiscussionTitle(this._currentDiscussion!);
@@ -462,43 +433,8 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         })();
     }
 
-
     this._callApiWithMessages(this._currentDiscussion.messages);
-  }
-
-  private async regenerateResponse() {
-    if (!this._currentDiscussion || this._currentDiscussion.messages.length < 1) return;
-
-    const lastAssistantMsgIndex = this._currentDiscussion.messages.map(m => m.role).lastIndexOf('assistant');
-    if (lastAssistantMsgIndex === -1) {
-        vscode.window.showInformationMessage("No assistant message found to regenerate.");
-        return;
-    }
-
-    const lastUserMsgIndex = this._currentDiscussion.messages
-        .slice(0, lastAssistantMsgIndex)
-        .map(m => m.role)
-        .lastIndexOf('user');
-    
-    if (lastUserMsgIndex === -1) {
-        vscode.window.showInformationMessage("Could not find the user message for this response.");
-        return;
-    }
-
-    const lastUserMessage = this._currentDiscussion.messages[lastUserMsgIndex];
-    if (!lastUserMessage || typeof lastUserMessage.content !== 'string') {
-        vscode.window.showErrorMessage("Failed to get content of last user message.");
-        return;
-    };
-    const lastUserMessageContent = lastUserMessage.content;
-    
-    this._currentDiscussion.messages.splice(lastAssistantMsgIndex);
-    
-    await this._discussionManager.saveDiscussion(this._currentDiscussion);
-    this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
-
-    const messageId = 'user_' + Date.now().toString() + Math.random().toString(36).substring(2);
-    this._panel.webview.postMessage({ command: 'resendMessage', message: {id: messageId, role: 'user', content: lastUserMessageContent }});
+    this._updateContextAndTokens(); 
   }
 
   private async regenerateFromMessage(messageId: string) {
@@ -512,17 +448,23 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     }
 
     const targetMessage = this._currentDiscussion.messages[messageIndex];
-    if (targetMessage.role !== 'user' || typeof targetMessage.content !== 'string' && !Array.isArray(targetMessage.content)) {
+    if (targetMessage.role !== 'user' || (typeof targetMessage.content !== 'string' && !Array.isArray(targetMessage.content))) {
         vscode.window.showErrorMessage("Can only regenerate from a user's text message.");
         return;
     }
-    const messageContent = targetMessage.content as string;
+    const messageContent = targetMessage.content;
     
     this._currentDiscussion.messages.splice(messageIndex);
     
     await this._discussionManager.saveDiscussion(this._currentDiscussion);
     
-    this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
+    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+    const isInspectorEnabled = config.get<boolean>('enableCodeInspector', true);
+    this._panel.webview.postMessage({
+        command: 'loadDiscussion',
+        messages: this._currentDiscussion.messages,
+        isInspectorEnabled: isInspectorEnabled
+    });
 
     const newMessageId = 'user_' + Date.now().toString() + Math.random().toString(36).substring(2);
     this._panel.webview.postMessage({ command: 'resendMessage', message: {id: newMessageId, role: 'user', content: messageContent }});
@@ -592,48 +534,11 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         let extractedText = '';
         let warning = '';
         try {
-            const extension = path.extname(name).toLowerCase();
             const base64Data = dataUrl.split(',')[1];
-            const buffer = Buffer.from(base64Data, 'base64');
-
-            switch (extension) {
-                case '.pdf':
-                    const data = await pdf(buffer);
-                    extractedText = data.text;
-                    break;
-                case '.docx':
-                    const docxResult = await mammoth.extractRawText({ buffer });
-                    extractedText = docxResult.value;
-                    break;
-                case '.xlsx':
-                    const workbook = new ExcelJS.Workbook();
-                    const stream = new Readable();
-                    stream.push(buffer);
-                    stream.push(null);
-                    await workbook.xlsx.read(stream);
-                    
-                    let fullText = '';
-                    workbook.eachSheet((worksheet) => {
-                        fullText += `--- Sheet: ${worksheet.name} ---\n`;
-                        worksheet.eachRow({ includeEmpty: false }, (row) => {
-                            const values = row.values as ExcelJS.CellValue[];
-                            const cleanValues = values.slice(1).map(v => (v === null || v === undefined) ? '' : v.toString());
-                            fullText += cleanValues.join(', ') + '\n';
-                        });
-                        fullText += '\n';
-                    });
-                    extractedText = fullText;
-                    break;
-                case '.pptx':
-                    warning = `\n\n**Warning**: Content extraction for PPTX files is not supported.`;
-                    extractedText = '(Content not displayed for .pptx)';
-                    break;
-                default:
-                    extractedText = buffer.toString('utf8');
-                    break;
-            }
+            extractedText = await this._lollmsAPI.extractText(base64Data, name);
         } catch (error: any) {
-            extractedText = `Error parsing file: ${error.message}`;
+            extractedText = `Error parsing file via backend: ${error.message}`;
+            console.error(extractedText);
         }
         
         const fileContentBlock = `\`\`\`\n${extractedText}\n\`\`\`${warning}`;
@@ -652,6 +557,9 @@ Your task is to re-analyze your previous code suggestion in light of this new er
       switch (message.command) {
         case 'sendMessage':
           await this.sendMessage(message.message);
+          break;
+        case 'copyToClipboard':
+          await vscode.env.clipboard.writeText(message.text);
           break;
         case 'executeLollmsCommand':
             const { command, params } = message.details;
@@ -685,7 +593,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             (async () => {
                 const { id, controller } = this.processManager.register(this._currentDiscussion!.id, 'Inspecting code...');
                 try {
-                    const response = await this._lollmsAPI.sendChat(inspectionMessages, controller.signal, inspectorModel);
+                    const response = await this._lollmsAPI.sendChat(inspectionMessages, null, controller.signal, inspectorModel);
                     if(controller.signal.aborted) return;
 
                     const cleanResponse = stripThinkingTags(response);
@@ -757,7 +665,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
           break;
         case 'runAgent':
           await this.sendMessage(message.message);
-          this.agentManager.run(message.objective, this._currentDiscussion?.messages || []);
+          this.agentManager.run(message.objective, this._currentDiscussion?.messages || [], activeWorkspaceFolder);
           break;
         case 'displayPlan':
             this.displayPlan(message.plan);
@@ -805,9 +713,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
 
           InfoPanel.createOrShow(this._extensionUri, 'Lollms API Log', logContent);
           return;
-        case 'regenerateResponse':
-          await this.regenerateResponse();
-          break;
         case 'regenerateFromMessage':
             await this.regenerateFromMessage(message.messageId);
             break;

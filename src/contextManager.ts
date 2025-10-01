@@ -15,7 +15,8 @@ export class ContextManager {
   private fileTreeProvider?: FileTreeProvider;
   private context: vscode.ExtensionContext;
   private lollmsAPI: LollmsAPI;
-  private imageExtensions = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp'];
+  private imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']);
+  private docExtensions = new Set(['.pdf', '.docx', '.xlsx', '.pptx', '.msg']);
 
   constructor(context: vscode.ExtensionContext, lollmsAPI: LollmsAPI) {
     this.context = context;
@@ -38,6 +39,8 @@ export class ContextManager {
 
   async getContextContent(): Promise<ContextResult> {
     const result: ContextResult = { text: '', images: [] };
+    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+    const maxImageSize = config.get<number>('maxImageSize') || 1024;
 
     if (!this.fileTreeProvider) {
       result.text = this.getNoWorkspaceMessage();
@@ -57,60 +60,59 @@ export class ContextManager {
     const includedFiles = contextFiles.filter(p => !p.endsWith(path.sep));
     if (includedFiles.length > 0) {
       content += `## File Contents (${includedFiles.length} files)\n\n`;
-      content += `Warining: Only some files contents are shown here. If you need more file contents, don't hesistate to ask the user to select more files that you need to see.\n\n`;
+      content += `Warning: Only some files' contents are shown here. If you need more file contents, don't hesitate to ask the user to select more files that you need to see.\n\n`;
+      
       for (const filePath of contextFiles) {
         try {
           const fullPath = vscode.Uri.joinPath(workspaceFolder.uri, filePath);
           const stat = await vscode.workspace.fs.stat(fullPath);
+          if (stat.type !== vscode.FileType.File) continue;
 
-          if (stat.type === vscode.FileType.File) {
-            const ext = path.extname(filePath).toLowerCase();
+          const ext = path.extname(filePath).toLowerCase();
+          const fileBytes = await vscode.workspace.fs.readFile(fullPath);
+          const buffer = Buffer.from(fileBytes);
+          let fileContent = '';
 
-            if (this.imageExtensions.includes(ext)) {
-              // ... (image handling logic remains the same) ...
-            } else if (ext === '.ipynb') {
-                try {
-                    const fileBytes = await vscode.workspace.fs.readFile(fullPath);
-                    const notebookJson = JSON.parse(Buffer.from(fileBytes).toString('utf8'));
-                    let notebookContent = '';
-                    if (notebookJson.cells && Array.isArray(notebookJson.cells)) {
-                        notebookJson.cells.forEach((cell: any, index: number) => {
-                            const source = Array.isArray(cell.source) ? cell.source.join('') : '';
-                            if (cell.cell_type === 'code') {
-                                notebookContent += `--- Cell ${index + 1} (code) ---\n`;
-                                notebookContent += '```python\n';
-                                notebookContent += source + '\n';
-                                notebookContent += '```\n\n';
-                            } else if (cell.cell_type === 'markdown') {
-                                notebookContent += `--- Cell ${index + 1} (markdown) ---\n`;
-                                notebookContent += source + '\n\n';
-                            }
-                        });
-                    }
-                    content += `### \`${filePath}\` (Jupyter Notebook)\n\n`;
-                    content += notebookContent;
-                } catch (e: any) {
-                    content += `### \`${filePath}\`\n\n⚠️ **Error parsing Jupyter Notebook:** ${e.message}\n\n`;
-                }
-            } else {
-              let fileContent: string | undefined;
-              const openDocument = vscode.workspace.textDocuments.find(doc => doc.uri.fsPath === fullPath.fsPath);
-              
-              if (openDocument) {
-                fileContent = openDocument.getText();
-              } else {
-                const fileBytes = await vscode.workspace.fs.readFile(fullPath);
-                fileContent = Buffer.from(fileBytes).toString('utf8');
-              }
-
-              content += `### \`${filePath}\`\n\n`;
-              const language = path.extname(filePath).substring(1);
-              content += '```' + language + '\n';
-              content += fileContent;
-              content += '\n```\n\n';
+          if (this.imageExtensions.has(ext)) {
+            const image = await jimp.read(buffer);
+            if (maxImageSize > 0 && (image.getWidth() > maxImageSize || image.getHeight() > maxImageSize)) {
+              image.scaleToFit(maxImageSize, maxImageSize);
             }
+            const base64Data = await image.getBase64Async(image.getMIME());
+            result.images.push({ filePath, data: base64Data });
+            content += `### \`${filePath}\` (Image Attached)\n\n`;
+            continue; 
+          } else if (this.docExtensions.has(ext)) {
+            try {
+                fileContent = await this.lollmsAPI.extractText(buffer.toString('base64'), filePath);
+            } catch (e: any) {
+                fileContent = `⚠️ **Error processing document on backend:** ${e.message}`;
+            }
+          } else if (ext === '.ipynb') {
+            try {
+              const notebookJson = JSON.parse(buffer.toString('utf8'));
+              if (notebookJson.cells && Array.isArray(notebookJson.cells)) {
+                  notebookJson.cells.forEach((cell: any, index: number) => {
+                      const source = Array.isArray(cell.source) ? cell.source.join('') : '';
+                      if (cell.cell_type === 'code') {
+                          fileContent += `--- Cell ${index + 1} (code) ---\n\`\`\`python\n${source}\n\`\`\`\n\n`;
+                      } else if (cell.cell_type === 'markdown') {
+                          fileContent += `--- Cell ${index + 1} (markdown) ---\n${source}\n\n`;
+                      }
+                  });
+              }
+            } catch (e: any) {
+                fileContent = `⚠️ **Error parsing Jupyter Notebook:** ${e.message}`;
+            }
+          } else {
+            fileContent = buffer.toString('utf8');
           }
-          // If it's a directory, we simply ignore it here. Its presence is noted in the project tree.
+          
+          content += `### \`${filePath}\`\n\n`;
+          const language = path.extname(filePath).substring(1);
+          content += '```' + language + '\n';
+          content += fileContent;
+          content += '\n```\n\n`';
 
         } catch (error) {
           content += `### ${filePath}\n\n⚠️ **Error processing entry:** ${error}\n\n`;
@@ -162,7 +164,7 @@ Based on the objective and the file tree, which files are the most relevant? Ret
         const responseText = await this.lollmsAPI.sendChat([
             { role: 'system', content: systemPrompt },
             { role: 'user', content: fullUserPrompt }
-        ]);
+        ], null);
 
         const jsonString = this.extractJsonArray(responseText);
         if (!jsonString) {

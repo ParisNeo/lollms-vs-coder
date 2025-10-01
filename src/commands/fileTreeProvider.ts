@@ -8,19 +8,26 @@ import { ContextManager } from '../contextManager';
 export type PathState = 'included' | 'tree-only' | 'fully-excluded';
 
 class ContextProgressBarItem extends vscode.TreeItem {
-    constructor(currentTokens: number, maxTokens: number) {
+    constructor(currentTokens: number | 'Calculating...', maxTokens: number | 'Calculating...') {
         super('', vscode.TreeItemCollapsibleState.None);
 
-        const percentage = maxTokens > 0 ? (currentTokens / maxTokens) : 0;
-        const barWidth = 20;
-        const filledBlocks = Math.round(percentage * barWidth);
-        const emptyBlocks = barWidth - filledBlocks;
-        
-        const bar = '█'.repeat(filledBlocks) + '░'.repeat(emptyBlocks);
+        if (typeof currentTokens === 'number' && typeof maxTokens === 'number' && maxTokens > 0) {
+            const percentage = (currentTokens / maxTokens);
+            const barWidth = 20;
+            const filledBlocks = Math.round(percentage * barWidth);
+            const emptyBlocks = barWidth - filledBlocks;
+            
+            const bar = '█'.repeat(filledBlocks) + '░'.repeat(emptyBlocks);
+    
+            this.label = `Context Size: ${bar}`;
+            this.description = `${currentTokens.toLocaleString()} / ${maxTokens.toLocaleString()} Tokens`;
+            this.tooltip = `The current context size is at ${Math.round(percentage * 100)}% of the model's limit.`;
+        } else {
+            this.label = `Context Size:`;
+            this.description = `Calculating...`;
+            this.tooltip = `Calculating the total token count of the included files.`;
+        }
 
-        this.label = `Context Size: ${bar}`;
-        this.description = `${currentTokens.toLocaleString()} / ${maxTokens.toLocaleString()} Tokens`;
-        this.tooltip = `The current context size is at ${Math.round(percentage * 100)}% of the model's limit.`;
         this.iconPath = new vscode.ThemeIcon('dashboard');
         this.contextValue = 'contextProgressBar';
     }
@@ -43,7 +50,8 @@ export class FileTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
     private imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg']);
     private excludedFolders = new Set(['node_modules', '.git', 'dist', 'build', 'out', '__pycache__', '.pytest_cache', '.mypy_cache', 'egg-info']);
   
-    private watcher: vscode.FileSystemWatcher;
+    private watcher?: vscode.FileSystemWatcher;
+    private progressBar: ContextProgressBarItem = new ContextProgressBarItem('Calculating...', 'Calculating...');
 
     constructor(
         private workspaceRoot: string, 
@@ -51,18 +59,40 @@ export class FileTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
         private lollmsAPI: LollmsAPI,
         private contextManager: ContextManager
     ) {
-      this.contextFiles = new Set(context.workspaceState.get<string[]>('aiContextFiles', []));
-      this.treeOnlyFiles = new Set(context.workspaceState.get<string[]>('aiTreeOnlyFiles', []));
-      this.fullyExcludedPaths = new Set(context.workspaceState.get<string[]>('aiFullyExcludedPaths', []));
-
-      // Initialize the file watcher
-      this.watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(this.workspaceRoot, '**/*'));
-      
-      this.watcher.onDidCreate(() => this.refresh());
-      this.watcher.onDidChange(() => this.refresh());
-      this.watcher.onDidDelete(uri => this.handleFileDelete(uri));
+      this.loadStateForWorkspace();
+      this.setupWatcher();
+      this.updateProgressBar();
     }
-  
+
+    public async switchWorkspace(newWorkspaceRoot: string) {
+        await this.saveState(); // Save for the old workspace
+        this.workspaceRoot = newWorkspaceRoot;
+        
+        this.watcher?.dispose(); // Dispose old watcher
+        this.setupWatcher(); // Create new watcher for the new root
+        
+        await this.loadStateForWorkspace(); // Load state for the new workspace
+        this.refresh();
+    }
+
+    private setupWatcher() {
+        this.watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(this.workspaceRoot, '**/*'));
+        this.watcher.onDidCreate(() => this.refresh());
+        this.watcher.onDidChange(() => this.refresh());
+        this.watcher.onDidDelete(uri => this.handleFileDelete(uri));
+    }
+    
+    private getScopedKey(key: string): string {
+        const workspaceUri = vscode.Uri.file(this.workspaceRoot);
+        return `${key}_${workspaceUri.toString()}`;
+    }
+
+    private async loadStateForWorkspace() {
+        this.contextFiles = new Set(this.context.workspaceState.get<string[]>(this.getScopedKey('aiContextFiles'), []));
+        this.treeOnlyFiles = new Set(this.context.workspaceState.get<string[]>(this.getScopedKey('aiTreeOnlyFiles'), []));
+        this.fullyExcludedPaths = new Set(this.context.workspaceState.get<string[]>(this.getScopedKey('aiFullyExcludedPaths'), []));
+    }
+
     private async handleFileDelete(uri: vscode.Uri): Promise<void> {
         const relPath = path.relative(this.workspaceRoot, uri.fsPath).replace(/\\/g, '/');
         
@@ -88,13 +118,12 @@ export class FileTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
     }
 
     public dispose(): void {
-        this.watcher.dispose();
+        this.watcher?.dispose();
     }
     
     private async _pruneNonExistentFiles(): Promise<void> {
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) return;
-        const workspaceRoot = workspaceFolders[0].uri;
+        if (!this.workspaceRoot) return;
+        const workspaceRootUri = vscode.Uri.file(this.workspaceRoot);
 
         const allTrackedPaths = new Set([
             ...this.contextFiles,
@@ -105,10 +134,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
         let stateChanged = false;
         for (const relPath of allTrackedPaths) {
             try {
-                const fileUri = vscode.Uri.joinPath(workspaceRoot, relPath);
+                const fileUri = vscode.Uri.joinPath(workspaceRootUri, relPath);
                 await vscode.workspace.fs.stat(fileUri);
             } catch {
-                // File or directory does not exist, prune it
                 this.contextFiles.delete(relPath);
                 this.treeOnlyFiles.delete(relPath);
                 this.fullyExcludedPaths.delete(relPath);
@@ -123,6 +151,7 @@ export class FileTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
     async refresh(): Promise<void> {
         await this._pruneNonExistentFiles();
         this._onDidChangeTreeData.fire();
+        this.updateProgressBar(); // Trigger background update
     }
 
     getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
@@ -132,44 +161,39 @@ export class FileTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
     async getChildren(element?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
         if (!this.workspaceRoot) return Promise.resolve([]);
 
-        if (element) { // Children of a file/folder item
+        if (element) {
             if (element instanceof FileItem) {
                 const dirPath = element.resourceUri!.fsPath;
                 const relativePath = element.relativePath;
                 return Promise.resolve(this.getDirectoryContents(dirPath, relativePath));
             }
-            return Promise.resolve([]); // No children for progress bar
-        } else { // Root level
-            const progressBarItem = await this._createProgressBarItem();
+            return Promise.resolve([]);
+        } else {
             const fileItems = this.getDirectoryContents(this.workspaceRoot, '');
-            
-            const items: vscode.TreeItem[] = [];
-            if (progressBarItem) {
-                items.push(progressBarItem);
-            }
-            items.push(...fileItems);
-            return items;
+            return [this.progressBar, ...fileItems];
         }
     }
 
-    private async _createProgressBarItem(): Promise<ContextProgressBarItem | null> {
-        try {
-            const [contextResult, contextSizeResponse] = await Promise.all([
-                this.contextManager.getContextContent(),
-                this.lollmsAPI.getContextSize()
-            ]);
-    
-            const maxTokens = contextSizeResponse.context_size;
-            
-            // We only tokenize the text part for the progress bar calculation
-            const tokenizeResponse = await this.lollmsAPI.tokenize(contextResult.text);
-            const currentTokens = tokenizeResponse.count;
-    
-            return new ContextProgressBarItem(currentTokens, maxTokens);
-        } catch (error) {
-            console.error("Failed to create context progress bar:", error);
-            return null;
-        }
+    public updateProgressBar(): void {
+        // This function now runs in the background and doesn't block getChildren
+        (async () => {
+            try {
+                const [contextResult, contextSizeResponse] = await Promise.all([
+                    this.contextManager.getContextContent(),
+                    this.lollmsAPI.getContextSize()
+                ]);
+        
+                const maxTokens = contextSizeResponse.context_size;
+                const tokenizeResponse = await this.lollmsAPI.tokenize(contextResult.text);
+                const currentTokens = tokenizeResponse.count;
+        
+                this.progressBar = new ContextProgressBarItem(currentTokens, maxTokens);
+            } catch (error) {
+                console.error("Failed to create context progress bar:", error);
+                this.progressBar = new ContextProgressBarItem('Error', 'Error');
+            }
+            this._onDidChangeTreeData.fire(this.progressBar); // Refresh only the progress bar item
+        })();
     }
 
     private getDirectoryContents(dirPath: string, relativePath: string): FileItem[] {
@@ -187,10 +211,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
                 const state = this.getPathState(relPath);
                 
                 if (state === 'fully-excluded' && this.fullyExcludedPaths.has(relPath)) {
-                    // If the item itself is explicitly excluded, show it so it can be un-excluded.
-                    // But don't show children of fully excluded folders unless they have their own state.
+                    // Show it so it can be un-excluded.
                 } else if (state === 'fully-excluded') {
-                    continue; // Don't show children of fully-excluded parents unless they have specific state
+                    continue; 
                 }
 
                 if (entry.isDirectory()) {
@@ -225,11 +248,10 @@ export class FileTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
         while (parent !== '.' && parent !== '/') {
             if (this.fullyExcludedPaths.has(parent)) return 'fully-excluded';
             if (this.contextFiles.has(parent)) return 'included';
-            // `tree-only` is not inherited because it's the default.
             parent = path.dirname(parent);
         }
         
-        return 'tree-only'; // Default state
+        return 'tree-only';
     }
 
     async cycleFileState(item: FileItem) {
@@ -272,10 +294,8 @@ export class FileTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
         const fullPath = path.join(this.workspaceRoot, folderRelPath);
         const filesToUpdate = await this.getAllFilesInFolder(fullPath, true);
         
-        // Also apply to the folder itself
         this._setPathState(folderRelPath, state);
 
-        // Apply to all children
         filesToUpdate.forEach(fileRelPath => {
             this._setPathState(fileRelPath, state);
         });
@@ -362,9 +382,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
     }
 
     private async saveState() {
-        await this.context.workspaceState.update('aiContextFiles', Array.from(this.contextFiles));
-        await this.context.workspaceState.update('aiTreeOnlyFiles', Array.from(this.treeOnlyFiles));
-        await this.context.workspaceState.update('aiFullyExcludedPaths', Array.from(this.fullyExcludedPaths));
+        await this.context.workspaceState.update(this.getScopedKey('aiContextFiles'), Array.from(this.contextFiles));
+        await this.context.workspaceState.update(this.getScopedKey('aiTreeOnlyFiles'), Array.from(this.treeOnlyFiles));
+        await this.context.workspaceState.update(this.getScopedKey('aiFullyExcludedPaths'), Array.from(this.fullyExcludedPaths));
     }
 
     getContextFiles(): string[] { return Array.from(this.contextFiles); }

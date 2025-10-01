@@ -21,6 +21,7 @@
     "command.saveNewFile.title": "Lollms: 保存新文件",
     "command.executeScript.title": "Lollms: 执行脚本",
     "command.inspectCode.title": "Lollms: 检查代码",
+    "command.generateAsset.title": "Lollms: 生成资产...",
     "command.newDiscussion.title": "新讨论",
     "command.delete.title": "删除",
     "command.cancel.title": "取消",

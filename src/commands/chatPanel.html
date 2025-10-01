@@ -640,6 +640,7 @@
             </div>
             <div class="input-area">
                 <button id="attachButton" title="Attach Files"><i class="codicon codicon-add"></i></button>
+                <button id="generateAssetButton" title="Generate Asset"><i class="codicon codicon-device-camera"></i></button>
                 <button id="setEntryPointButton" title="Set Project Entry Point"><i class="codicon codicon-target"></i></button>
                 <button id="executeButton" title="Execute Project"><i class="codicon codicon-play"></i></button>
                 <textarea id="messageInput" placeholder="Enter your message (Shift+Enter for new line)..." rows="1"></textarea>
@@ -669,6 +670,7 @@
         const sendButton = document.getElementById('sendButton');
         const stopButton = document.getElementById('stopButton');
         const attachButton = document.getElementById('attachButton');
+        const generateAssetButton = document.getElementById('generateAssetButton');
         const executeButton = document.getElementById('executeButton');
         const setEntryPointButton = document.getElementById('setEntryPointButton');
         const fileInput = document.getElementById('fileInput');
@@ -913,32 +915,13 @@
 
             const contentDiv = document.createElement('div');
             contentDiv.className = 'message-content';
+            contentDiv.id = `content-${message.id}`;
             contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(displayContent));
 
             messageDiv.dataset.originalContent = rawContent;
 
-            // Add message actions
             const actions = document.createElement('div');
             actions.className = 'message-actions';
-
-            const copyBtn = document.createElement('button');
-            copyBtn.className = 'msg-action-btn';
-            copyBtn.innerHTML = '📋';
-            copyBtn.title = 'Copy Message';
-            copyBtn.onclick = async () => {
-                await navigator.clipboard.writeText(rawContent);
-                copyBtn.innerHTML = '✅';
-                setTimeout(() => { copyBtn.innerHTML = '📋'; }, 2000);
-            };
-
-            const deleteBtn = document.createElement('button');
-            deleteBtn.className = 'msg-action-btn';
-            deleteBtn.innerHTML = '🗑️';
-            deleteBtn.title = 'Delete Message';
-            deleteBtn.onclick = () => vscode.postMessage({ command: 'requestDeleteMessage', messageId: message.id });
-
-            actions.appendChild(copyBtn);
-            actions.appendChild(deleteBtn);
 
             if (role !== 'system') {
                 const editBtn = document.createElement('button');
@@ -946,9 +929,29 @@
                 editBtn.innerHTML = '✏️';
                 editBtn.title = 'Edit Message';
                 editBtn.onclick = () => startEdit(messageDiv, message.id, role);
-                actions.insertBefore(editBtn, actions.firstChild);
+                actions.appendChild(editBtn);
+
+                if (role === 'user') {
+                    const resendBtn = document.createElement('button');
+                    resendBtn.className = 'msg-action-btn';
+                    resendBtn.innerHTML = '🔄';
+                    resendBtn.title = 'Regenerate response';
+                    resendBtn.onclick = () => vscode.postMessage({ command: 'regenerateFromMessage', messageId: message.id });
+                    actions.appendChild(resendBtn);
+                }
             }
-            
+
+            const copyBtn = document.createElement('button');
+            copyBtn.className = 'msg-action-btn';
+            copyBtn.innerHTML = '📋';
+            copyBtn.title = 'Copy Message';
+            copyBtn.onclick = () => {
+                vscode.postMessage({ command: 'copyToClipboard', text: rawContent });
+                copyBtn.innerHTML = '✅';
+                setTimeout(() => { copyBtn.innerHTML = '📋'; }, 2000);
+            };
+            actions.appendChild(copyBtn);
+
             if (role === 'assistant') {
                 const savePromptBtn = document.createElement('button');
                 savePromptBtn.className = 'msg-action-btn';
@@ -964,6 +967,13 @@
                 logBtn.onclick = () => vscode.postMessage({ command: 'requestLog' });
                 actions.appendChild(logBtn);
             }
+
+            const deleteBtn = document.createElement('button');
+            deleteBtn.className = 'msg-action-btn';
+            deleteBtn.innerHTML = '🗑️';
+            deleteBtn.title = 'Delete Message';
+            deleteBtn.onclick = () => vscode.postMessage({ command: 'requestDeleteMessage', messageId: message.id });
+            actions.appendChild(deleteBtn);
 
             messageDiv.appendChild(contentDiv);
             messageDiv.appendChild(actions);
@@ -1133,6 +1143,7 @@
             agentModeCheckbox.disabled = isGenerating;
             agentModeToggle.classList.toggle('disabled', isGenerating);
             attachButton.disabled = isGenerating;
+            generateAssetButton.disabled = isGenerating;
             executeButton.disabled = isGenerating;
             setEntryPointButton.disabled = isGenerating;
 
@@ -1162,6 +1173,10 @@
         
         attachButton.addEventListener('click', () => {
             fileInput.click();
+        });
+
+        generateAssetButton.addEventListener('click', () => {
+            vscode.postMessage({ command: 'generateAsset' });
         });
 
         executeButton.addEventListener('click', () => {
@@ -1395,7 +1410,7 @@
             const action = target.dataset.action;
 
             if (action === 'copyCode' && codeContent) {
-                navigator.clipboard.writeText(codeContent);
+                vscode.postMessage({ command: 'copyToClipboard', text: codeContent });
                 target.innerHTML = '✅ Copied!';
                 setTimeout(() => { target.innerHTML = '📋 Copy'; }, 2000);
             } else if (action === 'runScript' && codeContent) {
@@ -1470,8 +1485,40 @@
 
           switch(message.command) {
             case 'addMessage':
-                setGeneratingState(false);
-                addMessage(message.message);
+                addChatMessage(message.message);
+                break;
+            case 'appendMessageChunk':
+                {
+                    const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.id}']`);
+                    if(wrapper) {
+                        const contentDiv = wrapper.querySelector('.message-content');
+                        const messageDiv = wrapper.querySelector('.message');
+                        if (contentDiv && messageDiv) {
+                            // Append text to the raw content
+                            messageDiv.dataset.originalContent += message.chunk;
+                            // Re-render the whole thing
+                            contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(messageDiv.dataset.originalContent));
+                            // Re-enhance code blocks every time
+                            enhanceCodeBlocks(wrapper);
+                            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                        }
+                    }
+                }
+                break;
+            case 'finalizeMessage':
+                {
+                    const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.id}']`);
+                    if(wrapper) {
+                        const contentDiv = wrapper.querySelector('.message-content');
+                        const messageDiv = wrapper.querySelector('.message');
+                        if (contentDiv && messageDiv) {
+                            messageDiv.dataset.originalContent = message.fullContent;
+                            contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(message.fullContent));
+                            enhanceCodeBlocks(wrapper);
+                            enhanceWithCommandButtons(wrapper);
+                        }
+                    }
+                }
                 break;
             case 'setGeneratingState':
                 setGeneratingState(message.isGenerating);
@@ -1481,7 +1528,6 @@
                 setGeneratingState(!isFinished);
                 displayPlan(message.plan);
                 break;
-
             case 'loadDiscussion':
                 attachmentsContainer.innerHTML = '';
                 chatMessagesContainer.innerHTML = '';

@@ -21,6 +21,7 @@
     "command.saveNewFile.title": "Lollms: Save New File",
     "command.executeScript.title": "Lollms: Execute Script",
     "command.inspectCode.title": "Lollms: Inspect Code",
+    "command.generateAsset.title": "Lollms: Generate Asset...",
     "command.newDiscussion.title": "New Discussion",
     "command.delete.title": "Delete",
     "command.cancel.title": "Cancel",

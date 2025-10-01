@@ -117,11 +117,6 @@
         "title": "%command.inspectCode.title%"
       },
       {
-        "command": "lollms-vs-coder.generateAsset",
-        "title": "%command.generateAsset.title%",
-        "icon": "$(device-camera)"
-      },
-      {
         "command": "lollms-vs-coder.newDiscussion",
         "title": "%command.newDiscussion.title%",
         "icon": "$(add)"

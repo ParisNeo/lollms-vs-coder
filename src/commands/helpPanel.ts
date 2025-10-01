@@ -56,72 +56,24 @@ export class HelpPanel {
             padding: 2em;
             line-height: 1.7;
         }
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-        }
-        .header {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-            border-bottom: 1px solid var(--vscode-panel-border);
-            padding-bottom: 1em;
-            margin-bottom: 2em;
-        }
-        .header img {
-            width: 50px;
-            height: 50px;
-        }
-        h1 {
-            margin: 0;
-            font-size: 2.2em;
-            font-weight: 300;
-        }
-        h2 {
-            font-size: 1.8em;
-            font-weight: 400;
-            margin-top: 2.5em;
-            border-bottom: 1px solid var(--vscode-panel-border);
-            padding-bottom: 0.5em;
-        }
-        h3 {
-            font-size: 1.3em;
-            margin-top: 2em;
-            font-weight: 500;
-        }
-        p, li {
-            font-size: 1em;
-            color: var(--vscode-foreground);
-        }
-        code {
-            font-family: var(--vscode-editor-font-family);
-            background-color: var(--vscode-textBlockQuote-background);
-            border: 1px solid var(--vscode-textBlockQuote-border);
-            padding: 0.2em 0.4em;
-            border-radius: 4px;
-        }
+        .container { max-width: 900px; margin: 0 auto; }
+        .header { display: flex; align-items: center; gap: 15px; border-bottom: 1px solid var(--vscode-panel-border); padding-bottom: 1em; margin-bottom: 2em; }
+        .header img { width: 50px; height: 50px; }
+        h1 { margin: 0; font-size: 2.2em; font-weight: 300; }
+        h2 { font-size: 1.8em; font-weight: 400; margin-top: 2.5em; border-bottom: 1px solid var(--vscode-panel-border); padding-bottom: 0.5em; display: flex; align-items: center; gap: 10px; }
+        h3 { font-size: 1.3em; margin-top: 2em; font-weight: 500; }
+        p, li { font-size: 1em; color: var(--vscode-foreground); }
+        code { font-family: var(--vscode-editor-font-family); background-color: var(--vscode-textCodeBlock-background); border: 1px solid var(--vscode-textBlockQuote-border); padding: 0.2em 0.4em; border-radius: 4px; }
+        .codicon { font-family: "codicon"; display: inline-block; vertical-align: middle; font-size: 1.1em; margin-right: 5px;}
+        .key-feature { font-weight: 600; color: var(--vscode-textLink-foreground); }
+        .status-bar-example { display: flex; gap: 15px; background-color: var(--vscode-statusBar-background); color: var(--vscode-statusBar-foreground); padding: 5px 15px; border-radius: 5px; margin: 1em 0; align-items: center; font-family: var(--vscode-editor-font-family); }
+        ul { padding-left: 20px; }
+        li { margin-bottom: 0.5em; }
         blockquote {
             background-color: var(--vscode-textBlockQuote-background);
             border-left: 4px solid var(--vscode-textBlockQuote-border);
             margin: 1em 0;
             padding: 0.5em 1.5em;
-        }
-        .feature-icon {
-            display: inline-block;
-            vertical-align: middle;
-            margin-right: 8px;
-            font-weight: bold;
-        }
-        .status-bar-example {
-            display: flex;
-            gap: 15px;
-            background-color: var(--vscode-statusBar-background);
-            color: var(--vscode-statusBar-foreground);
-            padding: 5px 15px;
-            border-radius: 5px;
-            margin: 1em 0;
-            align-items: center;
-            font-family: var(--vscode-editor-font-family);
         }
     </style>
 </head>
@@ -132,75 +84,79 @@ export class HelpPanel {
             <h1>Lollms VS Coder Help</h1>
         </div>
 
-        <p>Welcome to Lollms VS Coder! This extension integrates a powerful AI assistant directly into your editor. This guide covers its main features, from basic chat to the advanced, self-correcting AI Agent.</p>
+        <p>Welcome! This guide provides a detailed overview of all features available in the Lollms VS Coder extension, from basic chat to the advanced, self-correcting AI Agent.</p>
 
-        <h2><span class="feature-icon">🤖</span> Agent Mode</h2>
+        <h2><span class="codicon codicon-robot"></span>Agent Mode: Your Autonomous Assistant</h2>
         <p>Agent Mode is the most powerful feature. It allows the AI to create and execute a multi-step plan to achieve a complex objective, like building an entire application from a single prompt. It can create files, write code, run commands, and even correct its own mistakes.</p>
         
-        <h3>Activation</h3>
+        <h3>How to Use Agent Mode</h3>
         <ol>
-            <li>Open the AI Chat panel.</li>
-            <li>Click the <span class="feature-icon">🤖 Agent</span> toggle switch in the input area. The switch will turn blue.</li>
-            <li>The agent will confirm its activation and the model it's using.</li>
-            <li>Type your objective in the input box (e.g., "build a snake game in python with a virtual environment") and press Enter.</li>
+            <li>Open the AI Chat panel by clicking <span class="codicon codicon-comment-discussion"></span><strong>Lollms Chat</strong> in the status bar.</li>
+            <li>In the input area, click the <span class="key-feature">🤖 Agent Mode</span> toggle switch.</li>
+            <li>The agent will confirm its activation. Type your high-level objective in the input box (e.g., "build a snake game in python with a virtual environment") and press Enter.</li>
         </ol>
 
-        <h3>The Execution Plan</h3>
-        <p>Once you provide an objective, the agent will first create an **Execution Plan**. This is a dynamic list of tasks that will appear in the chat window. The agent will execute these tasks one by one.</p>
+        <h3>Understanding the Execution Plan</h3>
+        <p>Once you provide an objective, the agent creates an <span class="key-feature">Execution Plan</span>, a dynamic list of tasks displayed in the chat. The agent executes these tasks sequentially, showing the status of each:</p>
         <ul>
-            <li><span class="feature-icon">⚪ Pending:</span> The task has not yet started.</li>
-            <li><span class="feature-icon">⏳ In Progress:</span> The agent is currently working on this task.</li>
-            <li><span class="feature-icon">✅ Completed:</span> The task finished successfully.</li>
-            <li><span class="feature-icon">❌ Failed:</span> The task encountered an error.</li>
+            <li><span class="codicon codicon-circle-large-filled"></span><strong>Pending:</strong> The task is waiting to be executed.</li>
+            <li><span class="codicon codicon-sync spin"></span><strong>In Progress:</strong> The agent is currently working on this task.</li>
+            <li><span class="codicon codicon-check"></span><strong>Completed:</strong> The task finished successfully.</li>
+            <li><span class="codicon codicon-error"></span><strong>Failed:</strong> The task encountered an error.</li>
         </ul>
 
         <h3>Autonomous Self-Correction</h3>
-        <p>When a task fails, the agent will automatically try to fix the problem. It will analyze the error and generate a new set of tasks to correct the mistake. The number of self-correction attempts can be configured in the settings.</p>
+        <p>When a task fails, the agent will automatically try to fix the problem. It analyzes the error output and generates a new set of tasks to correct the mistake. The number of self-correction attempts can be configured in the settings.</p>
         
         <h3>User Intervention</h3>
-        <p>If the agent cannot fix a problem on its own after its configured number of retries, it will stop and ask for your help with a dialog box:</p>
+        <p>If the agent cannot fix a problem on its own, it will pause and ask for your help with a dialog box:</p>
         <ul>
             <li><strong>Stop:</strong> Halts the execution of the plan permanently.</li>
-            <li><strong>Continue Anyway:</strong> Ignores the error and proceeds to the next task. (Use with caution).</li>
-            <li><strong>View Log:</strong> Opens a panel showing the detailed error message (STDOUT/STDERR) from the failed task.</li>
+            <li><strong>Continue Anyway:</strong> Ignores the error and proceeds to the next task (use with caution).</li>
+            <li><strong>View Log:</strong> Opens a panel showing the detailed error message from the failed task.</li>
         </ul>
 
-        <h2><span class="feature-icon">💬</span> AI Chat</h2>
-        <p>For general-purpose questions, brainstorming, or getting quick code snippets, you can use the standard AI Chat.</p>
-        <ul>
-            <li><strong>Start a Chat:</strong> Click the <span class="feature-icon">$(comment-discussion) Lollms Chat</span> icon in the status bar.</li>
-            <li><strong>Select a Model:</strong> Click the model name (e.g., <span class="feature-icon">$(chip) ollama/mistral</span>) in the status bar to choose from any model available on your Lollms server.</li>
-            <li><strong>Discussions:</strong> All chats are saved as "Discussions" in the Lollms sidebar. You can rename, delete, or organize them into groups.</li>
-        </ul>
-
-        <h2><span class="feature-icon">💡</span> Code Actions</h2>
-        <p>Perform AI-powered actions directly on your code.</p>
-        <ol>
-            <li>Select a block of code in the editor.</li>
-            <li>Click the <strong>Lollms Actions...</strong> CodeLens that appears above it.</li>
-            <li>Choose from a list of predefined actions or create a "Custom Prompt..." using the new modal window.</li>
-        </ol>
-
-        <h2><span class="feature-icon">🧠</span> AI Context Management</h2>
-        <p>Control exactly which files the AI knows about for more accurate responses via the <strong>AI Context Files</strong> view in the Lollms sidebar. Click on any file or folder to cycle through its state.</p>
+        <h2><span class="codicon codicon-comment-discussion"></span>The AI Chat Panel</h2>
+        <p>For general-purpose questions, brainstorming, or getting quick code snippets, use the standard AI Chat.</p>
         
-        <h2><span class="feature-icon">⚙️</span> Configuration</h2>
-        <p>Click the <span class="feature-icon">$(gear)</span> icon in any Lollms view's title bar to open the settings panel. Here you can configure:</p>
+        <h3>Interacting with AI Responses</h3>
         <ul>
-            <li>API Host, API Key, and Model Name.</li>
-            <li><strong>Agent Self-Correction Retries:</strong> The number of times the agent will try to fix a failed task before asking for your help.</li>
+            <li><strong><span class="codicon codicon-tools"></span>Apply to File</strong>: When the AI suggests creating or modifying a file (e.g., <code>File: src/app.js</code>), a button appears on the code block. Clicking it opens an inline diff view where you can accept or reject the changes.</li>
+            <li><strong><span class="codicon codicon-play"></span>Execute</strong>: Code blocks for shell scripts (Python, Bash, PowerShell) have an Execute button. This runs the script in a temporary file, and the output is automatically fed back to the AI for analysis.</li>
+            <li><strong><span class="codicon codicon-search"></span>Inspect</strong>: Check AI-generated code for bugs and vulnerabilities. The inspector can auto-fix minor issues or provide detailed warnings.</li>
+            <li><strong><span class="codicon codicon-device-camera"></span>Generate Image</strong>: If the AI returns an <code>image_prompt</code> block, a "Generate" button will appear. Clicking it creates the image and saves it to your project.</li>
         </ul>
 
-        <h2><span class="feature-icon">📊</span> Status Bar</h2>
-        <p>The status bar provides quick access to key features:</p>
-        <div class="status-bar-example">
-            <span>...</span>
-            <span>$(chip) ollama/mistral</span>
-            <span>$(comment-discussion) Lollms Chat</span>
-        </div>
+        <h3>The "More Actions" <code>...</code> Menu</h3>
+        <p>This menu, located to the left of the chat input, provides powerful project-level commands:</p>
         <ul>
-            <li><span class="feature-icon">$(chip) Model Name:</span> Click to select a different model for the chat and agent.</li>
-            <li><span class="feature-icon">$(comment-discussion) Lollms Chat:</span> Click to open a new chat panel.</li>
+            <li><strong><span class="codicon codicon-add"></span>Attach Files</strong>: Manually provide files (including text and images) to the AI for analysis or questions.</li>
+            <li><strong><span class="codicon codicon-sparkle"></span>Generate Asset...</strong>: Describe an image you want to create (e.g., "a modern logo for a save button"), choose where to save it, and the AI will generate it.</li>
+            <li><strong><span class="codicon codicon-target"></span>Set Project Entry Point</strong>: Define the main executable file (`.js`, `.py`, etc.) for your project. This is used by the "Execute Project" command.</li>
+            <li><strong><span class="codicon codicon-play-circle"></span>Execute Project</strong>: Runs your project using the configured entry point. If it fails, the AI automatically analyzes the error output and suggests a fix.</li>
+        </ul>
+
+        <h2><span class="codicon codicon-brain"></span>AI Context Management</h2>
+        <p>The <span class="key-feature">AI Context Files</span> view in the Lollms sidebar gives you precise control over what project information the AI sees. Click any file or folder to cycle through its three states:</p>
+        <ul>
+            <li><span class="codicon codicon-check"></span><strong>Included</strong>: The file's path AND its full content are sent to the AI.</li>
+            <li><span class="codicon codicon-file-text"></span><strong>Tree-Only (Default)</strong>: Only the file's path is included in the project tree structure sent to the AI. Its content is hidden, saving tokens.</li>
+            <li><span class="codicon codicon-circle-slash"></span><strong>Excluded</strong>: The file or folder is completely hidden from the AI.</li>
+        </ul>
+        <blockquote>Use the <strong><span class="codicon codicon-wand"></span>Auto-Select Context</strong> button in the view's toolbar to have the AI intelligently pick the most relevant files for a given objective.</blockquote>
+
+        <h2><span class="codicon codicon-lightbulb"></span>In-Editor Tools</h2>
+        <ul>
+            <li><strong>Code Actions</strong>: Select code in the editor, click the <code>Lollms Actions...</code> CodeLens that appears, and choose from default actions (Explain, Refactor, Find Bugs, Generate Docs) or trigger your own custom prompts.</li>
+            <li><strong>Inline Autocomplete</strong>: Enable "ghost text" suggestions in the extension settings for real-time, single-line code completion as you type.</li>
+            <li><strong>Jupyter Notebooks</strong>: When a <code>.ipynb</code> file is active, use the icons in the cell toolbar to <strong>Enhance Cell</strong> (refactor) or <strong>Generate Next Cell</strong> based on the current one.</li>
+        </ul>
+
+        <h2><span class="codicon codicon-source-control"></span>Git, Sidebar, and Configuration</h2>
+        <ul>
+            <li><strong>Git Commit Messages</strong>: Click the Lollms icon in the Source Control panel's title bar to generate a conventional commit message based on your staged changes.</li>
+            <li><strong>Sidebar Views</strong>: Use the sidebar to manage Discussions, see Running Processes, and create/organize your custom Prompts into groups.</li>
+            <li><strong>Configuration <span class="codicon codicon-gear"></span></strong>: Access the settings UI from the title bar of any Lollms view to configure your API endpoint, select models, and customize agent behavior.</li>
         </ul>
         
     </div>

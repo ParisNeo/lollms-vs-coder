@@ -554,6 +554,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     
   private _setWebviewMessageListener(webview: vscode.Webview) {
     webview.onDidReceiveMessage(async (message) => {
+      const activeWorkspaceFolder = vscode.workspace.workspaceFolders?.[0];
       switch (message.command) {
         case 'sendMessage':
           await this.sendMessage(message.message);
@@ -665,7 +666,9 @@ Your task is to re-analyze your previous code suggestion in light of this new er
           break;
         case 'runAgent':
           await this.sendMessage(message.message);
-          this.agentManager.run(message.objective, this._currentDiscussion?.messages || [], activeWorkspaceFolder);
+          if (activeWorkspaceFolder) {
+            this.agentManager.run(message.objective, this._currentDiscussion?.messages || [], activeWorkspaceFolder);
+          }
           break;
         case 'displayPlan':
             this.displayPlan(message.plan);
@@ -746,6 +749,44 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         case 'saveMarkdownToFile':
             vscode.commands.executeCommand('lollms-vs-coder.saveMarkdownToFile', message.content);
             break;
+        case 'generateImage':
+            vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: "Lollms: Generating image...",
+                cancellable: true
+            }, async (progress, token) => {
+                try {
+                    const b64_json = await this._lollmsAPI.generateImage(message.prompt, token);
+                    if (token.isCancellationRequested) {
+                        webview.postMessage({ command: 'imageGenerationResult', buttonId: message.buttonId, success: false });
+                        return;
+                    }
+                    
+                    const workspaceFolders = vscode.workspace.workspaceFolders;
+                    if (!workspaceFolders) {
+                        throw new Error("No workspace folder is open to save the image.");
+                    }
+                    
+                    const fileUri = vscode.Uri.joinPath(workspaceFolders[0].uri, message.filePath);
+                    const buffer = Buffer.from(b64_json, 'base64');
+                    await vscode.workspace.fs.writeFile(fileUri, buffer);
+
+                    webview.postMessage({ command: 'imageGenerationResult', buttonId: message.buttonId, success: true });
+                    
+                    this.addMessageToDiscussion({
+                        role: 'system',
+                        content: `✅ Image successfully generated and saved to \`${message.filePath}\``
+                    });
+
+                } catch (error: any) {
+                    webview.postMessage({ command: 'imageGenerationResult', buttonId: message.buttonId, success: false });
+                    this.addMessageToDiscussion({
+                        role: 'system',
+                        content: `❌ Image generation failed: ${error.message}`
+                    });
+                }
+            });
+            break;            
       }
     });
   }

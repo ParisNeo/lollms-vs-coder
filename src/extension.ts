@@ -744,59 +744,6 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showConfigView', () => SettingsPanel.createOrShow(context.extensionUri)));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showHelp', () => HelpPanel.createOrShow(context.extensionUri)));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateAsset', async () => {
-        if (!activeWorkspaceFolder) {
-            vscode.window.showErrorMessage("Please open a workspace folder to save the asset.");
-            return;
-        }
-    
-        const prompt = await vscode.window.showInputBox({
-            prompt: "Describe the asset you want to generate",
-            placeHolder: "e.g., a modern, flat icon for a 'save' button",
-            title: "Generate Asset"
-        });
-    
-        if (!prompt) {
-            return;
-        }
-    
-        const fileUri = await vscode.window.showSaveDialog({
-            title: "Save Generated Asset",
-            defaultUri: vscode.Uri.joinPath(activeWorkspaceFolder.uri, 'asset.png'),
-            filters: {
-                'Images': ['png']
-            }
-        });
-    
-        if (!fileUri) {
-            return;
-        }
-    
-        await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: "Lollms: Generating asset...",
-            cancellable: true
-        }, async (progress, token) => {
-            try {
-                const b64_json = await lollmsAPI.generateImage(prompt, token);
-                if (token.isCancellationRequested) {
-                    return;
-                }
-                const buffer = Buffer.from(b64_json, 'base64');
-                await vscode.workspace.fs.writeFile(fileUri, buffer);
-    
-                const openButton = "Open Image";
-                vscode.window.showInformationMessage(`✅ Asset saved to ${path.basename(fileUri.fsPath)}`, openButton).then(selection => {
-                    if (selection === openButton) {
-                        vscode.commands.executeCommand('vscode.open', fileUri);
-                    }
-                });
-    
-            } catch (error: any) {
-                vscode.window.showErrorMessage(`Failed to generate asset: ${error.message}`);
-            }
-        });
-    }));
         
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.exportContextContent', async () => {
         try {

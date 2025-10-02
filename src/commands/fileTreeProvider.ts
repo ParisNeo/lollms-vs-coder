@@ -7,33 +7,6 @@ import { ContextManager } from '../contextManager';
 
 export type PathState = 'included' | 'tree-only' | 'fully-excluded';
 
-class ContextProgressBarItem extends vscode.TreeItem {
-    constructor(currentTokens: number | 'Calculating...', maxTokens: number | 'Calculating...') {
-        super('', vscode.TreeItemCollapsibleState.None);
-
-        if (typeof currentTokens === 'number' && typeof maxTokens === 'number' && maxTokens > 0) {
-            const percentage = (currentTokens / maxTokens);
-            const barWidth = 20;
-            const filledBlocks = Math.round(percentage * barWidth);
-            const emptyBlocks = barWidth - filledBlocks;
-            
-            const bar = '█'.repeat(filledBlocks) + '░'.repeat(emptyBlocks);
-    
-            this.label = `Context Size: ${bar}`;
-            this.description = `${currentTokens.toLocaleString()} / ${maxTokens.toLocaleString()} Tokens`;
-            this.tooltip = `The current context size is at ${Math.round(percentage * 100)}% of the model's limit.`;
-        } else {
-            this.label = `Context Size:`;
-            this.description = `Calculating...`;
-            this.tooltip = `Calculating the total token count of the included files.`;
-        }
-
-        this.iconPath = new vscode.ThemeIcon('dashboard');
-        this.contextValue = 'contextProgressBar';
-    }
-}
-
-
 export class FileTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem>, vscode.Disposable {
     private _onDidChangeTreeData: vscode.EventEmitter<vscode.TreeItem | undefined | null | void> = new vscode.EventEmitter<vscode.TreeItem | undefined | null | void>();
     readonly onDidChangeTreeData: vscode.Event<vscode.TreeItem | undefined | null | void> = this._onDidChangeTreeData.event;
@@ -48,10 +21,9 @@ export class FileTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
         '.ipynb' // Explicitly support Jupyter notebooks
     ]);
     private imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg']);
-    private excludedFolders = new Set(['node_modules', '.git', 'dist', 'build', 'out', '__pycache__', '.pytest_cache', '.mypy_cache', 'egg-info']);
+    private excludedFolders = new Set(['node_modules', '.git', 'dist', 'build', 'out', '__pycache__', '.pytest_cache', '.mypy_cache', 'egg-info', '.venv', 'venv']);
   
     private watcher?: vscode.FileSystemWatcher;
-    private progressBar: ContextProgressBarItem = new ContextProgressBarItem('Calculating...', 'Calculating...');
 
     constructor(
         private workspaceRoot: string, 
@@ -61,7 +33,6 @@ export class FileTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
     ) {
       this.loadStateForWorkspace();
       this.setupWatcher();
-      this.updateProgressBar();
     }
 
     public async switchWorkspace(newWorkspaceRoot: string) {
@@ -151,7 +122,6 @@ export class FileTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
     async refresh(): Promise<void> {
         await this._pruneNonExistentFiles();
         this._onDidChangeTreeData.fire();
-        this.updateProgressBar(); // Trigger background update
     }
 
     getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
@@ -169,31 +139,8 @@ export class FileTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
             }
             return Promise.resolve([]);
         } else {
-            const fileItems = this.getDirectoryContents(this.workspaceRoot, '');
-            return [this.progressBar, ...fileItems];
+            return this.getDirectoryContents(this.workspaceRoot, '');
         }
-    }
-
-    public updateProgressBar(): void {
-        // This function now runs in the background and doesn't block getChildren
-        (async () => {
-            try {
-                const [contextResult, contextSizeResponse] = await Promise.all([
-                    this.contextManager.getContextContent(),
-                    this.lollmsAPI.getContextSize()
-                ]);
-        
-                const maxTokens = contextSizeResponse.context_size;
-                const tokenizeResponse = await this.lollmsAPI.tokenize(contextResult.text);
-                const currentTokens = tokenizeResponse.count;
-        
-                this.progressBar = new ContextProgressBarItem(currentTokens, maxTokens);
-            } catch (error) {
-                console.error("Failed to create context progress bar:", error);
-                this.progressBar = new ContextProgressBarItem('Error', 'Error');
-            }
-            this._onDidChangeTreeData.fire(this.progressBar); // Refresh only the progress bar item
-        })();
     }
 
     private getDirectoryContents(dirPath: string, relativePath: string): FileItem[] {

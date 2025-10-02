@@ -1,3 +1,4 @@
+// src/commands/chatPanel.ts
 import * as vscode from 'vscode';
 import { LollmsAPI, ChatMessage } from '../lollmsAPI';
 import { ContextManager, ContextResult } from '../contextManager';
@@ -113,7 +114,11 @@ export class ChatPanel {
         
         this.displayPlan(null);
         this.updateGeneratingState();
-        this._updateContextAndTokens();
+        this._panel.webview.postMessage({
+            command: 'updateTokenProgress',
+            totalTokens: 'N/A',
+            contextSize: 'N/A'
+        });
     }
   }
   public async startNewDiscussion(groupId: string | null = null): Promise<void> {
@@ -123,13 +128,16 @@ export class ChatPanel {
     this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
     this.displayPlan(null); // Clear plan for new discussion
     this.updateGeneratingState();
-    this._updateContextAndTokens();
+    this._panel.webview.postMessage({
+        command: 'updateTokenProgress',
+        totalTokens: 'N/A',
+        contextSize: 'N/A'
+    });
   }
   
   private _updateContextAndTokens() {
     if (!this._contextManager || !this._currentDiscussion) return;
 
-    // This operation is now async and doesn't block the UI
     (async () => {
         try {
             const context = await this._contextManager.getContextContent();
@@ -205,7 +213,6 @@ export class ChatPanel {
         this._panel.webview.postMessage({ command: 'addMessage', message: message });
     }
 
-    this._updateContextAndTokens();
     vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
   }
 
@@ -391,8 +398,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     
     vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
 
-    this._updateContextAndTokens();
-
     (async () => {
         const newTitle = await this._discussionManager.generateDiscussionTitle(this._currentDiscussion!);
         if (newTitle && this._currentDiscussion) {
@@ -434,7 +439,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     }
 
     this._callApiWithMessages(this._currentDiscussion.messages);
-    this._updateContextAndTokens(); 
   }
 
   private async regenerateFromMessage(messageId: string) {
@@ -486,7 +490,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     await this._discussionManager.saveDiscussion(this._currentDiscussion);
 
     this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
-    this._updateContextAndTokens();
     vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
   }
 
@@ -513,7 +516,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     if (messageIndex !== -1) {
         this._currentDiscussion.messages[messageIndex].content = newContent;
         await this._discussionManager.saveDiscussion(this._currentDiscussion);
-        await this._updateContextAndTokens();
     }
   }
 
@@ -558,6 +560,9 @@ Your task is to re-analyze your previous code suggestion in light of this new er
       switch (message.command) {
         case 'sendMessage':
           await this.sendMessage(message.message);
+          break;
+        case 'calculateTokens':
+          this._updateContextAndTokens();
           break;
         case 'copyToClipboard':
           await vscode.env.clipboard.writeText(message.text);

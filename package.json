@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -19,7 +19,7 @@
     "Other",
     "Notebooks"
   ],
-  "l10n": "./l10n",
+  "l10n": "./out/l10n",
   "main": "./out/extension.js",
   "activationEvents": [
     "onStartupFinished"
@@ -555,7 +555,7 @@
     "compile": "npm run copy-assets && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap",
     "watch": "npm run copy-assets && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap --watch",
     "esbuild-package": "npm run copy-assets && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --minify",
-    "copy-assets": "cpx \"src/**/*.html\" out",
+    "copy-assets": "cpx \"src/**/*.html\" out && cpx \"l10n/**\" out/l10n",
     "package": "npx @vscode/vsce package",
     "pretest": "npm run compile && npm audit",
     "test": "node ./out/test/runTest.js",

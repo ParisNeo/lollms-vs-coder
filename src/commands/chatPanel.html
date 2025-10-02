@@ -258,6 +258,16 @@
             color: var(--vscode-descriptionForeground);
             white-space: nowrap;
         }
+        #refresh-tokens-btn {
+            background: none;
+            border: none;
+            color: var(--vscode-icon-foreground);
+            cursor: pointer;
+            padding: 2px;
+        }
+        #refresh-tokens-btn:hover {
+            background-color: var(--vscode-toolbar-hoverBackground);
+        }
         .input-area {
             display: flex;
             gap: 8px;
@@ -700,6 +710,7 @@
                         <div class="token-progress-bar" id="token-progress-bar"></div>
                     </div>
                     <span id="token-count-label">Tokens: 0 / 0</span>
+                    <button id="refresh-tokens-btn" title="Calculate Token Count"><i class="codicon codicon-sync"></i></button>
                 </div>
                 <div class="agent-mode-toggle">
                     <span>🤖 Agent Mode</span>
@@ -753,6 +764,7 @@
         
         const tokenProgressBar = document.getElementById('token-progress-bar');
         const tokenCountLabel = document.getElementById('token-count-label');
+        const refreshTokensBtn = document.getElementById('refresh-tokens-btn');
 
         const searchBar = document.getElementById('search-bar');
         const searchInput = document.getElementById('searchInput');
@@ -1306,6 +1318,13 @@
             vscode.postMessage({ command: 'toggleAgentMode' });
         });
 
+        refreshTokensBtn.addEventListener('click', () => {
+            tokenCountLabel.textContent = 'Calculating...';
+            const icon = refreshTokensBtn.querySelector('i');
+            icon.classList.add('codicon-sync~spin');
+            vscode.postMessage({ command: 'calculateTokens' });
+        });
+
         sendButton.addEventListener('click', sendMessage);
         stopButton.addEventListener('click', () => {
             vscode.postMessage({ command: 'stopGeneration' });
@@ -1695,6 +1714,8 @@
                     break;
                 case 'updateTokenProgress':
                     const { totalTokens, contextSize } = message;
+                    const icon = refreshTokensBtn.querySelector('i');
+                    icon.classList.remove('codicon-sync~spin');
                     if (typeof totalTokens === 'number' && typeof contextSize === 'number' && contextSize > 0) {
                         const percentage = Math.min((totalTokens / contextSize) * 100, 100);
                         tokenProgressBar.style.width = `${percentage}%`;
@@ -1710,7 +1731,7 @@
                         
                         tokenCountLabel.textContent = `Tokens: ${totalTokens} / ${contextSize}`;
                     } else {
-                        tokenCountLabel.textContent = `Tokens: N/A`;
+                        tokenCountLabel.textContent = `Tokens: Press 🔃 to calculate`;
                         tokenProgressBar.style.width = '0%';
                     }
                     break;

@@ -185,7 +185,7 @@ export class LollmsAPI {
     return data.text || '';
 }
 
-  public async generateImage(prompt: string, signal?: AbortSignal): Promise<string> {
+  public async generateImage(prompt: string, token?: vscode.CancellationToken): Promise<string> {
     if (!this.baseUrl) {
       throw new Error("Lollms API URL is not configured correctly.");
     }
@@ -203,8 +203,8 @@ export class LollmsAPI {
     const timeoutDuration = vscode.workspace.getConfiguration('lollmsVsCoder').get<number>('requestTimeout') || 600000;
     const timeout = setTimeout(() => controller.abort(), timeoutDuration);
 
-    if (signal) {
-        signal.addEventListener('abort', () => controller.abort());
+    if (token) {
+        token.onCancellationRequested(() => controller.abort());
     }
 
     try {
@@ -240,7 +240,7 @@ export class LollmsAPI {
 
     } catch (error) {
         if (error instanceof AbortError) {
-            if (signal?.aborted) {
+            if (token?.isCancellationRequested) {
               throw error; // Propagate user-initiated abort
             } else {
               throw new Error(`Image generation request timed out after ${timeoutDuration / 1000} seconds.`);
@@ -304,20 +304,24 @@ export class LollmsAPI {
       if (stream && onChunk && response.body) {
         let fullResponse = '';
         let buffer = '';
+        const decoder = new TextDecoder();
         
         for await (const chunk of response.body) {
             if(controller.signal.aborted) {
                 response.body.destroy();
                 throw new AbortError('Request was aborted');
             }
-            buffer += chunk.toString();
-            let boundary = buffer.indexOf('\n\n');
-            while(boundary !== -1) {
-                const chunkStr = buffer.substring(0, boundary);
-                buffer = buffer.substring(boundary + 2);
-                if (chunkStr.startsWith('data: ')) {
-                    const data = chunkStr.substring(6);
-                    if (data.trim() === '[DONE]') {
+            buffer += decoder.decode(chunk, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || ''; // Keep the last, possibly incomplete line
+
+            for (const line of lines) {
+                const trimmedLine = line.trim();
+                if (trimmedLine === '') continue; // Skip empty lines
+
+                if (trimmedLine.startsWith('data: ')) {
+                    const data = trimmedLine.substring(6).trim();
+                    if (data === '[DONE]') {
                         return fullResponse;
                     }
                     try {
@@ -328,10 +332,9 @@ export class LollmsAPI {
                             onChunk(content);
                         }
                     } catch (e) {
-                        console.error('Error parsing stream chunk:', e);
+                        console.error('Error parsing stream data line:', data, e);
                     }
                 }
-                boundary = buffer.indexOf('\n\n');
             }
         }
         return fullResponse;

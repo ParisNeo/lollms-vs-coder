@@ -178,7 +178,7 @@
             display: flex;
             gap: 8px;
         }
-        .code-action-btn, .msg-action-btn, .lollms-command-btn, .generation-btn {
+        .code-action-btn, .msg-action-btn, .lollms-command-btn, .generation-btn, .remove-attachment-btn {
             background-color: var(--vscode-button-secondaryBackground);
             color: var(--vscode-button-secondaryForeground);
             border: 1px solid transparent;
@@ -192,7 +192,7 @@
             align-items: center;
             gap: 4px;
         }
-        .code-action-btn:hover, .msg-action-btn:hover, .lollms-command-btn:hover, .generation-btn:hover {
+        .code-action-btn:hover, .msg-action-btn:hover, .lollms-command-btn:hover, .generation-btn:hover, .remove-attachment-btn:hover {
             background-color: var(--vscode-button-secondaryHoverBackground);
         }
         .apply-btn, .lollms-command-btn, .generation-btn {
@@ -549,18 +549,28 @@
             padding: 10px;
             border-radius: 4px;
         }
-        .attachment-summary {
+        .attachment-item {
             display: flex;
             justify-content: space-between;
             align-items: center;
+            padding: 8px 10px;
+            border-bottom: 1px solid var(--vscode-editorWidget-background);
         }
-        .remove-attachment-btn {
-            background: none; border: none; cursor: pointer;
-            color: var(--vscode-icon-foreground); padding: 2px 5px; border-radius: 3px;
+        .attachment-item:last-child {
+            border-bottom: none;
         }
-        .remove-attachment-btn:hover { background-color: var(--vscode-toolbar-hoverBackground); }
-        .collapsible-content img { max-width: 100%; border-radius: 4px; margin-top: 5px; }
-
+        .attachment-info {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9em;
+        }
+        .attachment-info img {
+            max-height: 40px;
+            max-width: 80px;
+            border-radius: 3px;
+            object-fit: cover;
+        }
         #welcome-message {
             padding: 15px;
             background-color: var(--vscode-textBlockQuote-background);
@@ -655,7 +665,13 @@
             </div>
             
             <div id="context-container"></div>
-            <div id="attachments-container"></div>
+            
+            <details id="attachments-collapsible-wrapper" class="info-collapsible" style="display: none;" open>
+                <summary id="attachments-summary">📎 Attachments</summary>
+                <div id="attachments-container" class="collapsible-content" style="padding: 0;">
+                    <!-- Individual attachments will be injected here as divs -->
+                </div>
+            </details>
             
             <div id="welcome-message" style="display: none;">
                 <h3>{{welcomeTitle}}</h3>
@@ -769,7 +785,9 @@
 
         function startEdit(messageDiv, messageId, role) {
             const contentDiv = messageDiv.querySelector('.message-content');
-            const originalContent = messageDiv.dataset.originalContent;
+            const originalContentJSON = messageDiv.dataset.originalContent;
+            const originalContent = JSON.parse(originalContentJSON);
+
             const editOverlay = document.createElement('div');
             editOverlay.className = 'edit-overlay';
             editOverlay.innerHTML = `
@@ -823,7 +841,7 @@
             }
             contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(processedContent));
             enhanceCodeBlocks(messageDiv.parentElement);
-            messageDiv.dataset.originalContent = newContent;
+            messageDiv.dataset.originalContent = JSON.stringify(newContent);
             editOverlay.remove();
             contentDiv.style.display = 'block';
             vscode.postMessage({ command: 'updateMessage', messageId, newContent });
@@ -838,117 +856,108 @@
         }
 
         function addAttachment(message) {
-            if (document.querySelector(`.attachment-details[data-message-id='${message.id}']`)) return;
-
-            const details = document.createElement('details');
-            details.className = 'info-collapsible attachment-details';
-            details.dataset.messageId = message.id;
-
-            const summary = document.createElement('summary');
-            summary.className = 'attachment-summary';
-            const summaryText = document.createElement('span');
+            const wrapper = document.getElementById('attachments-collapsible-wrapper');
+            const attachmentsContainer = document.getElementById('attachments-container');
+            const summary = document.getElementById('attachments-summary');
+        
+            if (document.querySelector(`.attachment-item[data-message-id='${message.id}']`)) return;
             
+            wrapper.style.display = 'block';
+        
+            const itemDiv = document.createElement('div');
+            itemDiv.className = 'attachment-item';
+            itemDiv.dataset.messageId = message.id;
+        
+            const infoDiv = document.createElement('div');
+            infoDiv.className = 'attachment-info';
+        
             const removeBtn = document.createElement('button');
             removeBtn.className = 'remove-attachment-btn';
             removeBtn.innerHTML = '<i class="codicon codicon-trash"></i>';
             removeBtn.title = 'Remove Attachment';
             removeBtn.onclick = (e) => {
                 e.preventDefault();
-                e.stopPropagation();
                 vscode.postMessage({ command: 'requestDeleteMessage', messageId: message.id });
             };
-
-            const contentDiv = document.createElement('div');
-            contentDiv.className = 'collapsible-content';
-            
+        
             let fileName = 'file';
-            let fileContentHtml = '';
-
+        
             if (Array.isArray(message.content)) {
                 const textPart = message.content.find(p => p.type === 'text');
                 const imagePart = message.content.find(p => p.type === 'image_url');
                 
-                if (imagePart) { // Image
+                if (imagePart) {
                     if (textPart && typeof textPart.text === 'string') {
                         fileName = textPart.text.replace('Attached image: ', '');
                     }
-                    summaryText.textContent = `📎 Attached Image: ${fileName}`;
-                    fileContentHtml = `<img src="${imagePart.image_url.url}" alt="${fileName}">`;
-                } else { // Text file (messy structure)
-                    const titlePart = message.content[0];
-                    const contentPart = message.content[1];
-                    if (titlePart && typeof titlePart.text === 'string') {
-                         fileName = titlePart.text.replace('Attached file: ', '').trim();
+                    infoDiv.innerHTML = `<img src="${imagePart.image_url.url}" alt="${fileName}"><span class="codicon codicon-file-media"></span> <span>${fileName}</span>`;
+                } else { // It's a system message about a text file
+                    if (typeof message.content === 'string') {
+                         const match = message.content.match(/\*\*([^*]+)\*\*/);
+                         if (match) fileName = match[1];
                     }
-                    summaryText.textContent = `📎 Attached File: ${fileName}`;
-                    
-                    let code = 'Could not display file content.';
-                    if(contentPart && typeof contentPart.text === 'string') {
-                        const codeBlockRegex = /```\\n([\\s\\S]+?)\\n```/; // Adjusted regex for escaped newlines
-                        const match = contentPart.text.match(codeBlockRegex);
-                        if (match && match[1]) {
-                            code = match[1].replace(/\\n/g, '\\n');
-                        } else {
-                            code = contentPart.text.replace(/^```\w*\\n|\\n```$/g, '').replace(/\\n/g, '\\n');
-                        }
-                    }
-                    fileContentHtml = `<pre>${DOMPurify.sanitize(code)}</pre>`;
+                    infoDiv.innerHTML = `<span class="codicon codicon-file-text"></span> <span>${fileName}</span>`;
                 }
-
+            } else if (typeof message.content === 'string') { // Fallback for simple system messages
+                 const match = message.content.match(/\*\*([^*]+)\*\*/);
+                 if (match) fileName = match[1];
+                 infoDiv.innerHTML = `<span class="codicon codicon-file-text"></span> <span>${fileName}</span>`;
             }
             
-            summary.appendChild(summaryText);
-            summary.appendChild(removeBtn);
-            contentDiv.innerHTML = fileContentHtml;
-            details.appendChild(summary);
-            details.appendChild(contentDiv);
-            attachmentsContainer.appendChild(details);
+            itemDiv.appendChild(infoDiv);
+            itemDiv.appendChild(removeBtn);
+            attachmentsContainer.appendChild(itemDiv);
+            
+            const count = attachmentsContainer.children.length;
+            summary.innerHTML = `📎 Attachments (${count})`;
         }
 
         function addChatMessage(message) {
             const role = message.role;
-            let rawContent = message.content;
-            let displayContent = message.content;
-            let thoughtElements = [];
-            if (role === 'assistant') {
-                const { thoughts, processedContent } = processThinkTags(rawContent);
-                displayContent = processedContent;
-                thoughtElements = thoughts.map(thought => {
-                    const details = document.createElement('details');
-                    details.className = 'info-collapsible thinking-collapsible';
-                    details.innerHTML = `
-                        <summary>🤔 Thinking Process</summary>
-                        <div class="collapsible-content">${DOMPurify.sanitize(marked.parse(thought))}</div>
-                    `;
-                    return details;
+            const rawContent = message.content;
+            
+            let textForClipboard = '';
+            let contentForDisplay = '';
+            let isMultipart = false;
+
+            if (typeof rawContent === 'string') {
+                contentForDisplay = rawContent;
+                textForClipboard = rawContent;
+            } else if (Array.isArray(rawContent)) {
+                isMultipart = true;
+                let textParts = [];
+                rawContent.forEach(part => {
+                    if (part.type === 'text') {
+                        textParts.push(part.text);
+                    } else if (part.type === 'image_url') {
+                        contentForDisplay += `<img src="${part.image_url.url}" style="max-width: 90%; max-height: 400px; border-radius: 4px; margin-top: 5px; display: block;">`;
+                    }
                 });
+                const combinedText = textParts.join('\n');
+                contentForDisplay = combinedText + '\n' + contentForDisplay;
+                textForClipboard = combinedText;
             }
+
+            let { thoughts, processedContent } = processThinkTags(contentForDisplay);
             
             const existingMsgWrapper = chatMessagesContainer.querySelector(`.message-wrapper[data-message-id='${message.id}']`);
             if (existingMsgWrapper) {
                 const messageDiv = existingMsgWrapper.querySelector('.message');
                 const contentDiv = messageDiv.querySelector('.message-content');
-                // Remove existing thoughts
                 messageDiv.querySelectorAll('.thinking-collapsible').forEach(el => el.remove());
-                let updateRawContent = message.content;
-                let updateDisplayContent = message.content;
-                let updateThoughtElements = [];
-                if (role === 'assistant') {
-                    const { thoughts, processedContent } = processThinkTags(updateRawContent);
-                    updateDisplayContent = processedContent;
-                    updateThoughtElements = thoughts.map(thought => {
-                        const details = document.createElement('details');
-                        details.className = 'info-collapsible thinking-collapsible';
-                        details.innerHTML = `
-                            <summary>🤔 Thinking Process</summary>
-                            <div class="collapsible-content">${DOMPurify.sanitize(marked.parse(thought))}</div>
-                        `;
-                        return details;
-                    });
-                }
-                updateThoughtElements.forEach(el => messageDiv.insertBefore(el, contentDiv));
-                contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(updateDisplayContent));
-                messageDiv.dataset.originalContent = updateRawContent;
+                
+                let updateResult = processThinkTags(rawContent);
+                thoughts = updateResult.thoughts;
+                processedContent = updateResult.processedContent;
+
+                thoughts.forEach(thought => {
+                    const details = document.createElement('details');
+                    details.className = 'info-collapsible thinking-collapsible';
+                    details.innerHTML = `<summary>🤔 Thinking Process</summary><div class="collapsible-content">${DOMPurify.sanitize(marked.parse(thought))}</div>`;
+                    messageDiv.insertBefore(details, contentDiv);
+                });
+                contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(processedContent));
+                messageDiv.dataset.originalContent = JSON.stringify(rawContent);
                 enhanceCodeBlocks(existingMsgWrapper);
                 return;
             }
@@ -959,26 +968,29 @@
 
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${role}-message`;
+            messageDiv.dataset.originalContent = JSON.stringify(rawContent);
             
             const headerDiv = document.createElement('div');
             headerDiv.className = 'message-header';
             headerDiv.textContent = role;
-            
             messageDiv.appendChild(headerDiv);
 
-            thoughtElements.forEach(el => messageDiv.appendChild(el));
+            thoughts.forEach(thought => {
+                const details = document.createElement('details');
+                details.className = 'info-collapsible thinking-collapsible';
+                details.innerHTML = `<summary>🤔 Thinking Process</summary><div class="collapsible-content">${DOMPurify.sanitize(marked.parse(thought))}</div>`;
+                messageDiv.appendChild(details);
+            });
 
             const contentDiv = document.createElement('div');
             contentDiv.className = 'message-content';
             contentDiv.id = `content-${message.id}`;
-            contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(displayContent));
-
-            messageDiv.dataset.originalContent = rawContent;
-
+            contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(processedContent));
+            
             const actions = document.createElement('div');
             actions.className = 'message-actions';
 
-            if (role !== 'system') {
+            if (role !== 'system' && !isMultipart) {
                 const editBtn = document.createElement('button');
                 editBtn.className = 'msg-action-btn';
                 editBtn.innerHTML = '✏️';
@@ -1001,7 +1013,7 @@
             copyBtn.innerHTML = '📋';
             copyBtn.title = 'Copy Message';
             copyBtn.onclick = () => {
-                vscode.postMessage({ command: 'copyToClipboard', text: rawContent });
+                vscode.postMessage({ command: 'copyToClipboard', text: textForClipboard });
                 copyBtn.innerHTML = '✅';
                 setTimeout(() => { copyBtn.innerHTML = '📋'; }, 2000);
             };
@@ -1012,7 +1024,7 @@
                 savePromptBtn.className = 'msg-action-btn';
                 savePromptBtn.innerHTML = '💾';
                 savePromptBtn.title = 'Save as Prompt';
-                savePromptBtn.onclick = () => vscode.postMessage({ command: 'saveMessageAsPrompt', content: rawContent });
+                savePromptBtn.onclick = () => vscode.postMessage({ command: 'saveMessageAsPrompt', content: textForClipboard });
                 actions.appendChild(savePromptBtn);
 
                 const logBtn = document.createElement('button');
@@ -1586,11 +1598,21 @@
                             const contentDiv = wrapper.querySelector('.message-content');
                             const messageDiv = wrapper.querySelector('.message');
                             if (contentDiv && messageDiv) {
-                                // Append text to the raw content
-                                messageDiv.dataset.originalContent += message.chunk;
-                                // Re-render the whole thing
-                                contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(messageDiv.dataset.originalContent));
-                                // Re-enhance code blocks every time
+                                let originalContent = JSON.parse(messageDiv.dataset.originalContent);
+                                originalContent += message.chunk;
+                                messageDiv.dataset.originalContent = JSON.stringify(originalContent);
+                                
+                                const { thoughts, processedContent } = processThinkTags(originalContent);
+
+                                messageDiv.querySelectorAll('.thinking-collapsible').forEach(el => el.remove());
+                                thoughts.forEach(thought => {
+                                    const details = document.createElement('details');
+                                    details.className = 'info-collapsible thinking-collapsible';
+                                    details.innerHTML = `<summary>🤔 Thinking Process</summary><div class="collapsible-content">${DOMPurify.sanitize(marked.parse(thought))}</div>`;
+                                    messageDiv.insertBefore(details, contentDiv);
+                                });
+
+                                contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(processedContent));
                                 enhanceCodeBlocks(wrapper);
                                 messagesDiv.scrollTop = messagesDiv.scrollHeight;
                             }
@@ -1604,8 +1626,18 @@
                             const contentDiv = wrapper.querySelector('.message-content');
                             const messageDiv = wrapper.querySelector('.message');
                             if (contentDiv && messageDiv) {
-                                messageDiv.dataset.originalContent = message.fullContent;
-                                contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(message.fullContent));
+                                messageDiv.dataset.originalContent = JSON.stringify(message.fullContent);
+                                const { thoughts, processedContent } = processThinkTags(message.fullContent);
+
+                                messageDiv.querySelectorAll('.thinking-collapsible').forEach(el => el.remove());
+                                thoughts.forEach(thought => {
+                                    const details = document.createElement('details');
+                                    details.className = 'info-collapsible thinking-collapsible';
+                                    details.innerHTML = `<summary>🤔 Thinking Process</summary><div class="collapsible-content">${DOMPurify.sanitize(marked.parse(thought))}</div>`;
+                                    messageDiv.insertBefore(details, contentDiv);
+                                });
+                                
+                                contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(processedContent));
                                 enhanceCodeBlocks(wrapper);
                                 enhanceWithCommandButtons(wrapper);
                             }
@@ -1623,10 +1655,14 @@
                 case 'loadDiscussion':
                     attachmentsContainer.innerHTML = '';
                     chatMessagesContainer.innerHTML = '';
+                    
+                    const attachmentsWrapper = document.getElementById('attachments-collapsible-wrapper');
+                    attachmentsWrapper.style.display = 'none';
+
                     const existingPlan = chatMessagesContainer.querySelector('.plan-wrapper');
                     if (existingPlan) { existingPlan.remove(); }
 
-                    isInspectorEnabled = message.isInspectorEnabled; // Store the inspector status
+                    isInspectorEnabled = message.isInspectorEnabled;
 
                     let hasChatContent = false;
                     if (Array.isArray(message.messages) && message.messages.length > 0) {
@@ -1638,7 +1674,15 @@
                         });
                     }
                     
-                    welcomeMessage.style.display = (attachmentsContainer.hasChildNodes() || hasChatContent) ? 'none' : 'block';
+                    const attachmentCount = attachmentsContainer.children.length;
+                    if (attachmentCount > 0) {
+                        attachmentsWrapper.style.display = 'block';
+                        document.getElementById('attachments-summary').textContent = `📎 Attachments (${attachmentCount})`;
+                    } else {
+                        attachmentsWrapper.style.display = 'none';
+                    }
+
+                    welcomeMessage.style.display = (attachmentCount > 0 || hasChatContent) ? 'none' : 'block';
                     setGeneratingState(false);
                     break;
                 case 'resendMessage':

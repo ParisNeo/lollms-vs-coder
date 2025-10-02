@@ -20,3 +20,7 @@
 - add the possibility to activate/deactivate file rewrite/file patch
 - add the possibility to save selection
 - add the possibility to use personalities
+
+
+URGENT:
+- don't calculate context size when updating the tree. instead calculate it when a discussion is loaded.

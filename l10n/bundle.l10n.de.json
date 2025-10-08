@@ -137,5 +137,12 @@
     "welcome.item4": "Aktivieren Sie den 🤖 <strong>Agentenmodus</strong>, um mir ein komplexes Ziel zu geben. Ich erstelle einen Plan und führe ihn Schritt für Schritt aus.",
     "prompt.enterObjectiveForSelection": "Geben Sie das Ziel für die KI-Dateiauswahl ein",
     "progress.aiSelectingFiles": "Lollms: KI wählt relevante Dateien aus...",
-    "info.aiSelectedFiles": "Lollms: KI hat {0} Datei(en) ausgewählt und eine neue Diskussion gestartet."
+    "info.aiSelectedFiles": "Lollms: KI hat {0} Datei(en) ausgewählt und eine neue Diskussion gestartet.",
+    "info.contextSelectionSaved": "Lollms: Kontextauswahl in {0} gespeichert.",
+    "info.contextSelectionLoaded": "Lollms: Kontextauswahl aus {0} geladen.",
+    "error.failedToSaveContext": "Fehler beim Speichern der Kontextauswahl: {0}",
+    "error.failedToLoadContext": "Fehler beim Laden der Kontextauswahl: {0}",
+    "title.saveContextSelection": "Lollms-Kontextauswahl speichern",
+    "title.loadContextSelection": "Lollms-Kontextauswahl laden",
+    "filter.lollmsContext": "Lollms-Kontextdatei"
 }

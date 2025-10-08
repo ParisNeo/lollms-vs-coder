@@ -2,7 +2,7 @@
 
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { FileTreeProvider } from './commands/fileTreeProvider';
+import { ContextStateProvider } from './commands/contextStateProvider';
 import jimp from 'jimp';
 import { LollmsAPI } from './lollmsAPI';
 
@@ -12,7 +12,7 @@ export interface ContextResult {
 }
 
 export class ContextManager {
-  private fileTreeProvider?: FileTreeProvider;
+  private contextStateProvider?: ContextStateProvider;
   private context: vscode.ExtensionContext;
   private lollmsAPI: LollmsAPI;
   private imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']);
@@ -21,20 +21,14 @@ export class ContextManager {
   constructor(context: vscode.ExtensionContext, lollmsAPI: LollmsAPI) {
     this.context = context;
     this.lollmsAPI = lollmsAPI;
-    this.reinitializeFileTreeProvider();
+  }
+  
+  public setContextStateProvider(provider: ContextStateProvider | undefined) {
+      this.contextStateProvider = provider;
   }
 
-  public reinitializeFileTreeProvider() {
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (workspaceFolder) {
-      this.fileTreeProvider = new FileTreeProvider(workspaceFolder.uri.fsPath, this.context, this.lollmsAPI, this);
-    } else {
-      this.fileTreeProvider = undefined;
-    }
-  }
-
-  getFileTreeProvider(): FileTreeProvider | undefined {
-    return this.fileTreeProvider;
+  getContextStateProvider(): ContextStateProvider | undefined {
+    return this.contextStateProvider;
   }
 
   async getContextContent(): Promise<ContextResult> {
@@ -42,7 +36,7 @@ export class ContextManager {
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const maxImageSize = config.get<number>('maxImageSize') || 1024;
 
-    if (!this.fileTreeProvider) {
+    if (!this.contextStateProvider) {
       result.text = this.getNoWorkspaceMessage();
       return result;
     }
@@ -52,7 +46,7 @@ export class ContextManager {
       return result;
     }
 
-    const contextFiles = this.fileTreeProvider.getContextFiles();
+    const contextFiles = this.contextStateProvider.getIncludedFiles();
     let content = `# Project Context\n\n**Workspace:** ${path.basename(workspaceFolder.uri.fsPath)}\n\n`;
     content += await this.generateProjectTree();
     content += '\n';
@@ -127,8 +121,8 @@ export class ContextManager {
   }
   
   public async getAutoSelectionForContext(userPrompt: string): Promise<string[] | null> {
-    if (!this.fileTreeProvider) {
-        vscode.window.showErrorMessage("File Tree Provider not available.");
+    if (!this.contextStateProvider) {
+        vscode.window.showErrorMessage("Context State Provider not available.");
         return null;
     }
 
@@ -200,11 +194,11 @@ Based on the objective and the file tree, which files are the most relevant? Ret
   
   private async generateProjectTree(): Promise<string> {
     
-    if (!this.fileTreeProvider) {
+    if (!this.contextStateProvider) {
       return '## Project Structure\n\n*No project structure available - no workspace folder found.*\n';
     }
 
-    const allVisibleFiles = await this.fileTreeProvider.getAllVisibleFiles();
+    const allVisibleFiles = await this.contextStateProvider.getAllVisibleFiles();
     
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder) {
@@ -214,7 +208,7 @@ Based on the objective and the file tree, which files are the most relevant? Ret
     let tree = '## Project Structure\n\n';
     
     if (allVisibleFiles.length === 0) {
-      tree += '*No files are currently visible in the context. Use the file tree in the Lollms Settings sidebar to manage file visibility.*\n';
+      tree += '*No files are currently visible in the context. Right-click files in the explorer to change their context state.*\n';
       return tree;
     }
 
@@ -274,7 +268,7 @@ Based on the objective and the file tree, which files are the most relevant? Ret
 
 To use Lollms with your project files:
 1. Open a folder in VS Code (File → Open Folder)
-2. Use the file tree in the Lollms Settings sidebar to select which files to include
+2. Right-click on files in the explorer to set their AI Context State
 3. Start chatting with context about your code
 
 Currently operating without project context.

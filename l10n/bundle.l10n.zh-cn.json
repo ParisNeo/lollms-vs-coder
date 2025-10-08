@@ -137,5 +137,12 @@
     "welcome.item4": "切换 🤖 <strong>代理模式</strong> 给我一个复杂的目标。我将制定一个计划并逐步执行它。",
     "prompt.enterObjectiveForSelection": "输入AI文件选择的目标",
     "progress.aiSelectingFiles": "Lollms: AI正在选择相关文件...",
-    "info.aiSelectedFiles": "Lollms: AI选择了 {0} 个文件并开始了新的讨论。"
+    "info.aiSelectedFiles": "Lollms: AI选择了 {0} 个文件并开始了新的讨论。",
+    "info.contextSelectionSaved": "Lollms：上下文选择已保存到 {0}。",
+    "info.contextSelectionLoaded": "Lollms：已从 {0} 加载上下文选择。",
+    "error.failedToSaveContext": "保存上下文选择失败：{0}",
+    "error.failedToLoadContext": "加载上下文选择失败：{0}",
+    "title.saveContextSelection": "保存 Lollms 上下文选择",
+    "title.loadContextSelection": "加载 Lollms 上下文选择",
+    "filter.lollmsContext": "Lollms 上下文文件"
 }

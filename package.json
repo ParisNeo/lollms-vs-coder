@@ -47,14 +47,6 @@
         "title": "Lollms: Select Active Workspace"
       },
       {
-        "command": "lollms-vs-coder.addFileToContext",
-        "title": "%command.addFileToContext.title%"
-      },
-      {
-        "command": "lollms-vs-coder.removeFileFromContext",
-        "title": "%command.removeFileFromContext.title%"
-      },
-      {
         "command": "lollms-vs-coder.generateCommitMessage",
         "title": "%command.generateCommitMessage.title%"
       },
@@ -65,24 +57,6 @@
       {
         "command": "lollmsApi.recreateClient",
         "title": "%command.recreateClient.title%"
-      },
-      {
-        "command": "lollms-vs-coder.refreshTree",
-        "title": "%command.refresh.title%",
-        "icon": "$(refresh)"
-      },
-      {
-        "command": "lollms-vs-coder.cycleFileState",
-        "title": "%command.cycleFileState.title%",
-        "icon": "$(sync)"
-      },
-      {
-        "command": "lollms-vs-coder.addFolderToContext",
-        "title": "%command.addFolderToContext.title%"
-      },
-      {
-        "command": "lollms-vs-coder.removeFolderFromContext",
-        "title": "%command.removeFolderFromContext.title%"
       },
       {
         "command": "lollms-vs-coder.showConfigView",
@@ -243,6 +217,28 @@
       {
         "command": "lollms-vs-coder.enhanceNotebookCell",
         "title": "%command.enhanceNotebookCell.title%"
+      },
+      {
+        "command": "lollms-vs-coder.setContextIncluded",
+        "title": "%command.setContextIncluded.title%"
+      },
+      {
+        "command": "lollms-vs-coder.setContextTreeOnly",
+        "title": "%command.setContextTreeOnly.title%"
+      },
+      {
+        "command": "lollms-vs-coder.setContextExcluded",
+        "title": "%command.setContextExcluded.title%"
+      },
+      {
+        "command": "lollms-vs-coder.saveContextSelection",
+        "title": "%command.saveContextSelection.title%",
+        "icon": "$(save)"
+      },
+      {
+        "command": "lollms-vs-coder.loadContextSelection",
+        "title": "%command.loadContextSelection.title%",
+        "icon": "$(folder-opened)"
       }
     ],
     "configuration": {
@@ -367,11 +363,6 @@
           "when": "workspaceFolderCount > 0"
         },
         {
-          "id": "lollmsSettings.fileTreeView",
-          "name": "%view.fileTreeView.name%",
-          "when": "workspaceFolderCount > 0"
-        },
-        {
           "id": "lollmsChatPromptsView",
           "name": "%view.chatPrompts.name%",
           "when": "workspaceFolderCount > 0"
@@ -384,6 +375,26 @@
       ]
     },
     "menus": {
+      "explorer/context": [
+        {
+          "submenu": "lollms-vs-coder.setContextSubmenu",
+          "group": "1_modification@0"
+        }
+      ],
+      "lollms-vs-coder.setContextSubmenu": [
+        {
+          "command": "lollms-vs-coder.setContextIncluded",
+          "group": "1_modification@1"
+        },
+        {
+          "command": "lollms-vs-coder.setContextTreeOnly",
+          "group": "1_modification@2"
+        },
+        {
+          "command": "lollms-vs-coder.setContextExcluded",
+          "group": "1_modification@3"
+        }
+      ],
       "scm/title": [
         {
           "command": "lollms-vs-coder.generateCommitMessage",
@@ -435,27 +446,32 @@
         },
         {
           "command": "lollms-vs-coder.autoSelectContextFiles",
-          "when": "view == lollmsSettings.fileTreeView",
-          "group": "navigation@1"
-        },
-        {
-          "command": "lollms-vs-coder.refreshTree",
-          "when": "view == lollmsSettings.fileTreeView",
-          "group": "navigation@2"
+          "when": "view == lollmsDiscussionsView",
+          "group": "navigation@6"
         },
         {
           "command": "lollms-vs-coder.exportContextContent",
-          "when": "view == lollmsSettings.fileTreeView",
-          "group": "navigation@3"
+          "when": "view == lollmsDiscussionsView",
+          "group": "navigation@7"
+        },
+        {
+          "command": "lollms-vs-coder.saveContextSelection",
+          "when": "view == lollmsDiscussionsView",
+          "group": "navigation@8"
+        },
+        {
+          "command": "lollms-vs-coder.loadContextSelection",
+          "when": "view == lollmsDiscussionsView",
+          "group": "navigation@9"
         },
         {
           "command": "lollms-vs-coder.showHelp",
-          "when": "view == lollmsDiscussionsView || view == lollmsChatPromptsView || view == lollmsCodeActionsView || view == lollmsSettings.fileTreeView || view == lollmsProcessView",
+          "when": "view == lollmsDiscussionsView || view == lollmsChatPromptsView || view == lollmsCodeActionsView || view == lollmsProcessView",
           "group": "navigation@98"
         },
         {
           "command": "lollms-vs-coder.showConfigView",
-          "when": "view == lollmsDiscussionsView || view == lollmsChatPromptsView || view == lollmsCodeActionsView || view == lollmsSettings.fileTreeView || view == lollmsProcessView",
+          "when": "view == lollmsDiscussionsView || view == lollmsChatPromptsView || view == lollmsCodeActionsView || view == lollmsProcessView",
           "group": "navigation@99"
         }
       ],
@@ -469,21 +485,6 @@
           "command": "lollms-vs-coder.deleteDiscussion",
           "when": "view == lollmsDiscussionsView && viewItem == 'discussion'",
           "group": "inline"
-        },
-        {
-          "command": "lollms-vs-coder.cycleFileState",
-          "when": "view == lollmsSettings.fileTreeView && (viewItem == 'file' || viewItem == 'image' || viewItem == 'folder')",
-          "group": "inline"
-        },
-        {
-          "command": "lollms-vs-coder.addFolderToContext",
-          "when": "view == lollmsSettings.fileTreeView && viewItem == 'folder'",
-          "group": "1_modification"
-        },
-        {
-          "command": "lollms-vs-coder.removeFolderFromContext",
-          "when": "view == lollmsSettings.fileTreeView && viewItem == 'folder'",
-          "group": "1_modification"
         },
         {
           "command": "lollms-vs-coder.renameDiscussion",
@@ -547,6 +548,12 @@
         "viewType": "jupyter-notebook",
         "placement": "left",
         "priority": 100
+      }
+    ],
+    "submenus": [
+      {
+        "id": "lollms-vs-coder.setContextSubmenu",
+        "label": "Lollms"
       }
     ]
   },

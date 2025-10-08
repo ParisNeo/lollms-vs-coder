@@ -5,15 +5,9 @@
     "command.triggerCodeAction.title": "Lollms 操作...",
     "command.triggerInlineSuggestion.title": "Lollms: 自动完成",
     "command.selectModel.title": "Lollms: 选择模型",
-    "command.addFileToContext.title": "Lollms: 将文件添加到AI上下文",
-    "command.removeFileFromContext.title": "Lollms: 从AI上下文中删除文件",
     "command.generateCommitMessage.title": "Lollms: 生成提交消息",
     "command.commitWithAIMessage.title": "Lollms: 使用AI消息提交暂存的更改",
     "command.recreateClient.title": "重新创建LollmsAPI客户端",
-    "command.refresh.title": "刷新",
-    "command.cycleFileState.title": "切换AI上下文状态",
-    "command.addFolderToContext.title": "Lollms: 将文件夹添加到上下文",
-    "command.removeFolderFromContext.title": "Lollms: 从上下文中删除文件夹",
     "command.showConfigView.title": "Lollms: 打开设置",
     "command.showHelp.title": "Lollms: 显示帮助",
     "command.exportContextContent.title": "Lollms: 将上下文导出到剪贴板",
@@ -41,6 +35,9 @@
     "command.editPromptsFile.title": "编辑提示JSON文件",
     "command.generateNextNotebookCell.title": "Lollms: 生成下一个笔记本单元格",
     "command.enhanceNotebookCell.title": "Lollms: 增强笔记本单元格",
+    "command.setContextIncluded.title": "✓ 在 AI 上下文中包含内容",
+    "command.setContextTreeOnly.title": "□ 仅包含在树中 (默认)",
+    "command.setContextExcluded.title": "⊘ 从 AI 上下文中排除",
     "config.title": "Lollms VS Coder 配置",
     "config.enableCodeActions.description": "在选定代码上方启用Lollms CodeLens操作（例如，“Lollms 操作...”）。",
     "config.enableInlineSuggestions.description": "在您键入时启用单行内联代码建议（实验性）。",
@@ -64,5 +61,5 @@
     "view.processes.name": "正在运行的进程",
     "view.chatPrompts.name": "聊天提示",
     "view.codeActions.name": "代码操作",
-    "view.fileTreeView.name": "AI上下文文件"
+    "menu.lollmsAIContext.title": "Lollms AI 上下文"
 }

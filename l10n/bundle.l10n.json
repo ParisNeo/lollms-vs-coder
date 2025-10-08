@@ -138,5 +138,12 @@
     "welcome.item4": "Toggle 🤖 <strong>Agent Mode</strong> to give me a complex objective. I'll create a plan and execute it step-by-step.",
     "prompt.enterObjectiveForSelection": "Enter the objective for AI file selection",
     "progress.aiSelectingFiles": "Lollms: AI is selecting relevant files...",
-    "info.aiSelectedFiles": "Lollms: AI selected {0} file(s) and started a new discussion."
+    "info.aiSelectedFiles": "Lollms: AI selected {0} file(s) and started a new discussion.",
+    "info.contextSelectionSaved": "Lollms: Context selection saved to {0}.",
+    "info.contextSelectionLoaded": "Lollms: Context selection loaded from {0}.",
+    "error.failedToSaveContext": "Failed to save context selection: {0}",
+    "error.failedToLoadContext": "Failed to load context selection: {0}",
+    "title.saveContextSelection": "Save Lollms Context Selection",
+    "title.loadContextSelection": "Load Lollms Context Selection",
+    "filter.lollmsContext": "Lollms Context File"
 }

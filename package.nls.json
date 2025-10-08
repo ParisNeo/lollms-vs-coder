@@ -5,15 +5,9 @@
     "command.triggerCodeAction.title": "Lollms Actions...",
     "command.triggerInlineSuggestion.title": "Lollms: Autocomplete",
     "command.selectModel.title": "Lollms: Select Model",
-    "command.addFileToContext.title": "Lollms: Add File to AI Context",
-    "command.removeFileFromContext.title": "Lollms: Remove File from AI Context",
     "command.generateCommitMessage.title": "Lollms: Generate Commit Message",
     "command.commitWithAIMessage.title": "Lollms: Commit Staged Changes with AI Message",
     "command.recreateClient.title": "Recreate LollmsAPI Client",
-    "command.refresh.title": "Refresh",
-    "command.cycleFileState.title": "Cycle AI Context State",
-    "command.addFolderToContext.title": "Lollms: Add Folder to Context",
-    "command.removeFolderFromContext.title": "Lollms: Remove Folder from Context",
     "command.showConfigView.title": "Lollms: Open Settings",
     "command.showHelp.title": "Lollms: Show Help",
     "command.exportContextContent.title": "Lollms: Export Context to Clipboard",
@@ -41,6 +35,9 @@
     "command.editPromptsFile.title": "Edit Prompts JSON File",
     "command.generateNextNotebookCell.title": "Lollms: Generate Next Notebook Cell",
     "command.enhanceNotebookCell.title": "Lollms: Enhance Notebook Cell",
+    "command.setContextIncluded.title": "✓ Include Content in AI Context",
+    "command.setContextTreeOnly.title": "□ Include in Tree Only (Default)",
+    "command.setContextExcluded.title": "⊘ Exclude from AI Context",
     "config.title": "Lollms VS Coder Configuration",
     "config.enableCodeActions.description": "Enable the Lollms CodeLens actions (e.g., 'Lollms Actions...') above selected code.",
     "config.enableInlineSuggestions.description": "Enable single-line, inline code suggestions as you type (experimental).",
@@ -64,5 +61,5 @@
     "view.processes.name": "Running Processes",
     "view.chatPrompts.name": "Chat Prompts",
     "view.codeActions.name": "Code Actions",
-    "view.fileTreeView.name": "AI Context Files"
+    "menu.lollmsAIContext.title": "Lollms AI Context"
 }

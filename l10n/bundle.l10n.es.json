@@ -137,5 +137,12 @@
     "welcome.item4": "Activa el 🤖 <strong>Modo Agente</strong> para darme un objetivo complejo. Crearé un plan y lo ejecutaré paso a paso.",
     "prompt.enterObjectiveForSelection": "Ingrese el objetivo para la selección de archivos por parte de la IA",
     "progress.aiSelectingFiles": "Lollms: La IA está seleccionando archivos relevantes...",
-    "info.aiSelectedFiles": "Lollms: La IA seleccionó {0} archivo(s) e inició una nueva discusión."
+    "info.aiSelectedFiles": "Lollms: La IA seleccionó {0} archivo(s) e inició una nueva discusión.",
+    "info.contextSelectionSaved": "Lollms: Selección de contexto guardada en {0}.",
+    "info.contextSelectionLoaded": "Lollms: Selección de contexto cargada desde {0}.",
+    "error.failedToSaveContext": "Error al guardar la selección de contexto: {0}",
+    "error.failedToLoadContext": "Error al cargar la selección de contexto: {0}",
+    "title.saveContextSelection": "Guardar Selección de Contexto de Lollms",
+    "title.loadContextSelection": "Cargar Selección de Contexto de Lollms",
+    "filter.lollmsContext": "Archivo de Contexto de Lollms"
 }

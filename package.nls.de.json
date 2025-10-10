@@ -58,6 +58,7 @@
     "config.agentPersona.description": "Definiert die Persona für KI-Agenten, die autonome Aufgaben ausführen. Unterstützt Platzhalter wie {{date}}, {{os}}.",
     "config.codeInspectorPersona.description": "Passen Sie die Persona des Code-Inspektors an. Dies wird zu einem Basis-Prompt mit den kritischen Antwortregeln hinzugefügt.",
     "config.commitMessagePersona.description": "Definiert die Persona für den Git-Commit-Nachrichtengenerator.",
+    "config.contextFileExceptions.description": "Eine Liste von Datei- und Ordner-Mustern, die immer aus dem KI-Kontext ausgeschlossen werden sollen. Verwendet Glob-Muster (z.B. '*.log', 'dist/**').",
     "config.language.description": "Beeinflusst die Antwortsprache der KI. Die Benutzeroberfläche der Erweiterung folgt der Anzeigesprache von VS Code.",
     "views.container.title": "Lollms",
     "view.discussions.name": "Diskussionen",

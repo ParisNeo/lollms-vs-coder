@@ -58,6 +58,7 @@
     "config.agentPersona.description": "为执行自主任务的 AI 代理定义角色。支持占位符如 {{date}}, {{os}}。",
     "config.codeInspectorPersona.description": "自定义代码检查器的角色。这会附加到包含关键响应规则的基本提示中。",
     "config.commitMessagePersona.description": "为 git 提交消息生成器定义角色。",
+    "config.contextFileExceptions.description": "一个文件和文件夹模式列表，用于始终从 AI 上下文中排除。使用 glob 模式（例如 '*.log', 'dist/**'）。",
     "config.language.description": "影响 AI 的响应语言。扩展 UI 遵循 VS Code 的显示语言设置。",
     "views.container.title": "Lollms",
     "view.discussions.name": "讨论",

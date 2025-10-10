@@ -1,3 +1,4 @@
+
 // src/commands/chatPanel.ts
 import * as vscode from 'vscode';
 import { LollmsAPI, ChatMessage } from '../lollmsAPI';
@@ -85,6 +86,7 @@ export class ChatPanel {
   }
   
   public async loadDiscussion(id: string): Promise<void> {
+    this._panel.webview.postMessage({ command: 'startContextLoading' });
     const discussion = await this._discussionManager.getDiscussion(id);
 
     if (discussion) {
@@ -115,9 +117,12 @@ export class ChatPanel {
         this.displayPlan(null);
         this.updateGeneratingState();
         this._updateContextAndTokens();
+    } else {
+        this._panel.webview.postMessage({ command: 'updateTokenProgress' }); // Ends loading state
     }
   }
   public async startNewDiscussion(groupId: string | null = null): Promise<void> {
+    this._panel.webview.postMessage({ command: 'startContextLoading' });
     this._currentDiscussion = this._discussionManager.createNewDiscussion(groupId);
     await this._discussionManager.saveDiscussion(this._currentDiscussion);
     this._panel.title = this._currentDiscussion.title;
@@ -128,7 +133,10 @@ export class ChatPanel {
   }
   
   private _updateContextAndTokens() {
-    if (!this._contextManager || !this._currentDiscussion) return;
+    if (!this._contextManager || !this._currentDiscussion) {
+        this._panel.webview.postMessage({ command: 'updateTokenProgress' }); // This will hide the spinner
+        return;
+    }
 
     (async () => {
         try {
@@ -230,7 +238,9 @@ export class ChatPanel {
     html = html.replace(/{{welcomeItem2}}/g, vscode.l10n.t("welcome.item2"));
     html = html.replace(/{{welcomeItem3}}/g, vscode.l10n.t("welcome.item3"));
     html = html.replace(/{{welcomeItem4}}/g, vscode.l10n.t("welcome.item4"));
-
+    html = html.replace(/{{progressLoadingFiles}}/g, vscode.l10n.t("progress.loadingFiles"));
+    html = html.replace(/{{tooltipRefreshContext}}/g, vscode.l10n.t("tooltip.refreshContext"));
+    
     return html;
   }
 

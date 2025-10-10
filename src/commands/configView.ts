@@ -20,6 +20,7 @@ export class SettingsPanel {
     chatPersona: '',
     agentPersona: '',
     commitMessagePersona: '',
+    contextFileExceptions: [] as string[],
     language: 'auto'
   };
 
@@ -63,6 +64,7 @@ export class SettingsPanel {
     this._pendingConfig.chatPersona = config.get<string>('chatPersona') || '';
     this._pendingConfig.agentPersona = config.get<string>('agentPersona') || '';
     this._pendingConfig.commitMessagePersona = config.get<string>('commitMessagePersona') || '';
+    this._pendingConfig.contextFileExceptions = config.get<string[]>('contextFileExceptions') || [];
     this._pendingConfig.language = config.get<string>('language') || 'auto';
 
     this._panel.webview.html = this._getHtml(this._panel.webview, this._pendingConfig);
@@ -104,6 +106,7 @@ export class SettingsPanel {
                 await config.update('chatPersona', this._pendingConfig.chatPersona, vscode.ConfigurationTarget.Global);
                 await config.update('agentPersona', this._pendingConfig.agentPersona, vscode.ConfigurationTarget.Global);
                 await config.update('commitMessagePersona', this._pendingConfig.commitMessagePersona, vscode.ConfigurationTarget.Global);
+                await config.update('contextFileExceptions', this._pendingConfig.contextFileExceptions, vscode.ConfigurationTarget.Global);
                 await config.update('language', this._pendingConfig.language, vscode.ConfigurationTarget.Global);
   
                 vscode.window.showInformationMessage('Configuration saved. Recreating LollmsAPI...');
@@ -143,7 +146,7 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, modelName, disableSslVerification, noThinkMode, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, language } = config;
+    const { apiKey, apiUrl, modelName, disableSslVerification, noThinkMode, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language } = config;
 
     return `<!DOCTYPE html>
         <html lang="en">
@@ -209,11 +212,11 @@ export class SettingsPanel {
               </select>
               <p class="help-text">Influences the AI's response language. The extension UI follows VS Code's display language setting.</p>
               
-              <h2>API Configuration</h2>
-              <label for="apiKey">API Key</label>
-              <input type="text" id="apiKey" value="${apiKey}" placeholder="Enter your Lollms API key" autocomplete="off" />
+              <h2>API & Model</h2>
               <label for="apiUrl">API Host</label>
               <input type="text" id="apiUrl" value="${apiUrl}" placeholder="http://localhost:9642" autocomplete="off" />
+              <label for="apiKey">API Key</label>
+              <input type="text" id="apiKey" value="${apiKey}" placeholder="Enter your Lollms API key" autocomplete="off" />
               <label for="modelSelect">Model</label>
               <input list="modelsList" id="modelSelect" name="modelSelect" value="${modelName}" placeholder="Enter or select a model" autocomplete="off" />
               <datalist id="modelsList"></datalist>
@@ -221,52 +224,50 @@ export class SettingsPanel {
               <label for="requestTimeout">Request Timeout (ms)</label>
               <input type="number" id="requestTimeout" value="${requestTimeout}" min="1000" step="1000" />
               <p class="help-text">Increase this if large generations are timing out. Default is 600000 (10 minutes).</p>
-
               <div class="checkbox-container">
                   <input type="checkbox" id="disableSsl" ${disableSslVerification ? 'checked' : ''}>
                   <label for="disableSsl">Disable SSL Verification</label>
               </div>
               <p class="help-text">Useful for local servers with self-signed certificates.</p>
-              
               <div class="checkbox-container">
                   <input type="checkbox" id="noThinkMode" ${noThinkMode ? 'checked' : ''}>
                   <label for="noThinkMode">Enable /no_think Mode</label>
               </div>
               <p class="help-text">Prefixes all system prompts with the /no_think command for models that support it.</p>
               
+              <h2>Context</h2>
               <label for="maxImageSize">Max Image Size (px)</label>
               <input type="number" id="maxImageSize" value="${maxImageSize}" min="0" step="128" />
               <p class="help-text">Resize images to this maximum dimension before sending. 0 disables resizing.</p>
+              <label for="contextFileExceptions">Context File Exceptions</label>
+              <textarea id="contextFileExceptions" rows="8">${contextFileExceptions.join('\n')}</textarea>
+              <p class="help-text">Enter file or folder patterns to always exclude from the AI context, one pattern per line. Uses glob patterns (e.g., '*.log', 'dist/**').</p>
 
-              <h2>Agent Configuration</h2>
+              <h2>Agent</h2>
               <label for="agentMaxRetries">Agent Self-Correction Retries</label>
               <input type="number" id="agentMaxRetries" value="${agentMaxRetries}" min="0" max="5" />
               <p class="help-text">Number of times the agent will try to fix a failed task before asking for help.</p>
               
               <h2>Code Inspector</h2>
-                <div class="checkbox-container">
-                    <input type="checkbox" id="enableCodeInspector" ${enableCodeInspector ? 'checked' : ''}>
-                    <label for="enableCodeInspector">Enable Code Inspector</label>
-                </div>
-                <p class="help-text">Adds a button to AI-generated code blocks to check for bugs and vulnerabilities.</p>
-                
-                <label for="inspectorModelName">Inspector Model Name</label>
-                <input type="text" id="inspectorModelName" value="${inspectorModelName}" placeholder="Default: Same as chat model" autocomplete="off" />
-                <p class="help-text">Optional. Use a different, potentially stronger model for code inspection.</p>
+              <div class="checkbox-container">
+                  <input type="checkbox" id="enableCodeInspector" ${enableCodeInspector ? 'checked' : ''}>
+                  <label for="enableCodeInspector">Enable Code Inspector</label>
+              </div>
+              <p class="help-text">Adds a button to AI-generated code blocks to check for bugs and vulnerabilities.</p>
+              <label for="inspectorModelName">Inspector Model Name</label>
+              <input type="text" id="inspectorModelName" value="${inspectorModelName}" placeholder="Default: Same as chat model" autocomplete="off" />
+              <p class="help-text">Optional. Use a different, potentially stronger model for code inspection.</p>
 
-                <label for="codeInspectorPersona">Code Inspector Persona</label>
-                <textarea id="codeInspectorPersona" rows="4">${codeInspectorPersona}</textarea>
-                <p class="help-text">Customize the persona of the code inspector. This is added to a base prompt with the critical response rules.</p>
-
-              <h2>System Prompts / Personas</h2>
+              <h2>Personas / System Prompts</h2>
               <label for="chatPersona">Chat Mode Persona</label>
               <textarea id="chatPersona" rows="6" placeholder="e.g., You are a helpful AI assistant.">${chatPersona}</textarea>
-              <p class="help-text">Define the AI's persona and rules for the main chat. This is added to a base prompt with the critical file-output rules. Supports placeholders: <code>{{date}}</code>, <code>{{os}}</code>.</p>
-              
+              <p class="help-text">Define the AI's persona and rules for the main chat. Supports placeholders: <code>{{date}}</code>, <code>{{os}}</code>.</p>
               <label for="agentPersona">Agent Mode Persona</label>
               <textarea id="agentPersona" rows="4" placeholder="e.g., You are a sub-agent that follows instructions.">${agentPersona}</textarea>
               <p class="help-text">Define the persona for AI agents performing autonomous tasks. Supports placeholders: <code>{{date}}</code>, <code>{{os}}</code>.</p>
-
+              <label for="codeInspectorPersona">Code Inspector Persona</label>
+              <textarea id="codeInspectorPersona" rows="4">${codeInspectorPersona}</textarea>
+              <p class="help-text">Customize the persona of the code inspector.</p>
               <label for="commitMessagePersona">Git Commit Persona</label>
               <textarea id="commitMessagePersona" rows="4" placeholder="e.g., You are an expert at writing conventional git commit messages.">${commitMessagePersona}</textarea>
               <p class="help-text">Define the persona for the git commit message generator.</p>
@@ -297,7 +298,8 @@ export class SettingsPanel {
                     codeInspectorPersona: document.getElementById('codeInspectorPersona'),
                     chatPersona: document.getElementById('chatPersona'),
                     agentPersona: document.getElementById('agentPersona'),
-                    commitMessagePersona: document.getElementById('commitMessagePersona')
+                    commitMessagePersona: document.getElementById('commitMessagePersona'),
+                    contextFileExceptions: document.getElementById('contextFileExceptions')
                 };
                 
                 const modelsDatalist = document.getElementById('modelsList');
@@ -310,6 +312,9 @@ export class SettingsPanel {
                     const element = fields[key];
                     const eventType = element.type === 'checkbox' ? 'change' : 'input';
                     const valueGetter = () => {
+                        if (key === 'contextFileExceptions') {
+                            return element.value.split('\\n').map(s => s.trim()).filter(s => s);
+                        }
                         if (element.type === 'checkbox') return element.checked;
                         if (element.type === 'number') return parseInt(element.value, 10);
                         return element.value;

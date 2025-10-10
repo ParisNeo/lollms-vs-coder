@@ -58,6 +58,7 @@
     "config.agentPersona.description": "Define la persona para los agentes de IA que realizan tareas autónomas. Admite marcadores de posición como {{date}}, {{os}}.",
     "config.codeInspectorPersona.description": "Personalice la persona del inspector de código. Esto se añade a un prompt base con las reglas de respuesta críticas.",
     "config.commitMessagePersona.description": "Define la persona para el generador de mensajes de commit de git.",
+    "config.contextFileExceptions.description": "Una lista de patrones de archivos y carpetas para excluir siempre del contexto de la IA. Utiliza patrones glob (por ejemplo, '*.log', 'dist/**').",
     "config.language.description": "Influye en el idioma de respuesta de la IA. La interfaz de usuario de la extensión sigue el idioma de visualización de VS Code.",
     "views.container.title": "Lollms",
     "view.discussions.name": "Discusiones",

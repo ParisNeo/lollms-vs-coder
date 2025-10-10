@@ -58,6 +58,7 @@
     "config.agentPersona.description": "يحدد شخصية وكلاء الذكاء الاصطناعي الذين يقومون بمهام مستقلة. يدعم العناصر النائبة مثل {{date}}، {{os}}.",
     "config.codeInspectorPersona.description": "تخصيص شخصية مفتش الكود. يُضاف هذا إلى موجه أساسي مع قواعد الاستجابة الهامة.",
     "config.commitMessagePersona.description": "يحدد شخصية منشئ رسائل git commit.",
+    "config.contextFileExceptions.description": "قائمة بأنماط الملفات والمجلدات التي يجب استبعادها دائمًا من سياق الذكاء الاصطناعي. تستخدم أنماط glob (مثل '*.log' ، 'dist/**').",
     "config.language.description": "يؤثر على لغة استجابة الذكاء الاصطناعي. تتبع واجهة مستخدم الإضافة لغة عرض VS Code.",
     "views.container.title": "Lollms",
     "view.discussions.name": "المناقشات",

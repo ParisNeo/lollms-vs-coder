@@ -258,14 +258,14 @@
             color: var(--vscode-descriptionForeground);
             white-space: nowrap;
         }
-        #refresh-tokens-btn {
+        #refresh-context-btn {
             background: none;
             border: none;
             color: var(--vscode-icon-foreground);
             cursor: pointer;
             padding: 2px;
         }
-        #refresh-tokens-btn:hover {
+        #refresh-context-btn:hover {
             background-color: var(--vscode-toolbar-hoverBackground);
         }
         .input-area {
@@ -756,8 +756,14 @@
                     <div class="token-progress-container">
                         <div class="token-progress-bar" id="token-progress-bar"></div>
                     </div>
-                    <span id="token-count-label">Tokens: 0 / 0</span>
-                    <button id="refresh-tokens-btn" title="Calculate Token Count"><i class="codicon codicon-sync"></i></button>
+                    <div id="context-status-container" style="display: flex; align-items: center; gap: 8px;">
+                        <span id="token-count-label">Tokens: 0 / 0</span>
+                        <button id="refresh-context-btn" title="{{tooltipRefreshContext}}"><i class="codicon codicon-sync"></i></button>
+                    </div>
+                    <div id="context-loading-spinner" style="display: none; align-items: center; gap: 8px; font-size: 0.9em; color: var(--vscode-descriptionForeground);">
+                        <div class="spinner"></div>
+                        <span>{{progressLoadingFiles}}</span>
+                    </div>
                 </div>
                 <div class="agent-mode-toggle">
                     <span>🤖 Agent Mode</span>
@@ -811,7 +817,9 @@
         
         const tokenProgressBar = document.getElementById('token-progress-bar');
         const tokenCountLabel = document.getElementById('token-count-label');
-        const refreshTokensBtn = document.getElementById('refresh-tokens-btn');
+        const refreshContextBtn = document.getElementById('refresh-context-btn');
+        const contextStatusContainer = document.getElementById('context-status-container');
+        const contextLoadingSpinner = document.getElementById('context-loading-spinner');
 
         const searchBar = document.getElementById('search-bar');
         const searchInput = document.getElementById('searchInput');
@@ -1366,11 +1374,10 @@
             vscode.postMessage({ command: 'toggleAgentMode' });
         });
 
-        refreshTokensBtn.addEventListener('click', () => {
-            tokenCountLabel.textContent = 'Calculating...';
-            const icon = refreshTokensBtn.querySelector('i');
-            icon.classList.add('codicon-sync~spin');
+        refreshContextBtn.addEventListener('click', () => {
             vscode.postMessage({ command: 'calculateTokens' });
+            contextStatusContainer.style.display = 'none';
+            contextLoadingSpinner.style.display = 'flex';
         });
 
         sendButton.addEventListener('click', sendMessage);
@@ -1751,6 +1758,10 @@
                 case 'setGeneratingState':
                     setGeneratingState(message.isGenerating);
                     break;
+                case 'startContextLoading':
+                    contextStatusContainer.style.display = 'none';
+                    contextLoadingSpinner.style.display = 'flex';
+                    break;
                 case 'displayPlan':
                     const isFinished = !message.plan || message.plan.tasks.every(t => t.status === 'completed' || t.status === 'failed');
                     setGeneratingState(!isFinished);
@@ -1798,9 +1809,10 @@
                     updateContext(message.context);
                     break;
                 case 'updateTokenProgress':
+                    contextStatusContainer.style.display = 'flex';
+                    contextLoadingSpinner.style.display = 'none';
                     const { totalTokens, contextSize } = message;
-                    const icon = refreshTokensBtn.querySelector('i');
-                    icon.classList.remove('codicon-sync~spin');
+
                     if (typeof totalTokens === 'number' && typeof contextSize === 'number' && contextSize > 0) {
                         const percentage = Math.min((totalTokens / contextSize) * 100, 100);
                         tokenProgressBar.style.width = `${percentage}%`;

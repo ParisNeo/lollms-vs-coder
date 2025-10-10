@@ -1,158 +1,211 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 
-// Defines the possible states for any file or folder in the context.
 export type ContextState = 'included' | 'tree-only' | 'fully-excluded';
 
-/**
- * Manages the AI context state (included, excluded, etc.) for all files and folders
- * within the active workspace. It persists this state and applies default exclusions.
- */
-export class ContextStateProvider {
-    private _onDidChangeState: vscode.EventEmitter<vscode.Uri | undefined> = new vscode.EventEmitter<vscode.Uri | undefined>();
-    readonly onDidChangeState: vscode.Event<vscode.Uri | undefined> = this._onDidChangeState.event;
+class ContextItem extends vscode.TreeItem {
+    constructor(
+        public readonly resourceUri: vscode.Uri,
+        public readonly state: ContextState,
+        public readonly isDirectory: boolean
+    ) {
+        super(vscode.workspace.asRelativePath(resourceUri, false), isDirectory ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
+        this.id = resourceUri.toString();
+        this.contextValue = `contextItem:${state}`;
+    }
+}
 
-    private state: { [relativePath: string]: ContextState } = {};
-    private stateKey!: string;
+export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem> {
+    private _onDidChangeTreeData: vscode.EventEmitter<ContextItem | undefined | null | void> = new vscode.EventEmitter<ContextItem | undefined | null | void>();
+    readonly onDidChangeTreeData: vscode.Event<ContextItem | undefined | null | void> = this._onDidChangeTreeData.event;
 
-    // Default folders and files to exclude from the AI context.
-    // FIX: Added '.lollms' to the default list of excluded folders.
-    private readonly defaultExcludedFolders = new Set(['.git', 'node_modules', '.vscode', '.lollms']);
-    private readonly defaultExcludedFiles = new Set(['.gitignore', '.DS_Store', 'package-lock.json']);
+    private _onDidChangeFileDecorations: vscode.EventEmitter<vscode.Uri | vscode.Uri[]> = new vscode.EventEmitter<vscode.Uri | vscode.Uri[]>();
+    readonly onDidChangeFileDecorations: vscode.Event<vscode.Uri | vscode.Uri[]> = this._onDidChangeFileDecorations.event;
 
-    constructor(private workspaceRoot: string, private context: vscode.ExtensionContext) {
-        this.updateStateKey();
-        this.loadStateAndApplyDefaults();
+    private workspaceRoot: string;
+    private context: vscode.ExtensionContext;
+    private stateKey: string;
+
+    constructor(workspaceRoot: string, context: vscode.ExtensionContext) {
+        this.workspaceRoot = workspaceRoot;
+        this.context = context;
+        this.stateKey = `context-state-${this.workspaceRoot}`;
+        vscode.workspace.onDidChangeConfiguration(e => {
+            if (e.affectsConfiguration('lollmsVsCoder.contextFileExceptions')) {
+                this.refresh();
+            }
+        });
     }
 
-    /**
-     * Switches to a new workspace, loading its specific context state.
-     * @param newWorkspaceRoot The file system path of the new workspace root.
-     */
     public async switchWorkspace(newWorkspaceRoot: string) {
         this.workspaceRoot = newWorkspaceRoot;
-        this.updateStateKey();
-        await this.loadStateAndApplyDefaults();
-        this._onDidChangeState.fire(undefined); // Notify decorators to refresh for the new workspace
-    }
-    
-    private updateStateKey() {
-        this.stateKey = `context-state-${this.workspaceRoot}`;
+        this.stateKey = `context-state-${newWorkspaceRoot}`;
+        this.refresh();
     }
 
-    /**
-     * Loads the saved context state from workspace storage and applies
-     * default exclusions for any files/folders that don't have a state set.
-     * This ensures new projects and newly added default patterns are handled correctly.
-     */
-    private async loadStateAndApplyDefaults() {
-        this.state = this.context.workspaceState.get(this.stateKey) || {};
-        
-        // FIX: Ensure default exclusions are applied at startup.
-        const workspaceUri = vscode.Uri.file(this.workspaceRoot);
-        try {
-            const entries = await vscode.workspace.fs.readDirectory(workspaceUri);
-            let stateChanged = false;
-
-            for (const [name, type] of entries) {
-                const relativePath = name; // At the root, the name is the relative path.
-                
-                // Only apply default if the user hasn't already set a state for this item.
-                if (this.state[relativePath] === undefined) {
-                    const isFolder = type === vscode.FileType.Directory;
-                    const isFile = type === vscode.FileType.File;
-
-                    if ((isFolder && this.defaultExcludedFolders.has(name)) || (isFile && this.defaultExcludedFiles.has(name))) {
-                        this.state[relativePath] = 'fully-excluded';
-                        stateChanged = true;
-                    }
-                }
-            }
-            if (stateChanged) {
-                await this.saveState();
-            }
-        } catch (error) {
-            console.error(`Lollms: Failed to read workspace directory to apply default exclusions: ${error}`);
+    refresh(): void {
+        this._onDidChangeTreeData.fire();
+        if (vscode.workspace.workspaceFolders?.[0]) {
+            this._onDidChangeFileDecorations.fire(vscode.workspace.workspaceFolders[0].uri);
         }
     }
 
-    private async saveState() {
-        await this.context.workspaceState.update(this.stateKey, this.state);
+    getTreeItem(element: ContextItem): vscode.TreeItem {
+        return element;
     }
+
+    async getChildren(element?: ContextItem): Promise<ContextItem[]> {
+        if (!this.workspaceRoot) {
+            return [];
+        }
+
+        const parentUri = element ? element.resourceUri : vscode.Uri.file(this.workspaceRoot);
+        const entries = await vscode.workspace.fs.readDirectory(parentUri);
+        
+        const items: ContextItem[] = [];
+        for (const [name, type] of entries) {
+            const uri = vscode.Uri.joinPath(parentUri, name);
+            if (this.isExcluded(uri.fsPath)) {
+                continue;
+            }
+            const state = this.getStateForUri(uri);
+            const isDirectory = type === vscode.FileType.Directory;
+            items.push(new ContextItem(uri, state, isDirectory));
+        }
+
+        items.sort((a, b) => {
+            if (a.isDirectory && !b.isDirectory) return -1;
+            if (!a.isDirectory && b.isDirectory) return 1;
+            return (a.label || '').toString().localeCompare((b.label || '').toString());
+        });
+
+        return items;
+    }
+
+    private isExcluded(filePath: string): boolean {
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const exceptions = config.get<string[]>('contextFileExceptions') || [];
+        const fileUri = vscode.Uri.file(filePath);
     
-    /**
-     * Gets the current context state for a given file URI.
-     * @param uri The URI of the file or folder.
-     * @returns The current ContextState. Defaults to 'tree-only'.
-     */
+        for (let pattern of exceptions) {
+            const filter: vscode.DocumentFilter = { pattern: pattern };
+            if (vscode.languages.match(filter, { uri: fileUri, scheme: 'file', languageId: '' })) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public getStateForUri(uri: vscode.Uri): ContextState {
-        const relativePath = path.relative(this.workspaceRoot, uri.fsPath);
-        return this.state[relativePath] || 'tree-only';
+        const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
+        const relativePath = vscode.workspace.asRelativePath(uri, false);
+        return workspaceState[relativePath] || 'tree-only';
     }
 
-    /**
-     * Sets the context state for a given URI and persists the change.
-     * @param uri The URI of the file or folder to update.
-     * @param newState The new state to set.
-     */
-    public async setStateForUri(uri: vscode.Uri, newState: ContextState) {
-        const relativePath = path.relative(this.workspaceRoot, uri.fsPath);
-        if (this.state[relativePath] !== newState) {
-            this.state[relativePath] = newState;
-            await this.saveState();
-            this._onDidChangeState.fire(uri);
-        }
-    }
+    public async setStateForUri(uri: vscode.Uri, state: ContextState) {
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+        if (!workspaceFolder) return;
     
-    /**
-     * Retrieves all files that are explicitly marked as 'included'.
-     * @returns An array of relative file paths.
-     */
-    public getIncludedFiles(): string[] {
-        return Object.entries(this.state)
-            .filter(([, state]) => state === 'included')
-            .map(([relativePath]) => relativePath);
+        const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
+        const relativePath = vscode.workspace.asRelativePath(uri, false);
+    
+        const stat = await vscode.workspace.fs.stat(uri);
+    
+        if (stat.type === vscode.FileType.Directory) {
+            Object.keys(workspaceState).forEach(key => {
+                if (key.startsWith(relativePath + path.sep) || key === relativePath) {
+                    delete workspaceState[key];
+                }
+            });
+    
+            if (state === 'included') {
+                await this.updateChildrenState(uri, 'add', workspaceState);
+            } else {
+                workspaceState[relativePath] = state;
+            }
+        } else {
+            workspaceState[relativePath] = state;
+        }
+    
+        await this.context.workspaceState.update(this.stateKey, workspaceState);
+        this.refresh();
+        this._onDidChangeFileDecorations.fire(uri);
     }
 
-    /**
-     * Retrieves all files and folders that are not fully excluded.
-     * @returns An array of relative paths.
-     */
-    public async getAllVisibleFiles(): Promise<string[]> {
-        const visibleFiles: string[] = [];
-        const workspaceUri = vscode.Uri.file(this.workspaceRoot);
-        
-        const walk = async (dir: vscode.Uri) => {
-            const relativeDir = path.relative(this.workspaceRoot, dir.fsPath);
-            if (this.getStateForUri(dir) === 'fully-excluded') {
+    private async updateChildrenState(dirUri: vscode.Uri, action: 'add', workspaceState: { [key: string]: ContextState }) {
+        const urisToFire: vscode.Uri[] = [dirUri];
+        const processDirectory = async (currentDirUri: vscode.Uri) => {
+            let entries;
+            try {
+                entries = await vscode.workspace.fs.readDirectory(currentDirUri);
+            } catch (error) {
+                console.warn(`Could not read directory ${currentDirUri.fsPath}:`, error);
                 return;
             }
-            if (relativeDir) { // Don't add the root itself
-                visibleFiles.push(relativeDir);
-            }
-
-            try {
-                const entries = await vscode.workspace.fs.readDirectory(dir);
-                for (const [name, type] of entries) {
-                    const entryUri = vscode.Uri.joinPath(dir, name);
-                    const relativePath = path.relative(this.workspaceRoot, entryUri.fsPath);
     
-                    if (this.state[relativePath] === 'fully-excluded') {
-                        continue;
-                    }
+            for (const [name, type] of entries) {
+                const entryUri = vscode.Uri.joinPath(currentDirUri, name);
+                if (this.isExcluded(entryUri.fsPath)) {
+                    continue;
+                }
+                urisToFire.push(entryUri);
     
-                    if (type === vscode.FileType.Directory) {
-                        await walk(entryUri);
-                    } else {
-                        visibleFiles.push(relativePath);
+                if (type === vscode.FileType.Directory) {
+                    await processDirectory(entryUri);
+                } else if (type === vscode.FileType.File) {
+                    const relativePath = vscode.workspace.asRelativePath(entryUri, false);
+                    if (action === 'add') {
+                        workspaceState[relativePath] = 'included';
                     }
                 }
-            } catch (error) {
-                // Ignore errors for directories that can't be read, etc.
             }
         };
+        await processDirectory(dirUri);
+        this._onDidChangeFileDecorations.fire(urisToFire);
+    }
 
-        await walk(workspaceUri);
+    public async getAllVisibleFiles(): Promise<string[]> {
+        const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
+        const visibleFiles: string[] = [];
+    
+        const workspaceFolder = vscode.workspace.workspaceFolders?.find(f => f.uri.fsPath === this.workspaceRoot);
+        if (!workspaceFolder) return [];
+    
+        const processDirectory = async (dirUri: vscode.Uri) => {
+            const relativePath = vscode.workspace.asRelativePath(dirUri, false);
+            if (workspaceState[relativePath] === 'fully-excluded' || this.isExcluded(dirUri.fsPath)) {
+                return;
+            }
+    
+            let entries;
+            try {
+                entries = await vscode.workspace.fs.readDirectory(dirUri);
+            } catch (error) {
+                return; 
+            }
+    
+            for (const [name, type] of entries) {
+                const entryUri = vscode.Uri.joinPath(dirUri, name);
+                const entryRelativePath = vscode.workspace.asRelativePath(entryUri, false);
+    
+                if (workspaceState[entryRelativePath] === 'fully-excluded' || this.isExcluded(entryUri.fsPath)) {
+                    continue;
+                }
+    
+                if (type === vscode.FileType.Directory) {
+                    await processDirectory(entryUri);
+                } else {
+                    visibleFiles.push(entryRelativePath);
+                }
+            }
+        };
+    
+        await processDirectory(workspaceFolder.uri);
         return visibleFiles;
+    }
+    
+    public getIncludedFiles(): string[] {
+        const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
+        return Object.keys(workspaceState).filter(key => workspaceState[key] === 'included');
     }
 }

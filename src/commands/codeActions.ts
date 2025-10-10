@@ -1,39 +1,45 @@
 import * as vscode from 'vscode';
+import { PromptManager, Prompt } from '../promptManager';
 
-export class CodeActionProvider implements vscode.CodeLensProvider {
-    private _onDidChangeCodeLenses: vscode.EventEmitter<void> = new vscode.EventEmitter<void>();
-    public readonly onDidChangeCodeLenses: vscode.Event<void> = this._onDidChangeCodeLenses.event;
+export class LollmsCodeActionProvider implements vscode.CodeActionProvider {
 
-    constructor() {
-        vscode.workspace.onDidChangeConfiguration(() => {
-            this._onDidChangeCodeLenses.fire();
-        });
-        
-        vscode.window.onDidChangeTextEditorSelection(() => {
-            this._onDidChangeCodeLenses.fire();
-        });
-    }
+    constructor(private promptManager: PromptManager) {}
 
-    public provideCodeLenses(document: vscode.TextDocument, token: vscode.CancellationToken): vscode.CodeLens[] | Thenable<vscode.CodeLens[]> {
-        const isEnabled = vscode.workspace.getConfiguration('lollmsVsCoder').get('enableCodeActions');
-        if (!isEnabled) {
+    public static readonly providedCodeActionKinds = [
+        vscode.CodeActionKind.Refactor,
+        vscode.CodeActionKind.Source
+    ];
+
+    public async provideCodeActions(document: vscode.TextDocument, range: vscode.Range | vscode.Selection, context: vscode.CodeActionContext, token: vscode.CancellationToken): Promise<vscode.CodeAction[]> {
+        // Only show actions when there is a selection
+        if (range.isEmpty) {
             return [];
         }
 
-        const codeLenses: vscode.CodeLens[] = [];
-        const editor = vscode.window.activeTextEditor;
-        if (editor && editor.document === document && !editor.selection.isEmpty) {
-            // Place the CodeLens on the first line of the selection
-            const startPosition = editor.selection.start;
-            const range = new vscode.Range(startPosition, startPosition);
-            
-            const command: vscode.Command = {
-                title: "$(lollms-icon) Lollms Actions...",
-                command: "lollms-vs-coder.triggerCodeAction",
-                tooltip: "Apply a Lollms AI action to the selected code"
+        const codeActions: vscode.CodeAction[] = [];
+        const prompts = await this.promptManager.getCodeActionPrompts();
+
+        // Create an action for each saved prompt
+        prompts.forEach(prompt => {
+            const action = new vscode.CodeAction(`Lollms: ${prompt.title}`, vscode.CodeActionKind.Refactor);
+            action.command = {
+                command: 'lollms-vs-coder.triggerCodeAction',
+                title: prompt.title,
+                arguments: [prompt]
             };
-            codeLenses.push(new vscode.CodeLens(range, command));
-        }
-        return codeLenses;
+            codeActions.push(action);
+        });
+
+        // Add the "Custom Action..." option
+        const customAction = new vscode.CodeAction('Lollms: Custom Action...', vscode.CodeActionKind.Refactor);
+        customAction.command = {
+            command: 'lollms-vs-coder.triggerCodeAction',
+            title: 'Lollms Custom Action',
+            // Pass a special argument to signal a direct custom action request
+            arguments: [{ isCustom: true }]
+        };
+        codeActions.push(customAction);
+        
+        return codeActions;
     }
 }

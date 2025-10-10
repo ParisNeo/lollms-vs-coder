@@ -443,15 +443,23 @@
             border: 1px solid var(--vscode-panel-border);
             border-radius: 8px;
             background-color: var(--vscode-sideBar-background);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15); /* More pleasant shadow */
         }
         .plan-header {
-            padding: 10px 15px;
+            padding: 12px 16px; /* More padding */
             font-weight: 600;
             cursor: pointer;
             display: flex;
             align-items: center;
-            gap: 8px;
+            gap: 10px;
             list-style: none;
+            background-color: var(--vscode-editorGroupHeader-tabsBackground); /* Header background */
+            border-bottom: 1px solid var(--vscode-panel-border);
+            border-top-left-radius: 8px;
+            border-top-right-radius: 8px;
+        }
+        details[open] > .plan-header {
+            border-bottom: 1px solid var(--vscode-panel-border);
         }
         .plan-header::-webkit-details-marker { display: none; }
         .plan-header::before {
@@ -464,42 +472,65 @@
         }
         .plan-objective {
             font-size: 0.9em;
-            font-weight: normal;
+            font-style: italic; /* Italicize objective */
             color: var(--vscode-descriptionForeground);
             margin-top: 5px;
-            padding: 0 15px 10px 15px;
+            padding: 10px 16px;
+            background-color: var(--vscode-editor-background); /* Slight background difference */
+            border-bottom: 1px solid var(--vscode-panel-border);
         }
         .plan-body {
-            padding: 5px 15px 15px 15px;
+            padding: 5px 16px 16px 16px;
         }
         .plan-task {
-            padding: 8px 0;
+            padding: 12px 0; /* More padding */
             border-bottom: 1px solid var(--vscode-editorWidget-background);
+            display: flex; /* Use flexbox for layout */
+            gap: 12px;
+            align-items: flex-start;
         }
         .plan-task:last-child { border-bottom: none; }
-        .plan-task-header {
-            display: flex;
-            align-items: center;
-        }
         .task-status {
+            font-size: 18px; /* Bigger icons */
             width: 24px;
             text-align: center;
-            margin-right: 10px;
-            font-size: 16px;
+            padding-top: 2px; /* Align icon better with text */
         }
-        .task-status .codicon-sync.spin { animation: spin 1.5s linear infinite; }
+        .task-status .codicon-sync~spin { animation: spin 1.5s linear infinite; }
         .task-status .codicon-check { color: var(--vscode-testing-iconPassed); }
         .task-status .codicon-error { color: var(--vscode-testing-iconFailed); }
-        .task-status .codicon-circle-large-filled { 
+        .task-status .codicon-circle-large { 
             color: var(--vscode-descriptionForeground); 
-            font-size: 12px;
+            font-size: 14px;
             vertical-align: middle;
          }
         
-        .task-description { flex: 1; }
+        .task-main { flex: 1; }
+        .task-description-wrapper {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .task-description { font-weight: 500; }
+        .retry-btn {
+            background-color: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+            border: 1px solid transparent;
+            border-radius: 4px;
+            padding: 2px 8px;
+            cursor: pointer;
+            font-size: 11px;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .retry-btn:hover {
+            background-color: var(--vscode-button-secondaryHoverBackground);
+        }
+        .retry-btn .codicon { font-size: 14px; }
         .task-result-details {
             margin-top: 8px;
-            padding-left: 34px;
         }
         .task-result-details summary {
             cursor: pointer;
@@ -509,7 +540,7 @@
             list-style-position: inside;
         }
         .task-result-content {
-            margin-top: 5px;
+            margin-top: 8px;
             background-color: var(--vscode-textCodeBlock-background);
             border-radius: 4px;
             padding: 8px 12px;
@@ -559,27 +590,44 @@
             padding: 10px;
             border-radius: 4px;
         }
-        .attachment-item {
+        .attachment-item-details { /* NEW */
+            margin-bottom: 5px;
+            border: 1px solid var(--vscode-editorWidget-background);
+            border-radius: 6px;
+            overflow: hidden;
+        }
+        .attachment-item-summary { /* NEW */
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 8px 10px;
-            border-bottom: 1px solid var(--vscode-editorWidget-background);
+            padding: 8px 12px;
+            cursor: pointer;
+            background-color: var(--vscode-sideBar-sectionHeaderBackground);
+            list-style: none;
         }
-        .attachment-item:last-child {
-            border-bottom: none;
-        }
+        .attachment-item-summary::-webkit-details-marker { display: none; }
         .attachment-info {
             display: flex;
             align-items: center;
             gap: 8px;
             font-size: 0.9em;
         }
-        .attachment-info img {
-            max-height: 40px;
-            max-width: 80px;
-            border-radius: 3px;
-            object-fit: cover;
+        .attachment-content { /* NEW */
+            padding: 10px;
+            background-color: var(--vscode-editor-background);
+            max-height: 300px;
+            overflow: auto;
+        }
+        .attachment-content img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 4px;
+        }
+        .attachment-content pre {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            margin: 0;
+            font-family: var(--vscode-editor-font-family);
         }
         #welcome-message {
             padding: 15px;
@@ -677,9 +725,8 @@
             <div id="context-container"></div>
             
             <details id="attachments-collapsible-wrapper" class="info-collapsible" style="display: none;" open>
-                <summary id="attachments-summary">📎 Attachments</summary>
-                <div id="attachments-container" class="collapsible-content" style="padding: 0;">
-                    <!-- Individual attachments will be injected here as divs -->
+                <summary id="attachments-summary">📎 Added Files</summary>
+                <div id="attachments-container" class="collapsible-content" style="padding: 5px 0 0 0;">
                 </div>
             </details>
             
@@ -872,57 +919,65 @@
             const attachmentsContainer = document.getElementById('attachments-container');
             const summary = document.getElementById('attachments-summary');
         
-            if (document.querySelector(`.attachment-item[data-message-id='${message.id}']`)) return;
+            if (document.querySelector(`.attachment-item-details[data-message-id='${message.id}']`)) return;
             
             wrapper.style.display = 'block';
         
-            const itemDiv = document.createElement('div');
-            itemDiv.className = 'attachment-item';
-            itemDiv.dataset.messageId = message.id;
-        
+            let fileName = 'file';
+            let fileIcon = 'codicon-file-text';
+            let contentHtml = '';
+
+            if (Array.isArray(message.content)) { // Image attachment
+                const textPart = message.content.find(p => p.type === 'text');
+                const imagePart = message.content.find(p => p.type === 'image_url');
+                if (imagePart) {
+                    fileName = textPart?.text.replace('Attached image: ', '') || 'image.png';
+                    fileIcon = 'codicon-file-media';
+                    contentHtml = `<img src="${imagePart.image_url.url}" alt="${fileName}">`;
+                }
+            } else if (typeof message.content === 'string') { // Text file attachment
+                const nameMatch = message.content.match(/\*\*([^*]+)\*\*/);
+                const codeMatch = message.content.match(/```(?:\w*)\n([\s\S]+?)\n```/);
+                if (nameMatch) fileName = nameMatch[1];
+                if (codeMatch) contentHtml = `<pre>${DOMPurify.sanitize(codeMatch[1])}</pre>`;
+            }
+
+            const details = document.createElement('details');
+            details.className = 'attachment-item-details';
+            details.dataset.messageId = message.id;
+
+            const summaryEl = document.createElement('summary');
+            summaryEl.className = 'attachment-item-summary';
+            
             const infoDiv = document.createElement('div');
             infoDiv.className = 'attachment-info';
-        
+            infoDiv.innerHTML = `<span class="codicon ${fileIcon}"></span> <span>${fileName}</span>`;
+
             const removeBtn = document.createElement('button');
             removeBtn.className = 'remove-attachment-btn';
             removeBtn.innerHTML = '<i class="codicon codicon-trash"></i>';
             removeBtn.title = 'Remove Attachment';
             removeBtn.onclick = (e) => {
-                e.preventDefault();
+                e.preventDefault(); // Prevent details toggling
+                e.stopPropagation();
                 vscode.postMessage({ command: 'requestDeleteMessage', messageId: message.id });
             };
-        
-            let fileName = 'file';
-        
-            if (Array.isArray(message.content)) {
-                const textPart = message.content.find(p => p.type === 'text');
-                const imagePart = message.content.find(p => p.type === 'image_url');
-                
-                if (imagePart) {
-                    if (textPart && typeof textPart.text === 'string') {
-                        fileName = textPart.text.replace('Attached image: ', '');
-                    }
-                    infoDiv.innerHTML = `<img src="${imagePart.image_url.url}" alt="${fileName}"><span class="codicon codicon-file-media"></span> <span>${fileName}</span>`;
-                } else { // It's a system message about a text file
-                    if (typeof message.content === 'string') {
-                         const match = message.content.match(/\*\*([^*]+)\*\*/);
-                         if (match) fileName = match[1];
-                    }
-                    infoDiv.innerHTML = `<span class="codicon codicon-file-text"></span> <span>${fileName}</span>`;
-                }
-            } else if (typeof message.content === 'string') { // Fallback for simple system messages
-                 const match = message.content.match(/\*\*([^*]+)\*\*/);
-                 if (match) fileName = match[1];
-                 infoDiv.innerHTML = `<span class="codicon codicon-file-text"></span> <span>${fileName}</span>`;
-            }
             
-            itemDiv.appendChild(infoDiv);
-            itemDiv.appendChild(removeBtn);
-            attachmentsContainer.appendChild(itemDiv);
+            summaryEl.appendChild(infoDiv);
+            summaryEl.appendChild(removeBtn);
+            
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'attachment-content';
+            contentDiv.innerHTML = contentHtml;
+            
+            details.appendChild(summaryEl);
+            details.appendChild(contentDiv);
+            attachmentsContainer.appendChild(details);
             
             const count = attachmentsContainer.children.length;
-            summary.innerHTML = `📎 Attachments (${count})`;
+            summary.innerHTML = `📎 Added Files (${count})`;
         }
+
 
         function addChatMessage(message) {
             const role = message.role;
@@ -1070,7 +1125,7 @@
             if (contextText && contextText.trim() !== '') {
                 contextContainer.innerHTML = `
                     <details class="info-collapsible">
-                        <summary>View AI Context</summary>
+                        <summary>Project Context</summary>
                         <div class="collapsible-content">
                             <pre>${DOMPurify.sanitize(contextText)}</pre>
                         </div>
@@ -1081,7 +1136,7 @@
         
         function getStatusIcon(status) {
             switch(status) {
-                case 'pending': return '<span class="codicon codicon-circle-large-filled"></span>';
+                case 'pending': return '<span class="codicon codicon-circle-large"></span>';
                 case 'in_progress': return '<span class="codicon codicon-sync spin"></span>';
                 case 'completed': return '<span class="codicon codicon-check"></span>';
                 case 'failed': return '<span class="codicon codicon-error"></span>';
@@ -1090,8 +1145,6 @@
         }
         
         function enhanceWithCommandButtons(container) {
-            // This now uses event delegation, so we just create the buttons.
-            // The listener is on the container.
             const contentDivs = container.querySelectorAll('.message-content');
             const commandRegex = /\[command:(\w+)\]({.*})/g;
 
@@ -1131,7 +1184,6 @@
                     .find(c => c.startsWith('language-'))
                     ?.replace('language-', '').toLowerCase() || 'text';
                 
-                // --- Handle Image Generation Block ---
                 if (language === 'image_prompt') {
                     const previousElement = pre.previousElementSibling;
                     const fileMatch = previousElement && previousElement.tagName === 'P' ? (previousElement.textContent || '').match(/^File:\s*(.+)$/i) : null;
@@ -1157,10 +1209,9 @@
                         pre.replaceWith(generationBlock);
                         pre.dataset.enhanced = "true";
                     }
-                    return; // Skip rest of processing for this block
+                    return; 
                 }
 
-                // --- Existing Code Block Logic ---
                 if (pre.parentElement.tagName === 'DETAILS' && !pre.parentElement.classList.contains('code-collapsible')) return;
 
                 const details = document.createElement('details');
@@ -1178,7 +1229,6 @@
                 const actions = document.createElement('div');
                 actions.className = 'code-actions';
 
-                // Add "Apply to File" button if applicable
                 const previousElement = pre.previousElementSibling;
                 if (previousElement && previousElement.tagName === 'P') {
                     const text = (previousElement.textContent || '').trim();
@@ -1245,8 +1295,6 @@
             });
         }
         
-
-
         function setGeneratingState(isGenerating) {
             messageInput.disabled = isGenerating;
             agentModeCheckbox.disabled = isGenerating;
@@ -1450,15 +1498,32 @@
             }
 
             updateSearchCount();
-        }
-        
+        }        
         function displayPlan(plan) {
             const existingPlan = chatMessagesContainer.querySelector('.plan-wrapper');
             if (existingPlan) {
                 existingPlan.remove();
             }
 
-            if (!plan) {
+            if (!plan) return;
+
+            if (plan.tasks.length === 0) {
+                 const planWrapper = document.createElement('div');
+                planWrapper.className = 'plan-wrapper';
+                planWrapper.innerHTML = `
+                    <details class="plan-container-details" open>
+                        <summary class="plan-header"><span class="codicon codicon-sync spin"></span> Agent Execution Plan</summary>
+                        <div class="plan-body">
+                           <div class="plan-objective"><b>Objective:</b> ${DOMPurify.sanitize(plan.objective)}</div>
+                           <div class="plan-scratchpad">
+                                <h3>Agent Status</h3>
+                                ${DOMPurify.sanitize(marked.parse(plan.scratchpad))}
+                           </div>
+                        </div>
+                    </details>
+                `;
+                chatMessagesContainer.appendChild(planWrapper);
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
                 return;
             }
             
@@ -1471,15 +1536,26 @@
                         </details>
                     </div>
                 ` : '';
+
+                let retryButtonHtml = '';
+                if (task.status === 'failed' && task.can_retry) {
+                    retryButtonHtml = `<button class="retry-btn" data-task-id="${task.id}" title="Retry this task"><span class="codicon codicon-debug-restart"></span>Retry</button>`;
+                } else if (task.status === 'failed' && !task.can_retry) {
+                     retryButtonHtml = `<span style="font-size:0.9em; opacity:0.7;">(Retries exhausted)</span>`;
+                }
+
                 return `
                     <div class="plan-task" data-task-id="${task.id}">
-                        <div class="plan-task-header">
-                           <div class="task-status">${getStatusIcon(task.status)}</div>
-                            <div class="task-description">
-                                <strong>${task.id ? task.id + '.' : ''} ${DOMPurify.sanitize(task.description)}</strong>
+                        <div class="task-status">${getStatusIcon(task.status)}</div>
+                        <div class="task-main">
+                            <div class="task-description-wrapper">
+                                <div class="task-description">
+                                    <strong>${task.id}. ${DOMPurify.sanitize(task.description)}</strong>
+                                </div>
+                                ${retryButtonHtml}
                             </div>
+                            ${resultHtml}
                         </div>
-                        ${resultHtml}
                     </div>`;
             }).join('');
             
@@ -1497,7 +1573,7 @@
                     <summary class="plan-header">📝 Agent Execution Plan</summary>
                     <div class="plan-body">
                        <div class="plan-objective"><b>Objective:</b> ${DOMPurify.sanitize(plan.objective)}</div>
-                       ${tasksHtml}
+                       <div id="plan-tasks-container">${tasksHtml}</div>
                        ${scratchpadHtml}
                     </div>
                 </details>
@@ -1507,10 +1583,19 @@
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
 
-        // Use event delegation for all dynamic buttons
         chatMessagesContainer.addEventListener('click', (e) => {
             const target = e.target.closest('button');
             if (!target) return;
+            
+            if (target.classList.contains('retry-btn')) {
+                vscode.postMessage({
+                    command: 'retryAgentTask',
+                    taskId: target.dataset.taskId
+                });
+                target.disabled = true;
+                target.innerHTML = `<span class="codicon codicon-sync spin"></span> Retrying...`;
+                return;
+            }
             
             const codeCollapsible = target.closest('.code-collapsible');
             const codeBlock = codeCollapsible ? codeCollapsible.querySelector('code') : null;
@@ -1552,7 +1637,6 @@
                  });
             }
 
-            // --- New: Handle Image Generation Button ---
             if (target.classList.contains('generation-btn')) {
                 const prompt = target.dataset.prompt;
                 const filepath = target.dataset.filepath;
@@ -1562,10 +1646,11 @@
                     command: 'generateImage',
                     prompt: prompt,
                     filePath: filepath,
-                    buttonId: target.id || (target.id = `gen-${Date.now()}`) // Assign an ID if it doesn't have one
+                    buttonId: target.id || (target.id = `gen-${Date.now()}`) 
                 });
             }
         });
+        
 
         document.addEventListener('keydown', e => {
             if (e.ctrlKey || e.metaKey) {
@@ -1696,7 +1781,7 @@
                     const attachmentCount = attachmentsContainer.children.length;
                     if (attachmentCount > 0) {
                         attachmentsWrapper.style.display = 'block';
-                        document.getElementById('attachments-summary').textContent = `📎 Attachments (${attachmentCount})`;
+                        document.getElementById('attachments-summary').textContent = `📎 Added Files (${attachmentCount})`;
                     } else {
                         attachmentsWrapper.style.display = 'none';
                     }

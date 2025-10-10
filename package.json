@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.4.5",
+  "version": "0.4.7",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -540,6 +540,11 @@
           "command": "lollms-vs-coder.deletePromptGroup",
           "when": "(view == lollmsChatPromptsView || view == lollmsCodeActionsView) && viewItem == 'promptGroup'",
           "group": "9_delete"
+        },
+        {
+          "command": "lollms-vs-coder.deletePrompt",
+          "when": "(view == lollmsChatPromptsView || view == lollmsCodeActionsView) && viewItem == 'prompt'",
+          "group": "9_delete"
         }
       ]
     },
@@ -553,7 +558,7 @@
     "submenus": [
       {
         "id": "lollms-vs-coder.setContextSubmenu",
-        "label": "Lollms"
+        "label": "%menu.lollmsAIContext.title%"
       }
     ]
   },
@@ -562,7 +567,7 @@
     "compile": "npm run copy-assets && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap",
     "watch": "npm run copy-assets && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap --watch",
     "esbuild-package": "npm run copy-assets && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --minify",
-    "copy-assets": "cpx \"src/**/*.html\" out && cpx \"l10n/**\" out/l10n",
+    "copy-assets": "cpx \"src/**/*.html\" out && cpx \"l10n/**\" out/l10n && cpx \"media/**\" out/media",
     "package": "npx @vscode/vsce package",
     "pretest": "npm run compile && npm audit",
     "test": "node ./out/test/runTest.js",

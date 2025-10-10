@@ -20,6 +20,7 @@ interface Task {
     status: 'pending' | 'in_progress' | 'completed' | 'failed';
     result: string | null;
     retries: number;
+    can_retry?: boolean; // NEW property
 }
 
 export class AgentManager {
@@ -29,6 +30,7 @@ export class AgentManager {
     private planParser: PlanParser;
     private processManager?: ProcessManager;
     private currentWorkspaceFolder?: vscode.WorkspaceFolder;
+    private currentTaskIndex: number = 0; // NEW: Make this a class member
 
     constructor(
         private chatPanel: ChatPanel,
@@ -96,17 +98,51 @@ export class AgentManager {
         }
     }
 
-    private async executePlan() {
+    public async retryFailedTask(taskId: number) {
+        if (!this.currentPlan) {
+            console.error("Cannot retry: No active plan.");
+            return;
+        }
+
+        const failedTaskIndex = this.currentPlan.tasks.findIndex(t => t.id === taskId);
+        if (failedTaskIndex === -1) {
+            console.error(`Cannot retry: Task with ID ${taskId} not found.`);
+            return;
+        }
+        
+        const failedTask = this.currentPlan.tasks[failedTaskIndex];
+        if (failedTask.status !== 'failed' || !failedTask.can_retry) {
+            console.error("Invalid task to retry.", failedTask);
+            return;
+        }
+
+        // Update UI state for retry
+        failedTask.status = 'in_progress';
+        failedTask.retries++;
+        failedTask.can_retry = false; // Prevent multiple clicks
+        this.chatPanel.displayPlan(this.currentPlan);
+        
+        const revisionSucceeded = await this.revisePlanForFailure(failedTask);
+        if (revisionSucceeded) {
+            // Plan has been revised, resume execution from the point of failure
+            await this.executePlan(failedTaskIndex);
+        } else {
+            this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🛑 **Execution Halted:** Failed to generate a revised plan.` });
+            this.deactivateAgent();
+        }
+    }
+
+    private async executePlan(startIndex: number = 0) {
         if (!this.currentPlan) return;
-
-        let currentTaskIndex = 0;
-        while (currentTaskIndex < this.currentPlan.tasks.length) {
-            const task = this.currentPlan.tasks[currentTaskIndex];
-
+    
+        this.currentTaskIndex = startIndex;
+        while (this.currentTaskIndex < this.currentPlan.tasks.length) {
+            const task = this.currentPlan.tasks[this.currentTaskIndex];
+    
             if (task.status === 'pending') {
                 task.status = 'in_progress';
                 this.chatPanel.displayPlan(this.currentPlan);
-                
+    
                 let result: { success: boolean; output: string; };
                 try {
                     const resolvedParams = this.resolveParameters(task);
@@ -115,55 +151,52 @@ export class AgentManager {
                 } catch (error: any) {
                     result = { success: false, output: error.message };
                 }
-
+    
                 task.result = result.output;
                 task.status = result.success ? 'completed' : 'failed';
-                
+    
                 this.currentPlan.scratchpad += `\n\nTask ${task.id} (${task.action}) ${task.status}. Result:\n${result.output}`;
                 this.chatPanel.displayPlan(this.currentPlan);
-
+    
                 if (!result.success) {
                     const maxRetries = vscode.workspace.getConfiguration('lollmsVsCoder').get<number>('agentMaxRetries') || 1;
                     if (task.retries < maxRetries) {
-                        task.retries++;
-                        const revisionSucceeded = await this.revisePlanForFailure(task);
-                        if (!revisionSucceeded) {
-                            this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🛑 **Execution Halted:** Failed to generate a revised plan.` });
-                            this.deactivateAgent();
-                            return;
-                        }
-                        continue; 
+                        task.can_retry = true;
+                        this.chatPanel.displayPlan(this.currentPlan);
+                        return; // Halt execution and wait for user intervention via UI
                     } else {
+                        task.can_retry = false;
+                        this.chatPanel.displayPlan(this.currentPlan);
+    
                         let userChoice: string | undefined = '';
                         while (userChoice !== 'Stop' && userChoice !== 'Continue Anyway') {
                             userChoice = await vscode.window.showErrorMessage(
-                                `Agent task "${task.description}" failed after ${task.retries} self-correction attempts. What should I do?`,
+                                `Agent task "${task.description}" failed after ${task.retries + 1} attempt(s). What should I do?`,
                                 { modal: true },
                                 'Stop', 'Continue Anyway', 'View Log'
                             );
-
+    
                             if (userChoice === 'View Log') {
                                 InfoPanel.createOrShow(this.extensionUri, `Log for Failed Task: ${task.id}`, `## Task Description\n${task.description}\n\n## Failure Log\n\`\`\`\n${task.result || 'No output available.'}\n\`\`\``);
                             } else if (userChoice === undefined) {
                                 userChoice = 'Stop';
                             }
                         }
-
+    
                         if (userChoice === 'Stop') {
-                            this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🛑 **Execution Halted:** User chose to stop after ${task.retries} failed attempts.` });
+                            this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🛑 **Execution Halted:** User chose to stop after failed attempts.` });
                             this.deactivateAgent();
                             return;
                         }
                     }
                 }
             }
-            currentTaskIndex++;
+            this.currentTaskIndex++;
         }
-
+    
         this.chatPanel.addMessageToDiscussion({ role: 'system', content: '✅ **Plan Complete:** All tasks have been executed.' });
         this.deactivateAgent();
     }
-
     private async revisePlanForFailure(failedTask: Task): Promise<boolean> {
         if (!this.currentPlan) return false;
         
@@ -402,7 +435,7 @@ export class AgentManager {
                     return { success: false, output: "Error: 'objective' parameter is required for auto-selecting files." };
                 }
             
-                const fileTreeProvider = this.contextManager.getFileTreeProvider();
+                const fileTreeProvider = this.contextManager.getContextStateProvider();
                 if (!fileTreeProvider) {
                     return { success: false, output: "Error: File Tree Provider is not available." };
                 }

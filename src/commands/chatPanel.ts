@@ -114,11 +114,7 @@ export class ChatPanel {
         
         this.displayPlan(null);
         this.updateGeneratingState();
-        this._panel.webview.postMessage({
-            command: 'updateTokenProgress',
-            totalTokens: 'N/A',
-            contextSize: 'N/A'
-        });
+        this._updateContextAndTokens();
     }
   }
   public async startNewDiscussion(groupId: string | null = null): Promise<void> {
@@ -128,11 +124,7 @@ export class ChatPanel {
     this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
     this.displayPlan(null); // Clear plan for new discussion
     this.updateGeneratingState();
-    this._panel.webview.postMessage({
-        command: 'updateTokenProgress',
-        totalTokens: 'N/A',
-        contextSize: 'N/A'
-    });
+    this._updateContextAndTokens();
   }
   
   private _updateContextAndTokens() {
@@ -675,6 +667,11 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             this.agentManager.run(message.objective, this._currentDiscussion?.messages || [], activeWorkspaceFolder);
           }
           break;
+        case 'retryAgentTask':
+            if (this.agentManager) {
+                this.agentManager.retryFailedTask(parseInt(message.taskId, 10));
+            }
+            break;
         case 'displayPlan':
             this.displayPlan(message.plan);
             break;

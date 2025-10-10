@@ -8,6 +8,7 @@
     "command.generateCommitMessage.title": "Lollms: إنشاء رسالة Commit",
     "command.commitWithAIMessage.title": "Lollms: تثبيت التغييرات المرحلية برسالة من الذكاء الاصطناعي",
     "command.recreateClient.title": "إعادة إنشاء عميل LollmsAPI",
+    "command.refresh.title": "تحديث",
     "command.showConfigView.title": "Lollms: فتح الإعدادات",
     "command.showHelp.title": "Lollms: إظهار المساعدة",
     "command.exportContextContent.title": "Lollms: تصدير السياق إلى الحافظة",

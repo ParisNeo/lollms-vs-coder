@@ -271,7 +271,7 @@ export class LollmsAPI {
     const timeout = setTimeout(() => controller.abort(), timeoutDuration);
 
     if (signal) {
-      signal.addEventListener('abort', () => controller.abort());
+      signal.onabort = () => controller.abort();
     }
 
     try {

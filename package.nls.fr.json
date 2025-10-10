@@ -8,6 +8,7 @@
     "command.generateCommitMessage.title": "Lollms: Générer un Message de Commit",
     "command.commitWithAIMessage.title": "Lollms: Commiter les Changements Préparés avec un Message de l'IA",
     "command.recreateClient.title": "Recréer le Client LollmsAPI",
+    "command.refresh.title": "Actualiser",
     "command.showConfigView.title": "Lollms: Ouvrir les Paramètres",
     "command.showHelp.title": "Lollms: Afficher l'Aide",
     "command.exportContextContent.title": "Lollms: Exporter le Contexte vers le Presse-papiers",

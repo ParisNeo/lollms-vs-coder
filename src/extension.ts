@@ -17,7 +17,7 @@ import { CodeActionTreeProvider } from './commands/codeActionTreeProvider';
 import { PromptItem, PromptGroupItem, ProcessItem } from './commands/treeItems';
 import { HelpPanel } from './commands/helpPanel';
 import { PromptBuilderPanel, parsePlaceholders } from './commands/promptBuilderPanel';
-import { CodeActionProvider } from './commands/codeActions';
+import { LollmsCodeActionProvider } from './commands/codeActions';
 import { LollmsInlineCompletionProvider } from './commands/inlineSuggestions';
 import { AgentManager } from './agentManager';
 import { InlineDiffProvider } from './commands/inlineDiffProvider';
@@ -42,6 +42,7 @@ let pythonExtApi: any = null;
 
 async function buildCodeActionPrompt(
     promptTemplate: string, 
+    actionType: 'generation' | 'information' | undefined,
     editor: vscode.TextEditor, 
     extensionUri: vscode.Uri,
     contextManager: ContextManager
@@ -65,30 +66,42 @@ async function buildCodeActionPrompt(
     const selectedText = document.getText(selection);
     const fileName = path.basename(document.fileName);
     const languageId = document.languageId;
-    const startLine = Math.max(0, selection.start.line - 10);
-    const endLine = Math.min(document.lineCount - 1, selection.end.line + 10);
-    const beforeRange = new vscode.Range(new vscode.Position(startLine, 0), selection.start);
-    const afterRange = new vscode.Range(selection.end, new vscode.Position(endLine, document.lineAt(endLine).text.length));
-    const codeBefore = document.getText(beforeRange);
-    const codeAfter = document.getText(afterRange);
     
-    let userPrompt = `I am working on the file \`${fileName}\` which is a \`${languageId}\` file.\n\n`;
+    let userPrompt = `I am working on the file \`${fileName}\` which is a \`${languageId}\` file.\n\nHere is the code selection:\n\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\nINSTRUCTION: **${userInstruction}**`;
 
-    if (codeBefore.trim()) {
-        userPrompt += `==== CONTEXT BEFORE (DO NOT INCLUDE IN OUTPUT) ====\n\`\`\`${languageId}\n${codeBefore}\n\`\`\`\n\n`;
-    }
-
-    userPrompt += `==== SELECTED CODE TO MODIFY (MODIFY THIS ONLY) ====\n\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\n`;
-
-    if (codeAfter.trim()) {
-        userPrompt += `==== CONTEXT AFTER (DO NOT INCLUDE IN OUTPUT) ====\n\`\`\`${languageId}\n${codeAfter}\n\`\`\`\n\n`;
-    }
-
-    userPrompt += `INSTRUCTION: **${userInstruction}**\n\n`;
-    userPrompt += `⚠️ CRITICAL: Your response must contain ONLY the modified selected code block. Do not include any BEFORE or AFTER context code in your response.`;
-    
     const agentPersonaPrompt = getProcessedSystemPrompt('agent');
-    let systemPrompt = `You are a surgical code modification tool. You must modify ONLY the selected code block and return ONLY that modified block.
+    let systemPrompt = '';
+
+    if (actionType === 'information') {
+        userPrompt += `\n\nPlease provide a detailed answer in Markdown format.`;
+        systemPrompt = `You are an expert code analyst. Your task is to answer questions and provide explanations about a given code snippet.
+- Analyze the user's instruction and the provided code.
+- Respond with a clear, well-formatted Markdown explanation.
+- If you include code examples, use appropriate markdown code blocks.
+
+User preferences: ${agentPersonaPrompt}`;
+    } else { // Default to 'generation'
+        const startLine = Math.max(0, selection.start.line - 10);
+        const endLine = Math.min(document.lineCount - 1, selection.end.line + 10);
+        const beforeRange = new vscode.Range(new vscode.Position(startLine, 0), selection.start);
+        const afterRange = new vscode.Range(selection.end, new vscode.Position(endLine, document.lineAt(endLine).text.length));
+        const codeBefore = document.getText(beforeRange);
+        const codeAfter = document.getText(afterRange);
+        
+        userPrompt = `I am working on the file \`${fileName}\` which is a \`${languageId}\` file.\n\n`;
+
+        if (codeBefore.trim()) {
+            userPrompt += `==== CONTEXT BEFORE (DO NOT INCLUDE IN OUTPUT) ====\n\`\`\`${languageId}\n${codeBefore}\n\`\`\`\n\n`;
+        }
+        userPrompt += `==== SELECTED CODE TO MODIFY (MODIFY THIS ONLY) ====\n\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\n`;
+        if (codeAfter.trim()) {
+            userPrompt += `==== CONTEXT AFTER (DO NOT INCLUDE IN OUTPUT) ====\n\`\`\`${languageId}\n${codeAfter}\n\`\`\`\n\n`;
+        }
+
+        userPrompt += `INSTRUCTION: **${userInstruction}**\n\n`;
+        userPrompt += `⚠️ CRITICAL: Your response must contain ONLY the modified selected code block. Do not include any BEFORE or AFTER context code in your response.`;
+
+        systemPrompt = `You are a surgical code modification tool. You must modify ONLY the selected code block and return ONLY that modified block.
 
 ## STRICT OUTPUT RULES
 - Return ONLY the modified selected code in a single markdown code block
@@ -97,32 +110,12 @@ async function buildCodeActionPrompt(
 - NEVER add explanations, comments, or text outside the code block
 - The first line of your response must be the opening code fence: \`\`\`${languageId}
 - The last line of your response must be the closing code fence: \`\`\`
-
-## INPUT UNDERSTANDING
-You receive three sections:
-1. **CONTEXT BEFORE**: Reference only - helps you understand the code structure
-2. **SELECTED CODE**: The ONLY code you should modify and return
-3. **CONTEXT AFTER**: Reference only - helps ensure compatibility
-
-## MODIFICATION REQUIREMENTS
-- Apply the instruction precisely to the selected code only
-- Preserve original indentation and formatting style
-- Maintain compatibility with the surrounding context
-- Keep all variable names, imports, and structure unless instructed otherwise
-- Ensure the modified code is syntactically correct
-
-## FORBIDDEN ACTIONS
-- Do NOT return any BEFORE context code
-- Do NOT return any AFTER context code  
-- Do NOT add explanatory text
 - Do NOT use placeholder comments like "// rest of code"
-- Do NOT include line numbers or file headers
 
 Your entire response must be executable code that can directly replace the selected text.
 
-
-User preferences: ${agentPersonaPrompt}
-`;
+User preferences: ${agentPersonaPrompt}`;
+    }
     
     return { systemPrompt, userPrompt };
 }
@@ -178,8 +171,12 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.acceptDiff', () => inlineDiffProvider.accept()));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.rejectDiff', () => inlineDiffProvider.reject()));
 
-    const codeActionProvider = new CodeActionProvider();
-    context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file', language: '*' }, codeActionProvider));
+    context.subscriptions.push(
+        vscode.languages.registerCodeActionsProvider('*', 
+            new LollmsCodeActionProvider(promptManager), {
+            providedCodeActionKinds: LollmsCodeActionProvider.providedCodeActionKinds
+        })
+    );
     
     if (config.get<boolean>('enableInlineSuggestions')) {
         const inlineProvider = new LollmsInlineCompletionProvider(lollmsAPI);
@@ -408,15 +405,50 @@ export async function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refreshDiscussions', () => discussionTreeProvider?.refresh()));
     
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.triggerCodeAction', async (prompt?: Prompt) => {
+context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.triggerCodeAction', async (promptOrArg?: Prompt | { isCustom: true }) => {
         const editor = vscode.window.activeTextEditor;
         if (!editor || editor.selection.isEmpty) {
             vscode.window.showInformationMessage(vscode.l10n.t("info.selectCodeForAction"));
             return;
         }
     
-        let targetPrompt: Prompt | undefined = prompt;
-        if (!targetPrompt) {
+        let targetPrompt: Prompt | undefined;
+
+        // Case 1: The "Custom Action..." menu item was clicked directly.
+        if (promptOrArg && (promptOrArg as { isCustom: true }).isCustom === true) {
+            const customActionData = await CustomActionModal.createOrShow(context.extensionUri);
+            if (!customActionData) return; // User cancelled
+    
+            if (customActionData.save && customActionData.title) {
+                const data = await promptManager.getData();
+                const newPrompt: Prompt = {
+                    id: Date.now().toString() + Math.random().toString(36).substring(2),
+                    groupId: null,
+                    title: customActionData.title,
+                    content: `${customActionData.prompt}\n{{SELECTED_CODE}}`,
+                    type: 'code_action',
+                    action_type: customActionData.actionType
+                };
+                data.prompts.push(newPrompt);
+                await promptManager.saveData(data);
+                chatPromptTreeProvider.refresh();
+                codeActionTreeProvider.refresh();
+                vscode.window.showInformationMessage(vscode.l10n.t('info.promptSaved', customActionData.title));
+            }
+            
+            targetPrompt = {
+                id: 'custom',
+                title: customActionData.save ? customActionData.title : vscode.l10n.t('title.customAction'),
+                content: `${customActionData.prompt}\n{{SELECTED_CODE}}`,
+                type: 'code_action',
+                action_type: customActionData.actionType,
+                groupId: null
+            };
+        // Case 2: A specific, pre-defined prompt was passed as an argument.
+        } else if (promptOrArg) {
+            targetPrompt = promptOrArg as Prompt;
+        // Case 3: The command was called without arguments (e.g., from Command Palette).
+        } else {
             const codePrompts = await promptManager.getCodeActionPrompts();
             const items = codePrompts.map(p => ({ label: p.title, description: p.content, prompt: p }));
             const selection = await vscode.window.showQuickPick(
@@ -462,7 +494,13 @@ export async function activate(context: vscode.ExtensionContext) {
     
         if (!targetPrompt) { return; }
 
-        const promptData = await buildCodeActionPrompt(targetPrompt.content, editor, context.extensionUri, contextManager);
+        // FIX: Add a guard against malformed prompt objects that might lack a 'content' property.
+        if (typeof targetPrompt.content !== 'string') {
+            vscode.window.showErrorMessage(`Lollms Action '${targetPrompt.title}' is missing its prompt content. Please check your prompts.json file.`);
+            return;
+        }
+
+        const promptData = await buildCodeActionPrompt(targetPrompt.content, targetPrompt.action_type, editor, context.extensionUri, contextManager);
         if (promptData === null) return;
         const { systemPrompt, userPrompt } = promptData;
     

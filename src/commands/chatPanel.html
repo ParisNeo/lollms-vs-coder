@@ -641,16 +641,41 @@
         #welcome-message ul { padding-left: 20px; margin: 10px 0 0 0; }
         #welcome-message li { margin-bottom: 5px; }
 
-        .plan-scratchpad {
+        .plan-scratchpad-details {
+            margin-top: 15px;
+            border-top: 1px solid var(--vscode-panel-border);
+            padding-top: 10px;
+        }
+        .plan-scratchpad-details > summary {
+            cursor: pointer;
+            font-weight: 600;
+            list-style: none;
+            color: var(--vscode-descriptionForeground);
+        }
+        .plan-scratchpad-details > summary::-webkit-details-marker {
+            display: none;
+        }
+        .plan-scratchpad-details > summary::before {
+            content: '▶';
+            margin-right: 8px;
+            font-size: 0.8em;
+            display: inline-block;
+            transition: transform 0.2s;
+        }
+        .plan-scratchpad-details[open] > summary::before {
+            transform: rotate(90deg);
+        }
+        .plan-scratchpad-content {
+            margin-top: 10px;
             font-size: 0.9em;
             color: var(--vscode-descriptionForeground);
-            margin-top: 15px;
-            padding-top: 15px;
-            border-top: 1px solid var(--vscode-panel-border);
             white-space: pre-wrap;
             word-wrap: break-word;
+            padding: 10px;
+            background-color: var(--vscode-textCodeBlock-background);
+            border-radius: 4px;
         }
-        .plan-scratchpad h3 { margin-top: 0; font-size: 1em; font-weight: 600; }
+
         #chat-messages-container {
             display: flex;
             flex-direction: column;
@@ -1513,6 +1538,20 @@
             }
 
             if (!plan) return;
+            
+            let scratchpadHtml = '';
+            if (plan.scratchpad) {
+                const summaryText = plan.tasks.length === 0 ? "Agent Status & Scratchpad" : "View Agent Scratchpad";
+                scratchpadHtml = `
+                    <details class="plan-scratchpad-details">
+                        <summary>${summaryText}</summary>
+                        <div class="plan-scratchpad-content">
+                            ${DOMPurify.sanitize(marked.parse(plan.scratchpad))}
+                        </div>
+                    </details>
+                `;
+            }
+
 
             if (plan.tasks.length === 0) {
                  const planWrapper = document.createElement('div');
@@ -1522,10 +1561,7 @@
                         <summary class="plan-header"><span class="codicon codicon-sync spin"></span> Agent Execution Plan</summary>
                         <div class="plan-body">
                            <div class="plan-objective"><b>Objective:</b> ${DOMPurify.sanitize(plan.objective)}</div>
-                           <div class="plan-scratchpad">
-                                <h3>Agent Status</h3>
-                                ${DOMPurify.sanitize(marked.parse(plan.scratchpad))}
-                           </div>
+                           ${scratchpadHtml}
                         </div>
                     </details>
                 `;
@@ -1565,13 +1601,6 @@
                         </div>
                     </div>`;
             }).join('');
-            
-            const scratchpadHtml = plan.scratchpad ? `
-                <div class="plan-scratchpad">
-                    <h3>Agent Scratchpad</h3>
-                    ${DOMPurify.sanitize(marked.parse(plan.scratchpad))}
-                </div>
-            ` : '';
             
             const planWrapper = document.createElement('div');
             planWrapper.className = 'plan-wrapper';

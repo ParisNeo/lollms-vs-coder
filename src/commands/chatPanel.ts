@@ -1,4 +1,3 @@
-
 // src/commands/chatPanel.ts
 import * as vscode from 'vscode';
 import { LollmsAPI, ChatMessage } from '../lollmsAPI';
@@ -672,9 +671,35 @@ Your task is to re-analyze your previous code suggestion in light of this new er
           this.agentManager.toggleAgentMode();
           break;
         case 'runAgent':
-          await this.sendMessage(message.message);
+          if (!this._currentDiscussion) {
+            vscode.window.showErrorMessage("No active discussion. Please start a new one.");
+            this.updateGeneratingState();
+            return;
+          }
+          // Add the user's message to the discussion history
+          this._currentDiscussion.messages.push(message.message);
+          this._currentDiscussion.timestamp = Date.now();
+          await this._discussionManager.saveDiscussion(this._currentDiscussion);
+          vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
+          // If it's the first message, generate a title
+          const isFirstMessage = this._currentDiscussion.messages.filter(m => m.role !== 'system').length <= 1;
+          if (isFirstMessage) {
+            (async () => {
+              const newTitle = await this._discussionManager.generateDiscussionTitle(this._currentDiscussion!);
+              if (newTitle && this._currentDiscussion) {
+                this._currentDiscussion.title = newTitle;
+                this._panel.title = newTitle;
+                await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
+              }
+            })();
+          }
+          // Now run the agent
           if (activeWorkspaceFolder) {
             this.agentManager.run(message.objective, this._currentDiscussion?.messages || [], activeWorkspaceFolder);
+          } else {
+            this.addMessageToDiscussion({ role: 'system', content: 'Agent requires an active workspace folder to run.' });
+            this.updateGeneratingState();
           }
           break;
         case 'retryAgentTask':

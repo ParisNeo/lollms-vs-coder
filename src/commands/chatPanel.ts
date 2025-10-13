@@ -96,6 +96,11 @@ export class ChatPanel {
                 needsSave = true;
             }
         });
+        if (!('plan' in discussion)) {
+            discussion.plan = null;
+            needsSave = true;
+        }
+
 
         if (needsSave) {
             await this._discussionManager.saveDiscussion(discussion);
@@ -113,7 +118,7 @@ export class ChatPanel {
             isInspectorEnabled: isInspectorEnabled 
         });
         
-        this.displayPlan(null);
+        this.displayPlan(discussion.plan);
         this.updateGeneratingState();
         this._updateContextAndTokens();
     } else {
@@ -696,7 +701,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
           }
           // Now run the agent
           if (activeWorkspaceFolder) {
-            this.agentManager.run(message.objective, this._currentDiscussion?.messages || [], activeWorkspaceFolder);
+            this.agentManager.run(message.objective, this._currentDiscussion, activeWorkspaceFolder);
           } else {
             this.addMessageToDiscussion({ role: 'system', content: 'Agent requires an active workspace folder to run.' });
             this.updateGeneratingState();

@@ -8,7 +8,7 @@ import { GitIntegration } from './gitIntegration';
 import { applyDiff, getProcessedSystemPrompt, stripThinkingTags } from './utils';
 import { ContextStateProvider } from './commands/contextStateProvider';
 import { FileDecorationProvider } from './commands/fileDecorationProvider';
-import { DiscussionManager } from './discussionManager';
+import { DiscussionManager, Discussion } from './discussionManager';
 import { DiscussionTreeProvider, DiscussionItem, DiscussionGroupItem } from './commands/discussionTreeProvider';
 import { ScriptRunner } from './scriptRunner';
 import { PromptManager, Prompt } from './promptManager';
@@ -199,7 +199,7 @@ export async function activate(context: vscode.ExtensionContext) {
     
     const setupChatPanel = (panel: ChatPanel) => {
         if (!panel.agentManager) {
-            panel.agentManager = new AgentManager(panel, lollmsAPI, contextManager, gitIntegration, context.extensionUri);
+            panel.agentManager = new AgentManager(panel, lollmsAPI, contextManager, gitIntegration, discussionManager!, context.extensionUri);
         }
         panel.setProcessManager(processManager);
         panel.agentManager.setProcessManager(processManager);
@@ -311,9 +311,13 @@ export async function activate(context: vscode.ExtensionContext) {
         await panel.loadDiscussion(discussionId);
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms.runAgentCommand', (objective: string, messages: ChatMessage[]) => {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.selectPythonInterpreter', () => {
+        vscode.commands.executeCommand('python.setInterpreter');
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms.runAgentCommand', (objective: string, discussion: Discussion) => {
         if (ChatPanel.currentPanel?.agentManager && activeWorkspaceFolder) {
-            ChatPanel.currentPanel.agentManager.run(objective, messages, activeWorkspaceFolder);
+            ChatPanel.currentPanel.agentManager.run(objective, discussion, activeWorkspaceFolder);
         } else if (!activeWorkspaceFolder) {
             vscode.window.showErrorMessage("Cannot run Agent: No active Lollms workspace.");
         }
@@ -894,6 +898,9 @@ context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.trig
         const fileUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, filePath);
     
         try {
+            const parentUri = vscode.Uri.joinPath(fileUri, '..');
+            await vscode.workspace.fs.createDirectory(parentUri);
+            
             let document: vscode.TextDocument;
             try {
                 document = await vscode.workspace.openTextDocument(fileUri);

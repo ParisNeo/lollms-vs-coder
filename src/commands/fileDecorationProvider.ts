@@ -1,57 +1,40 @@
 import * as vscode from 'vscode';
 import { ContextStateProvider, ContextState } from './contextStateProvider';
 
-/**
- * Provides file decorations (badges, tooltips) in the Explorer view
- * to indicate the AI context state of files and folders.
- */
 export class FileDecorationProvider implements vscode.FileDecorationProvider {
-    private _onDidChangeFileDecorations: vscode.EventEmitter<vscode.Uri | vscode.Uri[] | undefined> = new vscode.EventEmitter();
-    readonly onDidChangeFileDecorations: vscode.Event<vscode.Uri | vscode.Uri[] | undefined> = this._onDidChangeFileDecorations.event;
-    private disposable: vscode.Disposable | undefined;
+    private _onDidChangeFileDecorations: vscode.EventEmitter<vscode.Uri | vscode.Uri[]> = new vscode.EventEmitter<vscode.Uri | vscode.Uri[]>();
+    readonly onDidChangeFileDecorations: vscode.Event<vscode.Uri | vscode.Uri[]> = this._onDidChangeFileDecorations.event;
 
-    constructor(private stateProvider: ContextStateProvider | undefined) {
-        if (this.stateProvider) {
-            this.disposable = this.stateProvider.onDidChangeState((uri) => this._onDidChangeFileDecorations.fire(uri));
-        }
+    private stateProvider: ContextStateProvider | undefined;
+    private disposables: vscode.Disposable[] = [];
+
+    constructor(provider: ContextStateProvider | undefined) {
+        this.updateStateProvider(provider);
     }
 
-    /**
-     * Called by the extension's activation logic to link this decoration provider
-     * with the state management provider.
-     * @param provider The active ContextStateProvider.
-     */
-    public updateStateProvider(provider: ContextStateProvider) {
-        if (this.disposable) {
-            this.disposable.dispose();
-        }
-        
+    public updateStateProvider(provider: ContextStateProvider | undefined) {
+        // Dispose of the old listener if it exists
+        this.disposables.forEach(d => d.dispose());
+        this.disposables = [];
+
         this.stateProvider = provider;
-        
+
         if (this.stateProvider) {
-            this.disposable = this.stateProvider.onDidChangeState((uri) => {
-                this._onDidChangeFileDecorations.fire(uri);
+            // Correctly listen to the onDidChangeFileDecorations event
+            const disposable = this.stateProvider.onDidChangeFileDecorations(e => {
+                // When the state provider fires an event, we fire our own to tell VS Code to update decorations
+                this._onDidChangeFileDecorations.fire(e);
             });
+            this.disposables.push(disposable);
         }
-        
-        // FIX: When the provider is updated (e.g., on startup or workspace switch),
-        // fire an event to tell VS Code to refresh all visible file decorations.
-        // This ensures the UI is immediately consistent with the current state.
-        this._onDidChangeFileDecorations.fire(undefined); 
     }
-    
-    /**
-     * Provides the decoration for a given file URI.
-     * @param uri The URI of the file or folder to decorate.
-     * @returns A FileDecoration object or undefined if no decoration is needed.
-     */
-    public async provideFileDecoration(uri: vscode.Uri): Promise<vscode.FileDecoration | undefined> {
-        // Don't decorate if we don't have a state provider or the file isn't in the workspace
-        if (!this.stateProvider || !vscode.workspace.getWorkspaceFolder(uri)) {
+
+    provideFileDecoration(uri: vscode.Uri, token: vscode.CancellationToken): vscode.ProviderResult<vscode.FileDecoration> {
+        if (!this.stateProvider) {
             return undefined;
         }
 
-        const state = this.stateProvider.getStateForUri(uri);
+        const state: ContextState = this.stateProvider.getStateForUri(uri);
 
         switch (state) {
             case 'included':
@@ -60,8 +43,8 @@ export class FileDecorationProvider implements vscode.FileDecorationProvider {
                 return new vscode.FileDecoration('⊘', 'Excluded from AI Context', new vscode.ThemeColor('gitDecoration.ignoredResourceForeground'));
             case 'tree-only':
             default:
-                // The default state has no decoration.
-                return undefined; 
+                // No decoration for the default 'tree-only' state
+                return undefined;
         }
     }
 }

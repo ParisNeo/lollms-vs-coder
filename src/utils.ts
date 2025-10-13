@@ -75,18 +75,27 @@ export function getProcessedSystemPrompt(promptType: 'chat' | 'agent' | 'inspect
     let personaKey = '';
 
     switch (promptType) {
-        case 'chat':
-            basePrompt = `**CRITICAL RESPONSE FORMATTING RULES:**
-1.  **For File Modifications (Creating or Overwriting):**
-    -   You MUST prefix your response with a single line in this EXACT format: \`File: path/to/the/file.ext\`
+        case 'chat': {
+            const fileUpdateMethod = config.get<string>('fileUpdateMethod') || 'full_file';
+            let updateInstructions = '';
+
+            if (fileUpdateMethod === 'patch') {
+                updateInstructions = `2.  **For Patches (Advanced):**
+    -   After your explanation, you MUST prefix your response with a single line: \`Patch: path/to/the/file.ext\`
+    -   Follow this with the content in a standard \`.diff\` format inside a code block.`;
+            } else { // Default to full_file
+                updateInstructions = `2.  **For File Modifications (Creating or Overwriting):**
+    -   After your explanation, you MUST prefix your code response with a single line in this EXACT format: \`File: path/to/the/file.ext\`
     -   This line MUST be on its own, followed by a newline.
     -   Immediately after, provide the new content in a single markdown code block.
     -   Your code block MUST contain the **entire, final content of the file** from beginning to end.
     -   **DO NOT use placeholders**, ellipses (...), or comments like "// ... keep existing code". The extension requires the full file content to apply changes correctly.
-    -   DO NOT add any conversational text or explanations before the \`File:\` line or after the code block.
-2.  **For Patches (Advanced):**
-    -   You MUST prefix your response with a single line: \`Patch: path/to/the/file.ext\`
-    -   Follow this with the content in a standard \`.diff\` format inside a code block.
+    -   DO NOT add any conversational text or explanations after the code block.`;
+            }
+
+            basePrompt = `**CRITICAL RESPONSE FORMATTING RULES:**
+1.  **Always Explain Your Code:** To foster learning and collaboration, before providing a code block for a file, first write a brief, friendly explanation of your plan, what the code does, and why you've chosen that approach.
+${updateInstructions}
 3.  **For Image Generation:**
     -   You MUST prefix your response with a \`File: path/to/image.png\` line.
     -   Follow this with a special code block of type \`image_prompt\`.
@@ -108,6 +117,14 @@ export function getProcessedSystemPrompt(promptType: 'chat' | 'agent' | 'inspect
             -   Example: \`[command:gitCommit]{"message": "feat(api): Add new endpoint for user profiles"}\`
     -   Use these commands when a direct action is more appropriate than just providing code or text.`;
             personaKey = 'chatPersona';
+            break;
+        }
+        case 'agent':
+        case 'inspector':
+        case 'commit':
+            // These prompts are defined in their respective managers/integrations
+            // and don't need a base here. We just need the persona.
+            personaKey = `${promptType}Persona`;
             break;
     }
 

@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -85,6 +85,10 @@
       {
         "command": "lollms-vs-coder.executeScript",
         "title": "%command.executeScript.title%"
+      },
+      {
+        "command": "lollms-vs-coder.selectPythonInterpreter",
+        "title": "%command.selectPythonInterpreter.title%"
       },
       {
         "command": "lollms-vs-coder.inspectCode",
@@ -245,6 +249,19 @@
       "type": "object",
       "title": "%config.title%",
       "properties": {
+        "lollmsVsCoder.fileUpdateMethod": {
+            "type": "string",
+            "default": "full_file",
+            "description": "%config.fileUpdateMethod.description%",
+            "enum": [
+                "full_file",
+                "patch"
+            ],
+            "enumDescriptions": [
+                "%config.fileUpdateMethod.full_file.description%",
+                "%config.fileUpdateMethod.patch.description%"
+            ]
+        },
         "lollmsVsCoder.enableCodeActions": {
           "type": "boolean",
           "default": true,

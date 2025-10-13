@@ -21,6 +21,7 @@ export class SettingsPanel {
     agentPersona: '',
     commitMessagePersona: '',
     contextFileExceptions: [] as string[],
+    fileUpdateMethod: 'full_file',
     language: 'auto'
   };
 
@@ -65,6 +66,7 @@ export class SettingsPanel {
     this._pendingConfig.agentPersona = config.get<string>('agentPersona') || '';
     this._pendingConfig.commitMessagePersona = config.get<string>('commitMessagePersona') || '';
     this._pendingConfig.contextFileExceptions = config.get<string[]>('contextFileExceptions') || [];
+    this._pendingConfig.fileUpdateMethod = config.get<string>('fileUpdateMethod') || 'full_file';
     this._pendingConfig.language = config.get<string>('language') || 'auto';
 
     this._panel.webview.html = this._getHtml(this._panel.webview, this._pendingConfig);
@@ -107,6 +109,7 @@ export class SettingsPanel {
                 await config.update('agentPersona', this._pendingConfig.agentPersona, vscode.ConfigurationTarget.Global);
                 await config.update('commitMessagePersona', this._pendingConfig.commitMessagePersona, vscode.ConfigurationTarget.Global);
                 await config.update('contextFileExceptions', this._pendingConfig.contextFileExceptions, vscode.ConfigurationTarget.Global);
+                await config.update('fileUpdateMethod', this._pendingConfig.fileUpdateMethod, vscode.ConfigurationTarget.Global);
                 await config.update('language', this._pendingConfig.language, vscode.ConfigurationTarget.Global);
   
                 vscode.window.showInformationMessage('Configuration saved. Recreating LollmsAPI...');
@@ -146,7 +149,7 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, modelName, disableSslVerification, noThinkMode, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language } = config;
+    const { apiKey, apiUrl, modelName, disableSslVerification, noThinkMode, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, fileUpdateMethod, language } = config;
 
     return `<!DOCTYPE html>
         <html lang="en">
@@ -235,7 +238,13 @@ export class SettingsPanel {
               </div>
               <p class="help-text">Prefixes all system prompts with the /no_think command for models that support it.</p>
               
-              <h2>Context</h2>
+              <h2>Context & File Strategy</h2>
+              <label for="fileUpdateMethod">File Update Method</label>
+              <select id="fileUpdateMethod">
+                <option value="full_file" ${fileUpdateMethod === 'full_file' ? 'selected' : ''}>Full File Content</option>
+                <option value="patch" ${fileUpdateMethod === 'patch' ? 'selected' : ''}>Diff Patch</option>
+              </select>
+              <p class="help-text">Choose how the AI provides file updates. 'Full File' is more reliable; 'Patch' uses fewer tokens.</p>
               <label for="maxImageSize">Max Image Size (px)</label>
               <input type="number" id="maxImageSize" value="${maxImageSize}" min="0" step="128" />
               <p class="help-text">Resize images to this maximum dimension before sending. 0 disables resizing.</p>
@@ -243,12 +252,10 @@ export class SettingsPanel {
               <textarea id="contextFileExceptions" rows="8">${contextFileExceptions.join('\n')}</textarea>
               <p class="help-text">Enter file or folder patterns to always exclude from the AI context, one pattern per line. Uses glob patterns (e.g., '*.log', 'dist/**').</p>
 
-              <h2>Agent</h2>
+              <h2>Agent & Inspector</h2>
               <label for="agentMaxRetries">Agent Self-Correction Retries</label>
               <input type="number" id="agentMaxRetries" value="${agentMaxRetries}" min="0" max="5" />
               <p class="help-text">Number of times the agent will try to fix a failed task before asking for help.</p>
-              
-              <h2>Code Inspector</h2>
               <div class="checkbox-container">
                   <input type="checkbox" id="enableCodeInspector" ${enableCodeInspector ? 'checked' : ''}>
                   <label for="enableCodeInspector">Enable Code Inspector</label>
@@ -299,7 +306,8 @@ export class SettingsPanel {
                     chatPersona: document.getElementById('chatPersona'),
                     agentPersona: document.getElementById('agentPersona'),
                     commitMessagePersona: document.getElementById('commitMessagePersona'),
-                    contextFileExceptions: document.getElementById('contextFileExceptions')
+                    contextFileExceptions: document.getElementById('contextFileExceptions'),
+                    fileUpdateMethod: document.getElementById('fileUpdateMethod')
                 };
                 
                 const modelsDatalist = document.getElementById('modelsList');

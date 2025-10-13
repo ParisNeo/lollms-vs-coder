@@ -4,12 +4,16 @@ import { LollmsAPI, ChatMessage } from './lollmsAPI';
 import { getProcessedSystemPrompt, stripThinkingTags } from './utils';
 import { ProcessManager } from './processManager';
 
+// Assuming Plan is defined in planParser.ts and imported where needed
+import { Plan } from './planParser';
+
 export interface Discussion {
     id: string;
     title: string;
     messages: ChatMessage[];
     timestamp: number;
     groupId: string | null;
+    plan: Plan | null; // Added for agent state persistence
 }
 
 export interface DiscussionGroup {
@@ -51,7 +55,8 @@ export class DiscussionManager {
             title: 'New Discussion',
             messages: [],
             timestamp: Date.now(),
-            groupId
+            groupId,
+            plan: null
         };
     }
 

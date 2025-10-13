@@ -10,6 +10,7 @@ import { InfoPanel } from './commands/infoPanel';
 import { Plan, PlanParser } from './planParser';
 import { getProcessedSystemPrompt } from './utils';
 import { ProcessManager } from './processManager';
+import { DiscussionManager, Discussion } from './discussionManager';
 
 interface Task {
     id: number;
@@ -20,7 +21,7 @@ interface Task {
     status: 'pending' | 'in_progress' | 'completed' | 'failed';
     result: string | null;
     retries: number;
-    can_retry?: boolean; // NEW property
+    can_retry?: boolean;
 }
 
 export class AgentManager {
@@ -30,13 +31,15 @@ export class AgentManager {
     private planParser: PlanParser;
     private processManager?: ProcessManager;
     private currentWorkspaceFolder?: vscode.WorkspaceFolder;
-    private currentTaskIndex: number = 0; // NEW: Make this a class member
+    private currentTaskIndex: number = 0;
+    private currentDiscussion?: Discussion;
 
     constructor(
         private chatPanel: ChatPanel,
         private lollmsApi: LollmsAPI,
         private contextManager: ContextManager,
         private gitIntegration: GitIntegration,
+        private discussionManager: DiscussionManager,
         private extensionUri: vscode.Uri
     ) {
         this.planParser = new PlanParser(this.lollmsApi, this.contextManager);
@@ -56,22 +59,32 @@ export class AgentManager {
             this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🤖 **Agent Mode Activated.** Using model: \`${this.lollmsApi.getModelName()}\`. Please provide your goal.` });
         } else {
             this.chatPanel.addMessageToDiscussion({ role: 'system', content: '🤖 **Agent Mode Deactivated.**' });
-            this.chatPanel.displayPlan(null); // Clear the plan view
+            this.displayAndSavePlan(null);
         }
     }
 
-    public async run(initialObjective: string, fullChatHistory: ChatMessage[], workspaceFolder: vscode.WorkspaceFolder) {
+    private async displayAndSavePlan(plan: Plan | null) {
+        this.currentPlan = plan;
+        if (this.currentDiscussion) {
+            this.currentDiscussion.plan = plan;
+            await this.discussionManager.saveDiscussion(this.currentDiscussion);
+        }
+        this.chatPanel.displayPlan(plan);
+    }
+
+    public async run(initialObjective: string, discussion: Discussion, workspaceFolder: vscode.WorkspaceFolder) {
         if (!this.isActive) return;
         this.currentWorkspaceFolder = workspaceFolder;
+        this.currentDiscussion = discussion;
 
-        this.chatHistory = [...fullChatHistory];
-        this.chatHistory.push({ role: 'user', content: initialObjective });
+        this.chatHistory = [...discussion.messages];
         
-        this.chatPanel.displayPlan({ 
+        const initialPlanState = { 
             objective: initialObjective,
             scratchpad: "🧠 Thinking... Generating the initial execution plan.",
             tasks: []
-        });
+        };
+        this.displayAndSavePlan(initialPlanState);
 
         try {
             const planResult = await this.planParser.generateAndParsePlan(initialObjective);
@@ -82,13 +95,12 @@ export class AgentManager {
                     scratchpad: `❌ **Plan Generation Failed:** Could not generate a valid plan, even after self-correction attempts. \n\n**Error:** ${planResult.error}\n\n**Final Raw Response from Model:**\n\`\`\`\n${planResult.rawResponse}\n\`\`\``,
                     tasks: []
                 };
-                this.chatPanel.displayPlan(failedPlanState);
+                this.displayAndSavePlan(failedPlanState);
                 this.deactivateAgent();
                 return;
             }
             
-            this.currentPlan = planResult.plan;
-            this.chatPanel.displayPlan(this.currentPlan);
+            this.displayAndSavePlan(planResult.plan);
             await this.executePlan();
 
         } catch (error: any) {
@@ -99,32 +111,21 @@ export class AgentManager {
     }
 
     public async retryFailedTask(taskId: number) {
-        if (!this.currentPlan) {
-            console.error("Cannot retry: No active plan.");
-            return;
-        }
+        if (!this.currentPlan) return;
 
         const failedTaskIndex = this.currentPlan.tasks.findIndex(t => t.id === taskId);
-        if (failedTaskIndex === -1) {
-            console.error(`Cannot retry: Task with ID ${taskId} not found.`);
-            return;
-        }
+        if (failedTaskIndex === -1) return;
         
         const failedTask = this.currentPlan.tasks[failedTaskIndex];
-        if (failedTask.status !== 'failed' || !failedTask.can_retry) {
-            console.error("Invalid task to retry.", failedTask);
-            return;
-        }
+        if (failedTask.status !== 'failed' || !failedTask.can_retry) return;
 
-        // Update UI state for retry
         failedTask.status = 'in_progress';
         failedTask.retries++;
-        failedTask.can_retry = false; // Prevent multiple clicks
-        this.chatPanel.displayPlan(this.currentPlan);
+        failedTask.can_retry = false;
+        this.displayAndSavePlan(this.currentPlan);
         
         const revisionSucceeded = await this.revisePlanForFailure(failedTask);
         if (revisionSucceeded) {
-            // Plan has been revised, resume execution from the point of failure
             await this.executePlan(failedTaskIndex);
         } else {
             this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🛑 **Execution Halted:** Failed to generate a revised plan.` });
@@ -141,7 +142,7 @@ export class AgentManager {
     
             if (task.status === 'pending') {
                 task.status = 'in_progress';
-                this.chatPanel.displayPlan(this.currentPlan);
+                this.displayAndSavePlan(this.currentPlan);
     
                 let result: { success: boolean; output: string; };
                 try {
@@ -156,22 +157,29 @@ export class AgentManager {
                 task.status = result.success ? 'completed' : 'failed';
     
                 this.currentPlan.scratchpad += `\n\nTask ${task.id} (${task.action}) ${task.status}. Result:\n${result.output}`;
-                this.chatPanel.displayPlan(this.currentPlan);
+                this.displayAndSavePlan(this.currentPlan);
     
                 if (!result.success) {
                     const maxRetries = vscode.workspace.getConfiguration('lollmsVsCoder').get<number>('agentMaxRetries') || 1;
                     if (task.retries < maxRetries) {
-                        task.can_retry = true;
-                        this.chatPanel.displayPlan(this.currentPlan);
-                        return; // Halt execution and wait for user intervention via UI
+                        const revisionSucceeded = await this.revisePlanForFailure(task);
+                        if (revisionSucceeded) {
+                            // Loop will continue from the corrected task index
+                            continue;
+                        } else {
+                            // Self-correction failed, now we ask the user
+                            task.can_retry = true;
+                            this.displayAndSavePlan(this.currentPlan);
+                            return; // Halt for user intervention
+                        }
                     } else {
-                        task.can_retry = false;
-                        this.chatPanel.displayPlan(this.currentPlan);
+                        task.can_retry = true; // Allow one final manual retry
+                        this.displayAndSavePlan(this.currentPlan);
     
                         let userChoice: string | undefined = '';
                         while (userChoice !== 'Stop' && userChoice !== 'Continue Anyway') {
                             userChoice = await vscode.window.showErrorMessage(
-                                `Agent task "${task.description}" failed after ${task.retries + 1} attempt(s). What should I do?`,
+                                `Agent task "${task.description}" failed after ${task.retries} attempt(s). What should I do?`,
                                 { modal: true },
                                 'Stop', 'Continue Anyway', 'View Log'
                             );
@@ -197,11 +205,13 @@ export class AgentManager {
         this.chatPanel.addMessageToDiscussion({ role: 'system', content: '✅ **Plan Complete:** All tasks have been executed.' });
         this.deactivateAgent();
     }
+
     private async revisePlanForFailure(failedTask: Task): Promise<boolean> {
         if (!this.currentPlan) return false;
         
+        failedTask.retries++;
         this.currentPlan.scratchpad += `\n\n---\n⚠️ **Task ${failedTask.id} Failed.** Attempting to self-correct (Attempt ${failedTask.retries})...\n---`;
-        this.chatPanel.displayPlan(this.currentPlan);
+        this.displayAndSavePlan(this.currentPlan);
 
         const planResult = await this.planParser.generateAndParsePlan(
             this.currentPlan.objective,
@@ -212,7 +222,7 @@ export class AgentManager {
 
         if (!planResult.plan) {
             this.currentPlan.scratchpad += `\n\n❌ **Self-Correction Failed:** The fixer agent's response was invalid.\n\n**Raw Response:**\n${planResult.rawResponse}`;
-            this.chatPanel.displayPlan(this.currentPlan);
+            this.displayAndSavePlan(this.currentPlan);
             return false;
         }
 
@@ -230,7 +240,7 @@ export class AgentManager {
         }
         
         this.currentPlan.scratchpad += `\n\n--- PLAN REVISED after failure of task ${failedTask.id} ---`;
-        this.chatPanel.displayPlan(this.currentPlan);
+        this.displayAndSavePlan(this.currentPlan);
         return true;
     }
     
@@ -247,10 +257,10 @@ export class AgentManager {
                 let resolvedValue = value;
                 let match;
                 while ((match = regex.exec(value)) !== null) {
-                    const taskId = parseInt(match, 10);
+                    const taskId = parseInt(match[1], 10);
                     const sourceTask = this.currentPlan.tasks.find(t => t.id === taskId);
                     if (sourceTask && sourceTask.status === 'completed' && sourceTask.result !== null) {
-                        resolvedValue = resolvedValue.replace(match, sourceTask.result);
+                        resolvedValue = resolvedValue.replace(match[0], sourceTask.result);
                     } else {
                         throw new Error(`Could not resolve parameter: Source task ${taskId} has not completed successfully or has no result.`);
                     }
@@ -290,6 +300,20 @@ export class AgentManager {
                         return { success: false, output: "User cancelled the input request." };
                     }
                     return { success: true, output: `User provided input: ${userInput}` };
+
+                case 'read_file':
+                    if (!filePath) return { success: false, output: "Error: 'path' parameter is required." };
+                    const wsFolderReadFile = this.currentWorkspaceFolder;
+                    if (wsFolderReadFile) {
+                        try {
+                            const fileUri = vscode.Uri.joinPath(wsFolderReadFile.uri, filePath);
+                            const fileContent = await vscode.workspace.fs.readFile(fileUri);
+                            return { success: true, output: Buffer.from(fileContent).toString('utf8') };
+                        } catch (error: any) {
+                             return { success: false, output: `Error reading file ${filePath}: ${error.message}` };
+                        }
+                    }
+                     return { success: false, output: "Error: No active workspace folder." };
 
                 case 'create_python_environment':
                     if (!env_name) return { success: false, output: "Error: 'env_name' is required." };
@@ -331,6 +355,8 @@ export class AgentManager {
                     const wsFolder = this.currentWorkspaceFolder;
                     if (wsFolder) {
                         const fileUri = vscode.Uri.joinPath(wsFolder.uri, filePath);
+                        const parentUri = vscode.Uri.joinPath(fileUri, '..');
+                        await vscode.workspace.fs.createDirectory(parentUri);
                         await vscode.workspace.fs.writeFile(fileUri, Buffer.from(code, 'utf8'));
                         return { success: true, output: `Successfully wrote to file: ${filePath}` };
                     }
@@ -422,8 +448,8 @@ export class AgentManager {
                 const codeBlockRegex = /```(?:[\w-]*)\n([\s\S]+?)\n```/s;
                 const match = responseText.match(codeBlockRegex);
 
-                if (match && match) {
-                    return { success: true, output: match.trim() };
+                if (match && match[1]) {
+                    return { success: true, output: match[1].trim() };
                 } else if (responseText.trim().length > 0) {
                     return { success: true, output: responseText.trim() };
                 } else {
@@ -476,8 +502,13 @@ export class AgentManager {
 
     private deactivateAgent() {
         this.isActive = false;
+        if(this.currentDiscussion){
+            this.currentDiscussion.plan = null;
+            this.discussionManager.saveDiscussion(this.currentDiscussion);
+        }
         this.currentPlan = null;
         this.currentWorkspaceFolder = undefined;
+        this.currentDiscussion = undefined;
         this.chatPanel.updateAgentMode(false);
     }
     

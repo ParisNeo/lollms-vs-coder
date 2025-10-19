@@ -95,6 +95,20 @@
         "title": "%command.inspectCode.title%"
       },
       {
+        "command": "lollms-vs-coder.buildCodeGraph",
+        "title": "%command.buildCodeGraph.title%",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "lollms-vs-coder.addSkill",
+        "title": "%command.addSkill.title%",
+        "icon": "$(add)"
+      },
+      {
+        "command": "lollms-vs-coder.learnSelectionAsSkill",
+        "title": "%command.learnSelectionAsSkill.title%"
+      },
+      {
         "command": "lollms-vs-coder.newDiscussion",
         "title": "%command.newDiscussion.title%",
         "icon": "$(add)"
@@ -422,8 +436,18 @@
           "when": "workspaceFolderCount > 0"
         },
         {
-          "id": "lollmsProcessView",
-          "name": "%view.processes.name%",
+          "id": "lollmsFileTreeView",
+          "name": "%view.fileTreeView.name%",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "id": "lollmsCodeExplorerView",
+          "name": "%view.codeExplorer.name%",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "id": "lollmsSkillsView",
+          "name": "%view.skills.name%",
           "when": "workspaceFolderCount > 0"
         },
         {
@@ -435,6 +459,11 @@
           "id": "lollmsCodeActionsView",
           "name": "%view.codeActions.name%",
           "when": "workspaceFolderCount > 0"
+        },
+        {
+          "id": "lollmsProcessView",
+          "name": "%view.processes.name%",
+          "when": "workspaceFolderCount > 0"
         }
       ]
     },
@@ -443,6 +472,13 @@
         {
           "submenu": "lollms-vs-coder.setContextSubmenu",
           "group": "1_modification@0"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "lollms-vs-coder.learnSelectionAsSkill",
+          "when": "editorHasSelection",
+          "group": "1_modification"
         }
       ],
       "lollms-vs-coder.setContextSubmenu": [
@@ -482,6 +518,16 @@
           "command": "lollms-vs-coder.refreshDiscussions",
           "when": "view == lollmsDiscussionsView",
           "group": "navigation@3"
+        },
+        {
+          "command": "lollms-vs-coder.buildCodeGraph",
+          "when": "view == lollmsCodeExplorerView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "lollms-vs-coder.addSkill",
+          "when": "view == lollmsSkillsView",
+          "group": "navigation@1"
         },
         {
           "command": "lollms-vs-coder.createPrompt",

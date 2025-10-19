@@ -57,6 +57,8 @@
     "view.chatPrompts.name": "Prompts de Chat",
     "view.codeActions.name": "Acciones de Código",
     "view.fileTreeView.name": "Archivos de Contexto de IA",
+    "view.codeExplorer.name": "Explorador de Código",
+    "view.skills.name": "Habilidades",
     "prompt.confirmDelete": "¿Está seguro de que desea eliminar \"{0}\"?",
     "prompt.enterNewDiscussionTitle": "Introduzca el nuevo título de la discusión",
     "progress.generatingDiscussionTitle": "Lollms: Generando título de la discusión...",

@@ -29,6 +29,11 @@ import { ProcessTreeProvider } from './commands/processTreeProvider';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { LollmsNotebookCellActionProvider } from './notebookTools';
+import { CodeExplorerPanel } from './commands/codeExplorerView';
+import { CodeExplorerTreeProvider } from './commands/codeExplorerTreeProvider';
+import { SkillsTreeProvider } from './commands/skillsTreeProvider';
+import { SkillsManager } from './skillsManager';
+import { CodeGraphManager } from './codeGraphManager';
 
 const execAsync = promisify(exec);
 
@@ -149,6 +154,8 @@ export async function activate(context: vscode.ExtensionContext) {
     const promptManager = new PromptManager(context.globalStorageUri);
     const gitIntegration = new GitIntegration(lollmsAPI);
     const processManager = new ProcessManager();
+    const skillsManager = new SkillsManager();
+    const codeGraphManager = new CodeGraphManager();
 
     const processTreeProvider = new ProcessTreeProvider(processManager);
     context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsProcessView', processTreeProvider));
@@ -164,6 +171,10 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsChatPromptsView', chatPromptTreeProvider));
     const codeActionTreeProvider = new CodeActionTreeProvider(promptManager);
     context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsCodeActionsView', codeActionTreeProvider));
+    const codeExplorerTreeProvider = new CodeExplorerTreeProvider(codeGraphManager);
+    context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsCodeExplorerView', codeExplorerTreeProvider));
+    const skillsTreeProvider = new SkillsTreeProvider(skillsManager);
+    context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsSkillsView', skillsTreeProvider));
 
     const inlineDiffProvider = new InlineDiffProvider();
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, inlineDiffProvider));
@@ -222,11 +233,15 @@ export async function activate(context: vscode.ExtensionContext) {
             discussionTreeProvider?.refresh();
         }
         
+        await skillsManager.switchWorkspace(folder.uri);
+        skillsTreeProvider.refresh();
+        
         if (contextStateProvider) {
             await contextStateProvider.switchWorkspace(folder.uri.fsPath);
         } else {
             contextStateProvider = new ContextStateProvider(folder.uri.fsPath, context);
             contextManager.setContextStateProvider(contextStateProvider);
+            codeGraphManager.setContextStateProvider(contextStateProvider);
             fileDecorationProvider.updateStateProvider(contextStateProvider);
         }
 
@@ -247,6 +262,7 @@ export async function activate(context: vscode.ExtensionContext) {
             discussionManager = undefined;
             contextStateProvider = undefined;
             contextManager.setContextStateProvider(undefined);
+            codeGraphManager.setContextStateProvider(undefined);
             fileDecorationProvider.updateStateProvider(undefined);
             return;
         }
@@ -537,6 +553,47 @@ context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.trig
         });
     }));
     
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.buildCodeGraph', async () => {
+        await codeGraphManager.buildGraph();
+        codeExplorerTreeProvider.refresh();
+        CodeExplorerPanel.createOrShow(context.extensionUri);
+        if (CodeExplorerPanel.currentPanel) {
+            CodeExplorerPanel.currentPanel.updateGraph(codeGraphManager.getGraphData());
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.addSkill', async () => {
+        const name = await vscode.window.showInputBox({ prompt: "Enter a name for the new skill" });
+        if (!name) return;
+        const description = await vscode.window.showInputBox({ prompt: "Enter a brief description of the skill" });
+        if (description === undefined) return;
+        const content = await vscode.window.showInputBox({ prompt: "Enter the code or content for the skill", placeHolder: "Code snippet, shell command, or instructions..." });
+        if (content === undefined) return;
+
+        await skillsManager.addSkill({ name, description, content });
+        skillsTreeProvider.refresh();
+        vscode.window.showInformationMessage(`Skill '${name}' has been learned.`);
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.learnSelectionAsSkill', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor || editor.selection.isEmpty) {
+            vscode.window.showInformationMessage('Please select a piece of code to learn as a skill.');
+            return;
+        }
+
+        const content = editor.document.getText(editor.selection);
+        const language = editor.document.languageId;
+        const name = await vscode.window.showInputBox({ prompt: "Enter a name for this new skill", value: `New ${language} skill` });
+        if (!name) return;
+        const description = await vscode.window.showInputBox({ prompt: "Enter a brief description of what this code does" });
+        if (description === undefined) return;
+
+        await skillsManager.addSkill({ name, description, content, language });
+        skillsTreeProvider.refresh();
+        vscode.window.showInformationMessage(`Skill '${name}' has been learned.`);
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextIncluded', (uri?: vscode.Uri) => {
         if (contextStateProvider && uri) {
             contextStateProvider.setStateForUri(uri, 'included');

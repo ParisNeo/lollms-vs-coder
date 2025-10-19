@@ -57,6 +57,8 @@
     "view.chatPrompts.name": "聊天提示",
     "view.codeActions.name": "代码操作",
     "view.fileTreeView.name": "AI上下文文件",
+    "view.codeExplorer.name": "代码资源管理器",
+    "view.skills.name": "技能",
     "prompt.confirmDelete": "您确定要删除“{0}”吗？",
     "prompt.enterNewDiscussionTitle": "输入新的讨论标题",
     "progress.generatingDiscussionTitle": "Lollms：正在生成讨论标题...",

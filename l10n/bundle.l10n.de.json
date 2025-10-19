@@ -57,6 +57,8 @@
     "view.chatPrompts.name": "Chat-Prompts",
     "view.codeActions.name": "Code-Aktionen",
     "view.fileTreeView.name": "KI-Kontextdateien",
+    "view.codeExplorer.name": "Code-Explorer",
+    "view.skills.name": "Fähigkeiten",
     "prompt.confirmDelete": "Sind Sie sicher, dass Sie \"{0}\" löschen möchten?",
     "prompt.enterNewDiscussionTitle": "Neuen Diskussionstitel eingeben",
     "progress.generatingDiscussionTitle": "Lollms: Diskussionstitel wird generiert...",

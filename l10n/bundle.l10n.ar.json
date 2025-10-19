@@ -57,6 +57,8 @@
     "view.chatPrompts.name": "موجهات الدردشة",
     "view.codeActions.name": "إجراءات الكود",
     "view.fileTreeView.name": "ملفات سياق الذكاء الاصطناعي",
+    "view.codeExplorer.name": "مستكشف الكود",
+    "view.skills.name": "المهارات",
     "prompt.confirmDelete": "هل أنت متأكد من أنك تريد حذف \"{0}\"؟",
     "prompt.enterNewDiscussionTitle": "أدخل عنوان المناقشة الجديد",
     "progress.generatingDiscussionTitle": "Lollms: جارٍ إنشاء عنوان المناقشة...",

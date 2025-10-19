@@ -113,7 +113,7 @@ export class SettingsPanel {
                 await config.update('language', this._pendingConfig.language, vscode.ConfigurationTarget.Global);
   
                 vscode.window.showInformationMessage('Configuration saved. Recreating LollmsAPI...');
-                await vscode.commands.executeCommand('lollmsApi.recreateClient', this._pendingConfig);
+                await vscode.commands.executeCommand('lollmsApi.recreateClient');
                 SettingsPanel.currentPanel?.dispose();
               } catch (err) {
                 vscode.window.showErrorMessage('Failed to save configuration.');

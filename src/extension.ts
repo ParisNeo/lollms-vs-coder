@@ -642,6 +642,7 @@ context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.trig
                 contextStateProvider = new ContextStateProvider(activeWorkspaceFolder.uri.fsPath, context);
                 contextManager.setContextStateProvider(contextStateProvider);
                 fileDecorationProvider.updateStateProvider(contextStateProvider);
+                contextStateProvider.refresh();
 
                 vscode.window.showInformationMessage(vscode.l10n.t('info.contextSelectionLoaded', path.basename(fileUri.fsPath)));
             }

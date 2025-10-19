@@ -30,23 +30,73 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         this.workspaceRoot = workspaceRoot;
         this.context = context;
         this.stateKey = `context-state-${this.workspaceRoot}`;
+        
         vscode.workspace.onDidChangeConfiguration(e => {
             if (e.affectsConfiguration('lollmsVsCoder.contextFileExceptions')) {
                 this.refresh();
             }
         });
+
+        vscode.workspace.onDidDeleteFiles(e => this.handleFileDeletions(e.files));
+        this.cleanNonExistentFiles().then(() => this.refresh());
     }
 
     public async switchWorkspace(newWorkspaceRoot: string) {
         this.workspaceRoot = newWorkspaceRoot;
         this.stateKey = `context-state-${newWorkspaceRoot}`;
+        await this.cleanNonExistentFiles();
         this.refresh();
     }
 
     refresh(): void {
         this._onDidChangeTreeData.fire();
-        if (vscode.workspace.workspaceFolders?.[0]) {
-            this._onDidChangeFileDecorations.fire(vscode.workspace.workspaceFolders[0].uri);
+        this._onDidChangeFileDecorations.fire();
+    }
+
+    private async cleanNonExistentFiles(): Promise<void> {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.find(f => f.uri.fsPath === this.workspaceRoot);
+        if (!workspaceFolder) return;
+    
+        const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
+        const allFileKeys = Object.keys(workspaceState);
+        let stateWasModified = false;
+    
+        const checkPromises = allFileKeys.map(async (key) => {
+            const fileUri = vscode.Uri.joinPath(workspaceFolder.uri, key);
+            try {
+                await vscode.workspace.fs.stat(fileUri);
+            } catch (error) {
+                // File does not exist, so mark it for removal
+                return key;
+            }
+            return null;
+        });
+    
+        const keysToRemove = (await Promise.all(checkPromises)).filter(key => key !== null);
+    
+        if (keysToRemove.length > 0) {
+            keysToRemove.forEach(key => {
+                if (key) delete workspaceState[key];
+            });
+            await this.context.workspaceState.update(this.stateKey, workspaceState);
+        }
+    }
+
+    private async handleFileDeletions(deletedFiles: readonly vscode.Uri[]): Promise<void> {
+        const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
+        let stateWasModified = false;
+        
+        for (const uri of deletedFiles) {
+            const relativePath = vscode.workspace.asRelativePath(uri, false);
+            if (workspaceState[relativePath]) {
+                delete workspaceState[relativePath];
+                stateWasModified = true;
+            }
+        }
+
+        if (stateWasModified) {
+            await this.context.workspaceState.update(this.stateKey, workspaceState);
+            this.refresh();
         }
     }
 
@@ -110,16 +160,22 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         const relativePath = vscode.workspace.asRelativePath(uri, false);
     
         const stat = await vscode.workspace.fs.stat(uri);
+        let urisToFire: vscode.Uri[] = [uri];
     
         if (stat.type === vscode.FileType.Directory) {
+            const descendantUris = await this.getAllDescendantUris(uri);
+            urisToFire.push(...descendantUris);
+    
             Object.keys(workspaceState).forEach(key => {
-                if (key.startsWith(relativePath + path.sep) || key === relativePath) {
+                if (key.startsWith(relativePath + '/') || key === relativePath) {
                     delete workspaceState[key];
                 }
             });
     
             if (state === 'included') {
-                await this.updateChildrenState(uri, 'add', workspaceState);
+                // This function will set the state and also return the URIs it touched
+                const updatedUris = await this.updateChildrenState(uri, 'add', workspaceState);
+                urisToFire.push(...updatedUris);
             } else {
                 workspaceState[relativePath] = state;
             }
@@ -128,11 +184,11 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         }
     
         await this.context.workspaceState.update(this.stateKey, workspaceState);
-        this.refresh();
-        this._onDidChangeFileDecorations.fire(uri);
+        this.refresh(); // Updates the tree view
+        this._onDidChangeFileDecorations.fire(urisToFire); // Updates file explorer decorations
     }
 
-    private async updateChildrenState(dirUri: vscode.Uri, action: 'add', workspaceState: { [key: string]: ContextState }) {
+    private async updateChildrenState(dirUri: vscode.Uri, action: 'add', workspaceState: { [key: string]: ContextState }): Promise<vscode.Uri[]> {
         const urisToFire: vscode.Uri[] = [dirUri];
         const processDirectory = async (currentDirUri: vscode.Uri) => {
             let entries;
@@ -162,6 +218,33 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         };
         await processDirectory(dirUri);
         this._onDidChangeFileDecorations.fire(urisToFire);
+        return urisToFire;
+    }
+
+    private async getAllDescendantUris(dirUri: vscode.Uri): Promise<vscode.Uri[]> {
+        const descendants: vscode.Uri[] = [];
+        try {
+            const processDirectory = async (currentDirUri: vscode.Uri) => {
+                let entries;
+                try {
+                    entries = await vscode.workspace.fs.readDirectory(currentDirUri);
+                } catch (error) {
+                    return;
+                }
+        
+                for (const [name, type] of entries) {
+                    const entryUri = vscode.Uri.joinPath(currentDirUri, name);
+                    descendants.push(entryUri);
+                    if (type === vscode.FileType.Directory) {
+                        await processDirectory(entryUri);
+                    }
+                }
+            };
+            await processDirectory(dirUri);
+        } catch (e) {
+            // Ignore errors if directory cannot be read
+        }
+        return descendants;
     }
 
     public async getAllVisibleFiles(): Promise<string[]> {
@@ -207,5 +290,22 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     public getIncludedFiles(): string[] {
         const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
         return Object.keys(workspaceState).filter(key => workspaceState[key] === 'included');
+    }
+
+    public async addFilesToContext(files: string[]): Promise<void> {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) return;
+        
+        const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
+        const urisToFire: vscode.Uri[] = [];
+
+        files.forEach(file => {
+            workspaceState[file] = 'included';
+            urisToFire.push(vscode.Uri.joinPath(workspaceFolder.uri, file));
+        });
+
+        await this.context.workspaceState.update(this.stateKey, workspaceState);
+        this.refresh();
+        this._onDidChangeFileDecorations.fire(urisToFire);
     }
 }

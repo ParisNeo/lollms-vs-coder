@@ -7,17 +7,20 @@
 - OK add stop generation
 - OK add tokens progressbar
 - OK fix actions for py files
+- OK add the possibility to activate/deactivate file rewrite/file patch
+- OK .vue files are not loading
+- some files like jupyter and vue files must be loadable
 
 - if there is a .gitignore, apply it to the context selection
 - fuse generate code and rewrite code
 - add firewall with rules for execution
 
 - when refreshing remove any selected files that do not exist anymore
-- .vue files are not loading
+
 - when using File: syntax, the LLM needs to provide full code without any placeholder
-- some files like jupyter and vue files must be loadable
+
 - add inspection
-- add the possibility to activate/deactivate file rewrite/file patch
+
 - add the possibility to save selection
 - add the possibility to use personalities
 

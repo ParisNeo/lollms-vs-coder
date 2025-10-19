@@ -890,6 +890,40 @@ context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.trig
         }
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateCommitMessage', async () => {
+        if (!activeWorkspaceFolder) {
+            vscode.window.showErrorMessage("No active workspace for Git operations.");
+            return;
+        }
+        if (!(await gitIntegration.isGitRepo(activeWorkspaceFolder))) {
+            vscode.window.showErrorMessage(vscode.l10n.t('error.notGitRepository'));
+            return;
+        }
+
+        const gitExtension = vscode.extensions.getExtension<GitExtension>('vscode.git');
+        if (!gitExtension) {
+            vscode.window.showErrorMessage(vscode.l10n.t('error.gitExtensionNotFound'));
+            return;
+        }
+
+        if (!gitExtension.isActive) {
+            await gitExtension.activate();
+        }
+
+        const git = gitExtension.exports.getAPI(1);
+        
+        const repository = git.repositories.find(repo => repo.rootUri.fsPath === activeWorkspaceFolder.uri.fsPath);
+
+        if (repository) {
+            const message = await gitIntegration.generateCommitMessage(activeWorkspaceFolder);
+            if (message) {
+                repository.inputBox.value = message;
+            }
+        } else {
+            vscode.window.showErrorMessage("Could not find a Git repository for the active workspace.");
+        }
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string) => {
         if (!activeWorkspaceFolder) {
             vscode.window.showErrorMessage(vscode.l10n.t('error.openWorkspaceToApplyChanges'));

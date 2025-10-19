@@ -42,6 +42,7 @@
     "command.setContextExcluded.title": "⊘ Exclude from AI Context",
     "command.saveContextSelection.title": "Lollms: Save Context Selection",
     "command.loadContextSelection.title": "Lollms: Load Context Selection",
+    "command.resetContextSelection.title": "Lollms: Reset Context Selection",
     "config.title": "Lollms VS Coder Configuration",
     "config.fileUpdateMethod.description": "Choose how the AI should provide file updates. 'Full File' is more reliable, while 'Patch' can use fewer tokens for small changes.",
     "config.fileUpdateMethod.full_file.description": "Full File Content: The AI provides the entire file content. Best for reliability and new files.",
@@ -69,5 +70,8 @@
     "view.processes.name": "Running Processes",
     "view.chatPrompts.name": "Chat Prompts",
     "view.codeActions.name": "Code Actions",
-    "menu.lollmsAIContext.title": "Lollms AI Context"
+    "menu.lollmsAIContext.title": "Lollms AI Context",
+    "prompt.confirmResetContext": "Are you sure you want to reset the AI context? All file selections will be cleared.",
+    "label.reset": "Reset",
+    "info.contextReset": "AI context has been reset to default."
 }

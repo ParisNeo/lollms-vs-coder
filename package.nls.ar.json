@@ -41,6 +41,7 @@
     "command.setContextExcluded.title": "⊘ استبعاد من سياق الذكاء الاصطناعي",
     "command.saveContextSelection.title": "Lollms: حفظ تحديد السياق",
     "command.loadContextSelection.title": "Lollms: تحميل تحديد السياق",
+    "command.resetContextSelection.title": "Lollms: إعادة تعيين اختيار السياق",
     "config.title": "تكوين Lollms VS Coder",
     "config.enableCodeActions.description": "تمكين إجراءات Lollms CodeLens (على سبيل المثال، 'إجراءات Lollms...') فوق الكود المحدد.",
     "config.enableInlineSuggestions.description": "تمكين اقتراحات التعليمات البرمجية المضمنة أحادية السطر أثناء الكتابة (تجريبي).",
@@ -65,5 +66,8 @@
     "view.processes.name": "العمليات قيد التشغيل",
     "view.chatPrompts.name": "موجهات الدردشة",
     "view.codeActions.name": "إجراءات الكود",
-    "menu.lollmsAIContext.title": "سياق Lollms للذكاء الاصطناعي"
+    "menu.lollmsAIContext.title": "سياق Lollms للذكاء الاصطناعي",
+    "prompt.confirmResetContext": "هل أنت متأكد من أنك تريد إعادة تعيين سياق الذكاء الاصطناعي؟ سيتم مسح جميع تحديدات الملفات.",
+    "label.reset": "إعادة تعيين",
+    "info.contextReset": "تمت إعادة تعيين سياق الذكاء الاصطناعي إلى الوضع الافتراضي."
 }

@@ -41,6 +41,7 @@
     "command.setContextExcluded.title": "⊘ Von KI-Kontext ausschließen",
     "command.saveContextSelection.title": "Lollms: Kontextauswahl speichern",
     "command.loadContextSelection.title": "Lollms: Kontextauswahl laden",
+    "command.resetContextSelection.title": "Lollms: Kontextauswahl zurücksetzen",
     "config.title": "Lollms VS Coder Konfiguration",
     "config.enableCodeActions.description": "Aktivieren Sie die Lollms CodeLens-Aktionen (z. B. 'Lollms-Aktionen...') über dem ausgewählten Code.",
     "config.enableInlineSuggestions.description": "Aktivieren Sie einzeilige, inline Code-Vorschläge während des Tippens (experimentell).",
@@ -65,5 +66,8 @@
     "view.processes.name": "Laufende Prozesse",
     "view.chatPrompts.name": "Chat-Prompts",
     "view.codeActions.name": "Code-Aktionen",
-    "menu.lollmsAIContext.title": "Lollms KI-Kontext"
+    "menu.lollmsAIContext.title": "Lollms KI-Kontext",
+    "prompt.confirmResetContext": "Sind Sie sicher, dass Sie den KI-Kontext zurücksetzen möchten? Alle Dateiauswahlen werden gelöscht.",
+    "label.reset": "Zurücksetzen",
+    "info.contextReset": "Der KI-Kontext wurde auf die Standardeinstellungen zurückgesetzt."
 }

@@ -41,6 +41,7 @@
     "command.setContextExcluded.title": "⊘ Exclure du Contexte IA",
     "command.saveContextSelection.title": "Lollms: Enregistrer la Sélection du Contexte",
     "command.loadContextSelection.title": "Lollms: Charger la Sélection du Contexte",
+    "command.resetContextSelection.title": "Lollms: Réinitialiser la Sélection du Contexte",
     "config.title": "Configuration de Lollms VS Coder",
     "config.enableCodeActions.description": "Activer les actions CodeLens de Lollms (par ex., 'Actions Lollms...') au-dessus du code sélectionné.",
     "config.enableInlineSuggestions.description": "Activer les suggestions de code en ligne sur une seule ligne pendant que vous tapez (expérimental).",
@@ -65,5 +66,8 @@
     "view.processes.name": "Processus en Cours",
     "view.chatPrompts.name": "Prompts de Chat",
     "view.codeActions.name": "Actions de Code",
-    "menu.lollmsAIContext.title": "Contexte IA de Lollms"
+    "menu.lollmsAIContext.title": "Contexte IA de Lollms",
+    "prompt.confirmResetContext": "Êtes-vous sûr de vouloir réinitialiser le contexte de l'IA ? Toutes les sélections de fichiers seront effacées.",
+    "label.reset": "Réinitialiser",
+    "info.contextReset": "Le contexte de l'IA a été réinitialisé par défaut."
 }

@@ -41,6 +41,7 @@
     "command.setContextExcluded.title": "⊘ 从 AI 上下文中排除",
     "command.saveContextSelection.title": "Lollms: 保存上下文选择",
     "command.loadContextSelection.title": "Lollms: 加载上下文选择",
+    "command.resetContextSelection.title": "Lollms: 重置上下文选择",
     "config.title": "Lollms VS Coder 配置",
     "config.enableCodeActions.description": "在选定代码上方启用Lollms CodeLens操作（例如，“Lollms 操作...”）。",
     "config.enableInlineSuggestions.description": "在您键入时启用单行内联代码建议（实验性）。",
@@ -65,5 +66,8 @@
     "view.processes.name": "正在运行的进程",
     "view.chatPrompts.name": "聊天提示",
     "view.codeActions.name": "代码操作",
-    "menu.lollmsAIContext.title": "Lollms AI 上下文"
+    "menu.lollmsAIContext.title": "Lollms AI 上下文",
+    "prompt.confirmResetContext": "您确定要重置 AI 上下文吗？所有文件选择都将被清除。",
+    "label.reset": "重置",
+    "info.contextReset": "AI 上下文已重置为默认值。"
 }

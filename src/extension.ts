@@ -651,6 +651,21 @@ context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.trig
         }
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.resetContextSelection', async () => {
+        if (contextStateProvider) {
+            const resetButton = { title: vscode.l10n.t('label.reset'), id: 'reset' };
+            const confirm = await vscode.window.showWarningMessage(
+                vscode.l10n.t('prompt.confirmResetContext'),
+                { modal: true },
+                resetButton
+            );
+            if (confirm?.id === 'reset') {
+                await contextStateProvider.resetState();
+                vscode.window.showInformationMessage(vscode.l10n.t('info.contextReset'));
+            }
+        }
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.saveInfoToFile', async (content: string) => {
         try {
             const fileUri = await vscode.window.showSaveDialog({

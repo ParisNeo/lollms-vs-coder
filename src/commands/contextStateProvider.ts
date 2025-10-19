@@ -59,7 +59,6 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     
         const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
         const allFileKeys = Object.keys(workspaceState);
-        let stateWasModified = false;
     
         const checkPromises = allFileKeys.map(async (key) => {
             const fileUri = vscode.Uri.joinPath(workspaceFolder.uri, key);
@@ -307,5 +306,9 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         await this.context.workspaceState.update(this.stateKey, workspaceState);
         this.refresh();
         this._onDidChangeFileDecorations.fire(urisToFire);
+    }
+    public async resetState(): Promise<void> {
+        await this.context.workspaceState.update(this.stateKey, {});
+        this.refresh();
     }
 }

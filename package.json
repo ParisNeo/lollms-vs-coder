@@ -243,6 +243,11 @@
         "command": "lollms-vs-coder.loadContextSelection",
         "title": "%command.loadContextSelection.title%",
         "icon": "$(folder-opened)"
+      },
+      {
+        "command": "lollms-vs-coder.resetContextSelection",
+        "title": "%command.resetContextSelection.title%",
+        "icon": "$(clear-all)"
       }
     ],
     "configuration": {
@@ -345,10 +350,16 @@
         "lollmsVsCoder.contextFileExceptions": {
           "type": "array",
           "default": [
+            "**/.lollms/**",
             "**/node_modules/**",
             "**/.git/**",
             "**/__pycache__/**",
             "**/.vscode/**",
+            "**/venv/**",
+            "**/.venv/**",
+            "**/build/**",
+            "**/dist/**",
+            "**/out/**",
             "**/*.pyc",
             "**/*.egg-info/**",
             "**/*.o",
@@ -516,6 +527,11 @@
           "command": "lollms-vs-coder.loadContextSelection",
           "when": "view == lollmsDiscussionsView",
           "group": "navigation@9"
+        },
+        {
+          "command": "lollms-vs-coder.resetContextSelection",
+          "when": "view == lollmsDiscussionsView",
+          "group": "navigation@10"
         },
         {
           "command": "lollms-vs-coder.showHelp",

@@ -132,10 +132,7 @@ async function buildCodeActionPrompt(
         });
     }
 
-    const userInstruction = processedTemplate.includes('{{SELECTED_CODE}}')
-        ? processedTemplate.replace('{{SELECTED_CODE}}', '').trim()
-        : processedTemplate.trim();
-
+    const userInstruction = processedTemplate.replace('{{SELECTED_CODE}}', '').trim();
     const selectedText = document.getText(selection);
     const fileName = path.basename(document.fileName);
     const languageId = document.languageId;
@@ -506,13 +503,15 @@ context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.trig
             const customActionData = await CustomActionModal.createOrShow(context.extensionUri);
             if (!customActionData) return; // User cancelled
     
+            const fullContent = `${customActionData.prompt}\n{{SELECTED_CODE}}`;
+
             if (customActionData.save && customActionData.title) {
                 const data = await promptManager.getData();
                 const newPrompt: Prompt = {
                     id: Date.now().toString() + Math.random().toString(36).substring(2),
                     groupId: null,
                     title: customActionData.title,
-                    content: customActionData.prompt, // Save the raw instruction
+                    content: fullContent,
                     type: 'code_action',
                     action_type: customActionData.actionType
                 };
@@ -522,11 +521,10 @@ context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.trig
                 vscode.window.showInformationMessage(vscode.l10n.t('info.promptSaved', customActionData.title));
             }
             
-            // Create a temporary prompt object for execution
             targetPrompt = {
                 id: 'custom',
                 title: customActionData.title || vscode.l10n.t('title.customAction'),
-                content: customActionData.prompt, // Use the raw instruction
+                content: fullContent,
                 type: 'code_action',
                 action_type: customActionData.actionType,
                 groupId: null
@@ -547,13 +545,15 @@ context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.trig
                 const customActionData = await CustomActionModal.createOrShow(context.extensionUri);
                 if (!customActionData) return;
     
+                const fullContent = `${customActionData.prompt}\n{{SELECTED_CODE}}`;
+
                 if (customActionData.save && customActionData.title) {
                     const data = await promptManager.getData();
                     const newPrompt: Prompt = {
                         id: Date.now().toString() + Math.random().toString(36).substring(2),
                         groupId: null,
                         title: customActionData.title,
-                        content: customActionData.prompt,
+                        content: fullContent,
                         type: 'code_action',
                         action_type: customActionData.actionType
                     };
@@ -566,7 +566,7 @@ context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.trig
                 targetPrompt = {
                     id: 'custom',
                     title: customActionData.title || vscode.l10n.t('title.customAction'),
-                    content: customActionData.prompt,
+                    content: fullContent,
                     type: 'code_action',
                     action_type: customActionData.actionType,
                     groupId: null

@@ -94,7 +94,7 @@ export function getProcessedSystemPrompt(promptType: 'chat' | 'agent' | 'inspect
             }
 
             basePrompt = `**CRITICAL RESPONSE FORMATTING RULES:**
-1.  **Always Explain Your Code:** To foster learning and collaboration, before providing a code block for a file, first write a brief, friendly explanation of your plan, what the code does, and why you've chosen that approach.
+1.  **Always Explain Your Code:** To foster learning and collaboration, before providing a code block for a file, first write a brief, friendly explanation of your plan, what the code does, and why you'vechosen that approach.
 ${updateInstructions}
 3.  **For Image Generation:**
     -   You MUST prefix your response with a \`File: path/to/image.png\` line.

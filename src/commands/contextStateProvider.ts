@@ -151,40 +151,56 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         return workspaceState[relativePath] || 'tree-only';
     }
 
-    public async setStateForUri(uri: vscode.Uri, state: ContextState) {
-        const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
-        if (!workspaceFolder) return;
+    public async setStateForUris(uris: vscode.Uri[], state: ContextState) {
+        if (uris.length === 0) return;
     
         const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
-        const relativePath = vscode.workspace.asRelativePath(uri, false);
-    
-        const stat = await vscode.workspace.fs.stat(uri);
-        let urisToFire: vscode.Uri[] = [uri];
-    
-        if (stat.type === vscode.FileType.Directory) {
-            const descendantUris = await this.getAllDescendantUris(uri);
-            urisToFire.push(...descendantUris);
-    
-            Object.keys(workspaceState).forEach(key => {
-                if (key.startsWith(relativePath + '/') || key === relativePath) {
-                    delete workspaceState[key];
+        const allUrisToFire = new Set<string>(); // Use a Set to avoid duplicates
+
+        for (const uri of uris) {
+            const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+            if (!workspaceFolder) continue;
+
+            const relativePath = vscode.workspace.asRelativePath(uri, false);
+            allUrisToFire.add(uri.toString());
+
+            const stat = await vscode.workspace.fs.stat(uri);
+
+            if (stat.type === vscode.FileType.Directory) {
+                const descendantUris = await this.getAllDescendantUris(uri);
+                descendantUris.forEach(u => allUrisToFire.add(u.toString()));
+
+                // Clear out existing states for the directory and its children before setting the new state
+                Object.keys(workspaceState).forEach(key => {
+                    if (key.startsWith(relativePath + path.sep) || key === relativePath) {
+                        delete workspaceState[key];
+                    }
+                });
+
+                if (state === 'included') {
+                    // This will batch-add all children to the workspaceState object
+                    await this.updateChildrenState(uri, 'add', workspaceState);
+                } else {
+                    // For tree-only or excluded, just set the state on the directory itself
+                    workspaceState[relativePath] = state;
                 }
-            });
-    
-            if (state === 'included') {
-                // This function will set the state and also return the URIs it touched
-                const updatedUris = await this.updateChildrenState(uri, 'add', workspaceState);
-                urisToFire.push(...updatedUris);
-            } else {
+            } else { // It's a file
                 workspaceState[relativePath] = state;
             }
-        } else {
-            workspaceState[relativePath] = state;
         }
-    
+
         await this.context.workspaceState.update(this.stateKey, workspaceState);
+        
+        // Convert Set of strings back to array of Uris
+        const urisToUpdate = Array.from(allUrisToFire).map(s => vscode.Uri.parse(s));
+
+        // Fire events only once after all changes are made
         this.refresh(); // Updates the tree view
-        this._onDidChangeFileDecorations.fire(urisToFire); // Updates file explorer decorations
+        this._onDidChangeFileDecorations.fire(urisToUpdate); // Updates file explorer decorations
+    }
+    
+    public async setStateForUri(uri: vscode.Uri, state: ContextState) {
+        await this.setStateForUris([uri], state);
     }
 
     private async updateChildrenState(dirUri: vscode.Uri, action: 'add', workspaceState: { [key: string]: ContextState }): Promise<vscode.Uri[]> {

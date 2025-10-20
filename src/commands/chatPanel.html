@@ -27,6 +27,7 @@
             height: 100vh;
             display: flex;
             flex-direction: column;
+            position: relative; /* Needed for positioning the scroll button */
         }
         .messages {
             flex: 1;
@@ -34,6 +35,30 @@
             padding: 10px;
             display: flex;
             flex-direction: column;
+        }
+        #scrollToBottomBtn {
+            position: absolute;
+            bottom: 120px; /* Position above the input area */
+            right: 30px;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: 1px solid var(--vscode-panel-border);
+            cursor: pointer;
+            font-size: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+            z-index: 100;
+            opacity: 0.9;
+            transition: opacity 0.2s;
+        }
+        #scrollToBottomBtn:hover {
+            opacity: 1;
+            background-color: var(--vscode-button-hoverBackground);
         }
         .search-bar {
             display: flex;
@@ -768,6 +793,10 @@
             <div id="chat-messages-container"></div>
 
         </div>
+        
+        <button id="scrollToBottomBtn" title="Scroll to bottom" style="display: none;">
+            <i class="codicon codicon-arrow-down"></i>
+        </button>
 
         <div class="input-area-wrapper">
             <div id="more-actions-menu">
@@ -839,6 +868,7 @@
         const contextContainer = document.getElementById('context-container');
         const attachmentsContainer = document.getElementById('attachments-container');
         const welcomeMessage = document.getElementById('welcome-message');
+        const scrollToBottomBtn = document.getElementById('scrollToBottomBtn');
         
         const tokenProgressBar = document.getElementById('token-progress-bar');
         const tokenCountLabel = document.getElementById('token-count-label');
@@ -864,7 +894,32 @@
             headerIds: false,
             mangle: false
         });
+
+        function isScrolledToBottom(el) {
+            // A 20px threshold allows for some minor visual space at the bottom
+            return el.scrollHeight - el.scrollTop - el.clientHeight < 20;
+        }
+
+        function updateScroll(el) {
+            if (isScrolledToBottom(el)) {
+                el.scrollTop = el.scrollHeight;
+            }
+        }
         
+        messagesDiv.addEventListener('scroll', () => {
+            const isGenerating = stopButton.style.display === 'flex';
+            if (isGenerating && !isScrolledToBottom(messagesDiv)) {
+                scrollToBottomBtn.style.display = 'flex';
+            } else {
+                scrollToBottomBtn.style.display = 'none';
+            }
+        });
+
+        scrollToBottomBtn.addEventListener('click', () => {
+            messagesDiv.scrollTo({ top: messagesDiv.scrollHeight, behavior: 'smooth' });
+            scrollToBottomBtn.style.display = 'none';
+        });
+
         function processThinkTags(content) {
             const thoughts = [];
             const thinkRegex = /<(think|thinking)>([\s\S]*?)<\/\1>/g;
@@ -1150,7 +1205,7 @@
             
             enhanceCodeBlocks(messageWrapper);
             enhanceWithCommandButtons(messageWrapper);
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            updateScroll(messagesDiv);
         }
         
         function updateContext(contextText) {
@@ -1262,6 +1317,7 @@
                 const actions = document.createElement('div');
                 actions.className = 'code-actions';
 
+                let hasApplyButton = false;
                 const previousElement = pre.previousElementSibling;
                 if (previousElement && previousElement.tagName === 'P') {
                     const text = (previousElement.textContent || '').trim();
@@ -1284,7 +1340,18 @@
                         applyBtn.dataset.action = matchInfo.type;
                         applyBtn.dataset.filePath = matchInfo.path;
                         actions.appendChild(applyBtn);
+                        hasApplyButton = true;
                     }
+                }
+
+                if (!hasApplyButton) {
+                    const saveAsBtn = document.createElement('button');
+                    saveAsBtn.className = 'code-action-btn';
+                    saveAsBtn.innerHTML = '💾 Save As...';
+                    saveAsBtn.title = 'Save code snippet to a file';
+                    saveAsBtn.dataset.action = 'saveCodeToFile';
+                    saveAsBtn.dataset.language = language;
+                    actions.appendChild(saveAsBtn);
                 }
 
                 const messageWrapper = pre.closest('.message-wrapper');
@@ -1338,6 +1405,10 @@
 
             sendButton.style.display = isGenerating ? 'none' : 'flex';
             stopButton.style.display = isGenerating ? 'flex' : 'none';
+            
+            if (!isGenerating) {
+                scrollToBottomBtn.style.display = 'none';
+            }
         }
 
         function sendMessage() {
@@ -1566,7 +1637,7 @@
                     </details>
                 `;
                 chatMessagesContainer.appendChild(planWrapper);
-                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                updateScroll(messagesDiv);
                 return;
             }
             
@@ -1616,7 +1687,7 @@
             `;
             
             chatMessagesContainer.appendChild(planWrapper);
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            updateScroll(messagesDiv);
         }
 
         chatMessagesContainer.addEventListener('click', (e) => {
@@ -1641,7 +1712,13 @@
 
             const action = target.dataset.action;
 
-            if (action === 'copyCode' && codeContent) {
+            if (action === 'saveCodeToFile' && codeContent) {
+                vscode.postMessage({
+                    command: 'saveCodeToFile',
+                    content: codeContent,
+                    language: target.dataset.language
+                });
+            } else if (action === 'copyCode' && codeContent) {
                 vscode.postMessage({ command: 'copyToClipboard', text: codeContent });
                 target.innerHTML = '✅ Copied!';
                 setTimeout(() => { target.innerHTML = '📋 Copy'; }, 2000);
@@ -1738,6 +1815,10 @@
                             const contentDiv = wrapper.querySelector('.message-content');
                             const messageDiv = wrapper.querySelector('.message');
                             if (contentDiv && messageDiv) {
+                                const shouldScrollContainer = isScrolledToBottom(messagesDiv);
+                                const codeScroller = contentDiv.querySelector('pre');
+                                const shouldScrollCode = codeScroller ? isScrolledToBottom(codeScroller) : true;
+
                                 let originalContent = JSON.parse(messageDiv.dataset.originalContent);
                                 originalContent += message.chunk;
                                 messageDiv.dataset.originalContent = JSON.stringify(originalContent);
@@ -1754,7 +1835,19 @@
 
                                 contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(processedContent));
                                 enhanceCodeBlocks(wrapper);
-                                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+
+                                if (shouldScrollContainer) {
+                                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                                } else {
+                                    scrollToBottomBtn.style.display = 'flex';
+                                }
+
+                                if (shouldScrollCode) {
+                                    const newCodeScroller = contentDiv.querySelector('pre');
+                                    if (newCodeScroller) {
+                                        newCodeScroller.scrollTop = newCodeScroller.scrollHeight;
+                                    }
+                                }
                             }
                         }
                     }
@@ -1766,6 +1859,10 @@
                             const contentDiv = wrapper.querySelector('.message-content');
                             const messageDiv = wrapper.querySelector('.message');
                             if (contentDiv && messageDiv) {
+                                const shouldScrollContainer = isScrolledToBottom(messagesDiv);
+                                const codeScroller = contentDiv.querySelector('pre');
+                                const shouldScrollCode = codeScroller ? isScrolledToBottom(codeScroller) : true;
+
                                 messageDiv.dataset.originalContent = JSON.stringify(message.fullContent);
                                 const { thoughts, processedContent } = processThinkTags(message.fullContent);
 
@@ -1780,6 +1877,16 @@
                                 contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(processedContent));
                                 enhanceCodeBlocks(wrapper);
                                 enhanceWithCommandButtons(wrapper);
+
+                                if (shouldScrollContainer) {
+                                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                                }
+                                if (shouldScrollCode) {
+                                    const newCodeScroller = contentDiv.querySelector('pre');
+                                    if (newCodeScroller) {
+                                        newCodeScroller.scrollTop = newCodeScroller.scrollHeight;
+                                    }
+                                }
                             }
                         }
                     }

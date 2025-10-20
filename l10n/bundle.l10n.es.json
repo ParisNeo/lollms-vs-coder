@@ -21,6 +21,7 @@
     "command.executeScript.title": "Lollms: Ejecutar Script",
     "command.inspectCode.title": "Lollms: Inspeccionar Código",
     "command.autoSelectContextFiles.title": "Lollms: Autoseleccionar Archivos de Contexto",
+    "command.debugErrorWithAI.title": "Lollms: Corregir este error",
     "command.newDiscussion.title": "Nueva Discusión",
     "command.delete.title": "Eliminar",
     "command.cancel.title": "Cancelar",

@@ -11,6 +11,7 @@ import { Plan, PlanParser } from './planParser';
 import { getProcessedSystemPrompt } from './utils';
 import { ProcessManager } from './processManager';
 import { DiscussionManager, Discussion } from './discussionManager';
+import * as fs from 'fs/promises';
 
 interface Task {
     id: number;
@@ -288,11 +289,87 @@ export class AgentManager {
         }
     }
     
+    private async generateFileTree(startPath: string, prefix: string = ''): Promise<string> {
+        let result = '';
+        let entries;
+        try {
+            entries = await fs.readdir(startPath, { withFileTypes: true });
+        } catch (e) {
+            return ` (could not read directory)\n`;
+        }
+    
+        const sortedEntries = entries.sort((a, b) => {
+            if (a.isDirectory() && !b.isDirectory()) return -1;
+            if (!a.isDirectory() && b.isDirectory()) return 1;
+            return a.name.localeCompare(b.name);
+        });
+    
+        for (let i = 0; i < sortedEntries.length; i++) {
+            const entry = sortedEntries[i];
+            const isLast = i === sortedEntries.length - 1;
+            const connector = isLast ? '└── ' : '├── ';
+    
+            if (['.git', 'node_modules', '__pycache__', '.vscode', '.lollms', 'venv', '.venv'].includes(entry.name)) {
+                continue;
+            }
+    
+            result += prefix + connector + entry.name + '\n';
+            
+            if (entry.isDirectory()) {
+                const newPrefix = prefix + (isLast ? '    ' : '│   ');
+                result += await this.generateFileTree(path.join(startPath, entry.name), newPrefix);
+            }
+        }
+        return result;
+    }
+
     private async executeSimpleAction(task: Task): Promise<{ success: boolean, output: string }> {
         const { command, path: filePath, code, env_name, dependencies, script_path, question } = task.parameters;
         
         try {
             switch (task.action) {
+                case 'get_environment_details': {
+                    const commands = {
+                        python: 'python --version',
+                        node: 'node --version',
+                        npm: 'npm --version',
+                        git: 'git --version'
+                    };
+                    let detailsOutput = 'Environment Details:\n';
+                    const promises = Object.entries(commands).map(async ([tool, command]) => {
+                        const result = await this.runCommand(command);
+                        const output = result.output.replace(/STDOUT:|STDERR:/g, '').trim();
+                        if (result.success && output) {
+                            return `- ${tool}: ${output.split('\n')[0]}`; // Take first line
+                        } else {
+                            return `- ${tool}: Not found or error`;
+                        }
+                    });
+                
+                    const results = await Promise.all(promises);
+                    detailsOutput += results.join('\n');
+                    return { success: true, output: detailsOutput };
+                }
+                case 'list_files': {
+                    if (!this.currentWorkspaceFolder) {
+                        return { success: false, output: "Error: No active workspace folder." };
+                    }
+                    const listPath = task.parameters.path || '.';
+                    const targetPath = path.join(this.currentWorkspaceFolder.uri.fsPath, listPath);
+                    
+                    try {
+                        const resolvedPath = path.resolve(targetPath);
+                        const resolvedWorkspaceRoot = path.resolve(this.currentWorkspaceFolder.uri.fsPath);
+                        if (!resolvedPath.startsWith(resolvedWorkspaceRoot)) {
+                             return { success: false, output: "Error: Access to paths outside the workspace is not allowed." };
+                        }
+                        
+                        const fileTree = await this.generateFileTree(targetPath);
+                        return { success: true, output: `File listing for '${listPath}':\n${fileTree}` };
+                    } catch (error: any) {
+                        return { success: false, output: `Error listing files: ${error.message}` };
+                    }
+                }
                 case 'request_user_input':
                     if (!question) return { success: false, output: "Error: 'question' parameter is required." };
                     const userInput = await vscode.window.showInputBox({ prompt: question, title: "Agent is requesting input" });
@@ -350,18 +427,6 @@ export class AgentManager {
                         : path.join(env_name, 'bin', 'python');
                     return this.runCommand(`"${pythonScriptExec}" ${script_path}`);
 
-                case 'rewrite_file':
-                    if (!filePath || code === undefined) return { success: false, output: "Error: 'path' and 'code' are required." };
-                    const wsFolder = this.currentWorkspaceFolder;
-                    if (wsFolder) {
-                        const fileUri = vscode.Uri.joinPath(wsFolder.uri, filePath);
-                        const parentUri = vscode.Uri.joinPath(fileUri, '..');
-                        await vscode.workspace.fs.createDirectory(parentUri);
-                        await vscode.workspace.fs.writeFile(fileUri, Buffer.from(code, 'utf8'));
-                        return { success: true, output: `Successfully wrote to file: ${filePath}` };
-                    }
-                    return { success: false, output: "Error: No active workspace folder." };
-
                 case 'execute_command':
                     if (!command) return { success: false, output: "Error: 'command' argument is required." };
                     return await this.runCommand(command);
@@ -402,7 +467,7 @@ export class AgentManager {
                             });
                         }
                         
-                        launchConfig.configurations.program = `\${workspaceFolder}/${task.parameters.file_path}`;
+                        launchConfig.configurations[0].program = `\${workspaceFolder}/${task.parameters.file_path}`;
                         
                         try {
                             await vscode.workspace.fs.writeFile(launchJsonPath, Buffer.from(JSON.stringify(launchConfig, null, 4), 'utf8'));
@@ -425,19 +490,24 @@ export class AgentManager {
         }
 
         switch (task.action) {
-            case 'generate_code':
+            case 'generate_code': {
                 const projectContext = await this.contextManager.getContextContent();
                 let userPromptContent = task.parameters.user_prompt || `Generate code for ${task.parameters.file_path}`;
 
                 const workspaceFolder = this.currentWorkspaceFolder;
                 const filePath = task.parameters.file_path;
-                if (workspaceFolder && filePath) {
+                if (!filePath) {
+                    return { success: false, output: "Error: 'file_path' parameter is required for generate_code action." };
+                }
+
+                if (workspaceFolder) {
                     try {
                         const fileUri = vscode.Uri.joinPath(workspaceFolder.uri, filePath);
                         const fileContentBytes = await vscode.workspace.fs.readFile(fileUri);
                         const existingContent = Buffer.from(fileContentBytes).toString('utf8');
                         userPromptContent = `I am working on the file \`${filePath}\`. Here is its current content:\n\n\`\`\`\n${existingContent}\n\`\`\`\n\nMy instruction is: ${userPromptContent}`;
                     } catch (error) {
+                        // File doesn't exist, which is fine for creation.
                     }
                 }
 
@@ -447,14 +517,26 @@ export class AgentManager {
                 
                 const codeBlockRegex = /```(?:[\w-]*)\n([\s\S]+?)\n```/s;
                 const match = responseText.match(codeBlockRegex);
+                const generatedCode = match ? match[1].trim() : responseText.trim();
 
-                if (match && match[1]) {
-                    return { success: true, output: match[1].trim() };
-                } else if (responseText.trim().length > 0) {
-                    return { success: true, output: responseText.trim() };
-                } else {
-                    return { success: false, output: `Coder agent failed to produce a valid code block or any content. Full response:\n${responseText}` };
+                if (!generatedCode) {
+                    return { success: false, output: `Coder agent failed to produce any valid code. Full response:\n${responseText}` };
                 }
+
+                if (!workspaceFolder) {
+                    return { success: false, output: "Error: No active workspace folder to write the file." };
+                }
+                
+                try {
+                    const fileUri = vscode.Uri.joinPath(workspaceFolder.uri, filePath);
+                    const parentUri = vscode.Uri.joinPath(fileUri, '..');
+                    await vscode.workspace.fs.createDirectory(parentUri);
+                    await vscode.workspace.fs.writeFile(fileUri, Buffer.from(generatedCode, 'utf8'));
+                    return { success: true, output: `Successfully generated and wrote code to file: ${filePath}` };
+                } catch (error: any) {
+                    return { success: false, output: `Error writing generated code to file ${filePath}: ${error.message}` };
+                }
+            }
             
             case 'auto_select_context_files':
                 if (!task.parameters.objective) {
@@ -490,12 +572,22 @@ export class AgentManager {
                 return;
             }
             exec(command, { cwd: this.currentWorkspaceFolder.uri.fsPath }, (error, stdout, stderr) => {
-                const output = `STDOUT:\n${stdout}\n\nSTDERR:\n${stderr}`;
+                const stdoutContent = stdout.trim();
+                const stderrContent = stderr.trim();
+                let output = '';
+    
+                if (stdoutContent) {
+                    output += `STDOUT:\n${stdoutContent}\n\n`;
+                }
+                if (stderrContent) {
+                    output += `STDERR:\n${stderrContent}`;
+                }
+    
                 if (error) {
-                    resolve({ success: false, output: `Error during command execution:\n${output}\n\nError Object:\n${error.message}` });
+                    resolve({ success: false, output: `Error during command execution:\n${output.trim()}\n\nError Object:\n${error.message}` });
                     return;
                 }
-                resolve({ success: true, output: `Command executed successfully:\n${output}` });
+                resolve({ success: true, output: `Command executed successfully.\n${output.trim() || '(No output)'}` });
             });
         });
     }

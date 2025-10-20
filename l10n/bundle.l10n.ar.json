@@ -21,6 +21,7 @@
     "command.executeScript.title": "Lollms: تنفيذ البرنامج النصي",
     "command.inspectCode.title": "Lollms: فحص الكود",
     "command.autoSelectContextFiles.title": "Lollms: تحديد ملفات السياق تلقائيًا",
+    "command.debugErrorWithAI.title": "Lollms: إصلاح هذا الخطأ",
     "command.newDiscussion.title": "مناقشة جديدة",
     "command.delete.title": "حذف",
     "command.cancel.title": "إلغاء",

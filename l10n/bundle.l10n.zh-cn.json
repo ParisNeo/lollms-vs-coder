@@ -21,6 +21,7 @@
     "command.executeScript.title": "Lollms: 执行脚本",
     "command.inspectCode.title": "Lollms: 检查代码",
     "command.autoSelectContextFiles.title": "Lollms: 自动选择上下文文件",
+    "command.debugErrorWithAI.title": "Lollms: 修复此错误",
     "command.newDiscussion.title": "新讨论",
     "command.delete.title": "删除",
     "command.cancel.title": "取消",

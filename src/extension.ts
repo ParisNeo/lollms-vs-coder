@@ -6,7 +6,7 @@ import { SettingsPanel } from './commands/configView';
 import { ContextManager } from './contextManager';
 import { GitIntegration } from './gitIntegration';
 import { applyDiff, getProcessedSystemPrompt, stripThinkingTags } from './utils';
-import { ContextStateProvider } from './commands/contextStateProvider';
+import { ContextStateProvider, ContextState } from './commands/contextStateProvider';
 import { FileDecorationProvider } from './commands/fileDecorationProvider';
 import { DiscussionManager, Discussion } from './discussionManager';
 import { DiscussionTreeProvider, DiscussionItem, DiscussionGroupItem } from './commands/discussionTreeProvider';
@@ -45,6 +45,71 @@ interface Repository { inputBox: { value: string }; rootUri: vscode.Uri; }
 let lollmsExecutionTerminal: vscode.Terminal | null = null;
 let pythonExtApi: any = null; 
 
+// Simple manager to hold the state of the last captured debug error
+const debugErrorManager = {
+    lastError: null as { message: string, stack?: string } | null,
+    
+    setError(message: string, stack?: string) {
+        this.lastError = { message, stack };
+        vscode.commands.executeCommand('setContext', 'lollms:hasDebugError', true);
+    },
+
+    clearError() {
+        this.lastError = null;
+        vscode.commands.executeCommand('setContext', 'lollms:hasDebugError', false);
+    }
+};
+
+class LollmsDebugAdapterTrackerFactory implements vscode.DebugAdapterTrackerFactory {
+    createDebugAdapterTracker(session: vscode.DebugSession): vscode.ProviderResult<vscode.DebugAdapterTracker> {
+        return {
+            onWillStartSession: () => {
+                debugErrorManager.clearError();
+            },
+            onWillStopSession: () => {
+                debugErrorManager.clearError();
+            },
+            onDidSendMessage: (message) => {
+                if (message.type === 'event' && message.event === 'stopped' && message.body.reason === 'exception') {
+                    const exceptionText = message.body.text || 'An unknown exception occurred.';
+                    const description = message.body.description || '';
+                    let fullMessage = exceptionText;
+                    if (description && !fullMessage.includes(description)) {
+                        fullMessage += `\n${description}`;
+                    }
+
+                    const threadId = message.body.threadId;
+                    if (threadId) {
+                        session.customRequest('stackTrace', { threadId: threadId, startFrame: 0, levels: 20 }).then(reply => {
+                            let stackTrace = '';
+                            if (reply && reply.stackFrames) {
+                                stackTrace = reply.stackFrames.map((frame: any) => {
+                                    const sourcePath = frame.source ? (frame.source.path || frame.source.name) : 'unknown_source';
+                                    return `  at ${frame.name} (${sourcePath}:${frame.line})`;
+                                }).join('\n');
+                            }
+                            debugErrorManager.setError(fullMessage, stackTrace);
+                        }).catch(() => {
+                            debugErrorManager.setError(fullMessage); // Fallback without stack trace
+                        });
+                    } else {
+                        debugErrorManager.setError(fullMessage);
+                    }
+                } else if (message.type === 'event' && message.event === 'output' && message.body.category === 'stderr') {
+                    const output = message.body.output;
+                    if (output.match(/error|exception|traceback/i) && !debugErrorManager.lastError) {
+                        debugErrorManager.setError(output);
+                    }
+                }
+            },
+            onWillContinue: () => {
+                debugErrorManager.clearError();
+            }
+        };
+    }
+}
+
+
 async function buildCodeActionPrompt(
     promptTemplate: string, 
     actionType: 'generation' | 'information' | undefined,
@@ -56,8 +121,8 @@ async function buildCodeActionPrompt(
     const selection = editor.selection;
     const document = editor.document;
 
-    const placeholders = parsePlaceholders(promptTemplate);
     let processedTemplate = promptTemplate;
+    const placeholders = parsePlaceholders(processedTemplate);
     if (placeholders.length > 0) {
         const formData = await PromptBuilderPanel.createOrShow(extensionUri, placeholders);
         if (formData === null) return null;
@@ -67,7 +132,10 @@ async function buildCodeActionPrompt(
         });
     }
 
-    const userInstruction = processedTemplate.replace('{{SELECTED_CODE}}', '').trim();
+    const userInstruction = processedTemplate.includes('{{SELECTED_CODE}}')
+        ? processedTemplate.replace('{{SELECTED_CODE}}', '').trim()
+        : processedTemplate.trim();
+
     const selectedText = document.getText(selection);
     const fileName = path.basename(document.fileName);
     const languageId = document.languageId;
@@ -434,7 +502,6 @@ context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.trig
     
         let targetPrompt: Prompt | undefined;
 
-        // Case 1: The "Custom Action..." menu item was clicked directly.
         if (promptOrArg && (promptOrArg as { isCustom: true }).isCustom === true) {
             const customActionData = await CustomActionModal.createOrShow(context.extensionUri);
             if (!customActionData) return; // User cancelled
@@ -445,29 +512,27 @@ context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.trig
                     id: Date.now().toString() + Math.random().toString(36).substring(2),
                     groupId: null,
                     title: customActionData.title,
-                    content: `${customActionData.prompt}\n{{SELECTED_CODE}}`,
+                    content: customActionData.prompt, // Save the raw instruction
                     type: 'code_action',
                     action_type: customActionData.actionType
                 };
                 data.prompts.push(newPrompt);
                 await promptManager.saveData(data);
-                chatPromptTreeProvider.refresh();
                 codeActionTreeProvider.refresh();
                 vscode.window.showInformationMessage(vscode.l10n.t('info.promptSaved', customActionData.title));
             }
             
+            // Create a temporary prompt object for execution
             targetPrompt = {
                 id: 'custom',
-                title: customActionData.save ? customActionData.title : vscode.l10n.t('title.customAction'),
-                content: `${customActionData.prompt}\n{{SELECTED_CODE}}`,
+                title: customActionData.title || vscode.l10n.t('title.customAction'),
+                content: customActionData.prompt, // Use the raw instruction
                 type: 'code_action',
                 action_type: customActionData.actionType,
                 groupId: null
             };
-        // Case 2: A specific, pre-defined prompt was passed as an argument.
         } else if (promptOrArg) {
             targetPrompt = promptOrArg as Prompt;
-        // Case 3: The command was called without arguments (e.g., from Command Palette).
         } else {
             const codePrompts = await promptManager.getCodeActionPrompts();
             const items = codePrompts.map(p => ({ label: p.title, description: p.content, prompt: p }));
@@ -478,7 +543,7 @@ context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.trig
 
             if (!selection) return;
     
-            if (!selection.prompt) {
+            if (!selection.prompt) { // User chose "Custom Prompt..."
                 const customActionData = await CustomActionModal.createOrShow(context.extensionUri);
                 if (!customActionData) return;
     
@@ -488,21 +553,20 @@ context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.trig
                         id: Date.now().toString() + Math.random().toString(36).substring(2),
                         groupId: null,
                         title: customActionData.title,
-                        content: `${customActionData.prompt}\n{{SELECTED_CODE}}`,
+                        content: customActionData.prompt,
                         type: 'code_action',
                         action_type: customActionData.actionType
                     };
                     data.prompts.push(newPrompt);
                     await promptManager.saveData(data);
-                    chatPromptTreeProvider.refresh();
                     codeActionTreeProvider.refresh();
                     vscode.window.showInformationMessage(vscode.l10n.t('info.promptSaved', customActionData.title));
                 }
                 
                 targetPrompt = {
                     id: 'custom',
-                    title: customActionData.save ? customActionData.title : vscode.l10n.t('title.customAction'),
-                    content: `${customActionData.prompt}\n{{SELECTED_CODE}}`,
+                    title: customActionData.title || vscode.l10n.t('title.customAction'),
+                    content: customActionData.prompt,
                     type: 'code_action',
                     action_type: customActionData.actionType,
                     groupId: null
@@ -512,13 +576,7 @@ context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.trig
             }
         }
     
-        if (!targetPrompt) { return; }
-
-        // FIX: Add a guard against malformed prompt objects that might lack a 'content' property.
-        if (typeof targetPrompt.content !== 'string') {
-            vscode.window.showErrorMessage(`Lollms Action '${targetPrompt.title}' is missing its prompt content. Please check your prompts.json file.`);
-            return;
-        }
+        if (!targetPrompt || typeof targetPrompt.content !== 'string') { return; }
 
         const promptData = await buildCodeActionPrompt(targetPrompt.content, targetPrompt.action_type, editor, context.extensionUri, contextManager);
         if (promptData === null) return;
@@ -594,20 +652,24 @@ context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.trig
         vscode.window.showInformationMessage(`Skill '${name}' has been learned.`);
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextIncluded', (uri?: vscode.Uri) => {
-        if (contextStateProvider && uri) {
-            contextStateProvider.setStateForUri(uri, 'included');
+    const handleSetState = (state: ContextState, primaryUri?: vscode.Uri, selectedUris?: vscode.Uri[]) => {
+        if (!contextStateProvider) return;
+        const urisToUpdate = selectedUris && selectedUris.length > 0 ? selectedUris : (primaryUri ? [primaryUri] : []);
+        if (urisToUpdate.length > 0) {
+            contextStateProvider.setStateForUris(urisToUpdate, state);
         }
+    };
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextIncluded', (primaryUri?: vscode.Uri, selectedUris?: vscode.Uri[]) => {
+        handleSetState('included', primaryUri, selectedUris);
     }));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextTreeOnly', (uri?: vscode.Uri) => {
-        if (contextStateProvider && uri) {
-            contextStateProvider.setStateForUri(uri, 'tree-only');
-        }
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextTreeOnly', (primaryUri?: vscode.Uri, selectedUris?: vscode.Uri[]) => {
+        handleSetState('tree-only', primaryUri, selectedUris);
     }));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextExcluded', (uri?: vscode.Uri) => {
-        if (contextStateProvider && uri) {
-            contextStateProvider.setStateForUri(uri, 'fully-excluded');
-        }
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextExcluded', (primaryUri?: vscode.Uri, selectedUris?: vscode.Uri[]) => {
+        handleSetState('fully-excluded', primaryUri, selectedUris);
     }));
     
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.autoSelectContextFiles', async () => {
@@ -1403,7 +1465,48 @@ context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.trig
             const fullOutput = `STDOUT:\n${error.stdout}\n\nSTDERR:\n${error.stderr}`;
             activeChatPanel.handleProjectExecutionResult(fullOutput, false);
         }
-    }));    
+    }));
+
+    context.subscriptions.push(vscode.debug.registerDebugAdapterTrackerFactory('*', new LollmsDebugAdapterTrackerFactory()));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.debugErrorWithAI', async () => {
+        if (!debugErrorManager.lastError) {
+            vscode.window.showInformationMessage("Lollms: No debug error has been captured.");
+            return;
+        }
+    
+        if (!discussionManager) {
+            vscode.window.showErrorMessage("Lollms: Cannot start a discussion, discussion manager not ready.");
+            return;
+        }
+    
+        const errorDetails = debugErrorManager.lastError;
+        
+        const contextContent = await contextManager.getContextContent();
+        
+        let prompt = `I'm encountering an error while debugging my project. Can you help me fix it?
+    
+Here are the details:
+    
+**Error Message:**
+\`\`\`
+${errorDetails.message}
+\`\`\`
+`;
+    
+        if(errorDetails.stack){
+            prompt += `\n**Stack Trace:**\n\`\`\`\n${errorDetails.stack}\n\`\`\`\n`;
+        }
+        
+        prompt += `Here is the current project context which might be relevant:\n${contextContent.text}\n\nPlease analyze the error and provide a fix.`;
+    
+        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager);
+        setupChatPanel(panel);
+        await panel.startDiscussionWithPrompt(prompt);
+    
+        // Clear the error after sending it to the AI
+        debugErrorManager.clearError();
+    }));
+        
     console.log('Extension activation complete.');
 }
 

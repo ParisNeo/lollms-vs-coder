@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
 import { ContextManager } from './contextManager';
 import { stripThinkingTags } from './utils'; // CORRECTED IMPORT PATH
+import * as os from 'os';
 
 export interface Plan {
     objective: string;
@@ -90,12 +91,28 @@ Your task is to generate a NEW set of tasks to recover from this failure and com
         if (!plan || typeof plan !== 'object') {
             throw new Error("The response is not a JSON object.");
         }
-        if (typeof plan.objective !== 'string' || typeof plan.scratchpad !== 'string' || !Array.isArray(plan.tasks)) {
-            throw new Error("The plan must have 'objective' (string), 'scratchpad' (string), and 'tasks' (array) properties.");
+        
+        // Allow scratchpad to be an object, but ensure it's a string for internal use.
+        if (typeof plan.objective !== 'string' || (typeof plan.scratchpad !== 'string' && typeof plan.scratchpad !== 'object') || !Array.isArray(plan.tasks)) {
+            throw new Error("The plan must have 'objective' (string), 'scratchpad' (string or object), and 'tasks' (array) properties.");
         }
+    
+        // If scratchpad is an object, stringify it for consistent handling.
+        if (typeof plan.scratchpad === 'object' && plan.scratchpad !== null) {
+            plan.scratchpad = JSON.stringify(plan.scratchpad, null, 2);
+        }
+    
         if (plan.tasks.length === 0) {
             throw new Error("The plan must contain at least one task.");
         }
+    
+        const simpleActions = new Set([
+            "execute_command", "read_file", "list_files", "get_environment_details",
+            "request_user_input", "set_launch_entrypoint", "create_python_environment",
+            "set_vscode_python_interpreter", "install_python_dependencies", "execute_python_script"
+        ]);
+        const agenticActions = new Set(["generate_code", "auto_select_context_files"]);
+    
         for (const task of plan.tasks) {
             const baseKeys = ['id', 'task_type', 'action', 'description', 'parameters'];
             for (const key of baseKeys) {
@@ -103,6 +120,20 @@ Your task is to generate a NEW set of tasks to recover from this failure and com
                     throw new Error(`A task is missing the required property: '${key}'. Full task: ${JSON.stringify(task)}`);
                 }
             }
+    
+            // Auto-correct common model errors
+            if (task.action === 'get_environment_details' && task.task_type !== 'simple_action') {
+                console.log(`Correcting task ${task.id}: action 'get_environment_details' task_type changed to 'simple_action'.`);
+                task.task_type = 'simple_action';
+            }
+    
+            if (task.task_type === 'simple_action' && !simpleActions.has(task.action)) {
+                throw new Error(`Invalid action '${task.action}' for task_type 'simple_action'.`);
+            }
+            if (task.task_type === 'agentic_action' && !agenticActions.has(task.action)) {
+                throw new Error(`Invalid action '${task.action}' for task_type 'agentic_action'.`);
+            }
+    
             if (typeof task.parameters !== 'object' || task.parameters === null) {
                  throw new Error(`The 'parameters' property for task ${task.id} must be a JSON object.`);
             }
@@ -149,7 +180,7 @@ Your task is to generate a NEW set of tasks to recover from this failure and com
             if (specifierMatch) {
                 // This is an opening fence for a nested block
                 depth++;
-                currentIndex = nextFence + 3 + specifierMatch[0].length;
+                currentIndex = nextFence + 3 + specifierMatch.length;
             } else {
                 // This is a closing fence
                 depth--;
@@ -185,21 +216,25 @@ Your task is to correct the JSON. You MUST provide ONLY the fixed, valid JSON ob
 
 **CONTEXT & ENVIRONMENT:**
 - You are operating inside a VS Code workspace.
-- The current working directory for all commands is the project's root folder. Do not create extra subdirectories unless strictly necessary for the project's structure (e.g., a 'src' or 'assets' folder).
-- The user has provided a project structure and the content of some files. Use this context to inform your plan. You can request to read other files using the 'read_file' action.
-- For Python projects, you should create a virtual environment named 'venv' and use the provided actions to install dependencies and set it as the VS Code interpreter.
+- You are in the root of the project. All file paths MUST be relative to this root. Do not create extra subdirectories unless strictly necessary for the project's structure (e.g., a 'src' or 'dist' folder).
+- The user's operating system is: \`${os.platform()}\`. All shell commands must be compatible with this OS.
+- The user has provided a project structure and the content of some files. Use this context to inform your plan. You can use \`read_file\` to see more file contents or \`list_files\` to explore directories.
+- For Python projects, it is highly recommended to first create a virtual environment (e.g., with \`create_python_environment\`) and install dependencies into it to ensure a clean, isolated workspace.
+- It's a good practice to start by using \`get_environment_details\` to understand the versions of tools you have available.
 
 **CRITICAL RULES:**
 1.  **JSON ONLY:** Your entire response MUST be a single, valid JSON object.
 2.  **MARKDOWN BLOCK:** The JSON object MUST be enclosed in a \`\`\`json code block.
 3.  **NO EXTRA TEXT:** Do not add any conversational text, apologies, or explanations before or after the JSON block.
-4.  **SCRATCHPAD USAGE:** Use the 'scratchpad' to maintain context, store key information (like function names or class definitions you've created), and track your high-level strategy. This helps you remember what you've done in previous steps.
-5.  **OS COMPATIBILITY:** All shell commands (\`execute_command\`) MUST be compatible with the OS specified in the user's context (e.g., \`OS: win32\`).
+4.  **SCRATCHPAD IS A STRING:** The 'scratchpad' field MUST be a single string, used for your internal notes and to track state. Do not use a JSON object for the scratchpad.
+5.  **OS COMPATIBILITY:** All shell commands (\`execute_command\`) MUST be compatible with the OS specified in the context above.
+6.  **SAFETY:** Do not use destructive commands like \`rm -rf\` or force-pushes to git. Always double-check file paths. Ask for user confirmation (\`request_user_input\`) for any potentially risky operation.
+7.  **Break It Down:** Decompose complex goals into a sequence of smaller, logical, and verifiable steps. This is crucial for success. For example, instead of one large 'build the app' task, create tasks for 'explore file structure with list_files', 'setup environment', 'create file structure', 'write component A', 'write component B', 'add tests for A', etc.
 
 **JSON SCHEMA DEFINITION & ALLOWED ACTIONS:**
 Your JSON output must conform to this schema, using only the actions listed below.
 
-\\\`\\\`\\\`json
+\`\`\`json
 {
   "objective": "string",
   "scratchpad": "string",
@@ -215,7 +250,7 @@ Your JSON output must conform to this schema, using only the actions listed belo
     }
   ]
 }
-\\\`\\\`\\\`
+\`\`\`
 
 ---
 
@@ -225,10 +260,12 @@ Your JSON output must conform to this schema, using only the actions listed belo
 
 *   **\`"action": "execute_command"\`**
     *   \`"parameters": { "command": "string" }\`
-*   **\`"action": "rewrite_file"\`**
-    *   \`"parameters": { "path": "string", "code": "string" }\` (Use \`{{tasks[ID].result}}\` to reference output from a previous \`generate_code\` or \`read_file\` task)
 *   **\`"action": "read_file"\`**
     *   \`"parameters": { "path": "string" }\` (Reads a file's content into the task result for later use, e.g., in a \`generate_code\` prompt)
+*   **\`"action": "list_files"\`**
+    *   \`"parameters": { "path": "string" }\` (Lists files and directories recursively. Defaults to project root '.')
+*   **\`"action": "get_environment_details"\`**
+    *   \`"parameters": {}\` (Gets versions of common tools like Python, Node, etc., to understand the environment)
 *   **\`"action": "request_user_input"\`**
     *   \`"parameters": { "question": "string" }\`
 *   **\`"action": "set_launch_entrypoint"\`**
@@ -245,7 +282,7 @@ Your JSON output must conform to this schema, using only the actions listed belo
 #### **\`agentic_action\`**
 
 *   **\`"action": "generate_code"\`**
-    *   \`"parameters": { "file_path": "string", "system_prompt": "string", "user_prompt": "string" }\`
+    *   \`"parameters": { "file_path": "string", "system_prompt": "string", "user_prompt": "string" }\` (Generates code based on the prompts and writes the full content to the specified file path)
 *   **\`"action": "auto_select_context_files"\`**
     *   \`"parameters": { "objective": "string" }\`
 

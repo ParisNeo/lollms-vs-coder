@@ -17,6 +17,7 @@
     "command.executeScript.title": "Lollms: Execute Script",
     "command.selectPythonInterpreter.title": "Lollms: Select Python Interpreter",
     "command.inspectCode.title": "Lollms: Inspect Code",
+    "command.debugErrorWithAI.title": "Lollms: Fix This Error",
     "command.buildCodeGraph.title": "Build Code Graph",
     "command.addSkill.title": "New Skill",
     "command.learnSelectionAsSkill.title": "Lollms: Learn Selection as Skill",

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { CodeGraphManager, CodeGraphNode } from '../codeGraphManager';
+import { CodeGraphManager, CodeGraphNode, CodeGraph } from '../codeGraphManager';
 
 export class CodeExplorerTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
     private _onDidChangeTreeData: vscode.EventEmitter<vscode.TreeItem | undefined | null | void> = new vscode.EventEmitter<vscode.TreeItem | undefined | null | void>();
@@ -16,45 +16,91 @@ export class CodeExplorerTreeProvider implements vscode.TreeDataProvider<vscode.
     }
 
     getChildren(element?: vscode.TreeItem): Thenable<vscode.TreeItem[]> {
-        if (element instanceof CodeGraphItem) {
-            return Promise.resolve(element.node.children.map(child => new CodeGraphItem(child)));
-        }
+        const graph = this.codeGraphManager.getGraphData();
 
-        if (!element) {
+        if (!element) { // Root level: show files
             if (this.codeGraphManager.getBuildState() === 'idle') {
-                const placeholder = new vscode.TreeItem("Click 'Build Code Graph' to start...", vscode.TreeItemCollapsibleState.None);
+                const placeholder = new vscode.TreeItem("Click the refresh icon to build the graph", vscode.TreeItemCollapsibleState.None);
                 placeholder.iconPath = new vscode.ThemeIcon('info');
                 return Promise.resolve([placeholder]);
             }
-
-            const graphData = this.codeGraphManager.getGraphData();
-            if (graphData.length === 0) {
-                const placeholder = new vscode.TreeItem("No code elements found in visible files.", vscode.TreeItemCollapsibleState.None);
-                placeholder.iconPath = new vscode.ThemeIcon('info');
-                return Promise.resolve([placeholder]);
-            }
-
-            return Promise.resolve(graphData.map(node => new CodeGraphItem(node)));
+            const fileNodes = graph.nodes.filter(n => n.type === 'file');
+            return Promise.resolve(fileNodes.map(n => new CodeGraphItem(n, 'file', graph)));
         }
+
+        if (element instanceof CodeGraphItem) {
+            return Promise.resolve(element.getChildren(graph));
+        }
+        
         return Promise.resolve([]);
     }
 }
 
 class CodeGraphItem extends vscode.TreeItem {
-    constructor(public readonly node: CodeGraphNode) {
-        super(node.label, node.children.length > 0 ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
+    constructor(
+        public readonly node: CodeGraphNode,
+        public readonly itemType: 'file' | 'symbol' | 'calls-group' | 'called-by-group' | 'call-site',
+        private graph: CodeGraph | null = null // Only root nodes need the full graph
+    ) {
+        let collapsibleState = vscode.TreeItemCollapsibleState.None;
+        if (itemType === 'file' || itemType === 'symbol' || itemType === 'calls-group' || itemType === 'called-by-group') {
+            collapsibleState = vscode.TreeItemCollapsibleState.Collapsed;
+        }
+
+        super(node.label, collapsibleState);
         
         this.id = node.id;
-        this.description = this.node.type === 'file' ? this.node.filePath : '';
-        this.contextValue = `codeGraphItem:${node.type}`;
+        this.command = node.command;
+        this.tooltip = node.docstring;
 
         const iconMapping = {
             file: 'file-code',
-            class: 'symbol-class',
-            function: 'symbol-method',
-            method: 'symbol-method',
-            enum: 'symbol-enum'
+            symbol: node.type === 'class' ? 'symbol-class' : 'symbol-method',
+            'calls-group': 'arrow-right',
+            'called-by-group': 'arrow-left',
+            'call-site': 'symbol-method',
         };
-        this.iconPath = new vscode.ThemeIcon(iconMapping[node.type] || 'symbol-misc');
+        this.iconPath = new vscode.ThemeIcon(iconMapping[itemType]);
+    }
+
+    getChildren(graph: CodeGraph): CodeGraphItem[] {
+        const children: CodeGraphItem[] = [];
+
+        if (this.itemType === 'file' && this.graph) {
+            // Children of a file are its symbols
+            this.graph.edges.filter(e => e.source === this.node.id && e.label === 'contains').forEach(edge => {
+                const targetNode = this.graph!.nodes.find(n => n.id === edge.target);
+                if (targetNode) {
+                    children.push(new CodeGraphItem(targetNode, 'symbol', this.graph));
+                }
+            });
+        } else if (this.itemType === 'symbol' && this.graph) {
+            // Children of a symbol are "Calls" and "Called By" groups
+            const calls = this.graph.edges.filter(e => e.source === this.node.id && e.label === 'calls');
+            const calledBy = this.graph.edges.filter(e => e.target === this.node.id && e.label === 'calls');
+            if (calls.length > 0) {
+                 children.push(new CodeGraphItem({ ...this.node, id: `${this.node.id}:calls`, label: 'Calls' }, 'calls-group', this.graph));
+            }
+            if (calledBy.length > 0) {
+                 children.push(new CodeGraphItem({ ...this.node, id: `${this.node.id}:called-by`, label: 'Called By' }, 'called-by-group', this.graph));
+            }
+        } else if (this.itemType === 'calls-group' && this.graph) {
+            // Children of "Calls" are the functions it calls
+            this.graph.edges.filter(e => e.source === this.node.id && e.label === 'calls').forEach(edge => {
+                const targetNode = this.graph!.nodes.find(n => n.id === edge.target);
+                if (targetNode) {
+                    children.push(new CodeGraphItem(targetNode, 'call-site', this.graph));
+                }
+            });
+        } else if (this.itemType === 'called-by-group' && this.graph) {
+            // Children of "Called By" are the functions that call it
+            this.graph.edges.filter(e => e.target === this.node.id && e.label === 'calls').forEach(edge => {
+                const sourceNode = this.graph!.nodes.find(n => n.id === edge.source);
+                if (sourceNode) {
+                    children.push(new CodeGraphItem(sourceNode, 'call-site', this.graph));
+                }
+            });
+        }
+        return children;
     }
 }

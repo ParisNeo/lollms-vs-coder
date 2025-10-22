@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import { minimatch } from 'minimatch';
 
 export type ContextState = 'included' | 'tree-only' | 'fully-excluded';
 
@@ -114,7 +115,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         const items: ContextItem[] = [];
         for (const [name, type] of entries) {
             const uri = vscode.Uri.joinPath(parentUri, name);
-            if (this.isExcluded(uri.fsPath)) {
+            if (this.isExcluded(uri)) {
                 continue;
             }
             const state = this.getStateForUri(uri);
@@ -131,18 +132,22 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         return items;
     }
 
-    private isExcluded(filePath: string): boolean {
+    private isExcluded(uri: vscode.Uri): boolean {
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+        if (!workspaceFolder) {
+            return false;
+        }
+    
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const exceptions = config.get<string[]>('contextFileExceptions') || [];
-        const fileUri = vscode.Uri.file(filePath);
+        const relativePath = path.relative(workspaceFolder.uri.fsPath, uri.fsPath).replace(/\\/g, '/');
     
-        for (let pattern of exceptions) {
-            const filter: vscode.DocumentFilter = { pattern: pattern };
-            if (vscode.languages.match(filter, { uri: fileUri, scheme: 'file', languageId: '' })) {
-                return true;
-            }
+        // If the path is empty, it's the root folder, which should not be excluded.
+        if (relativePath === '') {
+            return false;
         }
-        return false;
+
+        return exceptions.some(pattern => minimatch(relativePath, pattern, { dot: true }));
     }
 
     public getStateForUri(uri: vscode.Uri): ContextState {
@@ -216,7 +221,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     
             for (const [name, type] of entries) {
                 const entryUri = vscode.Uri.joinPath(currentDirUri, name);
-                if (this.isExcluded(entryUri.fsPath)) {
+                if (this.isExcluded(entryUri)) {
                     continue;
                 }
                 urisToFire.push(entryUri);
@@ -271,7 +276,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     
         const processDirectory = async (dirUri: vscode.Uri) => {
             const relativePath = vscode.workspace.asRelativePath(dirUri, false);
-            if (workspaceState[relativePath] === 'fully-excluded' || this.isExcluded(dirUri.fsPath)) {
+            if (workspaceState[relativePath] === 'fully-excluded' || this.isExcluded(dirUri)) {
                 return;
             }
     
@@ -286,7 +291,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                 const entryUri = vscode.Uri.joinPath(dirUri, name);
                 const entryRelativePath = vscode.workspace.asRelativePath(entryUri, false);
     
-                if (workspaceState[entryRelativePath] === 'fully-excluded' || this.isExcluded(entryUri.fsPath)) {
+                if (workspaceState[entryRelativePath] === 'fully-excluded' || this.isExcluded(entryUri)) {
                     continue;
                 }
     

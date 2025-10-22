@@ -614,10 +614,11 @@ context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.trig
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.buildCodeGraph', async () => {
         await codeGraphManager.buildGraph();
         codeExplorerTreeProvider.refresh();
-        CodeExplorerPanel.createOrShow(context.extensionUri);
-        if (CodeExplorerPanel.currentPanel) {
-            CodeExplorerPanel.currentPanel.updateGraph(codeGraphManager.getGraphData());
-        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showCodeGraphPanel', async () => {
+        await codeGraphManager.buildGraph();
+        CodeExplorerPanel.createOrShow(context.extensionUri, codeGraphManager.getGraphData());
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.addSkill', async () => {

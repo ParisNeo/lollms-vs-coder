@@ -3,7 +3,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { ContextStateProvider } from './commands/contextStateProvider';
-import jimp from 'jimp';
+import Jimp = require('jimp');
 import { LollmsAPI } from './lollmsAPI';
 
 export interface ContextResult {
@@ -68,7 +68,7 @@ export class ContextManager {
           let fileContent = '';
 
           if (this.imageExtensions.has(ext)) {
-            const image = await jimp.read(buffer);
+            const image = await Jimp.read(buffer);
             if (maxImageSize > 0 && (image.getWidth() > maxImageSize || image.getHeight() > maxImageSize)) {
               image.scaleToFit(maxImageSize, maxImageSize);
             }

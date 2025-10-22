@@ -803,6 +803,7 @@
                 <button class="menu-item" id="attachButton"><i class="codicon codicon-add"></i><span>Attach Files</span></button>
                 <button class="menu-item" id="setEntryPointButton"><i class="codicon codicon-target"></i><span>Set Project Entry Point</span></button>
                 <button class="menu-item" id="executeButton"><i class="codicon codicon-play"></i><span>Execute Project</span></button>
+                <button class="menu-item" id="debugRestartButton"><i class="codicon codicon-debug-restart"></i><span>Re-run Last Debug</span></button>
             </div>
 
             <div class="top-controls">
@@ -862,6 +863,7 @@
         const attachButton = document.getElementById('attachButton');
         const executeButton = document.getElementById('executeButton');
         const setEntryPointButton = document.getElementById('setEntryPointButton');
+        const debugRestartButton = document.getElementById('debugRestartButton');
         const fileInput = document.getElementById('fileInput');
         const agentModeCheckbox = document.getElementById('agentModeCheckbox');
         const agentModeToggle = document.querySelector('.agent-mode-toggle');
@@ -1402,6 +1404,7 @@
             attachButton.disabled = isGenerating;
             executeButton.disabled = isGenerating;
             setEntryPointButton.disabled = isGenerating;
+            debugRestartButton.disabled = isGenerating;
 
             sendButton.style.display = isGenerating ? 'none' : 'flex';
             stopButton.style.display = isGenerating ? 'flex' : 'none';
@@ -1442,6 +1445,10 @@
         
         setEntryPointButton.addEventListener('click', () => {
             vscode.postMessage({ command: 'setEntryPoint' });
+        });
+
+        debugRestartButton.addEventListener('click', () => {
+            vscode.postMessage({ command: 'debugRestart' });
         });
 
         fileInput.addEventListener('change', () => {

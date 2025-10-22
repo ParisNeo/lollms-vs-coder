@@ -9,7 +9,6 @@ import * as path from 'path';
 import { InfoPanel } from './infoPanel';
 import { ProcessManager } from '../processManager';
 
-
 export class ChatPanel {
   public static currentPanel: ChatPanel | undefined;
   public readonly _panel: vscode.WebviewPanel;
@@ -22,7 +21,6 @@ export class ChatPanel {
   private _lastApiRequest: ChatMessage[] | null = null;
   private _lastApiResponse: string | null = null;
   private processManager!: ProcessManager;
-
 
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, discussionManager: DiscussionManager): ChatPanel {
     const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
@@ -101,7 +99,6 @@ export class ChatPanel {
             needsSave = true;
         }
 
-
         if (needsSave) {
             await this._discussionManager.saveDiscussion(discussion);
         }
@@ -125,6 +122,7 @@ export class ChatPanel {
         this._panel.webview.postMessage({ command: 'updateTokenProgress' }); // Ends loading state
     }
   }
+
   public async startNewDiscussion(groupId: string | null = null): Promise<void> {
     this._panel.webview.postMessage({ command: 'startContextLoading' });
     this._currentDiscussion = this._discussionManager.createNewDiscussion(groupId);
@@ -189,7 +187,6 @@ export class ChatPanel {
         }
     })();
   }
-
 
   public getCurrentDiscussionId(): string | null {
     return this._currentDiscussion?.id || null;
@@ -781,6 +778,9 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             break;
         case 'setEntryPoint':
             vscode.commands.executeCommand('lollms-vs-coder.setEntryPoint');
+            break;
+        case 'debugRestart':
+            vscode.commands.executeCommand('workbench.action.debug.restart');
             break;
         case 'saveMessageAsPrompt':
           vscode.commands.executeCommand('lollms-vs-coder.saveMessageAsPrompt', message.content);

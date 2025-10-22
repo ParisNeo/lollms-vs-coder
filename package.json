@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.1",
+  "version": "0.5.3",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -104,6 +104,11 @@
         "command": "lollms-vs-coder.buildCodeGraph",
         "title": "%command.buildCodeGraph.title%",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "lollms-vs-coder.showCodeGraphPanel",
+        "title": "Lollms: Show Interactive Code Graph",
+        "icon": "$(diagram)"
       },
       {
         "command": "lollms-vs-coder.addSkill",
@@ -275,17 +280,17 @@
       "title": "%config.title%",
       "properties": {
         "lollmsVsCoder.fileUpdateMethod": {
-            "type": "string",
-            "default": "full_file",
-            "description": "%config.fileUpdateMethod.description%",
-            "enum": [
-                "full_file",
-                "patch"
-            ],
-            "enumDescriptions": [
-                "%config.fileUpdateMethod.full_file.description%",
-                "%config.fileUpdateMethod.patch.description%"
-            ]
+          "type": "string",
+          "default": "full_file",
+          "description": "%config.fileUpdateMethod.description%",
+          "enum": [
+            "full_file",
+            "patch"
+          ],
+          "enumDescriptions": [
+            "%config.fileUpdateMethod.full_file.description%",
+            "%config.fileUpdateMethod.patch.description%"
+          ]
         },
         "lollmsVsCoder.enableCodeActions": {
           "type": "boolean",
@@ -528,6 +533,11 @@
           "group": "navigation@3"
         },
         {
+          "command": "lollms-vs-coder.showCodeGraphPanel",
+          "when": "view == lollmsDiscussionsView",
+          "group": "navigation@4"
+        },
+        {
           "command": "lollms-vs-coder.buildCodeGraph",
           "when": "view == lollmsCodeExplorerView",
           "group": "navigation@1"
@@ -700,6 +710,7 @@
   "devDependencies": {
     "@types/jimp": "^0.2.28",
     "@types/marked": "5.0.2",
+    "@types/minimatch": "^5.1.2",
     "@types/node-fetch": "2.6.13",
     "@types/vscode": "1.74.0",
     "@vscode/vsce": "^2.26.0",
@@ -711,9 +722,10 @@
   "dependencies": {
     "@vscode/codicons": "^0.0.35",
     "exceljs": "^4.4.0",
-    "jimp": "^0.22.10",
+    "jimp": "^1.6.0",
     "mammoth": "^1.7.2",
     "marked": "16.2.1",
+    "minimatch": "^9.0.5",
     "node-fetch": "2.7.0"
   },
   "overrides": {

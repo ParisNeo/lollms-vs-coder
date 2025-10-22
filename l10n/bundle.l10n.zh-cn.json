@@ -147,5 +147,11 @@
     "error.failedToLoadContext": "加载上下文选择失败：{0}",
     "title.saveContextSelection": "保存 Lollms 上下文选择",
     "title.loadContextSelection": "加载 Lollms 上下文选择",
-    "filter.lollmsContext": "Lollms 上下文文件"
+    "filter.lollmsContext": "Lollms 上下文文件",
+    "view.codeGraph.viewLabel": "View:",
+    "view.codeGraph.callGraph": "Call Graph",
+    "view.codeGraph.importGraph": "Import Graph",
+    "view.codeGraph.classDiagram": "Class Diagram",
+    "tooltip.node.type": "Type:",
+    "view.codeGraph.emptyState": "No code structure found or graph has not been built yet. Click the diagram icon in the 'Discussions' view sidebar to build the graph."
 }

@@ -147,5 +147,11 @@
     "error.failedToLoadContext": "Fehler beim Laden der Kontextauswahl: {0}",
     "title.saveContextSelection": "Lollms-Kontextauswahl speichern",
     "title.loadContextSelection": "Lollms-Kontextauswahl laden",
-    "filter.lollmsContext": "Lollms-Kontextdatei"
+    "filter.lollmsContext": "Lollms-Kontextdatei",
+    "view.codeGraph.viewLabel": "View:",
+    "view.codeGraph.callGraph": "Call Graph",
+    "view.codeGraph.importGraph": "Import Graph",
+    "view.codeGraph.classDiagram": "Class Diagram",
+    "tooltip.node.type": "Type:",
+    "view.codeGraph.emptyState": "No code structure found or graph has not been built yet. Click the diagram icon in the 'Discussions' view sidebar to build the graph."
 }

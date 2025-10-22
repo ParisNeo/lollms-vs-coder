@@ -32,15 +32,9 @@ export class CodeExplorerPanel {
         this._panel = panel;
         this._extensionUri = extensionUri;
 
-        this._setPanelIcon();
         this._panel.webview.html = this._getHtmlForWebview(initialGraphData);
         this._panel.onDidDispose(() => this.dispose(), null, []);
         this._setWebviewMessageListener();
-    }
-    
-    private _setPanelIcon() {
-        const iconPath = vscode.Uri.joinPath(this._extensionUri, 'media', 'lollms-icon.svg');
-        this._panel.iconPath = iconPath;
     }
     
     private _setWebviewMessageListener() {
@@ -72,8 +66,17 @@ export class CodeExplorerPanel {
     }
 
     private _getHtmlForWebview(graphData: CodeGraph): string {
-        const cytoscapeUri = this._panel.webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'cytoscape.min.js'));
         
+        // Pass translated strings to the webview
+        const l10n = {
+            viewLabel: vscode.l10n.t('view.codeGraph.viewLabel', "View:"),
+            callGraph: vscode.l10n.t('view.codeGraph.callGraph', "Call Graph"),
+            importGraph: vscode.l10n.t('view.codeGraph.importGraph', "Import Graph"),
+            classDiagram: vscode.l10n.t('view.codeGraph.classDiagram', "Class Diagram"),
+            emptyState: vscode.l10n.t('view.codeGraph.emptyState', "No code structure found or graph has not been built yet. Click the diagram icon in the 'Discussions' view sidebar to build the graph."),
+            tooltipType: vscode.l10n.t('tooltip.node.type', "Type:")
+        };
+
         return `<!DOCTYPE html>
 <html>
 <head>
@@ -92,145 +95,170 @@ export class CodeExplorerPanel {
             width: 100%;
             overflow: hidden;
         }
-        #cy {
-            width: 100%;
-            height: 100%;
-            display: block;
-        }
+        #cy { width: 100%; height: 100%; display: block; }
         .empty-state { text-align: center; margin-top: 3em; color: var(--vscode-descriptionForeground); }
+        #toolbar {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 10;
+            background-color: var(--vscode-editorWidget-background);
+            padding: 8px;
+            border-radius: 5px;
+            border: 1px solid var(--vscode-panel-border);
+        }
+        #tooltip {
+            position: absolute;
+            display: none;
+            padding: 10px;
+            background-color: var(--vscode-menu-background);
+            border: 1px solid var(--vscode-menu-border);
+            border-radius: 5px;
+            max-width: 400px;
+            z-index: 100;
+            pointer-events: none;
+            font-size: 0.9em;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+        #tooltip h4 { margin: 0 0 5px 0; }
+        #tooltip p { margin: 0; color: var(--vscode-descriptionForeground); }
+        #tooltip strong { color: var(--vscode-editor-foreground); }
     </style>
 </head>
 <body>
+    <div id="toolbar">
+        <label for="view-selector">${l10n.viewLabel} </label>
+        <select id="view-selector">
+            <option value="call_graph" selected>${l10n.callGraph}</option>
+            <option value="import_graph">${l10n.importGraph}</option>
+            <option value="class_diagram">${l10n.classDiagram}</option>
+        </select>
+    </div>
     <div id="cy"></div>
+    <div id="tooltip"></div>
     <div id="empty-state-container" class="empty-state" style="display: none;">
-        <p>No code structure found or graph has not been built yet.</p>
-        <p>Click the diagram icon in the 'Discussions' view sidebar to build the graph.</p>
+        <p>${l10n.emptyState}</p>
     </div>
 
     <script>
         const vscode = acquireVsCodeApi();
         let cy;
+        let fullGraphData = ${JSON.stringify(graphData)};
+        const tooltip = document.getElementById('tooltip');
+        const viewSelector = document.getElementById('view-selector');
 
-        function renderGraph(graphData) {
+        function applyViewFilter() {
+            if (!fullGraphData || !fullGraphData.nodes) return [];
+
+            const selectedView = viewSelector.value;
+            const allNodes = fullGraphData.nodes.map(n => ({ data: { ...n } }));
+            const allEdges = fullGraphData.edges.map(e => ({ data: { ...e } }));
+
+            if (selectedView === 'import_graph') {
+                const importEdges = allEdges.filter(e => e.data.label === 'imports');
+                const relevantNodeIds = new Set();
+                importEdges.forEach(e => {
+                    relevantNodeIds.add(e.data.source);
+                    relevantNodeIds.add(e.data.target);
+                });
+                const fileNodes = allNodes.filter(n => relevantNodeIds.has(n.data.id));
+                return [...fileNodes, ...importEdges];
+            } else if (selectedView === 'class_diagram') {
+                const classNodes = allNodes.filter(n => n.data.type === 'class');
+                const classNodeIds = new Set(classNodes.map(n => n.data.id));
+
+                const methodEdges = allEdges.filter(e => e.data.label === 'contains' && classNodeIds.has(e.data.source));
+                const methodIds = new Set(methodEdges.map(e => e.data.target));
+                const methodNodes = allNodes.filter(n => methodIds.has(n.data.id));
+
+                const callEdges = allEdges.filter(e => e.data.label === 'calls' && (methodIds.has(e.data.source) || methodIds.has(e.data.target)));
+                
+                return [...classNodes, ...methodNodes, ...methodEdges, ...callEdges];
+            } else { // default to call_graph
+                return [...allNodes, ...allEdges.filter(e => e.data.label !== 'imports')];
+            }
+        }
+
+        function initializeCytoscape() {
             const container = document.getElementById('cy');
             const emptyState = document.getElementById('empty-state-container');
+            const elements = applyViewFilter();
 
-            if (!graphData || !graphData.nodes || graphData.nodes.length === 0) {
+            if (elements.length === 0) {
                 container.style.display = 'none';
                 emptyState.style.display = 'block';
+                if (cy) { cy.destroy(); cy = null; }
                 return;
             }
             container.style.display = 'block';
             emptyState.style.display = 'none';
-
-            const elements = [
-                ...graphData.nodes.map(n => ({ data: { ...n, ext: n.filePath.split('.').pop() } })),
-                ...graphData.edges.map(e => ({ data: { ...e } }))
-            ];
-
-            cy = cytoscape({
-                container: container,
-                elements: elements,
-                style: [
-                    {
-                        selector: 'node',
-                        style: {
-                            'label': 'data(label)',
-                            'color': 'var(--vscode-editor-foreground)',
-                            'font-size': '14px',
-                            'font-weight': 'bold',
-                            'text-valign': 'center',
-                            'text-halign': 'center',
-                            'background-color': 'var(--vscode-input-background)',
-                            'border-color': 'var(--vscode-panel-border)',
-                            'border-width': 2,
-                            'min-zoomed-font-size': 10
-                        }
-                    },
-                    {
-                        selector: 'node[type = "file"]',
-                        style: { 'shape': 'rectangle', 'width': 'label', 'height': 'label', 'padding': '15px', 'font-size': '16px' }
-                    },
-                    // File Type Colors
-                    { selector: 'node[ext = "py"]', style: { 'background-color': '#306998', 'border-color':'#FFD43B' } }, // Python
-                    { selector: 'node[ext = "js"]', style: { 'background-color': '#f0db4f', 'border-color':'#323330' } }, // JavaScript
-                    { selector: 'node[ext = "ts"]', style: { 'background-color': '#007acc', 'border-color':'#ffffff' } }, // TypeScript
-                    { selector: 'node[ext = "json"]', style: { 'background-color': '#8c8c8c' } }, // JSON
-                    { selector: 'node[ext = "md"]', style: { 'background-color': '#000000', 'border-color':'#ffffff' } }, // Markdown
-
-                    {
-                        selector: 'node[type = "class"]',
-                        style: { 'shape': 'octagon', 'background-color': 'var(--vscode-gitDecoration-modifiedResourceForeground)', 'border-color': 'var(--vscode-charts-yellow)' }
-                    },
-                    {
-                        selector: 'node[type = "function"]',
-                        style: { 'shape': 'ellipse', 'background-color': 'var(--vscode-gitDecoration-addedResourceForeground)', 'border-color': 'var(--vscode-charts-green)' }
-                    },
-                    {
-                        selector: 'edge',
-                        style: { 'width': 1.5, 'line-color': 'var(--vscode-panel-border)', 'target-arrow-color': 'var(--vscode-panel-border)', 'target-arrow-shape': 'triangle', 'curve-style': 'bezier' }
-                    },
-                    {
-                        selector: 'edge[label = "contains"]',
-                        style: { 'line-style': 'dashed', 'line-color': 'var(--vscode-descriptionForeground)' }
-                    },
-                    {
-                        selector: 'edge[label = "calls"]',
-                        style: { 'line-color': 'var(--vscode-charts-blue)' }
-                    },
-                    {
-                        selector: '.highlighted',
-                        style: {
-                            'background-color': 'var(--vscode-list-hoverBackground)', 'line-color': 'var(--vscode-focusBorder)', 'target-arrow-color': 'var(--vscode-focusBorder)',
-                            'transition-property': 'background-color, line-color, target-arrow-color', 'transition-duration': '0.2s'
-                        }
-                    }
-                ],
-                layout: {
-                    name: 'cose',
-                    animate: 'end',
-                    animationDuration: 300,
-                    idealEdgeLength: 180,
-                    nodeOverlap: 40,
-                    fit: true,
-                    padding: 30,
-                    componentSpacing: 150,
-                    nodeRepulsion: 800000,
-                    edgeElasticity: 100,
-                    gravity: 60,
-                }
-            });
-
-            cy.on('tap', 'node', function(evt){
-                const node = evt.target;
-                vscode.postMessage({
-                    command: 'openFile',
-                    filePath: node.data('filePath'),
-                    line: node.data('startLine')
+            
+            if (cy) {
+                cy.elements().remove();
+                cy.add(elements);
+            } else {
+                cy = cytoscape({
+                    container: container,
+                    elements: elements,
+                    style: [
+                        { selector: 'node', style: { 'label': 'data(label)', 'color': 'var(--vscode-editor-foreground)', 'font-size': '14px', 'font-weight': 'bold', 'text-valign': 'center', 'text-halign': 'center', 'background-color': 'var(--vscode-input-background)', 'border-color': 'var(--vscode-panel-border)', 'border-width': 2, 'min-zoomed-font-size': 10 } },
+                        { selector: 'node[type = "file"]', style: { 'shape': 'rectangle', 'width': 'label', 'height': 'label', 'padding': '15px', 'font-size': '16px' } },
+                        { selector: 'node[type = "class"]', style: { 'shape': 'octagon', 'background-color': 'var(--vscode-gitDecoration-modifiedResourceForeground)', 'border-color': 'var(--vscode-charts-yellow)' } },
+                        { selector: 'node[type = "function"]', style: { 'shape': 'ellipse', 'background-color': 'var(--vscode-gitDecoration-addedResourceForeground)', 'border-color': 'var(--vscode-charts-green)' } },
+                        { selector: 'edge', style: { 'width': 1.5, 'line-color': 'var(--vscode-panel-border)', 'target-arrow-color': 'var(--vscode-panel-border)', 'target-arrow-shape': 'triangle', 'curve-style': 'bezier' } },
+                        { selector: 'edge[label = "contains"]', style: { 'line-style': 'dashed', 'line-color': 'var(--vscode-descriptionForeground)' } },
+                        { selector: 'edge[label = "calls"]', style: { 'line-color': 'var(--vscode-charts-blue)' } },
+                        { selector: 'edge[label = "imports"]', style: { 'line-color': '#999', 'line-style': 'dotted' } },
+                        { selector: '.highlighted', style: { 'background-color': 'var(--vscode-list-hoverBackground)', 'line-color': 'var(--vscode-focusBorder)', 'target-arrow-color': 'var(--vscode-focusBorder)', 'transition-property': 'background-color, line-color, target-arrow-color', 'transition-duration': '0.2s' } }
+                    ]
                 });
-            });
 
-            cy.on('mouseover', 'node', function(e){
-                const node = e.target;
-                node.addClass('highlighted');
-                node.neighborhood().addClass('highlighted');
-            });
-            cy.on('mouseout', 'node', function(e){
-                const node = e.target;
-                node.removeClass('highlighted');
-                node.neighborhood().removeClass('highlighted');
-            });
+                cy.on('tap', 'node', function(evt){
+                    const node = evt.target;
+                    vscode.postMessage({ command: 'openFile', filePath: node.data('filePath'), line: node.data('startLine') });
+                });
+
+                cy.on('mouseover', 'node', function(e){
+                    const node = e.target;
+                    const nodeData = node.data();
+                    let content = \`<h4>\${nodeData.label}</h4><p><strong>${l10n.tooltipType}</strong> \${nodeData.type}</p>\`;
+                    if (nodeData.docstring) { content += \`<p>\${nodeData.docstring}</p>\`; }
+                    tooltip.innerHTML = content;
+                    tooltip.style.display = 'block';
+                    const pos = e.renderedPosition;
+                    tooltip.style.left = pos.x + 15 + 'px';
+                    tooltip.style.top = pos.y + 15 + 'px';
+                    node.addClass('highlighted');
+                    node.neighborhood().addClass('highlighted');
+                });
+                cy.on('mouseout', 'node', function(e){
+                    tooltip.style.display = 'none';
+                    const node = e.target;
+                    node.removeClass('highlighted');
+                    node.neighborhood().removeClass('highlighted');
+                });
+                cy.on('pan zoom', function(){ tooltip.style.display = 'none'; });
+            }
+
+            cy.layout({
+                name: 'cose', animate: 'end', animationDuration: 300, idealEdgeLength: 180, nodeOverlap: 40,
+                fit: true, padding: 30, componentSpacing: 150, nodeRepulsion: 800000, edgeElasticity: 100, gravity: 60,
+            }).run();
         }
+
+        viewSelector.addEventListener('change', initializeCytoscape);
 
         window.addEventListener('message', event => {
             const message = event.data;
             if (message.command === 'updateGraph') {
-                if (cy) { cy.destroy(); }
-                renderGraph(message.data);
+                fullGraphData = message.data;
+                initializeCytoscape();
             }
         });
 
-        renderGraph(${JSON.stringify(graphData)});
+        initializeCytoscape();
     </script>
 </body>
 </html>`;

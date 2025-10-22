@@ -107,7 +107,7 @@
       },
       {
         "command": "lollms-vs-coder.showCodeGraphPanel",
-        "title": "Lollms: Show Interactive Code Graph",
+        "title": "%command.showCodeGraphPanel.title%",
         "icon": "$(diagram)"
       },
       {

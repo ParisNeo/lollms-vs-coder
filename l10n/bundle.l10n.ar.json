@@ -147,5 +147,11 @@
     "error.failedToLoadContext": "فشل تحميل تحديد السياق: {0}",
     "title.saveContextSelection": "حفظ تحديد سياق Lollms",
     "title.loadContextSelection": "تحميل تحديد سياق Lollms",
-    "filter.lollmsContext": "ملف سياق Lollms"
+    "filter.lollmsContext": "ملف سياق Lollms",
+    "view.codeGraph.viewLabel": "View:",
+    "view.codeGraph.callGraph": "Call Graph",
+    "view.codeGraph.importGraph": "Import Graph",
+    "view.codeGraph.classDiagram": "Class Diagram",
+    "tooltip.node.type": "Type:",
+    "view.codeGraph.emptyState": "No code structure found or graph has not been built yet. Click the diagram icon in the 'Discussions' view sidebar to build the graph."
 }

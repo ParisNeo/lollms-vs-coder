@@ -19,6 +19,7 @@
     "command.inspectCode.title": "Lollms: 检查代码",
     "command.debugErrorWithAI.title": "Lollms: 修复此错误",
     "command.buildCodeGraph.title": "构建代码图",
+    "command.showCodeGraphPanel.title": "Lollms: 显示交互式代码图",
     "command.addSkill.title": "新技能",
     "command.learnSelectionAsSkill.title": "Lollms: 将选择学习为技能",
     "command.newDiscussion.title": "新讨论",

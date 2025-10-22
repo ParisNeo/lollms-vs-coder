@@ -16,7 +16,7 @@ export interface CodeGraphEdge {
     id: string;
     source: string; // ID of the source node
     target: string; // ID of the target node
-    label: 'contains' | 'calls';
+    label: 'contains' | 'calls' | 'imports';
 }
 
 export interface CodeGraph {
@@ -97,6 +97,7 @@ export class CodeGraphManager {
                 const fileUri = vscode.Uri.joinPath(workspaceRoot, relativePath);
                 newGraph.nodes.push({
                     id: relativePath, label: path.basename(relativePath), type: 'file', filePath: relativePath, startLine: 0,
+                    docstring: relativePath,
                     command: { command: 'vscode.open', title: 'Open File', arguments: [fileUri] }
                 });
 
@@ -121,13 +122,59 @@ export class CodeGraphManager {
                 } catch (e) { console.warn(`Could not get symbols for ${relativePath}:`, e); }
             }
 
+            // --- PASS 1.5: Find imports ---
+            progress.report({ message: "Scanning for imports..." });
+            const importRegex = /^(?:import|export)(?:[^{}]*|\{[^}]*\})\s*from\s*['"]([^'"]+)['"];?|import\s*['"]([^'"]+)['"];?|require\s*\(\s*['"]([^'"]+)['"]\s*\)/gm;
+
+            for (const sourcePath of allVisibleFiles) {
+                if (token.isCancellationRequested) return;
+
+                try {
+                    const fileUri = vscode.Uri.joinPath(workspaceRoot, sourcePath);
+                    const content = (await vscode.workspace.fs.readFile(fileUri)).toString();
+                    
+                    let match;
+                    while ((match = importRegex.exec(content)) !== null) {
+                        const importPath = match[1] || match[2] || match[3];
+                        if (!importPath || !importPath.startsWith('.')) continue; // Only handle relative imports
+
+                        const sourceDir = path.dirname(sourcePath);
+                        const targetPath = path.join(sourceDir, importPath);
+                        const normalizedTargetPath = path.normalize(targetPath).replace(/\\/g, '/');
+
+                        const possibleExtensions = ['', '.ts', '.js', '.tsx', '.jsx', '/index.ts', '/index.js'];
+                        let resolvedPath: string | null = null;
+
+                        for (const ext of possibleExtensions) {
+                            const tempPath = normalizedTargetPath + ext;
+                            if (newGraph.nodes.some(n => n.id === tempPath && n.type === 'file')) {
+                                resolvedPath = tempPath;
+                                break;
+                            }
+                        }
+
+                        if (resolvedPath) {
+                            newGraph.edges.push({
+                                id: `${sourcePath}->import->${resolvedPath}`,
+                                source: sourcePath,
+                                target: resolvedPath,
+                                label: 'imports'
+                            });
+                        }
+                    }
+                } catch (e) {
+                    console.warn(`Could not read or parse imports for ${sourcePath}:`, e);
+                }
+            }
+            
             // --- PASS 2: Find connections (references) ---
             const symbolNodes = newGraph.nodes.filter(n => n.type === 'function' || n.type === 'class');
             let processedSymbols = 0;
+            const totalSymbols = symbolNodes.length;
             for (const symbolNode of symbolNodes) {
                 if (token.isCancellationRequested) return;
                 processedSymbols++;
-                progress.report({ message: `Finding references for ${symbolNode.label}`, increment: (processedSymbols / symbolNodes.length) * 100 });
+                progress.report({ message: `Finding references for ${symbolNode.label}`, increment: (1 / totalSymbols) * 100 });
                 
                 const symbolUri = vscode.Uri.joinPath(workspaceRoot, symbolNode.filePath);
                 const symbolPosition = new vscode.Position(symbolNode.startLine, 0);
@@ -141,17 +188,20 @@ export class CodeGraphManager {
                             const refRelativePath = vscode.workspace.asRelativePath(ref.uri, false);
                             const callingSymbolNode = newGraph.nodes.find(n => 
                                 n.filePath === refRelativePath &&
-                                n.type === 'function' &&
+                                (n.type === 'function' || n.type === 'class') && 
                                 ref.range.start.line >= n.startLine
                             );
                             
                             if (callingSymbolNode && callingSymbolNode.id !== symbolNode.id) {
-                                newGraph.edges.push({
-                                    id: `${callingSymbolNode.id}->${symbolNode.id}`,
-                                    source: callingSymbolNode.id,
-                                    target: symbolNode.id,
-                                    label: 'calls'
-                                });
+                                const edgeId = `${callingSymbolNode.id}->calls->${symbolNode.id}`;
+                                if (!newGraph.edges.some(e => e.id === edgeId)) {
+                                    newGraph.edges.push({
+                                        id: edgeId,
+                                        source: callingSymbolNode.id,
+                                        target: symbolNode.id,
+                                        label: 'calls'
+                                    });
+                                }
                             }
                         }
                     }

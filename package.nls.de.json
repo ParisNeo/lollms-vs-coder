@@ -19,6 +19,7 @@
     "command.inspectCode.title": "Lollms: Code überprüfen",
     "command.debugErrorWithAI.title": "Lollms: Diesen Fehler beheben",
     "command.buildCodeGraph.title": "Code-Graph erstellen",
+    "command.showCodeGraphPanel.title": "Lollms: Interaktiven Code-Graphen anzeigen",
     "command.addSkill.title": "Neue Fähigkeit",
     "command.learnSelectionAsSkill.title": "Lollms: Auswahl als Fähigkeit lernen",
     "command.newDiscussion.title": "Neue Diskussion",

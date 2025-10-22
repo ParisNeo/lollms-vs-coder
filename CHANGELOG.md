@@ -4,6 +4,17 @@ Of course! Here is the updated changelog for version **0.3.7**, incorporating th
 
 All notable changes to the "Lollms VS Coder" extension will be documented in this file.
 
+## [0.5.4] - 2025-10-22
+
+### ✨ Features
+
+-   **Enhanced Code Graph**: The interactive code graph view has been significantly upgraded.
+    -   **Multiple Views**: A new dropdown menu allows you to switch between different graph visualizations:
+        -   **Call Graph**: The classic view showing function/method calls and file containment.
+        -   **Import Graph**: A new view that visualizes the import relationships between files.
+        -   **Class Diagram**: A simplified UML-style view showing classes, their methods, and the calls between them.
+    -   **Interactive Metadata**: Hovering over any node (file, class, or function) in the graph now displays a tooltip with detailed information, including its type and documentation/docstring.
+
 ## [0.3.7] - 2025-09-24
 
 ### ✨ Features

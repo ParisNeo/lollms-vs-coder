@@ -19,6 +19,7 @@
     "command.inspectCode.title": "Lollms: فحص الكود",
     "command.debugErrorWithAI.title": "Lollms: إصلاح هذا الخطأ",
     "command.buildCodeGraph.title": "بناء الرسم البياني للكود",
+    "command.showCodeGraphPanel.title": "Lollms: إظهار الرسم البياني التفاعلي للكود",
     "command.addSkill.title": "مهارة جديدة",
     "command.learnSelectionAsSkill.title": "Lollms: تعلم التحديد كمهارة",
     "command.newDiscussion.title": "مناقشة جديدة",

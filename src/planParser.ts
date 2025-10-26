@@ -22,7 +22,9 @@ export class PlanParser {
         objective: string,
         existingPlan?: Plan,
         failedTaskId?: number,
-        failureReason?: string | null
+        failureReason?: string | null,
+        signal?: AbortSignal,
+        modelOverride?: string
     ): Promise<{ plan: Plan | null, rawResponse: string, error?: string }> {
         let lastResponse = "";
         let lastError = "";
@@ -47,10 +49,10 @@ Your task is to generate a NEW set of tasks to recover from this failure and com
                         const projectContext = await this.contextManager.getContextContent();
                         userPromptContent = `My objective is: **${objective}**\n\nHere is the project context:\n${projectContext.text}`;
                     }
-                    lastResponse = await this.lollmsApi.sendChat([systemPrompt, { role: 'user', content: userPromptContent }]);
+                    lastResponse = await this.lollmsApi.sendChat([systemPrompt, { role: 'user', content: userPromptContent }], null, signal, modelOverride);
                 } else { // Retry attempt
                      const correctionPrompt = this.getCorrectionPrompt(lastResponse, lastError);
-                     lastResponse = await this.lollmsApi.sendChat([correctionPrompt]);
+                     lastResponse = await this.lollmsApi.sendChat([correctionPrompt], null, signal, modelOverride);
                 }
                 
                 console.log("--- Lollms Agent Debug: Raw Response from API ---");
@@ -102,7 +104,7 @@ Your task is to generate a NEW set of tasks to recover from this failure and com
             plan.scratchpad = JSON.stringify(plan.scratchpad, null, 2);
         }
     
-        if (plan.tasks.length === 0) {
+        if (plan.tasks.length === 0 && !plan.objective.startsWith("Thank you")) { // Allow empty tasks for thank you messages
             throw new Error("The plan must contain at least one task.");
         }
     

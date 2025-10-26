@@ -14,6 +14,7 @@ export interface Discussion {
     timestamp: number;
     groupId: string | null;
     plan: Plan | null; // Added for agent state persistence
+    model?: string;
 }
 
 export interface DiscussionGroup {
@@ -175,7 +176,7 @@ User: "how do I build a snake game in python?"
         };
     
         try {
-            const rawResponse = await this.lollmsAPI.sendChat([systemPrompt, userPrompt], null);
+            const rawResponse = await this.lollmsAPI.sendChat([systemPrompt, userPrompt], null, undefined, discussion.model);
             const cleanResponse = stripThinkingTags(rawResponse);
     
             const jsonMatch = cleanResponse.match(/```json\s*([\s\S]+?)\s*```/);

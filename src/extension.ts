@@ -409,9 +409,10 @@ export async function activate(context: vscode.ExtensionContext) {
         vscode.commands.executeCommand('python.setInterpreter');
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms.runAgentCommand', (objective: string, discussion: Discussion) => {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms.runAgentCommand', (objective: string, discussion: Discussion, modelOverride?: string) => {
         if (ChatPanel.currentPanel?.agentManager && activeWorkspaceFolder) {
-            ChatPanel.currentPanel.agentManager.run(objective, discussion, activeWorkspaceFolder);
+            const modelToUse = modelOverride || discussion.model;
+            ChatPanel.currentPanel.agentManager.run(objective, discussion, activeWorkspaceFolder, modelToUse);
         } else if (!activeWorkspaceFolder) {
             vscode.window.showErrorMessage("Cannot run Agent: No active Lollms workspace.");
         }

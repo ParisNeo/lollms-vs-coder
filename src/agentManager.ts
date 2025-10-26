@@ -73,23 +73,32 @@ export class AgentManager {
         this.chatPanel.displayPlan(plan);
     }
 
-    public async run(initialObjective: string, discussion: Discussion, workspaceFolder: vscode.WorkspaceFolder) {
-        if (!this.isActive) return;
-        this.currentWorkspaceFolder = workspaceFolder;
-        this.currentDiscussion = discussion;
-
-        this.chatHistory = [...discussion.messages];
+    public async run(initialObjective: string, discussion: Discussion, workspaceFolder: vscode.WorkspaceFolder, modelOverride?: string) {
+        if (!this.isActive || !this.processManager) return;
         
-        const initialPlanState = { 
-            objective: initialObjective,
-            scratchpad: "🧠 Thinking... Generating the initial execution plan.",
-            tasks: []
-        };
-        this.displayAndSavePlan(initialPlanState);
-
+        const { id: processId, controller } = this.processManager.register(discussion.id, `Agent: ${initialObjective.substring(0, 40)}...`);
+        
         try {
-            const planResult = await this.planParser.generateAndParsePlan(initialObjective);
+            this.currentWorkspaceFolder = workspaceFolder;
+            this.currentDiscussion = discussion;
+    
+            this.chatHistory = [...discussion.messages];
             
+            const initialPlanState = { 
+                objective: initialObjective,
+                scratchpad: "🧠 Thinking... Generating the initial execution plan.",
+                tasks: []
+            };
+            this.displayAndSavePlan(initialPlanState);
+    
+            const planResult = await this.planParser.generateAndParsePlan(initialObjective, undefined, undefined, undefined, controller.signal, modelOverride);
+            
+            if (controller.signal.aborted) {
+                this.chatPanel.addMessageToDiscussion({ role: 'system', content: '🛑 **Execution Halted:** User cancelled during planning.' });
+                this.deactivateAgent();
+                return;
+            }
+
             if (!planResult.plan) {
                  const failedPlanState = {
                     objective: initialObjective,
@@ -102,43 +111,63 @@ export class AgentManager {
             }
             
             this.displayAndSavePlan(planResult.plan);
-            await this.executePlan();
+            await this.executePlan(0, controller.signal, modelOverride);
 
         } catch (error: any) {
-            this.chatPanel.addMessageToDiscussion({ role: 'system', content: `❌ **Critical Error during planning:** ${error.message}` });
+            if (error.name !== 'AbortError') {
+                this.chatPanel.addMessageToDiscussion({ role: 'system', content: `❌ **Critical Error during planning:** ${error.message}` });
+            }
             this.deactivateAgent();
             return;
+        } finally {
+            this.processManager.unregister(processId);
         }
     }
 
     public async retryFailedTask(taskId: number) {
-        if (!this.currentPlan) return;
+        if (!this.currentPlan || !this.processManager || !this.currentDiscussion) return;
 
-        const failedTaskIndex = this.currentPlan.tasks.findIndex(t => t.id === taskId);
-        if (failedTaskIndex === -1) return;
-        
-        const failedTask = this.currentPlan.tasks[failedTaskIndex];
-        if (failedTask.status !== 'failed' || !failedTask.can_retry) return;
+        const { id: processId, controller } = this.processManager.register(this.currentDiscussion.id, `Agent: Retrying task ${taskId}...`);
 
-        failedTask.status = 'in_progress';
-        failedTask.retries++;
-        failedTask.can_retry = false;
-        this.displayAndSavePlan(this.currentPlan);
-        
-        const revisionSucceeded = await this.revisePlanForFailure(failedTask);
-        if (revisionSucceeded) {
-            await this.executePlan(failedTaskIndex);
-        } else {
-            this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🛑 **Execution Halted:** Failed to generate a revised plan.` });
+        try {
+            const failedTaskIndex = this.currentPlan.tasks.findIndex(t => t.id === taskId);
+            if (failedTaskIndex === -1) return;
+            
+            const failedTask = this.currentPlan.tasks[failedTaskIndex];
+            if (failedTask.status !== 'failed' || !failedTask.can_retry) return;
+    
+            failedTask.status = 'in_progress';
+            failedTask.retries++;
+            failedTask.can_retry = false;
+            this.displayAndSavePlan(this.currentPlan);
+            
+            const revisionSucceeded = await this.revisePlanForFailure(failedTask, controller.signal, this.currentDiscussion.model);
+            if (revisionSucceeded) {
+                await this.executePlan(failedTaskIndex, controller.signal, this.currentDiscussion.model);
+            } else {
+                this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🛑 **Execution Halted:** Failed to generate a revised plan.` });
+                this.deactivateAgent();
+            }
+        } catch (error: any) {
+             if (error.name !== 'AbortError') {
+                this.chatPanel.addMessageToDiscussion({ role: 'system', content: `❌ **Critical Error during retry:** ${error.message}` });
+            }
             this.deactivateAgent();
+        } finally {
+            this.processManager.unregister(processId);
         }
     }
 
-    private async executePlan(startIndex: number = 0) {
+    private async executePlan(startIndex: number = 0, signal: AbortSignal, modelOverride?: string) {
         if (!this.currentPlan) return;
     
         this.currentTaskIndex = startIndex;
         while (this.currentTaskIndex < this.currentPlan.tasks.length) {
+            if (signal.aborted) {
+                this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🛑 **Execution Halted:** User cancelled.` });
+                this.deactivateAgent();
+                return;
+            }
             const task = this.currentPlan.tasks[this.currentTaskIndex];
     
             if (task.status === 'pending') {
@@ -149,7 +178,7 @@ export class AgentManager {
                 try {
                     const resolvedParams = this.resolveParameters(task);
                     const taskWithResolvedParams = { ...task, parameters: resolvedParams };
-                    result = await this.executeTask(taskWithResolvedParams);
+                    result = await this.executeTask(taskWithResolvedParams, signal, modelOverride);
                 } catch (error: any) {
                     result = { success: false, output: error.message };
                 }
@@ -163,7 +192,7 @@ export class AgentManager {
                 if (!result.success) {
                     const maxRetries = vscode.workspace.getConfiguration('lollmsVsCoder').get<number>('agentMaxRetries') || 1;
                     if (task.retries < maxRetries) {
-                        const revisionSucceeded = await this.revisePlanForFailure(task);
+                        const revisionSucceeded = await this.revisePlanForFailure(task, signal, modelOverride);
                         if (revisionSucceeded) {
                             // Loop will continue from the corrected task index
                             continue;
@@ -207,7 +236,7 @@ export class AgentManager {
         this.deactivateAgent();
     }
 
-    private async revisePlanForFailure(failedTask: Task): Promise<boolean> {
+    private async revisePlanForFailure(failedTask: Task, signal: AbortSignal, modelOverride?: string): Promise<boolean> {
         if (!this.currentPlan) return false;
         
         failedTask.retries++;
@@ -218,8 +247,12 @@ export class AgentManager {
             this.currentPlan.objective,
             this.currentPlan,
             failedTask.id,
-            failedTask.result
+            failedTask.result,
+            signal,
+            modelOverride
         );
+
+        if (signal.aborted) { return false; }
 
         if (!planResult.plan) {
             this.currentPlan.scratchpad += `\n\n❌ **Self-Correction Failed:** The fixer agent's response was invalid.\n\n**Raw Response:**\n${planResult.rawResponse}`;
@@ -274,13 +307,13 @@ export class AgentManager {
         return resolvedParams;
     }
 
-    private async executeTask(task: Task): Promise<{ success: boolean; output: string }> {
+    private async executeTask(task: Task, signal: AbortSignal, modelOverride?: string): Promise<{ success: boolean; output: string }> {
         try {
             switch (task.task_type) {
                 case 'simple_action':
-                    return await this.executeSimpleAction(task);
+                    return await this.executeSimpleAction(task, signal);
                 case 'agentic_action':
-                    return await this.executeAgenticAction(task);
+                    return await this.executeAgenticAction(task, signal, modelOverride);
                 default:
                     return { success: false, output: `Unknown task type: ${task.task_type}` };
             }
@@ -323,7 +356,7 @@ export class AgentManager {
         return result;
     }
 
-    private async executeSimpleAction(task: Task): Promise<{ success: boolean, output: string }> {
+    private async executeSimpleAction(task: Task, signal: AbortSignal): Promise<{ success: boolean, output: string }> {
         const { command, path: filePath, code, env_name, dependencies, script_path, question } = task.parameters;
         
         try {
@@ -337,7 +370,8 @@ export class AgentManager {
                     };
                     let detailsOutput = 'Environment Details:\n';
                     const promises = Object.entries(commands).map(async ([tool, command]) => {
-                        const result = await this.runCommand(command);
+                        const result = await this.runCommand(command, signal);
+                        if (signal.aborted) return `- ${tool}: Cancelled`;
                         const output = result.output.replace(/STDOUT:|STDERR:/g, '').trim();
                         if (result.success && output) {
                             return `- ${tool}: ${output.split('\n')[0]}`; // Take first line
@@ -394,7 +428,7 @@ export class AgentManager {
 
                 case 'create_python_environment':
                     if (!env_name) return { success: false, output: "Error: 'env_name' is required." };
-                    return this.runCommand(`python -m venv ${env_name}`);
+                    return this.runCommand(`python -m venv ${env_name}`, signal);
 
                 case 'set_vscode_python_interpreter':
                     if (!env_name) return { success: false, output: "Error: 'env_name' is required." };
@@ -418,18 +452,18 @@ export class AgentManager {
                         ? path.join(env_name, 'Scripts', 'python.exe') 
                         : path.join(env_name, 'bin', 'python');
                     const deps = (dependencies as string[]).join(' ');
-                    return this.runCommand(`"${pythonExec}" -m pip install ${deps}`);
+                    return this.runCommand(`"${pythonExec}" -m pip install ${deps}`, signal);
                 
                 case 'execute_python_script':
                     if (!env_name || !script_path) return { success: false, output: "Error: 'env_name' and 'script_path' are required." };
                     const pythonScriptExec = os.platform() === 'win32'
                         ? path.join(env_name, 'Scripts', 'python.exe')
                         : path.join(env_name, 'bin', 'python');
-                    return this.runCommand(`"${pythonScriptExec}" ${script_path}`);
+                    return this.runCommand(`"${pythonScriptExec}" ${script_path}`, signal);
 
                 case 'execute_command':
                     if (!command) return { success: false, output: "Error: 'command' argument is required." };
-                    return await this.runCommand(command);
+                    return await this.runCommand(command, signal);
                 
                 case 'set_launch_entrypoint':
                         if (!task.parameters.file_path) {
@@ -484,7 +518,7 @@ export class AgentManager {
         }
     }
 
-    private async executeAgenticAction(task: Task): Promise<{ success: boolean, output: string }> {
+    private async executeAgenticAction(task: Task, signal: AbortSignal, modelOverride?: string): Promise<{ success: boolean, output: string }> {
         if (!this.currentPlan) {
             return { success: false, output: "Cannot execute agentic action without a plan." };
         }
@@ -513,7 +547,7 @@ export class AgentManager {
 
                 const coderSystemPrompt = this.getCoderSystemPrompt(task.parameters.system_prompt, this.currentPlan, projectContext.text);
                 const coderUserPrompt: ChatMessage = { role: 'user', content: userPromptContent };
-                const responseText = await this.lollmsApi.sendChat([coderSystemPrompt, coderUserPrompt]);
+                const responseText = await this.lollmsApi.sendChat([coderSystemPrompt, coderUserPrompt], null, signal, modelOverride);
                 
                 const codeBlockRegex = /```(?:[\w-]*)\n([\s\S]+?)\n```/s;
                 const match = responseText.match(codeBlockRegex);
@@ -565,13 +599,13 @@ export class AgentManager {
         }
     }
 
-    private async runCommand(command: string): Promise<{ success: boolean, output: string }> {
+    private async runCommand(command: string, signal: AbortSignal): Promise<{ success: boolean, output: string }> {
         return new Promise(resolve => {
             if (!this.currentWorkspaceFolder) {
                 resolve({ success: false, output: "Error: Agent has no active workspace folder to run command in." });
                 return;
             }
-            exec(command, { cwd: this.currentWorkspaceFolder.uri.fsPath }, (error, stdout, stderr) => {
+            const child = exec(command, { cwd: this.currentWorkspaceFolder.uri.fsPath }, (error, stdout, stderr) => {
                 const stdoutContent = stdout.trim();
                 const stderrContent = stderr.trim();
                 let output = '';
@@ -588,6 +622,11 @@ export class AgentManager {
                     return;
                 }
                 resolve({ success: true, output: `Command executed successfully.\n${output.trim() || '(No output)'}` });
+            });
+            
+            signal.addEventListener('abort', () => {
+                child.kill();
+                resolve({ success: false, output: 'Command cancelled by user.' });
             });
         });
     }

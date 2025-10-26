@@ -115,11 +115,15 @@ export class ChatPanel {
 
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const isInspectorEnabled = config.get<boolean>('enableCodeInspector', true);
+        const models = await this._lollmsAPI.getModels();
+
 
         this._panel.webview.postMessage({ 
             command: 'loadDiscussion', 
             messages: this._currentDiscussion.messages,
-            isInspectorEnabled: isInspectorEnabled 
+            isInspectorEnabled: isInspectorEnabled,
+            models: models,
+            currentModel: this._currentDiscussion.model
         });
         
         this.displayPlan(discussion.plan);
@@ -135,7 +139,14 @@ export class ChatPanel {
     this._currentDiscussion = this._discussionManager.createNewDiscussion(groupId);
     await this._discussionManager.saveDiscussion(this._currentDiscussion);
     this._panel.title = this._currentDiscussion.title;
-    this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
+    
+    const models = await this._lollmsAPI.getModels();
+    this._panel.webview.postMessage({ 
+        command: 'loadDiscussion', 
+        messages: this._currentDiscussion.messages,
+        models: models,
+        currentModel: this._currentDiscussion.model
+    });
     this.displayPlan(null); // Clear plan for new discussion
     this.updateGeneratingState();
     this._updateContextAndTokens();
@@ -152,7 +163,13 @@ export class ChatPanel {
         plan: null
     };
     this._panel.title = this._currentDiscussion.title;
-    this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
+    const models = await this._lollmsAPI.getModels();
+    this._panel.webview.postMessage({ 
+        command: 'loadDiscussion', 
+        messages: this._currentDiscussion.messages,
+        models: models,
+        currentModel: this._currentDiscussion.model
+    });
     this.displayPlan(null);
     this.updateGeneratingState();
     this._updateContextAndTokens();
@@ -225,9 +242,10 @@ export class ChatPanel {
     
     const existingMessageIndex = this._currentDiscussion.messages.findIndex(m => m.id === message.id);
     if (existingMessageIndex !== -1) {
-        if (this._currentDiscussion.messages[existingMessageIndex].content === message.content) return;
+        // Update existing message
         this._currentDiscussion.messages[existingMessageIndex] = message;
     } else {
+        // Add new message
         this._currentDiscussion.messages.push(message);
     }
     
@@ -235,10 +253,6 @@ export class ChatPanel {
         this._currentDiscussion.timestamp = Date.now();
         await this._discussionManager.saveDiscussion(this._currentDiscussion);
         vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
-    }
-
-    if (message.role !== 'user') {
-        this._panel.webview.postMessage({ command: 'addMessage', message: message });
     }
   }
 
@@ -288,7 +302,7 @@ export class ChatPanel {
             role: 'user',
             content: `The project failed to execute with the output shown in the last system message. Please analyze the error and provide a fix for the relevant file(s).`
         };
-        this._callApiWithMessages([...this._currentDiscussion.messages, analysisPrompt]);
+        this._callApiWithMessages([...this._currentDiscussion.messages, analysisPrompt], true, this._currentDiscussion.model);
     } else {
         this.updateGeneratingState();
     }
@@ -323,7 +337,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     const recentMessages = this._currentDiscussion.messages.slice(-6);
     const messagesForApi = [...recentMessages, analysisPrompt];
 
-    this._callApiWithMessages(messagesForApi, false);
+    this._callApiWithMessages(messagesForApi, false, this._currentDiscussion.model);
   }
 
   private _callApiWithMessages(messages: ChatMessage[], includeProjectContext: boolean = true, modelOverride?: string) {
@@ -373,33 +387,61 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         this._lastApiRequest = apiMessages;
   
         const assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
-        const assistantMessage: ChatMessage = { id: assistantMessageId, role: 'assistant', content: '' };
-        this._panel.webview.postMessage({ command: 'addMessage', message: assistantMessage });
+        const modelToUse = modelOverride || this._lollmsAPI.getModelName();
+        
+        // **FIX:** Send the placeholder message to the UI immediately
+        const assistantPlaceholder: ChatMessage = { 
+            id: assistantMessageId, 
+            role: 'assistant', 
+            content: '',
+            startTime: Date.now(),
+            model: modelToUse
+        };
+        this._panel.webview.postMessage({ command: 'addMessage', message: assistantPlaceholder });
   
         const onChunk = (chunk: string) => {
           if (controller.signal.aborted) return;
           this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk: chunk });
         };
   
-        const fullResponseText = await this._lollmsAPI.sendChat(apiMessages, onChunk, controller.signal, modelOverride);
+        const fullResponseText = await this._lollmsAPI.sendChat(apiMessages, onChunk, controller.signal, modelToUse);
         this._lastApiResponse = fullResponseText;
   
         if (controller.signal.aborted) { return; }
         
-        assistantMessage.content = fullResponseText;
-        this._panel.webview.postMessage({ command: 'finalizeMessage', id: assistantMessageId, fullContent: fullResponseText });
-        await this.addMessageToDiscussion(assistantMessage);
+        let tokenCount = 0;
+        try {
+            tokenCount = (await this._lollmsAPI.tokenize(fullResponseText)).count;
+        } catch(e) {
+            console.error("Could not tokenize final response, TPS will be unavailable.", e);
+        }
+
+        this._panel.webview.postMessage({ 
+            command: 'finalizeMessage', 
+            id: assistantMessageId, 
+            fullContent: fullResponseText,
+            tokenCount: tokenCount
+        });
+        
+        // Update the placeholder object with the final content before saving
+        assistantPlaceholder.content = fullResponseText;
+        await this.addMessageToDiscussion(assistantPlaceholder);
   
       } catch (error: any) {
         const isAbortError = error.name === 'AbortError' || (error instanceof Error && error.message.includes('aborted'));
         if (isAbortError) {
           console.log('Generation was aborted.');
+          await this.addMessageToDiscussion({ role: 'system', content: '🛑 Generation stopped by user.' });
           return;
         }
   
         const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
         this._lastApiResponse = errorMessage;
-        const errorResponseMessage: ChatMessage = { role: 'system', content: `Sorry, I encountered an error: ${errorMessage}` };
+        // Use a distinct color/style for errors
+        const errorResponseMessage: ChatMessage = { role: 'system', content: `<p style="color:var(--vscode-errorForeground);">❌ **API Error:**</p><pre style="background-color:var(--vscode-textCodeBlock-background); padding:10px; border-radius:4px; white-space:pre-wrap;">${errorMessage}</pre>` };
+        
+        // Send the error message to the UI immediately, without saving to history first
+        this._panel.webview.postMessage({ command: 'addMessage', message: errorResponseMessage });
         await this.addMessageToDiscussion(errorResponseMessage);
       } finally {
         this.processManager.unregister(processId);
@@ -421,7 +463,13 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     await this._discussionManager.saveDiscussion(this._currentDiscussion);
 
     this._panel.title = this._currentDiscussion.title;
-    this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
+    const models = await this._lollmsAPI.getModels();
+    this._panel.webview.postMessage({ 
+        command: 'loadDiscussion', 
+        messages: this._currentDiscussion.messages,
+        models: models,
+        currentModel: this._currentDiscussion.model
+    });
     this.displayPlan(null);
     
     vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
@@ -436,7 +484,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         }
     })();
 
-    this._callApiWithMessages(this._currentDiscussion.messages);
+    this._callApiWithMessages(this._currentDiscussion.messages, true, this._currentDiscussion.model);
 }
   public async sendMessage(userMessage: ChatMessage) {
     if (!this._currentDiscussion) {
@@ -462,7 +510,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         })();
     }
 
-    this._callApiWithMessages(this._currentDiscussion.messages);
+    this._callApiWithMessages(this._currentDiscussion.messages, true, this._currentDiscussion.model);
   }
 
   private async regenerateFromMessage(messageId: string) {
@@ -490,10 +538,13 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const isInspectorEnabled = config.get<boolean>('enableCodeInspector', true);
+    const models = await this._lollmsAPI.getModels();
     this._panel.webview.postMessage({
         command: 'loadDiscussion',
         messages: this._currentDiscussion.messages,
-        isInspectorEnabled: isInspectorEnabled
+        isInspectorEnabled: isInspectorEnabled,
+        models: models,
+        currentModel: this._currentDiscussion.model
     });
 
     const newMessageId = 'user_' + Date.now().toString() + Math.random().toString(36).substring(2);
@@ -518,8 +569,14 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         await this._discussionManager.saveDiscussion(this._currentDiscussion);
         vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
     }
-
-    this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
+    
+    const models = await this._lollmsAPI.getModels();
+    this._panel.webview.postMessage({ 
+        command: 'loadDiscussion', 
+        messages: this._currentDiscussion.messages,
+        models: models,
+        currentModel: this._currentDiscussion.model
+    });
   }
 
   private async editMessage(messageId: string) {
@@ -583,6 +640,8 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         };
     }
     await this.addMessageToDiscussion(chatMessage);
+    // Refresh UI after adding attachment
+    this._panel.webview.postMessage({ command: 'addMessage', message: chatMessage });
   }
     
   private _setWebviewMessageListener(webview: vscode.Webview) {
@@ -592,6 +651,14 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         case 'sendMessage':
           await this.sendMessage(message.message);
           break;
+        case 'updateDiscussionModel':
+            if (this._currentDiscussion) {
+                this._currentDiscussion.model = message.model || undefined; // set to undefined if empty string
+                if (!this._currentDiscussion.id.startsWith('temp-')) {
+                    await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                }
+            }
+            return;
         case 'calculateTokens':
           this._updateContextAndTokens();
           break;
@@ -614,7 +681,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         
             await this.addMessageToDiscussion({ role: 'system', content: '🔍 Inspecting code...' });
         
-            const inspectorModel = config.get<string>('inspectorModelName') || undefined;
+            const inspectorModel = config.get<string>('inspectorModelName') || this._currentDiscussion.model || undefined;
             const systemPrompt = getProcessedSystemPrompt('inspector');
         
             if (!systemPrompt) {
@@ -662,10 +729,13 @@ Your task is to re-analyze your previous code suggestion in light of this new er
                                 }
                                 await this.addMessageToDiscussion({ role: 'system', content: '✅ **Inspector:** Found issues and corrected the code above.' });
                                 
+                                const models = await this._lollmsAPI.getModels();
                                 this._panel.webview.postMessage({ 
                                     command: 'loadDiscussion', 
                                     messages: this._currentDiscussion.messages,
-                                    isInspectorEnabled: true 
+                                    isInspectorEnabled: true,
+                                    models: models,
+                                    currentModel: this._currentDiscussion.model
                                 });
                             }
                         } else {
@@ -689,11 +759,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
                 const process = this.processManager.getForDiscussion(this._currentDiscussion.id);
                 if (process) {
                     this.processManager.cancel(process.id);
-                    const stopMessage: ChatMessage = {
-                        role: 'system',
-                        content: '🛑 Generation stopped by user.'
-                    };
-                    await this.addMessageToDiscussion(stopMessage);
                 }
             } else {
                 vscode.commands.executeCommand('lollms-vs-coder.stopExecution');
@@ -710,6 +775,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
           }
           await this.addMessageToDiscussion(message.message);
           
+          const isFirstMessage = this._currentDiscussion.messages.filter(m => m.role !== 'system').length <= 1;
           if (isFirstMessage && !this._currentDiscussion.id.startsWith('temp-')) {
             (async () => {
               const newTitle = await this._discussionManager.generateDiscussionTitle(this._currentDiscussion!);
@@ -722,7 +788,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             })();
           }
           if (activeWorkspaceFolder) {
-            this.agentManager.run(message.objective, this._currentDiscussion, activeWorkspaceFolder);
+            this.agentManager.run(message.objective, this._currentDiscussion, activeWorkspaceFolder, this._currentDiscussion.model);
           } else {
             this.addMessageToDiscussion({ role: 'system', content: 'Agent requires an active workspace folder to run.' });
             this.updateGeneratingState();

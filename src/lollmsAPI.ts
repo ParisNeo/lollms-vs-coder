@@ -14,6 +14,8 @@ export interface ChatMessage {
   id?: string;
   role: 'user' | 'assistant' | 'system';
   content: string | any[];
+  startTime?: number;
+  model?: string;
 }
 
 export interface TokenizeResponse {
@@ -263,7 +265,7 @@ export class LollmsAPI {
     }
     const chatUrl = `${this.baseUrl}/v1/chat/completions`;
     const isHttps = chatUrl.startsWith('https');
-    const apiMessages = messages.map(({ id, ...rest }) => rest);
+    const apiMessages = messages.map(({ id, startTime, model, ...rest }) => rest);
     const stream = !!onChunk;
 
     const controller = new AbortController();
@@ -298,7 +300,19 @@ export class LollmsAPI {
       if (!response.ok) {
         const errorBody = await response.text();
         console.error('Lollms API Error Body:', errorBody);
-        throw new Error(`Lollms API error: ${response.status} ${response.statusText}`);
+        // Construct a more informative error message
+        let detailedError = `Lollms API error: ${response.status} ${response.statusText}.`;
+        try {
+            const parsedError = JSON.parse(errorBody);
+            if (parsedError.error && parsedError.error.message) {
+                detailedError += `\n\nDetails: ${parsedError.error.message}`;
+            } else {
+                detailedError += `\n\nFull Response: ${errorBody}`;
+            }
+        } catch (e) {
+            detailedError += `\n\nRaw Response: ${errorBody}`;
+        }
+        throw new Error(detailedError);
       }
       
       if (stream && onChunk && response.body) {

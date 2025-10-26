@@ -138,10 +138,27 @@
             font-size: 0.9em;
             text-transform: uppercase;
             letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .generation-stats {
+            font-size: 0.9em;
+            font-weight: normal;
+            color: var(--vscode-descriptionForeground);
+            text-transform: none;
+            letter-spacing: normal;
         }
         .message-content {
             line-height: 1.6;
             word-wrap: break-word;
+        }
+        .waiting-animation {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--vscode-descriptionForeground);
+            font-style: italic;
         }
 
         .code-collapsible, .generation-block {
@@ -255,11 +272,28 @@
             margin-bottom: 8px;
             gap: 15px; /* Added */
         }
+        .model-selector-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9em;
+            color: var(--vscode-descriptionForeground);
+            flex-shrink: 0; /* Prevent shrinking */
+        }
+        #model-selector {
+            background-color: var(--vscode-input-background);
+            color: var(--vscode-input-foreground);
+            border: 1px solid var(--vscode-input-border);
+            border-radius: 4px;
+            padding: 2px 6px;
+            max-width: 200px;
+        }
         .token-progress {
             flex-grow: 1; /* Added */
             display: flex;
             align-items: center;
             gap: 8px;
+            min-width: 100px; /* Ensure it doesn't get too small */
         }
         .token-progress-container {
             flex-grow: 1;
@@ -820,6 +854,10 @@
                         <span>{{progressLoadingFiles}}</span>
                     </div>
                 </div>
+                <div class="model-selector-container">
+                    <label for="model-selector">Model:</label>
+                    <select id="model-selector"></select>
+                </div>
                 <div class="agent-mode-toggle">
                     <span>🤖 Agent Mode</span>
                     <label class="switch">
@@ -867,6 +905,7 @@
         const fileInput = document.getElementById('fileInput');
         const agentModeCheckbox = document.getElementById('agentModeCheckbox');
         const agentModeToggle = document.querySelector('.agent-mode-toggle');
+        const modelSelector = document.getElementById('model-selector');
         const contextContainer = document.getElementById('context-container');
         const attachmentsContainer = document.getElementById('attachments-container');
         const welcomeMessage = document.getElementById('welcome-message');
@@ -1122,6 +1161,11 @@
             const messageWrapper = document.createElement('div');
             messageWrapper.className = 'message-wrapper';
             messageWrapper.dataset.messageId = message.id;
+            
+            if (message.startTime) {
+                messageWrapper.dataset.startTime = message.startTime;
+                messageWrapper.dataset.model = message.model;
+            }
 
             const messageDiv = document.createElement('div');
             messageDiv.className = `message ${role}-message`;
@@ -1142,7 +1186,17 @@
             const contentDiv = document.createElement('div');
             contentDiv.className = 'message-content';
             contentDiv.id = `content-${message.id}`;
-            contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(processedContent));
+            
+            if (role === 'assistant' && !rawContent && message.startTime) {
+                contentDiv.innerHTML = `
+                    <div class="waiting-animation">
+                        <div class="spinner"></div>
+                        <span>Waiting for first token...</span>
+                    </div>
+                `;
+            } else {
+                 contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(processedContent));
+            }
             
             const actions = document.createElement('div');
             actions.className = 'message-actions';
@@ -1401,6 +1455,7 @@
             messageInput.disabled = isGenerating;
             agentModeCheckbox.disabled = isGenerating;
             agentModeToggle.classList.toggle('disabled', isGenerating);
+            modelSelector.disabled = isGenerating;
             attachButton.disabled = isGenerating;
             executeButton.disabled = isGenerating;
             setEntryPointButton.disabled = isGenerating;
@@ -1475,6 +1530,10 @@
 
         agentModeCheckbox.addEventListener('change', () => {
             vscode.postMessage({ command: 'toggleAgentMode' });
+        });
+        
+        modelSelector.addEventListener('change', (event) => {
+            vscode.postMessage({ command: 'updateDiscussionModel', model: event.target.value });
         });
 
         refreshContextBtn.addEventListener('click', () => {
@@ -1813,12 +1872,35 @@
             const message = event.data;
             switch(message.command) {
                 case 'addMessage':
-                    addChatMessage(message.message);
+                    addChatMessage(message.message); // Pass the whole message object
                     break;
                 case 'appendMessageChunk':
                     {
                         const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.id}']`);
                         if(wrapper) {
+                            if (!wrapper.dataset.firstTokenReceived) {
+                                wrapper.dataset.firstTokenReceived = 'true';
+                                wrapper.dataset.firstTokenTime = Date.now();
+                                
+                                const waitingAnim = wrapper.querySelector('.waiting-animation');
+                                if (waitingAnim) waitingAnim.remove();
+
+                                const startTime = parseInt(wrapper.dataset.startTime, 10);
+                                const ttft = ((Date.now() - startTime) / 1000).toFixed(1);
+                                
+                                const modelName = wrapper.dataset.model || 'Default';
+                                
+                                const header = wrapper.querySelector('.message-header');
+                                let annotationSpan = header.querySelector('.generation-stats');
+                                if (!annotationSpan) {
+                                    annotationSpan = document.createElement('span');
+                                    annotationSpan.className = 'generation-stats';
+                                    header.appendChild(annotationSpan);
+                                }
+                                annotationSpan.textContent = `(${modelName} | TTFT: ${ttft}s)`;
+                            }
+
+
                             const contentDiv = wrapper.querySelector('.message-content');
                             const messageDiv = wrapper.querySelector('.message');
                             if (contentDiv && messageDiv) {
@@ -1863,6 +1945,20 @@
                     {
                         const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.id}']`);
                         if(wrapper) {
+                            const firstTokenTime = parseInt(wrapper.dataset.firstTokenTime, 10);
+                            if (firstTokenTime) {
+                                const duration = (Date.now() - firstTokenTime) / 1000;
+                                const tokenCount = message.tokenCount;
+                                if (duration > 0.05 && tokenCount > 1) { // Avoid division by zero and for single-token responses
+                                    const tps = (tokenCount / duration).toFixed(1);
+                                    const header = wrapper.querySelector('.message-header');
+                                    const annotationSpan = header.querySelector('.generation-stats');
+                                    if (annotationSpan) {
+                                        annotationSpan.textContent += ` | ${tps} t/s`;
+                                    }
+                                }
+                            }
+
                             const contentDiv = wrapper.querySelector('.message-content');
                             const messageDiv = wrapper.querySelector('.message');
                             if (contentDiv && messageDiv) {
@@ -1921,6 +2017,24 @@
                     if (existingPlan) { existingPlan.remove(); }
 
                     isInspectorEnabled = message.isInspectorEnabled;
+                    
+                    // Populate model selector
+                    modelSelector.innerHTML = '';
+                    const useGlobalOption = document.createElement('option');
+                    useGlobalOption.value = '';
+                    useGlobalOption.textContent = 'Default Model';
+                    modelSelector.appendChild(useGlobalOption);
+
+                    if (Array.isArray(message.models)) {
+                        message.models.forEach(model => {
+                            const option = document.createElement('option');
+                            option.value = model.id;
+                            option.textContent = model.id;
+                            modelSelector.appendChild(option);
+                        });
+                    }
+                    modelSelector.value = message.currentModel || '';
+
 
                     let hasChatContent = false;
                     if (Array.isArray(message.messages) && message.messages.length > 0) {

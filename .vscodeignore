@@ -1,12 +1,14 @@
-# Exclude development and source files from the package
 .vscode/**
 .vscode-test/**
-out/test/**
 src/**
+l10n/**
+media/**
+!media/icon.png
+!media/lollms-icon.svg
 node_modules/**
-
-# Exclude build and configuration files
-**/*.map
-**/*.ts
+.git/**
 .gitignore
+*.vsix
+package-lock.json
 tsconfig.json
+out/**/*.map

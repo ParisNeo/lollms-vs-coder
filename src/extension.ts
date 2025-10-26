@@ -34,6 +34,7 @@ import { CodeExplorerTreeProvider } from './commands/codeExplorerTreeProvider';
 import { SkillsTreeProvider } from './commands/skillsTreeProvider';
 import { SkillsManager } from './skillsManager';
 import { CodeGraphManager } from './codeGraphManager';
+import { ActionsTreeProvider } from './commands/actionsTreeProvider';
 
 const execAsync = promisify(exec);
 
@@ -222,6 +223,8 @@ export async function activate(context: vscode.ExtensionContext) {
     const skillsManager = new SkillsManager();
     const codeGraphManager = new CodeGraphManager();
 
+    const actionsTreeProvider = new ActionsTreeProvider();
+    context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsActionsView', actionsTreeProvider));
     const processTreeProvider = new ProcessTreeProvider(processManager);
     context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsProcessView', processTreeProvider));
     
@@ -339,7 +342,7 @@ export async function activate(context: vscode.ExtensionContext) {
             : workspaceFolders[0];
         
         discussionManager = new DiscussionManager(lollmsAPI, processManager);
-        discussionTreeProvider = new DiscussionTreeProvider(discussionManager);
+        discussionTreeProvider = new DiscussionTreeProvider(discussionManager, context.extensionUri);
         discussionView = vscode.window.createTreeView('lollmsDiscussionsView', { treeDataProvider: discussionTreeProvider });
         
         switchActiveWorkspace(initialWorkspace);
@@ -383,6 +386,16 @@ export async function activate(context: vscode.ExtensionContext) {
         setupChatPanel(panel);
         await panel.startNewDiscussion(groupId);
         discussionTreeProvider?.refresh();
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newTempDiscussion', async () => {
+        if (!discussionManager) {
+            vscode.window.showInformationMessage(vscode.l10n.t("info.openFolderToUseChat"));
+            return;
+        }
+        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager);
+        setupChatPanel(panel);
+        await panel.startNewTempDiscussion();
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.switchDiscussion', async (discussionId: string) => {

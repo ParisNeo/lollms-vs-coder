@@ -70,6 +70,27 @@ export async function applyDiff(diffContent: string) {
 export function getProcessedSystemPrompt(promptType: 'chat' | 'agent' | 'inspector' | 'commit'): string {
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const noThinkMode = config.get<boolean>('noThinkMode') || false;
+    const thinkingMode = config.get<string>('thinkingMode') || 'none';
+
+    let thinkingInstructions = '';
+
+    if (!noThinkMode && thinkingMode !== 'none') {
+        let instructionText = '';
+        switch (thinkingMode) {
+            case 'chain_of_thought':
+                instructionText = "Before providing your final answer, you must engage in a step-by-step thinking process. Outline your reasoning, the steps you'll take, and any assumptions you're making.";
+                break;
+            case 'plan_and_solve':
+                instructionText = "First, create a high-level plan to solve the user's request. Then, execute the plan. This helps in structuring your response for complex tasks.";
+                break;
+            case 'self_critique':
+                instructionText = "After generating your initial response, you must stop and critically review it. Look for errors, logical flaws, or better alternative solutions. Explain your critique and provide the refined, final answer.";
+                break;
+        }
+        if (instructionText) {
+            thinkingInstructions = `**THINKING PROCESS INSTRUCTIONS:**\nYou are required to use the following thinking process: ${instructionText} Enclose your entire thinking process, reasoning, and self-correction within a \`<thinking>\` XML block. This block will be hidden from the user but is crucial for your process.\n\n`;
+        }
+    }
 
     let basePrompt = '';
     let personaKey = '';
@@ -129,7 +150,7 @@ ${updateInstructions}
     }
 
     const userPersona = config.get<string>(personaKey) || '';
-    let combinedPrompt = `${basePrompt}\n\n**USER CUSTOMIZATION / PERSONA:**\n${userPersona}`;
+    let combinedPrompt = `${thinkingInstructions}${basePrompt}\n\n**USER CUSTOMIZATION / PERSONA:**\n${userPersona}`;
 
     const now = new Date();
     const date = now.toISOString().split('T')[0];

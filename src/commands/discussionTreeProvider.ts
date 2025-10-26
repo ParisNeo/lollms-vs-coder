@@ -5,7 +5,10 @@ export class DiscussionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
     private _onDidChangeTreeData: vscode.EventEmitter<vscode.TreeItem | undefined | null | void> = new vscode.EventEmitter<vscode.TreeItem | undefined | null | void>();
     readonly onDidChangeTreeData: vscode.Event<vscode.TreeItem | undefined | null | void> = this._onDidChangeTreeData.event;
 
-    constructor(private discussionManager: DiscussionManager) {}
+    constructor(
+        private discussionManager: DiscussionManager,
+        private extensionUri: vscode.Uri
+    ) {}
 
     refresh(): void {
         this._onDidChangeTreeData.fire();
@@ -21,7 +24,7 @@ export class DiscussionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
         if (element instanceof DiscussionGroupItem) {
             // Children of a group are the discussions in that group
             const discussionsInGroup = allDiscussions.filter(d => d.groupId === element.group.id);
-            return discussionsInGroup.map((d: Discussion) => new DiscussionItem(d));
+            return discussionsInGroup.map((d: Discussion) => new DiscussionItem(d, this.extensionUri));
         }
 
         if (!element) {
@@ -30,7 +33,7 @@ export class DiscussionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
             const groupItems = groups.map(g => new DiscussionGroupItem(g));
 
             const ungroupedDiscussions = allDiscussions.filter(d => !d.groupId || !groups.some(g => g.id === d.groupId));
-            const discussionItems = ungroupedDiscussions.map((d: Discussion) => new DiscussionItem(d));
+            const discussionItems = ungroupedDiscussions.map((d: Discussion) => new DiscussionItem(d, this.extensionUri));
             
             return [...groupItems, ...discussionItems];
         }
@@ -42,7 +45,8 @@ export class DiscussionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
 
 export class DiscussionItem extends vscode.TreeItem {
     constructor(
-        public readonly discussion: Discussion
+        public readonly discussion: Discussion,
+        private readonly extensionUri: vscode.Uri
     ) {
         super(discussion.title, vscode.TreeItemCollapsibleState.None);
         this.id = discussion.id;
@@ -53,7 +57,10 @@ export class DiscussionItem extends vscode.TreeItem {
             title: 'Switch Discussion',
             arguments: [this.id]
         };
-        this.iconPath = new vscode.ThemeIcon('comment-discussion');
+        this.iconPath = {
+            light: vscode.Uri.joinPath(this.extensionUri, 'media', 'lollms-icon.svg'),
+            dark: vscode.Uri.joinPath(this.extensionUri, 'media', 'lollms-icon.svg')
+        };
     }
 }
 

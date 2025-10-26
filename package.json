@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.3",
+  "version": "0.5.6",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -123,6 +123,11 @@
         "command": "lollms-vs-coder.newDiscussion",
         "title": "%command.newDiscussion.title%",
         "icon": "$(add)"
+      },
+      {
+        "command": "lollms-vs-coder.newTempDiscussion",
+        "title": "%command.newTempDiscussion.title%",
+        "icon": "$(zap)"
       },
       {
         "command": "lollms-vs-coder.deleteDiscussion",
@@ -279,6 +284,23 @@
       "type": "object",
       "title": "%config.title%",
       "properties": {
+        "lollmsVsCoder.thinkingMode": {
+          "type": "string",
+          "default": "none",
+          "description": "%config.thinkingMode.description%",
+          "enum": [
+            "none",
+            "chain_of_thought",
+            "plan_and_solve",
+            "self_critique"
+          ],
+          "enumDescriptions": [
+            "%config.thinkingMode.none.description%",
+            "%config.thinkingMode.chain_of_thought.description%",
+            "%config.thinkingMode.plan_and_solve.description%",
+            "%config.thinkingMode.self_critique.description%"
+          ]
+        },
         "lollmsVsCoder.fileUpdateMethod": {
           "type": "string",
           "default": "full_file",
@@ -433,14 +455,19 @@
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "lollmsSettings",
+          "id": "lollms",
           "title": "%views.container.title%",
           "icon": "media/lollms-icon.svg"
         }
       ]
     },
     "views": {
-      "lollmsSettings": [
+      "lollms": [
+        {
+          "id": "lollmsActionsView",
+          "name": "%view.actions.name%",
+          "when": "workspaceFolderCount > 0"
+        },
         {
           "id": "lollmsDiscussionsView",
           "name": "%view.discussions.name%",
@@ -523,19 +550,24 @@
           "group": "navigation@1"
         },
         {
-          "command": "lollms-vs-coder.createDiscussionGroup",
+          "command": "lollms-vs-coder.newTempDiscussion",
           "when": "view == lollmsDiscussionsView",
           "group": "navigation@2"
         },
         {
-          "command": "lollms-vs-coder.refreshDiscussions",
+          "command": "lollms-vs-coder.createDiscussionGroup",
           "when": "view == lollmsDiscussionsView",
           "group": "navigation@3"
         },
         {
-          "command": "lollms-vs-coder.showCodeGraphPanel",
+          "command": "lollms-vs-coder.refreshDiscussions",
           "when": "view == lollmsDiscussionsView",
           "group": "navigation@4"
+        },
+        {
+          "command": "lollms-vs-coder.showCodeGraphPanel",
+          "when": "view == lollmsDiscussionsView",
+          "group": "navigation@5"
         },
         {
           "command": "lollms-vs-coder.buildCodeGraph",
@@ -571,41 +603,6 @@
           "command": "lollms-vs-coder.exportPrompts",
           "when": "view == lollmsChatPromptsView || view == lollmsCodeActionsView",
           "group": "navigation@5"
-        },
-        {
-          "command": "lollms-vs-coder.autoSelectContextFiles",
-          "when": "view == lollmsDiscussionsView",
-          "group": "navigation@6"
-        },
-        {
-          "command": "lollms-vs-coder.exportContextContent",
-          "when": "view == lollmsDiscussionsView",
-          "group": "navigation@7"
-        },
-        {
-          "command": "lollms-vs-coder.saveContextSelection",
-          "when": "view == lollmsDiscussionsView",
-          "group": "navigation@8"
-        },
-        {
-          "command": "lollms-vs-coder.loadContextSelection",
-          "when": "view == lollmsDiscussionsView",
-          "group": "navigation@9"
-        },
-        {
-          "command": "lollms-vs-coder.resetContextSelection",
-          "when": "view == lollmsDiscussionsView",
-          "group": "navigation@10"
-        },
-        {
-          "command": "lollms-vs-coder.showHelp",
-          "when": "view == lollmsDiscussionsView || view == lollmsChatPromptsView || view == lollmsCodeActionsView || view == lollmsProcessView",
-          "group": "navigation@98"
-        },
-        {
-          "command": "lollms-vs-coder.showConfigView",
-          "when": "view == lollmsDiscussionsView || view == lollmsChatPromptsView || view == lollmsCodeActionsView || view == lollmsProcessView",
-          "group": "navigation@99"
         }
       ],
       "view/item/context": [
@@ -697,11 +694,12 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run esbuild-package",
-    "compile": "npm run copy-assets && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap",
-    "watch": "npm run copy-assets && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap --watch",
-    "esbuild-package": "npm run copy-assets && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --minify",
+    "compile": "npm run clean && npm run copy-assets && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap",
+    "watch": "npm run clean && npm run copy-assets && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap --watch",
+    "esbuild-package": "npm run clean && npm run copy-assets && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --minify",
     "copy-assets": "cpx \"src/**/*.html\" out && cpx \"l10n/**\" out/l10n && cpx \"media/**\" out/media",
-    "package": "npx @vscode/vsce package",
+    "package": "npm run build-and-package",
+    "build-and-package": "npm run clean && npm run vscode:prepublish && npx @vscode/vsce package",
     "pretest": "npm run compile && npm audit",
     "test": "node ./out/test/runTest.js",
     "security-audit": "npm audit --audit-level moderate",

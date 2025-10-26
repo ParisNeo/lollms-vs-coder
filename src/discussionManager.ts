@@ -61,6 +61,9 @@ export class DiscussionManager {
     }
 
     async saveDiscussion(discussion: Discussion): Promise<void> {
+        if (discussion.id.startsWith('temp-')) {
+            return; // Do not save temporary discussions
+        }
         const filePath = vscode.Uri.joinPath(this.discussionsDir, `${discussion.id}.json`);
         const content = Buffer.from(JSON.stringify(discussion, null, 2), 'utf8');
         await vscode.workspace.fs.writeFile(filePath, content);

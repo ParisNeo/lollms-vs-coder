@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 export class HelpPanel {
     public static currentPanel: HelpPanel | undefined;
     private readonly _panel: vscode.WebviewPanel;
-    private readonly _extensionUri: vscode.Uri;
+    private readonly _extensionUri: vscode._Uri;
 
     public static createOrShow(extensionUri: vscode.Uri) {
         const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
@@ -80,7 +80,7 @@ export class HelpPanel {
 <body>
     <div class="container">
         <div class="header">
-            <img src="${lollmsIconUri}" alt="Lollms Icon">
+            <img src="${lollmsIconUri.toString()}" alt="Lollms Icon">
             <h1>Lollms VS Coder Help</h1>
         </div>
 
@@ -131,19 +131,18 @@ export class HelpPanel {
         <p>This menu, located to the left of the chat input, provides powerful project-level commands:</p>
         <ul>
             <li><strong><span class="codicon codicon-add"></span>Attach Files</strong>: Manually provide files (including text and images) to the AI for analysis or questions.</li>
-            <li><strong><span class="codicon codicon-sparkle"></span>Generate Asset...</strong>: Describe an image you want to create (e.g., "a modern logo for a save button"), choose where to save it, and the AI will generate it.</li>
-            <li><strong><span class="codicon codicon-target"></span>Set Project Entry Point</strong>: Define the main executable file (`.js`, `.py`, etc.) for your project. This is used by the "Execute Project" command.</li>
+            <li><strong><span class="codicon codicon-target"></span>Set Project Entry Point</strong>: Define the main executable file (\`.js\`, \`.py\`, etc.) for your project. This is used by the "Execute Project" command.</li>
             <li><strong><span class="codicon codicon-play-circle"></span>Execute Project</strong>: Runs your project using the configured entry point. If it fails, the AI automatically analyzes the error output and suggests a fix.</li>
         </ul>
 
         <h2><span class="codicon codicon-brain"></span>AI Context Management</h2>
         <p>The <span class="key-feature">AI Context Files</span> view in the Lollms sidebar gives you precise control over what project information the AI sees. Click any file or folder to cycle through its three states:</p>
         <ul>
-            <li><span class="codicon codicon-check"></span><strong>Included</strong>: The file's path AND its full content are sent to the AI.</li>
-            <li><span class="codicon codicon-file-text"></span><strong>Tree-Only (Default)</strong>: Only the file's path is included in the project tree structure sent to the AI. Its content is hidden, saving tokens.</li>
-            <li><span class="codicon codicon-circle-slash"></span><strong>Excluded</strong>: The file or folder is completely hidden from the AI.</li>
+            <li><span style="color: var(--vscode-gitDecoration-addedResourceForeground);">✓</span> <strong>Included</strong>: The file's path AND its full content are sent to the AI.</li>
+            <li><span style="opacity: 0.7;">□</span> <strong>Tree-Only (Default)</strong>: Only the file's path is included in the project tree structure sent to the AI. Its content is hidden, saving tokens.</li>
+            <li><span style="color: var(--vscode-gitDecoration-ignoredResourceForeground);">⊘</span> <strong>Excluded</strong>: The file or folder is completely hidden from the AI.</li>
         </ul>
-        <blockquote>Use the <strong><span class="codicon codicon-wand"></span>Auto-Select Context</strong> button in the view's toolbar to have the AI intelligently pick the most relevant files for a given objective.</blockquote>
+        <blockquote>Use the <strong><span class="codicon codicon-wand"></span>Auto-Select Context</strong> button in the new 'Actions' panel to have the AI intelligently pick the most relevant files for a given objective.</blockquote>
 
         <h2><span class="codicon codicon-lightbulb"></span>In-Editor Tools</h2>
         <ul>
@@ -155,8 +154,8 @@ export class HelpPanel {
         <h2><span class="codicon codicon-source-control"></span>Git, Sidebar, and Configuration</h2>
         <ul>
             <li><strong>Git Commit Messages</strong>: Click the Lollms icon in the Source Control panel's title bar to generate a conventional commit message based on your staged changes.</li>
-            <li><strong>Sidebar Views</strong>: Use the sidebar to manage Discussions, see Running Processes, and create/organize your custom Prompts into groups.</li>
-            <li><strong>Configuration <span class="codicon codicon-gear"></span></strong>: Access the settings UI from the title bar of any Lollms view to configure your API endpoint, select models, and customize agent behavior.</li>
+            <li><strong>Sidebar Views</strong>: Use the sidebar to manage Discussions (including creating temporary ones), see Running Processes, and create/organize your custom Prompts into groups. The new 'Actions' view centralizes global commands.</li>
+            <li><strong>Configuration <span class="codicon codicon-gear"></span></strong>: Access the settings UI from the 'Actions' panel to configure your API endpoint, select models, and customize agent behavior.</li>
         </ul>
         
     </div>

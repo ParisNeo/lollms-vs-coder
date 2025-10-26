@@ -66,7 +66,7 @@ export class AgentManager {
 
     private async displayAndSavePlan(plan: Plan | null) {
         this.currentPlan = plan;
-        if (this.currentDiscussion) {
+        if (this.currentDiscussion && !this.currentDiscussion.id.startsWith('temp-')) {
             this.currentDiscussion.plan = plan;
             await this.discussionManager.saveDiscussion(this.currentDiscussion);
         }
@@ -594,7 +594,7 @@ export class AgentManager {
 
     private deactivateAgent() {
         this.isActive = false;
-        if(this.currentDiscussion){
+        if(this.currentDiscussion && !this.currentDiscussion.id.startsWith('temp-')){
             this.currentDiscussion.plan = null;
             this.discussionManager.saveDiscussion(this.currentDiscussion);
         }

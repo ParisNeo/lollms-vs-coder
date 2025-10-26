@@ -22,7 +22,8 @@ export class SettingsPanel {
     commitMessagePersona: '',
     contextFileExceptions: [] as string[],
     fileUpdateMethod: 'full_file',
-    language: 'auto'
+    language: 'auto',
+    thinkingMode: 'none'
   };
 
   public static createOrShow(extensionUri: vscode.Uri) {
@@ -68,6 +69,7 @@ export class SettingsPanel {
     this._pendingConfig.contextFileExceptions = config.get<string[]>('contextFileExceptions') || [];
     this._pendingConfig.fileUpdateMethod = config.get<string>('fileUpdateMethod') || 'full_file';
     this._pendingConfig.language = config.get<string>('language') || 'auto';
+    this._pendingConfig.thinkingMode = config.get<string>('thinkingMode') || 'none';
 
     this._panel.webview.html = this._getHtml(this._panel.webview, this._pendingConfig);
     this._setWebviewMessageListener(this._panel.webview);
@@ -111,6 +113,7 @@ export class SettingsPanel {
                 await config.update('contextFileExceptions', this._pendingConfig.contextFileExceptions, vscode.ConfigurationTarget.Global);
                 await config.update('fileUpdateMethod', this._pendingConfig.fileUpdateMethod, vscode.ConfigurationTarget.Global);
                 await config.update('language', this._pendingConfig.language, vscode.ConfigurationTarget.Global);
+                await config.update('thinkingMode', this._pendingConfig.thinkingMode, vscode.ConfigurationTarget.Global);
   
                 vscode.window.showInformationMessage('Configuration saved. Recreating LollmsAPI...');
                 await vscode.commands.executeCommand('lollmsApi.recreateClient');
@@ -149,7 +152,7 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, modelName, disableSslVerification, noThinkMode, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, fileUpdateMethod, language } = config;
+    const { apiKey, apiUrl, modelName, disableSslVerification, noThinkMode, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, fileUpdateMethod, language, thinkingMode } = config;
 
     return `<!DOCTYPE html>
         <html lang="en">
@@ -216,6 +219,14 @@ export class SettingsPanel {
               <p class="help-text">Influences the AI's response language. The extension UI follows VS Code's display language setting.</p>
               
               <h2>API & Model</h2>
+              <label for="thinkingMode">Thinking Mode</label>
+              <select id="thinkingMode">
+                <option value="none" ${thinkingMode === 'none' ? 'selected' : ''}>None (Default)</option>
+                <option value="chain_of_thought" ${thinkingMode === 'chain_of_thought' ? 'selected' : ''}>Chain of Thought</option>
+                <option value="plan_and_solve" ${thinkingMode === 'plan_and_solve' ? 'selected' : ''}>Plan and Solve</option>
+                <option value="self_critique" ${thinkingMode === 'self_critique' ? 'selected' : ''}>Self-Critique</option>
+              </select>
+              <p class="help-text">Select a structured thinking technique for the AI to improve complex responses.</p>
               <label for="apiUrl">API Host</label>
               <input type="text" id="apiUrl" value="${apiUrl}" placeholder="http://localhost:9642" autocomplete="off" />
               <label for="apiKey">API Key</label>
@@ -307,7 +318,8 @@ export class SettingsPanel {
                     agentPersona: document.getElementById('agentPersona'),
                     commitMessagePersona: document.getElementById('commitMessagePersona'),
                     contextFileExceptions: document.getElementById('contextFileExceptions'),
-                    fileUpdateMethod: document.getElementById('fileUpdateMethod')
+                    fileUpdateMethod: document.getElementById('fileUpdateMethod'),
+                    thinkingMode: document.getElementById('thinkingMode')
                 };
                 
                 const modelsDatalist = document.getElementById('modelsList');

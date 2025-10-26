@@ -25,6 +25,11 @@ export class ChatPanel {
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, discussionManager: DiscussionManager): ChatPanel {
     const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
 
+    // If the panel exists but is stale (missing new methods), dispose of it.
+    if (ChatPanel.currentPanel && typeof (ChatPanel.currentPanel as any).startNewTempDiscussion !== 'function') {
+        ChatPanel.currentPanel.dispose();
+    }
+
     if (ChatPanel.currentPanel) {
       ChatPanel.currentPanel._panel.reveal(column);
       return ChatPanel.currentPanel;
@@ -38,9 +43,11 @@ export class ChatPanel {
         enableScripts: true,
         localResourceRoots: [
             vscode.Uri.joinPath(extensionUri, 'out'),
-            vscode.Uri.joinPath(extensionUri, 'node_modules', '@vscode/codicons')
+            vscode.Uri.joinPath(extensionUri, 'node_modules', '@vscode/codicons'),
+            vscode.Uri.joinPath(extensionUri, 'media')
         ],
-        retainContextWhenHidden: true
+        retainContextWhenHidden: true,
+        iconPath: vscode.Uri.joinPath(extensionUri, 'media', 'lollms-icon.svg')
       }
     );
 
@@ -133,6 +140,23 @@ export class ChatPanel {
     this.updateGeneratingState();
     this._updateContextAndTokens();
   }
+
+  public async startNewTempDiscussion(): Promise<void> {
+    this._panel.webview.postMessage({ command: 'startContextLoading' });
+    this._currentDiscussion = {
+        id: 'temp-' + Date.now().toString() + Math.random().toString(36).substring(2),
+        title: 'Temporary Discussion',
+        messages: [],
+        timestamp: Date.now(),
+        groupId: null,
+        plan: null
+    };
+    this._panel.title = this._currentDiscussion.title;
+    this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
+    this.displayPlan(null);
+    this.updateGeneratingState();
+    this._updateContextAndTokens();
+  }
   
   private _updateContextAndTokens() {
     if (!this._contextManager || !this._currentDiscussion) {
@@ -206,15 +230,16 @@ export class ChatPanel {
     } else {
         this._currentDiscussion.messages.push(message);
     }
-
-    this._currentDiscussion.timestamp = Date.now();
-    await this._discussionManager.saveDiscussion(this._currentDiscussion);
     
+    if (!this._currentDiscussion.id.startsWith('temp-')) {
+        this._currentDiscussion.timestamp = Date.now();
+        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+        vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
+    }
+
     if (message.role !== 'user') {
         this._panel.webview.postMessage({ command: 'addMessage', message: message });
     }
-
-    vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
   }
 
   public setInputText(text: string) {
@@ -423,13 +448,9 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     
     const isFirstMessage = this._currentDiscussion.messages.filter(m => m.role !== 'system').length === 0;
 
-    this._currentDiscussion.messages.push(userMessage);
-    this._currentDiscussion.timestamp = Date.now();
-    await this._discussionManager.saveDiscussion(this._currentDiscussion);
+    await this.addMessageToDiscussion(userMessage);
     
-    vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
-
-    if (isFirstMessage) {
+    if (isFirstMessage && !this._currentDiscussion.id.startsWith('temp-')) {
         (async () => {
             const newTitle = await this._discussionManager.generateDiscussionTitle(this._currentDiscussion!);
             if (newTitle && this._currentDiscussion) {
@@ -463,7 +484,9 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     
     this._currentDiscussion.messages.splice(messageIndex);
     
-    await this._discussionManager.saveDiscussion(this._currentDiscussion);
+    if (!this._currentDiscussion.id.startsWith('temp-')) {
+        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+    }
     
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const isInspectorEnabled = config.get<boolean>('enableCodeInspector', true);
@@ -490,10 +513,13 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     }
     
     this._currentDiscussion.messages = this._currentDiscussion.messages.filter(msg => msg.id !== messageId);
-    await this._discussionManager.saveDiscussion(this._currentDiscussion);
+    
+    if (!this._currentDiscussion.id.startsWith('temp-')) {
+        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+        vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
+    }
 
     this._panel.webview.postMessage({ command: 'loadDiscussion', messages: this._currentDiscussion.messages });
-    vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
   }
 
   private async editMessage(messageId: string) {
@@ -518,7 +544,9 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     const messageIndex = this._currentDiscussion.messages.findIndex(m => m.id === messageId);
     if (messageIndex !== -1) {
         this._currentDiscussion.messages[messageIndex].content = newContent;
-        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+        if (!this._currentDiscussion.id.startsWith('temp-')) {
+            await this._discussionManager.saveDiscussion(this._currentDiscussion);
+        }
     }
   }
 
@@ -629,7 +657,9 @@ Your task is to re-analyze your previous code suggestion in light of this new er
                                     originalMessage.content = originalMessage.content.replace(originalCodeBlock, newCodeBlock);
                                 }
                                 
-                                await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                                if (!this._currentDiscussion.id.startsWith('temp-')) {
+                                    await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                                }
                                 await this.addMessageToDiscussion({ role: 'system', content: '✅ **Inspector:** Found issues and corrected the code above.' });
                                 
                                 this._panel.webview.postMessage({ 
@@ -678,14 +708,9 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             this.updateGeneratingState();
             return;
           }
-          // Add the user's message to the discussion history
-          this._currentDiscussion.messages.push(message.message);
-          this._currentDiscussion.timestamp = Date.now();
-          await this._discussionManager.saveDiscussion(this._currentDiscussion);
-          vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
-          // If it's the first message, generate a title
-          const isFirstMessage = this._currentDiscussion.messages.filter(m => m.role !== 'system').length <= 1;
-          if (isFirstMessage) {
+          await this.addMessageToDiscussion(message.message);
+          
+          if (isFirstMessage && !this._currentDiscussion.id.startsWith('temp-')) {
             (async () => {
               const newTitle = await this._discussionManager.generateDiscussionTitle(this._currentDiscussion!);
               if (newTitle && this._currentDiscussion) {
@@ -696,7 +721,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
               }
             })();
           }
-          // Now run the agent
           if (activeWorkspaceFolder) {
             this.agentManager.run(message.objective, this._currentDiscussion, activeWorkspaceFolder);
           } else {

@@ -57,10 +57,7 @@ export class DiscussionItem extends vscode.TreeItem {
             title: 'Switch Discussion',
             arguments: [this.id]
         };
-        this.iconPath = {
-            light: vscode.Uri.joinPath(this.extensionUri, 'media', 'lollms-icon.svg'),
-            dark: vscode.Uri.joinPath(this.extensionUri, 'media', 'lollms-icon.svg')
-        };
+        this.iconPath = vscode.Uri.joinPath(this.extensionUri, 'media', 'lollms-icon.svg');
     }
 }
 

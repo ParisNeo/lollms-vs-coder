@@ -2181,6 +2181,33 @@
             }
         });
 
+        messageInput.addEventListener('paste', (event) => {
+            const items = (event.clipboardData || window.clipboardData).items;
+            let imageFound = false;
+            for (const item of items) {
+                if (item.type.indexOf('image') === 0) {
+                    imageFound = true;
+                    const file = item.getAsFile();
+                    if (file) {
+                        const reader = new FileReader();
+                        reader.onload = (e) => {
+                            vscode.postMessage({
+                                command: 'loadFile',
+                                file: {
+                                    name: file.name || `pasted_image_${Date.now()}.png`,
+                                    content: e.target.result,
+                                    isImage: true
+                                }
+                            });
+                        };
+                        reader.readAsDataURL(file);
+                    }
+                }
+            }
+            if (imageFound) {
+                event.preventDefault();
+            }
+        });
     </script>
 </body>
 </html>

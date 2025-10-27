@@ -10,6 +10,7 @@ import { InfoPanel } from './infoPanel';
 import { ProcessManager } from '../processManager';
 
 export class ChatPanel {
+  public static panels: Map<string, ChatPanel> = new Map();
   public static currentPanel: ChatPanel | undefined;
   public readonly _panel: vscode.WebviewPanel;
   private readonly _extensionUri: vscode.Uri;
@@ -21,18 +22,15 @@ export class ChatPanel {
   private _lastApiRequest: ChatMessage[] | null = null;
   private _lastApiResponse: string | null = null;
   private processManager!: ProcessManager;
+  private readonly discussionId: string;
 
-  public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, discussionManager: DiscussionManager): ChatPanel {
+  public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, discussionManager: DiscussionManager, discussionId: string): ChatPanel {
     const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
 
-    // If the panel exists but is stale (missing new methods), dispose of it.
-    if (ChatPanel.currentPanel && typeof (ChatPanel.currentPanel as any).startNewTempDiscussion !== 'function') {
-        ChatPanel.currentPanel.dispose();
-    }
-
-    if (ChatPanel.currentPanel) {
-      ChatPanel.currentPanel._panel.reveal(column);
-      return ChatPanel.currentPanel;
+    const existingPanel = ChatPanel.panels.get(discussionId);
+    if (existingPanel) {
+      existingPanel._panel.reveal(column);
+      return existingPanel;
     }
 
     const panel = vscode.window.createWebviewPanel(
@@ -52,15 +50,23 @@ export class ChatPanel {
       }
     );
 
-    ChatPanel.currentPanel = new ChatPanel(panel, extensionUri, lollmsAPI, discussionManager);
-    return ChatPanel.currentPanel;
+    const newPanel = new ChatPanel(panel, extensionUri, lollmsAPI, discussionManager, discussionId);
+    ChatPanel.panels.set(discussionId, newPanel);
+    return newPanel;
   }
 
-  private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, discussionManager: DiscussionManager) {
+  private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, discussionManager: DiscussionManager, discussionId: string) {
     this._panel = panel;
     this._extensionUri = extensionUri;
     this._lollmsAPI = lollmsAPI;
     this._discussionManager = discussionManager;
+    this.discussionId = discussionId;
+
+    panel.onDidChangeViewState(e => {
+        if (e.webviewPanel.active) {
+            ChatPanel.currentPanel = this;
+        }
+    });
 
     this._panel.onDidDispose(() => this.dispose(), null, []);
     this._getHtmlForWebview(this._panel.webview).then(html => {
@@ -90,9 +96,22 @@ export class ChatPanel {
       this._panel.webview.postMessage({ command: 'displayPlan', plan: plan });
   }
   
-  public async loadDiscussion(id: string): Promise<void> {
+  public async loadDiscussion(): Promise<void> {
     this._panel.webview.postMessage({ command: 'showGlobalSpinner', show: true });
-    const discussion = await this._discussionManager.getDiscussion(id);
+    
+    let discussion: Discussion | null;
+    if (this.discussionId.startsWith('temp-')) {
+        discussion = {
+            id: this.discussionId,
+            title: 'Temporary Discussion',
+            messages: [],
+            timestamp: Date.now(),
+            groupId: null,
+            plan: null
+        };
+    } else {
+        discussion = await this._discussionManager.getDiscussion(this.discussionId);
+    }
 
     if (discussion) {
         let needsSave = false;
@@ -107,7 +126,7 @@ export class ChatPanel {
             needsSave = true;
         }
 
-        if (needsSave) {
+        if (needsSave && !discussion.id.startsWith('temp-')) {
             await this._discussionManager.saveDiscussion(discussion);
         }
 
@@ -133,50 +152,11 @@ export class ChatPanel {
     } else {
         this._panel.webview.postMessage({ command: 'updateTokenProgress' }); // Ends loading state
         this._panel.webview.postMessage({ command: 'showGlobalSpinner', show: false });
+        vscode.window.showErrorMessage(`Lollms: Could not load discussion ${this.discussionId}. It may have been deleted.`);
+        this.dispose();
     }
   }
 
-  public async startNewDiscussion(groupId: string | null = null): Promise<void> {
-    this._panel.webview.postMessage({ command: 'showGlobalSpinner', show: true });
-    this._currentDiscussion = this._discussionManager.createNewDiscussion(groupId);
-    await this._discussionManager.saveDiscussion(this._currentDiscussion);
-    this._panel.title = this._currentDiscussion.title;
-    
-    const models = await this._lollmsAPI.getModels();
-    this._panel.webview.postMessage({ 
-        command: 'loadDiscussion', 
-        messages: this._currentDiscussion.messages,
-        models: models,
-        currentModel: this._currentDiscussion.model
-    });
-    this.displayPlan(null); // Clear plan for new discussion
-    this.updateGeneratingState();
-    this._updateContextAndTokens();
-  }
-
-  public async startNewTempDiscussion(): Promise<void> {
-    this._panel.webview.postMessage({ command: 'showGlobalSpinner', show: true });
-    this._currentDiscussion = {
-        id: 'temp-' + Date.now().toString() + Math.random().toString(36).substring(2),
-        title: 'Temporary Discussion',
-        messages: [],
-        timestamp: Date.now(),
-        groupId: null,
-        plan: null
-    };
-    this._panel.title = this._currentDiscussion.title;
-    const models = await this._lollmsAPI.getModels();
-    this._panel.webview.postMessage({ 
-        command: 'loadDiscussion', 
-        messages: this._currentDiscussion.messages,
-        models: models,
-        currentModel: this._currentDiscussion.model
-    });
-    this.displayPlan(null);
-    this.updateGeneratingState();
-    this._updateContextAndTokens();
-  }
-  
   private _updateContextAndTokens() {
     if (!this._contextManager || !this._currentDiscussion) {
         this._panel.webview.postMessage({ command: 'updateTokenProgress' }); // This will hide the spinner
@@ -264,7 +244,13 @@ export class ChatPanel {
   }
 
   public dispose() {
-    ChatPanel.currentPanel = undefined;
+    ChatPanel.panels.delete(this.discussionId);
+    if (ChatPanel.currentPanel === this) {
+        ChatPanel.currentPanel = undefined;
+        if (ChatPanel.panels.size > 0) {
+            ChatPanel.currentPanel = ChatPanel.panels.values().next().value;
+        }
+    }
     this._panel.dispose();
   }
 
@@ -484,44 +470,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
       }
     })();
   }
-
-  public async startDiscussionWithPrompt(prompt: string): Promise<void> {
-    
-    this._currentDiscussion = this._discussionManager.createNewDiscussion();
-
-    const userMessage: ChatMessage = {
-        id: 'user_' + Date.now().toString() + Math.random().toString(36).substring(2),
-        role: 'user',
-        content: prompt
-    };
-    this._currentDiscussion.messages.push(userMessage);
-    this._currentDiscussion.timestamp = Date.now();
-    await this._discussionManager.saveDiscussion(this._currentDiscussion);
-
-    this._panel.title = this._currentDiscussion.title;
-    const models = await this._lollmsAPI.getModels();
-    this._panel.webview.postMessage({ 
-        command: 'loadDiscussion', 
-        messages: this._currentDiscussion.messages,
-        models: models,
-        currentModel: this._currentDiscussion.model
-    });
-    this.displayPlan(null);
-    
-    vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
-
-    (async () => {
-        const newTitle = await this._discussionManager.generateDiscussionTitle(this._currentDiscussion!);
-        if (newTitle && this._currentDiscussion) {
-            this._currentDiscussion.title = newTitle;
-            this._panel.title = newTitle;
-            await this._discussionManager.saveDiscussion(this._currentDiscussion);
-            vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
-        }
-    })();
-
-    this._callApiWithMessages(this._currentDiscussion.messages, true, this._currentDiscussion.model);
-}
   public async sendMessage(userMessage: ChatMessage) {
     if (!this._currentDiscussion) {
         vscode.window.showErrorMessage("No active discussion. Please start a new one.");
@@ -645,11 +593,13 @@ Your task is to re-analyze your previous code suggestion in light of this new er
 
   private async _handleFileAttachment(name: string, dataUrl: string, isImage: boolean) {
     let chatMessage: ChatMessage;
-    const attachmentId = 'attachment_' + Date.now().toString() + Math.random().toString(36).substring(2);
+    // Use a regular ID so it's treated as a normal chat message
+    const messageId = Date.now().toString() + Math.random().toString(36).substring(2);
 
     if (isImage) {
+        // Create a user message with multipart content (text + image)
         chatMessage = {
-            id: attachmentId,
+            id: messageId,
             role: 'user',
             content: [
                 { type: 'text', text: `Attached image: ${name}` },
@@ -657,6 +607,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             ]
         };
     } else {
+        // For documents, extract text and show as a system message for context
         let extractedText = '';
         let warning = '';
         try {
@@ -670,14 +621,13 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         const fileContentBlock = `\`\`\`\n${extractedText}\n\`\`\`${warning}`;
 
         chatMessage = {
-            id: attachmentId,
+            id: messageId,
             role: 'system',
             content: `Attached file: **${name}**\n\n${fileContentBlock}`
         };
     }
+    // This will add the message to history and send it to the webview
     await this.addMessageToDiscussion(chatMessage);
-    // Refresh UI after adding attachment
-    this._panel.webview.postMessage({ command: 'addMessage', message: chatMessage });
   }
     
   private _setWebviewMessageListener(webview: vscode.Webview) {

@@ -313,10 +313,9 @@ export async function activate(context: vscode.ExtensionContext) {
             fileDecorationProvider.updateStateProvider(contextStateProvider);
         }
 
-        if(ChatPanel.currentPanel){
-            ChatPanel.currentPanel.dispose();
-            vscode.window.showInformationMessage(`Lollms workspace switched to '${folder.name}'. The chat panel has been closed to reflect the new context.`);
-        }
+        // Close all existing chat panels when switching workspace to avoid context confusion
+        ChatPanel.panels.forEach(panel => panel.dispose());
+        vscode.window.showInformationMessage(`Lollms workspace switched to '${folder.name}'. All chat panels have been closed.`);
     }
 
     function initializeAndRegisterProviders() {
@@ -382,9 +381,12 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussion', async (item?: DiscussionGroupItem) => {
         if (!discussionManager) return;
         const groupId = item instanceof DiscussionGroupItem ? item.group.id : null;
-        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager);
+        const discussion = discussionManager.createNewDiscussion(groupId);
+        await discussionManager.saveDiscussion(discussion);
+        
+        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, discussion.id);
         setupChatPanel(panel);
-        await panel.startNewDiscussion(groupId);
+        await panel.loadDiscussion();
         discussionTreeProvider?.refresh();
     }));
 
@@ -393,16 +395,17 @@ export async function activate(context: vscode.ExtensionContext) {
             vscode.window.showInformationMessage(vscode.l10n.t("info.openFolderToUseChat"));
             return;
         }
-        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager);
+        const tempId = 'temp-' + Date.now().toString() + Math.random().toString(36).substring(2);
+        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, tempId);
         setupChatPanel(panel);
-        await panel.startNewTempDiscussion();
+        await panel.loadDiscussion();
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.switchDiscussion', async (discussionId: string) => {
         if (!discussionManager) return;
-        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager);
+        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, discussionId);
         setupChatPanel(panel);
-        await panel.loadDiscussion(discussionId);
+        await panel.loadDiscussion();
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.selectPythonInterpreter', () => {
@@ -410,9 +413,10 @@ export async function activate(context: vscode.ExtensionContext) {
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms.runAgentCommand', (objective: string, discussion: Discussion, modelOverride?: string) => {
-        if (ChatPanel.currentPanel?.agentManager && activeWorkspaceFolder) {
+        const panel = ChatPanel.panels.get(discussion.id);
+        if (panel?.agentManager && activeWorkspaceFolder) {
             const modelToUse = modelOverride || discussion.model;
-            ChatPanel.currentPanel.agentManager.run(objective, discussion, activeWorkspaceFolder, modelToUse);
+            panel.agentManager.run(objective, discussion, activeWorkspaceFolder, modelToUse);
         } else if (!activeWorkspaceFolder) {
             vscode.window.showErrorMessage("Cannot run Agent: No active Lollms workspace.");
         }
@@ -423,11 +427,11 @@ export async function activate(context: vscode.ExtensionContext) {
         const deleteButton = { title: vscode.l10n.t('command.delete.title'), id: 'delete' };
         const confirm = await vscode.window.showWarningMessage(vscode.l10n.t('prompt.confirmDelete', item.discussion.title), { modal: true }, deleteButton);
         if (confirm?.id === 'delete') {
+            const panel = ChatPanel.panels.get(item.discussion.id);
+            panel?.dispose(); // Close the panel if it's open
+            
             await discussionManager.deleteDiscussion(item.discussion.id);
             discussionTreeProvider?.refresh();
-            if (ChatPanel.currentPanel && ChatPanel.currentPanel.getCurrentDiscussionId() === item.discussion.id) {
-                ChatPanel.currentPanel.dispose();
-            }
         }
     }));
 
@@ -709,6 +713,25 @@ export async function activate(context: vscode.ExtensionContext) {
         handleSetState('fully-excluded', primaryUri, selectedUris);
     }));
     
+    async function startDiscussionWithInitialPrompt(prompt: string) {
+        if (!discussionManager) return;
+    
+        const discussion = discussionManager.createNewDiscussion();
+        const userMessage: ChatMessage = {
+            id: 'user_' + Date.now().toString() + Math.random().toString(36).substring(2),
+            role: 'user',
+            content: prompt
+        };
+        discussion.messages.push(userMessage);
+        await discussionManager.saveDiscussion(discussion);
+        discussionTreeProvider?.refresh();
+    
+        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, discussion.id);
+        setupChatPanel(panel);
+        await panel.loadDiscussion();
+        panel.sendMessage(userMessage); // This triggers the API call
+    }
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.autoSelectContextFiles', async () => {
         if (!contextStateProvider || !discussionManager) {
             vscode.window.showInformationMessage("Please open a workspace folder to use this feature.");
@@ -736,10 +759,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 await contextStateProvider!.addFilesToContext(fileList);
                 vscode.window.showInformationMessage(vscode.l10n.t('info.aiSelectedFiles', fileList.length));
                 
-                const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager!);
-                setupChatPanel(panel);
-                
-                await panel.startDiscussionWithPrompt(objective);
+                await startDiscussionWithInitialPrompt(objective);
 
             } else if (fileList) { 
                  vscode.window.showInformationMessage("The AI did not select any files for the given objective.");
@@ -1536,9 +1556,7 @@ ${errorDetails.message}
         
         prompt += `Here is the current project context which might be relevant:\n${contextContent.text}\n\nPlease analyze the error and provide a fix.`;
     
-        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager);
-        setupChatPanel(panel);
-        await panel.startDiscussionWithPrompt(prompt);
+        await startDiscussionWithInitialPrompt(prompt);
     
         // Clear the error after sending it to the AI
         debugErrorManager.clearError();

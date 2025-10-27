@@ -41,7 +41,9 @@ export class ProcessManager {
         const process = this.processes.get(id);
         if (process) {
             process.controller.abort();
-            // The process will be unregistered in the 'finally' block of the API call
+            // The process will be unregistered in the 'finally' block of the API call,
+            // but we also unregister here to update the UI immediately.
+            this.unregister(id);
         }
     }
 

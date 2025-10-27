@@ -55,6 +55,8 @@
     "config.thinkingMode.chain_of_thought.description": "Gedankenkette: Weist die KI an, Schritt für Schritt zu denken, um komplexe Probleme zu zerlegen.",
     "config.thinkingMode.plan_and_solve.description": "Planen und Lösen: Weist die KI an, zuerst einen groben Plan zu erstellen, bevor die Schritte ausgeführt werden.",
     "config.thinkingMode.self_critique.description": "Selbstkritik: Weist die KI an, eine Antwort zu generieren, diese kritisch auf Fehler zu überprüfen und dann eine korrigierte, endgültige Antwort zu geben.",
+    "config.thinkingMode.custom.description": "Use a custom thinking instruction defined in the 'Custom Thinking Prompt' setting below.",
+    "config.thinkingModeCustomPrompt.description": "Your custom instruction for the AI's thinking process. This is only used when 'Thinking Mode' is set to 'Custom'.",
     "config.enableCodeActions.description": "Aktivieren Sie die Lollms CodeLens-Aktionen (z. B. 'Lollms-Aktionen...') über dem ausgewählten Code.",
     "config.enableInlineSuggestions.description": "Aktivieren Sie einzeilige, inline Code-Vorschläge während des Tippens (experimentell).",
     "config.disableSslVerification.description": "Deaktivieren Sie die SSL-Zertifikatsüberprüfung für API-Anfragen. Mit Vorsicht bei Servern mit selbstsignierten Zertifikaten verwenden.",

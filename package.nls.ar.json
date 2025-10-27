@@ -55,6 +55,8 @@
     "config.thinkingMode.chain_of_thought.description": "سلسلة الأفكار: يوجه الذكاء الاصطناعي للتفكير خطوة بخطوة لتحليل المشاكل المعقدة.",
     "config.thinkingMode.plan_and_solve.description": "خطط وحل: يوجه الذكاء الاصطناعي لإنشاء خطة عالية المستوى أولاً قبل تنفيذ الخطوات.",
     "config.thinkingMode.self_critique.description": "النقد الذاتي: يوجه الذكاء الاصطناعي لتوليد استجابة، ومراجعتها بشكل نقدي بحثًا عن العيوب، ثم تقديم إجابة نهائية مصححة.",
+    "config.thinkingMode.custom.description": "Use a custom thinking instruction defined in the 'Custom Thinking Prompt' setting below.",
+    "config.thinkingModeCustomPrompt.description": "Your custom instruction for the AI's thinking process. This is only used when 'Thinking Mode' is set to 'Custom'.",
     "config.enableCodeActions.description": "تمكين إجراءات Lollms CodeLens (على سبيل المثال، 'إجراءات Lollms...') فوق الكود المحدد.",
     "config.enableInlineSuggestions.description": "تمكين اقتراحات التعليمات البرمجية المضمنة أحادية السطر أثناء الكتابة (تجريبي).",
     "config.disableSslVerification.description": "تعطيل التحقق من شهادة SSL لطلبات واجهة برمجة التطبيقات. استخدم بحذر للخوادم ذات الشهادات الموقعة ذاتيًا.",

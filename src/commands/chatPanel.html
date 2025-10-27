@@ -385,11 +385,15 @@
             background-color: var(--vscode-button-hoverBackground);
         }
         #stopButton {
-            background-color: var(--vscode-button-secondaryBackground);
-            color: var(--vscode-button-secondaryForeground);
+            background-color: var(--vscode-errorForeground);
+            color: var(--vscode-editor-background);
+            padding: 0 12px; /* Adjust padding for text */
+            width: auto;
+            gap: 8px;
         }
         #stopButton:hover {
-            background-color: var(--vscode-button-secondaryHoverBackground);
+            background-color: var(--vscode-errorForeground);
+            opacity: 0.9;
         }
         .spinner {
             border: 2px solid var(--vscode-panel-border);
@@ -398,6 +402,11 @@
             width: 16px;
             height: 16px;
             animation: spin 1s linear infinite;
+        }
+        #stopButton .spinner {
+            border-top-color: var(--vscode-editor-background);
+            border-color: rgba(255, 255, 255, 0.3);
+            border-top-color: var(--vscode-editor-background);
         }
         @keyframes spin {
             0% { transform: rotate(0deg); }
@@ -875,6 +884,7 @@
                     <button id="sendButton" title="Send Message"><i class="codicon codicon-send"></i></button>
                     <button id="stopButton" title="Stop Generation" style="display: none;">
                         <div class="spinner"></div>
+                        <span>Stop</span>
                     </button>
                 </div>
             </div>
@@ -887,6 +897,13 @@
     <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.5/dist/purify.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+    <!-- Preload common languages to avoid CSP issues with the autoloader -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-javascript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-typescript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-css.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
 
 
     <script>
@@ -1320,51 +1337,38 @@
             });
         }
         function enhanceCodeBlocks(container) {
-            container.querySelectorAll('pre:not([data-enhanced])').forEach(pre => {
+            container.querySelectorAll('div.message-content pre:not([data-enhanced])').forEach(pre => {
                 const codeBlock = pre.querySelector('code');
                 if (!codeBlock) return;
-        
+
                 let language = [...codeBlock.classList]
                     .find(c => c.startsWith('language-'))
                     ?.replace('language-', '').toLowerCase() || 'text';
                 
-                if (language === 'image_prompt') {
-                    const previousElement = pre.previousElementSibling;
-                    const fileMatch = previousElement && previousElement.tagName === 'P' ? (previousElement.textContent || '').match(/^File:\s*(.+)$/i) : null;
-                    if (fileMatch) {
-                        previousElement.style.display = 'none';
-                        const filePath = fileMatch[1].trim();
-                        const imagePrompt = codeBlock.innerText;
+                // --- CORRECTED LOGIC ---
+                // 1. Check for `File:` or `Patch:` before manipulating the DOM.
+                let matchInfo = null;
+                const previousElement = pre.previousElementSibling;
+                if (previousElement && previousElement.tagName === 'P') {
+                    const text = (previousElement.textContent || '').trim();
+                    const fileMatch = text.match(/^File:\s*(.+)$/i);
+                    const patchMatch = text.match(/^(Patch|diff):\s*(.+)$/i);
 
-                        const generationBlock = document.createElement('div');
-                        generationBlock.className = 'generation-block';
-                        generationBlock.innerHTML = `
-                            <div class="generation-header">
-                                <span class="codicon codicon-device-camera"></span>
-                                <span>Generate Image: <strong>${filePath}</strong></span>
-                            </div>
-                            <div class="generation-body">
-                                <p>${DOMPurify.sanitize(imagePrompt)}</p>
-                                <button class="generation-btn" data-prompt="${imagePrompt}" data-filepath="${filePath}">
-                                    <span class="codicon codicon-sparkle"></span> Generate
-                                </button>
-                            </div>
-                        `;
-                        pre.replaceWith(generationBlock);
-                        pre.dataset.enhanced = "true";
+                    if (fileMatch) {
+                        matchInfo = { type: 'applyFileContent', path: fileMatch[1].trim(), label: 'Apply to File', elementToHide: previousElement };
+                    } else if (patchMatch) {
+                        matchInfo = { type: 'applyPatchContent', path: patchMatch[2].trim(), label: 'Apply Patch', elementToHide: previousElement };
                     }
-                    return; 
                 }
 
-                if (pre.parentElement.tagName === 'DETAILS' && !pre.parentElement.classList.contains('code-collapsible')) return;
-
+                // 2. Now, create the wrapper and move the `pre` tag.
                 const details = document.createElement('details');
                 details.className = 'code-collapsible';
                 details.open = true;
 
                 const summary = document.createElement('summary');
                 summary.className = 'code-summary';
-
+                
                 const langLabel = document.createElement('span');
                 langLabel.className = 'summary-lang-label';
                 langLabel.textContent = language.toUpperCase();
@@ -1373,31 +1377,18 @@
                 const actions = document.createElement('div');
                 actions.className = 'code-actions';
 
+                // 3. Build buttons based on the matchInfo found earlier.
                 let hasApplyButton = false;
-                const previousElement = pre.previousElementSibling;
-                if (previousElement && previousElement.tagName === 'P') {
-                    const text = (previousElement.textContent || '').trim();
-                    const fileMatch = text.match(/^File:\s*(.+)$/i);
-                    const patchMatch = text.match(/^(Patch|diff):\s*(.+)$/i);
-                    let matchInfo = null;
-
-                    if (fileMatch) {
-                        matchInfo = { type: 'applyFileContent', path: fileMatch[1].trim(), label: 'Apply to File' };
-                    } else if (patchMatch) {
-                        matchInfo = { type: 'applyPatchContent', path: patchMatch[2].trim(), label: 'Apply Patch' };
-                    }
-
-                    if (matchInfo) {
-                        previousElement.style.display = 'none';
-                        const applyBtn = document.createElement('button');
-                        applyBtn.className = 'code-action-btn apply-btn';
-                        applyBtn.innerHTML = '⚙️ ' + matchInfo.label;
-                        applyBtn.title = `Write changes to ${matchInfo.path}`;
-                        applyBtn.dataset.action = matchInfo.type;
-                        applyBtn.dataset.filePath = matchInfo.path;
-                        actions.appendChild(applyBtn);
-                        hasApplyButton = true;
-                    }
+                if (matchInfo) {
+                    matchInfo.elementToHide.style.display = 'none';
+                    const applyBtn = document.createElement('button');
+                    applyBtn.className = 'code-action-btn apply-btn';
+                    applyBtn.innerHTML = '⚙️ ' + matchInfo.label;
+                    applyBtn.title = `Write changes to ${matchInfo.path}`;
+                    applyBtn.dataset.action = matchInfo.type;
+                    applyBtn.dataset.filePath = matchInfo.path;
+                    actions.appendChild(applyBtn);
+                    hasApplyButton = true;
                 }
 
                 if (!hasApplyButton) {

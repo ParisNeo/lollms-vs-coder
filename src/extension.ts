@@ -504,7 +504,29 @@ export async function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refreshDiscussions', () => discussionTreeProvider?.refresh()));
     
-context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.triggerCodeAction', async (promptOrArg?: Prompt | { isCustom: true }) => {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.inspectCode', async (args?: { code: string, language: string }) => {
+        if (!ChatPanel.currentPanel) {
+            vscode.window.showErrorMessage("Please open a Lollms chat panel to show inspection results.");
+            return;
+        }
+    
+        if (args && args.code) {
+            // Called from webview button
+            ChatPanel.currentPanel.handleInspectCode(args);
+        } else {
+            // Called from command palette or somewhere else
+            const editor = vscode.window.activeTextEditor;
+            if (editor && !editor.selection.isEmpty) {
+                const code = editor.document.getText(editor.selection);
+                const language = editor.document.languageId;
+                ChatPanel.currentPanel.handleInspectCode({ code, language });
+            } else {
+                vscode.window.showInformationMessage("Please select some code to inspect.");
+            }
+        }
+    }));
+        
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.triggerCodeAction', async (promptOrArg?: Prompt | { isCustom: true }) => {
         const editor = vscode.window.activeTextEditor;
         if (!editor || editor.selection.isEmpty) {
             vscode.window.showInformationMessage(vscode.l10n.t("info.selectCodeForAction"));

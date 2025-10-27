@@ -86,6 +86,9 @@ export function getProcessedSystemPrompt(promptType: 'chat' | 'agent' | 'inspect
             case 'self_critique':
                 instructionText = "After generating your initial response, you must stop and critically review it. Look for errors, logical flaws, or better alternative solutions. Explain your critique and provide the refined, final answer.";
                 break;
+            case 'custom':
+                instructionText = config.get<string>('thinkingModeCustomPrompt') || '';
+                break;
         }
         if (instructionText) {
             thinkingInstructions = `**THINKING PROCESS INSTRUCTIONS:**\nYou are required to use the following thinking process: ${instructionText} Enclose your entire thinking process, reasoning, and self-correction within a \`<thinking>\` XML block. This block will be hidden from the user but is crucial for your process.\n\n`;

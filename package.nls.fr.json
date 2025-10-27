@@ -50,6 +50,8 @@
     "command.loadContextSelection.title": "Lollms: Charger la Sélection du Contexte",
     "command.resetContextSelection.title": "Lollms: Réinitialiser la Sélection du Contexte",
     "config.title": "Configuration de Lollms VS Coder",
+    "config.thinkingMode.custom.description": "Use a custom thinking instruction defined in the 'Custom Thinking Prompt' setting below.",
+    "config.thinkingModeCustomPrompt.description": "Your custom instruction for the AI's thinking process. This is only used when 'Thinking Mode' is set to 'Custom'.",
     "config.enableCodeActions.description": "Activer les actions CodeLens de Lollms (par ex., 'Actions Lollms...') au-dessus du code sélectionné.",
     "config.enableInlineSuggestions.description": "Activer les suggestions de code en ligne sur une seule ligne pendant que vous tapez (expérimental).",
     "config.disableSslVerification.description": "Désactiver la vérification du certificat SSL pour les requêtes API. À utiliser avec prudence pour les serveurs avec des certificats auto-signés.",

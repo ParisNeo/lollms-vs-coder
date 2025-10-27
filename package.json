@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.6",
+  "version": "0.5.7",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -292,14 +292,21 @@
             "none",
             "chain_of_thought",
             "plan_and_solve",
-            "self_critique"
+            "self_critique",
+            "custom"
           ],
           "enumDescriptions": [
             "%config.thinkingMode.none.description%",
             "%config.thinkingMode.chain_of_thought.description%",
             "%config.thinkingMode.plan_and_solve.description%",
-            "%config.thinkingMode.self_critique.description%"
+            "%config.thinkingMode.self_critique.description%",
+            "%config.thinkingMode.custom.description%"
           ]
+        },
+        "lollmsVsCoder.thinkingModeCustomPrompt": {
+          "type": "string",
+          "default": "Think step by step. Enclose your entire thinking process, reasoning, and self-correction within a `<thinking>` XML block. This block will be hidden from the user but is crucial for your process.",
+          "description": "%config.thinkingModeCustomPrompt.description%"
         },
         "lollmsVsCoder.fileUpdateMethod": {
           "type": "string",

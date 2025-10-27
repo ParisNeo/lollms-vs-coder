@@ -50,6 +50,8 @@
     "command.loadContextSelection.title": "Lollms: 加载上下文选择",
     "command.resetContextSelection.title": "Lollms: 重置上下文选择",
     "config.title": "Lollms VS Coder 配置",
+    "config.thinkingMode.custom.description": "Use a custom thinking instruction defined in the 'Custom Thinking Prompt' setting below.",
+    "config.thinkingModeCustomPrompt.description": "Your custom instruction for the AI's thinking process. This is only used when 'Thinking Mode' is set to 'Custom'.",
     "config.enableCodeActions.description": "在选定代码上方启用Lollms CodeLens操作（例如，“Lollms 操作...”）。",
     "config.enableInlineSuggestions.description": "在您键入时启用单行内联代码建议（实验性）。",
     "config.disableSslVerification.description": "为API请求禁用SSL证书验证。对于使用自签名证书的服务器，请谨慎使用。",

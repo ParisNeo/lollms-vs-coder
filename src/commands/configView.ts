@@ -23,7 +23,8 @@ export class SettingsPanel {
     contextFileExceptions: [] as string[],
     fileUpdateMethod: 'full_file',
     language: 'auto',
-    thinkingMode: 'none'
+    thinkingMode: 'none',
+    thinkingModeCustomPrompt: ''
   };
 
   public static createOrShow(extensionUri: vscode.Uri) {
@@ -70,6 +71,7 @@ export class SettingsPanel {
     this._pendingConfig.fileUpdateMethod = config.get<string>('fileUpdateMethod') || 'full_file';
     this._pendingConfig.language = config.get<string>('language') || 'auto';
     this._pendingConfig.thinkingMode = config.get<string>('thinkingMode') || 'none';
+    this._pendingConfig.thinkingModeCustomPrompt = config.get<string>('thinkingModeCustomPrompt') || 'Think step by step. Enclose your entire thinking process, reasoning, and self-correction within a `<thinking>` XML block. This block will be hidden from the user but is crucial for your process.';
 
     this._panel.webview.html = this._getHtml(this._panel.webview, this._pendingConfig);
     this._setWebviewMessageListener(this._panel.webview);
@@ -114,6 +116,7 @@ export class SettingsPanel {
                 await config.update('fileUpdateMethod', this._pendingConfig.fileUpdateMethod, vscode.ConfigurationTarget.Global);
                 await config.update('language', this._pendingConfig.language, vscode.ConfigurationTarget.Global);
                 await config.update('thinkingMode', this._pendingConfig.thinkingMode, vscode.ConfigurationTarget.Global);
+                await config.update('thinkingModeCustomPrompt', this._pendingConfig.thinkingModeCustomPrompt, vscode.ConfigurationTarget.Global);
   
                 vscode.window.showInformationMessage('Configuration saved. Recreating LollmsAPI...');
                 await vscode.commands.executeCommand('lollmsApi.recreateClient');
@@ -152,7 +155,7 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, modelName, disableSslVerification, noThinkMode, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, fileUpdateMethod, language, thinkingMode } = config;
+    const { apiKey, apiUrl, modelName, disableSslVerification, noThinkMode, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, fileUpdateMethod, language, thinkingMode, thinkingModeCustomPrompt } = config;
 
     return `<!DOCTYPE html>
         <html lang="en">
@@ -225,8 +228,14 @@ export class SettingsPanel {
                 <option value="chain_of_thought" ${thinkingMode === 'chain_of_thought' ? 'selected' : ''}>Chain of Thought</option>
                 <option value="plan_and_solve" ${thinkingMode === 'plan_and_solve' ? 'selected' : ''}>Plan and Solve</option>
                 <option value="self_critique" ${thinkingMode === 'self_critique' ? 'selected' : ''}>Self-Critique</option>
+                <option value="custom" ${thinkingMode === 'custom' ? 'selected' : ''}>Custom</option>
               </select>
               <p class="help-text">Select a structured thinking technique for the AI to improve complex responses.</p>
+              <div id="custom-thinking-prompt-container" style="display: ${thinkingMode === 'custom' ? 'block' : 'none'};">
+                <label for="thinkingModeCustomPrompt">Custom Thinking Prompt</label>
+                <textarea id="thinkingModeCustomPrompt" rows="4">${thinkingModeCustomPrompt}</textarea>
+                <p class="help-text">Your custom instruction for the AI's thinking process. Used when 'Thinking Mode' is set to 'Custom'.</p>
+              </div>
               <label for="apiUrl">API Host</label>
               <input type="text" id="apiUrl" value="${apiUrl}" placeholder="http://localhost:9642" autocomplete="off" />
               <label for="apiKey">API Key</label>
@@ -319,10 +328,16 @@ export class SettingsPanel {
                     commitMessagePersona: document.getElementById('commitMessagePersona'),
                     contextFileExceptions: document.getElementById('contextFileExceptions'),
                     fileUpdateMethod: document.getElementById('fileUpdateMethod'),
-                    thinkingMode: document.getElementById('thinkingMode')
+                    thinkingMode: document.getElementById('thinkingMode'),
+                    thinkingModeCustomPrompt: document.getElementById('thinkingModeCustomPrompt')
                 };
                 
                 const modelsDatalist = document.getElementById('modelsList');
+                const customThinkingPromptContainer = document.getElementById('custom-thinking-prompt-container');
+
+                fields.thinkingMode.addEventListener('change', () => {
+                    customThinkingPromptContainer.style.display = fields.thinkingMode.value === 'custom' ? 'block' : 'none';
+                });
 
                 function postTempUpdate(key, value) {
                   vscode.postMessage({ command: 'updateTempValue', key, value });

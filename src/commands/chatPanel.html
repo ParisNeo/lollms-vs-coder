@@ -346,10 +346,11 @@
             color: var(--vscode-input-foreground);
             padding: 8px;
             font-size: 14px;
-            font-family: var(--vscode-font-family);
+            font-family: var(--vscode-editor-font-family);
             resize: none;
             line-height: 1.6;
-            max-height: 200px;
+            min-height: 24px;
+            max-height: 300px;
             outline: none;
         }
         #messageInput:disabled {
@@ -769,11 +770,12 @@
             background-color: var(--vscode-input-background);
             color: var(--vscode-input-foreground);
             padding: 8px;
-            font-family: var(--vscode-font-family);
+            font-family: var(--vscode-editor-font-family);
             font-size: 14px;
             line-height: 1.6;
             outline: none;
             border-radius: 4px;
+            min-height: 150px;
         }
         .edit-buttons {
             display: flex;
@@ -1345,10 +1347,57 @@
                     .find(c => c.startsWith('language-'))
                     ?.replace('language-', '').toLowerCase() || 'text';
                 
+                // --- NEW LOGIC for image generation blocks ---
+                const isImagePrompt = language === 'image_prompt' || language === 'image_generation';
+                const previousElement = pre.previousElementSibling;
+
+                if (isImagePrompt && previousElement && previousElement.tagName === 'P') {
+                    const text = (previousElement.textContent || '').trim();
+                    const fileMatch = text.match(/^File:\s*(.+)$/i);
+
+                    if (fileMatch) {
+                        const filePath = fileMatch[1].trim();
+                        const promptText = codeBlock.innerText;
+
+                        const generationBlock = document.createElement('div');
+                        generationBlock.className = 'generation-block';
+                        
+                        const header = document.createElement('div');
+                        header.className = 'generation-header';
+                        
+                        header.innerHTML = `<span class="summary-lang-label" style="display: flex; align-items: center; gap: 6px;"><i class="codicon codicon-device-camera"></i> Image Generation</span>`;
+                        
+                        const actions = document.createElement('div');
+                        actions.className = 'code-actions';
+                        
+                        const generateBtn = document.createElement('button');
+                        generateBtn.className = 'generation-btn';
+                        generateBtn.innerHTML = '<span class="codicon codicon-sparkle"></span> Generate';
+                        generateBtn.title = `Generate image and save to ${filePath}`;
+                        generateBtn.dataset.prompt = promptText;
+                        generateBtn.dataset.filepath = filePath;
+
+                        actions.appendChild(generateBtn);
+                        header.appendChild(actions);
+
+                        const body = document.createElement('div');
+                        body.className = 'generation-body';
+                        body.innerHTML = DOMPurify.sanitize(marked.parse(promptText));
+
+                        generationBlock.appendChild(header);
+                        generationBlock.appendChild(body);
+                        
+                        pre.parentNode.replaceChild(generationBlock, pre);
+                        previousElement.remove();
+                        
+                        return; // Stop processing this pre element
+                    }
+                }
+                
                 // --- CORRECTED LOGIC ---
                 // 1. Check for `File:` or `Patch:` before manipulating the DOM.
                 let matchInfo = null;
-                const previousElement = pre.previousElementSibling;
+                // No need to re-check previousElement, we already have it.
                 if (previousElement && previousElement.tagName === 'P') {
                     const text = (previousElement.textContent || '').trim();
                     const fileMatch = text.match(/^File:\s*(.+)$/i);
@@ -1538,7 +1587,7 @@
             vscode.postMessage({ command: 'stopGeneration' });
         });
 
-        messageInput.addEventListener('keypress', (e) => {
+        messageInput.addEventListener('keydown', (e) => {
           if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             sendMessage();
@@ -2094,11 +2143,22 @@
                     messageInput.value = message.text;
                     messageInput.focus();
                     break;
+                case 'forceScrollToBottom':
+                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                    break;
                 case 'imageGenerationResult':
                     const btn = document.getElementById(message.buttonId);
                     if (btn) {
                         if (message.success) {
                             btn.innerHTML = `<span class="codicon codicon-check"></span> Saved!`;
+                            btn.disabled = true;
+                            const generationBlock = btn.closest('.generation-block');
+                            if (generationBlock) {
+                                const body = generationBlock.querySelector('.generation-body');
+                                if (body) {
+                                    body.innerHTML = `<img src="${message.webviewUri}" style="max-width: 100%; border-radius: 4px;" />`;
+                                }
+                            }
                         } else {
                             btn.innerHTML = `<span class="codicon codicon-error"></span> Failed`;
                             btn.disabled = false; // Allow retry

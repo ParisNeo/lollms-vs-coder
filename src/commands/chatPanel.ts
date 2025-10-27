@@ -44,7 +44,8 @@ export class ChatPanel {
         localResourceRoots: [
             vscode.Uri.joinPath(extensionUri, 'out'),
             vscode.Uri.joinPath(extensionUri, 'node_modules', '@vscode/codicons'),
-            vscode.Uri.joinPath(extensionUri, 'media')
+            vscode.Uri.joinPath(extensionUri, 'media'),
+            vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0].uri: extensionUri
         ],
         retainContextWhenHidden: true,
         iconPath: vscode.Uri.joinPath(extensionUri, 'media', 'lollms-icon.svg')
@@ -90,7 +91,7 @@ export class ChatPanel {
   }
   
   public async loadDiscussion(id: string): Promise<void> {
-    this._panel.webview.postMessage({ command: 'startContextLoading' });
+    this._panel.webview.postMessage({ command: 'showGlobalSpinner', show: true });
     const discussion = await this._discussionManager.getDiscussion(id);
 
     if (discussion) {
@@ -131,11 +132,12 @@ export class ChatPanel {
         this._updateContextAndTokens();
     } else {
         this._panel.webview.postMessage({ command: 'updateTokenProgress' }); // Ends loading state
+        this._panel.webview.postMessage({ command: 'showGlobalSpinner', show: false });
     }
   }
 
   public async startNewDiscussion(groupId: string | null = null): Promise<void> {
-    this._panel.webview.postMessage({ command: 'startContextLoading' });
+    this._panel.webview.postMessage({ command: 'showGlobalSpinner', show: true });
     this._currentDiscussion = this._discussionManager.createNewDiscussion(groupId);
     await this._discussionManager.saveDiscussion(this._currentDiscussion);
     this._panel.title = this._currentDiscussion.title;
@@ -153,7 +155,7 @@ export class ChatPanel {
   }
 
   public async startNewTempDiscussion(): Promise<void> {
-    this._panel.webview.postMessage({ command: 'startContextLoading' });
+    this._panel.webview.postMessage({ command: 'showGlobalSpinner', show: true });
     this._currentDiscussion = {
         id: 'temp-' + Date.now().toString() + Math.random().toString(36).substring(2),
         title: 'Temporary Discussion',
@@ -364,6 +366,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         role: 'system', 
         content: `🔍 Inspecting code with \`${inspectorModel}\`...` 
     });
+    this._panel.webview.postMessage({ command: 'forceScrollToBottom' });
 
     const inspectionMessages: ChatMessage[] = [
         { role: 'system', content: systemPrompt },
@@ -863,7 +866,8 @@ Your task is to re-analyze your previous code suggestion in light of this new er
                     const buffer = Buffer.from(b64_json, 'base64');
                     await vscode.workspace.fs.writeFile(fileUri, buffer);
 
-                    webview.postMessage({ command: 'imageGenerationResult', buttonId: message.buttonId, success: true });
+                    const webviewUri = webview.asWebviewUri(fileUri);
+                    webview.postMessage({ command: 'imageGenerationResult', buttonId: message.buttonId, success: true, webviewUri: webviewUri.toString() });
                     
                     this.addMessageToDiscussion({
                         role: 'system',

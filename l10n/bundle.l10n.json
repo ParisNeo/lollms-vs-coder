@@ -22,6 +22,7 @@
     "command.executeScript.title": "Lollms: Execute Script",
     "command.inspectCode.title": "Lollms: Inspect Code",
     "command.debugErrorWithAI.title": "Lollms: Fix This Error",
+    "command.debugErrorSendToDiscussion.title": "Lollms: Send Error to Discussion",
     "command.newDiscussion.title": "New Discussion",
     "command.newTempDiscussion.title": "New Temporary Discussion",
     "command.delete.title": "Delete",

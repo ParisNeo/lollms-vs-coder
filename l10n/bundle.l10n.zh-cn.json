@@ -20,6 +20,7 @@
     "command.inspectCode.title": "Lollms: 检查代码",
     "command.autoSelectContextFiles.title": "Lollms: 自动选择上下文文件",
     "command.debugErrorWithAI.title": "Lollms: 修复此错误",
+    "command.debugErrorSendToDiscussion.title": "Lollms: 发送错误到讨论",
     "command.newDiscussion.title": "新讨论",
     "command.newTempDiscussion.title": "新建临时讨论",
     "command.delete.title": "删除",

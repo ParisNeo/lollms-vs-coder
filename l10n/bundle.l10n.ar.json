@@ -22,6 +22,7 @@
     "command.inspectCode.title": "Lollms: فحص الكود",
     "command.autoSelectContextFiles.title": "Lollms: تحديد ملفات السياق تلقائيًا",
     "command.debugErrorWithAI.title": "Lollms: إصلاح هذا الخطأ",
+    "command.debugErrorSendToDiscussion.title": "Lollms: إرسال الخطأ إلى المناقشة",    
     "command.newDiscussion.title": "مناقشة جديدة",
     "command.newTempDiscussion.title": "مناقشة مؤقتة جديدة",
     "command.delete.title": "حذف",

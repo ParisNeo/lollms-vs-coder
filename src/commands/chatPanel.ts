@@ -7,7 +7,7 @@ import { AgentManager } from '../agentManager';
 import { getProcessedSystemPrompt, stripThinkingTags } from '../utils';
 import * as path from 'path';
 import { InfoPanel } from './infoPanel';
-import { ProcessManager } from '../processManager';
+import { ProcessManager } from './processManager';
 
 export class ChatPanel {
   public static panels: Map<string, ChatPanel> = new Map();
@@ -135,20 +135,19 @@ export class ChatPanel {
 
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const isInspectorEnabled = config.get<boolean>('enableCodeInspector', true);
-        const models = await this._lollmsAPI.getModels();
-
 
         this._panel.webview.postMessage({ 
             command: 'loadDiscussion', 
             messages: this._currentDiscussion.messages,
-            isInspectorEnabled: isInspectorEnabled,
-            models: models,
-            currentModel: this._currentDiscussion.model
+            isInspectorEnabled: isInspectorEnabled
         });
         
         this.displayPlan(discussion.plan);
         this.updateGeneratingState();
+
+        this._fetchAndSetModels();
         this._updateContextAndTokens();
+
     } else {
         this._panel.webview.postMessage({ command: 'updateTokenProgress' }); // Ends loading state
         this._panel.webview.postMessage({ command: 'showGlobalSpinner', show: false });
@@ -157,6 +156,23 @@ export class ChatPanel {
     }
   }
 
+  private async _fetchAndSetModels() {
+    let models = [];
+    try {
+        models = await this._lollmsAPI.getModels();
+    } catch (error) {
+        console.warn("Could not fetch models from the backend. The server might be offline.", error);
+    }
+    
+    if (this._currentDiscussion) {
+        this._panel.webview.postMessage({ 
+            command: 'updateModels',
+            models: models,
+            currentModel: this._currentDiscussion.model
+        });
+    }
+  }
+  
   private _updateContextAndTokens() {
     if (!this._contextManager || !this._currentDiscussion) {
         this._panel.webview.postMessage({ command: 'updateTokenProgress' }); // This will hide the spinner
@@ -367,6 +383,15 @@ Your task is to re-analyze your previous code suggestion in light of this new er
   
     (async () => {
       const { id: processId, controller } = this.processManager.register(this._currentDiscussion!.id, 'Generating chat response...');
+      const assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
+      const modelToUse = modelOverride || this._lollmsAPI.getModelName();
+      const assistantPlaceholder: ChatMessage = { 
+          id: assistantMessageId, 
+          role: 'assistant', 
+          content: '',
+          startTime: Date.now(),
+          model: modelToUse
+      };
       
       try {
         const apiMessages: ChatMessage[] = [];
@@ -408,17 +433,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
   
         this._lastApiRequest = apiMessages;
   
-        const assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
-        const modelToUse = modelOverride || this._lollmsAPI.getModelName();
-        
-        // **FIX:** Send the placeholder message to the UI immediately
-        const assistantPlaceholder: ChatMessage = { 
-            id: assistantMessageId, 
-            role: 'assistant', 
-            content: '',
-            startTime: Date.now(),
-            model: modelToUse
-        };
         this._panel.webview.postMessage({ command: 'addMessage', message: assistantPlaceholder });
   
         const onChunk = (chunk: string) => {
@@ -445,26 +459,31 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             tokenCount: tokenCount
         });
         
-        // Update the placeholder object with the final content before saving
         assistantPlaceholder.content = fullResponseText;
         await this.addMessageToDiscussion(assistantPlaceholder);
   
       } catch (error: any) {
-        const isAbortError = error.name === 'AbortError' || (error instanceof Error && error.message.includes('aborted'));
-        if (isAbortError) {
-          console.log('Generation was aborted.');
-          await this.addMessageToDiscussion({ role: 'system', content: '🛑 Generation stopped by user.' });
-          return;
+        try {
+            const isAbortError = error.name === 'AbortError' || (error instanceof Error && error.message.includes('aborted'));
+            const errorMessage = isAbortError ? 'Generation stopped by user.' : (error instanceof Error ? error.message : 'An unknown error occurred');
+            this._lastApiResponse = errorMessage;
+
+            const errorContent = `<p style="color:var(--vscode-errorForeground);">❌ **${isAbortError ? 'Cancelled' : 'API Error'}:**</p><pre style="background-color:var(--vscode-textCodeBlock-background); padding:10px; border-radius:4px; white-space:pre-wrap;">${errorMessage}</pre>`;
+
+            this._panel.webview.postMessage({ 
+                command: 'finalizeMessage', 
+                id: assistantMessageId, 
+                fullContent: errorContent,
+                isHtml: true,
+                tokenCount: 0
+            });
+
+            assistantPlaceholder.content = errorContent;
+            assistantPlaceholder.role = 'system';
+            await this.addMessageToDiscussion(assistantPlaceholder);
+        } catch (secondaryError) {
+            console.error("Error while handling initial API error:", secondaryError);
         }
-  
-        const errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
-        this._lastApiResponse = errorMessage;
-        // Use a distinct color/style for errors
-        const errorResponseMessage: ChatMessage = { role: 'system', content: `<p style="color:var(--vscode-errorForeground);">❌ **API Error:**</p><pre style="background-color:var(--vscode-textCodeBlock-background); padding:10px; border-radius:4px; white-space:pre-wrap;">${errorMessage}</pre>` };
-        
-        // Send the error message to the UI immediately, without saving to history first
-        this._panel.webview.postMessage({ command: 'addMessage', message: errorResponseMessage });
-        await this.addMessageToDiscussion(errorResponseMessage);
       } finally {
         this.processManager.unregister(processId);
       }

@@ -18,6 +18,7 @@
     "command.selectPythonInterpreter.title": "Lollms: Seleccionar intérprete de Python",
     "command.inspectCode.title": "Lollms: Inspeccionar Código",
     "command.debugErrorWithAI.title": "Lollms: Corregir este error",
+    "command.debugErrorSendToDiscussion.title": "Lollms: Enviar Error a la Discusión",
     "command.buildCodeGraph.title": "Construir Gráfico de Código",
     "command.showCodeGraphPanel.title": "Lollms: Mostrar Gráfico de Código Interactivo",
     "command.addSkill.title": "Nueva Habilidad",

@@ -22,6 +22,7 @@
     "command.inspectCode.title": "Lollms: Inspeccionar Código",
     "command.autoSelectContextFiles.title": "Lollms: Autoseleccionar Archivos de Contexto",
     "command.debugErrorWithAI.title": "Lollms: Corregir este error",
+    "command.debugErrorSendToDiscussion.title": "Lollms: Enviar Error a la Discusión",
     "command.newDiscussion.title": "Nueva Discusión",
     "command.newTempDiscussion.title": "Nueva Discusión Temporal",
     "command.delete.title": "Eliminar",

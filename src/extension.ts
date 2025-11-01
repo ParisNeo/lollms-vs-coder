@@ -35,6 +35,7 @@ import { SkillsTreeProvider } from './commands/skillsTreeProvider';
 import { SkillsManager } from './skillsManager';
 import { CodeGraphManager } from './codeGraphManager';
 import { ActionsTreeProvider } from './commands/actionsTreeProvider';
+import { DebugCodeLensProvider } from './commands/debugCodeLensProvider';
 
 const execAsync = promisify(exec);
 
@@ -48,16 +49,21 @@ let pythonExtApi: any = null;
 
 // Simple manager to hold the state of the last captured debug error
 const debugErrorManager = {
-    lastError: null as { message: string, stack?: string } | null,
+    _onDidChange: new vscode.EventEmitter<void>(),
+    get onDidChange(): vscode.Event<void> { return this._onDidChange.event; },
+    lastError: null as { message: string, stack?: string, filePath?: vscode.Uri, line?: number } | null,
     
-    setError(message: string, stack?: string) {
-        this.lastError = { message, stack };
+    setError(message: string, stack?: string, filePath?: vscode.Uri, line?: number) {
+        this.lastError = { message, stack, filePath, line };
         vscode.commands.executeCommand('setContext', 'lollms:hasDebugError', true);
+        this._onDidChange.fire();
     },
 
     clearError() {
+        if (this.lastError === null) return;
         this.lastError = null;
         vscode.commands.executeCommand('setContext', 'lollms:hasDebugError', false);
+        this._onDidChange.fire();
     }
 };
 
@@ -81,17 +87,50 @@ class LollmsDebugAdapterTrackerFactory implements vscode.DebugAdapterTrackerFact
 
                     const threadId = message.body.threadId;
                     if (threadId) {
-                        session.customRequest('stackTrace', { threadId: threadId, startFrame: 0, levels: 20 }).then(reply => {
+                        session.customRequest('stackTrace', { threadId: threadId, startFrame: 0, levels: 20 }).then(async (reply) => {
                             let stackTrace = '';
-                            if (reply && reply.stackFrames) {
+                            let errorFileUri: vscode.Uri | undefined;
+                            let errorLine: number | undefined;
+
+                            if (reply && reply.stackFrames && reply.stackFrames.length > 0) {
                                 stackTrace = reply.stackFrames.map((frame: any) => {
                                     const sourcePath = frame.source ? (frame.source.path || frame.source.name) : 'unknown_source';
                                     return `  at ${frame.name} (${sourcePath}:${frame.line})`;
                                 }).join('\n');
+                                
+                                for (const frame of reply.stackFrames) {
+                                    if (frame.source && frame.source.path && !frame.source.path.includes('node_modules') && !frame.source.path.startsWith('<')) {
+                                        const frameUri = vscode.Uri.file(frame.source.path);
+                                        if (vscode.workspace.getWorkspaceFolder(frameUri)) {
+                                            errorFileUri = frameUri;
+                                            errorLine = frame.line;
+                                            
+                                            try {
+                                                const doc = await vscode.workspace.openTextDocument(errorFileUri);
+                                                await vscode.window.showTextDocument(doc, {
+                                                    selection: new vscode.Range(errorLine - 1, 0, errorLine - 1, 0),
+                                                    preserveFocus: false,
+                                                    preview: true
+                                                });
+                                            } catch (e) {
+                                                console.error("Lollms: Could not open document from stack trace.", e);
+                                            }
+                                            break; 
+                                        }
+                                    }
+                                }
                             }
-                            debugErrorManager.setError(fullMessage, stackTrace);
+                            debugErrorManager.setError(fullMessage, stackTrace, errorFileUri, errorLine);
+
+                            // Show an information message with a button
+                            const fixButton = 'Fix with Lollms';
+                            vscode.window.showInformationMessage(`Lollms captured a debug error: ${exceptionText}`, fixButton).then(selection => {
+                                if (selection === fixButton) {
+                                    vscode.commands.executeCommand('lollms-vs-coder.debugErrorWithAI');
+                                }
+                            });
                         }).catch(() => {
-                            debugErrorManager.setError(fullMessage); // Fallback without stack trace
+                            debugErrorManager.setError(fullMessage);
                         });
                     } else {
                         debugErrorManager.setError(fullMessage);
@@ -246,6 +285,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
     const inlineDiffProvider = new InlineDiffProvider();
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, inlineDiffProvider));
+    
+    const debugCodeLensProvider = new DebugCodeLensProvider(debugErrorManager);
+    context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, debugCodeLensProvider));
     
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.acceptDiff', () => inlineDiffProvider.accept()));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.rejectDiff', () => inlineDiffProvider.reject()));
@@ -1531,18 +1573,59 @@ export async function activate(context: vscode.ExtensionContext) {
             return;
         }
     
-        if (!discussionManager) {
-            vscode.window.showErrorMessage("Lollms: Cannot start a discussion, discussion manager not ready.");
+        if (!discussionManager || !activeWorkspaceFolder) {
+            vscode.window.showErrorMessage("Lollms: Cannot start a discussion, a workspace must be active.");
             return;
         }
     
         const errorDetails = debugErrorManager.lastError;
-        
-        const contextContent = await contextManager.getContextContent();
-        
-        let prompt = `I'm encountering an error while debugging my project. Can you help me fix it?
+        let prompt = '';
     
-Here are the details:
+        // Use the pre-parsed file info directly from the error manager
+        if (errorDetails.filePath && errorDetails.line) {
+            try {
+                const fileUri = errorDetails.filePath;
+                const relativePath = vscode.workspace.asRelativePath(fileUri, false);
+                const fileContent = await vscode.workspace.fs.readFile(fileUri);
+                const contentString = Buffer.from(fileContent).toString('utf8');
+                
+                // Open the document in the background to find its language ID
+                const document = await vscode.workspace.openTextDocument(fileUri);
+                const languageId = document.languageId;
+    
+                prompt = `I'm encountering an error while debugging my project. Can you help me fix it?
+    
+**Error Message:**
+\`\`\`
+${errorDetails.message}
+\`\`\`
+    
+**Stack Trace:**
+\`\`\`
+${errorDetails.stack || 'No stack trace available.'}
+\`\`\`
+    
+The error seems to originate in the file \`${relativePath}\` at line ${errorDetails.line}.
+    
+**Here is the full content of \`${relativePath}\`:**
+\`\`\`${languageId}
+${contentString}
+\`\`\`
+    
+Please analyze the error and the full file content, then provide a complete, corrected version of the entire file.
+    
+**CRITICAL:** Your response MUST start with the line \`File: ${relativePath}\`, followed by a markdown code block containing the complete and corrected file content. Do not add any explanations before the "File:" line.`;
+    
+            } catch (e) {
+                console.error("Failed to read file from stack trace:", e);
+                prompt = ''; // Reset prompt to trigger the fallback logic
+            }
+        }
+    
+        // Fallback if file info was not available or reading failed
+        if (!prompt) {
+            const contextContent = await contextManager.getContextContent();
+            prompt = `I'm encountering an error while debugging my project. Can you help me fix it?
     
 **Error Message:**
 \`\`\`
@@ -1550,15 +1633,98 @@ ${errorDetails.message}
 \`\`\`
 `;
     
-        if(errorDetails.stack){
-            prompt += `\n**Stack Trace:**\n\`\`\`\n${errorDetails.stack}\n\`\`\`\n`;
+            if(errorDetails.stack){
+                prompt += `\n**Stack Trace:**\n\`\`\`\n${errorDetails.stack}\n\`\`\`\n`;
+            }
+            
+            prompt += `Here is the current project context which might be relevant:\n${contextContent.text}\n\nPlease analyze the error and provide a fix.`;
         }
-        
-        prompt += `Here is the current project context which might be relevant:\n${contextContent.text}\n\nPlease analyze the error and provide a fix.`;
     
         await startDiscussionWithInitialPrompt(prompt);
     
         // Clear the error after sending it to the AI
+        debugErrorManager.clearError();
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.debugErrorSendToDiscussion', async () => {
+        if (!debugErrorManager.lastError) {
+            vscode.window.showInformationMessage("Lollms: No debug error has been captured.");
+            return;
+        }
+
+        const currentPanel = ChatPanel.currentPanel;
+        if (!currentPanel) {
+            vscode.window.showErrorMessage("Lollms: No active or last used discussion found. Please open a chat panel first.");
+            return;
+        }
+
+        const errorDetails = debugErrorManager.lastError;
+        let prompt = '';
+    
+        if (errorDetails.filePath && errorDetails.line) {
+            try {
+                const fileUri = errorDetails.filePath;
+                const relativePath = vscode.workspace.asRelativePath(fileUri, false);
+                const fileContent = await vscode.workspace.fs.readFile(fileUri);
+                const contentString = Buffer.from(fileContent).toString('utf8');
+                
+                const document = await vscode.workspace.openTextDocument(fileUri);
+                const languageId = document.languageId;
+    
+                prompt = `I'm encountering an error while debugging my project. Can you help me fix it?
+    
+**Error Message:**
+\`\`\`
+${errorDetails.message}
+\`\`\`
+    
+**Stack Trace:**
+\`\`\`
+${errorDetails.stack || 'No stack trace available.'}
+\`\`\`
+    
+The error seems to originate in the file \`${relativePath}\` at line ${errorDetails.line}.
+    
+**Here is the full content of \`${relativePath}\`:**
+\`\`\`${languageId}
+${contentString}
+\`\`\`
+    
+Please analyze the error and the full file content, then provide a complete, corrected version of the entire file.
+    
+**CRITICAL:** Your response MUST start with the line \`File: ${relativePath}\`, followed by a markdown code block containing the complete and corrected file content. Do not add any explanations before the "File:" line.`;
+    
+            } catch (e) {
+                console.error("Failed to read file from stack trace:", e);
+                prompt = ''; 
+            }
+        }
+    
+        if (!prompt) {
+            const contextContent = await contextManager.getContextContent();
+            prompt = `I'm encountering an error while debugging my project. Can you help me fix it?
+    
+**Error Message:**
+\`\`\`
+${errorDetails.message}
+\`\`\`
+`;
+    
+            if(errorDetails.stack){
+                prompt += `\n**Stack Trace:**\n\`\`\`\n${errorDetails.stack}\n\`\`\`\n`;
+            }
+            
+            prompt += `Here is the current project context which might be relevant:\n${contextContent.text}\n\nPlease analyze the error and provide a fix.`;
+        }
+
+        const userMessage: ChatMessage = {
+            id: 'user_' + Date.now().toString() + Math.random().toString(36).substring(2),
+            role: 'user',
+            content: prompt
+        };
+        
+        await currentPanel.sendMessage(userMessage);
+
         debugErrorManager.clearError();
     }));
         

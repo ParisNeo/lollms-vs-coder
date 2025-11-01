@@ -959,12 +959,6 @@
             // A 20px threshold allows for some minor visual space at the bottom
             return el.scrollHeight - el.scrollTop - el.clientHeight < 20;
         }
-
-        function updateScroll(el) {
-            if (isScrolledToBottom(el)) {
-                el.scrollTop = el.scrollHeight;
-            }
-        }
         
         messagesDiv.addEventListener('scroll', () => {
             const isGenerating = stopButton.style.display === 'flex';
@@ -1280,7 +1274,7 @@
             
             enhanceCodeBlocks(messageWrapper);
             enhanceWithCommandButtons(messageWrapper);
-            updateScroll(messagesDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
         }
         
         function updateContext(contextText) {
@@ -2005,19 +1999,27 @@
                                 const shouldScrollContainer = isScrolledToBottom(messagesDiv);
                                 const codeScroller = contentDiv.querySelector('pre');
                                 const shouldScrollCode = codeScroller ? isScrolledToBottom(codeScroller) : true;
+                                const isHtml = message.isHtml || false;
 
-                                messageDiv.dataset.originalContent = JSON.stringify(message.fullContent);
-                                const { thoughts, processedContent } = processThinkTags(message.fullContent);
+                                if (isHtml) {
+                                    contentDiv.innerHTML = DOMPurify.sanitize(message.fullContent);
+                                    messageDiv.classList.remove('assistant-message');
+                                    messageDiv.classList.add('system-message');
+                                } else {
+                                    messageDiv.dataset.originalContent = JSON.stringify(message.fullContent);
+                                    const { thoughts, processedContent } = processThinkTags(message.fullContent);
 
-                                messageDiv.querySelectorAll('.thinking-collapsible').forEach(el => el.remove());
-                                thoughts.forEach(thought => {
-                                    const details = document.createElement('details');
-                                    details.className = 'info-collapsible thinking-collapsible';
-                                    details.innerHTML = `<summary>🤔 Thinking Process</summary><div class="collapsible-content">${DOMPurify.sanitize(marked.parse(thought))}</div>`;
-                                    messageDiv.insertBefore(details, contentDiv);
-                                });
-                                
-                                contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(processedContent));
+                                    messageDiv.querySelectorAll('.thinking-collapsible').forEach(el => el.remove());
+                                    thoughts.forEach(thought => {
+                                        const details = document.createElement('details');
+                                        details.className = 'info-collapsible thinking-collapsible';
+                                        details.innerHTML = `<summary>🤔 Thinking Process</summary><div class="collapsible-content">${DOMPurify.sanitize(marked.parse(thought))}</div>`;
+                                        messageDiv.insertBefore(details, contentDiv);
+                                    });
+                                    
+                                    contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(processedContent));
+                                }
+
                                 enhanceCodeBlocks(wrapper);
                                 enhanceWithCommandButtons(wrapper);
 
@@ -2058,24 +2060,6 @@
 
                     isInspectorEnabled = message.isInspectorEnabled;
                     
-                    // Populate model selector
-                    modelSelector.innerHTML = '';
-                    const useGlobalOption = document.createElement('option');
-                    useGlobalOption.value = '';
-                    useGlobalOption.textContent = 'Default Model';
-                    modelSelector.appendChild(useGlobalOption);
-
-                    if (Array.isArray(message.models)) {
-                        message.models.forEach(model => {
-                            const option = document.createElement('option');
-                            option.value = model.id;
-                            option.textContent = model.id;
-                            modelSelector.appendChild(option);
-                        });
-                    }
-                    modelSelector.value = message.currentModel || '';
-
-
                     let hasChatContent = false;
                     if (Array.isArray(message.messages) && message.messages.length > 0) {
                         message.messages.forEach(msg => {
@@ -2096,6 +2080,24 @@
 
                     welcomeMessage.style.display = (attachmentCount > 0 || hasChatContent) ? 'none' : 'block';
                     setGeneratingState(false);
+                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                    break;
+                case 'updateModels':
+                    modelSelector.innerHTML = '';
+                    const useGlobalOption = document.createElement('option');
+                    useGlobalOption.value = '';
+                    useGlobalOption.textContent = 'Default Model';
+                    modelSelector.appendChild(useGlobalOption);
+
+                    if (Array.isArray(message.models)) {
+                        message.models.forEach(model => {
+                            const option = document.createElement('option');
+                            option.value = model.id;
+                            option.textContent = model.id;
+                            modelSelector.appendChild(option);
+                        });
+                    }
+                    modelSelector.value = message.currentModel || '';
                     break;
                 case 'resendMessage':
                     setGeneratingState(true);

@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.8",
+  "version": "0.5.9",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -99,6 +99,11 @@
         "command": "lollms-vs-coder.debugErrorWithAI",
         "title": "%command.debugErrorWithAI.title%",
         "icon": "$(lightbulb-sparkle)"
+      },
+      {
+        "command": "lollms-vs-coder.debugErrorSendToDiscussion",
+        "title": "%command.debugErrorSendToDiscussion.title%",
+        "icon": "$(send)"
       },
       {
         "command": "lollms-vs-coder.buildCodeGraph",
@@ -546,6 +551,11 @@
       "debug/toolbar": [
         {
           "command": "lollms-vs-coder.debugErrorWithAI",
+          "when": "debugState == 'stopped' && lollms:hasDebugError",
+          "group": "navigation@7"
+        },
+        {
+          "command": "lollms-vs-coder.debugErrorSendToDiscussion",
           "when": "debugState == 'stopped' && lollms:hasDebugError",
           "group": "navigation@7"
         }

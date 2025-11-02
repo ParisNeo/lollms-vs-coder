@@ -557,7 +557,7 @@
         {
           "command": "lollms-vs-coder.debugErrorSendToDiscussion",
           "when": "debugState == 'stopped' && lollms:hasDebugError",
-          "group": "navigation@7"
+          "group": "navigation@8"
         }
       ],
       "view/title": [

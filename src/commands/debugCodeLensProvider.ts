@@ -1,48 +1,53 @@
 import * as vscode from 'vscode';
 
-// A simplified interface to decouple the provider from the main extension file
-export interface DebugErrorManager {
-    lastError: { filePath?: vscode.Uri; line?: number; } | null;
+// A simplified version of the debug error manager for demonstration
+interface DebugErrorManager {
+    lastError: {
+        message: string;
+        stack?: string;
+        filePath?: vscode.Uri;
+        line?: number;
+    } | null;
     onDidChange: vscode.Event<void>;
 }
+
 
 export class DebugCodeLensProvider implements vscode.CodeLensProvider {
     private _onDidChangeCodeLenses: vscode.EventEmitter<void> = new vscode.EventEmitter<void>();
     public readonly onDidChangeCodeLenses: vscode.Event<void> = this._onDidChangeCodeLenses.event;
+    private debugErrorManager: DebugErrorManager;
 
-    constructor(private debugErrorManager: DebugErrorManager) {
-        // When the error manager signals a change (error captured or cleared), we tell VS Code to refresh CodeLenses
+    constructor(debugErrorManager: DebugErrorManager) {
+        this.debugErrorManager = debugErrorManager;
         this.debugErrorManager.onDidChange(() => {
             this._onDidChangeCodeLenses.fire();
         });
     }
 
-    public provideCodeLenses(document: vscode.TextDocument, token: vscode.CancellationToken): vscode.CodeLens[] {
-        const errorInfo = this.debugErrorManager.lastError;
-        
-        // No error, or error has no file info, so no CodeLens
-        if (!errorInfo || !errorInfo.filePath || !errorInfo.line) {
-            return [];
+    public provideCodeLenses(document: vscode.TextDocument, token: vscode.CancellationToken): vscode.CodeLens[] | Thenable<vscode.CodeLens[]> {
+        const lenses: vscode.CodeLens[] = [];
+        const error = this.debugErrorManager.lastError;
+
+        if (error && error.filePath && error.filePath.fsPath === document.uri.fsPath && error.line) {
+            const line = error.line - 1; // line is 1-based, VS Code API is 0-based
+            if (line >= 0 && line < document.lineCount) {
+                const range = document.lineAt(line).range;
+
+                const fixCommand: vscode.Command = {
+                    title: 'Lollms: Fix This Error',
+                    command: 'lollms-vs-coder.debugErrorWithAI',
+                    tooltip: 'Ask Lollms to generate a fix for this error in a new discussion.'
+                };
+                lenses.push(new vscode.CodeLens(range, fixCommand));
+
+                const sendCommand: vscode.Command = {
+                    title: 'Lollms: Send to Discussion',
+                    command: 'lollms-vs-coder.debugErrorSendToDiscussion',
+                    tooltip: 'Send this error to the current Lollms discussion.'
+                };
+                lenses.push(new vscode.CodeLens(range, sendCommand));
+            }
         }
-
-        // Check if the current document is the one with the error
-        if (document.uri.fsPath !== errorInfo.filePath.fsPath) {
-            return [];
-        }
-
-        // Line number from debug adapter is 1-based, VS Code's Position is 0-based
-        const errorLine = errorInfo.line - 1;
-        if (errorLine < 0 || errorLine >= document.lineCount) {
-            return [];
-        }
-
-        const range = document.lineAt(errorLine).range;
-        const command: vscode.Command = {
-            title: '$(lightbulb-sparkle) Lollms: Fix This Error',
-            command: 'lollms-vs-coder.debugErrorWithAI',
-            tooltip: 'Ask Lollms to analyze this error and suggest a fix.'
-        };
-
-        return [new vscode.CodeLens(range, command)];
+        return lenses;
     }
 }

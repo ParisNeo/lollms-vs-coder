@@ -124,9 +124,12 @@ class LollmsDebugAdapterTrackerFactory implements vscode.DebugAdapterTrackerFact
 
                             // Show an information message with a button
                             const fixButton = 'Fix with Lollms';
-                            vscode.window.showInformationMessage(`Lollms captured a debug error: ${exceptionText}`, fixButton).then(selection => {
+                            const sendToDiscussionButton = 'Send to Discussion';
+                            vscode.window.showInformationMessage(`Lollms captured a debug error: ${exceptionText}`, fixButton, sendToDiscussionButton).then(selection => {
                                 if (selection === fixButton) {
                                     vscode.commands.executeCommand('lollms-vs-coder.debugErrorWithAI');
+                                } else if (selection === sendToDiscussionButton) {
+                                    vscode.commands.executeCommand('lollms-vs-coder.debugErrorSendToDiscussion');
                                 }
                             });
                         }).catch(() => {
@@ -1652,12 +1655,6 @@ ${errorDetails.message}
             return;
         }
 
-        const currentPanel = ChatPanel.currentPanel;
-        if (!currentPanel) {
-            vscode.window.showErrorMessage("Lollms: No active or last used discussion found. Please open a chat panel first.");
-            return;
-        }
-
         const errorDetails = debugErrorManager.lastError;
         let prompt = '';
     
@@ -1717,13 +1714,18 @@ ${errorDetails.message}
             prompt += `Here is the current project context which might be relevant:\n${contextContent.text}\n\nPlease analyze the error and provide a fix.`;
         }
 
-        const userMessage: ChatMessage = {
-            id: 'user_' + Date.now().toString() + Math.random().toString(36).substring(2),
-            role: 'user',
-            content: prompt
-        };
-        
-        await currentPanel.sendMessage(userMessage);
+        const currentPanel = ChatPanel.currentPanel;
+        if (currentPanel) {
+            const userMessage: ChatMessage = {
+                id: 'user_' + Date.now().toString() + Math.random().toString(36).substring(2),
+                role: 'user',
+                content: prompt
+            };
+            await currentPanel.sendMessage(userMessage);
+        } else {
+            // No active panel, so create a new discussion with the prompt
+            await startDiscussionWithInitialPrompt(prompt);
+        }
 
         debugErrorManager.clearError();
     }));

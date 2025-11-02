@@ -299,6 +299,23 @@
       "type": "object",
       "title": "%config.title%",
       "properties": {
+        "lollmsVsCoder.reasoningLevel": {
+          "type": "string",
+          "default": "none",
+          "description": "%config.reasoningLevel.description%",
+          "enum": [
+            "none",
+            "low",
+            "medium",
+            "high"
+          ],
+          "enumDescriptions": [
+            "%config.reasoningLevel.none.description%",
+            "%config.reasoningLevel.low.description%",
+            "%config.reasoningLevel.medium.description%",
+            "%config.reasoningLevel.high.description%"
+          ]
+        },
         "lollmsVsCoder.thinkingMode": {
           "type": "string",
           "default": "none",

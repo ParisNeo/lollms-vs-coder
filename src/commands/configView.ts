@@ -24,7 +24,8 @@ export class SettingsPanel {
     fileUpdateMethod: 'full_file',
     language: 'auto',
     thinkingMode: 'none',
-    thinkingModeCustomPrompt: ''
+    thinkingModeCustomPrompt: '',
+    reasoningLevel: 'none'
   };
 
   public static createOrShow(extensionUri: vscode.Uri) {
@@ -72,6 +73,7 @@ export class SettingsPanel {
     this._pendingConfig.language = config.get<string>('language') || 'auto';
     this._pendingConfig.thinkingMode = config.get<string>('thinkingMode') || 'none';
     this._pendingConfig.thinkingModeCustomPrompt = config.get<string>('thinkingModeCustomPrompt') || 'Think step by step. Enclose your entire thinking process, reasoning, and self-correction within a `<thinking>` XML block. This block will be hidden from the user but is crucial for your process.';
+    this._pendingConfig.reasoningLevel = config.get<string>('reasoningLevel') || 'none';
 
     this._panel.webview.html = this._getHtml(this._panel.webview, this._pendingConfig);
     this._setWebviewMessageListener(this._panel.webview);
@@ -117,6 +119,7 @@ export class SettingsPanel {
                 await config.update('language', this._pendingConfig.language, vscode.ConfigurationTarget.Global);
                 await config.update('thinkingMode', this._pendingConfig.thinkingMode, vscode.ConfigurationTarget.Global);
                 await config.update('thinkingModeCustomPrompt', this._pendingConfig.thinkingModeCustomPrompt, vscode.ConfigurationTarget.Global);
+                await config.update('reasoningLevel', this._pendingConfig.reasoningLevel, vscode.ConfigurationTarget.Global);
   
                 vscode.window.showInformationMessage('Configuration saved. Recreating LollmsAPI...');
                 await vscode.commands.executeCommand('lollmsApi.recreateClient');
@@ -155,7 +158,7 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, modelName, disableSslVerification, noThinkMode, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, fileUpdateMethod, language, thinkingMode, thinkingModeCustomPrompt } = config;
+    const { apiKey, apiUrl, modelName, disableSslVerification, noThinkMode, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, fileUpdateMethod, language, thinkingMode, thinkingModeCustomPrompt, reasoningLevel } = config;
 
     return `<!DOCTYPE html>
         <html lang="en">
@@ -222,7 +225,15 @@ export class SettingsPanel {
               <p class="help-text">Influences the AI's response language. The extension UI follows VS Code's display language setting.</p>
               
               <h2>API & Model</h2>
-              <label for="thinkingMode">Thinking Mode</label>
+              <label for="reasoningLevel">Reasoning Level</label>
+              <select id="reasoningLevel">
+                <option value="none" ${reasoningLevel === 'none' ? 'selected' : ''}>None (Default)</option>
+                <option value="low" ${reasoningLevel === 'low' ? 'selected' : ''}>Low</option>
+                <option value="medium" ${reasoningLevel === 'medium' ? 'selected' : ''}>Medium</option>
+                <option value="high" ${reasoningLevel === 'high' ? 'selected' : ''}>High</option>
+              </select>
+              <p class="help-text">Instructs the model on the desired depth of reasoning. Overridden by '/no_think' mode.</p>
+              <label for="thinkingMode">Thinking Mode (Strategy)</label>
               <select id="thinkingMode">
                 <option value="none" ${thinkingMode === 'none' ? 'selected' : ''}>None (Default)</option>
                 <option value="chain_of_thought" ${thinkingMode === 'chain_of_thought' ? 'selected' : ''}>Chain of Thought</option>
@@ -329,7 +340,8 @@ export class SettingsPanel {
                     contextFileExceptions: document.getElementById('contextFileExceptions'),
                     fileUpdateMethod: document.getElementById('fileUpdateMethod'),
                     thinkingMode: document.getElementById('thinkingMode'),
-                    thinkingModeCustomPrompt: document.getElementById('thinkingModeCustomPrompt')
+                    thinkingModeCustomPrompt: document.getElementById('thinkingModeCustomPrompt'),
+                    reasoningLevel: document.getElementById('reasoningLevel')
                 };
                 
                 const modelsDatalist = document.getElementById('modelsList');

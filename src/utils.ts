@@ -70,6 +70,7 @@ export async function applyDiff(diffContent: string) {
 export function getProcessedSystemPrompt(promptType: 'chat' | 'agent' | 'inspector' | 'commit'): string {
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const noThinkMode = config.get<boolean>('noThinkMode') || false;
+    const reasoningLevel = config.get<string>('reasoningLevel') || 'none';
     const thinkingMode = config.get<string>('thinkingMode') || 'none';
 
     let thinkingInstructions = '';
@@ -170,6 +171,8 @@ ${updateInstructions}
 
     if (noThinkMode) {
         finalPrompt = `/no_think\n${finalPrompt}`;
+    } else if (reasoningLevel !== 'none') {
+        finalPrompt = `/reasoning_${reasoningLevel}\n${finalPrompt}`;
     }
 
     return finalPrompt ? `${finalPrompt}\n\n` : '';

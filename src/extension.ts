@@ -272,9 +272,10 @@ export async function activate(context: vscode.ExtensionContext) {
     
     context.subscriptions.push(processManager.onDidProcessChange(() => {
         processTreeProvider.refresh();
-        if (ChatPanel.currentPanel) {
-            ChatPanel.currentPanel.updateGeneratingState();
-        }
+        // Update all active chat panels, as any of them could be related to a process.
+        ChatPanel.panels.forEach(panel => {
+            panel.updateGeneratingState();
+        });
     }));
 
     const chatPromptTreeProvider = new ChatPromptTreeProvider(promptManager);
@@ -413,6 +414,68 @@ export async function activate(context: vscode.ExtensionContext) {
         if (picked && picked.uri.toString() !== activeWorkspaceFolder?.uri.toString()) {
             await switchActiveWorkspace(picked);
         }
+    }));
+
+    const sendSelection = async (createNew: boolean) => {
+        if (!activeWorkspaceFolder || !discussionManager) {
+            vscode.window.showInformationMessage(vscode.l10n.t("info.openFolderToUseChat"));
+            return;
+        }
+
+        const selectedText = await vscode.env.clipboard.readText();
+        if (!selectedText.trim()) {
+            vscode.window.showWarningMessage("No text selected in terminal (must be copied to clipboard first).");
+            return;
+        }
+
+        let targetDiscussion: Discussion | null = null;
+        let targetPanel: ChatPanel | undefined;
+
+        if (createNew) {
+            // New Discussion
+            targetDiscussion = discussionManager.createNewDiscussion();
+            await discussionManager.saveDiscussion(targetDiscussion);
+            discussionTreeProvider?.refresh();
+            targetPanel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, targetDiscussion.id);
+            setupChatPanel(targetPanel);
+            await targetPanel.loadDiscussion();
+        } else {
+            // Last Discussion
+            const allDiscussions = await discussionManager.getAllDiscussions();
+            const lastDiscussion = allDiscussions[0];
+            if (!lastDiscussion) {
+                vscode.window.showInformationMessage("No previous discussion found. Starting a new one.");
+                return sendSelection(true); // Fallback to creating new
+            }
+            targetDiscussion = lastDiscussion;
+            targetPanel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, targetDiscussion.id);
+            setupChatPanel(targetPanel);
+            await targetPanel.loadDiscussion();
+        }
+
+        if (targetDiscussion && targetPanel) {
+            const userMessageContent = `The user selected the following text from their terminal:
+\`\`\`
+${selectedText}
+\`\`\`
+Please analyze this output (e.g., error log, script output, or configuration text) and assist the user based on the context.`;
+            
+            const userMessage: ChatMessage = {
+                id: 'user_' + Date.now().toString() + Math.random().toString(36).substring(2),
+                role: 'user',
+                content: userMessageContent
+            };
+            
+            targetPanel.sendMessage(userMessage);
+        }
+    };
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.sendSelectionToNewDiscussion', async () => {
+        await sendSelection(true);
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.sendSelectionToLastDiscussion', async () => {
+        await sendSelection(false);
     }));
     
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.startChat', () => {
@@ -1582,70 +1645,42 @@ export async function activate(context: vscode.ExtensionContext) {
         }
     
         const errorDetails = debugErrorManager.lastError;
-        let prompt = '';
+        let prompt = `I'm encountering an error while debugging my project. Can you help me fix it?\n\n**Error Message:**\n\`\`\`\n${errorDetails.message}\n\`\`\`\n\n**Full Stack Trace:**\n\`\`\`\n${errorDetails.stack || 'No stack trace available.'}\n\`\`\``;
     
-        // Use the pre-parsed file info directly from the error manager
         if (errorDetails.filePath && errorDetails.line) {
-            try {
-                const fileUri = errorDetails.filePath;
-                const relativePath = vscode.workspace.asRelativePath(fileUri, false);
-                const fileContent = await vscode.workspace.fs.readFile(fileUri);
-                const contentString = Buffer.from(fileContent).toString('utf8');
-                
-                // Open the document in the background to find its language ID
-                const document = await vscode.workspace.openTextDocument(fileUri);
-                const languageId = document.languageId;
+            const fileUri = errorDetails.filePath;
+            const relativePath = vscode.workspace.asRelativePath(fileUri, false);
+            prompt += `\n\nThe error seems to originate in the file \`${relativePath}\` at line ${errorDetails.line}.`;
     
-                prompt = `I'm encountering an error while debugging my project. Can you help me fix it?
-    
-**Error Message:**
-\`\`\`
-${errorDetails.message}
-\`\`\`
-    
-**Stack Trace:**
-\`\`\`
-${errorDetails.stack || 'No stack trace available.'}
-\`\`\`
-    
-The error seems to originate in the file \`${relativePath}\` at line ${errorDetails.line}.
-    
-**Here is the full content of \`${relativePath}\`:**
-\`\`\`${languageId}
-${contentString}
-\`\`\`
-    
-Please analyze the error and the full file content, then provide a complete, corrected version of the entire file.
-    
-**CRITICAL:** Your response MUST start with the line \`File: ${relativePath}\`, followed by a markdown code block containing the complete and corrected file content. Do not add any explanations before the "File:" line.`;
-    
-            } catch (e) {
-                console.error("Failed to read file from stack trace:", e);
-                prompt = ''; // Reset prompt to trigger the fallback logic
+            let fileIsInContext = false;
+            if (contextStateProvider) {
+                const fileState = contextStateProvider.getStateForUri(fileUri);
+                if (fileState === 'included') {
+                    fileIsInContext = true;
+                }
             }
-        }
     
-        // Fallback if file info was not available or reading failed
-        if (!prompt) {
-            const contextContent = await contextManager.getContextContent();
-            prompt = `I'm encountering an error while debugging my project. Can you help me fix it?
+            if (fileIsInContext) {
+                prompt += ` The file \`${relativePath}\` is already included in your context. Please analyze the error and provide a fix.`;
+            } else {
+                try {
+                    const fileContent = await vscode.workspace.fs.readFile(fileUri);
+                    const contentString = Buffer.from(fileContent).toString('utf8');
+                    const document = await vscode.workspace.openTextDocument(fileUri);
+                    const languageId = document.languageId;
     
-**Error Message:**
-\`\`\`
-${errorDetails.message}
-\`\`\`
-`;
-    
-            if(errorDetails.stack){
-                prompt += `\n**Stack Trace:**\n\`\`\`\n${errorDetails.stack}\n\`\`\`\n`;
+                    prompt += `\n\n**Here is the full content of \`${relativePath}\` for your analysis:**\n\`\`\`${languageId}\n${contentString}\n\`\`\`\n\nPlease analyze the error and the file content, then provide a fix.`;
+                } catch (e) {
+                    console.error("Failed to read file from stack trace for debug prompt:", e);
+                    prompt += `\n\nI was unable to read the content of the file. Please provide a general analysis based on the error and stack trace.`;
+                }
             }
-            
-            prompt += `Here is the current project context which might be relevant:\n${contextContent.text}\n\nPlease analyze the error and provide a fix.`;
+        } else {
+             const contextContent = await contextManager.getContextContent();
+             prompt += `\n\nHere is the current project context which might be relevant:\n${contextContent.text}\n\nPlease analyze the error and provide a fix.`;
         }
     
         await startDiscussionWithInitialPrompt(prompt);
-    
-        // Clear the error after sending it to the AI
         debugErrorManager.clearError();
     }));
 
@@ -1656,62 +1691,39 @@ ${errorDetails.message}
         }
 
         const errorDetails = debugErrorManager.lastError;
-        let prompt = '';
+        let prompt = `I'm encountering an error while debugging my project. Can you help me fix it?\n\n**Error Message:**\n\`\`\`\n${errorDetails.message}\n\`\`\`\n\n**Full Stack Trace:**\n\`\`\`\n${errorDetails.stack || 'No stack trace available.'}\n\`\`\``;
     
         if (errorDetails.filePath && errorDetails.line) {
-            try {
-                const fileUri = errorDetails.filePath;
-                const relativePath = vscode.workspace.asRelativePath(fileUri, false);
-                const fileContent = await vscode.workspace.fs.readFile(fileUri);
-                const contentString = Buffer.from(fileContent).toString('utf8');
-                
-                const document = await vscode.workspace.openTextDocument(fileUri);
-                const languageId = document.languageId;
+            const fileUri = errorDetails.filePath;
+            const relativePath = vscode.workspace.asRelativePath(fileUri, false);
+            prompt += `\n\nThe error seems to originate in the file \`${relativePath}\` at line ${errorDetails.line}.`;
     
-                prompt = `I'm encountering an error while debugging my project. Can you help me fix it?
-    
-**Error Message:**
-\`\`\`
-${errorDetails.message}
-\`\`\`
-    
-**Stack Trace:**
-\`\`\`
-${errorDetails.stack || 'No stack trace available.'}
-\`\`\`
-    
-The error seems to originate in the file \`${relativePath}\` at line ${errorDetails.line}.
-    
-**Here is the full content of \`${relativePath}\`:**
-\`\`\`${languageId}
-${contentString}
-\`\`\`
-    
-Please analyze the error and the full file content, then provide a complete, corrected version of the entire file.
-    
-**CRITICAL:** Your response MUST start with the line \`File: ${relativePath}\`, followed by a markdown code block containing the complete and corrected file content. Do not add any explanations before the "File:" line.`;
-    
-            } catch (e) {
-                console.error("Failed to read file from stack trace:", e);
-                prompt = ''; 
+            let fileIsInContext = false;
+            if (contextStateProvider) {
+                const fileState = contextStateProvider.getStateForUri(fileUri);
+                if (fileState === 'included') {
+                    fileIsInContext = true;
+                }
             }
-        }
     
-        if (!prompt) {
-            const contextContent = await contextManager.getContextContent();
-            prompt = `I'm encountering an error while debugging my project. Can you help me fix it?
+            if (fileIsInContext) {
+                prompt += ` The file \`${relativePath}\` is already included in your context. Please analyze the error and provide a fix.`;
+            } else {
+                try {
+                    const fileContent = await vscode.workspace.fs.readFile(fileUri);
+                    const contentString = Buffer.from(fileContent).toString('utf8');
+                    const document = await vscode.workspace.openTextDocument(fileUri);
+                    const languageId = document.languageId;
     
-**Error Message:**
-\`\`\`
-${errorDetails.message}
-\`\`\`
-`;
-    
-            if(errorDetails.stack){
-                prompt += `\n**Stack Trace:**\n\`\`\`\n${errorDetails.stack}\n\`\`\`\n`;
+                    prompt += `\n\n**Here is the full content of \`${relativePath}\` for your analysis:**\n\`\`\`${languageId}\n${contentString}\n\`\`\`\n\nPlease analyze the error and the file content, then provide a fix.`;
+                } catch (e) {
+                    console.error("Failed to read file from stack trace for debug prompt:", e);
+                    prompt += `\n\nI was unable to read the content of the file. Please provide a general analysis based on the error and stack trace.`;
+                }
             }
-            
-            prompt += `Here is the current project context which might be relevant:\n${contextContent.text}\n\nPlease analyze the error and provide a fix.`;
+        } else {
+             const contextContent = await contextManager.getContextContent();
+             prompt += `\n\nHere is the current project context which might be relevant:\n${contextContent.text}\n\nPlease analyze the error and provide a fix.`;
         }
 
         const currentPanel = ChatPanel.currentPanel;
@@ -1723,7 +1735,6 @@ ${errorDetails.message}
             };
             await currentPanel.sendMessage(userMessage);
         } else {
-            // No active panel, so create a new discussion with the prompt
             await startDiscussionWithInitialPrompt(prompt);
         }
 

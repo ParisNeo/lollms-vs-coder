@@ -283,6 +283,16 @@
         "command": "lollms-vs-coder.resetContextSelection",
         "title": "%command.resetContextSelection.title%",
         "icon": "$(clear-all)"
+      },
+      {
+        "command": "lollms-vs-coder.sendSelectionToNewDiscussion",
+        "title": "%command.sendSelectionToNewDiscussion.title%",
+        "icon": "$(comment-add)"
+      },
+      {
+        "command": "lollms-vs-coder.sendSelectionToLastDiscussion",
+        "title": "%command.sendSelectionToLastDiscussion.title%",
+        "icon": "$(reply)"
       }
     ],
     "configuration": {
@@ -526,6 +536,23 @@
           "group": "1_modification"
         }
       ],
+      "terminal/context": [
+        {
+          "submenu": "lollms-vs-coder.terminalSelectionSubmenu",
+          "when": "terminalHasSelection",
+          "group": "navigation"
+        }
+      ],
+      "lollms-vs-coder.terminalSelectionSubmenu": [
+        {
+          "command": "lollms-vs-coder.sendSelectionToNewDiscussion",
+          "group": "1_send"
+        },
+        {
+          "command": "lollms-vs-coder.sendSelectionToLastDiscussion",
+          "group": "1_send"
+        }
+      ],
       "lollms-vs-coder.setContextSubmenu": [
         {
           "command": "lollms-vs-coder.setContextIncluded",
@@ -701,6 +728,10 @@
       {
         "id": "lollms-vs-coder.setContextSubmenu",
         "label": "%menu.lollmsAIContext.title%"
+      },
+      {
+        "id": "lollms-vs-coder.terminalSelectionSubmenu",
+        "label": "%menu.lollmsTerminalSelection.title%"
       }
     ]
   },

@@ -437,6 +437,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
   
         const onChunk = (chunk: string) => {
           if (controller.signal.aborted) return;
+          (assistantPlaceholder.content as string) += chunk;
           this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk: chunk });
         };
   
@@ -465,22 +466,41 @@ Your task is to re-analyze your previous code suggestion in light of this new er
       } catch (error: any) {
         try {
             const isAbortError = error.name === 'AbortError' || (error instanceof Error && error.message.includes('aborted'));
-            const errorMessage = isAbortError ? 'Generation stopped by user.' : (error instanceof Error ? error.message : 'An unknown error occurred');
-            this._lastApiResponse = errorMessage;
+            const isTimeoutError = error instanceof Error && error.message.includes('timed out');
 
-            const errorContent = `<p style="color:var(--vscode-errorForeground);">❌ **${isAbortError ? 'Cancelled' : 'API Error'}:**</p><pre style="background-color:var(--vscode-textCodeBlock-background); padding:10px; border-radius:4px; white-space:pre-wrap;">${errorMessage}</pre>`;
+            if (isTimeoutError) {
+                this._lastApiResponse = error.message;
 
-            this._panel.webview.postMessage({ 
-                command: 'finalizeMessage', 
-                id: assistantMessageId, 
-                fullContent: errorContent,
-                isHtml: true,
-                tokenCount: 0
-            });
+                // Save the partially streamed content to the discussion history if there is any
+                if (assistantPlaceholder.content && (assistantPlaceholder.content as string).trim() !== '') {
+                    await this.addMessageToDiscussion(assistantPlaceholder);
+                }
 
-            assistantPlaceholder.content = errorContent;
-            assistantPlaceholder.role = 'system';
-            await this.addMessageToDiscussion(assistantPlaceholder);
+                // Add the timeout system message
+                const timeoutMessage: ChatMessage = {
+                    role: 'system',
+                    content: `❌ **API Error:** ${error.message}`
+                };
+                await this.addMessageToDiscussion(timeoutMessage);
+            } else {
+                // For user cancellation or other errors, replace the message.
+                const errorMessage = isAbortError ? 'Generation stopped by user.' : (error instanceof Error ? error.message : 'An unknown error occurred');
+                this._lastApiResponse = errorMessage;
+
+                const errorContent = `<p style="color:var(--vscode-errorForeground);">❌ **${isAbortError ? 'Cancelled' : 'API Error'}:**</p><pre style="background-color:var(--vscode-textCodeBlock-background); padding:10px; border-radius:4px; white-space:pre-wrap;">${errorMessage}</pre>`;
+
+                this._panel.webview.postMessage({ 
+                    command: 'finalizeMessage', 
+                    id: assistantMessageId, 
+                    fullContent: errorContent,
+                    isHtml: true,
+                    tokenCount: 0
+                });
+
+                assistantPlaceholder.content = errorContent;
+                assistantPlaceholder.role = 'system';
+                await this.addMessageToDiscussion(assistantPlaceholder);
+            }
         } catch (secondaryError) {
             console.error("Error while handling initial API error:", secondaryError);
         }

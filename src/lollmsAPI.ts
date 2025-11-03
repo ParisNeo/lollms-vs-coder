@@ -270,7 +270,11 @@ export class LollmsAPI {
 
     const controller = new AbortController();
     const timeoutDuration = vscode.workspace.getConfiguration('lollmsVsCoder').get<number>('requestTimeout') || 600000;
-    const timeout = setTimeout(() => controller.abort(), timeoutDuration);
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+    }, timeoutDuration);
 
     if (signal) {
       signal.onabort = () => controller.abort();
@@ -358,14 +362,14 @@ export class LollmsAPI {
         return data.choices?.[0]?.message?.content || '';
       }
     } catch (error) {
-      if (error instanceof AbortError) {
-        if (signal?.aborted) {
-          throw error; // Propagate user-initiated abort
-        } else {
-          throw new Error(`Request to Lollms API timed out after ${timeoutDuration / 1000} seconds.`);
+        if (error instanceof AbortError) {
+            if (timedOut) {
+              throw new Error(`Request to Lollms API timed out after ${timeoutDuration / 1000} seconds.`);
+            }
+            // If not timedOut, it must be an external abort signal
+            throw error;
         }
-      }
-      throw error;
+        throw error;
     } finally {
       clearTimeout(timeout);
     }

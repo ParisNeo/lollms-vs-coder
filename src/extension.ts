@@ -20,7 +20,6 @@ import { PromptBuilderPanel, parsePlaceholders } from './commands/promptBuilderP
 import { LollmsCodeActionProvider } from './commands/codeActions';
 import { LollmsInlineCompletionProvider } from './commands/inlineSuggestions';
 import { AgentManager } from './agentManager';
-import { InlineDiffProvider } from './commands/inlineDiffProvider';
 import { InfoPanel } from './commands/infoPanel';
 import { CustomActionModal } from './commands/customActionModal';
 import * as https from 'https';
@@ -257,6 +256,29 @@ export async function activate(context: vscode.ExtensionContext) {
         disableSslVerification: config.get<boolean>('disableSslVerification') || false
     });
 
+    const originalContentProvider = new (class implements vscode.TextDocumentContentProvider {
+        private originalContent = new Map<string, string>();
+        private onDidChangeEmitter = new vscode.EventEmitter<vscode.Uri>();
+        readonly onDidChange = this.onDidChangeEmitter.event;
+
+        provideTextDocumentContent(uri: vscode.Uri): string {
+            return this.originalContent.get(uri.toString()) || '';
+        }
+
+        set(uri: vscode.Uri, content: string) {
+            const originalUri = uri.with({ scheme: 'lollms-original' });
+            this.originalContent.set(originalUri.toString(), content);
+            this.onDidChangeEmitter.fire(originalUri);
+        }
+
+        delete(uri: vscode.Uri) {
+            const originalUri = uri.with({ scheme: 'lollms-original' });
+            this.originalContent.delete(originalUri.toString());
+            this.onDidChangeEmitter.fire(originalUri);
+        }
+    })();
+    context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider('lollms-original', originalContentProvider));
+
     const contextManager = new ContextManager(context, lollmsAPI);
     const scriptRunner = new ScriptRunner(pythonExtApi);
     const promptManager = new PromptManager(context.globalStorageUri);
@@ -287,15 +309,9 @@ export async function activate(context: vscode.ExtensionContext) {
     const skillsTreeProvider = new SkillsTreeProvider(skillsManager);
     context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsSkillsView', skillsTreeProvider));
 
-    const inlineDiffProvider = new InlineDiffProvider();
-    context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, inlineDiffProvider));
-    
     const debugCodeLensProvider = new DebugCodeLensProvider(debugErrorManager);
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, debugCodeLensProvider));
     
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.acceptDiff', () => inlineDiffProvider.accept()));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.rejectDiff', () => inlineDiffProvider.reject()));
-
     context.subscriptions.push(
         vscode.languages.registerCodeActionsProvider('*', 
             new LollmsCodeActionProvider(promptManager), {
@@ -754,7 +770,19 @@ Please analyze this output (e.g., error log, script output, or configuration tex
                 }
     
                 const modifiedCode = match[1];
-                inlineDiffProvider.showDiff(editor, editor.selection, modifiedCode);
+                
+                const document = editor.document;
+                originalContentProvider.set(document.uri, document.getText());
+
+                await editor.edit(editBuilder => {
+                    editBuilder.replace(editor.selection, modifiedCode);
+                });
+
+                const originalUri = document.uri.with({ scheme: 'lollms-original' });
+                const modifiedUri = document.uri;
+
+                const title = `${path.basename(document.fileName)} (Original) ↔ ${path.basename(document.fileName)} (AI Suggestion)`;
+                await vscode.commands.executeCommand('vscode.diff', originalUri, modifiedUri, title);
             }
         });
     }));
@@ -1276,15 +1304,39 @@ Please analyze this output (e.g., error log, script output, or configuration tex
         }
         const fileUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, filePath);
     
+        let originalContent = '';
+        let fileExists = true;
         try {
-            const parentUri = vscode.Uri.joinPath(fileUri, '..');
-            await vscode.workspace.fs.createDirectory(parentUri);
-            
-            // Write the file directly instead of using the diff provider
-            await vscode.workspace.fs.writeFile(fileUri, Buffer.from(content, 'utf8'));
+            const fileContentBytes = await vscode.workspace.fs.readFile(fileUri);
+            originalContent = Buffer.from(fileContentBytes).toString('utf8');
+        } catch (error) {
+            fileExists = false;
+        }
+    
+        originalContentProvider.set(fileUri, originalContent);
+    
+        try {
+            const edit = new vscode.WorkspaceEdit();
+            if (fileExists) {
+                const document = await vscode.workspace.openTextDocument(fileUri);
+                const lastLine = document.lineAt(document.lineCount - 1);
+                const fullRange = new vscode.Range(new vscode.Position(0, 0), lastLine.range.end);
+                edit.replace(fileUri, fullRange, content);
+            } else {
+                edit.createFile(fileUri);
+                edit.insert(fileUri, new vscode.Position(0, 0), content);
+            }
+            const success = await vscode.workspace.applyEdit(edit);
+    
+            if (!success) {
+                throw new Error('VS Code failed to apply the edit.');
+            }
             
             vscode.window.showInformationMessage(vscode.l10n.t('info.applySuccess', '✅ Successfully applied changes to {0}', filePath));
-            await vscode.window.showTextDocument(fileUri);
+            
+            const originalUriForDiff = fileUri.with({ scheme: 'lollms-original' });
+            const title = `${path.basename(fileUri.path)} (Original) ↔ ${path.basename(fileUri.path)} (AI Suggestion)`;
+            await vscode.commands.executeCommand('vscode.diff', originalUriForDiff, fileUri, title);
     
         } catch (error: any) {
             vscode.window.showErrorMessage(vscode.l10n.t('error.failedToApplyFileContent', 'Failed to apply file content: {0}', error.message));
@@ -1292,7 +1344,22 @@ Please analyze this output (e.g., error log, script output, or configuration tex
     }));
     
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyPatchContent', async (filePath: string, patchContent: string) => {
+        if (!activeWorkspaceFolder){
+            vscode.window.showErrorMessage('No active workspace folder.');
+            return;
+        }
         try {
+            const fileUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, filePath);
+            let originalContent = '';
+            try {
+                const fileContentBytes = await vscode.workspace.fs.readFile(fileUri);
+                originalContent = Buffer.from(fileContentBytes).toString('utf8');
+            } catch (error) {
+                vscode.window.showErrorMessage(`Cannot apply patch: file ${filePath} not found.`);
+                return;
+            }
+            originalContentProvider.set(fileUri, originalContent);
+
             let finalPatch = patchContent;
             if (!patchContent.trim().startsWith('--- a/')) {
                 finalPatch = `--- a/${filePath}\n+++ b/${filePath}\n${patchContent}`;
@@ -1300,11 +1367,10 @@ Please analyze this output (e.g., error log, script output, or configuration tex
     
             await applyDiff(finalPatch);
             vscode.window.showInformationMessage(vscode.l10n.t('info.patchApplySuccess', filePath));
-    
-            if (vscode.workspace.workspaceFolders) {
-                 const fileUri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, filePath);
-                 await vscode.window.showTextDocument(fileUri);
-            }
+
+            const originalUriForDiff = fileUri.with({ scheme: 'lollms-original' });
+            const title = `${path.basename(fileUri.path)} (Original) ↔ ${path.basename(fileUri.path)} (Patched)`;
+            await vscode.commands.executeCommand('vscode.diff', originalUriForDiff, fileUri, title);
     
         } catch (error: any) {
             vscode.window.showErrorMessage(vscode.l10n.t('error.failedToApplyPatch', error.message));

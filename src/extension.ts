@@ -1224,6 +1224,51 @@ Please analyze this output (e.g., error log, script output, or configuration tex
         }
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyAllFiles', async (updates: {filePath: string, content: string}[]) => {
+        if (!activeWorkspaceFolder) {
+            vscode.window.showErrorMessage(vscode.l10n.t('error.openWorkspaceToApplyChanges'));
+            return;
+        }
+        if (!updates || !Array.isArray(updates)) {
+            // This is an internal error, no need to localize heavily.
+            vscode.window.showErrorMessage('Invalid updates for "Apply All".');
+            return;
+        }
+
+        let lastFileUri: vscode.Uri | undefined;
+        let successCount = 0;
+
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: vscode.l10n.t('progress.applyingAllFiles', "Lollms: Applying all file changes..."),
+            cancellable: false
+        }, async (progress) => {
+            for (const update of updates) {
+                const { filePath, content } = update;
+                progress.report({ message: `Applying to ${filePath}` });
+                const fileUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, filePath);
+                try {
+                    const parentUri = vscode.Uri.joinPath(fileUri, '..');
+                    await vscode.workspace.fs.createDirectory(parentUri);
+                    await vscode.workspace.fs.writeFile(fileUri, Buffer.from(content, 'utf8'));
+                    successCount++;
+                    lastFileUri = fileUri;
+                } catch (error: any) {
+                    vscode.window.showErrorMessage(vscode.l10n.t('error.failedToApplyMultiple', 'Failed to apply changes to {0}: {1}', filePath, error.message));
+                }
+            }
+        });
+
+        if (successCount > 0) {
+            vscode.window.showInformationMessage(vscode.l10n.t('info.applySuccessMultiple', '✅ Successfully applied changes to {0} files.', successCount));
+        }
+        
+        if (lastFileUri) {
+            // Open the last successfully modified file for review
+            await vscode.window.showTextDocument(lastFileUri);
+        }
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string) => {
         if (!activeWorkspaceFolder) {
             vscode.window.showErrorMessage(vscode.l10n.t('error.openWorkspaceToApplyChanges'));
@@ -1235,27 +1280,14 @@ Please analyze this output (e.g., error log, script output, or configuration tex
             const parentUri = vscode.Uri.joinPath(fileUri, '..');
             await vscode.workspace.fs.createDirectory(parentUri);
             
-            let document: vscode.TextDocument;
-            try {
-                document = await vscode.workspace.openTextDocument(fileUri);
-            } catch (error) {
-                const edit = new vscode.WorkspaceEdit();
-                edit.createFile(fileUri, { ignoreIfExists: true });
-                await vscode.workspace.applyEdit(edit);
-                document = await vscode.workspace.openTextDocument(fileUri);
-            }
-
-            const editor = await vscode.window.showTextDocument(document);
-
-            const fullRange = new vscode.Range(
-                document.positionAt(0),
-                document.positionAt(document.getText().length)
-            );
-
-            await inlineDiffProvider.showDiff(editor, fullRange, content);
-
+            // Write the file directly instead of using the diff provider
+            await vscode.workspace.fs.writeFile(fileUri, Buffer.from(content, 'utf8'));
+            
+            vscode.window.showInformationMessage(vscode.l10n.t('info.applySuccess', '✅ Successfully applied changes to {0}', filePath));
+            await vscode.window.showTextDocument(fileUri);
+    
         } catch (error: any) {
-            vscode.window.showErrorMessage(vscode.l10n.t('error.failedToApplyFileContent', error.message));
+            vscode.window.showErrorMessage(vscode.l10n.t('error.failedToApplyFileContent', 'Failed to apply file content: {0}', error.message));
         }
     }));
     
@@ -1279,6 +1311,45 @@ Please analyze this output (e.g., error log, script output, or configuration tex
         }
     }));
     
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.renameFile', async (originalPath: string, newPath: string) => {
+        if (!activeWorkspaceFolder) {
+            vscode.window.showErrorMessage('No active workspace folder.');
+            return;
+        }
+        const originalUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, originalPath);
+        const newUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, newPath);
+    
+        try {
+            await vscode.workspace.fs.rename(originalUri, newUri, { overwrite: true });
+            vscode.window.showInformationMessage(`Successfully renamed/moved '${originalPath}' to '${newPath}'.`);
+        } catch (error: any) {
+            vscode.window.showErrorMessage(`Failed to rename file: ${error.message}`);
+        }
+    }));
+    
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deleteFile', async (filePath: string) => {
+        if (!activeWorkspaceFolder) {
+            vscode.window.showErrorMessage('No active workspace folder.');
+            return;
+        }
+        const fileUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, filePath);
+    
+        const confirm = await vscode.window.showWarningMessage(
+            `Are you sure you want to delete '${filePath}'? This will move the file to the Trash.`,
+            { modal: true },
+            'Delete'
+        );
+    
+        if (confirm === 'Delete') {
+            try {
+                await vscode.workspace.fs.delete(fileUri, { useTrash: true });
+                vscode.window.showInformationMessage(`Successfully deleted '${filePath}'.`);
+            } catch (error: any) {
+                vscode.window.showErrorMessage(`Failed to delete file: ${error.message}`);
+            }
+        }
+    }));
+
     const saveCodeCommand = vscode.commands.registerCommand('lollms-vs-coder.saveCodeToFile', async (code: string, language?: string) => {
         const languageToFileFilter = (lang?: string): { [name: string]: string[] } => {
             if (!lang) return { [vscode.l10n.t('filter.allFiles')]: ['*'] };

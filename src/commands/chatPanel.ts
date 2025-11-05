@@ -276,8 +276,10 @@ export class ChatPanel {
     let html = Buffer.from(templateContent).toString('utf8');
 
     const codiconsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'node_modules', '@vscode/codicons', 'dist', 'codicon.css'));
-    
+    const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'commands', 'chatPanel.css'));
+
     html = html.replace(/{{codiconsUri}}/g, codiconsUri.toString());
+    html = html.replace(/{{cssUri}}/g, cssUri.toString());
     html = html.replace(/{{welcomeTitle}}/g, vscode.l10n.t("welcome.title"));
     html = html.replace(/{{welcomeItem1}}/g, vscode.l10n.t("welcome.item1"));
     html = html.replace(/{{welcomeItem2}}/g, vscode.l10n.t("welcome.item2"));
@@ -678,6 +680,12 @@ Your task is to re-analyze your previous code suggestion in light of this new er
           break;
         case 'applyAllFiles':
             vscode.commands.executeCommand('lollms-vs-coder.applyAllFiles', message.updates);
+            break;
+        case 'renameFile':
+            vscode.commands.executeCommand('lollms-vs-coder.renameFile', message.originalPath, message.newPath);
+            break;
+        case 'deleteFile':
+            vscode.commands.executeCommand('lollms-vs-coder.deleteFile', message.filePath);
             break;
         case 'showWarning':
             vscode.window.showWarningMessage(message.message);

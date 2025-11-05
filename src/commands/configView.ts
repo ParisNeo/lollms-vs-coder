@@ -9,6 +9,7 @@ export class SettingsPanel {
     apiKey: '',
     apiUrl: '',
     modelName: '',
+    developerName: '',
     disableSslVerification: false,
     noThinkMode: false,
     requestTimeout: 600000,
@@ -57,6 +58,7 @@ export class SettingsPanel {
     this._pendingConfig.apiKey = config.get<string>('apiKey')?.trim() || '';
     this._pendingConfig.apiUrl = config.get<string>('apiUrl') || 'http://localhost:9642';
     this._pendingConfig.modelName = config.get<string>('modelName') || '';
+    this._pendingConfig.developerName = config.get<string>('developerName') || '';
     this._pendingConfig.disableSslVerification = config.get<boolean>('disableSslVerification') || false;
     this._pendingConfig.noThinkMode = config.get<boolean>('noThinkMode') || false;
     this._pendingConfig.requestTimeout = config.get<number>('requestTimeout') || 600000;
@@ -103,6 +105,7 @@ export class SettingsPanel {
                 await config.update('apiKey', this._pendingConfig.apiKey, vscode.ConfigurationTarget.Global);
                 await config.update('apiUrl', this._pendingConfig.apiUrl, vscode.ConfigurationTarget.Global);
                 await config.update('modelName', this._pendingConfig.modelName, vscode.ConfigurationTarget.Global);
+                await config.update('developerName', this._pendingConfig.developerName, vscode.ConfigurationTarget.Global);
                 await config.update('disableSslVerification', this._pendingConfig.disableSslVerification, vscode.ConfigurationTarget.Global);
                 await config.update('noThinkMode', this._pendingConfig.noThinkMode, vscode.ConfigurationTarget.Global);
                 await config.update('requestTimeout', this._pendingConfig.requestTimeout, vscode.ConfigurationTarget.Global);
@@ -158,7 +161,7 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, modelName, disableSslVerification, noThinkMode, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, fileUpdateMethod, language, thinkingMode, thinkingModeCustomPrompt, reasoningLevel } = config;
+    const { apiKey, apiUrl, modelName, developerName, disableSslVerification, noThinkMode, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, fileUpdateMethod, language, thinkingMode, thinkingModeCustomPrompt, reasoningLevel } = config;
 
     return `<!DOCTYPE html>
         <html lang="en">
@@ -212,6 +215,9 @@ export class SettingsPanel {
               <h1>Lollms VS Coder Settings</h1>
 
               <h2>General</h2>
+              <label for="developerName">Developer Name</label>
+              <input type="text" id="developerName" value="${developerName}" placeholder="Your name for AI personalization" />
+              <p class="help-text">Used to replace the <code>{{developer_name}}</code> placeholder in prompts.</p>
               <label for="language">Language</label>
               <select id="language">
                 <option value="auto" ${language === 'auto' ? 'selected' : ''}>Automatic (Follow VS Code)</option>
@@ -299,10 +305,10 @@ export class SettingsPanel {
               <h2>Personas / System Prompts</h2>
               <label for="chatPersona">Chat Mode Persona</label>
               <textarea id="chatPersona" rows="6" placeholder="e.g., You are a helpful AI assistant.">${chatPersona}</textarea>
-              <p class="help-text">Define the AI's persona and rules for the main chat. Supports placeholders: <code>{{date}}</code>, <code>{{os}}</code>.</p>
+              <p class="help-text">Define the AI's persona and rules for the main chat. Supports placeholders: <code>{{date}}</code>, <code>{{time}}</code>, <code>{{os}}</code>, <code>{{developer_name}}</code>.</p>
               <label for="agentPersona">Agent Mode Persona</label>
               <textarea id="agentPersona" rows="4" placeholder="e.g., You are a sub-agent that follows instructions.">${agentPersona}</textarea>
-              <p class="help-text">Define the persona for AI agents performing autonomous tasks. Supports placeholders: <code>{{date}}</code>, <code>{{os}}</code>.</p>
+              <p class="help-text">Define the persona for AI agents performing autonomous tasks. Supports placeholders: <code>{{date}}</code>, <code>{{time}}</code>, <code>{{os}}</code>, <code>{{developer_name}}</code>.</p>
               <label for="codeInspectorPersona">Code Inspector Persona</label>
               <textarea id="codeInspectorPersona" rows="4">${codeInspectorPersona}</textarea>
               <p class="help-text">Customize the persona of the code inspector.</p>
@@ -326,6 +332,7 @@ export class SettingsPanel {
                     apiKey: document.getElementById('apiKey'),
                     apiUrl: document.getElementById('apiUrl'),
                     modelName: document.getElementById('modelSelect'),
+                    developerName: document.getElementById('developerName'),
                     requestTimeout: document.getElementById('requestTimeout'),
                     disableSslVerification: document.getElementById('disableSsl'),
                     noThinkMode: document.getElementById('noThinkMode'),

@@ -72,6 +72,7 @@ export function getProcessedSystemPrompt(promptType: 'chat' | 'agent' | 'inspect
     const noThinkMode = config.get<boolean>('noThinkMode') || false;
     const reasoningLevel = config.get<string>('reasoningLevel') || 'none';
     const thinkingMode = config.get<string>('thinkingMode') || 'none';
+    const developerName = config.get<string>('developerName') || 'Developer';
 
     let thinkingInstructions = '';
 
@@ -165,7 +166,8 @@ ${updateInstructions}
         .replace(/{{date}}/g, date)
         .replace(/{{time}}/g, time)
         .replace(/{{datetime}}/g, `${date} ${time}`)
-        .replace(/{{os}}/g, platform);
+        .replace(/{{os}}/g, platform)
+        .replace(/{{developer_name}}/g, developerName);
 
     let finalPrompt = processedPrompt.trim();
 

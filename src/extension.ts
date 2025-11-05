@@ -1259,6 +1259,57 @@ Please analyze this output (e.g., error log, script output, or configuration tex
         }
     }));
     
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyAllFiles', async (updates: {filePath: string, content: string}[]) => {
+        if (!activeWorkspaceFolder) {
+            vscode.window.showErrorMessage(vscode.l10n.t('error.openWorkspaceToApplyChanges'));
+            return;
+        }
+    
+        let successfulUpdates = 0;
+        const failedFiles: {path: string, error: string}[] = [];
+    
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Lollms: Applying all file changes...",
+            cancellable: true
+        }, async (progress, token) => {
+            for (let i = 0; i < updates.length; i++) {
+                if (token.isCancellationRequested) break;
+                const update = updates[i];
+                progress.report({ message: `(${i+1}/${updates.length}) Applying: ${update.filePath}`, increment: 100 / updates.length });
+    
+                const fileUri = vscode.Uri.joinPath(activeWorkspaceFolder!.uri, update.filePath);
+                try {
+                    const parentUri = vscode.Uri.joinPath(fileUri, '..');
+                    await vscode.workspace.fs.createDirectory(parentUri);
+                    await vscode.workspace.fs.writeFile(fileUri, Buffer.from(update.content, 'utf8'));
+                    successfulUpdates++;
+                } catch (error: any) {
+                    failedFiles.push({ path: update.filePath, error: error.message });
+                }
+            }
+        });
+    
+        if (failedFiles.length > 0) {
+            const failedList = failedFiles.map(f => `- ${f.path}: ${f.error}`).join('\n');
+            vscode.window.showErrorMessage(`Successfully applied changes to ${successfulUpdates} files, but failed on ${failedFiles.length} files:\n${failedList}`);
+        } else if (successfulUpdates > 0) {
+            vscode.window.showInformationMessage(`Successfully applied changes to all ${successfulUpdates} files.`);
+        } else {
+            vscode.window.showInformationMessage('No file changes were applied.');
+        }
+    
+        if (successfulUpdates > 0 && updates.length > 0) {
+            const firstFileUri = vscode.Uri.joinPath(activeWorkspaceFolder!.uri, updates[0].filePath);
+            try {
+                const document = await vscode.workspace.openTextDocument(firstFileUri);
+                await vscode.window.showTextDocument(document);
+            } catch (e) {
+                console.error("Could not open the first modified file.", e);
+            }
+        }
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyPatchContent', async (filePath: string, patchContent: string) => {
         try {
             let finalPatch = patchContent;

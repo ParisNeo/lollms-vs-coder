@@ -105,51 +105,104 @@ export function getProcessedSystemPrompt(promptType: 'chat' | 'agent' | 'inspect
             const fileUpdateMethod = config.get<string>('fileUpdateMethod') || 'full_file';
             let updateInstructions = '';
 
-            if (fileUpdateMethod === 'patch') {
-                updateInstructions = `2.  **For Code Patches (User setting is 'patch'):**
-    -   Prefix your response with a single line: \`Patch: path/to/the/file.ext\`
-    -   Follow this with the content in a standard \`.diff\` format inside a code block.`;
-            } else { // Default to full_file
-                updateInstructions = `2.  **For Full File Modifications (User setting is 'full_file'):**
-    -   Prefix your code response with a single line in this EXACT format: \`File: path/to/the/file.ext\`
-    -   This line MUST be on its own, followed by a newline.
-    -   Immediately after, provide the new content in a single markdown code block.
-    -   Your code block MUST contain the **entire, final content of the file**.
-    -   **DO NOT use placeholders** or comments like "// ... keep existing code".`;
+            const fullFileInstruction = `To create or overwrite a file, you MUST use the following two-part format:
+1.  A single line with the EXACT prefix \`File: path/to/the/file.ext\`.
+2.  Immediately after, a markdown code block containing the **ENTIRE, COMPLETE** content of the file.
+- **DO NOT** use placeholders or comments like "// ... keep existing code".
+- **DO NOT** add any text between the \`File:\` line and the code block.
+
+Example:
+File: src/components/Button.js
+\`\`\`javascript
+function Button({ text }) {
+  return <button>{text}</button>;
+}
+export default Button;
+\`\`\``;
+
+            const diffInstruction = `To patch a file, you MUST use the following two-part format:
+1.  A single line with the EXACT prefix \`Diff: path/to/the/file.ext\`.
+2.  Immediately after, a \`diff\` markdown code block with the patch content.
+
+Example:
+Diff: src/app.js
+\`\`\`diff
+@@ -10,1 +10,1 @@
+- console.log("Hello World");
++ console.log("Hello, Lollms!");
+\`\`\``;
+            
+            const locateInstruction = `To insert or replace code at a specific line, use a \`locate\` code block:
+\`\`\`locate
+file: path/to/your/file.ext
+line: 123
+action: insert_after
+---
+const newCode = "goes here";
+\`\`\`
+- Supported actions: \`insert_after\`, \`replace_line\`.`;
+
+            if (fileUpdateMethod === 'full_file') {
+                updateInstructions = fullFileInstruction;
+            } else if (fileUpdateMethod === 'diff') {
+                updateInstructions = diffInstruction;
+            } else if (fileUpdateMethod === 'locate') {
+                updateInstructions = locateInstruction;
+            } else if (fileUpdateMethod === 'do_your_best') {
+                updateInstructions = `You can choose the best method for file modifications. Here are your options and examples:
+
+<hr>
+
+**Option 1: Full File (Best for new files or major changes)**
+${fullFileInstruction}
+
+<hr>
+
+**Option 2: Diff (Best for small, targeted changes)**
+${diffInstruction}
+
+<hr>
+
+**Option 3: Locate (Best for precise insertions)**
+${locateInstruction}
+
+<hr>
+`;
             }
 
-            basePrompt = `**CRITICAL RESPONSE FORMATTING RULES:**
-1.  **Always Explain Your Plan First:** Before providing code blocks, briefly explain what you're going to do.
-${updateInstructions}
-3.  **For File Management (Use special code blocks):**
-    -   **To Move/Rename a file:** Use a \`rename\` code block. The extension will show a "Move/Rename" button.
+
+            basePrompt = `**YOU ARE A VSCODE ASSISTANT. YOUR OUTPUT IS PROGRAMMATICALLY PARSED. FOLLOW ALL FORMATTING RULES EXACTLY.**
+
+<CRITICAL_INSTRUCTIONS>
+1.  **File Modifications:**
+    ${updateInstructions}
+
+2.  **File Management (Use these special code blocks ONLY):**
+    -   **To Move/Rename:** Use a \`rename\` block with \`old -> new\`. The UI will show a "Move/Rename" button.
         \`\`\`rename
         path/to/old_file.ext -> path/to/new_file.ext
         \`\`\`
-    -   **To Delete a file:** Use a \`delete\` code block. The extension will show a "Delete" button.
+    -   **To Delete:** Use a \`delete\` block with one file path per line. The UI will show a "Delete" button.
         \`\`\`delete
         path/to/file_to_delete.ext
+        another/file/to_delete.js
         \`\`\`
-    -   **To request files for context:** If you need to see files that are not in your context, use a \`select\` code block. The extension will show an "Add to Context" button.
+    -   **To Request Context:** If you need to see files not in your context, use a \`select\` block. The UI will show an "Add to Context" button.
         \`\`\`select
-        path/to/file1.ext
-        path/to/file2.ext
+        src/api/auth.ts
+        src/utils/database.ts
         \`\`\`
-4.  **For Image Generation:**
-    -   Prefix with a \`File: path/to/image.png\` line.
-    -   Follow this with a special code block of type \`image_prompt\`.
-    -   Example:
-        File: assets/icons/save_icon.png
-        \`\`\`image_prompt
-        A modern, flat, minimalist icon of a floppy disk, vector style, on a transparent background.
-        \`\`\`
-5.  **For General Conversation:** Respond naturally in Markdown. Do NOT use the special file-related prefixes or code blocks.
-6.  **For Executable Commands:**
-    -   Syntax: \`[command:command_name]{"json_parameters"}\`
-    -   This renders a button for the user to click.
-    -   **Available Commands:**
-        -   \`createNotebook\`: \`{"path": "analysis.ipynb", "cellContent": "# New Analysis"}\`
-        -   \`gitCommit\`: \`{"message": "feat: Add new endpoint"}\``;
+
+3.  **Image Generation:**
+    -   Use \`File: path/to/image.png\` followed by an \`image_prompt\` code block.
+
+4.  **General Conversation:**
+    -   If no file operations are needed, respond naturally in standard Markdown. DO NOT use the special file-related formats.
+</CRITICAL_INSTRUCTIONS>
+
+<MASTER_RULE>
+Any deviation from these formats, especially the \`File:\` prefix and code block structure, will break the extension. Adhere to them with absolute precision.
+</MASTER_RULE>`;
             personaKey = 'chatPersona';
             break;
         }

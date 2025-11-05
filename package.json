@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.12",
+  "version": "0.5.13",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -351,11 +351,15 @@
           "description": "%config.fileUpdateMethod.description%",
           "enum": [
             "full_file",
-            "patch"
+            "diff",
+            "locate",
+            "do_your_best"
           ],
           "enumDescriptions": [
             "%config.fileUpdateMethod.full_file.description%",
-            "%config.fileUpdateMethod.patch.description%"
+            "%config.fileUpdateMethod.diff.description%",
+            "%config.fileUpdateMethod.locate.description%",
+            "%config.fileUpdateMethod.do_your_best.description%"
           ]
         },
         "lollmsVsCoder.enableCodeActions": {

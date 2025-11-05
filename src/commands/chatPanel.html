@@ -149,6 +149,62 @@
         let currentMatchIndex = -1;
         let isInspectorEnabled = false;
 
+        // --- CORRECTED: Throttling logic for stream rendering ---
+        const streamingMessages = {};
+        const RENDER_THROTTLE_MS = 100; // Update UI at most ~10 times per second
+
+        function scheduleRender(messageId) {
+            const stream = streamingMessages[messageId];
+            // If a timer is already set, it means a render is already scheduled.
+            // The upcoming render will process the latest buffer, so we don't need to do anything.
+            if (!stream || stream.timer) {
+                return;
+            }
+
+            // No timer is set, so schedule one.
+            stream.timer = setTimeout(() => {
+                // Check if the stream is still active before rendering
+                if (streamingMessages[messageId]) {
+                    renderMessageContent(messageId, streamingMessages[messageId].buffer);
+                    // Important: Clear the timer so the next chunk can schedule a new render.
+                    streamingMessages[messageId].timer = null;
+                }
+            }, RENDER_THROTTLE_MS);
+        }
+
+        function renderMessageContent(messageId, content) {
+            const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
+            if (!wrapper) return;
+
+            const contentDiv = wrapper.querySelector('.message-content');
+            const messageDiv = wrapper.querySelector('.message');
+            if (!contentDiv || !messageDiv) return;
+            
+            const shouldScrollContainer = isScrolledToBottom(messagesDiv);
+
+            const { thoughts, processedContent } = processThinkTags(content);
+
+            messageDiv.querySelectorAll('.thinking-collapsible').forEach(el => el.remove());
+            thoughts.forEach(thought => {
+                const details = document.createElement('details');
+                details.className = 'info-collapsible thinking-collapsible';
+                details.innerHTML = `<summary>🤔 Thinking Process</summary><div class="collapsible-content">${DOMPurify.sanitize(marked.parse(thought))}</div>`;
+                messageDiv.insertBefore(details, contentDiv);
+            });
+
+            contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(processedContent));
+            enhanceCodeBlocks(wrapper);
+
+            if (shouldScrollContainer) {
+                messagesDiv.scrollTop = messagesDiv.scrollHeight;
+            } else {
+                 if(stopButton.style.display !== 'none') { // Only show scroll button if generating
+                    scrollToBottomBtn.style.display = 'flex';
+                 }
+            }
+        }
+        // --- End of corrected throttling logic ---
+
 
         marked.setOptions({
             breaks: true,
@@ -409,6 +465,8 @@
                         <span>Waiting for first token...</span>
                     </div>
                 `;
+                // NEW: Initialize streaming state
+                streamingMessages[message.id] = { buffer: '', timer: null };
             } else {
                  contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(processedContent));
             }
@@ -478,7 +536,7 @@
             enhanceWithCommandButtons(messageWrapper);
             
             const applyableBlocks = messageWrapper.querySelectorAll('[data-action="applyFileContent"], [data-action="applyPatchContent"]');
-            if (applyableBlocks.length > 1) {
+            if (applyableBlocks.length >= 1) {
                 const applyAllBtn = document.createElement('button');
                 applyAllBtn.className = 'msg-action-btn';
                 applyAllBtn.innerHTML = '<i class="codicon codicon-check-all"></i> Apply All';
@@ -1231,9 +1289,11 @@
                     break;
                 case 'appendMessageChunk':
                     {
+                        const stream = streamingMessages[message.id];
+                        if (!stream) break;
+
                         const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.id}']`);
-                        if(wrapper) {
-                            if (!wrapper.dataset.firstTokenReceived) {
+                        if (!wrapper.dataset.firstTokenReceived) {
                                 wrapper.dataset.firstTokenReceived = 'true';
                                 wrapper.dataset.firstTokenTime = Date.now();
                                 
@@ -1253,51 +1313,25 @@
                                     header.appendChild(annotationSpan);
                                 }
                                 annotationSpan.textContent = `(${modelName} | TTFT: ${ttft}s)`;
-                            }
-
-
-                            const contentDiv = wrapper.querySelector('.message-content');
-                            const messageDiv = wrapper.querySelector('.message');
-                            if (contentDiv && messageDiv) {
-                                const shouldScrollContainer = isScrolledToBottom(messagesDiv);
-                                const codeScroller = contentDiv.querySelector('pre');
-                                const shouldScrollCode = codeScroller ? isScrolledToBottom(codeScroller) : true;
-
-                                let originalContent = JSON.parse(messageDiv.dataset.originalContent);
-                                originalContent += message.chunk;
-                                messageDiv.dataset.originalContent = JSON.stringify(originalContent);
-                                
-                                const { thoughts, processedContent } = processThinkTags(originalContent);
-
-                                messageDiv.querySelectorAll('.thinking-collapsible').forEach(el => el.remove());
-                                thoughts.forEach(thought => {
-                                    const details = document.createElement('details');
-                                    details.className = 'info-collapsible thinking-collapsible';
-                                    details.innerHTML = `<summary>🤔 Thinking Process</summary><div class="collapsible-content">${DOMPurify.sanitize(marked.parse(thought))}</div>`;
-                                    messageDiv.insertBefore(details, contentDiv);
-                                });
-
-                                contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(processedContent));
-                                enhanceCodeBlocks(wrapper);
-
-                                if (shouldScrollContainer) {
-                                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
-                                } else {
-                                    scrollToBottomBtn.style.display = 'flex';
-                                }
-
-                                if (shouldScrollCode) {
-                                    const newCodeScroller = contentDiv.querySelector('pre');
-                                    if (newCodeScroller) {
-                                        newCodeScroller.scrollTop = newCodeScroller.scrollHeight;
-                                    }
-                                }
-                            }
                         }
+
+                        stream.buffer += message.chunk;
+                        const messageDiv = wrapper.querySelector('.message');
+                        if(messageDiv) {
+                            messageDiv.dataset.originalContent = JSON.stringify(stream.buffer);
+                        }
+
+                        scheduleRender(message.id);
                     }
                     break;
                 case 'finalizeMessage':
                     {
+                        const stream = streamingMessages[message.id];
+                        if (stream) {
+                            clearTimeout(stream.timer);
+                            delete streamingMessages[message.id];
+                        }
+
                         const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.id}']`);
                         if(wrapper) {
                             const firstTokenTime = parseInt(wrapper.dataset.firstTokenTime, 10);
@@ -1317,9 +1351,6 @@
                             const contentDiv = wrapper.querySelector('.message-content');
                             const messageDiv = wrapper.querySelector('.message');
                             if (contentDiv && messageDiv) {
-                                const shouldScrollContainer = isScrolledToBottom(messagesDiv);
-                                const codeScroller = contentDiv.querySelector('pre');
-                                const shouldScrollCode = codeScroller ? isScrolledToBottom(codeScroller) : true;
                                 const isHtml = message.isHtml || false;
 
                                 if (isHtml) {
@@ -1328,31 +1359,11 @@
                                     messageDiv.classList.add('system-message');
                                 } else {
                                     messageDiv.dataset.originalContent = JSON.stringify(message.fullContent);
-                                    const { thoughts, processedContent } = processThinkTags(message.fullContent);
-
-                                    messageDiv.querySelectorAll('.thinking-collapsible').forEach(el => el.remove());
-                                    thoughts.forEach(thought => {
-                                        const details = document.createElement('details');
-                                        details.className = 'info-collapsible thinking-collapsible';
-                                        details.innerHTML = `<summary>🤔 Thinking Process</summary><div class="collapsible-content">${DOMPurify.sanitize(marked.parse(thought))}</div>`;
-                                        messageDiv.insertBefore(details, contentDiv);
-                                    });
-                                    
-                                    contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(processedContent));
+                                    renderMessageContent(message.id, message.fullContent);
                                 }
-
-                                enhanceCodeBlocks(wrapper);
                                 enhanceWithCommandButtons(wrapper);
 
-                                if (shouldScrollContainer) {
-                                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
-                                }
-                                if (shouldScrollCode) {
-                                    const newCodeScroller = contentDiv.querySelector('pre');
-                                    if (newCodeScroller) {
-                                        newCodeScroller.scrollTop = newCodeScroller.scrollHeight;
-                                    }
-                                }
+                                messagesDiv.scrollTop = messagesDiv.scrollHeight;
                             }
                         }
                     }

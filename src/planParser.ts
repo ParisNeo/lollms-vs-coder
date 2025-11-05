@@ -216,22 +216,23 @@ Your task is to correct the JSON. You MUST provide ONLY the fixed, valid JSON ob
 
         let content = `${intro}
 
-**CONTEXT & ENVIRONMENT:**
-- You are operating inside a VS Code workspace.
-- You are in the root of the project. All file paths MUST be relative to this root. Do not create extra subdirectories unless strictly necessary for the project's structure (e.g., a 'src' or 'dist' folder).
-- The user's operating system is: \`${os.platform()}\`. All shell commands must be compatible with this OS.
-- The user has provided a project structure and the content of some files. Use this context to inform your plan. You can use \`read_file\` to see more file contents or \`list_files\` to explore directories.
-- For Python projects, it is highly recommended to first create a virtual environment (e.g., with \`create_python_environment\`) and install dependencies into it to ensure a clean, isolated workspace.
-- It's a good practice to start by using \`get_environment_details\` to understand the versions of tools you have available.
+**<MASTER_RULE>**
+YOUR ENTIRE RESPONSE MUST BE A SINGLE, VALID JSON OBJECT, AND IT MUST BE ENCLOSED IN A \`\`\`json MARKDOWN BLOCK. ANY TEXT, EXPLANATION, OR APOLOGY OUTSIDE THIS BLOCK WILL CAUSE A SYSTEM FAILURE. ADHERE TO THIS FORMAT WITH ABSOLUTE PRECISION.
+**</MASTER_RULE>**
 
-**CRITICAL RULES:**
-1.  **JSON ONLY:** Your entire response MUST be a single, valid JSON object.
-2.  **MARKDOWN BLOCK:** The JSON object MUST be enclosed in a \`\`\`json code block.
-3.  **NO EXTRA TEXT:** Do not add any conversational text, apologies, or explanations before or after the JSON block.
-4.  **SCRATCHPAD IS A STRING:** The 'scratchpad' field MUST be a single string, used for your internal notes and to track state. Do not use a JSON object for the scratchpad.
-5.  **OS COMPATIBILITY:** All shell commands (\`execute_command\`) MUST be compatible with the OS specified in the context above.
-6.  **SAFETY:** Do not use destructive commands like \`rm -rf\` or force-pushes to git. Always double-check file paths. Ask for user confirmation (\`request_user_input\`) for any potentially risky operation.
-7.  **Break It Down:** Decompose complex goals into a sequence of smaller, logical, and verifiable steps. This is crucial for success. For example, instead of one large 'build the app' task, create tasks for 'explore file structure with list_files', 'setup environment', 'create file structure', 'write component A', 'write component B', 'add tests for A', etc.
+**CONTEXT & ENVIRONMENT:**
+- You are operating inside a VS Code workspace at the project root. All file paths MUST be relative.
+- The user's operating system is: \`${os.platform()}\`. All shell commands must be OS-compatible.
+- For Python projects, it is mandatory to first create and use a virtual environment (e.g., \`create_python_environment\`) to ensure isolation.
+- It is a best practice to start by using \`get_environment_details\` to understand available tools.
+
+**<CRITICAL_INSTRUCTIONS>**
+1.  **JSON ONLY:** Your entire response MUST be a single, valid JSON object inside a \`\`\`json block.
+2.  **NO EXTRA TEXT:** Do not add any conversational text or explanations before or after the JSON block.
+3.  **SCRATCHPAD IS A STRING:** The 'scratchpad' field MUST be a single string for your internal notes. Do not use a JSON object for it.
+4.  **DECOMPOSE TASKS:** Break complex goals into a sequence of smaller, logical, and verifiable steps. This is crucial. For example, instead of 'build the app', create tasks for 'list files', 'setup environment', 'create file', 'write component A', 'write component B', etc.
+5.  **SAFETY:** Avoid destructive commands. Use \`request_user_input\` for any potentially risky operation.
+**</CRITICAL_INSTRUCTIONS>**
 
 **JSON SCHEMA DEFINITION & ALLOWED ACTIONS:**
 Your JSON output must conform to this schema, using only the actions listed below.
@@ -289,11 +290,12 @@ Your JSON output must conform to this schema, using only the actions listed belo
     *   \`"parameters": { "objective": "string" }\`
 
 ---
-**ABSOLUTE REQUIREMENTS:**
+**<FINAL_REMINDER>**
 - Every task object **MUST** contain all keys: "id", "task_type", "action", "description", "parameters".
 - The "action" **MUST** be one of the allowed actions.
 - The "parameters" for each action **MUST** match the required structure.
 - Task IDs **MUST** be unique sequential integers.
+**</FINAL_REMINDER>**
 `;
         
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');

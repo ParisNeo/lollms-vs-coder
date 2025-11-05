@@ -279,9 +279,11 @@ export class SettingsPanel {
               <label for="fileUpdateMethod">File Update Method</label>
               <select id="fileUpdateMethod">
                 <option value="full_file" ${fileUpdateMethod === 'full_file' ? 'selected' : ''}>Full File Content</option>
-                <option value="patch" ${fileUpdateMethod === 'patch' ? 'selected' : ''}>Diff Patch</option>
+                <option value="diff" ${fileUpdateMethod === 'diff' ? 'selected' : ''}>Diff Mode</option>
+                <option value="locate" ${fileUpdateMethod === 'locate' ? 'selected' : ''}>Locate and Insert/Update Mode</option>
+                <option value="do_your_best" ${fileUpdateMethod === 'do_your_best' ? 'selected' : ''}>Do The Best You Can</option>
               </select>
-              <p class="help-text">Choose how the AI provides file updates. 'Full File' is more reliable; 'Patch' uses fewer tokens.</p>
+              <p class="help-text">Choose how the AI provides file updates.</p>
               <label for="maxImageSize">Max Image Size (px)</label>
               <input type="number" id="maxImageSize" value="${maxImageSize}" min="0" step="128" />
               <p class="help-text">Resize images to this maximum dimension before sending. 0 disables resizing.</p>

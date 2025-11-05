@@ -143,18 +143,19 @@ export class DiscussionManager {
     
         const systemPrompt: ChatMessage = {
             role: 'system',
-            content: `You are an expert at summarizing conversations. Your task is to generate a concise, descriptive title (5 words or less) based on the provided conversation.
+            content: `You are a title generation AI. Your sole purpose is to create a concise, descriptive title (5 words or less) for a conversation.
 
-**CRITICAL INSTRUCTIONS:**
-1.  **JSON ONLY:** Your entire response MUST be a single, valid JSON object inside a \`\`\`json markdown block.
-2.  **NO EXTRA TEXT:** Do not add any conversational text or explanations outside the JSON block.
-3.  **SCHEMA:** The JSON object must have a single key: "title".
-4.  **DO NOT ANSWER THE PROMPT:** Your sole purpose is to create the title.
+<CRITICAL_OUTPUT_FORMAT>
+Your entire response MUST be a single, valid JSON object inside a \`\`\`json markdown block.
+The JSON object must have a single key: "title".
+DO NOT add any text, conversation, or explanations outside the JSON block.
+DO NOT answer the user's prompt.
+</CRITICAL_OUTPUT_FORMAT>
 
 **Example Conversation:**
 User: "how do I build a snake game in python?"
 
-**Example Response:**
+**Correct Response:**
 \`\`\`json
 {
   "title": "Python Snake Game Implementation"

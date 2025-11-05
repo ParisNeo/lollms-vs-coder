@@ -63,7 +63,8 @@ export class HelpPanel {
         h2 { font-size: 1.8em; font-weight: 400; margin-top: 2.5em; border-bottom: 1px solid var(--vscode-panel-border); padding-bottom: 0.5em; display: flex; align-items: center; gap: 10px; }
         h3 { font-size: 1.3em; margin-top: 2em; font-weight: 500; }
         p, li { font-size: 1em; color: var(--vscode-foreground); }
-        code { font-family: var(--vscode-editor-font-family); background-color: var(--vscode-textCodeBlock-background); border: 1px solid var(--vscode-textBlockQuote-border); padding: 0.2em 0.4em; border-radius: 4px; }
+        code, pre { font-family: var(--vscode-editor-font-family); background-color: var(--vscode-textCodeBlock-background); border: 1px solid var(--vscode-textBlockQuote-border); padding: 0.2em 0.4em; border-radius: 4px; }
+        pre { padding: 1em; white-space: pre-wrap; }
         .codicon { font-family: "codicon"; display: inline-block; vertical-align: middle; font-size: 1.1em; margin-right: 5px;}
         .key-feature { font-weight: 600; color: var(--vscode-textLink-foreground); }
         .status-bar-example { display: flex; gap: 15px; background-color: var(--vscode-statusBar-background); color: var(--vscode-statusBar-foreground); padding: 5px 15px; border-radius: 5px; margin: 1em 0; align-items: center; font-family: var(--vscode-editor-font-family); }
@@ -99,7 +100,7 @@ export class HelpPanel {
         <h3>Understanding the Execution Plan</h3>
         <p>Once you provide an objective, the agent creates an <span class="key-feature">Execution Plan</span>, a dynamic list of tasks displayed in the chat. The agent executes these tasks sequentially, showing the status of each:</p>
         <ul>
-            <li><span class="codicon codicon-circle-large-filled"></span><strong>Pending:</strong> The task is waiting to be executed.</li>
+            <li><span class="codicon codicon-circle-large"></span><strong>Pending:</strong> The task is waiting to be executed.</li>
             <li><span class="codicon codicon-sync spin"></span><strong>In Progress:</strong> The agent is currently working on this task.</li>
             <li><span class="codicon codicon-check"></span><strong>Completed:</strong> The task finished successfully.</li>
             <li><span class="codicon codicon-error"></span><strong>Failed:</strong> The task encountered an error.</li>
@@ -116,15 +117,38 @@ export class HelpPanel {
             <li><strong>View Log:</strong> Opens a panel showing the detailed error message from the failed task.</li>
         </ul>
 
-        <h2><span class="codicon codicon-comment-discussion"></span>The AI Chat Panel</h2>
-        <p>For general-purpose questions, brainstorming, or getting quick code snippets, use the standard AI Chat.</p>
+        <h2><span class="codicon codicon-comment-discussion"></span>The AI Chat Panel & Code Generation</h2>
+        <p>For general-purpose questions, brainstorming, or getting quick code snippets, use the standard AI Chat. The AI can also create, modify, and manage your project files directly from the chat.</p>
         
         <h3>Interacting with AI Responses</h3>
         <ul>
-            <li><strong><span class="codicon codicon-tools"></span>Apply to File</strong>: When the AI suggests creating or modifying a file (e.g., <code>File: src/app.js</code>), a button appears on the code block. Clicking it opens an inline diff view where you can accept or reject the changes.</li>
             <li><strong><span class="codicon codicon-play"></span>Execute</strong>: Code blocks for shell scripts (Python, Bash, PowerShell) have an Execute button. This runs the script in a temporary file, and the output is automatically fed back to the AI for analysis.</li>
             <li><strong><span class="codicon codicon-search"></span>Inspect</strong>: Check AI-generated code for bugs and vulnerabilities. The inspector can auto-fix minor issues or provide detailed warnings.</li>
-            <li><strong><span class="codicon codicon-device-camera"></span>Generate Image</strong>: If the AI returns an <code>image_prompt</code> block, a "Generate" button will appear. Clicking it creates the image and saves it to your project.</li>
+        </ul>
+
+        <h3>Advanced File Operations</h3>
+        <p>The AI can perform various file operations by generating special code blocks with interactive buttons. The method it chooses can be configured in the extension settings under <code>File Update Method</code>.</p>
+        <ul>
+            <li><span class="key-feature">Full File Updates:</span> By default, the AI replaces entire files. It signals this with a <code>File: path/to/file.ext</code> line above a code block. Clicking the <strong><span class="codicon codicon-tools"></span>Apply to File</strong> button will show a diff view before overwriting the file.</li>
+            <li><span class="key-feature">Applying Diffs:</span> In 'Diff Mode', the AI provides only the changes. It signals this with a <code>Diff: path/to/file.ext</code> or <code>Patch: ...</code> line. Clicking <strong><span class="codicon codicon-tools"></span>Apply Patch</strong> will apply the changes to the existing file.</li>
+            <li><span class="key-feature">Renaming/Moving Files:</span> The AI can request a file rename or move by generating a <code>rename</code> code block. A <strong><span class="codicon codicon-git-compare"></span>Move/Rename</strong> button will appear.
+                <pre><code>\`\`\`rename
+path/to/old_file.ext -> path/to/new_file.ext
+\`\`\`</code></pre>
+            </li>
+            <li><span class="key-feature">Deleting Files:</span> The AI can request file deletions by generating a <code>delete</code> code block. A <strong><span class="codicon codicon-trash"></span>Delete</strong> button will appear, which will prompt for confirmation before moving files to the trash.
+                <pre><code>\`\`\`delete
+path/to/file_to_delete.ext
+another/file/to_delete.js
+\`\`\`</code></pre>
+            </li>
+            <li><span class="key-feature">Requesting Context:</span> If the AI needs to see files that are not in its context, it can generate a <code>select</code> block. A <strong><span class="codicon codicon-add"></span>Add to Context</strong> button will appear.
+                <pre><code>\`\`\`select
+src/api/auth.ts
+src/utils/database.ts
+\`\`\`</code></pre>
+            </li>
+            <li><span class="key-feature">Image Generation:</span> If the AI returns an <code>image_prompt</code> block prefixed with a file path, a <strong><span class="codicon codicon-sparkle"></span>Generate</strong> button will appear. Clicking it creates the image and saves it to your project.</li>
         </ul>
 
         <h3>The "More Actions" <code>...</code> Menu</h3>

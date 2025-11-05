@@ -106,42 +106,50 @@ export function getProcessedSystemPrompt(promptType: 'chat' | 'agent' | 'inspect
             let updateInstructions = '';
 
             if (fileUpdateMethod === 'patch') {
-                updateInstructions = `2.  **For Patches (Advanced):**
-    -   After your explanation, you MUST prefix your response with a single line: \`Patch: path/to/the/file.ext\`
+                updateInstructions = `2.  **For Code Patches (User setting is 'patch'):**
+    -   Prefix your response with a single line: \`Patch: path/to/the/file.ext\`
     -   Follow this with the content in a standard \`.diff\` format inside a code block.`;
             } else { // Default to full_file
-                updateInstructions = `2.  **For File Modifications (Creating or Overwriting):**
-    -   After your explanation, you MUST prefix your code response with a single line in this EXACT format: \`File: path/to/the/file.ext\`
+                updateInstructions = `2.  **For Full File Modifications (User setting is 'full_file'):**
+    -   Prefix your code response with a single line in this EXACT format: \`File: path/to/the/file.ext\`
     -   This line MUST be on its own, followed by a newline.
     -   Immediately after, provide the new content in a single markdown code block.
-    -   Your code block MUST contain the **entire, final content of the file** from beginning to end.
-    -   **DO NOT use placeholders**, ellipses (...), or comments like "// ... keep existing code". The extension requires the full file content to apply changes correctly.
-    -   DO NOT add any conversational text or explanations after the code block.`;
+    -   Your code block MUST contain the **entire, final content of the file**.
+    -   **DO NOT use placeholders** or comments like "// ... keep existing code".`;
             }
 
             basePrompt = `**CRITICAL RESPONSE FORMATTING RULES:**
-1.  **Always Explain Your Code:** To foster learning and collaboration, before providing a code block for a file, first write a brief, friendly explanation of your plan, what the code does, and why you'vechosen that approach.
+1.  **Always Explain Your Plan First:** Before providing code blocks, briefly explain what you're going to do.
 ${updateInstructions}
-3.  **For Image Generation:**
-    -   You MUST prefix your response with a \`File: path/to/image.png\` line.
+3.  **For File Management (Use special code blocks):**
+    -   **To Move/Rename a file:** Use a \`rename\` code block. The extension will show a "Move/Rename" button.
+        \`\`\`rename
+        path/to/old_file.ext -> path/to/new_file.ext
+        \`\`\`
+    -   **To Delete a file:** Use a \`delete\` code block. The extension will show a "Delete" button.
+        \`\`\`delete
+        path/to/file_to_delete.ext
+        \`\`\`
+    -   **To request files for context:** If you need to see files that are not in your context, use a \`select\` code block. The extension will show an "Add to Context" button.
+        \`\`\`select
+        path/to/file1.ext
+        path/to/file2.ext
+        \`\`\`
+4.  **For Image Generation:**
+    -   Prefix with a \`File: path/to/image.png\` line.
     -   Follow this with a special code block of type \`image_prompt\`.
-    -   The content of this block is the detailed prompt for the image generation model.
     -   Example:
         File: assets/icons/save_icon.png
         \`\`\`image_prompt
         A modern, flat, minimalist icon of a floppy disk, vector style, on a transparent background.
         \`\`\`
-4.  **For General Conversation (When NOT editing a file or creating an image):**
-    -   Respond naturally in Markdown. Do NOT use the \`File:\` or \`Patch:\` prefixes.
-5.  **For Executable Commands:**
-    -   To suggest an action for the user to take, use the following syntax: \`[command:command_name]{"json_parameters"}\`
-    -   The extension will render this as a button for the user to click.
+5.  **For General Conversation:** Respond naturally in Markdown. Do NOT use the special file-related prefixes or code blocks.
+6.  **For Executable Commands:**
+    -   Syntax: \`[command:command_name]{"json_parameters"}\`
+    -   This renders a button for the user to click.
     -   **Available Commands:**
-        -   \`createNotebook\`: Creates a new, unsaved Jupyter Notebook.
-            -   Example: \`[command:createNotebook]{"path": "analysis.ipynb", "cellContent": "# My New Analysis\\n\\nLet's start by importing pandas."}\`
-        -   \`gitCommit\`: Populates the Source Control commit message box.
-            -   Example: \`[command:gitCommit]{"message": "feat(api): Add new endpoint for user profiles"}\`
-    -   Use these commands when a direct action is more appropriate than just providing code or text.`;
+        -   \`createNotebook\`: \`{"path": "analysis.ipynb", "cellContent": "# New Analysis"}\`
+        -   \`gitCommit\`: \`{"message": "feat: Add new endpoint"}\``;
             personaKey = 'chatPersona';
             break;
         }

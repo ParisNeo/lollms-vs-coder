@@ -7,7 +7,7 @@ import { AgentManager } from '../agentManager';
 import { getProcessedSystemPrompt, stripThinkingTags } from '../utils';
 import * as path from 'path';
 import { InfoPanel } from './infoPanel';
-import { ProcessManager } from './processManager';
+import { ProcessManager } from '../processManager';
 
 export class ChatPanel {
   public static panels: Map<string, ChatPanel> = new Map();
@@ -678,14 +678,17 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         case 'sendMessage':
           await this.sendMessage(message.message);
           break;
-        case 'applyAllFiles':
-            vscode.commands.executeCommand('lollms-vs-coder.applyAllFiles', message.updates);
+        case 'applyAllChanges':
+            vscode.commands.executeCommand('lollms-vs-coder.applyAllChanges', message);
             break;
         case 'renameFile':
             vscode.commands.executeCommand('lollms-vs-coder.renameFile', message.originalPath, message.newPath);
             break;
         case 'deleteFile':
-            vscode.commands.executeCommand('lollms-vs-coder.deleteFile', message.filePath);
+            vscode.commands.executeCommand('lollms-vs-coder.deleteFile', message.filePaths);
+            break;
+        case 'addFilesToContext':
+            vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', message.files);
             break;
         case 'showWarning':
             vscode.window.showWarningMessage(message.message);

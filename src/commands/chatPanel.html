@@ -477,8 +477,8 @@
             enhanceCodeBlocks(messageWrapper);
             enhanceWithCommandButtons(messageWrapper);
             
-            const fileBlocks = messageWrapper.querySelectorAll('.apply-btn, .rename-btn, .delete-btn');
-            if (fileBlocks.length > 1) {
+            const applyableBlocks = messageWrapper.querySelectorAll('[data-action="applyFileContent"], [data-action="applyPatchContent"]');
+            if (applyableBlocks.length > 1) {
                 const applyAllBtn = document.createElement('button');
                 applyAllBtn.className = 'msg-action-btn';
                 applyAllBtn.innerHTML = '<i class="codicon codicon-check-all"></i> Apply All';
@@ -486,29 +486,29 @@
                 applyAllBtn.onclick = (e) => {
                     e.stopPropagation();
                     
-                    const fileUpdates = [];
-                    let hasUnsupportedActions = false;
+                    const updates = [];
+                    const patches = [];
 
-                    fileBlocks.forEach(btn => {
+                    applyableBlocks.forEach(btn => {
                         const codeCollapsible = btn.closest('.code-collapsible');
                         if (!codeCollapsible) return;
                         const codeBlock = codeCollapsible.querySelector('code');
 
                         if (btn.dataset.action === 'applyFileContent' && codeBlock) {
-                            fileUpdates.push({
+                            updates.push({
                                 filePath: btn.dataset.filePath,
                                 content: codeBlock.innerText
                             });
-                        } else {
-                            hasUnsupportedActions = true;
+                        } else if (btn.dataset.action === 'applyPatchContent' && codeBlock) {
+                            patches.push({
+                                filePath: btn.dataset.filePath,
+                                content: codeBlock.innerText
+                            });
                         }
                     });
 
-                    if (fileUpdates.length > 0) {
-                        vscode.postMessage({ command: 'applyAllFiles', updates: fileUpdates });
-                    }
-                    if (hasUnsupportedActions) {
-                        vscode.postMessage({ command: 'showWarning', message: 'Apply All only works for file content creation/updates. Please apply rename, delete, or patch operations individually.' });
+                    if (updates.length > 0 || patches.length > 0) {
+                        vscode.postMessage({ command: 'applyAllChanges', updates, patches });
                     }
 
                     applyAllBtn.innerHTML = '<i class="codicon codicon-check"></i> Applied!';
@@ -583,7 +583,7 @@
                 const codeBlock = pre.querySelector('code');
                 if (!codeBlock) continue;
 
-                // Format 2: `File: path` inside the code block
+                // Format 1: `File: path` inside the code block's first line
                 let codeContent = codeBlock.innerText;
                 const insideMatch = codeContent.match(/^(?:File|Patch|diff):\s*(.+)\n/i);
                 if (insideMatch) {
@@ -593,23 +593,21 @@
                     pre.parentNode.insertBefore(newP, pre);
                     codeBlock.innerText = codeContent.substring(insideMatch[0].length);
                     pre.dataset.fixed = 'true';
-                    continue; 
                 }
 
-                // Format 1: `File: path` in a preceding code block
-                if (i > 0) {
-                    const prevPre = pres[i - 1];
-                    const prevCodeBlock = prevPre.querySelector('code');
-                    if (prevCodeBlock) {
-                        const prevCodeText = prevCodeBlock.innerText.trim();
-                        const fileMatch = prevCodeText.match(/^File:\s*(.+)$/i);
-                        if (fileMatch && prevCodeText.split('\n').length === 1) {
-                            const newP = document.createElement('p');
-                            newP.textContent = prevCodeText;
-                            prevPre.parentNode.replaceChild(newP, prevPre);
-                            pre.dataset.fixed = 'true';
-                        }
-                    }
+                // Format 2: `File: path` used as the language specifier
+                const langClass = [...codeBlock.classList].find(c => c.toLowerCase().startsWith('language-file:'));
+                if (langClass) {
+                    const filePathLine = langClass.substring('language-'.length); // "File: path/to/file.ext"
+                    const newP = document.createElement('p');
+                    newP.textContent = filePathLine;
+                    pre.parentNode.insertBefore(newP, pre);
+                    
+                    // Attempt to find a real language from the extension
+                    const extMatch = filePathLine.match(/\.([^.]+)$/);
+                    const ext = extMatch ? extMatch[1] : '';
+                    codeBlock.className = ext ? `language-${ext}` : '';
+                    pre.dataset.fixed = 'true';
                 }
             }
             
@@ -622,7 +620,6 @@
                 
                 let matchInfo = null;
                 const previousElement = pre.previousElementSibling;
-
                 if (previousElement && previousElement.tagName === 'P') {
                     const text = (previousElement.textContent || '').trim();
                     const fileMatch = text.match(/^File:\s*(.+)$/i);
@@ -635,7 +632,6 @@
                     }
                 }
                 
-                // Image prompt handling
                 const isImagePrompt = language === 'image_prompt' || language === 'image_generation';
                 if (isImagePrompt && matchInfo && matchInfo.type === 'file') {
                     const filePath = matchInfo.path;
@@ -684,27 +680,40 @@
                 const actions = document.createElement('div');
                 actions.className = 'code-actions';
         
-                if (matchInfo) {
-                    matchInfo.elementToHide.style.display = 'none';
+                let actionButtonAdded = false;
 
-                    if (language === 'rename') {
-                        const renameBtn = document.createElement('button');
-                        renameBtn.className = 'code-action-btn rename-btn';
-                        renameBtn.innerHTML = '⇄ Move/Rename';
-                        renameBtn.title = `Rename ${matchInfo.path}`;
-                        renameBtn.dataset.action = 'renameFile';
-                        renameBtn.dataset.originalPath = matchInfo.path;
-                        renameBtn.dataset.newPath = codeBlock.innerText.trim();
+                if (language === 'rename') {
+                    const renameBtn = document.createElement('button');
+                    renameBtn.className = 'code-action-btn rename-btn';
+                    renameBtn.innerHTML = '⇄ Move/Rename';
+                    renameBtn.title = 'Move or rename file';
+                    renameBtn.dataset.action = 'renameFile';
+                    const paths = codeBlock.innerText.split('->');
+                    if (paths.length === 2) {
+                        renameBtn.dataset.originalPath = paths[0].trim();
+                        renameBtn.dataset.newPath = paths[1].trim();
                         actions.appendChild(renameBtn);
-                    } else if (language === 'delete') {
-                        const deleteBtn = document.createElement('button');
-                        deleteBtn.className = 'code-action-btn delete-btn';
-                        deleteBtn.innerHTML = '🗑️ Delete';
-                        deleteBtn.title = `Delete ${matchInfo.path}`;
-                        deleteBtn.dataset.action = 'deleteFile';
-                        deleteBtn.dataset.filePath = matchInfo.path;
-                        actions.appendChild(deleteBtn);
-                    } else if (matchInfo.type === 'patch') {
+                        actionButtonAdded = true;
+                    }
+                } else if (language === 'delete' || language === 'remove') {
+                    const deleteBtn = document.createElement('button');
+                    deleteBtn.className = 'code-action-btn delete-btn';
+                    deleteBtn.innerHTML = '🗑️ Delete';
+                    deleteBtn.title = `Delete file(s) listed in the block`;
+                    deleteBtn.dataset.action = 'deleteFile';
+                    actions.appendChild(deleteBtn);
+                    actionButtonAdded = true;
+                } else if (language === 'select' || language === 'select-context') {
+                    const addContextBtn = document.createElement('button');
+                    addContextBtn.className = 'code-action-btn apply-btn';
+                    addContextBtn.innerHTML = '➕ Add to Context';
+                    addContextBtn.title = `Add listed files to the AI's context`;
+                    addContextBtn.dataset.action = 'addFilesToContext';
+                    actions.appendChild(addContextBtn);
+                    actionButtonAdded = true;
+                } else if (matchInfo) {
+                    matchInfo.elementToHide.style.display = 'none';
+                    if (matchInfo.type === 'patch') {
                          const patchBtn = document.createElement('button');
                         patchBtn.className = 'code-action-btn apply-btn';
                         patchBtn.innerHTML = '⚙️ Apply Patch';
@@ -721,7 +730,10 @@
                         applyBtn.dataset.filePath = matchInfo.path;
                         actions.appendChild(applyBtn);
                     }
-                } else {
+                    actionButtonAdded = true;
+                }
+        
+                if (!actionButtonAdded) {
                     const saveAsBtn = document.createElement('button');
                     saveAsBtn.className = 'code-action-btn';
                     saveAsBtn.innerHTML = '💾 Save As...';
@@ -1100,7 +1112,28 @@
 
             const action = target.dataset.action;
 
-            if (action === 'saveCodeToFile' && codeContent) {
+            if (action === 'renameFile') {
+                vscode.postMessage({
+                    command: 'renameFile',
+                    originalPath: target.dataset.originalPath,
+                    newPath: target.dataset.newPath
+                });
+            } else if (action === 'deleteFile') {
+                if (codeContent) {
+                    vscode.postMessage({
+                        command: 'deleteFile',
+                        filePaths: codeContent // Pass the full content of the block
+                    });
+                }
+            } else if (action === 'addFilesToContext') {
+                if (codeContent) {
+                    const files = codeContent.split('\n').map(f => f.trim()).filter(f => f);
+                    vscode.postMessage({
+                        command: 'addFilesToContext',
+                        files: files
+                    });
+                }
+            } else if (action === 'saveCodeToFile' && codeContent) {
                 vscode.postMessage({
                     command: 'saveCodeToFile',
                     content: codeContent,

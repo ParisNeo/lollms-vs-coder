@@ -1252,47 +1252,69 @@ Please analyze this output (e.g., error log, script output, or configuration tex
         }
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyAllFiles', async (updates: {filePath: string, content: string}[]) => {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyAllChanges', async (changes: { updates: {filePath: string, content: string}[], patches: {filePath: string, content: string}[] }) => {
         if (!activeWorkspaceFolder) {
             vscode.window.showErrorMessage(vscode.l10n.t('error.openWorkspaceToApplyChanges'));
             return;
         }
-        if (!updates || !Array.isArray(updates)) {
-            // This is an internal error, no need to localize heavily.
-            vscode.window.showErrorMessage('Invalid updates for "Apply All".');
+        const { updates, patches } = changes;
+        if ((!updates || updates.length === 0) && (!patches || patches.length === 0)) {
             return;
         }
-
+    
         let lastFileUri: vscode.Uri | undefined;
         let successCount = 0;
-
+        let errorCount = 0;
+    
         await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
-            title: vscode.l10n.t('progress.applyingAllFiles', "Lollms: Applying all file changes..."),
+            title: "Lollms: Applying all file changes...",
             cancellable: false
         }, async (progress) => {
-            for (const update of updates) {
-                const { filePath, content } = update;
-                progress.report({ message: `Applying to ${filePath}` });
-                const fileUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, filePath);
-                try {
-                    const parentUri = vscode.Uri.joinPath(fileUri, '..');
-                    await vscode.workspace.fs.createDirectory(parentUri);
-                    await vscode.workspace.fs.writeFile(fileUri, Buffer.from(content, 'utf8'));
-                    successCount++;
-                    lastFileUri = fileUri;
-                } catch (error: any) {
-                    vscode.window.showErrorMessage(vscode.l10n.t('error.failedToApplyMultiple', 'Failed to apply changes to {0}: {1}', filePath, error.message));
+            // Apply full file updates
+            if (updates) {
+                for (const update of updates) {
+                    const { filePath, content } = update;
+                    progress.report({ message: `Applying to ${filePath}` });
+                    const fileUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, filePath);
+                    try {
+                        const parentUri = vscode.Uri.joinPath(fileUri, '..');
+                        await vscode.workspace.fs.createDirectory(parentUri);
+                        await vscode.workspace.fs.writeFile(fileUri, Buffer.from(content, 'utf8'));
+                        successCount++;
+                        lastFileUri = fileUri;
+                    } catch (error: any) {
+                        errorCount++;
+                        vscode.window.showErrorMessage(vscode.l10n.t('error.failedToApplyMultiple', 'Failed to apply changes to {0}: {1}', filePath, error.message));
+                    }
+                }
+            }
+            // Apply patches
+            if (patches) {
+                 for (const patch of patches) {
+                    const { filePath, content } = patch;
+                    progress.report({ message: `Patching ${filePath}` });
+                    try {
+                        let finalPatch = content;
+                        if (!content.trim().startsWith('--- a/')) {
+                            finalPatch = `--- a/${filePath}\n+++ b/${filePath}\n${content}`;
+                        }
+                        await applyDiff(finalPatch);
+                        successCount++;
+                        lastFileUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, filePath);
+                    } catch (error: any) {
+                        errorCount++;
+                        vscode.window.showErrorMessage(vscode.l10n.t('error.failedToApplyPatch', filePath, error.message));
+                    }
                 }
             }
         });
-
+    
         if (successCount > 0) {
             vscode.window.showInformationMessage(vscode.l10n.t('info.applySuccessMultiple', '✅ Successfully applied changes to {0} files.', successCount));
         }
         
         if (lastFileUri) {
-            // Open the last successfully modified file for review
             await vscode.window.showTextDocument(lastFileUri);
         }
     }));
@@ -1393,26 +1415,65 @@ Please analyze this output (e.g., error log, script output, or configuration tex
         }
     }));
     
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deleteFile', async (filePath: string) => {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deleteFile', async (filePathsStr: string) => {
         if (!activeWorkspaceFolder) {
             vscode.window.showErrorMessage('No active workspace folder.');
             return;
         }
-        const fileUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, filePath);
+        
+        const filesToDelete = filePathsStr.split('\n').map(f => f.trim()).filter(f => f);
+        if (filesToDelete.length === 0) {
+            vscode.window.showWarningMessage("No valid file paths found to delete.");
+            return;
+        }
     
+        const fileListForPrompt = filesToDelete.length > 5 
+            ? filesToDelete.slice(0, 5).join('\n') + `\n...and ${filesToDelete.length - 5} more files.`
+            : filesToDelete.join('\n');
+        
         const confirm = await vscode.window.showWarningMessage(
-            `Are you sure you want to delete '${filePath}'? This will move the file to the Trash.`,
+            `Are you sure you want to delete ${filesToDelete.length} file(s)?\n\n${fileListForPrompt}\n\nThis will move the file(s) to the Trash.`,
             { modal: true },
             'Delete'
         );
     
         if (confirm === 'Delete') {
-            try {
-                await vscode.workspace.fs.delete(fileUri, { useTrash: true });
-                vscode.window.showInformationMessage(`Successfully deleted '${filePath}'.`);
-            } catch (error: any) {
-                vscode.window.showErrorMessage(`Failed to delete file: ${error.message}`);
+            let successCount = 0;
+            let errorCount = 0;
+            let lastError = '';
+    
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: `Deleting ${filesToDelete.length} file(s)...`,
+                cancellable: false
+            }, async (progress) => {
+                for (const filePath of filesToDelete) {
+                    progress.report({ message: `Deleting ${filePath}` });
+                    const fileUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, filePath);
+                    try {
+                        await vscode.workspace.fs.delete(fileUri, { useTrash: true });
+                        successCount++;
+                    } catch (error: any) {
+                        errorCount++;
+                        lastError = error.message;
+                        console.error(`Failed to delete file ${filePath}:`, error);
+                    }
+                }
+            });
+    
+            if (errorCount > 0) {
+                vscode.window.showErrorMessage(`Failed to delete ${errorCount} file(s). Last error: ${lastError}`);
             }
+            if (successCount > 0) {
+                vscode.window.showInformationMessage(`Successfully deleted ${successCount} file(s).`);
+            }
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.addFilesToContext', async (files: string[]) => {
+        if (contextStateProvider && files && files.length > 0) {
+            await contextStateProvider.addFilesToContext(files);
+            vscode.window.showInformationMessage(`Added ${files.length} file(s) to the AI context.`);
         }
     }));
 

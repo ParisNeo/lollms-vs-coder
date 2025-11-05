@@ -676,6 +676,12 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         case 'sendMessage':
           await this.sendMessage(message.message);
           break;
+        case 'applyAllFiles':
+            vscode.commands.executeCommand('lollms-vs-coder.applyAllFiles', message.updates);
+            break;
+        case 'showWarning':
+            vscode.window.showWarningMessage(message.message);
+            break;
         case 'updateDiscussionModel':
             if (this._currentDiscussion) {
                 this._currentDiscussion.model = message.model || undefined; // set to undefined if empty string

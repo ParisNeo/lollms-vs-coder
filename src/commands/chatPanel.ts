@@ -41,7 +41,6 @@ export class ChatPanel {
         enableScripts: true,
         localResourceRoots: [
             vscode.Uri.joinPath(extensionUri, 'out'),
-            vscode.Uri.joinPath(extensionUri, 'node_modules', '@vscode/codicons'),
             vscode.Uri.joinPath(extensionUri, 'media'),
             vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0].uri: extensionUri
         ],
@@ -275,18 +274,24 @@ export class ChatPanel {
     const templateContent = await vscode.workspace.fs.readFile(templatePath);
     let html = Buffer.from(templateContent).toString('utf8');
 
-    const codiconsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'node_modules', '@vscode/codicons', 'dist', 'codicon.css'));
+    // FIX: Correctly create webview URIs for assets that are now inside the 'out' directory
+    const codiconsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'codicon.css'));
     const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'commands', 'chatPanel.css'));
 
+    // FIX: Inject all l10n strings as a JSON object for robust client-side rendering
+    const l10nStrings = {
+        welcomeTitle: vscode.l10n.t("welcome.title"),
+        welcomeItem1: vscode.l10n.t("welcome.item1"),
+        welcomeItem2: vscode.l10n.t("welcome.item2"),
+        welcomeItem3: vscode.l10n.t("welcome.item3"),
+        welcomeItem4: vscode.l10n.t("welcome.item4"),
+        progressLoadingFiles: vscode.l10n.t("progress.loadingFiles"),
+        tooltipRefreshContext: vscode.l10n.t("tooltip.refreshContext")
+    };
+
+    html = html.replace('\'{{l10n}}\'', JSON.stringify(l10nStrings));
     html = html.replace(/{{codiconsUri}}/g, codiconsUri.toString());
     html = html.replace(/{{cssUri}}/g, cssUri.toString());
-    html = html.replace(/{{welcomeTitle}}/g, vscode.l10n.t("welcome.title"));
-    html = html.replace(/{{welcomeItem1}}/g, vscode.l10n.t("welcome.item1"));
-    html = html.replace(/{{welcomeItem2}}/g, vscode.l10n.t("welcome.item2"));
-    html = html.replace(/{{welcomeItem3}}/g, vscode.l10n.t("welcome.item3"));
-    html = html.replace(/{{welcomeItem4}}/g, vscode.l10n.t("welcome.item4"));
-    html = html.replace(/{{progressLoadingFiles}}/g, vscode.l10n.t("progress.loadingFiles"));
-    html = html.replace(/{{tooltipRefreshContext}}/g, vscode.l10n.t("tooltip.refreshContext"));
     
     return html;
   }

@@ -28,12 +28,12 @@
             </details>
             
             <div id="welcome-message" style="display: none;">
-                <h3>{{welcomeTitle}}</h3>
+                <h3 id="welcome-title"></h3>
                 <ul>
-                    <li>{{welcomeItem1}}</li>
-                    <li>{{welcomeItem2}}</li>
-                    <li>{{welcomeItem3}}</li>
-                    <li>{{welcomeItem4}}</li>
+                    <li id="welcome-item-1"></li>
+                    <li id="welcome-item-2"></li>
+                    <li id="welcome-item-3"></li>
+                    <li id="welcome-item-4"></li>
                 </ul>
             </div>
 
@@ -60,11 +60,11 @@
                     </div>
                     <div id="context-status-container" style="display: flex; align-items: center; gap: 8px;">
                         <span id="token-count-label">Tokens: 0 / 0</span>
-                        <button id="refresh-context-btn" title="{{tooltipRefreshContext}}"><i class="codicon codicon-sync"></i></button>
+                        <button id="refresh-context-btn"><i class="codicon codicon-sync"></i></button>
                     </div>
                     <div id="context-loading-spinner" style="display: none; align-items: center; gap: 8px; font-size: 0.9em; color: var(--vscode-descriptionForeground);">
                         <div class="spinner"></div>
-                        <span>{{progressLoadingFiles}}</span>
+                        <span id="loading-files-text"></span>
                     </div>
                 </div>
                 <div class="model-selector-container">
@@ -112,6 +112,20 @@
 
     <script>
         const vscode = acquireVsCodeApi();
+        // FIX: All l10n strings are injected here as a JSON object
+        const l10n = '{{l10n}}';
+
+        // FIX: Populate UI with translated strings on load
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('welcome-title').innerHTML = l10n.welcomeTitle;
+            document.getElementById('welcome-item-1').innerHTML = l10n.welcomeItem1;
+            document.getElementById('welcome-item-2').innerHTML = l10n.welcomeItem2;
+            document.getElementById('welcome-item-3').innerHTML = l10n.welcomeItem3;
+            document.getElementById('welcome-item-4').innerHTML = l10n.welcomeItem4;
+            document.getElementById('loading-files-text').textContent = l10n.progressLoadingFiles;
+            document.getElementById('refresh-context-btn').title = l10n.tooltipRefreshContext;
+        });
+
         const messagesDiv = document.getElementById('messages');
         const chatMessagesContainer = document.getElementById('chat-messages-container');
         const messageInput = document.getElementById('messageInput');
@@ -536,7 +550,7 @@
             enhanceWithCommandButtons(messageWrapper);
             
             const applyableBlocks = messageWrapper.querySelectorAll('[data-action="applyFileContent"], [data-action="applyPatchContent"]');
-            if (applyableBlocks.length >= 1) {
+            if (applyableBlocks.length > 1) {
                 const applyAllBtn = document.createElement('button');
                 applyAllBtn.className = 'msg-action-btn';
                 applyAllBtn.innerHTML = '<i class="codicon codicon-check-all"></i> Apply All';
@@ -1328,7 +1342,9 @@
                     {
                         const stream = streamingMessages[message.id];
                         if (stream) {
-                            clearTimeout(stream.timer);
+                            if (stream.timer) {
+                                clearTimeout(stream.timer);
+                            }
                             delete streamingMessages[message.id];
                         }
 

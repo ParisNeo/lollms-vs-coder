@@ -509,6 +509,23 @@ export class AgentManager {
                         } catch (error: any) {
                             return { success: false, output: `Error writing to launch.json: ${error.message}` };
                         }
+                case 'deselect_context_files': {
+                    if (!task.parameters.files || !Array.isArray(task.parameters.files)) {
+                        return { success: false, output: "Error: 'files' parameter (an array of strings) is required for deselect_context_files action." };
+                    }
+                    const fileTreeProvider = this.contextManager.getContextStateProvider();
+                    if (!fileTreeProvider) {
+                        return { success: false, output: "Error: File Tree Provider is not available." };
+                    }
+                    if (!this.currentWorkspaceFolder) {
+                        return { success: false, output: "Error: No active workspace folder." };
+                    }
+                    const urisToDeselect: vscode.Uri[] = task.parameters.files.map((f: string) => vscode.Uri.joinPath(this.currentWorkspaceFolder!.uri, f));
+                    await fileTreeProvider.setStateForUris(urisToDeselect, 'tree-only');
+    
+                    const fileListString = task.parameters.files.map((f: string) => `- ${f}`).join('\n');
+                    return { success: true, output: `Successfully deselected ${task.parameters.files.length} files from the context:\n${fileListString}` };
+                }
 
                 default:
                     return { success: false, output: `Error: Unknown simple action '${task.action}'.` };

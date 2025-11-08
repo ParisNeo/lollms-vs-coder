@@ -17,6 +17,7 @@
     "command.executeScript.title": "Lollms: 执行脚本",
     "command.selectPythonInterpreter.title": "Lollms: 选择 Python 解释器",
     "command.inspectCode.title": "Lollms: 检查代码",
+    "command.inspectFile.title": "使用 Lollms 检查",
     "command.debugErrorWithAI.title": "Lollms: 修复此错误",
     "command.debugErrorSendToDiscussion.title": "Lollms: 发送错误到讨论",
     "command.buildCodeGraph.title": "构建代码图",

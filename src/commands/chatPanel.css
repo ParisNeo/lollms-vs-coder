@@ -150,7 +150,22 @@ mark.current-match {
     color: var(--vscode-descriptionForeground);
     font-style: italic;
 }
-
+.diagram-container {
+    background-color: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-panel-border);
+    border-radius: 8px;
+    padding: 16px;
+    margin: 12px 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    overflow: auto;
+}
+.diagram-container svg {
+    max-width: 100%;
+    height: auto;
+    background-color: transparent; /* Ensure SVG background is transparent */
+}
 .code-collapsible, .generation-block {
     background-color: var(--code-bg);
     border: 1px solid var(--code-border);
@@ -420,12 +435,11 @@ details[open] > .code-summary::before {
 .message:hover .message-actions {
     display: flex;
 }
-.msg-action-btn {
-    background: var(--vscode-sideBar-background);
-    opacity: 0.7;
+.message-actions .msg-action-btn {
+    background: var(--vscode-button-secondaryBackground);
 }
-.msg-action-btn:hover {
-    opacity: 1;
+.message-actions .msg-action-btn:hover {
+    background: var(--vscode-button-secondaryHoverBackground);
 }
 .agent-mode-toggle {
     display: flex;
@@ -760,19 +774,65 @@ details[open] > summary::before {
     padding: 12px;
     background-color: var(--vscode-editor-background);
 }
-.edit-textarea {
-    flex: 1;
-    resize: none;
-    border: 1px solid var(--vscode-input-border);
-    background-color: var(--vscode-input-background);
-    color: var(--vscode-input-foreground);
-    padding: 8px;
-    font-family: var(--vscode-editor-font-family);
-    font-size: 14px;
-    line-height: 1.6;
-    outline: none;
+.edit-toolbar {
+    display: flex;
+    gap: 4px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--vscode-editorWidget-background);
+}
+.edit-tool-btn {
+    background: none;
+    border: none;
+    color: var(--vscode-icon-foreground);
+    cursor: pointer;
+    padding: 4px;
     border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.edit-tool-btn:hover {
+    background-color: var(--vscode-toolbar-hoverBackground);
+}
+.edit-codemirror-container .CodeMirror {
+    border: 1px solid var(--vscode-input-border);
+    border-radius: 4px;
+    height: auto;
     min-height: 150px;
+    font-family: var(--vscode-editor-font-family);
+}
+.edit-codemirror-container .CodeMirror-scroll {
+    min-height: 150px;
+}
+.CodeMirror-gutters {
+    background: var(--vscode-editorGutter-background);
+    border-right: 1px solid var(--vscode-panel-border);
+}
+.CodeMirror-dialog {
+  background: var(--vscode-editorWidget-background);
+  color: var(--vscode-editorWidget-foreground);
+  border: 1px solid var(--vscode-panel-border);
+  border-radius: 4px;
+  padding: 8px;
+  box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+}
+.CodeMirror-dialog input {
+  background-color: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border);
+  color: var(--vscode-input-foreground);
+  padding: 4px 8px;
+  border-radius: 4px;
+  outline: none;
+}
+.CodeMirror-dialog button {
+    background-color: var(--vscode-button-secondaryBackground);
+    color: var(--vscode-button-secondaryForeground);
+    border: none;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+.CodeMirror-dialog button:hover {
+    background-color: var(--vscode-button-secondaryHoverBackground);
 }
 .edit-buttons {
     display: flex;
@@ -800,4 +860,18 @@ details[open] > summary::before {
 }
 .edit-cancel-btn:hover {
     background-color: var(--vscode-button-secondaryHoverBackground);
+}
+#message-insertion-controls {
+    text-align: center;
+    padding: 15px 0;
+    margin-top: 10px;
+    border-top: 1px dashed var(--vscode-panel-border);
+}
+#message-insertion-controls button {
+    margin: 0 5px;
+    font-size: 13px;
+    padding: 6px 12px;
+}
+.new-message-editor-wrapper {
+    margin-bottom: 15px;
 }

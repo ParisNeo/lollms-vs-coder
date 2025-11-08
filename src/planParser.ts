@@ -111,7 +111,8 @@ Your task is to generate a NEW set of tasks to recover from this failure and com
         const simpleActions = new Set([
             "execute_command", "read_file", "list_files", "get_environment_details",
             "request_user_input", "set_launch_entrypoint", "create_python_environment",
-            "set_vscode_python_interpreter", "install_python_dependencies", "execute_python_script"
+            "set_vscode_python_interpreter", "install_python_dependencies", "execute_python_script",
+            "deselect_context_files"
         ]);
         const agenticActions = new Set(["generate_code", "auto_select_context_files"]);
     
@@ -281,6 +282,8 @@ Your JSON output must conform to this schema, using only the actions listed belo
     *   \`"parameters": { "env_name": "venv", "dependencies": ["string"] }\`
 *   **\`"action": "execute_python_script"\`**
     *   \`"parameters": { "env_name": "venv", "script_path": "string" }\`
+*   **\`"action": "deselect_context_files"\`**
+    *   \`"parameters": { "files": ["string"] }\` (A list of relative file paths to deselect from the AI's context. This sets them back to the default 'tree-only' state to save tokens.)
 
 #### **\`agentic_action\`**
 

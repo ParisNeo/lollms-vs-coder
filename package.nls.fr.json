@@ -17,6 +17,7 @@
     "command.executeScript.title": "Lollms: Exécuter le Script",
     "command.selectPythonInterpreter.title": "Lollms: Sélectionner l'interpréteur Python",
     "command.inspectCode.title": "Lollms: Inspecter le Code",
+    "command.inspectFile.title": "Inspecter avec Lollms",
     "command.debugErrorWithAI.title": "Lollms: Corriger cette erreur",
     "command.debugErrorSendToDiscussion.title": "Lollms: Envoyer l'Erreur à la Discussion",
     "command.buildCodeGraph.title": "Construire le Graphe de Code",

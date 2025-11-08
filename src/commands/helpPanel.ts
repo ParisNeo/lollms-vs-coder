@@ -64,10 +64,9 @@ export class HelpPanel {
         h3 { font-size: 1.3em; margin-top: 2em; font-weight: 500; }
         p, li { font-size: 1em; color: var(--vscode-foreground); }
         code, pre { font-family: var(--vscode-editor-font-family); background-color: var(--vscode-textCodeBlock-background); border: 1px solid var(--vscode-textBlockQuote-border); padding: 0.2em 0.4em; border-radius: 4px; }
-        pre { padding: 1em; white-space: pre-wrap; }
+        pre { padding: 1em; white-space: pre-wrap; word-wrap: break-word; }
         .codicon { font-family: "codicon"; display: inline-block; vertical-align: middle; font-size: 1.1em; margin-right: 5px;}
         .key-feature { font-weight: 600; color: var(--vscode-textLink-foreground); }
-        .status-bar-example { display: flex; gap: 15px; background-color: var(--vscode-statusBar-background); color: var(--vscode-statusBar-foreground); padding: 5px 15px; border-radius: 5px; margin: 1em 0; align-items: center; font-family: var(--vscode-editor-font-family); }
         ul { padding-left: 20px; }
         li { margin-bottom: 0.5em; }
         blockquote {
@@ -87,99 +86,92 @@ export class HelpPanel {
 
         <p>Welcome! This guide provides a detailed overview of all features available in the Lollms VS Coder extension, from basic chat to the advanced, self-correcting AI Agent.</p>
 
-        <h2><span class="codicon codicon-robot"></span>Agent Mode: Your Autonomous Assistant</h2>
-        <p>Agent Mode is the most powerful feature. It allows the AI to create and execute a multi-step plan to achieve a complex objective, like building an entire application from a single prompt. It can create files, write code, run commands, and even correct its own mistakes.</p>
-        
-        <h3>How to Use Agent Mode</h3>
+        <h2><span class="codicon codicon-book"></span>Core Concepts</h2>
+
+        <h3><span class="codicon codicon-comment-discussion"></span>The AI Chat Panel</h3>
+        <p>The chat panel is your central hub for interacting with Lollms. Start a new chat from the <strong>Discussions</strong> view in the Lollms sidebar. Here, you can ask questions, request code, and give high-level objectives to the AI.</p>
+
+        <h3><span class="codicon codicon-robot"></span>Agent Mode</h3>
+        <p>This is the most powerful feature. When you toggle <strong><span class="key-feature">🤖 Agent Mode</span></strong> on, you're giving the AI an objective to complete. The AI will:</p>
         <ol>
-            <li>Open the AI Chat panel by clicking <span class="codicon codicon-comment-discussion"></span><strong>Lollms Chat</strong> in the status bar.</li>
-            <li>In the input area, click the <span class="key-feature">🤖 Agent Mode</span> toggle switch.</li>
-            <li>The agent will confirm its activation. Type your high-level objective in the input box (e.g., "build a snake game in python with a virtual environment") and press Enter.</li>
+            <li><strong>Formulate a Plan</strong>: It creates a step-by-step plan which is displayed in the chat window.</li>
+            <li><strong>Execute Tasks</strong>: It executes each task, which can include creating files, running shell commands, or generating code with sub-agents.</li>
+            <li><strong>Self-Correct</strong>: If a task fails (e.g., a script has an error), the agent analyzes the failure and revises its plan to fix the mistake.</li>
         </ol>
 
-        <h3>Understanding the Execution Plan</h3>
-        <p>Once you provide an objective, the agent creates an <span class="key-feature">Execution Plan</span>, a dynamic list of tasks displayed in the chat. The agent executes these tasks sequentially, showing the status of each:</p>
+        <h3><span class="codicon codicon-brain"></span>AI Context Management</h3>
+        <p>The <strong>AI Context Files</strong> view in the sidebar gives you precise control over what project information the AI sees. Click any file or folder to cycle its state:</p>
         <ul>
-            <li><span class="codicon codicon-circle-large"></span><strong>Pending:</strong> The task is waiting to be executed.</li>
-            <li><span class="codicon codicon-sync spin"></span><strong>In Progress:</strong> The agent is currently working on this task.</li>
-            <li><span class="codicon codicon-check"></span><strong>Completed:</strong> The task finished successfully.</li>
-            <li><span class="codicon codicon-error"></span><strong>Failed:</strong> The task encountered an error.</li>
+            <li><span style="color: var(--vscode-gitDecoration-addedResourceForeground);"><strong>✓ Included</strong></span>: The file's path AND its full content are sent to the AI.</li>
+            <li><strong>□ Tree-Only (Default)</strong>: Only the file's path is included in the project tree structure. Its content is hidden, saving tokens.</li>
+            <li><span style="color: var(--vscode-gitDecoration-ignoredResourceForeground);"><strong>⊘ Excluded</strong></span>: The file or folder is completely hidden from the AI.</li>
         </ul>
+        <blockquote>Use the <strong><span class="codicon codicon-wand"></span> Auto-Select Context</strong> button in the 'Actions' view to have the AI intelligently pick the most relevant files for an objective.</blockquote>
 
-        <h3>Autonomous Self-Correction</h3>
-        <p>When a task fails, the agent will automatically try to fix the problem. It analyzes the error output and generates a new set of tasks to correct the mistake. The number of self-correction attempts can be configured in the settings.</p>
+        <h2><span class="codicon codicon-tools"></span>Detailed Feature Guide</h2>
+
+        <h3>Interacting with AI Responses in Chat</h3>
+        <p>The AI can generate special, interactive blocks in its responses.</p>
+        <ul>
+            <li><strong><span class="codicon codicon-play"></span>Execute Scripts</strong>: Code blocks for shell scripts (Python, Bash, PowerShell) have an <strong>Execute</strong> button. This runs the script, and the output is automatically fed back to the AI for analysis.</li>
+            <li><strong><span class="codicon codicon-search"></span>Inspect Code</strong>: Check AI-generated code for bugs and vulnerabilities. The inspector can auto-fix minor issues or provide detailed warnings.</li>
+            <li><strong><span class="codicon codicon-circuit-board"></span>Render Diagrams</strong>: If the AI returns a code block with the language <code>svg</code> or <code>mermaid</code>, it will be automatically rendered as a visual diagram directly in the chat.</li>
+            <li><strong><span class="codicon codicon-device-camera"></span>Generate Images</strong>: An <code>image_prompt</code> block prefixed with a file path will show a <strong><span class="codicon codicon-sparkle"></span>Generate</strong> button to create the image and save it to your project.</li>
+        </ul>
         
-        <h3>User Intervention</h3>
-        <p>If the agent cannot fix a problem on its own, it will pause and ask for your help with a dialog box:</p>
-        <ul>
-            <li><strong>Stop:</strong> Halts the execution of the plan permanently.</li>
-            <li><strong>Continue Anyway:</strong> Ignores the error and proceeds to the next task (use with caution).</li>
-            <li><strong>View Log:</strong> Opens a panel showing the detailed error message from the failed task.</li>
-        </ul>
-
-        <h2><span class="codicon codicon-comment-discussion"></span>The AI Chat Panel & Code Generation</h2>
-        <p>For general-purpose questions, brainstorming, or getting quick code snippets, use the standard AI Chat. The AI can also create, modify, and manage your project files directly from the chat.</p>
-        
-        <h3>Interacting with AI Responses</h3>
-        <ul>
-            <li><strong><span class="codicon codicon-play"></span>Execute</strong>: Code blocks for shell scripts (Python, Bash, PowerShell) have an Execute button. This runs the script in a temporary file, and the output is automatically fed back to the AI for analysis.</li>
-            <li><strong><span class="codicon codicon-search"></span>Inspect</strong>: Check AI-generated code for bugs and vulnerabilities. The inspector can auto-fix minor issues or provide detailed warnings.</li>
-        </ul>
-
         <h3>Advanced File Operations</h3>
-        <p>The AI can perform various file operations by generating special code blocks with interactive buttons. The method it chooses can be configured in the extension settings under <code>File Update Method</code>.</p>
+        <p>The AI can perform file operations by generating special code blocks. The method it chooses can be configured in the settings under <code>File Update Method</code>.</p>
         <ul>
-            <li><span class="key-feature">Full File Updates:</span> By default, the AI replaces entire files. It signals this with a <code>File: path/to/file.ext</code> line above a code block. Clicking the <strong><span class="codicon codicon-tools"></span>Apply to File</strong> button will show a diff view before overwriting the file.</li>
-            <li><span class="key-feature">Applying Diffs:</span> In 'Diff Mode', the AI provides only the changes. It signals this with a <code>Diff: path/to/file.ext</code> or <code>Patch: ...</code> line. Clicking <strong><span class="codicon codicon-tools"></span>Apply Patch</strong> will apply the changes to the existing file.</li>
-            <li><span class="key-feature">Renaming/Moving Files:</span> The AI can request a file rename or move by generating a <code>rename</code> code block. A <strong><span class="codicon codicon-git-compare"></span>Move/Rename</strong> button will appear.
+            <li><strong>Full File Updates</strong>: Signaled with a <code>File: path/to/file.ext</code> line above a code block. Clicking the <strong><span class="codicon codicon-tools"></span>Apply to File</strong> button will show a diff view before overwriting the file.</li>
+            <li><strong>Applying Diffs/Patches</strong>: Signaled with a <code>Diff: path/to/file.ext</code> or <code>Patch: ...</code> line. Clicking <strong><span class="codicon codicon-tools"></span>Apply Patch</strong> will apply the changes to the existing file.</li>
+            <li><strong>Renaming/Moving Files</strong>: The AI can request a file rename or move by generating a <code>rename</code> code block. A <strong><span class="codicon codicon-git-compare"></span>Move/Rename</strong> button will appear.
                 <pre><code>\`\`\`rename
 path/to/old_file.ext -> path/to/new_file.ext
 \`\`\`</code></pre>
             </li>
-            <li><span class="key-feature">Deleting Files:</span> The AI can request file deletions by generating a <code>delete</code> code block. A <strong><span class="codicon codicon-trash"></span>Delete</strong> button will appear, which will prompt for confirmation before moving files to the trash.
+            <li><strong>Deleting Files</strong>: The AI can request file deletions by generating a <code>delete</code> code block. A <strong><span class="codicon codicon-trash"></span>Delete</strong> button will appear, which will prompt for confirmation.
                 <pre><code>\`\`\`delete
 path/to/file_to_delete.ext
 another/file/to_delete.js
 \`\`\`</code></pre>
             </li>
-            <li><span class="key-feature">Requesting Context:</span> If the AI needs to see files that are not in its context, it can generate a <code>select</code> block. A <strong><span class="codicon codicon-add"></span>Add to Context</strong> button will appear.
+            <li><strong>Requesting Context</strong>: If the AI needs to see files that are not in its context, it can generate a <code>select</code> block. A <strong><span class="codicon codicon-add"></span>Add to Context</strong> button will appear.
                 <pre><code>\`\`\`select
 src/api/auth.ts
 src/utils/database.ts
 \`\`\`</code></pre>
             </li>
-            <li><span class="key-feature">Image Generation:</span> If the AI returns an <code>image_prompt</code> block prefixed with a file path, a <strong><span class="codicon codicon-sparkle"></span>Generate</strong> button will appear. Clicking it creates the image and saves it to your project.</li>
         </ul>
 
         <h3>The "More Actions" <code>...</code> Menu</h3>
         <p>This menu, located to the left of the chat input, provides powerful project-level commands:</p>
         <ul>
-            <li><strong><span class="codicon codicon-add"></span>Attach Files</strong>: Manually provide files (including text and images) to the AI for analysis or questions.</li>
-            <li><strong><span class="codicon codicon-target"></span>Set Project Entry Point</strong>: Define the main executable file (\`.js\`, \`.py\`, etc.) for your project. This is used by the "Execute Project" command.</li>
+            <li><strong><span class="codicon codicon-add"></span>Attach Files</strong>: Manually provide files (including text and images) to the AI for analysis.</li>
+            <li><strong><span class="codicon codicon-target"></span>Set Project Entry Point</strong>: Define the main executable file (<code>.js</code>, <code>.py</code>, etc.) for your project. This is used by the "Execute Project" command.</li>
             <li><strong><span class="codicon codicon-play-circle"></span>Execute Project</strong>: Runs your project using the configured entry point. If it fails, the AI automatically analyzes the error output and suggests a fix.</li>
         </ul>
-
-        <h2><span class="codicon codicon-brain"></span>AI Context Management</h2>
-        <p>The <span class="key-feature">AI Context Files</span> view in the Lollms sidebar gives you precise control over what project information the AI sees. Click any file or folder to cycle through its three states:</p>
-        <ul>
-            <li><span style="color: var(--vscode-gitDecoration-addedResourceForeground);">✓</span> <strong>Included</strong>: The file's path AND its full content are sent to the AI.</li>
-            <li><span style="opacity: 0.7;">□</span> <strong>Tree-Only (Default)</strong>: Only the file's path is included in the project tree structure sent to the AI. Its content is hidden, saving tokens.</li>
-            <li><span style="color: var(--vscode-gitDecoration-ignoredResourceForeground);">⊘</span> <strong>Excluded</strong>: The file or folder is completely hidden from the AI.</li>
-        </ul>
-        <blockquote>Use the <strong><span class="codicon codicon-wand"></span>Auto-Select Context</strong> button in the new 'Actions' panel to have the AI intelligently pick the most relevant files for a given objective.</blockquote>
 
         <h2><span class="codicon codicon-lightbulb"></span>In-Editor Tools</h2>
         <ul>
             <li><strong>Code Actions</strong>: Select code in the editor, click the <code>Lollms Actions...</code> CodeLens that appears, and choose from default actions (Explain, Refactor, Find Bugs, Generate Docs) or trigger your own custom prompts.</li>
             <li><strong>Inline Autocomplete</strong>: Enable "ghost text" suggestions in the extension settings for real-time, single-line code completion as you type.</li>
-            <li><strong>Jupyter Notebooks</strong>: When a <code>.ipynb</code> file is active, use the icons in the cell toolbar to <strong>Enhance Cell</strong> (refactor) or <strong>Generate Next Cell</strong> based on the current one.</li>
+            <li><strong>Jupyter Notebooks</strong>: When a <code>.ipynb</code> file is active, use the icons in the cell toolbar to <strong><span class="codicon codicon-sparkle"></span>Enhance Cell</strong> (refactor) or <strong><span class="codicon codicon-wand"></span>Generate Next Cell</strong>.</li>
+            <li><strong>Debugging</strong>: When an exception occurs during a debug session, Lollms automatically captures it. Buttons will appear in the debug toolbar and as a CodeLens above the error line, allowing you to send the error directly to the AI for analysis.</li>
         </ul>
 
-        <h2><span class="codicon codicon-source-control"></span>Git, Sidebar, and Configuration</h2>
+        <h2><span class="codicon codicon-sidebar-left"></span>Sidebar Views & Git</h2>
         <ul>
-            <li><strong>Git Commit Messages</strong>: Click the Lollms icon in the Source Control panel's title bar to generate a conventional commit message based on your staged changes.</li>
-            <li><strong>Sidebar Views</strong>: Use the sidebar to manage Discussions (including creating temporary ones), see Running Processes, and create/organize your custom Prompts into groups. The new 'Actions' view centralizes global commands.</li>
-            <li><strong>Configuration <span class="codicon codicon-gear"></span></strong>: Access the settings UI from the 'Actions' panel to configure your API endpoint, select models, and customize agent behavior.</li>
+            <li><strong>Git Commit Messages</strong>: Click the Lollms icon in the Source Control panel's title bar to generate a conventional commit message based on your changes.</li>
+            <li><strong>Sidebar Views</strong>: The Lollms sidebar organizes all features into collapsible views:
+                <ul>
+                    <li><strong>Actions:</strong> Global commands like Settings, Help, and context management.</li>
+                    <li><strong>Discussions:</strong> Manage all your chat histories, including creating temporary chats and organizing them into groups.</li>
+                    <li><strong>Code Explorer:</strong> Visualize your project's structure as an interactive graph.</li>
+                    <li><strong>Skills:</strong> Save and reuse important code snippets or instructions.</li>
+                    <li><strong>Prompts:</strong> Create and manage your library of custom prompts.</li>
+                    <li><strong>Running Processes:</strong> View and cancel any active AI tasks.</li>
+                </ul>
+            </li>
         </ul>
         
     </div>

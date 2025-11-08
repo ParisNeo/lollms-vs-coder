@@ -232,6 +232,61 @@ User preferences: ${agentPersonaPrompt}`;
     return { systemPrompt, userPrompt };
 }
 
+async function buildDebugErrorPrompt(
+    errorDetails: { message: string, stack?: string, filePath?: vscode.Uri, line?: number } | null, 
+    contextManager: ContextManager, 
+    contextStateProvider: ContextStateProvider | undefined
+): Promise<string> {
+    if (!errorDetails) {
+        return "No debug error has been captured.";
+    }
+
+    let prompt = `I'm encountering an error while debugging my project. Can you help me fix it?\n\n**Error Message:**\n\`\`\`\n${errorDetails.message}\n\`\`\`\n\n**Full Stack Trace:**\n\`\`\`\n${errorDetails.stack || 'No stack trace available.'}\n\`\`\``;
+
+    if (errorDetails.filePath && errorDetails.line) {
+        const fileUri = errorDetails.filePath;
+        const relativePath = vscode.workspace.asRelativePath(fileUri, false);
+        prompt += `\n\nThe error seems to originate in the file \`${relativePath}\` at line ${errorDetails.line}.`;
+
+        try {
+            const document = await vscode.workspace.openTextDocument(fileUri);
+            const errorLineContent = document.lineAt(errorDetails.line - 1).text;
+            prompt += `\n\n**Here is the line of code that is causing the error:**\n\`\`\`\n${errorLineContent.trim()}\n\`\`\``;
+        } catch (e) {
+            console.error("Lollms: Could not read the specific error line from the document.", e);
+        }
+
+        let fileIsInContext = false;
+        if (contextStateProvider) {
+            const fileState = contextStateProvider.getStateForUri(fileUri);
+            if (fileState === 'included') {
+                fileIsInContext = true;
+            }
+        }
+
+        if (fileIsInContext) {
+            prompt += `\n\nThe file \`${relativePath}\` is already included in your context. Please analyze the error and provide a fix.`;
+        } else {
+            try {
+                const fileContent = await vscode.workspace.fs.readFile(fileUri);
+                const contentString = Buffer.from(fileContent).toString('utf8');
+                const document = await vscode.workspace.openTextDocument(fileUri);
+                const languageId = document.languageId;
+
+                prompt += `\n\n**Here is the full content of \`${relativePath}\` for your analysis:**\n\`\`\`${languageId}\n${contentString}\n\`\`\`\n\nPlease analyze the error and the file content, then provide a fix.`;
+            } catch (e) {
+                console.error("Failed to read file from stack trace for debug prompt:", e);
+                prompt += `\n\nI was unable to read the content of the file. Please provide a general analysis based on the error and stack trace.`;
+            }
+        }
+    } else {
+         const contextContent = await contextManager.getContextContent();
+         prompt += `\n\nHere is the current project context which might be relevant:\n${contextContent.text}\n\nPlease analyze the error and provide a fix.`;
+    }
+
+    return prompt;
+}
+
 
 export async function activate(context: vscode.ExtensionContext) {
     console.log('Lollms VS Coder is now active!');
@@ -651,6 +706,67 @@ Please analyze this output (e.g., error log, script output, or configuration tex
             } else {
                 vscode.window.showInformationMessage("Please select some code to inspect.");
             }
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.inspectFile', async (fileUri: vscode.Uri) => {
+        if (!fileUri) {
+            if (vscode.window.activeTextEditor) {
+                fileUri = vscode.window.activeTextEditor.document.uri;
+            } else {
+                vscode.window.showInformationMessage("Please select a file to inspect from the explorer or open it in the editor.");
+                return;
+            }
+        }
+    
+        if (!discussionManager) {
+            vscode.window.showErrorMessage("Cannot start a discussion, a workspace must be active.");
+            return;
+        }
+    
+        try {
+            const fileContentBytes = await vscode.workspace.fs.readFile(fileUri);
+            const fileContent = Buffer.from(fileContentBytes).toString('utf8');
+            let languageId = '';
+            try {
+                const document = await vscode.workspace.openTextDocument(fileUri);
+                languageId = document.languageId;
+            } catch (e) {
+                const ext = path.extname(fileUri.fsPath).substring(1);
+                languageId = ext || 'plaintext';
+            }
+            
+            const relativePath = vscode.workspace.asRelativePath(fileUri, false);
+    
+            const discussion = discussionManager.createNewDiscussion();
+            await discussionManager.saveDiscussion(discussion);
+            discussionTreeProvider?.refresh();
+    
+            const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, discussion.id);
+            setupChatPanel(panel);
+            await panel.loadDiscussion();
+    
+            const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+            const inspectorModel = config.get<string>('inspectorModelName') || discussion.model || lollmsAPI.getModelName();
+            const systemPrompt = getProcessedSystemPrompt('chat');
+    
+            const inspectionPrompt = `Your task is to act as a senior code inspector. Analyze the following ${languageId} file (\`${relativePath}\`) for errors, bugs, vulnerabilities, and malicious content.
+
+If you find any issues, you MUST provide a corrected version of the entire file using the 'File: ${relativePath}' syntax.
+
+After the file block, provide a brief summary of the changes you made in a markdown list.
+
+If the code is perfect and has no issues, simply respond with "The code looks good, no issues found."
+
+Here is the file content:
+\`\`\`${languageId}
+${fileContent}
+\`\`\`
+`;
+            await panel.sendIsolatedMessage(systemPrompt, inspectionPrompt, inspectorModel);
+    
+        } catch (error: any) {
+            vscode.window.showErrorMessage(`Failed to inspect file: ${error.message}`);
         }
     }));
         
@@ -1831,6 +1947,7 @@ Please analyze this output (e.g., error log, script output, or configuration tex
     }));
 
     context.subscriptions.push(vscode.debug.registerDebugAdapterTrackerFactory('*', new LollmsDebugAdapterTrackerFactory()));
+    
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.debugErrorWithAI', async () => {
         if (!debugErrorManager.lastError) {
             vscode.window.showInformationMessage("Lollms: No debug error has been captured.");
@@ -1842,42 +1959,7 @@ Please analyze this output (e.g., error log, script output, or configuration tex
             return;
         }
     
-        const errorDetails = debugErrorManager.lastError;
-        let prompt = `I'm encountering an error while debugging my project. Can you help me fix it?\n\n**Error Message:**\n\`\`\`\n${errorDetails.message}\n\`\`\`\n\n**Full Stack Trace:**\n\`\`\`\n${errorDetails.stack || 'No stack trace available.'}\n\`\`\``;
-    
-        if (errorDetails.filePath && errorDetails.line) {
-            const fileUri = errorDetails.filePath;
-            const relativePath = vscode.workspace.asRelativePath(fileUri, false);
-            prompt += `\n\nThe error seems to originate in the file \`${relativePath}\` at line ${errorDetails.line}.`;
-    
-            let fileIsInContext = false;
-            if (contextStateProvider) {
-                const fileState = contextStateProvider.getStateForUri(fileUri);
-                if (fileState === 'included') {
-                    fileIsInContext = true;
-                }
-            }
-    
-            if (fileIsInContext) {
-                prompt += ` The file \`${relativePath}\` is already included in your context. Please analyze the error and provide a fix.`;
-            } else {
-                try {
-                    const fileContent = await vscode.workspace.fs.readFile(fileUri);
-                    const contentString = Buffer.from(fileContent).toString('utf8');
-                    const document = await vscode.workspace.openTextDocument(fileUri);
-                    const languageId = document.languageId;
-    
-                    prompt += `\n\n**Here is the full content of \`${relativePath}\` for your analysis:**\n\`\`\`${languageId}\n${contentString}\n\`\`\`\n\nPlease analyze the error and the file content, then provide a fix.`;
-                } catch (e) {
-                    console.error("Failed to read file from stack trace for debug prompt:", e);
-                    prompt += `\n\nI was unable to read the content of the file. Please provide a general analysis based on the error and stack trace.`;
-                }
-            }
-        } else {
-             const contextContent = await contextManager.getContextContent();
-             prompt += `\n\nHere is the current project context which might be relevant:\n${contextContent.text}\n\nPlease analyze the error and provide a fix.`;
-        }
-    
+        const prompt = await buildDebugErrorPrompt(debugErrorManager.lastError, contextManager, contextStateProvider);
         await startDiscussionWithInitialPrompt(prompt);
         debugErrorManager.clearError();
     }));
@@ -1888,41 +1970,7 @@ Please analyze this output (e.g., error log, script output, or configuration tex
             return;
         }
 
-        const errorDetails = debugErrorManager.lastError;
-        let prompt = `I'm encountering an error while debugging my project. Can you help me fix it?\n\n**Error Message:**\n\`\`\`\n${errorDetails.message}\n\`\`\`\n\n**Full Stack Trace:**\n\`\`\`\n${errorDetails.stack || 'No stack trace available.'}\n\`\`\``;
-    
-        if (errorDetails.filePath && errorDetails.line) {
-            const fileUri = errorDetails.filePath;
-            const relativePath = vscode.workspace.asRelativePath(fileUri, false);
-            prompt += `\n\nThe error seems to originate in the file \`${relativePath}\` at line ${errorDetails.line}.`;
-    
-            let fileIsInContext = false;
-            if (contextStateProvider) {
-                const fileState = contextStateProvider.getStateForUri(fileUri);
-                if (fileState === 'included') {
-                    fileIsInContext = true;
-                }
-            }
-    
-            if (fileIsInContext) {
-                prompt += ` The file \`${relativePath}\` is already included in your context. Please analyze the error and provide a fix.`;
-            } else {
-                try {
-                    const fileContent = await vscode.workspace.fs.readFile(fileUri);
-                    const contentString = Buffer.from(fileContent).toString('utf8');
-                    const document = await vscode.workspace.openTextDocument(fileUri);
-                    const languageId = document.languageId;
-    
-                    prompt += `\n\n**Here is the full content of \`${relativePath}\` for your analysis:**\n\`\`\`${languageId}\n${contentString}\n\`\`\`\n\nPlease analyze the error and the file content, then provide a fix.`;
-                } catch (e) {
-                    console.error("Failed to read file from stack trace for debug prompt:", e);
-                    prompt += `\n\nI was unable to read the content of the file. Please provide a general analysis based on the error and stack trace.`;
-                }
-            }
-        } else {
-             const contextContent = await contextManager.getContextContent();
-             prompt += `\n\nHere is the current project context which might be relevant:\n${contextContent.text}\n\nPlease analyze the error and provide a fix.`;
-        }
+        const prompt = await buildDebugErrorPrompt(debugErrorManager.lastError, contextManager, contextStateProvider);
 
         const currentPanel = ChatPanel.currentPanel;
         if (currentPanel) {

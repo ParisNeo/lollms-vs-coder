@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.14",
+  "version": "0.5.18",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -94,6 +94,10 @@
       {
         "command": "lollms-vs-coder.inspectCode",
         "title": "%command.inspectCode.title%"
+      },
+      {
+        "command": "lollms-vs-coder.inspectFile",
+        "title": "%command.inspectFile.title%"
       },
       {
         "command": "lollms-vs-coder.debugErrorWithAI",
@@ -553,6 +557,11 @@
         {
           "submenu": "lollms-vs-coder.setContextSubmenu",
           "group": "1_modification@0"
+        },
+        {
+          "command": "lollms-vs-coder.inspectFile",
+          "group": "1_modification@1",
+          "when": "!resourceIsFolder"
         }
       ],
       "editor/context": [

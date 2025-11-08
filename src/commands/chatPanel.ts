@@ -144,8 +144,11 @@ export class ChatPanel {
         this.displayPlan(discussion.plan);
         this.updateGeneratingState();
 
-        this._fetchAndSetModels();
-        this._updateContextAndTokens();
+        // Defer background loading to prevent UI blocking
+        setTimeout(() => {
+            this._fetchAndSetModels();
+            this._updateContextAndTokens();
+        }, 100);
 
     } else {
         this._panel.webview.postMessage({ command: 'updateTokenProgress' }); // Ends loading state
@@ -177,6 +180,7 @@ export class ChatPanel {
         this._panel.webview.postMessage({ command: 'updateTokenProgress' }); // This will hide the spinner
         return;
     }
+    this._panel.webview.postMessage({ command: 'startContextLoading' });
 
     (async () => {
         try {
@@ -516,6 +520,28 @@ Your task is to re-analyze your previous code suggestion in light of this new er
       }
     })();
   }
+  public async sendIsolatedMessage(systemPrompt: string, userMessageContent: string, modelOverride?: string) {
+    if (!this._currentDiscussion) {
+        vscode.window.showErrorMessage("No active discussion to send isolated message.");
+        return;
+    }
+    
+    const userMessage: ChatMessage = {
+        id: 'user_' + Date.now().toString() + Math.random().toString(36).substring(2),
+        role: 'user',
+        content: userMessageContent
+    };
+
+    await this.addMessageToDiscussion(userMessage);
+
+    const messagesForApi = [
+        { role: 'system', content: systemPrompt },
+        userMessage
+    ];
+    
+    // false for includeProjectContext
+    this._callApiWithMessages(messagesForApi, false, modelOverride);
+  }
   public async sendMessage(userMessage: ChatMessage) {
     if (!this._currentDiscussion) {
         vscode.window.showErrorMessage("No active discussion. Please start a new one.");
@@ -609,6 +635,40 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     });
   }
 
+  private async insertMessage(afterMessageId: string, role: 'user' | 'assistant', content: string) {
+    if (!this._currentDiscussion) return;
+
+    const messageIndex = this._currentDiscussion.messages.findIndex(m => m.id === afterMessageId);
+    
+    const newMessage: ChatMessage = {
+        id: Date.now().toString() + Math.random().toString(36).substring(2),
+        role: role,
+        content: content
+    };
+
+    if (messageIndex === -1) {
+        console.warn(`Could not find message with id ${afterMessageId} to insert after. Appending to end.`);
+        this._currentDiscussion.messages.push(newMessage);
+    } else {
+        this._currentDiscussion.messages.splice(messageIndex + 1, 0, newMessage);
+    }
+
+    if (!this._currentDiscussion.id.startsWith('temp-')) {
+        this._currentDiscussion.timestamp = Date.now();
+        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+    }
+
+    // Reload the discussion in the webview to show the new message
+    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+    const isInspectorEnabled = config.get<boolean>('enableCodeInspector', true);
+
+    this._panel.webview.postMessage({ 
+        command: 'loadDiscussion', 
+        messages: this._currentDiscussion.messages,
+        isInspectorEnabled: isInspectorEnabled
+    });
+  }
+
   private async editMessage(messageId: string) {
     if (!this._currentDiscussion) return;
 
@@ -660,7 +720,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             const base64Data = dataUrl.split(',')[1];
             extractedText = await this._lollmsAPI.extractText(base64Data, name);
         } catch (error: any) {
-            extractedText = `Error parsing file via backend: ${error.message}`;
+            extractedText = `⚠️ **Error processing document on backend:** ${error.message}`;
             console.error(extractedText);
         }
         
@@ -824,6 +884,9 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             break;
         case 'editMessage':
             await this.editMessage(message.messageId);
+            break;
+        case 'insertMessage':
+            await this.insertMessage(message.afterMessageId, message.role, message.content);
             break;
         case 'updateMessage':
             await this.updateMessage(message.messageId, message.newContent);

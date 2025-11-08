@@ -17,6 +17,7 @@
     "command.executeScript.title": "Lollms: تنفيذ البرنامج النصي",
     "command.selectPythonInterpreter.title": "Lollms: تحديد مترجم بايثون",
     "command.inspectCode.title": "Lollms: فحص الكود",
+    "command.inspectFile.title": "فحص باستخدام Lollms",
     "command.debugErrorWithAI.title": "Lollms: إصلاح هذا الخطأ",
     "command.debugErrorSendToDiscussion.title": "Lollms: إرسال الخطأ إلى المناقشة",
     "command.buildCodeGraph.title": "بناء الرسم البياني للكود",

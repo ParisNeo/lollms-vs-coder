@@ -7,6 +7,7 @@
     <link href="{{codiconsUri}}" rel="stylesheet" />
     <link href="{{cssUri}}" rel="stylesheet" />
     <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 </head>
 <body>
     <div class="chat-container">
@@ -37,7 +38,12 @@
                 </ul>
             </div>
 
-            <div id="chat-messages-container"></div>
+            <div id="chat-messages-container">
+                <div id="message-insertion-controls">
+                    <button class="code-action-btn" id="add-user-message-btn"><i class="codicon codicon-add"></i> Add User Message</button>
+                    <button class="code-action-btn" id="add-ai-message-btn"><i class="codicon codicon-add"></i> Add AI Message</button>
+                </div>
+            </div>
 
         </div>
         
@@ -124,6 +130,13 @@
             document.getElementById('welcome-item-4').innerHTML = l10n.welcomeItem4;
             document.getElementById('loading-files-text').textContent = l10n.progressLoadingFiles;
             document.getElementById('refresh-context-btn').title = l10n.tooltipRefreshContext;
+
+            const isDarkTheme = document.body.classList.contains('vscode-dark') || document.body.classList.contains('vscode-high-contrast');
+            mermaid.initialize({
+                startOnLoad: false,
+                theme: isDarkTheme ? 'dark' : 'default',
+                securityLevel: 'loose' 
+            });
         });
 
         const messagesDiv = document.getElementById('messages');
@@ -256,6 +269,76 @@
             return { thoughts, processedContent: processedContent.trim() };
         }
 
+        function insertNewMessageEditor(role) {
+            // Remove any existing editor to avoid having multiple.
+            const existingEditor = document.querySelector('.new-message-editor-wrapper');
+            if (existingEditor) {
+                existingEditor.remove();
+            }
+
+            const editorWrapper = document.createElement('div');
+            editorWrapper.className = 'message-wrapper new-message-editor-wrapper';
+
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${role}-message`;
+            messageDiv.style.border = '1px dashed var(--vscode-focusBorder)';
+            
+            const headerDiv = document.createElement('div');
+            headerDiv.className = 'message-header';
+            headerDiv.textContent = `${role} (new)`;
+            messageDiv.appendChild(headerDiv);
+
+            const editOverlay = document.createElement('div');
+            editOverlay.className = 'edit-overlay';
+            editOverlay.innerHTML = `
+                <textarea class="edit-textarea" placeholder="Enter content..."></textarea>
+                <div class="edit-buttons">
+                    <button class="edit-cancel-btn">Cancel</button>
+                    <button class="edit-save-btn">Save</button>
+                </div>
+            `;
+            messageDiv.appendChild(editOverlay);
+            editorWrapper.appendChild(messageDiv);
+            
+            const insertionPoint = document.getElementById('message-insertion-controls');
+            insertionPoint.insertAdjacentElement('beforebegin', editorWrapper);
+
+
+            const textarea = editorWrapper.querySelector('.edit-textarea');
+            textarea.addEventListener('input', () => {
+                textarea.style.height = 'auto';
+                textarea.style.height = textarea.scrollHeight + 'px';
+            });
+            setTimeout(() => { // ensure it's rendered to calc scrollHeight
+                textarea.style.height = 'auto';
+                textarea.style.height = textarea.scrollHeight + 'px';
+                textarea.focus();
+            }, 0);
+
+            const saveBtn = editorWrapper.querySelector('.edit-save-btn');
+            const cancelBtn = editorWrapper.querySelector('.edit-cancel-btn');
+
+            saveBtn.onclick = () => {
+                const newContent = textarea.value;
+                if (!newContent.trim()) return;
+
+                const allMessages = document.querySelectorAll('.message-wrapper:not(.new-message-editor-wrapper)');
+                const lastMessage = allMessages[allMessages.length - 1];
+                const afterMessageId = lastMessage ? lastMessage.dataset.messageId : null;
+                
+                vscode.postMessage({
+                    command: 'insertMessage',
+                    afterMessageId: afterMessageId,
+                    role: role,
+                    content: newContent
+                });
+                editorWrapper.remove();
+            };
+
+            cancelBtn.onclick = () => {
+                editorWrapper.remove();
+            };
+        }
         function startEdit(messageDiv, messageId, role) {
             const contentDiv = messageDiv.querySelector('.message-content');
             const originalContentJSON = messageDiv.dataset.originalContent;
@@ -544,7 +627,9 @@
             messageDiv.appendChild(actions);
             
             messageWrapper.appendChild(messageDiv);
-            chatMessagesContainer.appendChild(messageWrapper);
+            
+            const insertionControls = document.getElementById('message-insertion-controls');
+            chatMessagesContainer.insertBefore(messageWrapper, insertionControls);
             
             enhanceCodeBlocks(messageWrapper);
             enhanceWithCommandButtons(messageWrapper);
@@ -552,7 +637,7 @@
             const applyableBlocks = messageWrapper.querySelectorAll('[data-action="applyFileContent"], [data-action="applyPatchContent"]');
             if (applyableBlocks.length > 1) {
                 const applyAllBtn = document.createElement('button');
-                applyAllBtn.className = 'msg-action-btn';
+                applyAllBtn.className = 'code-action-btn';
                 applyAllBtn.innerHTML = '<i class="codicon codicon-check-all"></i> Apply All';
                 applyAllBtn.title = 'Apply all file changes in this message';
                 applyAllBtn.onclick = (e) => {
@@ -689,6 +774,25 @@
                 if (!codeBlock) return;
 
                 let language = [...codeBlock.classList].find(c => c.startsWith('language-'))?.replace('language-', '').toLowerCase() || 'text';
+                
+                if (language === 'svg' || language === 'mermaid') {
+                    const diagramContainer = document.createElement('div');
+                    diagramContainer.className = 'diagram-container';
+    
+                    if (language === 'svg') {
+                        diagramContainer.innerHTML = DOMPurify.sanitize(codeBlock.innerText);
+                    } else { // Mermaid
+                        const mermaidDiv = document.createElement('div');
+                        mermaidDiv.className = 'mermaid';
+                        mermaidDiv.textContent = codeBlock.innerText;
+                        diagramContainer.appendChild(mermaidDiv);
+                        mermaid.run({ nodes: [mermaidDiv] });
+                    }
+    
+                    pre.parentNode.replaceChild(diagramContainer, pre);
+                    pre.dataset.enhanced = "true";
+                    return; 
+                }
                 
                 let matchInfo = null;
                 const previousElement = pre.previousElementSibling;
@@ -944,8 +1048,6 @@
 
         refreshContextBtn.addEventListener('click', () => {
             vscode.postMessage({ command: 'calculateTokens' });
-            contextStatusContainer.style.display = 'none';
-            contextLoadingSpinner.style.display = 'flex';
         });
 
         sendButton.addEventListener('click', sendMessage);
@@ -1204,6 +1306,8 @@
                         command: 'addFilesToContext',
                         files: files
                     });
+                    target.innerHTML = '✔️ Files Added to Context';
+                    target.disabled = true;
                 }
             } else if (action === 'saveCodeToFile' && codeContent) {
                 vscode.postMessage({
@@ -1398,8 +1502,8 @@
                     break;
                 case 'loadDiscussion':
                     attachmentsContainer.innerHTML = '';
-                    chatMessagesContainer.innerHTML = '';
-                    
+                    chatMessagesContainer.querySelectorAll('.message-wrapper').forEach(el => el.remove());
+
                     const attachmentsWrapper = document.getElementById('attachments-collapsible-wrapper');
                     attachmentsWrapper.style.display = 'none';
 
@@ -1557,6 +1661,13 @@
             if (imageFound) {
                 event.preventDefault();
             }
+        });
+        
+        document.getElementById('add-user-message-btn').addEventListener('click', () => {
+            insertNewMessageEditor('user');
+        });
+        document.getElementById('add-ai-message-btn').addEventListener('click', () => {
+            insertNewMessageEditor('assistant');
         });
     </script>
 </body>

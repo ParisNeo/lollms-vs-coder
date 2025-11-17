@@ -5,7 +5,7 @@ import { getProcessedSystemPrompt, stripThinkingTags } from './utils';
 import { ProcessManager } from './processManager';
 
 // Assuming Plan is defined in planParser.ts and imported where needed
-import { Plan } from './planParser';
+import { Plan } from './tools/tool';
 
 export interface Discussion {
     id: string;
@@ -13,7 +13,7 @@ export interface Discussion {
     messages: ChatMessage[];
     timestamp: number;
     groupId: string | null;
-    plan: Plan | null; // Added for agent state persistence
+    plan?: Plan | null; // Added for agent state persistence
     model?: string;
 }
 

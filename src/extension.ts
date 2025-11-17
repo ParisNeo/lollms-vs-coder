@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { LollmsAPI, LollmsConfig, ChatMessage } from './lollmsAPI';
-import { ChatPanel } from './commands/chatPanel';
+import { ChatPanel } from './commands/chatPanel/chatPanel';
 import { SettingsPanel } from './commands/configView';
 import { ContextManager } from './contextManager';
 import { GitIntegration } from './gitIntegration';
@@ -104,15 +104,17 @@ class LollmsDebugAdapterTrackerFactory implements vscode.DebugAdapterTrackerFact
                                             errorFileUri = frameUri;
                                             errorLine = frame.line;
                                             
-                                            try {
-                                                const doc = await vscode.workspace.openTextDocument(errorFileUri);
-                                                await vscode.window.showTextDocument(doc, {
-                                                    selection: new vscode.Range(errorLine - 1, 0, errorLine - 1, 0),
-                                                    preserveFocus: false,
-                                                    preview: true
-                                                });
-                                            } catch (e) {
-                                                console.error("Lollms: Could not open document from stack trace.", e);
+                                            if (errorLine !== undefined) {
+                                                try {
+                                                    const doc = await vscode.workspace.openTextDocument(errorFileUri);
+                                                    await vscode.window.showTextDocument(doc, {
+                                                        selection: new vscode.Range(errorLine - 1, 0, errorLine - 1, 0),
+                                                        preserveFocus: false,
+                                                        preview: true
+                                                    });
+                                                } catch (e) {
+                                                    console.error("Lollms: Could not open document from stack trace.", e);
+                                                }
                                             }
                                             break; 
                                         }
@@ -131,7 +133,7 @@ class LollmsDebugAdapterTrackerFactory implements vscode.DebugAdapterTrackerFact
                                     vscode.commands.executeCommand('lollms-vs-coder.debugErrorSendToDiscussion');
                                 }
                             });
-                        }).catch(() => {
+                        }, () => {
                             debugErrorManager.setError(fullMessage);
                         });
                     } else {
@@ -143,9 +145,6 @@ class LollmsDebugAdapterTrackerFactory implements vscode.DebugAdapterTrackerFact
                         debugErrorManager.setError(output);
                     }
                 }
-            },
-            onWillContinue: () => {
-                debugErrorManager.clearError();
             }
         };
     }
@@ -867,10 +866,13 @@ ${fileContent}
             title: vscode.l10n.t('progress.applyingAction', targetPrompt.title),
             cancellable: true
         }, async (progress, token) => {
+            const controller = new AbortController();
+            token.onCancellationRequested(() => controller.abort());
+            
             const responseText = await lollmsAPI.sendChat([
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: userPrompt }
-            ], null, token);
+            ], null, controller.signal);
             
             if (token.isCancellationRequested) { return; }
 
@@ -1024,16 +1026,17 @@ ${fileContent}
             vscode.window.showInformationMessage("Please open a workspace folder to save context selection.");
             return;
         }
+        const currentWorkspaceFolder = activeWorkspaceFolder;
 
         try {
             const fileUri = await vscode.window.showSaveDialog({
                 title: vscode.l10n.t('title.saveContextSelection'),
                 filters: { [vscode.l10n.t('filter.lollmsContext')]: ['lollms-ctx'] },
-                defaultUri: vscode.Uri.joinPath(activeWorkspaceFolder.uri, 'context-selection.lollms-ctx')
+                defaultUri: vscode.Uri.joinPath(currentWorkspaceFolder.uri, 'context-selection.lollms-ctx')
             });
 
             if (fileUri) {
-                const stateKey = `context-state-${activeWorkspaceFolder.uri.fsPath}`;
+                const stateKey = `context-state-${currentWorkspaceFolder.uri.fsPath}`;
                 const contextState = context.workspaceState.get(stateKey) || {};
                 const content = Buffer.from(JSON.stringify(contextState, null, 2), 'utf8');
                 await vscode.workspace.fs.writeFile(fileUri, content);
@@ -1049,13 +1052,14 @@ ${fileContent}
             vscode.window.showInformationMessage("Please open a workspace folder to load context selection.");
             return;
         }
+        const currentWorkspaceFolder = activeWorkspaceFolder;
 
         try {
             const fileUris = await vscode.window.showOpenDialog({
                 title: vscode.l10n.t('title.loadContextSelection'),
                 filters: { [vscode.l10n.t('filter.lollmsContext')]: ['lollms-ctx', 'json'] },
                 canSelectMany: false,
-                defaultUri: activeWorkspaceFolder.uri
+                defaultUri: currentWorkspaceFolder.uri
             });
 
             if (fileUris && fileUris[0]) {
@@ -1063,11 +1067,11 @@ ${fileContent}
                 const fileContent = await vscode.workspace.fs.readFile(fileUri);
                 const loadedState = JSON.parse(fileContent.toString());
                 
-                const stateKey = `context-state-${activeWorkspaceFolder.uri.fsPath}`;
+                const stateKey = `context-state-${currentWorkspaceFolder.uri.fsPath}`;
                 await context.workspaceState.update(stateKey, loadedState);
 
                 // Re-initialize the provider to make it reload the state from workspaceState
-                contextStateProvider = new ContextStateProvider(activeWorkspaceFolder.uri.fsPath, context);
+                contextStateProvider = new ContextStateProvider(currentWorkspaceFolder.uri.fsPath, context);
                 contextManager.setContextStateProvider(contextStateProvider);
                 fileDecorationProvider.updateStateProvider(contextStateProvider);
                 contextStateProvider.refresh();
@@ -1326,11 +1330,12 @@ ${fileContent}
     
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.commitWithAIMessage', async () => {
         if (!activeWorkspaceFolder) { vscode.window.showErrorMessage("No active workspace for Git operations."); return; }
-        if (!(await gitIntegration.isGitRepo(activeWorkspaceFolder))) { vscode.window.showErrorMessage(vscode.l10n.t('error.notGitRepository')); return; }
-        const message = await gitIntegration.generateCommitMessage(activeWorkspaceFolder);
+        const currentWorkspaceFolder = activeWorkspaceFolder;
+        if (!(await gitIntegration.isGitRepo(currentWorkspaceFolder))) { vscode.window.showErrorMessage(vscode.l10n.t('error.notGitRepository')); return; }
+        const message = await gitIntegration.generateCommitMessage(currentWorkspaceFolder);
         if (message) {
             const confirmed = await vscode.window.showQuickPick([vscode.l10n.t('label.yes'), vscode.l10n.t('label.no')], { placeHolder: vscode.l10n.t('prompt.confirmCommit', message) });
-            if (confirmed === vscode.l10n.t('label.yes')) { await gitIntegration.commitWithMessage(message, activeWorkspaceFolder); }
+            if (confirmed === vscode.l10n.t('label.yes')) { await gitIntegration.commitWithMessage(message, currentWorkspaceFolder); }
         }
     }));
 
@@ -1339,7 +1344,8 @@ ${fileContent}
             vscode.window.showErrorMessage("No active workspace for Git operations.");
             return;
         }
-        if (!(await gitIntegration.isGitRepo(activeWorkspaceFolder))) {
+        const currentWorkspaceFolder = activeWorkspaceFolder;
+        if (!(await gitIntegration.isGitRepo(currentWorkspaceFolder))) {
             vscode.window.showErrorMessage(vscode.l10n.t('error.notGitRepository'));
             return;
         }
@@ -1356,10 +1362,10 @@ ${fileContent}
 
         const git = gitExtension.exports.getAPI(1);
         
-        const repository = git.repositories.find(repo => repo.rootUri.fsPath === activeWorkspaceFolder.uri.fsPath);
+        const repository = git.repositories.find(repo => repo.rootUri.fsPath === currentWorkspaceFolder.uri.fsPath);
 
         if (repository) {
-            const message = await gitIntegration.generateCommitMessage(activeWorkspaceFolder);
+            const message = await gitIntegration.generateCommitMessage(currentWorkspaceFolder);
             if (message) {
                 repository.inputBox.value = message;
             }
@@ -1373,6 +1379,7 @@ ${fileContent}
             vscode.window.showErrorMessage(vscode.l10n.t('error.openWorkspaceToApplyChanges'));
             return;
         }
+        const currentWorkspaceFolder = activeWorkspaceFolder;
         const { updates, patches } = changes;
         if ((!updates || updates.length === 0) && (!patches || patches.length === 0)) {
             return;
@@ -1392,7 +1399,7 @@ ${fileContent}
                 for (const update of updates) {
                     const { filePath, content } = update;
                     progress.report({ message: `Applying to ${filePath}` });
-                    const fileUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, filePath);
+                    const fileUri = vscode.Uri.joinPath(currentWorkspaceFolder.uri, filePath);
                     try {
                         const parentUri = vscode.Uri.joinPath(fileUri, '..');
                         await vscode.workspace.fs.createDirectory(parentUri);
@@ -1417,7 +1424,7 @@ ${fileContent}
                         }
                         await applyDiff(finalPatch);
                         successCount++;
-                        lastFileUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, filePath);
+                        lastFileUri = vscode.Uri.joinPath(currentWorkspaceFolder.uri, filePath);
                     } catch (error: any) {
                         errorCount++;
                         vscode.window.showErrorMessage(vscode.l10n.t('error.failedToApplyPatch', filePath, error.message));
@@ -1440,7 +1447,8 @@ ${fileContent}
             vscode.window.showErrorMessage(vscode.l10n.t('error.openWorkspaceToApplyChanges'));
             return;
         }
-        const fileUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, filePath);
+        const currentWorkspaceFolder = activeWorkspaceFolder;
+        const fileUri = vscode.Uri.joinPath(currentWorkspaceFolder.uri, filePath);
     
         let originalContent = '';
         let fileExists = true;
@@ -1486,8 +1494,9 @@ ${fileContent}
             vscode.window.showErrorMessage('No active workspace folder.');
             return;
         }
+        const currentWorkspaceFolder = activeWorkspaceFolder;
         try {
-            const fileUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, filePath);
+            const fileUri = vscode.Uri.joinPath(currentWorkspaceFolder.uri, filePath);
             let originalContent = '';
             try {
                 const fileContentBytes = await vscode.workspace.fs.readFile(fileUri);
@@ -1520,8 +1529,9 @@ ${fileContent}
             vscode.window.showErrorMessage('No active workspace folder.');
             return;
         }
-        const originalUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, originalPath);
-        const newUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, newPath);
+        const currentWorkspaceFolder = activeWorkspaceFolder;
+        const originalUri = vscode.Uri.joinPath(currentWorkspaceFolder.uri, originalPath);
+        const newUri = vscode.Uri.joinPath(currentWorkspaceFolder.uri, newPath);
     
         try {
             await vscode.workspace.fs.rename(originalUri, newUri, { overwrite: true });
@@ -1536,6 +1546,7 @@ ${fileContent}
             vscode.window.showErrorMessage('No active workspace folder.');
             return;
         }
+        const currentWorkspaceFolder = activeWorkspaceFolder;
         
         const filesToDelete = filePathsStr.split('\n').map(f => f.trim()).filter(f => f);
         if (filesToDelete.length === 0) {
@@ -1565,7 +1576,7 @@ ${fileContent}
             }, async (progress) => {
                 for (const filePath of filesToDelete) {
                     progress.report({ message: `Deleting ${filePath}` });
-                    const fileUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, filePath);
+                    const fileUri = vscode.Uri.joinPath(currentWorkspaceFolder.uri, filePath);
                     try {
                         await vscode.workspace.fs.delete(fileUri, { useTrash: true });
                         successCount++;
@@ -1842,14 +1853,15 @@ ${fileContent}
             vscode.window.showErrorMessage("Please select an active Lollms workspace to set an entry point.");
             return;
         }
+        const currentWorkspaceFolder = activeWorkspaceFolder;
 
-        const launchJsonPath = vscode.Uri.joinPath(activeWorkspaceFolder.uri, '.vscode', 'launch.json');
+        const launchJsonPath = vscode.Uri.joinPath(currentWorkspaceFolder.uri, '.vscode', 'launch.json');
         let launchConfig: any;
         try {
             const fileContent = await vscode.workspace.fs.readFile(launchJsonPath);
             launchConfig = JSON.parse(fileContent.toString());
         } catch (error) {
-            try { await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(activeWorkspaceFolder.uri, '.vscode')); } catch (e) {}
+            try { await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(currentWorkspaceFolder.uri, '.vscode')); } catch (e) {}
             launchConfig = { version: '0.2.0', configurations: [] };
         }
 
@@ -1866,11 +1878,11 @@ ${fileContent}
             canSelectMany: false,
             openLabel: 'Select as Execution Entry Point',
             title: 'Select the main file to run for the project',
-            defaultUri: activeWorkspaceFolder.uri
+            defaultUri: currentWorkspaceFolder.uri
         });
 
         if (fileUris && fileUris[0]) {
-            const relativePath = path.relative(activeWorkspaceFolder.uri.fsPath, fileUris[0].fsPath).replace(/\\/g, '/');
+            const relativePath = path.relative(currentWorkspaceFolder.uri.fsPath, fileUris[0].fsPath).replace(/\\/g, '/');
             mainConfig.program = `\${workspaceFolder}/${relativePath}`;
             
             const ext = path.extname(relativePath).toLowerCase();
@@ -1878,7 +1890,7 @@ ${fileContent}
             if (ext === '.js' || ext === '.ts') { mainConfig.type = 'node'; }
 
             await vscode.workspace.fs.writeFile(launchJsonPath, Buffer.from(JSON.stringify(launchConfig, null, 4), 'utf8'));
-            vscode.window.showInformationMessage(`Set '${relativePath}' as the execution entry point for '${activeWorkspaceFolder.name}'.`);
+            vscode.window.showInformationMessage(`Set '${relativePath}' as the execution entry point for '${currentWorkspaceFolder.name}'.`);
         }
     }));
 
@@ -1889,12 +1901,12 @@ ${fileContent}
         }
         const activeChatPanel = ChatPanel.currentPanel;
     
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        if (!workspaceFolder) {
+        if (!activeWorkspaceFolder) {
             vscode.window.showErrorMessage("Please open a project folder to execute.");
             activeChatPanel.addMessageToDiscussion({ role: 'system', content: 'Execution failed: No workspace folder open.' });
             return;
         }
+        const workspaceFolder = activeWorkspaceFolder;
         
         activeChatPanel.updateGeneratingState();
     

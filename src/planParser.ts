@@ -3,19 +3,16 @@ import { LollmsAPI, ChatMessage } from './lollmsAPI';
 import { ContextManager } from './contextManager';
 import { stripThinkingTags } from './utils'; // CORRECTED IMPORT PATH
 import * as os from 'os';
-
-export interface Plan {
-    objective: string;
-    scratchpad: string;
-    tasks: any[];
-}
+import { ToolManager } from './tools/toolManager';
+import { Plan, ToolDefinition } from './tools/tool';
 
 export class PlanParser {
     private maxRetries = 1;
 
     constructor(
         private lollmsApi: LollmsAPI,
-        private contextManager: ContextManager
+        private contextManager: ContextManager,
+        private toolManager: ToolManager
     ) {}
 
     public async generateAndParsePlan(
@@ -108,13 +105,7 @@ Your task is to generate a NEW set of tasks to recover from this failure and com
             throw new Error("The plan must contain at least one task.");
         }
     
-        const simpleActions = new Set([
-            "execute_command", "read_file", "list_files", "get_environment_details",
-            "request_user_input", "set_launch_entrypoint", "create_python_environment",
-            "set_vscode_python_interpreter", "install_python_dependencies", "execute_python_script",
-            "deselect_context_files"
-        ]);
-        const agenticActions = new Set(["generate_code", "auto_select_context_files"]);
+        const allowedTools = new Set(this.toolManager.getAllTools().map((t: ToolDefinition) => t.name));
     
         for (const task of plan.tasks) {
             const baseKeys = ['id', 'task_type', 'action', 'description', 'parameters'];
@@ -124,17 +115,8 @@ Your task is to generate a NEW set of tasks to recover from this failure and com
                 }
             }
     
-            // Auto-correct common model errors
-            if (task.action === 'get_environment_details' && task.task_type !== 'simple_action') {
-                console.log(`Correcting task ${task.id}: action 'get_environment_details' task_type changed to 'simple_action'.`);
-                task.task_type = 'simple_action';
-            }
-    
-            if (task.task_type === 'simple_action' && !simpleActions.has(task.action)) {
-                throw new Error(`Invalid action '${task.action}' for task_type 'simple_action'.`);
-            }
-            if (task.task_type === 'agentic_action' && !agenticActions.has(task.action)) {
-                throw new Error(`Invalid action '${task.action}' for task_type 'agentic_action'.`);
+            if (!allowedTools.has(task.action)) {
+                throw new Error(`Invalid action '${task.action}'. Action must be one of the allowed tools.`);
             }
     
             if (typeof task.parameters !== 'object' || task.parameters === null) {
@@ -215,6 +197,12 @@ Your task is to correct the JSON. You MUST provide ONLY the fixed, valid JSON ob
             ? "You are an expert AI agent planner specializing in failure recovery. Your task is to create a new plan fragment to achieve the original objective, starting from the point of failure."
             : "You are a meticulous, programmatic AI agent planner. Your sole function is to create a detailed, step-by-step execution plan in JSON format based on a user's objective and project context.";
 
+        const tools = this.toolManager.getEnabledTools();
+        const toolDescriptions = tools.map((tool: ToolDefinition) => {
+            const params = tool.parameters.map((p: { name: string; type: string; description: string; required: boolean; }) => `{"name": "${p.name}", "type": "${p.type}", "description": "${p.description}", "required": ${p.required}}`).join(',\n');
+            return `* **"${tool.name}"**: ${tool.description}\n  - Parameters: \`[${params}]\`\n  - Type: \`${tool.isAgentic ? 'agentic_action' : 'simple_action'}\``;
+        }).join('\n');
+
         let content = `${intro}
 
 **<MASTER_RULE>**
@@ -259,38 +247,7 @@ Your JSON output must conform to this schema, using only the actions listed belo
 ---
 
 ### **ALLOWED ACTIONS & PARAMETERS:**
-
-#### **\`simple_action\`**
-
-*   **\`"action": "execute_command"\`**
-    *   \`"parameters": { "command": "string" }\`
-*   **\`"action": "read_file"\`**
-    *   \`"parameters": { "path": "string" }\` (Reads a file's content into the task result for later use, e.g., in a \`generate_code\` prompt)
-*   **\`"action": "list_files"\`**
-    *   \`"parameters": { "path": "string" }\` (Lists files and directories recursively. Defaults to project root '.')
-*   **\`"action": "get_environment_details"\`**
-    *   \`"parameters": {}\` (Gets versions of common tools like Python, Node, etc., to understand the environment)
-*   **\`"action": "request_user_input"\`**
-    *   \`"parameters": { "question": "string" }\`
-*   **\`"action": "set_launch_entrypoint"\`**
-    *   \`"parameters": { "file_path": "string" }\`
-*   **\`"action": "create_python_environment"\`**
-    *   \`"parameters": { "env_name": "venv" }\` (Always use "venv" unless one already exists)
-*   **\`"action": "set_vscode_python_interpreter"\`**
-    *   \`"parameters": { "env_name": "venv" }\`
-*   **\`"action": "install_python_dependencies"\`**
-    *   \`"parameters": { "env_name": "venv", "dependencies": ["string"] }\`
-*   **\`"action": "execute_python_script"\`**
-    *   \`"parameters": { "env_name": "venv", "script_path": "string" }\`
-*   **\`"action": "deselect_context_files"\`**
-    *   \`"parameters": { "files": ["string"] }\` (A list of relative file paths to deselect from the AI's context. This sets them back to the default 'tree-only' state to save tokens.)
-
-#### **\`agentic_action\`**
-
-*   **\`"action": "generate_code"\`**
-    *   \`"parameters": { "file_path": "string", "system_prompt": "string", "user_prompt": "string" }\` (Generates code based on the prompts and writes the full content to the specified file path)
-*   **\`"action": "auto_select_context_files"\`**
-    *   \`"parameters": { "objective": "string" }\`
+${toolDescriptions}
 
 ---
 **<FINAL_REMINDER>**

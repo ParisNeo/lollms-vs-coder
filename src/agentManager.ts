@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ChatPanel } from './commands/chatPanel';
+import { ChatPanel } from './commands/chatPanel/chatPanel';
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
 import { ContextManager } from './contextManager';
 import { GitIntegration } from './gitIntegration';
@@ -7,11 +7,13 @@ import * as os from 'os';
 import * as path from 'path';
 import { exec } from 'child_process';
 import { InfoPanel } from './commands/infoPanel';
-import { Plan, PlanParser } from './planParser';
+import { PlanParser } from './planParser';
 import { getProcessedSystemPrompt } from './utils';
 import { ProcessManager } from './processManager';
 import { DiscussionManager, Discussion } from './discussionManager';
 import * as fs from 'fs/promises';
+import { ToolManager } from './tools/toolManager';
+import { ToolExecutionEnv, ToolDefinition, Plan } from './tools/tool';
 
 interface Task {
     id: number;
@@ -31,19 +33,21 @@ export class AgentManager {
     private chatHistory: ChatMessage[] = [];
     private planParser: PlanParser;
     private processManager?: ProcessManager;
-    private currentWorkspaceFolder?: vscode.WorkspaceFolder;
+    public currentWorkspaceFolder?: vscode.WorkspaceFolder;
     private currentTaskIndex: number = 0;
     private currentDiscussion?: Discussion;
+    private toolManager: ToolManager;
 
     constructor(
         private chatPanel: ChatPanel,
-        private lollmsApi: LollmsAPI,
-        private contextManager: ContextManager,
+        public lollmsApi: LollmsAPI,
+        public contextManager: ContextManager,
         private gitIntegration: GitIntegration,
         private discussionManager: DiscussionManager,
         private extensionUri: vscode.Uri
     ) {
-        this.planParser = new PlanParser(this.lollmsApi, this.contextManager);
+        this.toolManager = new ToolManager();
+        this.planParser = new PlanParser(this.lollmsApi, this.contextManager, this.toolManager);
     }
 
     public setProcessManager(processManager: ProcessManager) {
@@ -52,6 +56,22 @@ export class AgentManager {
 
     public getIsActive(): boolean {
         return this.isActive;
+    }
+
+    public getTools(): ToolDefinition[] {
+        return this.toolManager.getAllTools();
+    }
+    
+    public getEnabledTools(): ToolDefinition[] {
+        return this.toolManager.getEnabledTools();
+    }
+
+    public setEnabledTools(toolNames: string[]) {
+        this.toolManager.setEnabledTools(toolNames);
+    }
+
+    public getCurrentDiscussion(): Discussion | undefined {
+        return this.currentDiscussion;
     }
 
     public toggleAgentMode() {
@@ -84,7 +104,7 @@ export class AgentManager {
     
             this.chatHistory = [...discussion.messages];
             
-            const initialPlanState = { 
+            const initialPlanState: Plan = { 
                 objective: initialObjective,
                 scratchpad: "🧠 Thinking... Generating the initial execution plan.",
                 tasks: []
@@ -100,7 +120,7 @@ export class AgentManager {
             }
 
             if (!planResult.plan) {
-                 const failedPlanState = {
+                 const failedPlanState: Plan = {
                     objective: initialObjective,
                     scratchpad: `❌ **Plan Generation Failed:** Could not generate a valid plan, even after self-correction attempts. \n\n**Error:** ${planResult.error}\n\n**Final Raw Response from Model:**\n\`\`\`\n${planResult.rawResponse}\n\`\`\``,
                     tasks: []
@@ -177,8 +197,7 @@ export class AgentManager {
                 let result: { success: boolean; output: string; };
                 try {
                     const resolvedParams = this.resolveParameters(task);
-                    const taskWithResolvedParams = { ...task, parameters: resolvedParams };
-                    result = await this.executeTask(taskWithResolvedParams, signal, modelOverride);
+                    result = await this.executeTask(task.action, resolvedParams, signal);
                 } catch (error: any) {
                     result = { success: false, output: error.message };
                 }
@@ -194,16 +213,14 @@ export class AgentManager {
                     if (task.retries < maxRetries) {
                         const revisionSucceeded = await this.revisePlanForFailure(task, signal, modelOverride);
                         if (revisionSucceeded) {
-                            // Loop will continue from the corrected task index
                             continue;
                         } else {
-                            // Self-correction failed, now we ask the user
                             task.can_retry = true;
                             this.displayAndSavePlan(this.currentPlan);
-                            return; // Halt for user intervention
+                            return; 
                         }
                     } else {
-                        task.can_retry = true; // Allow one final manual retry
+                        task.can_retry = true;
                         this.displayAndSavePlan(this.currentPlan);
     
                         let userChoice: string | undefined = '';
@@ -307,22 +324,24 @@ export class AgentManager {
         return resolvedParams;
     }
 
-    private async executeTask(task: Task, signal: AbortSignal, modelOverride?: string): Promise<{ success: boolean; output: string }> {
-        try {
-            switch (task.task_type) {
-                case 'simple_action':
-                    return await this.executeSimpleAction(task, signal);
-                case 'agentic_action':
-                    return await this.executeAgenticAction(task, signal, modelOverride);
-                default:
-                    return { success: false, output: `Unknown task type: ${task.task_type}` };
-            }
-        } catch (e: any) {
-            return { success: false, output: e.message };
+    private async executeTask(action: string, params: any, signal: AbortSignal): Promise<{ success: boolean, output: string }> {
+        const tool = this.toolManager.getTool(action);
+        if (!tool) {
+            return { success: false, output: `Unknown action: ${action}` };
         }
+
+        const env: ToolExecutionEnv = {
+            workspaceRoot: this.currentWorkspaceFolder,
+            lollmsApi: this.lollmsApi,
+            contextManager: this.contextManager,
+            currentPlan: this.currentPlan,
+            agentManager: this
+        };
+        
+        return tool.execute(params, env, signal);
     }
     
-    private async generateFileTree(startPath: string, prefix: string = ''): Promise<string> {
+    public async generateFileTree(startPath: string, prefix: string = ''): Promise<string> {
         let result = '';
         let entries;
         try {
@@ -356,267 +375,7 @@ export class AgentManager {
         return result;
     }
 
-    private async executeSimpleAction(task: Task, signal: AbortSignal): Promise<{ success: boolean, output: string }> {
-        const { command, path: filePath, code, env_name, dependencies, script_path, question } = task.parameters;
-        
-        try {
-            switch (task.action) {
-                case 'get_environment_details': {
-                    const commands = {
-                        python: 'python --version',
-                        node: 'node --version',
-                        npm: 'npm --version',
-                        git: 'git --version'
-                    };
-                    let detailsOutput = 'Environment Details:\n';
-                    const promises = Object.entries(commands).map(async ([tool, command]) => {
-                        const result = await this.runCommand(command, signal);
-                        if (signal.aborted) return `- ${tool}: Cancelled`;
-                        const output = result.output.replace(/STDOUT:|STDERR:/g, '').trim();
-                        if (result.success && output) {
-                            return `- ${tool}: ${output.split('\n')[0]}`; // Take first line
-                        } else {
-                            return `- ${tool}: Not found or error`;
-                        }
-                    });
-                
-                    const results = await Promise.all(promises);
-                    detailsOutput += results.join('\n');
-                    return { success: true, output: detailsOutput };
-                }
-                case 'list_files': {
-                    if (!this.currentWorkspaceFolder) {
-                        return { success: false, output: "Error: No active workspace folder." };
-                    }
-                    const listPath = task.parameters.path || '.';
-                    const targetPath = path.join(this.currentWorkspaceFolder.uri.fsPath, listPath);
-                    
-                    try {
-                        const resolvedPath = path.resolve(targetPath);
-                        const resolvedWorkspaceRoot = path.resolve(this.currentWorkspaceFolder.uri.fsPath);
-                        if (!resolvedPath.startsWith(resolvedWorkspaceRoot)) {
-                             return { success: false, output: "Error: Access to paths outside the workspace is not allowed." };
-                        }
-                        
-                        const fileTree = await this.generateFileTree(targetPath);
-                        return { success: true, output: `File listing for '${listPath}':\n${fileTree}` };
-                    } catch (error: any) {
-                        return { success: false, output: `Error listing files: ${error.message}` };
-                    }
-                }
-                case 'request_user_input':
-                    if (!question) return { success: false, output: "Error: 'question' parameter is required." };
-                    const userInput = await vscode.window.showInputBox({ prompt: question, title: "Agent is requesting input" });
-                    if (userInput === undefined) {
-                        return { success: false, output: "User cancelled the input request." };
-                    }
-                    return { success: true, output: `User provided input: ${userInput}` };
-
-                case 'read_file':
-                    if (!filePath) return { success: false, output: "Error: 'path' parameter is required." };
-                    const wsFolderReadFile = this.currentWorkspaceFolder;
-                    if (wsFolderReadFile) {
-                        try {
-                            const fileUri = vscode.Uri.joinPath(wsFolderReadFile.uri, filePath);
-                            const fileContent = await vscode.workspace.fs.readFile(fileUri);
-                            return { success: true, output: Buffer.from(fileContent).toString('utf8') };
-                        } catch (error: any) {
-                             return { success: false, output: `Error reading file ${filePath}: ${error.message}` };
-                        }
-                    }
-                     return { success: false, output: "Error: No active workspace folder." };
-
-                case 'create_python_environment':
-                    if (!env_name) return { success: false, output: "Error: 'env_name' is required." };
-                    return this.runCommand(`python -m venv ${env_name}`, signal);
-
-                case 'set_vscode_python_interpreter':
-                    if (!env_name) return { success: false, output: "Error: 'env_name' is required." };
-                    const workspaceFolder = this.currentWorkspaceFolder;
-                    if (!workspaceFolder) return { success: false, output: "Error: No active workspace folder."};
-                    
-                    const pythonExecutable = os.platform() === 'win32' 
-                        ? path.join(env_name, 'Scripts', 'python.exe') 
-                        : path.join(env_name, 'bin', 'python');
-                    
-                    const fullPath = path.join(workspaceFolder.uri.fsPath, pythonExecutable);
-                    
-                    const config = vscode.workspace.getConfiguration('python', workspaceFolder.uri);
-                    await config.update('defaultInterpreterPath', fullPath, vscode.ConfigurationTarget.WorkspaceFolder);
-                    
-                    return { success: true, output: `Successfully set VS Code Python interpreter to: ${fullPath}` };
-
-                case 'install_python_dependencies':
-                    if (!env_name || !dependencies) return { success: false, output: "Error: 'env_name' and 'dependencies' are required." };
-                    const pythonExec = os.platform() === 'win32' 
-                        ? path.join(env_name, 'Scripts', 'python.exe') 
-                        : path.join(env_name, 'bin', 'python');
-                    const deps = (dependencies as string[]).join(' ');
-                    return this.runCommand(`"${pythonExec}" -m pip install ${deps}`, signal);
-                
-                case 'execute_python_script':
-                    if (!env_name || !script_path) return { success: false, output: "Error: 'env_name' and 'script_path' are required." };
-                    const pythonScriptExec = os.platform() === 'win32'
-                        ? path.join(env_name, 'Scripts', 'python.exe')
-                        : path.join(env_name, 'bin', 'python');
-                    return this.runCommand(`"${pythonScriptExec}" ${script_path}`, signal);
-
-                case 'execute_command':
-                    if (!command) return { success: false, output: "Error: 'command' argument is required." };
-                    return await this.runCommand(command, signal);
-                
-                case 'set_launch_entrypoint':
-                        if (!task.parameters.file_path) {
-                            return { success: false, output: "Error: 'file_path' parameter is required." };
-                        }
-                        const root = this.currentWorkspaceFolder;
-                        if (!root) {
-                            return { success: false, output: "Error: No active workspace folder." };
-                        }
-                        const launchJsonPath = vscode.Uri.joinPath(root.uri, '.vscode', 'launch.json');
-                        let launchConfig;
-                
-                        try {
-                            const fileContent = await vscode.workspace.fs.readFile(launchJsonPath);
-                            launchConfig = JSON.parse(fileContent.toString());
-                        } catch (error) {
-                            // File doesn't exist, create a default one
-                            await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(root.uri, '.vscode'));
-                            launchConfig = {
-                                version: '0.2.0',
-                                configurations: []
-                            };
-                        }
-                
-                        if (!launchConfig.configurations || !Array.isArray(launchConfig.configurations)) {
-                             launchConfig.configurations = [];
-                        }
-                
-                        if (launchConfig.configurations.length === 0) {
-                            launchConfig.configurations.push({
-                                name: 'Run Lollms Project',
-                                request: 'launch',
-                                type: 'node', // A reasonable default
-                                program: ''
-                            });
-                        }
-                        
-                        launchConfig.configurations[0].program = `\${workspaceFolder}/${task.parameters.file_path}`;
-                        
-                        try {
-                            await vscode.workspace.fs.writeFile(launchJsonPath, Buffer.from(JSON.stringify(launchConfig, null, 4), 'utf8'));
-                            return { success: true, output: `Successfully set launch.json entry point to '${task.parameters.file_path}'.` };
-                        } catch (error: any) {
-                            return { success: false, output: `Error writing to launch.json: ${error.message}` };
-                        }
-                case 'deselect_context_files': {
-                    if (!task.parameters.files || !Array.isArray(task.parameters.files)) {
-                        return { success: false, output: "Error: 'files' parameter (an array of strings) is required for deselect_context_files action." };
-                    }
-                    const fileTreeProvider = this.contextManager.getContextStateProvider();
-                    if (!fileTreeProvider) {
-                        return { success: false, output: "Error: File Tree Provider is not available." };
-                    }
-                    if (!this.currentWorkspaceFolder) {
-                        return { success: false, output: "Error: No active workspace folder." };
-                    }
-                    const urisToDeselect: vscode.Uri[] = task.parameters.files.map((f: string) => vscode.Uri.joinPath(this.currentWorkspaceFolder!.uri, f));
-                    await fileTreeProvider.setStateForUris(urisToDeselect, 'tree-only');
-    
-                    const fileListString = task.parameters.files.map((f: string) => `- ${f}`).join('\n');
-                    return { success: true, output: `Successfully deselected ${task.parameters.files.length} files from the context:\n${fileListString}` };
-                }
-
-                default:
-                    return { success: false, output: `Error: Unknown simple action '${task.action}'.` };
-            }
-        } catch (e: any) {
-            return { success: false, output: `Error executing '${task.action}': ${e.message}` };
-        }
-    }
-
-    private async executeAgenticAction(task: Task, signal: AbortSignal, modelOverride?: string): Promise<{ success: boolean, output: string }> {
-        if (!this.currentPlan) {
-            return { success: false, output: "Cannot execute agentic action without a plan." };
-        }
-
-        switch (task.action) {
-            case 'generate_code': {
-                const projectContext = await this.contextManager.getContextContent();
-                let userPromptContent = task.parameters.user_prompt || `Generate code for ${task.parameters.file_path}`;
-
-                const workspaceFolder = this.currentWorkspaceFolder;
-                const filePath = task.parameters.file_path;
-                if (!filePath) {
-                    return { success: false, output: "Error: 'file_path' parameter is required for generate_code action." };
-                }
-
-                if (workspaceFolder) {
-                    try {
-                        const fileUri = vscode.Uri.joinPath(workspaceFolder.uri, filePath);
-                        const fileContentBytes = await vscode.workspace.fs.readFile(fileUri);
-                        const existingContent = Buffer.from(fileContentBytes).toString('utf8');
-                        userPromptContent = `I am working on the file \`${filePath}\`. Here is its current content:\n\n\`\`\`\n${existingContent}\n\`\`\`\n\nMy instruction is: ${userPromptContent}`;
-                    } catch (error) {
-                        // File doesn't exist, which is fine for creation.
-                    }
-                }
-
-                const coderSystemPrompt = this.getCoderSystemPrompt(task.parameters.system_prompt, this.currentPlan, projectContext.text);
-                const coderUserPrompt: ChatMessage = { role: 'user', content: userPromptContent };
-                const responseText = await this.lollmsApi.sendChat([coderSystemPrompt, coderUserPrompt], null, signal, modelOverride);
-                
-                const codeBlockRegex = /```(?:[\w-]*)\n([\s\S]+?)\n```/s;
-                const match = responseText.match(codeBlockRegex);
-                const generatedCode = match ? match[1].trim() : responseText.trim();
-
-                if (!generatedCode) {
-                    return { success: false, output: `Coder agent failed to produce any valid code. Full response:\n${responseText}` };
-                }
-
-                if (!workspaceFolder) {
-                    return { success: false, output: "Error: No active workspace folder to write the file." };
-                }
-                
-                try {
-                    const fileUri = vscode.Uri.joinPath(workspaceFolder.uri, filePath);
-                    const parentUri = vscode.Uri.joinPath(fileUri, '..');
-                    await vscode.workspace.fs.createDirectory(parentUri);
-                    await vscode.workspace.fs.writeFile(fileUri, Buffer.from(generatedCode, 'utf8'));
-                    return { success: true, output: `Successfully generated and wrote code to file: ${filePath}` };
-                } catch (error: any) {
-                    return { success: false, output: `Error writing generated code to file ${filePath}: ${error.message}` };
-                }
-            }
-            
-            case 'auto_select_context_files':
-                if (!task.parameters.objective) {
-                    return { success: false, output: "Error: 'objective' parameter is required for auto-selecting files." };
-                }
-            
-                const fileTreeProvider = this.contextManager.getContextStateProvider();
-                if (!fileTreeProvider) {
-                    return { success: false, output: "Error: File Tree Provider is not available." };
-                }
-                
-                const fileList = await this.contextManager.getAutoSelectionForContext(task.parameters.objective);
-            
-                if (fileList && fileList.length > 0) {
-                    await fileTreeProvider.addFilesToContext(fileList);
-                    const fileListString = fileList.map(f => `- ${f}`).join('\n');
-                    return { success: true, output: `Successfully added ${fileList.length} files to the context:\n${fileListString}` };
-                } else if (fileList) {
-                    return { success: true, output: "AI did not select any files for the given objective." };
-                } else {
-                    return { success: false, output: "AI failed to select files. The operation was aborted." };
-                }
-
-            default:
-                return { success: false, output: `Unknown agentic action: ${task.action}` };
-        }
-    }
-
-    private async runCommand(command: string, signal: AbortSignal): Promise<{ success: boolean, output: string }> {
+    public async runCommand(command: string, signal: AbortSignal): Promise<{ success: boolean, output: string }> {
         return new Promise(resolve => {
             if (!this.currentWorkspaceFolder) {
                 resolve({ success: false, output: "Error: Agent has no active workspace folder to run command in." });
@@ -658,30 +417,5 @@ export class AgentManager {
         this.currentWorkspaceFolder = undefined;
         this.currentDiscussion = undefined;
         this.chatPanel.updateAgentMode(false);
-    }
-    
-    private getCoderSystemPrompt(customPrompt: string, plan: Plan, projectContext: string): ChatMessage {
-        const agentPersonaPrompt = getProcessedSystemPrompt('agent');
-        return {
-            role: 'system',
-            content: `You are a code generation AI. You will be given instructions and context to write or modify a file.
-**CRITICAL INSTRUCTIONS:**
-1.  **CODE ONLY:** Your entire response MUST be a single markdown code block containing the complete file content.
-2.  **NO EXTRA TEXT:** Do not add any explanations, comments, or conversational text outside of the code block.
-3.  **COMPLETE FILE:** Your output must be the full and complete code for the file, not just the changed parts.
-4.  **NO PLACEHOLDERS:** Do not use placeholders like "...".
-**CUSTOM INSTRUCTIONS FOR THIS TASK:**
-${customPrompt}
-**CONTEXT FOR YOUR TASK:**
-- **Main Objective:** ${plan.objective}
-- **Shared Scratchpad & History:**
-${plan.scratchpad}
-- **Project Structure & Context:**
-${projectContext}
-
-**Agent Persona:**
-${agentPersonaPrompt}
-`
-        };
     }
 }

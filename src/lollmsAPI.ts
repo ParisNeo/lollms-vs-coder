@@ -102,9 +102,15 @@ export class LollmsAPI {
     return data.data || [];
   }
 
-  public async tokenize(text: string): Promise<TokenizeResponse> {
+  public async tokenize(text: string, model?: string): Promise<TokenizeResponse> {
     const tokenizeUrl = `${this.baseUrl}/v1/tokenize`;
     const isHttps = tokenizeUrl.startsWith('https');
+
+    const modelToSend = model || this.config.modelName;
+    const body: any = { text: text };
+    if (modelToSend) {
+        body.model = modelToSend;
+    }
 
     const options: RequestInit = {
         method: 'POST',
@@ -112,10 +118,7 @@ export class LollmsAPI {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${this.config.apiKey}`
         },
-        body: JSON.stringify({
-            model: this.config.modelName,
-            text: text
-        }),
+        body: JSON.stringify(body),
     };
 
     if (isHttps) {
@@ -131,18 +134,23 @@ export class LollmsAPI {
     return await response.json() as TokenizeResponse;
   }
 
-  public async getContextSize(): Promise<ContextSizeResponse> {
+  public async getContextSize(model?: string): Promise<ContextSizeResponse> {
     const contextSizeUrl = `${this.baseUrl}/v1/context_size`;
     const isHttps = contextSizeUrl.startsWith('https');
+
+    const modelToSend = model || this.config.modelName;
+    const body: any = {};
+    if (modelToSend) {
+        body.model = modelToSend;
+    }
+
     const options: RequestInit = {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${this.config.apiKey}`
         },
-        body: JSON.stringify({
-            model: this.config.modelName,
-        }),
+        body: JSON.stringify(body),
     };
 
     if (isHttps) {
@@ -281,17 +289,22 @@ export class LollmsAPI {
     }
 
     try {
+      const modelToSend = modelOverride || this.config.modelName;
+      const body: any = {
+          messages: apiMessages,
+          stream: stream
+      };
+      if (modelToSend) {
+          body.model = modelToSend;
+      }
+      
       const options: RequestInit = {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${this.config.apiKey}`
         },
-        body: JSON.stringify({
-          model: modelOverride || this.config.modelName,
-          messages: apiMessages,
-          stream: stream
-        }),
+        body: JSON.stringify(body),
         signal: controller.signal,
       };
 
@@ -326,10 +339,10 @@ export class LollmsAPI {
         
         for await (const chunk of response.body) {
             if(controller.signal.aborted) {
-                response.body.destroy();
+                (response.body as any).destroy();
                 throw new AbortError('Request was aborted');
             }
-            buffer += decoder.decode(chunk, { stream: true });
+            buffer += decoder.decode(chunk as any, { stream: true });
             const lines = buffer.split('\n');
             buffer = lines.pop() || ''; // Keep the last, possibly incomplete line
 

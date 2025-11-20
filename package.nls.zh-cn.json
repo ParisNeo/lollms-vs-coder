@@ -26,6 +26,7 @@
     "command.learnSelectionAsSkill.title": "Lollms: 将选择学习为技能",
     "command.newDiscussion.title": "新讨论",
     "command.newTempDiscussion.title": "新建临时讨论",
+    "command.newDiscussionFromClipboard.title": "从剪贴板新建讨论",
     "command.delete.title": "删除",
     "command.cancel.title": "取消",
     "command.switchDiscussion.title": "切换讨论",

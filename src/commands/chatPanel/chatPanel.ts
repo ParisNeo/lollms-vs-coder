@@ -8,6 +8,7 @@ import { getProcessedSystemPrompt, stripThinkingTags } from '../../utils';
 import * as path from 'path';
 import { InfoPanel } from '../infoPanel';
 import { ProcessManager } from '../../processManager';
+import { getNonce } from './getNonce';
 
 export class ChatPanel {
   public static panels: Map<string, ChatPanel> = new Map();
@@ -71,8 +72,12 @@ export class ChatPanel {
     });
 
     this._panel.onDidDispose(() => this.dispose(), null, []);
-    this._panel.webview.html = this._getHtmlForWebview(this._panel.webview);
+    this._updateHtmlForWebview(); 
     this._setWebviewMessageListener(this._panel.webview);
+  }
+  
+  private async _updateHtmlForWebview() {
+    this._panel.webview.html = await this._getHtmlForWebview(this._panel.webview);
   }
 
   public setContextManager(contextManager: ContextManager) {
@@ -103,7 +108,9 @@ export class ChatPanel {
   }
   
   public async loadDiscussion(): Promise<void> {
+    console.log("ChatPanel: loadDiscussion called for", this.discussionId);
     if (!this._isWebviewReady) {
+        console.log("ChatPanel: Webview not ready, queuing load.");
         this._isLoadPending = true;
         return;
     }
@@ -125,6 +132,12 @@ export class ChatPanel {
 
     if (discussion) {
         let needsSave = false;
+        
+        if (!discussion.messages || !Array.isArray(discussion.messages)) {
+            discussion.messages = [];
+            needsSave = true;
+        }
+
         discussion.messages.forEach(msg => {
             if (!msg.id) {
                 msg.id = Date.now().toString() + Math.random().toString(36).substring(2);
@@ -146,6 +159,7 @@ export class ChatPanel {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const isInspectorEnabled = config.get<boolean>('enableCodeInspector', true);
 
+        console.log("ChatPanel: Sending loadDiscussion message to webview with", this._currentDiscussion.messages.length, "messages");
         this._panel.webview.postMessage({ 
             command: 'loadDiscussion', 
             messages: this._currentDiscussion.messages,
@@ -218,7 +232,7 @@ export class ChatPanel {
                         command: 'updateTokenProgress',
                         error: `No model configured`
                     });
-                    return; // Exit early
+                    return;
                 }
         
                 const [tokenizeResponse, contextSizeResponse] = await Promise.all([
@@ -287,161 +301,6 @@ export class ChatPanel {
     this._panel.dispose();
   }
 
-  private _getHtmlForWebview(webview: vscode.Webview): string {
-    const codiconsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'codicon.css'));
-    const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'chatPanel.css'));
-    const jsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'chatPanel.bundle.js'));
-    
-    const l10nStrings = {
-        welcomeTitle: vscode.l10n.t("welcome.title"),
-        welcomeItem1: vscode.l10n.t("welcome.item1"),
-        welcomeItem2: vscode.l10n.t("welcome.item2"),
-        welcomeItem3: vscode.l10n.t("welcome.item3"),
-        welcomeItem4: vscode.l10n.t("welcome.item4"),
-        progressLoadingFiles: vscode.l10n.t("progress.loadingFiles"),
-        tooltipRefreshContext: vscode.l10n.t("tooltip.refreshContext")
-    };
-
-    let html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Lollms Chat</title>
-    <link href="${codiconsUri}" rel="stylesheet" />
-    <link href="${cssUri}" rel="stylesheet" />
-    <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-</head>
-<body>
-    <div class="chat-container">
-        <div class="messages" id="messages">
-            <div class="search-bar" id="search-bar" style="display: none;">
-                <input type="text" id="searchInput" placeholder="Search discussion...">
-                <span id="search-results-count"></span>
-                <button id="search-prev" title="Previous match"><i class="codicon codicon-arrow-up"></i></button>
-                <button id="search-next" title="Next match"><i class="codicon codicon-arrow-down"></i></button>
-                <button id="search-close" title="Close search"><i class="codicon codicon-close"></i></button>
-            </div>
-            
-            <div id="context-container"></div>
-            
-            <details id="attachments-collapsible-wrapper" class="info-collapsible" style="display: none;" open>
-                <summary id="attachments-summary">📎 Added Files</summary>
-                <div id="attachments-container" class="collapsible-content" style="padding: 5px 0 0 0;">
-                </div>
-            </details>
-            
-            <div id="welcome-message" style="display: none;">
-                <h3 id="welcome-title"></h3>
-                <ul>
-                    <li id="welcome-item-1"></li>
-                    <li id="welcome-item-2"></li>
-                    <li id="welcome-item-3"></li>
-                    <li id="welcome-item-4"></li>
-                </ul>
-            </div>
-
-            <div id="chat-messages-container">
-                <div id="message-insertion-controls">
-                    <button class="code-action-btn" id="add-user-message-btn"><i class="codicon codicon-add"></i> Add User Message</button>
-                    <button class="code-action-btn" id="add-ai-message-btn"><i class="codicon codicon-add"></i> Add AI Message</button>
-                </div>
-            </div>
-
-        </div>
-        
-        <button id="scrollToBottomBtn" title="Scroll to bottom" style="display: none;">
-            <i class="codicon codicon-arrow-down"></i>
-        </button>
-
-        <div id="tools-modal" class="modal">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h2>Configure Tools</h2>
-                    <span class="close-btn" id="close-tools-modal">&times;</span>
-                </div>
-                <div class="modal-body" id="tools-list"></div>
-                <div class="modal-footer">
-                    <button id="save-tools-btn">OK</button>
-                </div>
-            </div>
-        </div>
-
-        <div class="input-area-wrapper">
-            <div id="more-actions-menu">
-                <button class="menu-item" id="attachButton"><i class="codicon codicon-add"></i><span>Attach Files</span></button>
-                <button class="menu-item" id="configureToolsButton"><i class="codicon codicon-tools"></i><span>Configure Tools</span></button>
-                <button class="menu-item" id="setEntryPointButton"><i class="codicon codicon-target"></i><span>Set Project Entry Point</span></button>
-                <button class="menu-item" id="executeButton"><i class="codicon codicon-play"></i><span>Execute Project</span></button>
-                <button class="menu-item" id="debugRestartButton"><i class="codicon codicon-debug-restart"></i><span>Re-run Last Debug</span></button>
-            </div>
-
-            <div class="top-controls">
-                <div class="token-progress">
-                    <div class="token-progress-container">
-                        <div class="token-progress-bar" id="token-progress-bar"></div>
-                    </div>
-                    <div id="context-status-container" style="display: flex; align-items: center; gap: 8px;">
-                        <span id="token-count-label">Tokens: 0 / 0</span>
-                        <button id="refresh-context-btn"><i class="codicon codicon-sync"></i></button>
-                    </div>
-                    <div id="context-loading-spinner" style="display: none; align-items: center; gap: 8px; font-size: 0.9em; color: var(--vscode-descriptionForeground);">
-                        <div class="spinner"></div>
-                        <span id="loading-files-text"></span>
-                    </div>
-                </div>
-                <div class="model-selector-container">
-                    <label for="model-selector">Model:</label>
-                    <select id="model-selector"></select>
-                </div>
-                <div class="agent-mode-toggle">
-                    <span>🤖 Agent Mode</span>
-                    <label class="switch">
-                        <input type="checkbox" id="agentModeCheckbox">
-                        <span class="slider"></span>
-                    </label>
-                </div>
-            </div>
-            <div class="input-area">
-                <div class="control-buttons">
-                    <button id="moreActionsButton" title="More Actions"><i class="codicon codicon-ellipsis"></i></button>
-                </div>
-                <textarea id="messageInput" placeholder="Enter your message (Shift+Enter for new line)..." rows="1"></textarea>
-                <div class="control-buttons">
-                    <button id="sendButton" title="Send Message"><i class="codicon codicon-send"></i></button>
-                    <button id="stopButton" title="Stop Generation" style="display: none;">
-                        <div class="spinner"></div>
-                        <span>Stop</span>
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <input type="file" id="fileInput" style="display: none;" multiple accept=".md,.txt,.msg,.docx,.pdf,.pptx,.xlsx,.csv,.png,.jpg,.jpeg,.bmp,.webp">
-
-    <script src="https://cdn.jsdelivr.net/npm/marked@5.1.1/marked.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.5/dist/purify.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-javascript.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-typescript.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-css.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-json.min.js"></script>
-
-    <script>
-        const l10n = ${JSON.stringify(l10nStrings)};
-    </script>
-    <script type="module" src="${jsUri}"></script>
-</body>
-</html>`;
-    
-    return html;
-  }
-  
   public async handleProjectExecutionResult(output: string, success: boolean) {
     if (!this._currentDiscussion) {
         this.updateGeneratingState();
@@ -531,135 +390,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     this._callApiWithMessages(inspectionMessages, false, inspectorModel);
   }
 
-  private _callApiWithMessages(messages: ChatMessage[], includeProjectContext: boolean = true, modelOverride?: string) {
-    if (!this._currentDiscussion) return;
-  
-    (async () => {
-      const { id: processId, controller } = this.processManager.register(this._currentDiscussion!.id, 'Generating chat response...');
-      const assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
-      const modelToUse = modelOverride || this._currentDiscussion?.model || this._lollmsAPI.getModelName();
-      const assistantPlaceholder: ChatMessage = { 
-          id: assistantMessageId, 
-          role: 'assistant', 
-          content: '',
-          startTime: Date.now(),
-          model: modelToUse
-      };
-      
-      try {
-        const apiMessages: ChatMessage[] = [];
-        const systemPrompt = getProcessedSystemPrompt('chat');
-        if (systemPrompt) {
-          apiMessages.push({ role: 'system', content: systemPrompt });
-        }
-  
-        const messagesCopy = JSON.parse(JSON.stringify(messages));
-  
-        if (includeProjectContext) {
-          const context: ContextResult = this._contextManager ? await this._contextManager.getContextContent() : { text: '', images: [] };
-          if (context.text && context.text.trim().length > 0) {
-            apiMessages.push({ role: 'system', content: `## Project Context\n${context.text}` });
-          }
-          if (context.images.length > 0) {
-            let lastUserMessage = null;
-            for (let i = messagesCopy.length - 1; i >= 0; i--) {
-                if (messagesCopy[i].role === 'user') {
-                    lastUserMessage = messagesCopy[i];
-                    break;
-                }
-            }
-            if (lastUserMessage) {
-                if (typeof lastUserMessage.content === 'string') {
-                    lastUserMessage.content = [{ type: 'text', text: lastUserMessage.content }];
-                }
-                for (const image of context.images) {
-                    (lastUserMessage.content as any[]).push({
-                        type: 'image_url',
-                        image_url: { url: image.data, detail: "auto" }
-                    });
-                }
-            }
-          }
-        }
-
-        apiMessages.push(...messagesCopy);
-  
-        this._lastApiRequest = apiMessages;
-  
-        this._panel.webview.postMessage({ command: 'addMessage', message: assistantPlaceholder });
-  
-        const onChunk = (chunk: string) => {
-          if (controller.signal.aborted) return;
-          (assistantPlaceholder.content as string) += chunk;
-          this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk: chunk });
-        };
-  
-        const fullResponseText = await this._lollmsAPI.sendChat(apiMessages, onChunk, controller.signal, modelToUse);
-        this._lastApiResponse = fullResponseText;
-  
-        if (controller.signal.aborted) { return; }
-        
-        let tokenCount = 0;
-        try {
-            const modelForTokenization = modelToUse || this._lollmsAPI.getModelName();
-            tokenCount = (await this._lollmsAPI.tokenize(fullResponseText, modelForTokenization)).count;
-        } catch(e) {
-            console.error("Could not tokenize final response, TPS will be unavailable.", e);
-        }
-
-        this._panel.webview.postMessage({ 
-            command: 'finalizeMessage', 
-            id: assistantMessageId, 
-            fullContent: fullResponseText,
-            tokenCount: tokenCount
-        });
-        
-        assistantPlaceholder.content = fullResponseText;
-        await this.addMessageToDiscussion(assistantPlaceholder);
-  
-      } catch (error: any) {
-        try {
-            const isAbortError = error.name === 'AbortError' || (error instanceof Error && error.message.includes('aborted'));
-            const isTimeoutError = error instanceof Error && error.message.includes('timed out');
-
-            if (isTimeoutError) {
-                this._lastApiResponse = error.message;
-
-                if (assistantPlaceholder.content && (assistantPlaceholder.content as string).trim() !== '') {
-                    await this.addMessageToDiscussion(assistantPlaceholder);
-                }
-
-                const timeoutMessage: ChatMessage = {
-                    role: 'system',
-                    content: `❌ **API Error:** ${error.message}`
-                };
-                await this.addMessageToDiscussion(timeoutMessage);
-            } else {
-                const errorMessage = isAbortError ? 'Generation stopped by user.' : (error instanceof Error ? error.message : 'An unknown error occurred');
-                this._lastApiResponse = errorMessage;
-
-                const errorContent = `<p style="color:var(--vscode-errorForeground);">❌ **${isAbortError ? 'Cancelled' : 'API Error'}:**</p><pre style="background-color:var(--vscode-textCodeBlock-background); padding:10px; border-radius:4px; white-space:pre-wrap;">${errorMessage}</pre>`;
-
-                this._panel.webview.postMessage({ 
-                    command: 'finalizeMessage', 
-                    id: assistantMessageId, 
-                    fullContent: errorContent,
-                    isHtml: true,
-                    tokenCount: 0
-                });
-
-                assistantPlaceholder.content = errorContent;
-                assistantPlaceholder.role = 'system';
-                await this.addMessageToDiscussion(assistantPlaceholder);
-            }
-        } catch (secondaryError) {
-            console.error("Error while handling initial API error:", secondaryError);
-        }
-      } finally {
-        this.processManager.unregister(processId);
-      }
-    })();
-  }
   public async sendIsolatedMessage(systemPrompt: string, userMessageContent: string, modelOverride?: string) {
     if (!this._currentDiscussion) {
         vscode.window.showErrorMessage("No active discussion to send isolated message.");
@@ -824,7 +554,11 @@ Your task is to re-analyze your previous code suggestion in light of this new er
       console.log("Lollms: Received message from webview:", message.command, message);
       const activeWorkspaceFolder = vscode.workspace.workspaceFolders?.[0];
       switch (message.command) {
+        case 'webview-html-loaded':
+            console.log("ChatPanel: HTML Loaded signal received.");
+            break;
         case 'webview-ready':
+            console.log("ChatPanel: JS Ready signal received.");
             this._isWebviewReady = true;
             if (this._isLoadPending) {
                 this.loadDiscussion();
@@ -1003,5 +737,305 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             break;            
       }
     });
+  }
+
+  private _callApiWithMessages(messages: ChatMessage[], includeProjectContext: boolean = true, modelOverride?: string) {
+    if (!this._currentDiscussion) return;
+  
+    (async () => {
+      const { id: processId, controller } = this.processManager.register(this._currentDiscussion!.id, 'Generating chat response...');
+      const assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
+      const modelToUse = modelOverride || this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+      const assistantPlaceholder: ChatMessage = { 
+          id: assistantMessageId, 
+          role: 'assistant', 
+          content: '',
+          startTime: Date.now(),
+          model: modelToUse
+      };
+      
+      try {
+        const apiMessages: ChatMessage[] = [];
+        const systemPrompt = getProcessedSystemPrompt('chat');
+        if (systemPrompt) {
+          apiMessages.push({ role: 'system', content: systemPrompt });
+        }
+  
+        const messagesCopy = JSON.parse(JSON.stringify(messages));
+  
+        if (includeProjectContext) {
+          const context: ContextResult = this._contextManager ? await this._contextManager.getContextContent() : { text: '', images: [] };
+          if (context.text && context.text.trim().length > 0) {
+            apiMessages.push({ role: 'system', content: `## Project Context\n${context.text}` });
+          }
+          if (context.images.length > 0) {
+            let lastUserMessage = null;
+            for (let i = messagesCopy.length - 1; i >= 0; i--) {
+                if (messagesCopy[i].role === 'user') {
+                    lastUserMessage = messagesCopy[i];
+                    break;
+                }
+            }
+            if (lastUserMessage) {
+                if (typeof lastUserMessage.content === 'string') {
+                    lastUserMessage.content = [{ type: 'text', text: lastUserMessage.content }];
+                }
+                for (const image of context.images) {
+                    (lastUserMessage.content as any[]).push({
+                        type: 'image_url',
+                        image_url: { url: image.data, detail: "auto" }
+                    });
+                }
+            }
+          }
+        }
+
+        apiMessages.push(...messagesCopy);
+  
+        this._lastApiRequest = apiMessages;
+  
+        this._panel.webview.postMessage({ command: 'addMessage', message: assistantPlaceholder });
+  
+        const onChunk = (chunk: string) => {
+          if (controller.signal.aborted) return;
+          (assistantPlaceholder.content as string) += chunk;
+          this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk: chunk });
+        };
+  
+        const fullResponseText = await this._lollmsAPI.sendChat(apiMessages, onChunk, controller.signal, modelToUse);
+        this._lastApiResponse = fullResponseText;
+  
+        if (controller.signal.aborted) { return; }
+        
+        let tokenCount = 0;
+        try {
+            const modelForTokenization = modelToUse || this._lollmsAPI.getModelName();
+            tokenCount = (await this._lollmsAPI.tokenize(fullResponseText, modelForTokenization)).count;
+        } catch(e) {
+            console.error("Could not tokenize final response, TPS will be unavailable.", e);
+        }
+
+        this._panel.webview.postMessage({ 
+            command: 'finalizeMessage', 
+            id: assistantMessageId, 
+            fullContent: fullResponseText,
+            tokenCount: tokenCount
+        });
+        
+        assistantPlaceholder.content = fullResponseText;
+        await this.addMessageToDiscussion(assistantPlaceholder);
+  
+      } catch (error: any) {
+        try {
+            const isAbortError = error.name === 'AbortError' || (error instanceof Error && error.message.includes('aborted'));
+            const isTimeoutError = error instanceof Error && error.message.includes('timed out');
+
+            if (isTimeoutError) {
+                this._lastApiResponse = error.message;
+
+                if (assistantPlaceholder.content && (assistantPlaceholder.content as string).trim() !== '') {
+                    await this.addMessageToDiscussion(assistantPlaceholder);
+                }
+
+                const timeoutMessage: ChatMessage = {
+                    role: 'system',
+                    content: `❌ **API Error:** ${error.message}`
+                };
+                await this.addMessageToDiscussion(timeoutMessage);
+            } else {
+                const errorMessage = isAbortError ? 'Generation stopped by user.' : (error instanceof Error ? error.message : 'An unknown error occurred');
+                this._lastApiResponse = errorMessage;
+
+                const errorContent = `<p style="color:var(--vscode-errorForeground);">❌ **${isAbortError ? 'Cancelled' : 'API Error'}:**</p><pre style="background-color:var(--vscode-textCodeBlock-background); padding:10px; border-radius:4px; white-space:pre-wrap;">${errorMessage}</pre>`;
+
+                this._panel.webview.postMessage({ 
+                    command: 'finalizeMessage', 
+                    id: assistantMessageId, 
+                    fullContent: errorContent,
+                    isHtml: true,
+                    tokenCount: 0
+                });
+
+                assistantPlaceholder.content = errorContent;
+                assistantPlaceholder.role = 'system';
+                await this.addMessageToDiscussion(assistantPlaceholder);
+            }
+        } catch (secondaryError) {
+            console.error("Error while handling initial API error:", secondaryError);
+        }
+      } finally {
+        this.processManager.unregister(processId);
+      }
+    })();
+  }
+
+  private async _getHtmlForWebview(webview: vscode.Webview): Promise<string> {
+    const nonce = getNonce();
+
+    const codiconsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'codicon.css'));
+    const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'chatPanel.css'));
+    const prismThemeUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'prism-tomorrow.css'));
+    const jsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'chatPanel.bundle.js'));
+
+    const l10nStrings = {
+        welcomeTitle: vscode.l10n.t("welcome.title"),
+        welcomeItem1: vscode.l10n.t("welcome.item1"),
+        welcomeItem2: vscode.l10n.t("welcome.item2"),
+        welcomeItem3: vscode.l10n.t("welcome.item3"),
+        welcomeItem4: vscode.l10n.t("welcome.item4"),
+        progressLoadingFiles: vscode.l10n.t("progress.loadingFiles"),
+        tooltipRefreshContext: vscode.l10n.t("tooltip.refreshContext")
+    };
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="
+        default-src 'none';
+        style-src ${webview.cspSource} 'unsafe-inline';
+        font-src ${webview.cspSource};
+        img-src ${webview.cspSource} data:;
+        script-src 'nonce-${nonce}' 'unsafe-eval';
+    ">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Lollms Chat</title>
+    <link href="${codiconsUri}" rel="stylesheet" />
+    <link href="${cssUri}" rel="stylesheet" />
+    <link href="${prismThemeUri}" rel="stylesheet" />
+</head>
+<body>
+    <div class="chat-container">
+        <div class="messages" id="messages">
+            <div class="search-bar" id="search-bar" style="display: none;">
+                <input type="text" id="searchInput" placeholder="Search discussion...">
+                <span id="search-results-count"></span>
+                <button id="search-prev" title="Previous match"><i class="codicon codicon-arrow-up"></i></button>
+                <button id="search-next" title="Next match"><i class="codicon codicon-arrow-down"></i></button>
+                <button id="search-close" title="Close search"><i class="codicon codicon-close"></i></button>
+            </div>
+            
+            <div id="context-container"></div>
+            
+            <details id="attachments-collapsible-wrapper" class="info-collapsible" style="display: none;" open>
+                <summary id="attachments-summary">📎 Added Files</summary>
+                <div id="attachments-container" class="collapsible-content" style="padding: 5px 0 0 0;">
+                </div>
+            </details>
+            
+            <div id="welcome-message" style="display: none;">
+                <h3 id="welcome-title"></h3>
+                <ul>
+                    <li id="welcome-item-1"></li>
+                    <li id="welcome-item-2"></li>
+                    <li id="welcome-item-3"></li>
+                    <li id="welcome-item-4"></li>
+                </ul>
+            </div>
+
+            <div id="chat-messages-container">
+                <div id="message-insertion-controls">
+                    <button class="code-action-btn" id="add-user-message-btn"><i class="codicon codicon-add"></i> Add User Message</button>
+                    <button class="code-action-btn" id="add-ai-message-btn"><i class="codicon codicon-add"></i> Add AI Message</button>
+                </div>
+            </div>
+
+        </div>
+        
+        <button id="scrollToBottomBtn" title="Scroll to bottom" style="display: none;">
+            <i class="codicon codicon-arrow-down"></i>
+        </button>
+
+        <div id="tools-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Configure Tools</h2>
+                    <span class="close-btn" id="close-tools-modal">&times;</span>
+                </div>
+                <div class="modal-body" id="tools-list"></div>
+                <div class="modal-footer">
+                    <button id="save-tools-btn">OK</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="input-area-wrapper">
+            <div id="more-actions-menu">
+                <button class="menu-item" id="attachButton"><i class="codicon codicon-add"></i><span>Attach Files</span></button>
+                <button class="menu-item" id="configureToolsButton"><i class="codicon codicon-tools"></i><span>Configure Tools</span></button>
+                <button class="menu-item" id="setEntryPointButton"><i class="codicon codicon-target"></i><span>Set Project Entry Point</span></button>
+                <button class="menu-item" id="executeButton"><i class="codicon codicon-play"></i><span>Execute Project</span></button>
+                <button class="menu-item" id="debugRestartButton"><i class="codicon codicon-debug-restart"></i><span>Re-run Last Debug</span></button>
+            </div>
+
+            <div class="top-controls">
+                <div class="token-progress">
+                    <div class="token-progress-container">
+                        <div class="token-progress-bar" id="token-progress-bar"></div>
+                    </div>
+                    <div id="context-status-container" style="display: flex; align-items: center; gap: 8px;">
+                        <span id="token-count-label">Tokens: 0 / 0</span>
+                        <button id="refresh-context-btn"><i class="codicon codicon-sync"></i></button>
+                    </div>
+                    <div id="context-loading-spinner" style="display: none; align-items: center; gap: 8px; font-size: 0.9em; color: var(--vscode-descriptionForeground);">
+                        <div class="spinner"></div>
+                        <span id="loading-files-text"></span>
+                    </div>
+                </div>
+                <div class="model-selector-container">
+                    <label for="model-selector">Model:</label>
+                    <select id="model-selector"></select>
+                </div>
+                <div class="agent-mode-toggle">
+                    <span>🤖 Agent Mode</span>
+                    <label class="switch">
+                        <input type="checkbox" id="agentModeCheckbox">
+                        <span class="slider"></span>
+                    </label>
+                </div>
+            </div>
+            <div class="input-area">
+                <div class="control-buttons">
+                    <button id="moreActionsButton" title="More Actions"><i class="codicon codicon-ellipsis"></i></button>
+                </div>
+                <textarea id="messageInput" placeholder="Enter your message (Shift+Enter for new line)..." rows="1"></textarea>
+                <div class="control-buttons">
+                    <button id="sendButton" title="Send Message"><i class="codicon codicon-send"></i></button>
+                    <button id="stopButton" title="Stop Generation" style="display: none;">
+                        <div class="spinner"></div>
+                        <span>Stop</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <input type="file" id="fileInput" style="display: none;" multiple accept=".md,.txt,.msg,.docx,.pdf,.pptx,.xlsx,.csv,.png,.jpg,.jpeg,.bmp,.webp">
+
+    <script nonce="${nonce}">
+        // BOOTSTRAP SCRIPT
+        // This runs immediately to capture errors and acquire API
+        try {
+            const vscode = acquireVsCodeApi();
+            window.vscode = vscode; // Make available globally for bundle
+            
+            window.onerror = function(message, source, lineno, colno, error) {
+                vscode.postMessage({
+                    command: 'showError',
+                    message: 'Webview Runtime Error: ' + message + ' (' + source + ':' + lineno + ')'
+                });
+                console.error("Webview Error:", message, error);
+            };
+
+            console.log("Webview Bootstrap: API acquired");
+            vscode.postMessage({ command: 'webview-bootstrap-ok' });
+        } catch (e) {
+            console.error("Webview Bootstrap Failed:", e);
+        }
+        const l10n = ${JSON.stringify(l10nStrings)};
+    </script>
+    <script nonce="${nonce}" src="${jsUri}"></script>
+</body>
+</html>`;
   }
 }

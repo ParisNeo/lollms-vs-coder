@@ -26,6 +26,7 @@
     "command.learnSelectionAsSkill.title": "Lollms: تعلم التحديد كمهارة",
     "command.newDiscussion.title": "مناقشة جديدة",
     "command.newTempDiscussion.title": "مناقشة مؤقتة جديدة",
+    "command.newDiscussionFromClipboard.title": "مناقشة جديدة من الحافظة",
     "command.delete.title": "حذف",
     "command.cancel.title": "إلغاء",
     "command.switchDiscussion.title": "تبديل المناقشة",

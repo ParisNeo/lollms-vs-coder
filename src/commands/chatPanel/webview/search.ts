@@ -1,5 +1,4 @@
-import { dom } from './dom.js';
-import { state } from './main.js';
+import { dom, state } from './dom.js';
 
 export function clearSearch() {
     state.searchMatches = [];
@@ -84,7 +83,9 @@ export function navigateSearch(direction: number) {
 }
 
 function updateSearchCount() {
-    dom.searchResultsCount.textContent = state.searchMatches.length > 0
-        ? `${state.currentMatchIndex + 1} of ${state.searchMatches.length}`
-        : '';
+    if(dom.searchResultsCount) {
+        dom.searchResultsCount.textContent = state.searchMatches.length > 0
+            ? `${state.currentMatchIndex + 1} of ${state.searchMatches.length}`
+            : '';
+    }
 }

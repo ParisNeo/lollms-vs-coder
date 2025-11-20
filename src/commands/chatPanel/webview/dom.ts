@@ -1,39 +1,75 @@
+// Define the API interface
+export interface VsCodeApi {
+    postMessage(message: any): void;
+    getState(): any;
+    setState(state: any): void;
+}
+
+// Robust API Accessor using Proxy
+export const vscode = new Proxy({} as VsCodeApi, {
+    get: (target, prop) => {
+        const api = (window as any).vscode;
+        if (api) {
+            const value = api[prop as keyof VsCodeApi];
+            if (typeof value === 'function') {
+                return value.bind(api);
+            }
+            return value;
+        }
+        console.error(`CRITICAL: VS Code API '${String(prop)}' accessed but 'window.vscode' is missing. Check bootstrap.`);
+        // Return no-op to prevent crash
+        return () => console.warn(`Ignored call to ${String(prop)} because API is missing.`);
+    }
+});
+
+export const state: {
+    searchMatches: HTMLElement[],
+    currentMatchIndex: number,
+    isInspectorEnabled: boolean,
+    streamingMessages: { [key: string]: { buffer: string, timer: any } },
+} = {
+    searchMatches: [],
+    currentMatchIndex: -1,
+    isInspectorEnabled: false,
+    streamingMessages: {},
+};
+
 export const dom = {
-    messagesDiv: document.getElementById('messages') as HTMLDivElement,
-    chatMessagesContainer: document.getElementById('chat-messages-container') as HTMLDivElement,
-    messageInput: document.getElementById('messageInput') as HTMLTextAreaElement,
-    sendButton: document.getElementById('sendButton') as HTMLButtonElement,
-    stopButton: document.getElementById('stopButton') as HTMLButtonElement,
-    moreActionsButton: document.getElementById('moreActionsButton') as HTMLButtonElement,
-    moreActionsMenu: document.getElementById('more-actions-menu') as HTMLDivElement,
-    attachButton: document.getElementById('attachButton') as HTMLButtonElement,
-    executeButton: document.getElementById('executeButton') as HTMLButtonElement,
-    setEntryPointButton: document.getElementById('setEntryPointButton') as HTMLButtonElement,
-    debugRestartButton: document.getElementById('debugRestartButton') as HTMLButtonElement,
-    fileInput: document.getElementById('fileInput') as HTMLInputElement,
-    agentModeCheckbox: document.getElementById('agentModeCheckbox') as HTMLInputElement,
-    agentModeToggle: document.querySelector('.agent-mode-toggle') as HTMLLabelElement,
-    modelSelector: document.getElementById('model-selector') as HTMLSelectElement,
-    contextContainer: document.getElementById('context-container') as HTMLDivElement,
-    attachmentsContainer: document.getElementById('attachments-container') as HTMLDivElement,
-    welcomeMessage: document.getElementById('welcome-message') as HTMLDivElement,
-    scrollToBottomBtn: document.getElementById('scrollToBottomBtn') as HTMLButtonElement,
-    tokenProgressBar: document.getElementById('token-progress-bar') as HTMLDivElement,
-    tokenCountLabel: document.getElementById('token-count-label') as HTMLSpanElement,
-    refreshContextBtn: document.getElementById('refresh-context-btn') as HTMLButtonElement,
-    contextStatusContainer: document.getElementById('context-status-container') as HTMLDivElement,
-    contextLoadingSpinner: document.getElementById('context-loading-spinner') as HTMLDivElement,
-    searchBar: document.getElementById('search-bar') as HTMLDivElement,
-    searchInput: document.getElementById('searchInput') as HTMLInputElement,
-    searchResultsCount: document.getElementById('search-results-count') as HTMLSpanElement,
-    searchPrevBtn: document.getElementById('search-prev') as HTMLButtonElement,
-    searchNextBtn: document.getElementById('search-next') as HTMLButtonElement,
-    searchCloseBtn: document.getElementById('search-close') as HTMLButtonElement,
-    configureToolsButton: document.getElementById('configureToolsButton') as HTMLButtonElement,
-    toolsModal: document.getElementById('tools-modal') as HTMLDivElement,
-    closeToolsModal: document.getElementById('close-tools-modal') as HTMLSpanElement,
-    saveToolsBtn: document.getElementById('save-tools-btn') as HTMLButtonElement,
-    toolsListDiv: document.getElementById('tools-list') as HTMLDivElement,
-    addUserMessageBtn: document.getElementById('add-user-message-btn') as HTMLButtonElement,
-    addAiMessageBtn: document.getElementById('add-ai-message-btn') as HTMLButtonElement,
+    get messagesDiv() { return document.getElementById('messages') as HTMLDivElement; },
+    get chatMessagesContainer() { return document.getElementById('chat-messages-container') as HTMLDivElement; },
+    get messageInput() { return document.getElementById('messageInput') as HTMLTextAreaElement; },
+    get sendButton() { return document.getElementById('sendButton') as HTMLButtonElement; },
+    get stopButton() { return document.getElementById('stopButton') as HTMLButtonElement; },
+    get moreActionsButton() { return document.getElementById('moreActionsButton') as HTMLButtonElement; },
+    get moreActionsMenu() { return document.getElementById('more-actions-menu') as HTMLDivElement; },
+    get attachButton() { return document.getElementById('attachButton') as HTMLButtonElement; },
+    get executeButton() { return document.getElementById('executeButton') as HTMLButtonElement; },
+    get setEntryPointButton() { return document.getElementById('setEntryPointButton') as HTMLButtonElement; },
+    get debugRestartButton() { return document.getElementById('debugRestartButton') as HTMLButtonElement; },
+    get fileInput() { return document.getElementById('fileInput') as HTMLInputElement; },
+    get agentModeCheckbox() { return document.getElementById('agentModeCheckbox') as HTMLInputElement; },
+    get agentModeToggle() { return document.querySelector('.agent-mode-toggle') as HTMLLabelElement; },
+    get modelSelector() { return document.getElementById('model-selector') as HTMLSelectElement; },
+    get contextContainer() { return document.getElementById('context-container') as HTMLDivElement; },
+    get attachmentsContainer() { return document.getElementById('attachments-container') as HTMLDivElement; },
+    get welcomeMessage() { return document.getElementById('welcome-message') as HTMLDivElement; },
+    get scrollToBottomBtn() { return document.getElementById('scrollToBottomBtn') as HTMLButtonElement; },
+    get tokenProgressBar() { return document.getElementById('token-progress-bar') as HTMLDivElement; },
+    get tokenCountLabel() { return document.getElementById('token-count-label') as HTMLSpanElement; },
+    get refreshContextBtn() { return document.getElementById('refresh-context-btn') as HTMLButtonElement; },
+    get contextStatusContainer() { return document.getElementById('context-status-container') as HTMLDivElement; },
+    get contextLoadingSpinner() { return document.getElementById('context-loading-spinner') as HTMLDivElement; },
+    get searchBar() { return document.getElementById('search-bar') as HTMLDivElement; },
+    get searchInput() { return document.getElementById('searchInput') as HTMLInputElement; },
+    get searchResultsCount() { return document.getElementById('search-results-count') as HTMLSpanElement; },
+    get searchPrevBtn() { return document.getElementById('search-prev') as HTMLButtonElement; },
+    get searchNextBtn() { return document.getElementById('search-next') as HTMLButtonElement; },
+    get searchCloseBtn() { return document.getElementById('search-close') as HTMLButtonElement; },
+    get configureToolsButton() { return document.getElementById('configureToolsButton') as HTMLButtonElement; },
+    get toolsModal() { return document.getElementById('tools-modal') as HTMLDivElement; },
+    get closeToolsModal() { return document.getElementById('close-tools-modal') as HTMLSpanElement; },
+    get saveToolsBtn() { return document.getElementById('save-tools-btn') as HTMLButtonElement; },
+    get toolsListDiv() { return document.getElementById('tools-list') as HTMLDivElement; },
+    get addUserMessageBtn() { return document.getElementById('add-user-message-btn') as HTMLButtonElement; },
+    get addAiMessageBtn() { return document.getElementById('add-ai-message-btn') as HTMLButtonElement; },
 };

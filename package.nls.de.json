@@ -26,6 +26,7 @@
     "command.learnSelectionAsSkill.title": "Lollms: Auswahl als Fähigkeit lernen",
     "command.newDiscussion.title": "Neue Diskussion",
     "command.newTempDiscussion.title": "Neue temporäre Diskussion",
+    "command.newDiscussionFromClipboard.title": "Neue Diskussion aus Zwischenablage",
     "command.delete.title": "Löschen",
     "command.cancel.title": "Abbrechen",
     "command.switchDiscussion.title": "Diskussion wechseln",

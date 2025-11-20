@@ -343,16 +343,8 @@ export async function activate(context: vscode.ExtensionContext) {
 
     const actionsTreeProvider = new ActionsTreeProvider();
     context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsActionsView', actionsTreeProvider));
-    const processTreeProvider = new ProcessTreeProvider(processManager);
-    context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsProcessView', processTreeProvider));
     
-    context.subscriptions.push(processManager.onDidProcessChange(() => {
-        processTreeProvider.refresh();
-        // Update all active chat panels, as any of them could be related to a process.
-        ChatPanel.panels.forEach(panel => {
-            panel.updateGeneratingState();
-        });
-    }));
+    let processTreeProvider: ProcessTreeProvider | undefined;
 
     const chatPromptTreeProvider = new ChatPromptTreeProvider(promptManager);
     context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsChatPromptsView', chatPromptTreeProvider));
@@ -460,6 +452,16 @@ export async function activate(context: vscode.ExtensionContext) {
         discussionTreeProvider = new DiscussionTreeProvider(discussionManager, context.extensionUri);
         discussionView = vscode.window.createTreeView('lollmsDiscussionsView', { treeDataProvider: discussionTreeProvider });
         
+        processTreeProvider = new ProcessTreeProvider(processManager);
+        context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsProcessView', processTreeProvider));
+        
+        context.subscriptions.push(processManager.onDidProcessChange(() => {
+            processTreeProvider?.refresh();
+            ChatPanel.panels.forEach(panel => {
+                panel.updateGeneratingState();
+            });
+        }));
+
         switchActiveWorkspace(initialWorkspace);
     }
     
@@ -565,6 +567,43 @@ Please analyze this output (e.g., error log, script output, or configuration tex
         const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, discussion.id);
         setupChatPanel(panel);
         await panel.loadDiscussion();
+        discussionTreeProvider?.refresh();
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussionFromClipboard', async () => {
+        if (!discussionManager) {
+            vscode.window.showInformationMessage(vscode.l10n.t("info.openFolderToUseChat"));
+            return;
+        }
+
+        const clipboardContent = await vscode.env.clipboard.readText();
+        if (!clipboardContent.trim()) {
+            vscode.window.showInformationMessage("Clipboard is empty.");
+            return;
+        }
+
+        const discussion = discussionManager.createNewDiscussion();
+
+        const userMessage: ChatMessage = {
+            id: 'user_' + Date.now().toString() + Math.random().toString(36).substring(2),
+            role: 'user',
+            content: clipboardContent
+        };
+        discussion.messages.push(userMessage);
+
+        const title = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: vscode.l10n.t("progress.generatingDiscussionTitle"), cancellable: false }, async () => await discussionManager!.generateDiscussionTitle(discussion));
+        if (title) {
+            discussion.title = title;
+        } else {
+            discussion.title = "From Clipboard";
+        }
+
+        await discussionManager.saveDiscussion(discussion);
+        
+        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, discussion.id);
+        setupChatPanel(panel);
+        await panel.loadDiscussion();
+        
         discussionTreeProvider?.refresh();
     }));
 

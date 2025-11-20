@@ -1,34 +1,62 @@
-import { dom } from './dom.js';
-import { state, vscode } from './main.js';
+import { dom, vscode, state } from './dom.js';
 import { isScrolledToBottom } from './utils.js';
-
-declare const marked: any;
-declare const DOMPurify: any;
-declare const Prism: any;
-declare const mermaid: any;
+import { marked } from 'marked';
+import DOMPurify from 'dompurify';
+import mermaid from 'mermaid';
+import Prism from 'prismjs';
 
 const RENDER_THROTTLE_MS = 100;
 
-marked.setOptions({
-    breaks: true,
-    gfm: true,
-    headerIds: false,
-    mangle: false
-});
+// Configure Marked
+try {
+    marked.setOptions({
+        breaks: true,
+        gfm: true,
+        highlight: (code, lang) => {
+            if (Prism.languages[lang]) {
+                return Prism.highlight(code, Prism.languages[lang], lang);
+            }
+            return code;
+        },
+    });
+} catch (e) {
+    console.error("Failed to configure marked:", e);
+}
 
-// =================================================================================================
-// HELPER FUNCTIONS
-// =================================================================================================
+// Initialize DOMPurify
+const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
+
+const SANITIZE_CONFIG = {
+    ALLOWED_TAGS: [
+        'a', 'b', 'blockquote', 'br', 'code', 'dd', 'del', 'details', 'div', 'dl', 'dt', 'em', 
+        'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'i', 'img', 'ins', 'kbd', 'li', 'ol', 'p', 
+        'pre', 'q', 'rp', 'rt', 'ruby', 's', 'samp', 'span', 'strike', 'strong', 'sub', 
+        'summary', 'sup', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'tt', 'ul', 'var'
+    ],
+    ALLOWED_ATTR: [
+        'align', 'alt', 'class', 'height', 'href', 'id', 'src', 'style', 'target', 'title', 
+        'type', 'width', 'data-language', 'start'
+    ]
+};
+
 
 function createButton(text: string, icon: string, onClick: () => void, className = 'code-action-btn'): HTMLButtonElement {
     const btn = document.createElement('button');
     btn.className = className;
-    btn.innerHTML = `<span class="codicon ${icon}"></span> ${text}`;
-    btn.addEventListener('click', (e) => {
-        e.stopPropagation();
+    btn.title = text;
+    btn.innerHTML = `<span class="codicon ${icon}"></span> <span class="btn-text">${text}</span>`;
+    
+    btn.onclick = (e) => {
         e.preventDefault();
-        onClick();
-    });
+        e.stopPropagation();
+        console.log(`[Button Click] Action: ${text}`);
+        try {
+            onClick();
+        } catch (err) {
+            console.error(`Error executing action for ${text}:`, err);
+            vscode.postMessage({ command: 'showError', message: `Action failed: ${err}` });
+        }
+    };
     return btn;
 }
 
@@ -54,14 +82,14 @@ function createGenerationBlock(type: string, filePath: string, prompt: string): 
             filePath: filePath,
             buttonId: buttonId
         });
-    }, 'generation-btn');
+    }, 'code-action-btn apply-btn');
     generateBtn.id = buttonId;
 
     actions.appendChild(generateBtn);
     
     const body = document.createElement('div');
     body.className = 'generation-body';
-    body.innerHTML = `<p><strong>Prompt:</strong> ${DOMPurify.sanitize(prompt)}</p>`;
+    body.innerHTML = `<p><strong>Prompt:</strong> ${sanitizer.sanitize(prompt)}</p>`;
     
     block.appendChild(header);
     block.appendChild(body);
@@ -76,25 +104,21 @@ function renderDiagram(codeElement: HTMLElement, language: string, container: HT
     if (language === 'mermaid') {
         try {
             mermaid.render(`mermaid-${Date.now()}`, codeElement.textContent || '', (svgCode: string) => {
-                diagramContainer.innerHTML = svgCode;
+                diagramContainer.innerHTML = sanitizer.sanitize(svgCode, { USE_PROFILES: { svg: true } });
                 container.appendChild(diagramContainer);
             });
-            (codeElement.parentElement as HTMLElement).style.display = 'none'; // Hide the raw code
+            if(codeElement.parentElement) codeElement.parentElement.style.display = 'none';
         } catch (e) {
             console.error("Mermaid render error:", e);
             diagramContainer.innerText = "Error rendering Mermaid diagram.";
             container.appendChild(diagramContainer);
         }
     } else if (language === 'svg') {
-        diagramContainer.innerHTML = DOMPurify.sanitize(codeElement.textContent || '');
+        diagramContainer.innerHTML = sanitizer.sanitize(codeElement.textContent || '', { USE_PROFILES: { svg: true } });
         container.appendChild(diagramContainer);
-        (codeElement.parentElement as HTMLElement).style.display = 'none'; // Hide the raw code
+        if(codeElement.parentElement) codeElement.parentElement.style.display = 'none';
     }
 }
-
-// =================================================================================================
-// MESSAGE EDITING
-// =================================================================================================
 
 function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     const originalContent = JSON.parse(messageDiv.dataset.originalContent || '""');
@@ -152,17 +176,12 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
                 messageId: messageId,
                 newContent: newContent
             });
-            // The extension will send back a 'loadDiscussion' message which re-renders everything
         }
         cleanup();
     };
 
     cancelBtn.onclick = cleanup;
 }
-
-// =================================================================================================
-// CONTENT ENHANCEMENT
-// =================================================================================================
 
 function enhanceCodeBlocks(container: HTMLElement) {
     const pres = container.querySelectorAll('pre');
@@ -189,10 +208,12 @@ function enhanceCodeBlocks(container: HTMLElement) {
         summary.appendChild(langLabel);
         summary.appendChild(actions);
 
+        // --- Standard Buttons ---
         const copyBtn = createButton('Copy', 'codicon-copy', () => {
             vscode.postMessage({ command: 'copyToClipboard', text: codeText });
-            copyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
-            setTimeout(() => { copyBtn.innerHTML = '<span class="codicon codicon-copy"></span> Copy'; }, 2000);
+            const icon = copyBtn.querySelector('.codicon');
+            if(icon) icon.className = 'codicon codicon-check';
+            setTimeout(() => { if(icon) icon.className = 'codicon codicon-copy'; }, 2000);
         });
         actions.appendChild(copyBtn);
 
@@ -208,78 +229,120 @@ function enhanceCodeBlocks(container: HTMLElement) {
             actions.appendChild(inspectBtn);
         }
 
-        const pElement = pre.previousElementSibling as HTMLElement;
+        // --- Special Logic Detection ---
+        const prevEl = pre.previousElementSibling as HTMLElement;
         let filePath = '';
+        let isFileBlock = false;
 
-        if (pElement && pElement.tagName === 'P' && pElement.innerText.trim().startsWith('File:')) {
-            filePath = pElement.innerText.trim().substring(5).trim();
+        // Improved Regex
+        const fileRegex = /(?:^|\n)(?:File:\s*|(?:\*\*|__)File:(?:\*\*|__)\s*)(.+?)(?:\s*|$)/i;
+
+        if (prevEl && (prevEl.tagName === 'P' || prevEl.tagName === 'DIV')) {
+             const text = prevEl.textContent || "";
+             const match = text.match(fileRegex);
+             if (match && match[1]) {
+                 filePath = match[1].trim().replace(/`/g, '');
+                 isFileBlock = true;
+             }
+        }
+
+        let isDiff = language === 'diff';
+        let diffFilePath = '';
+        const diffRegex = /(?:^|\n)(?:Diff:\s*|(?:\*\*|__)Diff:(?:\*\*|__)\s*)(.+?)(?:\s*|$)/i;
+
+        if (!isFileBlock && prevEl && (prevEl.tagName === 'P' || prevEl.tagName === 'DIV')) {
+             const text = prevEl.textContent || "";
+             const match = text.match(diffRegex);
+             if (match && match[1]) {
+                 diffFilePath = match[1].trim().replace(/`/g, '');
+                 isDiff = true;
+             }
+        }
+        
+        if (!isDiff && !isFileBlock) {
+            const diffHeaderMatch = codeText.match(/---\s+a\/(.+)\n\+\+\+\s+b\/(.+)/);
+            if (diffHeaderMatch && diffHeaderMatch[1]) {
+                diffFilePath = diffHeaderMatch[1].trim();
+                isDiff = true;
+            }
+        }
+
+        // --- Add Contextual Buttons ---
+
+        if (isFileBlock && filePath) {
             langLabel.textContent = filePath;
-            pElement.style.display = 'none';
+            prevEl.style.display = 'none'; 
+            
             const applyBtn = createButton('Apply to File', 'codicon-tools', () => {
                 vscode.postMessage({ command: 'applyFileContent', filePath: filePath, content: codeText });
-            }, 'apply-btn');
-            actions.insertBefore(applyBtn, actions.firstChild);
-        } else if (language === 'diff' || (pElement && pElement.tagName === 'P' && pElement.innerText.trim().startsWith('Diff:'))) {
-            let diffFilePath = '';
-            if (pElement && pElement.tagName === 'P' && pElement.innerText.trim().startsWith('Diff:')) {
-                diffFilePath = pElement.innerText.trim().substring(5).trim();
-                pElement.style.display = 'none';
-            } else {
-                const diffHeaderMatch = codeText.match(/---\s+a\/(.+)\n\+\+\+\s+b\/(.+)/);
-                if (diffHeaderMatch && diffHeaderMatch[1]) diffFilePath = diffHeaderMatch[1].trim();
-            }
-            if (diffFilePath) {
-                langLabel.textContent = `Diff: ${diffFilePath}`;
-                const applyPatchBtn = createButton('Apply Patch', 'codicon-tools', () => {
-                    vscode.postMessage({ command: 'applyPatchContent', filePath: diffFilePath, content: codeText });
-                }, 'apply-btn');
-                actions.insertBefore(applyPatchBtn, actions.firstChild);
-            }
+            }, 'code-action-btn apply-btn');
+            
+            if (actions.firstChild) actions.insertBefore(applyBtn, actions.firstChild);
+            else actions.appendChild(applyBtn);
+
+        } else if (isDiff) {
+            if(diffFilePath) langLabel.textContent = `Diff: ${diffFilePath}`;
+            if(prevEl && prevEl.textContent?.match(diffRegex)) prevEl.style.display = 'none';
+            
+            const applyPatchBtn = createButton('Apply Patch', 'codicon-tools', () => {
+                vscode.postMessage({ command: 'applyPatchContent', filePath: diffFilePath, content: codeText });
+            }, 'code-action-btn apply-btn');
+            
+            if (actions.firstChild) actions.insertBefore(applyPatchBtn, actions.firstChild);
+            else actions.appendChild(applyPatchBtn);
+
         } else if (language === 'rename') {
             const renameBtn = createButton('Move/Rename', 'codicon-git-compare', () => {
                 const lines = codeText.trim().split('\n');
                 lines.forEach(line => {
-                    const [originalPath, newPath] = line.split('->').map(s => s.trim());
-                    if (originalPath && newPath) {
-                        vscode.postMessage({ command: 'renameFile', originalPath, newPath });
+                    const parts = line.split('->');
+                    if(parts.length === 2) {
+                        vscode.postMessage({ command: 'renameFile', originalPath: parts[0].trim(), newPath: parts[1].trim() });
                     }
                 });
-            }, 'rename-btn');
-            actions.insertBefore(renameBtn, actions.firstChild);
+            }, 'code-action-btn apply-btn');
+            if (actions.firstChild) actions.insertBefore(renameBtn, actions.firstChild);
+            else actions.appendChild(renameBtn);
+
         } else if (language === 'delete') {
             const deleteBtn = createButton('Delete Files', 'codicon-trash', () => {
                 vscode.postMessage({ command: 'deleteFile', filePaths: codeText });
-            }, 'delete-btn');
-            actions.insertBefore(deleteBtn, actions.firstChild);
+            }, 'code-action-btn delete-btn');
+            if (actions.firstChild) actions.insertBefore(deleteBtn, actions.firstChild);
+            else actions.appendChild(deleteBtn);
+
         } else if (language === 'select') {
             const selectBtn = createButton('Add to Context', 'codicon-add', () => {
                 const files = codeText.trim().split('\n').map(f => f.trim()).filter(f => f);
                 vscode.postMessage({ command: 'addFilesToContext', files });
             });
-            actions.insertBefore(selectBtn, actions.firstChild);
-        } else if (language === 'image_prompt' && pElement && pElement.tagName === 'P' && pElement.innerText.trim().startsWith('File:')) {
-            filePath = pElement.innerText.trim().substring(5).trim();
-            pElement.style.display = 'none';
-            const genBlock = createGenerationBlock('Image', filePath, codeText);
-            pre.parentNode?.replaceChild(genBlock, pre);
-            return;
+            if (actions.firstChild) actions.insertBefore(selectBtn, actions.firstChild);
+            else actions.appendChild(selectBtn);
+
+        } else if (language === 'image_prompt' && isFileBlock) {
+             const genBlock = createGenerationBlock('Image', filePath, codeText);
+             if (pre.parentNode) pre.parentNode.replaceChild(genBlock, pre);
+             return;
         } else {
-            const runnableLanguages = ['python', 'py', 'javascript', 'js', 'typescript', 'ts', 'bash', 'sh', 'shell', 'powershell', 'pwsh', 'batch', 'cmd', 'bat'];
-            if (runnableLanguages.includes(language.toLowerCase())) {
-                const executeBtn = createButton('Execute', 'codicon-play', () => {
-                    vscode.postMessage({ command: 'runScript', code: codeText, language: language });
-                }, 'apply-btn');
-                actions.insertBefore(executeBtn, actions.firstChild);
-            }
+             const runnableLanguages = ['python', 'py', 'javascript', 'js', 'typescript', 'ts', 'bash', 'sh', 'shell', 'powershell', 'pwsh', 'batch', 'cmd', 'bat'];
+             if (runnableLanguages.includes(language.toLowerCase())) {
+                 const executeBtn = createButton('Execute', 'codicon-play', () => {
+                     vscode.postMessage({ command: 'runScript', code: codeText, language: language });
+                 }, 'code-action-btn apply-btn');
+                 
+                 if (actions.firstChild) actions.insertBefore(executeBtn, actions.firstChild);
+                 else actions.appendChild(executeBtn);
+             }
         }
 
-        details.appendChild(summary);
-        details.appendChild(pre);
-        if (pre.parentNode) {
-            pre.parentNode.replaceChild(details, pre);
+        // --- Safe DOM Insertion ---
+        const parent = pre.parentNode;
+        if (parent) {
+            details.appendChild(summary);
+            parent.insertBefore(details, pre); 
+            details.appendChild(pre); 
         }
 
-        Prism.highlightElement(code);
         if (language === 'mermaid' || language === 'svg') {
             renderDiagram(code, language, details);
         }
@@ -317,10 +380,6 @@ function enhanceWithCommandButtons(container: HTMLElement) {
 }
 
 
-// =================================================================================================
-// MAIN RENDERING LOGIC
-// =================================================================================================
-
 export function processThinkTags(content: string): { thoughts: string[], processedContent: string } {
     const thoughts: string[] = [];
     if (typeof content !== 'string') return { thoughts, processedContent: '' };
@@ -352,34 +411,39 @@ export function renderMessageContent(messageId: string, rawContent: any) {
 
     const shouldScroll = isScrolledToBottom(dom.messagesDiv);
 
-    if (Array.isArray(rawContent)) {
-        let htmlContent = '';
-        rawContent.forEach(part => {
-            if (part.type === 'text') {
-                htmlContent += `<div>${DOMPurify.sanitize(marked.parse(part.text))}</div>`;
-            } else if (part.type === 'image_url') {
-                htmlContent += `<img src="${part.image_url.url}" style="max-width: 100%; border-radius: 4px; margin-top: 8px;" />`;
-            }
-        });
-        contentDiv.innerHTML = htmlContent;
-    } else if (typeof rawContent === 'string') {
-        const { thoughts, processedContent } = processThinkTags(rawContent);
-        messageDiv.querySelectorAll('.thinking-collapsible').forEach(el => el.remove());
-        thoughts.forEach(thought => {
-            const details = document.createElement('details');
-            details.className = 'info-collapsible thinking-collapsible';
-            details.innerHTML = `<summary>🤔 Thinking Process</summary><div class="collapsible-content">${DOMPurify.sanitize(marked.parse(thought))}</div>`;
-            messageDiv.insertBefore(details, contentDiv);
-        });
-        contentDiv.innerHTML = DOMPurify.sanitize(marked.parse(processedContent));
+    try {
+        if (Array.isArray(rawContent)) {
+            let htmlContent = '';
+            rawContent.forEach(part => {
+                if (part.type === 'text') {
+                    htmlContent += `<div>${sanitizer.sanitize(marked.parse(part.text) as string, SANITIZE_CONFIG)}</div>`;
+                } else if (part.type === 'image_url') {
+                    htmlContent += `<img src="${part.image_url.url}" style="max-width: 100%; border-radius: 4px; margin-top: 8px;" />`;
+                }
+            });
+            contentDiv.innerHTML = htmlContent;
+        } else if (typeof rawContent === 'string') {
+            const { thoughts, processedContent } = processThinkTags(rawContent);
+            messageDiv.querySelectorAll('.thinking-collapsible').forEach(el => el.remove());
+            thoughts.forEach(thought => {
+                const details = document.createElement('details');
+                details.className = 'info-collapsible thinking-collapsible';
+                details.innerHTML = `<summary>🤔 Thinking Process</summary><div class="collapsible-content">${sanitizer.sanitize(marked.parse(thought) as string, SANITIZE_CONFIG)}</div>`;
+                messageDiv.insertBefore(details, contentDiv);
+            });
+            contentDiv.innerHTML = sanitizer.sanitize(marked.parse(processedContent) as string, SANITIZE_CONFIG);
+        }
+
+        enhanceWithCommandButtons(wrapper as HTMLElement);
+        enhanceCodeBlocks(wrapper as HTMLElement);
+    } catch (e) {
+        console.error("Error rendering message content:", e);
+        contentDiv.innerText = "Error rendering content: " + e;
     }
 
-    enhanceCodeBlocks(wrapper as HTMLElement);
-    enhanceWithCommandButtons(wrapper as HTMLElement);
-
-    if (shouldScroll) {
+    if (shouldScroll && dom.messagesDiv) {
         dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
-    } else if (dom.stopButton.style.display !== 'none') {
+    } else if (dom.stopButton && dom.stopButton.style.display !== 'none' && dom.scrollToBottomBtn) {
         dom.scrollToBottomBtn.style.display = 'flex';
     }
 }
@@ -393,6 +457,7 @@ export function addMessage(message: any) {
 }
 
 function addAttachment(message: any) {
+    if (!dom.attachmentsContainer) return;
     const wrapper = dom.attachmentsContainer.closest('.info-collapsible');
     if (!wrapper) return;
     
@@ -403,7 +468,7 @@ function addAttachment(message: any) {
     const nameMatch = message.content.match(/\*\*([^*]+)\*\*/);
     const codeMatch = message.content.match(/```(?:\w*)\n([\s\S]+?)\n```/);
     if (nameMatch) fileName = nameMatch[1];
-    if (codeMatch) contentHtml = `<pre>${DOMPurify.sanitize(codeMatch[1])}</pre>`;
+    if (codeMatch) contentHtml = `<pre>${sanitizer.sanitize(codeMatch[1])}</pre>`;
     
     const details = document.createElement('details');
     details.className = 'attachment-item-details';
@@ -434,11 +499,15 @@ function addAttachment(message: any) {
     dom.attachmentsContainer.appendChild(details);
     
     const count = dom.attachmentsContainer.children.length;
-    (wrapper.querySelector('summary') as HTMLElement).textContent = `📎 Added Files (${count})`;
+    const summary = wrapper.querySelector('summary');
+    if(summary) summary.textContent = `📎 Added Files (${count})`;
 }
 
 function addChatMessage(message: any) {
     const { role, id, content: rawContent, startTime, model } = message;
+    
+    if (!dom.chatMessagesContainer) return;
+
     const existingWrapper = dom.chatMessagesContainer.querySelector(`.message-wrapper[data-message-id='${id}']`);
     if (existingWrapper) {
         renderMessageContent(id, rawContent);
@@ -502,14 +571,18 @@ function addChatMessage(message: any) {
     messageDiv.appendChild(actions);
     messageWrapper.appendChild(messageDiv);
     
-    const insertionControls = document.getElementById('message-insertion-controls') as HTMLElement;
-    dom.chatMessagesContainer.insertBefore(messageWrapper, insertionControls);
+    const insertionControls = document.getElementById('message-insertion-controls');
+    if (insertionControls) {
+        dom.chatMessagesContainer.insertBefore(messageWrapper, insertionControls);
+    } else {
+        dom.chatMessagesContainer.appendChild(messageWrapper);
+    }
 
     renderMessageContent(id, rawContent);
 }
 
 export function updateContext(contextText: string) {
-    dom.contextContainer.innerHTML = contextText ? `<details class="info-collapsible"><summary>Project Context</summary><div class="collapsible-content"><pre>${DOMPurify.sanitize(contextText)}</pre></div></details>` : '';
+    if(dom.contextContainer) dom.contextContainer.innerHTML = contextText ? `<details class="info-collapsible"><summary>Project Context</summary><div class="collapsible-content"><pre>${sanitizer.sanitize(contextText)}</pre></div></details>` : '';
 }
 
 function getStatusIcon(status: string) {
@@ -523,6 +596,7 @@ function getStatusIcon(status: string) {
 }
 
 export function displayPlan(plan: any) {
+    if(!dom.chatMessagesContainer) return;
     const existingPlan = dom.chatMessagesContainer.querySelector('.plan-wrapper');
     if (existingPlan) existingPlan.remove();
     if (!plan) return;
@@ -530,27 +604,29 @@ export function displayPlan(plan: any) {
     let scratchpadHtml = plan.scratchpad ? `
         <details class="plan-scratchpad-details">
             <summary>${plan.tasks.length === 0 ? "Agent Status & Scratchpad" : "View Agent Scratchpad"}</summary>
-            <div class="plan-scratchpad-content">${DOMPurify.sanitize(marked.parse(plan.scratchpad))}</div>
+            <div class="plan-scratchpad-content">${sanitizer.sanitize(marked.parse(plan.scratchpad) as string, SANITIZE_CONFIG)}</div>
         </details>` : '';
 
     let tasksHtml = plan.tasks.map((task: any) => {
-        const resultHtml = task.result ? `
-            <div class="task-result-details">
-                <details ${task.status === 'failed' ? 'open' : ''}>
-                    <summary>View Details</summary>
-                    <div class="task-result-content">${DOMPurify.sanitize(task.result)}</div>
-                </details>
-            </div>` : '';
         let retryButtonHtml = '';
         if (task.status === 'failed' && task.can_retry) {
             retryButtonHtml = `<button class="retry-btn" data-task-id="${task.id}" title="Retry this task"><span class="codicon codicon-debug-restart"></span>Retry</button>`;
         }
+        
+        const resultHtml = task.result ? `
+            <div class="task-result-details">
+                <details ${task.status === 'failed' ? 'open' : ''}>
+                    <summary>View Details</summary>
+                    <div class="task-result-content">${sanitizer.sanitize(task.result)}</div>
+                </details>
+            </div>` : '';
+
         return `
             <div class="plan-task" data-task-id="${task.id}">
                 <div class="task-status">${getStatusIcon(task.status)}</div>
                 <div class="task-main">
                     <div class="task-description-wrapper">
-                        <div class="task-description"><strong>${task.id}. ${DOMPurify.sanitize(task.description)}</strong></div>
+                        <div class="task-description"><strong>${task.id}. ${sanitizer.sanitize(task.description)}</strong></div>
                         ${retryButtonHtml}
                     </div>
                     ${resultHtml}
@@ -564,7 +640,7 @@ export function displayPlan(plan: any) {
         <details class="plan-container-details" open>
             <summary class="plan-header">${plan.tasks.length > 0 ? '📝' : '🧠'} Agent Execution Plan</summary>
             <div class="plan-body">
-               <div class="plan-objective"><b>Objective:</b> ${DOMPurify.sanitize(plan.objective)}</div>
+               <div class="plan-objective"><b>Objective:</b> ${sanitizer.sanitize(plan.objective)}</div>
                ${plan.tasks.length > 0 ? `<div id="plan-tasks-container">${tasksHtml}</div>` : ''}
                ${scratchpadHtml}
             </div>
@@ -578,10 +654,11 @@ export function displayPlan(plan: any) {
     });
 
     dom.chatMessagesContainer.appendChild(planWrapper);
-    dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+    if(dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
 }
 
 export function insertNewMessageEditor(role: 'user' | 'assistant') {
+    if(!dom.chatMessagesContainer) return;
     const existingEditor = document.querySelector('.new-message-editor-wrapper');
     if (existingEditor) existingEditor.remove();
 
@@ -600,23 +677,36 @@ export function insertNewMessageEditor(role: 'user' | 'assistant') {
         </div>
     `;
     
-    dom.chatMessagesContainer.insertBefore(editorWrapper, dom.chatMessagesContainer.querySelector('#message-insertion-controls'));
+    const controls = dom.chatMessagesContainer.querySelector('#message-insertion-controls');
+    if (controls) {
+        dom.chatMessagesContainer.insertBefore(editorWrapper, controls);
+    } else {
+        dom.chatMessagesContainer.appendChild(editorWrapper);
+    }
 
     const textarea = editorWrapper.querySelector('.edit-textarea') as HTMLTextAreaElement;
-    textarea.focus();
+    if(textarea) textarea.focus();
 
-    (editorWrapper.querySelector('.edit-save-btn') as HTMLElement).addEventListener('click', () => {
-        const newContent = textarea.value;
-        if (!newContent.trim()) return;
-        const lastMessage = [...document.querySelectorAll('.message-wrapper:not(.new-message-editor-wrapper)')].pop() as HTMLElement;
-        vscode.postMessage({
-            command: 'insertMessage',
-            afterMessageId: lastMessage?.dataset.messageId || null,
-            role: role,
-            content: newContent
+    const saveBtn = editorWrapper.querySelector('.edit-save-btn');
+    if(saveBtn) {
+        (saveBtn as HTMLElement).addEventListener('click', () => {
+            if(textarea) {
+                const newContent = textarea.value;
+                if (!newContent.trim()) return;
+                const lastMessage = [...document.querySelectorAll('.message-wrapper:not(.new-message-editor-wrapper)')].pop() as HTMLElement;
+                vscode.postMessage({
+                    command: 'insertMessage',
+                    afterMessageId: lastMessage?.dataset.messageId || null,
+                    role: role,
+                    content: newContent
+                });
+            }
+            editorWrapper.remove();
         });
-        editorWrapper.remove();
-    });
+    }
 
-    (editorWrapper.querySelector('.edit-cancel-btn') as HTMLElement).addEventListener('click', () => editorWrapper.remove());
+    const cancelBtn = editorWrapper.querySelector('.edit-cancel-btn');
+    if(cancelBtn) {
+        (cancelBtn as HTMLElement).addEventListener('click', () => editorWrapper.remove());
+    }
 }

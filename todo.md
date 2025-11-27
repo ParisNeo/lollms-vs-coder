@@ -27,6 +27,7 @@
 
 # new stuff:
 
+0 - when showing the files list on the top of a discussion, we get an error
 1 - system messages need to be deletable
 2 - sometimes an ai message can't be deleted.
 3 - the tokens cnotext filling progressbar needs to be removed

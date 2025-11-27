@@ -1,9 +1,11 @@
 import * as vscode from 'vscode';
+import { LollmsAPI } from '../lollmsAPI';
 
 export class SettingsPanel {
   public static currentPanel: SettingsPanel | undefined;
   private readonly _panel: vscode.WebviewPanel;
   private readonly _extensionUri: vscode.Uri;
+  private readonly _lollmsAPI: LollmsAPI;
   
   private _pendingConfig = {
     apiKey: '',
@@ -29,7 +31,7 @@ export class SettingsPanel {
     reasoningLevel: 'none'
   };
 
-  public static createOrShow(extensionUri: vscode.Uri) {
+  public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI) {
     const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
 
     if (SettingsPanel.currentPanel) {
@@ -47,12 +49,13 @@ export class SettingsPanel {
       }
     );
 
-    SettingsPanel.currentPanel = new SettingsPanel(panel, extensionUri);
+    SettingsPanel.currentPanel = new SettingsPanel(panel, extensionUri, lollmsAPI);
   }
 
-  private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri) {
+  private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, lollmsAPI: LollmsAPI) {
     this._panel = panel;
     this._extensionUri = extensionUri;
+    this._lollmsAPI = lollmsAPI;
 
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     this._pendingConfig.apiKey = config.get<string>('apiKey')?.trim() || '';
@@ -134,14 +137,11 @@ export class SettingsPanel {
               return;
   
             case 'fetchModels':
-              if (this._panel && this._pendingConfig.apiUrl) {
+              if (this._panel) {
                 try {
-                  const models: Array<{ id: string }> | undefined = await vscode.commands.executeCommand(
-                    'lollmsSettings.fetchModels',
-                    this._pendingConfig.apiUrl,
-                    this._pendingConfig.apiKey,
-                    this._pendingConfig.disableSslVerification
-                  );
+                  // Use the instance of lollmsAPI with caching
+                  const forceRefresh = message.value === true;
+                  const models = await this._lollmsAPI.getModels(forceRefresh);
                   this._panel.webview.postMessage({ command: 'modelsList', models: models || [] });
                 } catch (e) {
                   console.error('Error fetching models:', e);
@@ -169,6 +169,7 @@ export class SettingsPanel {
             <meta charset="UTF-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1.0" />
             <title>Lollms Configuration</title>
+            <link href="${webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'codicon.css'))}" rel="stylesheet" />
             <style>
               body, html {
                 height: 100%; margin: 0; padding: 0;
@@ -207,6 +208,8 @@ export class SettingsPanel {
               .help-text { font-size: 0.9em; color: var(--vscode-description-foreground); opacity: 0.9; margin-top: 4px; }
               .checkbox-container { display: flex; align-items: center; margin-top: 1em; }
               .checkbox-container input { margin-right: 0.5em; }
+              .input-group { display: flex; gap: 5px; }
+              .icon-btn { width: auto; padding: 8px 10px; margin-top: 0; }
             </style>
         </head>
         <body>
@@ -257,10 +260,13 @@ export class SettingsPanel {
               <input type="text" id="apiUrl" value="${apiUrl}" placeholder="http://localhost:9642" autocomplete="off" />
               <label for="apiKey">API Key</label>
               <input type="text" id="apiKey" value="${apiKey}" placeholder="Enter your Lollms API key" autocomplete="off" />
-              <label for="modelSelect">Model</label>
-              <input list="modelsList" id="modelSelect" name="modelSelect" value="${modelName}" placeholder="Enter or select a model" autocomplete="off" />
-              <datalist id="modelsList"></datalist>
-              <button id="refreshModels" type="button" class="secondary-button">Refresh Models</button>
+              
+              <label for="modelSelect">Chat Model</label>
+              <div class="input-group">
+                  <select id="modelSelect"></select>
+                  <button id="refreshModels" type="button" class="icon-btn" title="Refresh Models"><i class="codicon codicon-refresh"></i></button>
+              </div>
+              
               <label for="requestTimeout">Request Timeout (ms)</label>
               <input type="number" id="requestTimeout" value="${requestTimeout}" min="1000" step="1000" />
               <p class="help-text">Increase this if large generations are timing out. Default is 600000 (10 minutes).</p>
@@ -300,8 +306,12 @@ export class SettingsPanel {
                   <label for="enableCodeInspector">Enable Code Inspector</label>
               </div>
               <p class="help-text">Adds a button to AI-generated code blocks to check for bugs and vulnerabilities.</p>
+              
               <label for="inspectorModelName">Inspector Model Name</label>
-              <input type="text" id="inspectorModelName" value="${inspectorModelName}" placeholder="Default: Same as chat model" autocomplete="off" />
+              <div class="input-group">
+                  <select id="inspectorModelName"></select>
+                  <button id="refreshInspectorModels" type="button" class="icon-btn" title="Refresh Models"><i class="codicon codicon-refresh"></i></button>
+              </div>
               <p class="help-text">Optional. Use a different, potentially stronger model for code inspection.</p>
 
               <h2>Personas / System Prompts</h2>
@@ -328,6 +338,9 @@ export class SettingsPanel {
           <script>
             const vscode = acquireVsCodeApi();
             
+            const currentModelName = "${modelName}";
+            const currentInspectorModelName = "${inspectorModelName}";
+
             window.addEventListener('DOMContentLoaded', () => {
                 const fields = {
                     language: document.getElementById('language'),
@@ -353,7 +366,8 @@ export class SettingsPanel {
                     reasoningLevel: document.getElementById('reasoningLevel')
                 };
                 
-                const modelsDatalist = document.getElementById('modelsList');
+                const chatModelSelect = document.getElementById('modelSelect');
+                const inspectorModelSelect = document.getElementById('inspectorModelName');
                 const customThinkingPromptContainer = document.getElementById('custom-thinking-prompt-container');
 
                 fields.thinkingMode.addEventListener('change', () => {
@@ -378,13 +392,14 @@ export class SettingsPanel {
                     element.addEventListener(eventType, () => postTempUpdate(key, valueGetter()));
                 }
                 
-                document.getElementById('refreshModels').addEventListener('click', () => {
-                  modelsDatalist.innerHTML = '';
-                  const loadingOption = document.createElement('option');
-                  loadingOption.value = "Loading...";
-                  modelsDatalist.appendChild(loadingOption);
-                  vscode.postMessage({ command: 'fetchModels' })
-                });
+                function refreshModelsList(force) {
+                    chatModelSelect.innerHTML = '<option>Loading...</option>';
+                    inspectorModelSelect.innerHTML = '<option>Loading...</option>';
+                    vscode.postMessage({ command: 'fetchModels', value: force });
+                }
+
+                document.getElementById('refreshModels').addEventListener('click', () => refreshModelsList(true));
+                document.getElementById('refreshInspectorModels').addEventListener('click', () => refreshModelsList(true));
 
                 document.getElementById('editPromptsBtn').addEventListener('click', () => vscode.postMessage({ command: 'editPrompts' }));
                 document.getElementById('saveConfig').addEventListener('click', () => vscode.postMessage({ command: 'saveConfig' }));
@@ -392,20 +407,39 @@ export class SettingsPanel {
                 window.addEventListener('message', event => {
                     const message = event.data;
                     if (message.command === 'modelsList') {
-                        modelsDatalist.innerHTML = '';
-                        if (Array.isArray(message.models) && message.models.length > 0) {
-                            message.models.forEach(model => {
-                                const option = document.createElement('option');
-                                option.value = model.id;
-                                modelsDatalist.appendChild(option);
-                            });
-                        } else {
-                            const noModelsOption = document.createElement('option');
-                            noModelsOption.value = "No models found or failed to fetch.";
-                            modelsDatalist.appendChild(noModelsOption);
-                        }
+                        const createOptions = (selectElement, selectedValue) => {
+                            selectElement.innerHTML = '';
+                            if (Array.isArray(message.models) && message.models.length > 0) {
+                                // Add a default empty option for Inspector model (optional)
+                                if (selectElement === inspectorModelSelect) {
+                                    const emptyOption = document.createElement('option');
+                                    emptyOption.value = "";
+                                    emptyOption.text = "Same as Chat Model (Default)";
+                                    selectElement.appendChild(emptyOption);
+                                }
+
+                                message.models.forEach(model => {
+                                    const option = document.createElement('option');
+                                    option.value = model.id;
+                                    option.text = model.id;
+                                    if (model.id === selectedValue) option.selected = true;
+                                    selectElement.appendChild(option);
+                                });
+                            } else {
+                                const noModelsOption = document.createElement('option');
+                                noModelsOption.value = selectedValue;
+                                noModelsOption.text = selectedValue || "No models found";
+                                selectElement.appendChild(noModelsOption);
+                            }
+                        };
+
+                        createOptions(chatModelSelect, currentModelName);
+                        createOptions(inspectorModelSelect, currentInspectorModelName);
                     }
                 });
+
+                // Initial fetch (from cache if available)
+                refreshModelsList(false);
             });
           </script>
         </body>

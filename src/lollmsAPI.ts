@@ -53,6 +53,7 @@ export class LollmsAPI {
   private config: LollmsConfig;
   private httpsAgent: https.Agent;
   private baseUrl: string;
+  private _cachedModels: Array<{ id: string }> | null = null;
 
   constructor(config: LollmsConfig) {
     this.config = config;
@@ -75,13 +76,19 @@ export class LollmsAPI {
         console.error("Invalid API URL provided:", this.config.apiUrl);
         this.baseUrl = ''; 
     }
+    // Clear cache on config change as URL might have changed
+    this._cachedModels = null;
   }
 
   public getModelName(): string {
       return this.config.modelName;
   }
 
-  public async getModels(): Promise<Array<{ id: string }>> {
+  public async getModels(forceRefresh: boolean = false): Promise<Array<{ id: string }>> {
+    if (this._cachedModels && !forceRefresh) {
+        return this._cachedModels;
+    }
+
     const modelsUrl = `${this.baseUrl}/v1/models`;
     const isHttps = modelsUrl.startsWith('https');
 
@@ -99,7 +106,8 @@ export class LollmsAPI {
         throw new Error(`Failed to fetch models: ${response.status} ${response.statusText}`);
     }
     const data = await response.json();
-    return data.data || [];
+    this._cachedModels = data.data || [];
+    return this._cachedModels!;
   }
 
   public async tokenize(text: string, model?: string): Promise<TokenizeResponse> {

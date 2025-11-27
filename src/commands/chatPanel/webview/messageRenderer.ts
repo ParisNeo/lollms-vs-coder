@@ -5,6 +5,31 @@ import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
 import Prism from 'prismjs';
 
+// CodeMirror Imports - STRICTLY use scoped packages to avoid version conflicts
+import { EditorView, keymap, drawSelection, highlightSpecialChars, highlightActiveLine, dropCursor } from "@codemirror/view";
+import { EditorState, Compartment } from "@codemirror/state";
+import { markdown } from "@codemirror/lang-markdown";
+import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import { 
+    search, 
+    openSearchPanel, 
+    closeSearchPanel, 
+    findNext, 
+    findPrevious, 
+    replaceNext, 
+    replaceAll, 
+    SearchQuery, 
+    setSearchQuery, 
+    getSearchQuery,
+    highlightSelectionMatches
+} from "@codemirror/search";
+import { 
+    bracketMatching, 
+    defaultHighlightStyle, 
+    indentOnInput, 
+    syntaxHighlighting 
+} from "@codemirror/language";
+
 const RENDER_THROTTLE_MS = 100;
 
 // Configure Marked
@@ -39,6 +64,64 @@ const SANITIZE_CONFIG = {
     ]
 };
 
+const vscodeTheme = EditorView.theme({
+    "&": {
+        backgroundColor: "var(--vscode-input-background)",
+        color: "var(--vscode-input-foreground)",
+        border: "1px solid var(--vscode-input-border)",
+        borderRadius: "4px",
+        height: "auto",
+        maxHeight: "500px",
+        minHeight: "100px"
+    },
+    ".cm-content": {
+        fontFamily: "var(--vscode-editor-font-family)",
+        fontSize: "var(--vscode-editor-font-size)",
+        padding: "8px",
+        lineHeight: "1.5"
+    },
+    "&.cm-focused": {
+        outline: "1px solid var(--vscode-focusBorder)"
+    },
+    ".cm-scroller": {
+        overflow: "auto"
+    },
+    ".cm-activeLine": {
+        backgroundColor: "transparent" 
+    },
+    ".cm-searchMatch": {
+        backgroundColor: "var(--vscode-editor-findMatchHighlightBackground)",
+        border: "1px solid var(--vscode-editor-findMatchHighlightBorder)"
+    },
+    ".cm-searchMatch.cm-searchMatch-selected": {
+        backgroundColor: "var(--vscode-editor-findMatchBackground)",
+        border: "1px solid var(--vscode-editor-findMatchBorder)"
+    },
+    ".cm-selectionMatch": {
+        backgroundColor: "var(--vscode-editor-selectionHighlightBackground)"
+    },
+    ".cm-cursor": {
+        borderLeftColor: "var(--vscode-editorCursor-foreground)"
+    }
+});
+
+// Minimal setup to replace basicSetup from 'codemirror' package
+const minimalSetup = [
+    highlightActiveLine(),
+    highlightSpecialChars(),
+    history(),
+    drawSelection(),
+    dropCursor(),
+    EditorState.allowMultipleSelections.of(true),
+    indentOnInput(),
+    syntaxHighlighting(defaultHighlightStyle, {fallback: true}),
+    bracketMatching(),
+    keymap.of([
+        ...defaultKeymap,
+        ...historyKeymap,
+        indentWithTab
+    ])
+];
 
 function createButton(text: string, icon: string, onClick: () => void, className = 'code-action-btn'): HTMLButtonElement {
     const btn = document.createElement('button');
@@ -130,10 +213,99 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     const editOverlay = document.createElement('div');
     editOverlay.className = 'edit-overlay';
     
-    const textarea = document.createElement('textarea');
-    textarea.className = 'edit-textarea';
-    textarea.value = originalContent;
+    // --- Search Bar Container ---
+    const searchBar = document.createElement('div');
+    searchBar.className = 'edit-search-bar';
+    
+    // --- Row 1: Find ---
+    const findRow = document.createElement('div');
+    findRow.style.display = 'flex';
+    findRow.style.alignItems = 'center';
+    findRow.style.gap = '4px';
+    findRow.style.width = '100%';
 
+    // Toggle Replace Mode Button
+    const toggleReplaceBtn = document.createElement('button');
+    toggleReplaceBtn.className = 'edit-search-btn';
+    toggleReplaceBtn.innerHTML = '<span class="codicon codicon-chevron-right"></span>';
+    toggleReplaceBtn.title = 'Toggle Replace';
+    
+    const searchInput = document.createElement('input');
+    searchInput.type = 'text';
+    searchInput.className = 'edit-search-input';
+    searchInput.placeholder = 'Find...';
+    
+    const caseBtn = document.createElement('button');
+    caseBtn.className = 'edit-search-btn toggle-btn';
+    caseBtn.innerHTML = '<span class="codicon codicon-case-sensitive"></span>';
+    caseBtn.title = 'Match Case';
+    
+    const wordBtn = document.createElement('button');
+    wordBtn.className = 'edit-search-btn toggle-btn';
+    wordBtn.innerHTML = '<span class="codicon codicon-whole-word"></span>';
+    wordBtn.title = 'Match Whole Word';
+
+    const searchCount = document.createElement('span');
+    searchCount.className = 'edit-search-count';
+    searchCount.textContent = '0/0';
+    searchCount.style.minWidth = '50px';
+    searchCount.style.textAlign = 'center';
+    
+    const prevBtn = document.createElement('button');
+    prevBtn.className = 'edit-search-btn';
+    prevBtn.title = 'Previous Match';
+    prevBtn.innerHTML = '<span class="codicon codicon-arrow-up"></span>';
+    
+    const nextBtn = document.createElement('button');
+    nextBtn.className = 'edit-search-btn';
+    nextBtn.title = 'Next Match';
+    nextBtn.innerHTML = '<span class="codicon codicon-arrow-down"></span>';
+
+    findRow.appendChild(toggleReplaceBtn);
+    findRow.appendChild(searchInput);
+    findRow.appendChild(caseBtn);
+    findRow.appendChild(wordBtn);
+    findRow.appendChild(searchCount);
+    findRow.appendChild(prevBtn);
+    findRow.appendChild(nextBtn);
+
+    // --- Row 2: Replace ---
+    const replaceRow = document.createElement('div');
+    replaceRow.style.display = 'none'; // Hidden by default
+    replaceRow.style.alignItems = 'center';
+    replaceRow.style.gap = '4px';
+    replaceRow.style.width = '100%';
+    replaceRow.style.marginTop = '4px';
+    replaceRow.style.paddingLeft = '24px'; // Indent to align with inputs
+
+    const replaceInput = document.createElement('input');
+    replaceInput.type = 'text';
+    replaceInput.className = 'edit-search-input';
+    replaceInput.placeholder = 'Replace...';
+
+    const replaceBtn = document.createElement('button');
+    replaceBtn.className = 'edit-search-btn';
+    replaceBtn.innerHTML = '<span class="codicon codicon-replace"></span>';
+    replaceBtn.title = 'Replace';
+
+    const replaceAllBtn = document.createElement('button');
+    replaceAllBtn.className = 'edit-search-btn';
+    replaceAllBtn.innerHTML = '<span class="codicon codicon-replace-all"></span>';
+    replaceAllBtn.title = 'Replace All';
+
+    replaceRow.appendChild(replaceInput);
+    replaceRow.appendChild(replaceBtn);
+    replaceRow.appendChild(replaceAllBtn);
+
+    searchBar.appendChild(findRow);
+    searchBar.appendChild(replaceRow);
+    editOverlay.appendChild(searchBar);
+
+    // --- CodeMirror Editor ---
+    const editorContainer = document.createElement('div');
+    editorContainer.style.width = '100%';
+    
+    // --- Footer Buttons ---
     const buttonsDiv = document.createElement('div');
     buttonsDiv.className = 'edit-buttons';
     
@@ -148,7 +320,7 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     buttonsDiv.appendChild(cancelBtn);
     buttonsDiv.appendChild(saveBtn);
     
-    editOverlay.appendChild(textarea);
+    editOverlay.appendChild(editorContainer);
     editOverlay.appendChild(buttonsDiv);
     
     const originalHtml = contentDiv.innerHTML;
@@ -157,18 +329,176 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     contentDiv.appendChild(editOverlay);
     actionsDiv.style.display = 'none';
 
-    textarea.style.height = 'auto';
-    textarea.style.height = `${textarea.scrollHeight}px`;
-    textarea.focus();
+    // --- Setup CodeMirror ---
+    
+    // Create a view first, using our clean setup
+    const view = new EditorView({
+        state: EditorState.create({
+            doc: originalContent,
+            extensions: [
+                minimalSetup,
+                markdown(),
+                vscodeTheme,
+                search({ top: false }), // Enable search functionality
+                EditorView.lineWrapping,
+                highlightSelectionMatches(),
+                EditorView.updateListener.of((update) => {
+                    if (update.docChanged || update.selectionSet) {
+                        // Defer counting to avoid freezing on every keystroke
+                        setTimeout(updateMatchCount, 10); 
+                    }
+                })
+            ]
+        }),
+        parent: editorContainer
+    });
+    view.focus();
+
+    // --- State & Handlers ---
+    let searchState = {
+        caseSensitive: false,
+        wholeWord: false
+    };
+
+    const updateMatchCount = () => {
+        const queryStr = searchInput.value;
+        if (!queryStr) {
+            searchCount.textContent = '0/0';
+            return;
+        }
+
+        const searchQuery = new SearchQuery({
+            search: queryStr,
+            caseSensitive: searchState.caseSensitive,
+            wholeWord: searchState.wholeWord
+        });
+        
+        let count = 0;
+        let cursor = searchQuery.getCursor(view.state);
+        let currentIdx = 0;
+        const head = view.state.selection.main.head;
+        let foundCurrent = false;
+
+        // Limit counting to avoid freezing on huge files
+        const maxCount = 1000; 
+
+        let item = cursor.next();
+        while(!item.done) {
+            count++;
+            if (!foundCurrent && item.value.to >= head) {
+                currentIdx = count;
+                foundCurrent = true;
+            }
+            if (count >= maxCount) break;
+            item = cursor.next();
+        }
+        
+        const displayCount = count >= maxCount ? `${maxCount}+` : `${count}`;
+        
+        // If cursor is after the last match
+        if (!foundCurrent && count > 0) currentIdx = 0; 
+        
+        searchCount.textContent = count > 0 ? `${currentIdx || '?'}/${displayCount}` : '0/0';
+    };
+
+    const updateSearchEffect = () => {
+        const query = searchInput.value;
+        if (!query) {
+            // Clear search
+            view.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: "", caseSensitive: searchState.caseSensitive, wholeWord: searchState.wholeWord })) });
+            searchCount.textContent = '0/0';
+            return;
+        }
+
+        const searchQuery = new SearchQuery({
+            search: query,
+            caseSensitive: searchState.caseSensitive,
+            wholeWord: searchState.wholeWord,
+            replace: replaceInput.value
+        });
+
+        view.dispatch({ effects: setSearchQuery.of(searchQuery) });
+        updateMatchCount();
+    };
+
+    // --- Event Listeners ---
+
+    toggleReplaceBtn.onclick = () => {
+        const isHidden = replaceRow.style.display === 'none';
+        replaceRow.style.display = isHidden ? 'flex' : 'none';
+        toggleReplaceBtn.innerHTML = isHidden ? '<span class="codicon codicon-chevron-down"></span>' : '<span class="codicon codicon-chevron-right"></span>';
+    };
+
+    caseBtn.onclick = () => {
+        searchState.caseSensitive = !searchState.caseSensitive;
+        caseBtn.classList.toggle('active', searchState.caseSensitive);
+        updateSearchEffect();
+    };
+
+    wordBtn.onclick = () => {
+        searchState.wholeWord = !searchState.wholeWord;
+        wordBtn.classList.toggle('active', searchState.wholeWord);
+        updateSearchEffect();
+    };
+
+    searchInput.addEventListener('input', () => updateSearchEffect());
+    
+    searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            if (e.shiftKey) {
+                findPrevious(view);
+            } else {
+                findNext(view);
+            }
+            view.focus(); // Ensure editor gets focus so highlight is visible
+        }
+    });
+
+    prevBtn.onclick = () => {
+        findPrevious(view);
+        view.focus();
+    };
+
+    nextBtn.onclick = () => {
+        findNext(view);
+        view.focus();
+    };
+
+    replaceBtn.onclick = () => {
+        replaceNext(view);
+        view.focus();
+    };
+
+    replaceAllBtn.onclick = () => {
+        replaceAll(view);
+        view.focus();
+    };
+    
+    replaceInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            if (e.shiftKey) replaceAll(view);
+            else replaceNext(view);
+            view.focus();
+        }
+    });
+
+    replaceInput.addEventListener('input', () => {
+        updateSearchEffect();
+    });
+
+    // --- Cleanup & Save ---
 
     const cleanup = () => {
+        view.destroy();
         contentDiv.innerHTML = originalHtml;
         actionsDiv.style.display = '';
         editOverlay.remove();
     };
 
     saveBtn.onclick = () => {
-        const newContent = textarea.value;
+        const newContent = view.state.doc.toString();
         if (newContent.trim() !== originalContent.trim()) {
             messageDiv.dataset.originalContent = JSON.stringify(newContent);
             vscode.postMessage({
@@ -202,7 +532,10 @@ function enhanceCodeBlocks(container: HTMLElement) {
         summary.className = 'code-summary';
         const langLabel = document.createElement('span');
         langLabel.className = 'summary-lang-label';
+        
+        // Initial label
         langLabel.textContent = language;
+
         const actions = document.createElement('div');
         actions.className = 'code-actions';
         summary.appendChild(langLabel);
@@ -217,7 +550,7 @@ function enhanceCodeBlocks(container: HTMLElement) {
         });
         actions.appendChild(copyBtn);
 
-        const saveBtn = createButton('Save As...', 'codicon-save', () => {
+        const saveBtn = createButton('Save As', 'codicon-save', () => {
             vscode.postMessage({ command: 'saveCodeToFile', content: codeText, language: language });
         });
         actions.appendChild(saveBtn);
@@ -235,7 +568,7 @@ function enhanceCodeBlocks(container: HTMLElement) {
         let isFileBlock = false;
 
         // Improved Regex
-        const fileRegex = /(?:^|\n)(?:File:\s*|(?:\*\*|__)File:(?:\*\*|__)\s*)(.+?)(?:\s*|$)/i;
+        const fileRegex = /(?:^|\n)(?:File:\s*|(?:\*\*|__)File:(?:\*\*|__)\s*)([^\n]+)(?:\s*|$)/i;
 
         if (prevEl && (prevEl.tagName === 'P' || prevEl.tagName === 'DIV')) {
              const text = prevEl.textContent || "";
@@ -248,7 +581,7 @@ function enhanceCodeBlocks(container: HTMLElement) {
 
         let isDiff = language === 'diff';
         let diffFilePath = '';
-        const diffRegex = /(?:^|\n)(?:Diff:\s*|(?:\*\*|__)Diff:(?:\*\*|__)\s*)(.+?)(?:\s*|$)/i;
+        const diffRegex = /(?:^|\n)(?:Diff:\s*|(?:\*\*|__)Diff:(?:\*\*|__)\s*)([^\n]+)(?:\s*|$)/i;
 
         if (!isFileBlock && prevEl && (prevEl.tagName === 'P' || prevEl.tagName === 'DIV')) {
              const text = prevEl.textContent || "";
@@ -270,7 +603,7 @@ function enhanceCodeBlocks(container: HTMLElement) {
         // --- Add Contextual Buttons ---
 
         if (isFileBlock && filePath) {
-            langLabel.textContent = filePath;
+            langLabel.textContent = `${language} : ${filePath}`;
             prevEl.style.display = 'none'; 
             
             const applyBtn = createButton('Apply to File', 'codicon-tools', () => {
@@ -281,7 +614,8 @@ function enhanceCodeBlocks(container: HTMLElement) {
             else actions.appendChild(applyBtn);
 
         } else if (isDiff) {
-            if(diffFilePath) langLabel.textContent = `Diff: ${diffFilePath}`;
+            const path = diffFilePath || 'patch';
+            langLabel.textContent = `${language} : Diff: ${path}`;
             if(prevEl && prevEl.textContent?.match(diffRegex)) prevEl.style.display = 'none';
             
             const applyPatchBtn = createButton('Apply Patch', 'codicon-tools', () => {
@@ -429,7 +763,9 @@ export function renderMessageContent(messageId: string, rawContent: any) {
                 const details = document.createElement('details');
                 details.className = 'info-collapsible thinking-collapsible';
                 details.innerHTML = `<summary>🤔 Thinking Process</summary><div class="collapsible-content">${sanitizer.sanitize(marked.parse(thought) as string, SANITIZE_CONFIG)}</div>`;
-                messageDiv.insertBefore(details, contentDiv);
+                
+                // Insert before contentDiv (which is now inside .message-body)
+                contentDiv.parentElement?.insertBefore(details, contentDiv);
             });
             contentDiv.innerHTML = sanitizer.sanitize(marked.parse(processedContent) as string, SANITIZE_CONFIG);
         }
@@ -524,20 +860,46 @@ function addChatMessage(message: any) {
     messageDiv.className = `message ${role}-message`;
     messageDiv.dataset.originalContent = JSON.stringify(rawContent);
 
+    // --- Layout Reconstruction for New UI ---
+    
+    // 1. Avatar
+    const avatarDiv = document.createElement('div');
+    avatarDiv.className = 'message-avatar';
+    let iconClass = 'codicon-account'; // User
+    if (role === 'assistant') iconClass = 'codicon-hubot';
+    else if (role === 'system') iconClass = 'codicon-gear';
+    avatarDiv.innerHTML = `<span class="codicon ${iconClass}"></span>`;
+    messageDiv.appendChild(avatarDiv);
+
+    // 2. Body Container (Header + Content)
+    const bodyDiv = document.createElement('div');
+    bodyDiv.className = 'message-body';
+    messageDiv.appendChild(bodyDiv);
+
+    // 3. Header
     const headerDiv = document.createElement('div');
     headerDiv.className = 'message-header';
-    headerDiv.textContent = role;
-    messageDiv.appendChild(headerDiv);
+    
+    let roleDisplay = 'System';
+    if (role === 'user') roleDisplay = 'You';
+    else if (role === 'assistant') roleDisplay = 'Lollms';
+    
+    headerDiv.innerHTML = `<span class="role-name">${roleDisplay}</span>`;
+    bodyDiv.appendChild(headerDiv);
 
+    // 4. Content
     const contentDiv = document.createElement('div');
     contentDiv.className = 'message-content';
     contentDiv.id = `content-${id}`;
     
     if (role === 'assistant' && !rawContent && startTime) {
-        contentDiv.innerHTML = `<div class="waiting-animation"><div class="spinner"></div><span>Waiting for first token...</span></div>`;
+        contentDiv.innerHTML = `<div class="waiting-animation"><div class="spinner"></div><span>Thinking...</span></div>`;
         state.streamingMessages[id] = { buffer: '', timer: null };
     }
     
+    bodyDiv.appendChild(contentDiv);
+
+    // 5. Actions (Absolute positioned)
     const actions = document.createElement('div');
     actions.className = 'message-actions';
     const isMultipart = Array.isArray(rawContent);
@@ -547,6 +909,7 @@ function addChatMessage(message: any) {
 
     if (role !== 'system') {
         if (!isMultipart) {
+            // Need to pass messageDiv (which contains data-originalContent) 
             actions.appendChild(createButton('', 'codicon-edit', () => startEdit(messageDiv, id, role), 'msg-action-btn'));
         }
         if (role === 'user') {
@@ -567,7 +930,6 @@ function addChatMessage(message: any) {
         actions.appendChild(createButton('', 'codicon-trash', () => vscode.postMessage({ command: 'requestDeleteMessage', messageId: id }), 'msg-action-btn'));
     }
 
-    messageDiv.appendChild(contentDiv);
     messageDiv.appendChild(actions);
     messageWrapper.appendChild(messageDiv);
     
@@ -664,14 +1026,20 @@ export function insertNewMessageEditor(role: 'user' | 'assistant') {
 
     const editorWrapper = document.createElement('div');
     editorWrapper.className = 'message-wrapper new-message-editor-wrapper';
+    // Updated structure for new layout
     editorWrapper.innerHTML = `
         <div class="message ${role}-message" style="border: 1px dashed var(--vscode-focusBorder);">
-            <div class="message-header">${role} (new)</div>
-            <div class="edit-overlay">
-                <textarea class="edit-textarea" placeholder="Enter content..."></textarea>
-                <div class="edit-buttons">
-                    <button class="edit-cancel-btn">Cancel</button>
-                    <button class="edit-save-btn">Save</button>
+            <div class="message-avatar">
+                <span class="codicon ${role === 'user' ? 'codicon-account' : 'codicon-hubot'}"></span>
+            </div>
+            <div class="message-body">
+                <div class="message-header">${role === 'user' ? 'You' : 'Lollms'} (New)</div>
+                <div class="edit-overlay">
+                    <textarea class="edit-textarea" placeholder="Enter content..."></textarea>
+                    <div class="edit-buttons">
+                        <button class="edit-cancel-btn">Cancel</button>
+                        <button class="edit-save-btn">Save</button>
+                    </div>
                 </div>
             </div>
         </div>

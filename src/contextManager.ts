@@ -102,11 +102,11 @@ export class ContextManager {
             fileContent = buffer.toString('utf8');
           }
           
-          content += `### \`${filePath}\`\n\n`;
+          content += `File: ${filePath}\n`;
           const language = path.extname(filePath).substring(1);
           content += '```' + language + '\n';
           content += fileContent;
-          content += '\n```\n\n`';
+          content += '\n```\n\n';
 
         } catch (error) {
           content += `### ${filePath}\n\n⚠️ **Error processing entry:** ${error}\n\n`;

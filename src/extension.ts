@@ -1334,7 +1334,7 @@ ${fileContent}
         }
     }));
     
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showConfigView', () => SettingsPanel.createOrShow(context.extensionUri)));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showConfigView', () => SettingsPanel.createOrShow(context.extensionUri, lollmsAPI)));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showHelp', () => HelpPanel.createOrShow(context.extensionUri)));
 
         
@@ -1344,27 +1344,6 @@ ${fileContent}
             await vscode.env.clipboard.writeText(content.text);
             vscode.window.showInformationMessage(vscode.l10n.t('info.contextCopied'));
         } catch (error: any) { vscode.window.showErrorMessage(vscode.l10n.t('error.failedToExportContext', error.message)); }
-    }));
-    
-    context.subscriptions.push(vscode.commands.registerCommand('lollmsSettings.fetchModels', async (apiUrl, apiKey, disableSslVerification) => {
-        const fetch = require('node-fetch');
-        try {
-            const agent = new https.Agent({ rejectUnauthorized: !disableSslVerification });
-            const url = apiUrl.replace(/\/+$/, '') + '/v1/models';
-            const isHttps = url.startsWith('https');
-
-            const options: any = {
-                headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' }
-            };
-
-            if (isHttps) {
-                options.agent = agent;
-            }
-            
-            const response = await fetch(url, options);
-            if (!response.ok) { throw new Error(`HTTP Error ${response.status}: ${response.statusText}`); }
-            return (await response.json()).data || [];
-        } catch (err) { console.error('Error fetching models in extension:', err); return []; }
     }));
     
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.commitWithAIMessage', async () => {

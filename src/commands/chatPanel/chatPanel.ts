@@ -160,7 +160,8 @@ export class ChatPanel {
         const isInspectorEnabled = config.get<boolean>('enableCodeInspector', true);
 
         console.log("ChatPanel: Sending loadDiscussion message to webview with", this._currentDiscussion.messages.length, "messages");
-        this._panel.webview.postMessage({ 
+        // 1. Render the discussion UI first
+        await this._panel.webview.postMessage({ 
             command: 'loadDiscussion', 
             messages: this._currentDiscussion.messages,
             isInspectorEnabled: isInspectorEnabled
@@ -169,7 +170,10 @@ export class ChatPanel {
         this.displayPlan(discussion.plan);
         this.updateGeneratingState();
 
-        this._fetchAndSetModels();
+        // 2. Then load models (using cache if available)
+        await this._fetchAndSetModels(false);
+
+        // 3. Finally compute tokens and context (heavy operation)
         this._updateContextAndTokens();
 
     } else {
@@ -179,12 +183,13 @@ export class ChatPanel {
     }
   }
 
-  private async _fetchAndSetModels() {
+  private async _fetchAndSetModels(forceRefresh: boolean = false) {
     try {
         if (!this._panel.webview) return;
         let models: Array<{ id: string }> = [];
         try {
-            models = await this._lollmsAPI.getModels();
+            // Pass the forceRefresh flag to the API
+            models = await this._lollmsAPI.getModels(forceRefresh);
         } catch (error) {
             console.warn("Lollms: Could not fetch models from the backend.", error);
         }
@@ -596,6 +601,9 @@ Your task is to re-analyze your previous code suggestion in light of this new er
                 }
             }
             return;
+        case 'refreshModels':
+            await this._fetchAndSetModels(true);
+            break;
         case 'calculateTokens':
           this._updateContextAndTokens();
           break;
@@ -985,6 +993,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
                 <div class="model-selector-container">
                     <label for="model-selector">Model:</label>
                     <select id="model-selector"></select>
+                    <button id="refresh-models-btn" title="Refresh Models" class="icon-btn"><i class="codicon codicon-refresh"></i></button>
                 </div>
                 <div class="agent-mode-toggle">
                     <span>🤖 Agent Mode</span>
@@ -1014,10 +1023,9 @@ Your task is to re-analyze your previous code suggestion in light of this new er
 
     <script nonce="${nonce}">
         // BOOTSTRAP SCRIPT
-        // This runs immediately to capture errors and acquire API
         try {
             const vscode = acquireVsCodeApi();
-            window.vscode = vscode; // Make available globally for bundle
+            window.vscode = vscode;
             
             window.onerror = function(message, source, lineno, colno, error) {
                 vscode.postMessage({

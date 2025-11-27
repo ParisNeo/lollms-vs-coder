@@ -1,3 +1,4 @@
+// src/commands/chatPanel/webview/main.ts
 // Import dom first.
 import { dom, vscode, state } from './dom.js';
 
@@ -344,6 +345,14 @@ function initEventHandlers() {
 
     if(dom.modelSelector) {
         dom.modelSelector.addEventListener('change', (event) => vscode.postMessage({ command: 'updateDiscussionModel', model: (event.target as HTMLSelectElement).value }));
+    }
+
+    // Add handler for the refresh models button
+    const refreshModelsBtn = document.getElementById('refresh-models-btn');
+    if (refreshModelsBtn) {
+        refreshModelsBtn.addEventListener('click', () => {
+            vscode.postMessage({ command: 'refreshModels' });
+        });
     }
 
     window.addEventListener('click', (event: MouseEvent) => {

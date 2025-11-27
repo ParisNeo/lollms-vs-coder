@@ -32,14 +32,38 @@ import {
 
 const RENDER_THROTTLE_MS = 100;
 
+// --- Language Map for Prism ---
+const langMap: { [key: string]: string } = {
+    'js': 'javascript',
+    'ts': 'typescript',
+    'py': 'python',
+    'sh': 'bash',
+    'shell': 'bash',
+    'cs': 'csharp',
+    'cpp': 'cpp',
+    'c++': 'cpp',
+    'h': 'c',
+    'hpp': 'cpp',
+    'txt': 'plaintext',
+    'md': 'markdown',
+    'yml': 'yaml',
+    'json': 'json'
+};
+
 // Configure Marked
 try {
     marked.setOptions({
         breaks: true,
         gfm: true,
         highlight: (code, lang) => {
-            if (Prism.languages[lang]) {
-                return Prism.highlight(code, Prism.languages[lang], lang);
+            const language = langMap[lang.toLowerCase()] || lang.toLowerCase();
+            if (Prism.languages[language]) {
+                try {
+                    return Prism.highlight(code, Prism.languages[language], language);
+                } catch (e) {
+                    console.warn(`Prism highlight failed for ${language}:`, e);
+                    return code;
+                }
             }
             return code;
         },
@@ -550,7 +574,7 @@ function enhanceCodeBlocks(container: HTMLElement) {
         });
         actions.appendChild(copyBtn);
 
-        const saveBtn = createButton('Save As', 'codicon-save', () => {
+        const saveBtn = createButton('Save As...', 'codicon-save', () => {
             vscode.postMessage({ command: 'saveCodeToFile', content: codeText, language: language });
         });
         actions.appendChild(saveBtn);
@@ -679,6 +703,10 @@ function enhanceCodeBlocks(container: HTMLElement) {
 
         if (language === 'mermaid' || language === 'svg') {
             renderDiagram(code, language, details);
+        } else {
+            // Force Prism highlight on elements that might have missed the initial pass
+            // due to being inserted dynamically.
+            Prism.highlightElement(code);
         }
     });
 }
@@ -763,9 +791,7 @@ export function renderMessageContent(messageId: string, rawContent: any) {
                 const details = document.createElement('details');
                 details.className = 'info-collapsible thinking-collapsible';
                 details.innerHTML = `<summary>🤔 Thinking Process</summary><div class="collapsible-content">${sanitizer.sanitize(marked.parse(thought) as string, SANITIZE_CONFIG)}</div>`;
-                
-                // Insert before contentDiv (which is now inside .message-body)
-                contentDiv.parentElement?.insertBefore(details, contentDiv);
+                messageDiv.insertBefore(details, contentDiv);
             });
             contentDiv.innerHTML = sanitizer.sanitize(marked.parse(processedContent) as string, SANITIZE_CONFIG);
         }
@@ -860,26 +886,25 @@ function addChatMessage(message: any) {
     messageDiv.className = `message ${role}-message`;
     messageDiv.dataset.originalContent = JSON.stringify(rawContent);
 
-    // --- Layout Reconstruction for New UI ---
-    
-    // 1. Avatar
     const avatarDiv = document.createElement('div');
     avatarDiv.className = 'message-avatar';
-    let iconClass = 'codicon-account'; // User
-    if (role === 'assistant') iconClass = 'codicon-hubot';
-    else if (role === 'system') iconClass = 'codicon-gear';
-    avatarDiv.innerHTML = `<span class="codicon ${iconClass}"></span>`;
+    
+    if (role === 'user') {
+        avatarDiv.innerHTML = '<span class="codicon codicon-account"></span>';
+    } else if (role === 'assistant') {
+        // Empty, handled by CSS background-image
+    } else {
+        avatarDiv.innerHTML = '<span class="codicon codicon-gear"></span>';
+    }
+    
     messageDiv.appendChild(avatarDiv);
 
-    // 2. Body Container (Header + Content)
     const bodyDiv = document.createElement('div');
     bodyDiv.className = 'message-body';
     messageDiv.appendChild(bodyDiv);
 
-    // 3. Header
     const headerDiv = document.createElement('div');
     headerDiv.className = 'message-header';
-    
     let roleDisplay = 'System';
     if (role === 'user') roleDisplay = 'You';
     else if (role === 'assistant') roleDisplay = 'Lollms';
@@ -887,7 +912,6 @@ function addChatMessage(message: any) {
     headerDiv.innerHTML = `<span class="role-name">${roleDisplay}</span>`;
     bodyDiv.appendChild(headerDiv);
 
-    // 4. Content
     const contentDiv = document.createElement('div');
     contentDiv.className = 'message-content';
     contentDiv.id = `content-${id}`;
@@ -899,7 +923,6 @@ function addChatMessage(message: any) {
     
     bodyDiv.appendChild(contentDiv);
 
-    // 5. Actions (Absolute positioned)
     const actions = document.createElement('div');
     actions.className = 'message-actions';
     const isMultipart = Array.isArray(rawContent);
@@ -909,7 +932,6 @@ function addChatMessage(message: any) {
 
     if (role !== 'system') {
         if (!isMultipart) {
-            // Need to pass messageDiv (which contains data-originalContent) 
             actions.appendChild(createButton('', 'codicon-edit', () => startEdit(messageDiv, id, role), 'msg-action-btn'));
         }
         if (role === 'user') {

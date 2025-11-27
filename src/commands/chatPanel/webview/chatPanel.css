@@ -17,22 +17,24 @@ body {
     height: 100vh;
     display: flex;
     flex-direction: column;
+    position: relative;
 }
 
 .messages {
     flex: 1;
     overflow-y: auto;
-    padding: 0; /* Padding moved to messages for better hover effect */
+    padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 0; /* Gap handled by padding/border */
+    gap: 10px;
     padding-bottom: 60px;
+    scroll-behavior: smooth;
 }
 
 /* --- Message Bubbles --- */
 .message-wrapper {
     width: 100%;
-    border-bottom: 1px solid var(--vscode-editorGroup-border); /* Separator line */
+    padding: 4px 0;
 }
 
 .message {
@@ -42,6 +44,11 @@ body {
     padding: 16px 20px;
     position: relative;
     transition: background-color 0.2s;
+    border: 1px solid var(--vscode-widget-border);
+    border-radius: 8px;
+    margin: 0 12px;
+    box-sizing: border-box;
+    background-color: var(--vscode-editor-background);
 }
 
 .message:hover {
@@ -56,30 +63,38 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 16px;
-    margin-top: 2px;
+    margin-top: 4px;
+    background-size: cover;
+    background-repeat: no-repeat;
+    background-position: center;
 }
 
 .user-message .message-avatar {
+    /* User Avatar Style (Codicon based) */
     background-color: var(--vscode-button-background);
     color: var(--vscode-button-foreground);
+    font-size: 16px;
 }
 
 .assistant-message .message-avatar {
-    background-color: var(--vscode-activityBarBadge-background);
-    color: var(--vscode-activityBarBadge-foreground);
+    /* Lollms Avatar Style */
+    background-image: var(--lollms-icon);
+    background-color: transparent;
+    border: none;
 }
 
 .system-message {
+    border: 1px dashed var(--vscode-editorGroup-border);
     background-color: var(--vscode-editor-inactiveSelectionBackground);
-    border-bottom: 1px solid var(--vscode-editorGroup-border);
-    padding: 10px 20px;
+    margin: 0 20px;
+    padding: 10px;
 }
 
 .system-message .message-avatar {
     background-color: transparent;
     color: var(--vscode-editor-foreground);
     border: 1px solid var(--vscode-editorGroup-border);
+    font-size: 16px;
 }
 
 .message-body {
@@ -112,12 +127,13 @@ body {
     font-size: var(--vscode-editor-font-size);
     overflow-wrap: break-word;
     color: var(--vscode-editor-foreground);
+    width: 100%;
 }
 
 .message-content p { margin-top: 0; margin-bottom: 0.8em; }
 .message-content p:last-child { margin-bottom: 0; }
 
-/* --- Message Actions (Top Right) --- */
+/* --- Message Actions --- */
 .message-actions {
     display: none;
     position: absolute;
@@ -154,13 +170,14 @@ body {
     color: var(--vscode-foreground);
 }
 
-/* --- Code Blocks & Headers --- */
+/* --- Code Blocks --- */
 .code-collapsible, .generation-block {
     background-color: var(--vscode-editor-background);
     border: 1px solid var(--code-border);
     border-radius: 6px;
     margin: 12px 0;
     overflow: hidden;
+    width: 100%;
 }
 
 .code-summary, .generation-header {
@@ -191,10 +208,8 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 
 .summary-lang-label {
     font-weight: 600;
-    /* text-transform: uppercase; */ /* Removed uppercase for cleaner look on paths */
 }
 
-/* --- Code Actions Toolbar --- */
 .code-actions {
     display: flex;
     gap: 8px;
@@ -221,7 +236,6 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     background-color: var(--vscode-button-secondaryHoverBackground);
 }
 
-/* Special buttons */
 .apply-btn {
     background-color: var(--vscode-button-background);
     color: var(--vscode-button-foreground);
@@ -239,13 +253,13 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     background-color: var(--vscode-inputValidation-errorBackground);
 }
 
-/* Code Content */
 .code-collapsible > pre {
     margin: 0;
     padding: 0;
     overflow-x: auto;
     max-height: 450px;
     overflow-y: auto;
+    width: 100%;
 }
 .code-collapsible > pre > code {
     display: block;
@@ -253,7 +267,34 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     font-family: var(--vscode-editor-font-family);
     font-size: var(--vscode-editor-font-size);
     white-space: pre;
-    background-color: var(--vscode-textBlockQuote-background); /* Slight contrast */
+    background-color: transparent; /* Let Prism handle background */
+}
+
+/* --- Scroll To Bottom Button --- */
+#scrollToBottomBtn {
+    display: none;
+    position: absolute;
+    bottom: 120px;
+    right: 30px;
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background-color: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+    border: 1px solid var(--vscode-widget-border);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+    cursor: pointer;
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.1s, opacity 0.2s;
+}
+#scrollToBottomBtn:hover {
+    background-color: var(--vscode-button-hoverBackground);
+    transform: translateY(-2px);
+}
+#scrollToBottomBtn:active {
+    transform: translateY(0);
 }
 
 /* --- Insertion Controls --- */
@@ -265,24 +306,13 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     opacity: 0;
     transition: opacity 0.2s;
 }
-
-.chat-container:hover #message-insertion-controls {
-    opacity: 1;
-}
-
+.chat-container:hover #message-insertion-controls { opacity: 1; }
 #message-insertion-controls button {
     background-color: var(--vscode-button-secondaryBackground);
     color: var(--vscode-button-secondaryForeground);
-    border: none;
-    padding: 6px 14px;
-    border-radius: 14px;
-    font-size: 12px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 6px;
+    border: none; padding: 6px 14px; border-radius: 14px;
+    font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 6px;
 }
-
 #message-insertion-controls button:hover {
     background-color: var(--vscode-button-secondaryHoverBackground);
 }
@@ -296,7 +326,7 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     z-index: 50;
 }
 
-/* ... (Tools Modal styling remains mostly the same, just ensure variables) ... */
+/* --- Tools Modal --- */
 #tools-modal.modal {
     display: none;
     position: fixed;
@@ -308,7 +338,6 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     align-items: center;
 }
 #tools-modal.modal.visible { display: flex !important; }
-
 .modal-content {
     background-color: var(--vscode-editorWidget-background);
     border: 1px solid var(--vscode-widget-border);
@@ -319,7 +348,6 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     max-height: 80vh;
     color: var(--vscode-editorWidget-foreground);
 }
-
 .modal-header {
     padding: 12px 16px;
     border-bottom: 1px solid var(--vscode-widget-border);
@@ -341,27 +369,14 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     align-items: flex-end;
 }
 .input-area:focus-within { border-color: var(--vscode-focusBorder); }
-
 #messageInput {
-    flex-grow: 1;
-    background: transparent;
-    border: none;
-    color: var(--vscode-input-foreground);
-    font-family: var(--vscode-font-family);
-    font-size: 13px;
-    resize: none;
-    max-height: 300px;
-    outline: none;
-    padding: 4px;
+    flex-grow: 1; background: transparent; border: none;
+    color: var(--vscode-input-foreground); font-family: var(--vscode-font-family);
+    font-size: 13px; resize: none; max-height: 300px; outline: none; padding: 4px;
 }
-
 .control-buttons button {
-    background: transparent;
-    border: none;
-    color: var(--vscode-icon-foreground);
-    cursor: pointer;
-    padding: 6px;
-    border-radius: 4px;
+    background: transparent; border: none; color: var(--vscode-icon-foreground);
+    cursor: pointer; padding: 6px; border-radius: 4px;
     display: flex; align-items: center; justify-content: center;
 }
 .control-buttons button:hover { background-color: var(--vscode-toolbar-hoverBackground); }
@@ -369,58 +384,38 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 
 /* --- Top Bar --- */
 .top-controls {
-    display: flex;
-    gap: 12px;
-    margin-bottom: 12px;
-    align-items: center;
-    font-size: 12px;
+    display: flex; gap: 12px; margin-bottom: 12px; align-items: center; font-size: 12px;
 }
 .token-progress { flex: 1; display: flex; gap: 10px; align-items: center; color: var(--vscode-descriptionForeground); }
 .token-progress-container { flex: 1; height: 4px; background: var(--vscode-scrollbarSlider-background); border-radius: 2px; overflow: hidden; }
 .token-progress-bar { height: 100%; background: var(--vscode-progressBar-background); width: 0; }
 
-/* --- More Actions Menu --- */
+/* --- Menus & Overlays --- */
 #more-actions-menu {
-    display: none;
-    position: absolute;
-    bottom: 100%; left: 12px;
-    width: 220px;
-    background-color: var(--vscode-menu-background);
-    border: 1px solid var(--vscode-menu-border);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.25);
-    border-radius: 6px;
-    z-index: 2000;
-    flex-direction: column;
-    padding: 4px;
-    margin-bottom: 8px;
+    display: none; position: absolute; bottom: 100%; left: 12px; width: 220px;
+    background-color: var(--vscode-menu-background); border: 1px solid var(--vscode-menu-border);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.25); border-radius: 6px; z-index: 2000;
+    flex-direction: column; padding: 4px; margin-bottom: 8px;
 }
 #more-actions-menu.visible { display: flex; }
 .menu-item {
-    background: transparent; border: none; text-align: left;
-    padding: 8px 12px; color: var(--vscode-menu-foreground);
-    cursor: pointer; display: flex; align-items: center; gap: 8px;
-    font-family: var(--vscode-font-family); font-size: 12px;
-    border-radius: 4px;
+    background: transparent; border: none; text-align: left; padding: 8px 12px;
+    color: var(--vscode-menu-foreground); cursor: pointer; display: flex; align-items: center; gap: 8px;
+    font-family: var(--vscode-font-family); font-size: 12px; border-radius: 4px;
 }
 .menu-item:hover { background-color: var(--vscode-menu-selectionBackground); color: var(--vscode-menu-selectionForeground); }
 
-/* --- Search --- */
 .search-bar {
-    display: none; /* Hidden by default */
-    background: var(--vscode-editorWidget-background);
-    border-bottom: 1px solid var(--vscode-widget-border);
-    padding: 8px; gap: 8px; position: sticky; top: 0; z-index: 900;
-    align-items: center;
+    display: none; background: var(--vscode-editorWidget-background);
+    border-bottom: 1px solid var(--vscode-widget-border); padding: 8px; gap: 8px;
+    position: sticky; top: 0; z-index: 900; align-items: center;
 }
 #searchInput {
-    flex: 1; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); color: var(--vscode-input-foreground);
-    padding: 4px 8px; border-radius: 4px;
+    flex: 1; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border);
+    color: var(--vscode-input-foreground); padding: 4px 8px; border-radius: 4px;
 }
 
-/* --- Edit Message UI --- */
-.edit-overlay {
-    display: flex; flex-direction: column; gap: 10px; width: 100%; margin-top: 8px;
-}
+.edit-overlay { display: flex; flex-direction: column; gap: 10px; width: 100%; margin-top: 8px; }
 .edit-textarea {
     width: 100%; min-height: 100px; max-height: 600px;
     background-color: var(--vscode-input-background); color: var(--vscode-input-foreground);
@@ -430,5 +425,5 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 }
 .edit-textarea:focus { border-color: var(--vscode-focusBorder); }
 .edit-buttons { display: flex; justify-content: flex-end; gap: 8px; }
-.edit-save-btn { background-color: var(--vscode-button-background); color: var(--vscode-button-foreground); padding: 6px 12px; border-radius: 4px; border:none; cursor:pointer;}
-.edit-cancel-btn { background-color: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); padding: 6px 12px; border-radius: 4px; border:none; cursor:pointer;}
+.edit-save-btn { background-color: var(--vscode-button-background); color: var(--vscode-button-foreground); padding: 6px 12px; border-radius: 4px; border:none; cursor:pointer; }
+.edit-cancel-btn { background-color: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); padding: 6px 12px; border-radius: 4px; border:none; cursor:pointer; }

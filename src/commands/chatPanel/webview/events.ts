@@ -124,14 +124,16 @@ export function initEventHandlers() {
     dom.addUserMessageBtn.addEventListener('click', () => insertNewMessageEditor('user'));
     dom.addAiMessageBtn.addEventListener('click', () => insertNewMessageEditor('assistant'));
     
-    dom.messagesDiv.addEventListener('scroll', () => {
-        const isGenerating = dom.stopButton.style.display === 'flex';
-        if (isGenerating && !isScrolledToBottom(dom.messagesDiv)) {
+    // Fixed Scroll Logic
+    const handleScroll = () => {
+        if (!isScrolledToBottom(dom.messagesDiv)) {
             dom.scrollToBottomBtn.style.display = 'flex';
         } else {
             dom.scrollToBottomBtn.style.display = 'none';
         }
-    });
+    };
+
+    dom.messagesDiv.addEventListener('scroll', handleScroll);
 
     dom.scrollToBottomBtn.addEventListener('click', () => {
         dom.messagesDiv.scrollTo({ top: dom.messagesDiv.scrollHeight, behavior: 'smooth' });

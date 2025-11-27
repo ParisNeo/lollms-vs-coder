@@ -884,6 +884,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     const cssUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'chatPanel.css'));
     const prismThemeUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'prism-tomorrow.css'));
     const jsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'chatPanel.bundle.js'));
+    const lollmsIconUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'lollms-icon.svg'));
 
     const l10nStrings = {
         welcomeTitle: vscode.l10n.t("welcome.title"),
@@ -911,6 +912,11 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     <link href="${codiconsUri}" rel="stylesheet" />
     <link href="${cssUri}" rel="stylesheet" />
     <link href="${prismThemeUri}" rel="stylesheet" />
+    <style>
+        :root {
+            --lollms-icon: url("${lollmsIconUri}");
+        }
+    </style>
 </head>
 <body>
     <div class="chat-container">

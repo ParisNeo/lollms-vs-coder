@@ -22,12 +22,53 @@ import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
 import Prism from 'prismjs';
-import 'prismjs/components/prism-python';
-import 'prismjs/components/prism-javascript';
-import 'prismjs/components/prism-typescript';
+
+// --- PrismJS Dependencies (Order Matters) ---
+
+// 1. Core & Bases
+import 'prismjs/components/prism-clike';
+import 'prismjs/components/prism-markup'; // html, xml, svg
+import 'prismjs/components/prism-markup-templating'; // Required for PHP, ERB, etc.
+
+// 2. Common Languages
 import 'prismjs/components/prism-css';
+import 'prismjs/components/prism-javascript'; // Depends on clike
+import 'prismjs/components/prism-typescript'; // Depends on javascript
+import 'prismjs/components/prism-python';
 import 'prismjs/components/prism-bash';
 import 'prismjs/components/prism-json';
+import 'prismjs/components/prism-c';
+import 'prismjs/components/prism-cpp';
+import 'prismjs/components/prism-csharp';
+import 'prismjs/components/prism-java';
+import 'prismjs/components/prism-go';
+import 'prismjs/components/prism-rust';
+import 'prismjs/components/prism-sql';
+import 'prismjs/components/prism-yaml';
+import 'prismjs/components/prism-markdown'; // Depends on markup
+
+// 3. Scripting & Config
+import 'prismjs/components/prism-powershell';
+import 'prismjs/components/prism-batch';
+import 'prismjs/components/prism-lua';
+import 'prismjs/components/prism-php'; // Depends on markup-templating
+import 'prismjs/components/prism-r';
+import 'prismjs/components/prism-swift';
+import 'prismjs/components/prism-kotlin';
+import 'prismjs/components/prism-ruby';
+import 'prismjs/components/prism-dart';
+import 'prismjs/components/prism-docker';
+import 'prismjs/components/prism-makefile';
+import 'prismjs/components/prism-nginx';
+import 'prismjs/components/prism-http';
+import 'prismjs/components/prism-latex';
+import 'prismjs/components/prism-perl';
+
+// 4. Web Frameworks & Extensions
+import 'prismjs/components/prism-sass';
+import 'prismjs/components/prism-scss';
+import 'prismjs/components/prism-jsx'; // Depends on javascript, markup
+import 'prismjs/components/prism-tsx'; // Depends on jsx, typescript
 
 // Initialize DOMPurify
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
@@ -62,8 +103,12 @@ function localSetGeneratingState(isGenerating: boolean) {
     if(dom.sendButton) dom.sendButton.style.display = isGenerating ? 'none' : 'flex';
     if(dom.stopButton) dom.stopButton.style.display = isGenerating ? 'flex' : 'none';
     
-    if (!isGenerating && dom.scrollToBottomBtn) {
-        dom.scrollToBottomBtn.style.display = 'none';
+    if (!isGenerating) {
+        if (!isScrolledToBottom(dom.messagesDiv)) {
+            dom.scrollToBottomBtn.style.display = 'flex';
+        } else {
+            dom.scrollToBottomBtn.style.display = 'none';
+        }
     }
 }
 

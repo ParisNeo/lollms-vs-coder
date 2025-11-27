@@ -35,3 +35,4 @@
 - 5 - add a copy prompt button to the ui that instead of sending the prompt to the LLM stores the full context to the clipboard so you can use your favorite tool for generation
 - 6 - when pressing fix with lollms I get No active discussion. Please start a new one.
 - 7 - The AI should never use comments like this :# ... (imports and helper functions remain unchanged) It should instead rewrite that code
+- - 8 - upgrade the prompt to push the LLM to always explain before writing the code

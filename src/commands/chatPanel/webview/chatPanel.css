@@ -70,14 +70,12 @@ body {
 }
 
 .user-message .message-avatar {
-    /* User Avatar Style (Codicon based) */
     background-color: var(--vscode-button-background);
     color: var(--vscode-button-foreground);
     font-size: 16px;
 }
 
 .assistant-message .message-avatar {
-    /* Lollms Avatar Style */
     background-image: var(--lollms-icon);
     background-color: transparent;
     border: none;
@@ -389,6 +387,49 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 .token-progress { flex: 1; display: flex; gap: 10px; align-items: center; color: var(--vscode-descriptionForeground); }
 .token-progress-container { flex: 1; height: 4px; background: var(--vscode-scrollbarSlider-background); border-radius: 2px; overflow: hidden; }
 .token-progress-bar { height: 100%; background: var(--vscode-progressBar-background); width: 0; }
+
+.model-selector-container {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+}
+
+.model-selector-container label {
+    white-space: nowrap;
+    color: var(--vscode-descriptionForeground);
+}
+
+#model-selector {
+    flex: 1;
+    background-color: var(--vscode-dropdown-background);
+    color: var(--vscode-dropdown-foreground);
+    border: 1px solid var(--vscode-dropdown-border);
+    padding: 4px;
+    border-radius: 2px;
+    outline: none;
+}
+
+#model-selector:focus {
+    border-color: var(--vscode-focusBorder);
+}
+
+.icon-btn {
+    background: transparent;
+    border: none;
+    color: var(--vscode-icon-foreground);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.icon-btn:hover {
+    background-color: var(--vscode-toolbar-hoverBackground);
+    color: var(--vscode-foreground);
+}
 
 /* --- Menus & Overlays --- */
 #more-actions-menu {

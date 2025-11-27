@@ -989,7 +989,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
                     </div>
                     <div id="context-status-container" style="display: flex; align-items: center; gap: 8px;">
                         <span id="token-count-label">Tokens: 0 / 0</span>
-                        <button id="refresh-context-btn"><i class="codicon codicon-sync"></i></button>
+                        <button id="refresh-context-btn" class="icon-btn" title="Refresh Context"><i class="codicon codicon-sync"></i></button>
                     </div>
                     <div id="context-loading-spinner" style="display: none; align-items: center; gap: 8px; font-size: 0.9em; color: var(--vscode-descriptionForeground);">
                         <div class="spinner"></div>

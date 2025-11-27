@@ -85,7 +85,8 @@ export class LollmsAPI {
   }
 
   public async getModels(forceRefresh: boolean = false): Promise<Array<{ id: string }>> {
-    if (this._cachedModels && !forceRefresh) {
+    // Use cache if available and not empty, unless force refresh is requested
+    if (this._cachedModels && this._cachedModels.length > 0 && !forceRefresh) {
         return this._cachedModels;
     }
 

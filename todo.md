@@ -29,3 +29,5 @@
 
 1 - system messages need to be deletable
 2 - sometimes an ai message can't be deleted.
+3 - the tokens cnotext filling progressbar needs to be removed
+4 - create a compatible prompt for all platforms to allow using other platforms like chatgpt/gemini etc with vscoder

@@ -33,3 +33,4 @@
 - 3 - the tokens cnotext filling progressbar needs to be removed
 - 4 - create a compatible prompt for all platforms to allow using other platforms like chatgpt/gemini etc with vscoder
 - 5 - add a copy prompt button to the ui that instead of sending the prompt to the LLM stores the full context to the clipboard so you can use your favorite tool for generation
+- 6 - when pressing fix with lollms I get No active discussion. Please start a new one.

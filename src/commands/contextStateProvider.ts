@@ -39,10 +39,11 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     private stateKey: string;
     
     // Default folders to show as collapsed (content hidden)
+    // Removed __pycache__ as it is now fully excluded
     private defaultCollapsedFolders = new Set([
         'node_modules', 'dist', 'build', 'out', 'bin', 'obj', 'target',
         'venv', '.venv', 'env', '.env', 
-        '__pycache__', '.git', '.idea', '.vscode'
+        '.git', '.idea', '.vscode', '.ruff_cache'
     ]);
 
     constructor(workspaceRoot: string, context: vscode.ExtensionContext) {
@@ -192,9 +193,10 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         }
         
         const relativePath = this.normalize(path.relative(workspaceFolder.uri.fsPath, uri.fsPath));
+        const segments = relativePath.split('/');
 
-        // Always exclude .lollms folder
-        if (relativePath === '.lollms' || relativePath.startsWith('.lollms/')) {
+        // Always exclude .lollms folder and __pycache__ anywhere in path
+        if (segments.includes('.lollms') || segments.includes('__pycache__')) {
             return true;
         }
     

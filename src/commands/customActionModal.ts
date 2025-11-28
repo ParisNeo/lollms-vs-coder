@@ -92,7 +92,7 @@ export class CustomActionModal {
                 label { display: block; margin-top: 14px; margin-bottom: 5px; font-weight: 600; color: var(--vscode-description-foreground); }
                 .radio-group label { display: inline-block; margin-right: 15px; font-weight: normal; }
                 .checkbox-container { display: flex; align-items: center; margin-top: 1em; }
-                .checkbox-container input { margin-right: 0.5em; }
+                .checkbox-container label:not(.switch) { margin-top: 0; margin-bottom: 0; font-weight: normal; cursor: pointer; }
                 .button-group {
                     display: flex; gap: 10px; margin-top: 2em;
                     border-top: 1px solid var(--vscode-panel-border);
@@ -111,6 +111,45 @@ export class CustomActionModal {
                 button:hover { background-color: var(--vscode-button-hoverBackground); }
                 button.secondary:hover { background-color: var(--vscode-button-secondaryHoverBackground); }
                 #save-title-group { display: none; margin-top: 1em; }
+
+                /* Switch Toggle */
+                .switch {
+                    position: relative;
+                    display: inline-block;
+                    width: 32px;
+                    height: 18px;
+                    margin-right: 8px;
+                }
+                .switch input { opacity: 0; width: 0; height: 0; }
+                .slider {
+                    position: absolute;
+                    cursor: pointer;
+                    top: 0; left: 0; right: 0; bottom: 0;
+                    background-color: var(--vscode-input-background);
+                    border: 1px solid var(--vscode-widget-border);
+                    transition: .4s;
+                    border-radius: 18px;
+                }
+                .slider:before {
+                    position: absolute;
+                    content: "";
+                    height: 12px;
+                    width: 12px;
+                    left: 2px;
+                    bottom: 2px;
+                    background-color: var(--vscode-foreground);
+                    transition: .4s;
+                    border-radius: 50%;
+                }
+                input:checked + .slider {
+                    background-color: var(--vscode-button-background);
+                    border-color: var(--vscode-button-background);
+                }
+                input:checked + .slider:before {
+                    transform: translateX(14px);
+                    background-color: var(--vscode-button-foreground);
+                }
+                input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
             </style>
         </head>
         <body>
@@ -131,7 +170,10 @@ export class CustomActionModal {
                     </div>
 
                     <div class="checkbox-container">
-                        <input type="checkbox" id="save-prompt">
+                        <label class="switch">
+                            <input type="checkbox" id="save-prompt">
+                            <span class="slider"></span>
+                        </label>
                         <label for="save-prompt">Save as a new reusable prompt</label>
                     </div>
                     

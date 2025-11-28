@@ -19,12 +19,12 @@ export class ChatPanel {
   private _discussionManager!: DiscussionManager;
   private _currentDiscussion: Discussion | null = null;
   public agentManager!: AgentManager;
-  private _lastApiRequest: ChatMessage[] | null = null;
-  private _lastApiResponse: string | null = null;
+  private _executionLogs: string[] = []; // Store logs here
   private processManager!: ProcessManager;
   private readonly discussionId: string;
   private _isWebviewReady = false;
   private _isLoadPending = false;
+  private _inputResolver: ((value: string) => void) | null = null;
 
 
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, discussionManager: DiscussionManager, discussionId: string): ChatPanel {
@@ -64,6 +64,8 @@ export class ChatPanel {
     this._discussionManager = discussionManager;
     this.discussionId = discussionId;
 
+    this.log(`ChatPanel initialized for discussion: ${discussionId}`);
+
     panel.onDidChangeViewState(e => {
         if (e.webviewPanel.active) {
             ChatPanel.currentPanel = this;
@@ -73,6 +75,16 @@ export class ChatPanel {
     this._panel.onDidDispose(() => this.dispose(), null, []);
     this._updateHtmlForWebview(); 
     this._setWebviewMessageListener(this._panel.webview);
+  }
+
+  private log(message: string, level: 'INFO' | 'WARN' | 'ERROR' = 'INFO') {
+      const timestamp = new Date().toLocaleTimeString();
+      const logEntry = `[${timestamp}] [${level}] ${message}`;
+      console.log(logEntry);
+      this._executionLogs.push(logEntry);
+      if (this._executionLogs.length > 2000) {
+          this._executionLogs.shift();
+      }
   }
   
   private async _updateHtmlForWebview() {
@@ -90,7 +102,8 @@ export class ChatPanel {
   public updateGeneratingState() {
     if (this._panel.webview) {
         const process = this._currentDiscussion ? this.processManager.getForDiscussion(this._currentDiscussion.id) : undefined;
-        this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: !!process });
+        const isGenerating = !!process && !this._inputResolver;
+        this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating });
     }
   }
 
@@ -105,12 +118,16 @@ export class ChatPanel {
         this._panel.webview.postMessage({ command: 'displayPlan', plan: plan });
       }
   }
+
+  public showDebugLog() {
+      const logContent = this._executionLogs.join('\n');
+      InfoPanel.createOrShow(this._extensionUri, 'Lollms VS Coder Log', `\`\`\`log\n${logContent}\n\`\`\``);
+  }
   
   public async loadDiscussion(): Promise<void> {
-    console.log("ChatPanel: loadDiscussion called for", this.discussionId);
+    this.log(`Loading discussion ${this.discussionId}`);
 
     // 1. Load Data FIRST
-    // We check if we already have the correct discussion loaded in memory to avoid overwriting transient state (like streaming placeholders) with stale disk data.
     if (!this._currentDiscussion || this._currentDiscussion.id !== this.discussionId) {
         let discussion: Discussion | null;
         if (this.discussionId.startsWith('temp-')) {
@@ -150,7 +167,7 @@ export class ChatPanel {
             this._currentDiscussion = discussion;
             this._panel.title = this._currentDiscussion.title;
         } else {
-            // Discussion not found
+            this.log(`Discussion ${this.discussionId} not found.`, 'ERROR');
             this._panel.webview.postMessage({ command: 'updateTokenProgress' });
             vscode.window.showErrorMessage(`Lollms: Could not load discussion ${this.discussionId}. It may have been deleted.`);
             this.dispose();
@@ -160,7 +177,7 @@ export class ChatPanel {
 
     // 2. Check Webview Readiness
     if (!this._isWebviewReady) {
-        console.log("ChatPanel: Webview not ready, queuing load.");
+        this.log("Webview not ready, queuing load.");
         this._isLoadPending = true;
         return;
     }
@@ -170,7 +187,6 @@ export class ChatPanel {
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const isInspectorEnabled = config.get<boolean>('enableCodeInspector', true);
 
-    // Send buffered context immediately to avoid "junky" empty feeling
     if (this._contextManager) {
         const cachedContext = this._contextManager.getLastContext();
         if (cachedContext) {
@@ -179,7 +195,7 @@ export class ChatPanel {
         }
     }
 
-    console.log("ChatPanel: Sending loadDiscussion message to webview with", this._currentDiscussion.messages.length, "messages");
+    this.log(`Sending ${this._currentDiscussion.messages.length} messages to webview`);
     
     await this._panel.webview.postMessage({ 
         command: 'loadDiscussion', 
@@ -190,8 +206,11 @@ export class ChatPanel {
     this.displayPlan(this._currentDiscussion.plan);
     this.updateGeneratingState();
 
-    await this._fetchAndSetModels(false);
+    // Start fetching context immediately (async) to show the spinner faster
     this._updateContextAndTokens();
+    
+    // Fetch models (will use cache if available)
+    await this._fetchAndSetModels(false);
   }
 
   private async _fetchAndSetModels(forceRefresh: boolean = false) {
@@ -199,10 +218,9 @@ export class ChatPanel {
         if (!this._panel.webview) return;
         let models: Array<{ id: string }> = [];
         try {
-            // Pass the forceRefresh flag to the API
             models = await this._lollmsAPI.getModels(forceRefresh);
-        } catch (error) {
-            console.warn("Lollms: Could not fetch models from the backend.", error);
+        } catch (error: any) {
+            this.log(`Failed to fetch models: ${error.message}`, 'WARN');
         }
         
         if (this._currentDiscussion) {
@@ -212,8 +230,8 @@ export class ChatPanel {
                 currentModel: this._currentDiscussion.model
             });
         }
-    } catch (e) {
-        console.error("Lollms: Unexpected error in _fetchAndSetModels", e);
+    } catch (e: any) {
+        this.log(`Unexpected error in _fetchAndSetModels: ${e.message}`, 'ERROR');
     }
   }
   
@@ -224,9 +242,9 @@ export class ChatPanel {
             return;
         }
         
-        // Report status: Scanning
+        // Notify start: Building tree
+        this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: 'Building file tree...' });
         this._panel.webview.postMessage({ command: 'updateStatus', status: 'Scanning project files...', type: 'info' });
-        this._panel.webview.postMessage({ command: 'startContextLoading' });
 
         (async () => {
             try {
@@ -234,8 +252,9 @@ export class ChatPanel {
                 this._panel.webview.postMessage({ command: 'updateContext', context: context.text });
                 this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
                 
-                // Done scanning
-                this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready', type: 'info' });
+                // Update spinner: Counting tokens
+                this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: 'Counting tokens...' });
+                this._panel.webview.postMessage({ command: 'updateStatus', status: 'Computing tokens length...', type: 'info' });
         
                 const discussionContent = this._currentDiscussion!.messages.map(msg => {
                     if (typeof msg.content === 'string') return msg.content;
@@ -249,11 +268,14 @@ export class ChatPanel {
                 const modelForTokenization = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
 
                 if (!modelForTokenization) {
-                    console.warn("Lollms: No model selected for token calculation. Skipping token count.");
+                    this.log("No model selected for token calculation.");
                     this._panel.webview.postMessage({
                         command: 'updateTokenProgress',
                         error: `No model configured`
                     });
+                    this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (No model)', type: 'info' });
+                    // Even if no model, we should unblock the UI
+                    this._panel.webview.postMessage({ command: 'tokenCalculationFinished' }); 
                     return;
                 }
         
@@ -262,23 +284,67 @@ export class ChatPanel {
                     this._lollmsAPI.getContextSize(modelForTokenization)
                 ]);
                 
+                let ctxSize = contextSizeResponse.context_size;
+                if (!ctxSize || ctxSize <= 0) {
+                    this.log(`Received invalid context size: ${ctxSize}`, 'WARN');
+                    ctxSize = 0;
+                }
+
                 this._panel.webview.postMessage({
                     command: 'updateTokenProgress',
                     totalTokens: tokenizeResponse.count,
-                    contextSize: contextSizeResponse.context_size
+                    contextSize: ctxSize
                 });
+                
+                this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready', type: 'info' });
         
             } catch (error: any) {
-                console.error("Failed to update tokens:", error);
-                this._panel.webview.postMessage({
-                    command: 'updateTokenProgress',
-                    error: `API Error. Check console.`
-                });
-                this._panel.webview.postMessage({ command: 'updateStatus', status: 'Error scanning context', type: 'error' });
+                this.log(`Failed to update tokens: ${error.message}. Using failsafe fallback.`, 'WARN');
+                
+                // Fallback logic: Count words
+                try {
+                    const context = await this._contextManager.getContextContent(); // Re-fetch as we might have failed later
+                    const discussionContent = this._currentDiscussion!.messages.map(msg => {
+                        if (typeof msg.content === 'string') return msg.content;
+                        if (Array.isArray(msg.content)) {
+                            return msg.content.filter(item => item.type === 'text').map(item => item.text).join('\n');
+                        }
+                        return '';
+                    }).join('\n');
+                    const fullText = context.text + '\n' + discussionContent;
+                    
+                    const wordCount = fullText.trim().split(/\s+/).length;
+                    const estimatedTokens = Math.ceil(wordCount * 1.33); // Rough approximation
+                    
+                    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+                    const failsafeSize = config.get<number>('failsafeContextSize') || 4096;
+
+                    this._panel.webview.postMessage({
+                        command: 'updateTokenProgress',
+                        totalTokens: estimatedTokens,
+                        contextSize: failsafeSize,
+                        isApproximate: true
+                    });
+                    
+                    this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (Approx)', type: 'warning' });
+
+                } catch (fallbackError) {
+                    this.log(`Critical failure in token counting fallback: ${fallbackError}`, 'ERROR');
+                    this._panel.webview.postMessage({
+                        command: 'updateTokenProgress',
+                        error: `API Error`
+                    });
+                    this._panel.webview.postMessage({ command: 'updateStatus', status: 'Error scanning context', type: 'error' });
+                }
+            } finally {
+                // Always ensure we unblock the UI
+                this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
             }
         })();
-    } catch (e) {
-        console.error("Lollms: Unexpected error in _updateContextAndTokens", e);
+    } catch (e: any) {
+        this.log(`Unexpected error in _updateContextAndTokens: ${e.message}`, 'ERROR');
+        // Ensure UI unblock in case of catastrophic synchronous error
+        if (this._panel.webview) this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
     }
   }
 
@@ -293,6 +359,8 @@ export class ChatPanel {
         message.id = Date.now().toString() + Math.random().toString(36).substring(2);
     }
     
+    this.log(`Adding message ${message.id} (${message.role})`);
+
     const existingMessageIndex = this._currentDiscussion.messages.findIndex(m => m.id === message.id);
     if (existingMessageIndex !== -1) {
         this._currentDiscussion.messages[existingMessageIndex] = message;
@@ -300,7 +368,6 @@ export class ChatPanel {
         this._currentDiscussion.messages.push(message);
     }
     
-    // Only post if webview is ready, otherwise loadDiscussion will handle it when ready
     if (this._isWebviewReady) {
         this._panel.webview.postMessage({ command: 'addMessage', message: message });
     }
@@ -317,6 +384,7 @@ export class ChatPanel {
   }
 
   public dispose() {
+    this.log("Disposing ChatPanel");
     ChatPanel.panels.delete(this.discussionId);
     if (ChatPanel.currentPanel === this) {
         ChatPanel.currentPanel = undefined;
@@ -352,9 +420,7 @@ export class ChatPanel {
   }
   
   public async analyzeExecutionResult(code: string, language: string, output: string, exitCode: number | null) {
-    if (!this._currentDiscussion) {
-      return;
-    }
+    if (!this._currentDiscussion) return;
 
     this.updateGeneratingState();
 
@@ -437,9 +503,30 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     
     this._callApiWithMessages(messagesForApi, false, modelOverride);
   }
+
   public async sendMessage(userMessage: ChatMessage) {
     if (!this._currentDiscussion) {
         vscode.window.showErrorMessage("No active discussion. Please start a new one.");
+        return;
+    }
+
+    if (this._inputResolver) {
+        this.log("Intercepting message for agent input request");
+        await this.addMessageToDiscussion(userMessage);
+        
+        let inputContent = '';
+        if (typeof userMessage.content === 'string') {
+            inputContent = userMessage.content;
+        } else if (Array.isArray(userMessage.content)) {
+            inputContent = userMessage.content.map(p => p.type === 'text' ? p.text : '').join('\n');
+        } else {
+            inputContent = JSON.stringify(userMessage.content);
+        }
+
+        const resolver = this._inputResolver;
+        this._inputResolver = null;
+        this.updateGeneratingState();
+        resolver(inputContent);
         return;
     }
 
@@ -464,6 +551,26 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     this._callApiWithMessages(this._currentDiscussion.messages, true, this._currentDiscussion.model);
   }
 
+  public async requestUserInput(question: string, signal: AbortSignal): Promise<string> {
+      const questionMessage: ChatMessage = {
+          role: 'system',
+          content: `❓ **Agent Request:** ${question}\n\n*Please reply in the chat input below to continue.*`
+      };
+      await this.addMessageToDiscussion(questionMessage);
+
+      return new Promise<string>((resolve, reject) => {
+          this._inputResolver = resolve;
+          this.updateGeneratingState();
+
+          const onAbort = () => {
+              this._inputResolver = null;
+              this.updateGeneratingState();
+              reject(new Error('User cancelled input request.'));
+          };
+          signal.addEventListener('abort', onAbort);
+      });
+  }
+
   private async regenerateFromMessage(messageId: string) {
     if (!this._currentDiscussion) return;
 
@@ -482,9 +589,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         await this._discussionManager.saveDiscussion(this._currentDiscussion);
     }
     
-    await this.loadDiscussion(); // Reload the UI with truncated history
-
-    // Resend the message
+    await this.loadDiscussion(); 
     await this.sendMessage(targetMessage);
   }
 
@@ -506,7 +611,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         await this._discussionManager.saveDiscussion(this._currentDiscussion);
     }
     
-    await this.loadDiscussion(); // Reload to show the change
+    await this.loadDiscussion(); 
   }
 
   private async insertMessage(afterMessageId: string, role: 'user' | 'assistant', content: string) {
@@ -579,10 +684,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     if (!this._contextManager) return;
 
     try {
-        // 1. System Prompt
         const systemPrompt = getProcessedSystemPrompt('chat');
-        
-        // 2. Context
         const contextResult = await this._contextManager.getContextContent();
         const contextText = contextResult.text;
 
@@ -624,7 +726,8 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         vscode.window.showErrorMessage(`Failed to copy prompt: ${e.message}`);
     }
   }
-    
+   
+        
   private _setWebviewMessageListener(webview: vscode.Webview) {
     webview.onDidReceiveMessage(async (message) => {
       console.log("Lollms: Received message from webview:", message.command, message);
@@ -753,14 +856,9 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             break;
         }
         case 'requestLog':
-          if (!this._lastApiRequest && !this._lastApiResponse) {
-            InfoPanel.createOrShow(this._extensionUri, 'Lollms API Log', 'No log data available.');
-            return;
-          }
-          let logContent = `## ➡️ Request\n\n\`\`\`json\n${JSON.stringify(this._lastApiRequest, null, 2)}\n\`\`\`\n\n## ⬅️ Response\n\n\`\`\`\n${this._lastApiResponse}\n\`\`\``;
-          InfoPanel.createOrShow(this._extensionUri, 'Lollms API Log', logContent);
+          this.showDebugLog();
           return;
-        case 'regenerateFromMessage':
+         case 'regenerateFromMessage':
             await this.regenerateFromMessage(message.messageId);
             break;
         case 'insertMessage':
@@ -779,7 +877,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             vscode.commands.executeCommand('lollms-vs-coder.runScript', message.code, message.language);
             break;
         case 'executeProject':
-            await vscode.commands.executeCommand('lollms-vs-coder.executeProject');
+            await vscode.commands.executeCommand('lollms-vs-coder.executeProject', this);
             break;
         case 'setEntryPoint':
             vscode.commands.executeCommand('lollms-vs-coder.setEntryPoint');
@@ -836,9 +934,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
           model: modelToUse
       };
       
-      // CRITICAL FIX: Add placeholder to in-memory discussion immediately.
-      // This ensures that if the webview reloads (e.g. webview-ready event) during streaming,
-      // the incomplete message is present and can be rendered.
       this._currentDiscussion!.messages.push(assistantPlaceholder);
 
       try {
@@ -879,7 +974,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
 
         apiMessages.push(...messagesCopy);
   
-        this._lastApiRequest = apiMessages;
+        this.log(`Calling API with model: ${modelToUse}. Messages: ${apiMessages.length}`);
   
         if (this._isWebviewReady) {
             this._panel.webview.postMessage({ command: 'addMessage', message: assistantPlaceholder });
@@ -891,6 +986,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
           if (controller.signal.aborted) return;
           if (!hasStarted) {
               hasStarted = true;
+              this.log("First token received");
               if (this._isWebviewReady) this._panel.webview.postMessage({ command: 'updateStatus', status: 'Generating...', type: 'info' });
           }
           (assistantPlaceholder.content as string) += chunk;
@@ -900,6 +996,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         };
   
         const fullResponseText = await this._lollmsAPI.sendChat(apiMessages, onChunk, controller.signal, modelToUse);
+        this.log("Generation complete");
         this._lastApiResponse = fullResponseText;
   
         if (controller.signal.aborted) { return; }
@@ -909,7 +1006,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             const modelForTokenization = modelToUse || this._lollmsAPI.getModelName();
             tokenCount = (await this._lollmsAPI.tokenize(fullResponseText, modelForTokenization)).count;
         } catch(e) {
-            console.error("Could not tokenize final response, TPS will be unavailable.", e);
+            this.log(`Failed to tokenize response: ${e}`, 'WARN');
         }
 
         if (this._isWebviewReady) {
@@ -924,7 +1021,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         
         assistantPlaceholder.content = fullResponseText;
         
-        // Save the completed message to disk
         if (!this._currentDiscussion!.id.startsWith('temp-')) {
             this._currentDiscussion!.timestamp = Date.now();
             await this._discussionManager.saveDiscussion(this._currentDiscussion!);
@@ -932,18 +1028,12 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         }
   
       } catch (error: any) {
+        this.log(`API Call Failed: ${error.message}`, 'ERROR');
         try {
             const isAbortError = error.name === 'AbortError' || (error instanceof Error && error.message.includes('aborted'));
             const isTimeoutError = error instanceof Error && error.message.includes('timed out');
 
             if (isTimeoutError) {
-                this._lastApiResponse = error.message;
-
-                if (assistantPlaceholder.content && (assistantPlaceholder.content as string).trim() !== '') {
-                    // Update the existing placeholder in the array if it has content
-                    // It's already in the array, so we just need to save.
-                }
-
                 const timeoutMessage: ChatMessage = {
                     role: 'system',
                     content: `❌ **API Error:** ${error.message}`
@@ -951,8 +1041,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
                 await this.addMessageToDiscussion(timeoutMessage);
             } else {
                 const errorMessage = isAbortError ? 'Generation stopped by user.' : (error instanceof Error ? error.message : 'An unknown error occurred');
-                this._lastApiResponse = errorMessage;
-
                 const errorContent = `<p style="color:var(--vscode-errorForeground);">❌ **${isAbortError ? 'Cancelled' : 'API Error'}:**</p><pre style="background-color:var(--vscode-textCodeBlock-background); padding:10px; border-radius:4px; white-space:pre-wrap;">${errorMessage}</pre>`;
 
                 if (this._isWebviewReady) {
@@ -964,7 +1052,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
                         tokenCount: 0
                     });
                 }
-                // Ensure status is updated on error
+                
                 if (this._isWebviewReady) {
                      this._panel.webview.postMessage({ command: 'updateStatus', status: 'Error', type: 'error' });
                 }
@@ -972,7 +1060,6 @@ Your task is to re-analyze your previous code suggestion in light of this new er
                 assistantPlaceholder.content = errorContent;
                 assistantPlaceholder.role = 'system';
                 
-                // Save the error state to disk
                 if (!this._currentDiscussion!.id.startsWith('temp-')) {
                     await this._discussionManager.saveDiscussion(this._currentDiscussion!);
                 }
@@ -1096,6 +1183,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
                 <button class="menu-item" id="setEntryPointButton"><i class="codicon codicon-target"></i><span>Set Project Entry Point</span></button>
                 <button class="menu-item" id="executeButton"><i class="codicon codicon-play"></i><span>Execute Project</span></button>
                 <button class="menu-item" id="debugRestartButton"><i class="codicon codicon-debug-restart"></i><span>Re-run Last Debug</span></button>
+                <button class="menu-item" id="showDebugLogButton"><i class="codicon codicon-output"></i><span>Show Debug Log</span></button>
             </div>
 
             <div class="top-controls">
@@ -1143,6 +1231,11 @@ Your task is to re-analyze your previous code suggestion in light of this new er
                     </button>
                 </div>
             </div>
+        </div>
+        
+        <div id="token-counting-overlay" class="token-counting-overlay" style="display: none;">
+            <div class="spinner"></div>
+            <span>Counting tokens...</span>
         </div>
     </div>
 

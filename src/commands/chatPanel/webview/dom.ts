@@ -47,6 +47,7 @@ export const dom = {
     get executeButton() { return document.getElementById('executeButton') as HTMLButtonElement; },
     get setEntryPointButton() { return document.getElementById('setEntryPointButton') as HTMLButtonElement; },
     get debugRestartButton() { return document.getElementById('debugRestartButton') as HTMLButtonElement; },
+    get showDebugLogButton() { return document.getElementById('showDebugLogButton') as HTMLButtonElement; },
     get fileInput() { return document.getElementById('fileInput') as HTMLInputElement; },
     get agentModeCheckbox() { return document.getElementById('agentModeCheckbox') as HTMLInputElement; },
     get agentModeToggle() { return document.querySelector('.agent-mode-toggle') as HTMLLabelElement; },
@@ -56,6 +57,7 @@ export const dom = {
     get welcomeMessage() { return document.getElementById('welcome-message') as HTMLDivElement; },
     get scrollToBottomBtn() { return document.getElementById('scrollToBottomBtn') as HTMLButtonElement; },
     get tokenProgressBar() { return document.getElementById('token-progress-bar') as HTMLDivElement; },
+    get tokenProgressContainer() { return document.querySelector('.token-progress-container') as HTMLDivElement; },
     get tokenCountLabel() { return document.getElementById('token-count-label') as HTMLSpanElement; },
     get refreshContextBtn() { return document.getElementById('refresh-context-btn') as HTMLButtonElement; },
     get contextStatusContainer() { return document.getElementById('context-status-container') as HTMLDivElement; },
@@ -77,4 +79,7 @@ export const dom = {
     get statusLabel() { return document.getElementById('status-label') as HTMLDivElement; },
     get statusText() { return document.getElementById('status-text') as HTMLSpanElement; },
     get statusSpinner() { return document.getElementById('status-spinner') as HTMLDivElement; },
+    get tokenCountingOverlay() { return document.getElementById('token-counting-overlay') as HTMLDivElement; },
+    get tokenCountingText() { return document.querySelector('#token-counting-overlay span') as HTMLSpanElement; },
+    get inputAreaWrapper() { return document.querySelector('.input-area-wrapper') as HTMLDivElement; },
 };

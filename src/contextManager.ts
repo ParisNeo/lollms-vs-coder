@@ -1,5 +1,3 @@
-// src/contextManager.ts
-
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { ContextStateProvider } from './commands/contextStateProvider';
@@ -17,6 +15,13 @@ export class ContextManager {
   private lollmsAPI: LollmsAPI;
   private imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']);
   private docExtensions = new Set(['.pdf', '.docx', '.xlsx', '.pptx', '.msg']);
+  // Explicitly exclude common binary and ML model formats
+  private binaryExtensions = new Set([
+      '.pth', '.pt', '.onnx', '.tflite', '.pb', '.h5', '.hdf5', '.pkl', '.bin', 
+      '.exe', '.dll', '.so', '.dylib', '.class', '.jar', '.war', '.ear', 
+      '.zip', '.tar', '.gz', '.7z', '.rar', '.iso', '.img', '.db', '.sqlite', '.sqlite3',
+      '.pyc', '.pyo', '.pyd'
+  ]);
   
   private _lastContext: ContextResult | null = null;
 
@@ -35,6 +40,12 @@ export class ContextManager {
 
   public getLastContext(): ContextResult | null {
       return this._lastContext;
+  }
+
+  private isBinary(buffer: Buffer): boolean {
+      // Check first 1024 bytes for null bytes, which is a strong indicator of binary content
+      const chunk = buffer.slice(0, Math.min(buffer.length, 1024));
+      return chunk.includes(0);
   }
 
   async getContextContent(): Promise<ContextResult> {
@@ -71,6 +82,13 @@ export class ContextManager {
           if (stat.type !== vscode.FileType.File) continue;
 
           const ext = path.extname(filePath).toLowerCase();
+
+          // 1. Check extension list first
+          if (this.binaryExtensions.has(ext)) {
+              content += `File: ${filePath}\n(Binary file content excluded)\n\n`;
+              continue;
+          }
+
           const fileBytes = await vscode.workspace.fs.readFile(fullPath);
           const buffer = Buffer.from(fileBytes);
           let fileContent = '';
@@ -107,11 +125,16 @@ export class ContextManager {
                 fileContent = `⚠️ **Error parsing Jupyter Notebook:** ${e.message}`;
             }
           } else {
+            // 2. Fallback check for binary content content
+            if (this.isBinary(buffer)) {
+                content += `File: ${filePath}\n(Binary content detected and excluded)\n\n`;
+                continue;
+            }
             fileContent = buffer.toString('utf8');
           }
           
           content += `File: ${filePath}\n`;
-          const language = path.extname(filePath).substring(1);
+          const language = path.extname(filePath).substring(1) || 'plaintext';
           content += '```' + language + '\n';
           content += fileContent;
           content += '\n```\n\n';
@@ -129,7 +152,6 @@ export class ContextManager {
     return result;
   }
   
-  // ... (getAutoSelectionForContext, extractJsonArray same as before) ...
   public async getAutoSelectionForContext(userPrompt: string): Promise<string[] | null> {
     if (!this.contextStateProvider) {
         vscode.window.showErrorMessage("Context State Provider not available.");

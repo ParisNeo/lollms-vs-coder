@@ -556,9 +556,79 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     cancelBtn.onclick = cleanup;
 }
 
+// Helper to extract file paths from raw markdown content
+function extractFilePaths(content: string): { type: 'file' | 'diff' | null, path: string }[] {
+    const infos: { type: 'file' | 'diff' | null, path: string }[] = [];
+    const lines = content.split('\n');
+    let inBlock = false;
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.trim().startsWith('```')) {
+            if (!inBlock) {
+                // Starting a block. Check previous lines for metadata.
+                let j = i - 1;
+                while (j >= 0 && lines[j].trim() === '') j--; // Skip empty lines
+                
+                let type: 'file' | 'diff' | null = null;
+                let pathStr = '';
+
+                if (j >= 0) {
+                    const prevLine = lines[j];
+                    const fileMatch = prevLine.match(/^(?:File:|(?:\*\*|__)File:(?:\*\*|__))\s*(.+)$/i);
+                    const diffMatch = prevLine.match(/^(?:Diff:|(?:\*\*|__)Diff:(?:\*\*|__))\s*(.+)$/i);
+
+                    if (fileMatch) {
+                        type = 'file';
+                        pathStr = fileMatch[1].trim();
+                    } else if (diffMatch) {
+                        type = 'diff';
+                        pathStr = diffMatch[1].trim();
+                    }
+                }
+                
+                if (pathStr) {
+                    // Remove wrapping backticks and bold/italic markers if they wrap the entire string
+                    pathStr = pathStr.replace(/^`|`$/g, '');
+                    // Only remove markdown if it wraps the whole string to avoid corrupting names like __init__
+                    pathStr = pathStr.replace(/^\*\*|\*\*$/g, ''); 
+                    pathStr = pathStr.replace(/^\*|\*$/g, '');
+                }
+
+                infos.push({ type, path: pathStr });
+                inBlock = true;
+            } else {
+                inBlock = false;
+            }
+        }
+    }
+    return infos;
+}
+
 function enhanceCodeBlocks(container: HTMLElement) {
     const pres = container.querySelectorAll('pre');
-    pres.forEach(pre => {
+    if (pres.length === 0) return;
+
+    // Retrieve original content to accurately parsing file paths
+    let originalContentText = '';
+    const messageDiv = container.querySelector('.message') as HTMLElement;
+    if (messageDiv && messageDiv.dataset.originalContent) {
+        try {
+            const raw = JSON.parse(messageDiv.dataset.originalContent);
+            if (Array.isArray(raw)) {
+                originalContentText = raw.map(p => p.type === 'text' ? p.text : '').join('\n');
+            } else {
+                originalContentText = raw;
+            }
+        } catch(e) {}
+    }
+
+    const codeBlockInfos = extractFilePaths(originalContentText);
+    
+    // We assume the order of pres in DOM matches the order of code blocks in original text.
+    // Marked.js usually guarantees this order.
+    
+    pres.forEach((pre, index) => {
         const code = pre.querySelector('code');
         if (!code) return;
         if (pre.parentElement?.classList.contains('code-collapsible')) return;
@@ -605,49 +675,48 @@ function enhanceCodeBlocks(container: HTMLElement) {
             actions.appendChild(inspectBtn);
         }
 
-        // --- Special Logic Detection ---
-        const prevEl = pre.previousElementSibling as HTMLElement;
+        // --- Special Logic Detection using extracted infos ---
+        const info = codeBlockInfos[index];
         let filePath = '';
         let isFileBlock = false;
-
-        // Improved Regex
-        const fileRegex = /(?:^|\n)(?:File:\s*|(?:\*\*|__)File:(?:\*\*|__)\s*)([^\n]+)(?:\s*|$)/i;
-
-        if (prevEl && (prevEl.tagName === 'P' || prevEl.tagName === 'DIV')) {
-             const text = prevEl.textContent || "";
-             const match = text.match(fileRegex);
-             if (match && match[1]) {
-                 filePath = match[1].trim().replace(/`/g, '');
-                 isFileBlock = true;
-             }
-        }
-
-        let isDiff = language === 'diff';
+        let isDiff = false;
         let diffFilePath = '';
-        const diffRegex = /(?:^|\n)(?:Diff:\s*|(?:\*\*|__)Diff:(?:\*\*|__)\s*)([^\n]+)(?:\s*|$)/i;
 
-        if (!isFileBlock && prevEl && (prevEl.tagName === 'P' || prevEl.tagName === 'DIV')) {
-             const text = prevEl.textContent || "";
-             const match = text.match(diffRegex);
-             if (match && match[1]) {
-                 diffFilePath = match[1].trim().replace(/`/g, '');
-                 isDiff = true;
-             }
-        }
-        
-        if (!isDiff && !isFileBlock) {
-            const diffHeaderMatch = codeText.match(/---\s+a\/(.+)\n\+\+\+\s+b\/(.+)/);
-            if (diffHeaderMatch && diffHeaderMatch[1]) {
-                diffFilePath = diffHeaderMatch[1].trim();
+        if (info) {
+            if (info.type === 'file') {
+                filePath = info.path;
+                isFileBlock = true;
+            } else if (info.type === 'diff') {
+                diffFilePath = info.path;
                 isDiff = true;
             }
+        } else {
+            // Fallback to auto-detection from diff content if no header found
+            if (language === 'diff') {
+                const diffHeaderMatch = codeText.match(/---\s+a\/(.+)\n\+\+\+\s+b\/(.+)/);
+                if (diffHeaderMatch && diffHeaderMatch[1]) {
+                    diffFilePath = diffHeaderMatch[1].trim();
+                    isDiff = true;
+                } else {
+                    isDiff = true; // Still a diff, but unknown file
+                }
+            }
+        }
+
+        // Hide the "File: ..." paragraph from the DOM if we handled it
+        const prevEl = pre.previousElementSibling as HTMLElement;
+        if (prevEl && (prevEl.tagName === 'P' || prevEl.tagName === 'DIV')) {
+             const text = prevEl.textContent || "";
+             // Check if this paragraph likely contained the File/Diff marker we just consumed
+             if ((isFileBlock && text.includes('File:')) || (isDiff && text.includes('Diff:'))) {
+                 prevEl.style.display = 'none';
+             }
         }
 
         // --- Add Contextual Buttons ---
 
         if (isFileBlock && filePath) {
             langLabel.textContent = `${language} : ${filePath}`;
-            prevEl.style.display = 'none'; 
             
             const applyBtn = createButton('Apply to File', 'codicon-tools', () => {
                 vscode.postMessage({ command: 'applyFileContent', filePath: filePath, content: codeText });
@@ -659,7 +728,6 @@ function enhanceCodeBlocks(container: HTMLElement) {
         } else if (isDiff) {
             const path = diffFilePath || 'patch';
             langLabel.textContent = `${language} : Diff: ${path}`;
-            if(prevEl && prevEl.textContent?.match(diffRegex)) prevEl.style.display = 'none';
             
             const applyPatchBtn = createButton('Apply Patch', 'codicon-tools', () => {
                 vscode.postMessage({ command: 'applyPatchContent', filePath: diffFilePath, content: codeText });
@@ -1174,5 +1242,3 @@ export function insertNewMessageEditor(role: 'user' | 'assistant') {
         (cancelBtn as HTMLElement).addEventListener('click', () => editorWrapper.remove());
     }
 }
-
-

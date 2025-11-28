@@ -462,6 +462,10 @@ Start the task IDs sequentially after the last completed task ID (${completedTas
         });
     }
 
+    public async requestUserInput(question: string, signal: AbortSignal): Promise<string> {
+        return this.chatPanel.requestUserInput(question, signal);
+    }
+
     private deactivateAgent() {
         this.isActive = false;
         if(this.currentDiscussion && !this.currentDiscussion.id.startsWith('temp-')){

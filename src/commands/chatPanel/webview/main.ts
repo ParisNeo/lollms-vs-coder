@@ -176,7 +176,8 @@ function handleExtensionMessage(event: MessageEvent) {
                     if (stream.timer) clearTimeout(stream.timer);
                     delete state.streamingMessages[message.id];
                 }
-                renderMessageContent(message.id, message.fullContent);
+                // Pass true for isFinal to enable buttons (Execute, Apply, etc.)
+                renderMessageContent(message.id, message.fullContent, true);
                 break;
             }
 
@@ -210,15 +211,57 @@ function handleExtensionMessage(event: MessageEvent) {
                 }
                 break;
                 
+            case 'tokenCalculationStarted':
+                if (dom.tokenCountingOverlay) {
+                    dom.tokenCountingOverlay.style.display = 'flex';
+                    if (dom.tokenCountingText && message.text) {
+                        dom.tokenCountingText.textContent = message.text;
+                    }
+                }
+                if (dom.inputAreaWrapper) dom.inputAreaWrapper.style.display = 'none';
+                break;
+
+            case 'tokenCalculationFinished':
+                if (dom.tokenCountingOverlay) dom.tokenCountingOverlay.style.display = 'none';
+                if (dom.inputAreaWrapper) dom.inputAreaWrapper.style.display = 'block';
+                break;
+
             case 'updateTokenProgress':
                 if(dom.tokenCountLabel) {
-                    const { totalTokens, contextSize, error } = message;
+                    const { totalTokens, contextSize, error, isApproximate } = message;
                      if (error) {
                         dom.tokenCountLabel.textContent = `Tokens: ${error}`;
+                        dom.tokenProgressBar.classList.add('red');
+                        dom.tokenProgressBar.style.width = '100%';
                     } else if (typeof totalTokens === 'number') {
-                        dom.tokenCountLabel.textContent = `Tokens: ${totalTokens} / ${contextSize || '?'}`;
+                        const size = (typeof contextSize === 'number' && contextSize > 0) ? contextSize : 0;
+                        const labelText = isApproximate 
+                            ? `Est. Tokens: ${totalTokens} / ${size} (Approx)` 
+                            : `Tokens: ${totalTokens} / ${size}`;
+                        
+                        dom.tokenCountLabel.textContent = labelText;
+                        
+                        if (size > 0) {
+                            const percentage = Math.min((totalTokens / size) * 100, 100);
+                            dom.tokenProgressBar.style.width = `${percentage}%`;
+                            
+                            dom.tokenProgressBar.classList.remove('green', 'yellow', 'red', 'approximate');
+                            if (isApproximate) {
+                                dom.tokenProgressBar.classList.add('approximate');
+                            } else if (percentage > 90) {
+                                dom.tokenProgressBar.classList.add('red');
+                            } else if (percentage > 75) {
+                                dom.tokenProgressBar.classList.add('yellow');
+                            } else {
+                                dom.tokenProgressBar.classList.add('green');
+                            }
+                        } else {
+                            dom.tokenCountLabel.textContent = `Tokens: ${totalTokens} / ?`;
+                            dom.tokenProgressBar.style.width = '0%';
+                        }
                     } else {
                         dom.tokenCountLabel.textContent = `Tokens: ?`;
+                        dom.tokenProgressBar.style.width = '0%';
                     }
                 }
                 break;

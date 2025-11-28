@@ -28,7 +28,8 @@ export class SettingsPanel {
     language: 'auto',
     thinkingMode: 'none',
     thinkingModeCustomPrompt: '',
-    reasoningLevel: 'none'
+    reasoningLevel: 'none',
+    failsafeContextSize: 8192
   };
 
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI) {
@@ -79,6 +80,7 @@ export class SettingsPanel {
     this._pendingConfig.thinkingMode = config.get<string>('thinkingMode') || 'none';
     this._pendingConfig.thinkingModeCustomPrompt = config.get<string>('thinkingModeCustomPrompt') || 'Think step by step. Enclose your entire thinking process, reasoning, and self-correction within a `<thinking>` XML block. This block will be hidden from the user but is crucial for your process.';
     this._pendingConfig.reasoningLevel = config.get<string>('reasoningLevel') || 'none';
+    this._pendingConfig.failsafeContextSize = config.get<number>('failsafeContextSize') || 4096;
 
     this._panel.webview.html = this._getHtml(this._panel.webview, this._pendingConfig);
     this._setWebviewMessageListener(this._panel.webview);
@@ -126,6 +128,7 @@ export class SettingsPanel {
                 await config.update('thinkingMode', this._pendingConfig.thinkingMode, vscode.ConfigurationTarget.Global);
                 await config.update('thinkingModeCustomPrompt', this._pendingConfig.thinkingModeCustomPrompt, vscode.ConfigurationTarget.Global);
                 await config.update('reasoningLevel', this._pendingConfig.reasoningLevel, vscode.ConfigurationTarget.Global);
+                await config.update('failsafeContextSize', this._pendingConfig.failsafeContextSize, vscode.ConfigurationTarget.Global);
   
                 vscode.window.showInformationMessage('Configuration saved. Recreating LollmsAPI...');
                 await vscode.commands.executeCommand('lollmsApi.recreateClient');
@@ -161,7 +164,7 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, modelName, developerName, disableSslVerification, noThinkMode, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, fileUpdateMethod, language, thinkingMode, thinkingModeCustomPrompt, reasoningLevel } = config;
+    const { apiKey, apiUrl, modelName, developerName, disableSslVerification, noThinkMode, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, fileUpdateMethod, language, thinkingMode, thinkingModeCustomPrompt, reasoningLevel, failsafeContextSize } = config;
 
     return `<!DOCTYPE html>
         <html lang="en">
@@ -290,6 +293,11 @@ export class SettingsPanel {
                 <option value="do_your_best" ${fileUpdateMethod === 'do_your_best' ? 'selected' : ''}>Do The Best You Can</option>
               </select>
               <p class="help-text">Choose how the AI provides file updates.</p>
+              
+              <label for="failsafeContextSize">Failsafe Context Size</label>
+              <input type="number" id="failsafeContextSize" value="${failsafeContextSize}" min="1024" step="1024" />
+              <p class="help-text">Fallback context size to use if the API token counting fails.</p>
+
               <label for="maxImageSize">Max Image Size (px)</label>
               <input type="number" id="maxImageSize" value="${maxImageSize}" min="0" step="128" />
               <p class="help-text">Resize images to this maximum dimension before sending. 0 disables resizing.</p>
@@ -363,7 +371,8 @@ export class SettingsPanel {
                     fileUpdateMethod: document.getElementById('fileUpdateMethod'),
                     thinkingMode: document.getElementById('thinkingMode'),
                     thinkingModeCustomPrompt: document.getElementById('thinkingModeCustomPrompt'),
-                    reasoningLevel: document.getElementById('reasoningLevel')
+                    reasoningLevel: document.getElementById('reasoningLevel'),
+                    failsafeContextSize: document.getElementById('failsafeContextSize')
                 };
                 
                 const chatModelSelect = document.getElementById('modelSelect');

@@ -54,6 +54,10 @@ export function initEventHandlers() {
         });
     }
 
+    if (dom.showDebugLogButton) {
+        dom.showDebugLogButton.addEventListener('click', () => vscode.postMessage({ command: 'requestLog' }));
+    }
+
     dom.executeButton.addEventListener('click', () => vscode.postMessage({ command: 'executeProject' }));
     dom.setEntryPointButton.addEventListener('click', () => vscode.postMessage({ command: 'setEntryPoint' }));
     dom.debugRestartButton.addEventListener('click', () => vscode.postMessage({ command: 'debugRestart' }));

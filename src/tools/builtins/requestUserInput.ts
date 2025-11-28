@@ -13,10 +13,12 @@ export const requestUserInputTool: ToolDefinition = {
         if (!params.question) {
             return { success: false, output: "Error: 'question' parameter is required." };
         }
-        const userInput = await vscode.window.showInputBox({ prompt: params.question, title: "Agent is requesting input" });
-        if (userInput === undefined) {
-            return { success: false, output: "User cancelled the input request." };
+        
+        try {
+            const userInput = await env.agentManager.requestUserInput(params.question, signal);
+            return { success: true, output: `User provided input: ${userInput}` };
+        } catch (error: any) {
+            return { success: false, output: `Input request cancelled or failed: ${error.message}` };
         }
-        return { success: true, output: `User provided input: ${userInput}` };
     }
 };

@@ -90,7 +90,11 @@ export function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'startContextLoading':
                 dom.contextStatusContainer.style.display = 'none';
+                if(dom.tokenProgressContainer) dom.tokenProgressContainer.style.display = 'none';
                 dom.contextLoadingSpinner.style.display = 'flex';
+                // Set spinner text
+                const loadingText = dom.contextLoadingSpinner.querySelector('#loading-files-text');
+                if (loadingText) loadingText.textContent = "Computing tokens length...";
                 break;
             case 'displayPlan':
                 const isFinished = !message.plan || message.plan.tasks.every((t: any) => t.status === 'completed' || t.status === 'failed');
@@ -180,6 +184,8 @@ export function handleExtensionMessage(event: MessageEvent) {
             case 'updateTokenProgress':
                 dom.contextStatusContainer.style.display = 'flex';
                 dom.contextLoadingSpinner.style.display = 'none';
+                if(dom.tokenProgressContainer) dom.tokenProgressContainer.style.display = 'block';
+
                 const { totalTokens, contextSize, error } = message;
 
                 if (error) {
@@ -187,19 +193,29 @@ export function handleExtensionMessage(event: MessageEvent) {
                     dom.tokenProgressBar.style.width = '100%';
                     dom.tokenProgressBar.classList.remove('green', 'yellow');
                     dom.tokenProgressBar.classList.add('red');
-                } else if (typeof totalTokens === 'number' && typeof contextSize === 'number' && contextSize > 0) {
-                    const percentage = Math.min((totalTokens / contextSize) * 100, 100);
-                    dom.tokenProgressBar.style.width = `${percentage}%`;
+                } else if (typeof totalTokens === 'number') {
+                    // Handle edge case where contextSize might be 0/undefined/null
+                    const size = (typeof contextSize === 'number' && contextSize > 0) ? contextSize : 0;
                     
-                    dom.tokenProgressBar.classList.remove('green', 'yellow', 'red');
-                    if (percentage > 90) dom.tokenProgressBar.classList.add('red');
-                    else if (percentage > 75) dom.tokenProgressBar.classList.add('yellow');
-                    else dom.tokenProgressBar.classList.add('green');
-                    
-                    dom.tokenCountLabel.textContent = `Tokens: ${totalTokens} / ${contextSize}`;
+                    if (size > 0) {
+                        const percentage = Math.min((totalTokens / size) * 100, 100);
+                        dom.tokenProgressBar.style.width = `${percentage}%`;
+                        
+                        dom.tokenProgressBar.classList.remove('green', 'yellow', 'red');
+                        if (percentage > 90) dom.tokenProgressBar.classList.add('red');
+                        else if (percentage > 75) dom.tokenProgressBar.classList.add('yellow');
+                        else dom.tokenProgressBar.classList.add('green');
+                        
+                        dom.tokenCountLabel.textContent = `Tokens: ${totalTokens} / ${size}`;
+                    } else {
+                        // Fallback if size is missing but we have token count
+                        dom.tokenProgressBar.style.width = '0%';
+                        dom.tokenCountLabel.textContent = `Tokens: ${totalTokens} / ?`;
+                    }
                 } else {
                     dom.tokenCountLabel.textContent = `Tokens: Press 🔃 to calculate`;
                     dom.tokenProgressBar.style.width = '0%';
+                    dom.tokenProgressBar.classList.remove('green', 'yellow', 'red');
                 }
                 break;
             case 'updateAgentMode':
@@ -239,11 +255,16 @@ export function handleExtensionMessage(event: MessageEvent) {
                     const toolItem = document.createElement('div');
                     toolItem.className = 'tool-item';
                     toolItem.innerHTML = `
-                        <input type="checkbox" class="tool-item-checkbox" id="tool-${tool.name}" value="${tool.name}" ${isChecked ? 'checked' : ''}>
-                        <label for="tool-${tool.name}" class="tool-item-details">
-                            <h4>${tool.name}</h4>
-                            <p>${tool.description}</p>
-                        </label>
+                        <div class="checkbox-container">
+                            <label class="switch">
+                                <input type="checkbox" class="tool-item-checkbox" id="tool-${tool.name}" value="${tool.name}" ${isChecked ? 'checked' : ''}>
+                                <span class="slider"></span>
+                            </label>
+                            <label for="tool-${tool.name}" class="tool-item-details">
+                                <strong>${tool.name}</strong><br>
+                                <span style="font-weight:normal; font-size: 0.9em; opacity: 0.8;">${tool.description}</span>
+                            </label>
+                        </div>
                     `;
                     dom.toolsListDiv.appendChild(toolItem);
                 });

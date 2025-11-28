@@ -54,9 +54,11 @@ export class LollmsAPI {
   private httpsAgent: https.Agent;
   private baseUrl: string;
   private _cachedModels: Array<{ id: string }> | null = null;
+  private globalState: vscode.Memento;
 
-  constructor(config: LollmsConfig) {
+  constructor(config: LollmsConfig, globalState: vscode.Memento) {
     this.config = config;
+    this.globalState = globalState;
     this.httpsAgent = new https.Agent({
         rejectUnauthorized: !this.config.disableSslVerification,
     });
@@ -65,6 +67,7 @@ export class LollmsAPI {
   }
 
   public updateConfig(newConfig: LollmsConfig) {
+    const oldUrl = this.config.apiUrl;
     this.config = newConfig;
     this.httpsAgent = new https.Agent({
         rejectUnauthorized: !this.config.disableSslVerification,
@@ -76,8 +79,12 @@ export class LollmsAPI {
         console.error("Invalid API URL provided:", this.config.apiUrl);
         this.baseUrl = ''; 
     }
-    // Clear cache on config change as URL might have changed
-    this._cachedModels = null;
+    
+    // Only clear cache if the URL or Key has changed, implying a different server or auth
+    if (oldUrl !== newConfig.apiUrl) {
+        this._cachedModels = null;
+        this.globalState.update('lollms_models_cache', undefined);
+    }
   }
 
   public getModelName(): string {
@@ -85,11 +92,21 @@ export class LollmsAPI {
   }
 
   public async getModels(forceRefresh: boolean = false): Promise<Array<{ id: string }>> {
-    // Use cache if available and not empty, unless force refresh is requested
+    // 1. Try in-memory cache first
     if (this._cachedModels && this._cachedModels.length > 0 && !forceRefresh) {
         return this._cachedModels;
     }
 
+    // 2. Try persistent storage cache next (if not forcing refresh)
+    if (!forceRefresh) {
+        const storedModels = this.globalState.get<Array<{ id: string }>>('lollms_models_cache');
+        if (storedModels && storedModels.length > 0) {
+            this._cachedModels = storedModels;
+            return storedModels;
+        }
+    }
+
+    // 3. Fetch from API
     const modelsUrl = `${this.baseUrl}/v1/models`;
     const isHttps = modelsUrl.startsWith('https');
 
@@ -102,13 +119,29 @@ export class LollmsAPI {
         options.agent = this.httpsAgent;
     }
 
-    const response = await fetch(modelsUrl, options);
-    if (!response.ok) {
-        throw new Error(`Failed to fetch models: ${response.status} ${response.statusText}`);
+    try {
+        const response = await fetch(modelsUrl, options);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch models: ${response.status} ${response.statusText}`);
+        }
+        const data = await response.json();
+        const models = data.data || [];
+        
+        // Update caches
+        this._cachedModels = models;
+        await this.globalState.update('lollms_models_cache', models);
+        
+        return models;
+    } catch (error) {
+        // If fetch fails but we have stale cache in storage, return that as fallback
+        const storedModels = this.globalState.get<Array<{ id: string }>>('lollms_models_cache');
+        if (storedModels && storedModels.length > 0) {
+            console.warn("Lollms: Failed to fetch models, using stale cache.", error);
+            this._cachedModels = storedModels;
+            return storedModels;
+        }
+        throw error;
     }
-    const data = await response.json();
-    this._cachedModels = data.data || [];
-    return this._cachedModels!;
   }
 
   public async tokenize(text: string, model?: string): Promise<TokenizeResponse> {
@@ -346,36 +379,43 @@ export class LollmsAPI {
         let buffer = '';
         const decoder = new TextDecoder();
         
-        for await (const chunk of response.body) {
-            if(controller.signal.aborted) {
-                (response.body as any).destroy();
-                throw new AbortError('Request was aborted');
-            }
-            buffer += decoder.decode(chunk as any, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || ''; // Keep the last, possibly incomplete line
-
-            for (const line of lines) {
-                const trimmedLine = line.trim();
-                if (trimmedLine === '') continue; // Skip empty lines
-
-                if (trimmedLine.startsWith('data: ')) {
-                    const data = trimmedLine.substring(6).trim();
-                    if (data === '[DONE]') {
-                        return fullResponse;
+        try {
+            for await (const chunk of response.body) {
+                if(controller.signal.aborted) {
+                    if ((response.body as any).destroy) {
+                        (response.body as any).destroy();
                     }
-                    try {
-                        const parsed = JSON.parse(data);
-                        const content = parsed.choices?.[0]?.delta?.content;
-                        if (content) {
-                            fullResponse += content;
-                            onChunk(content);
+                    throw new AbortError('Request was aborted');
+                }
+                buffer += decoder.decode(chunk as any, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || ''; // Keep the last, possibly incomplete line
+
+                for (const line of lines) {
+                    const trimmedLine = line.trim();
+                    if (trimmedLine === '') continue; // Skip empty lines
+
+                    if (trimmedLine.startsWith('data: ')) {
+                        const data = trimmedLine.substring(6).trim();
+                        if (data === '[DONE]') {
+                            return fullResponse;
                         }
-                    } catch (e) {
-                        console.error('Error parsing stream data line:', data, e);
+                        try {
+                            const parsed = JSON.parse(data);
+                            const content = parsed.choices?.[0]?.delta?.content;
+                            if (content) {
+                                fullResponse += content;
+                                onChunk(content);
+                            }
+                        } catch (e) {
+                            console.error('Error parsing stream data line:', data, e);
+                        }
                     }
                 }
             }
+        } catch (streamError) {
+             if (streamError instanceof AbortError) throw streamError;
+             throw streamError;
         }
         return fullResponse;
 
@@ -388,7 +428,6 @@ export class LollmsAPI {
             if (timedOut) {
               throw new Error(`Request to Lollms API timed out after ${timeoutDuration / 1000} seconds.`);
             }
-            // If not timedOut, it must be an external abort signal
             throw error;
         }
         throw error;

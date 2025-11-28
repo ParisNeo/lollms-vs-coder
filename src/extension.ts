@@ -308,7 +308,7 @@ export async function activate(context: vscode.ExtensionContext) {
         apiKey: config.get<string>('apiKey')?.trim() || '',
         modelName: config.get<string>('modelName') || 'ollama/mistral',
         disableSslVerification: config.get<boolean>('disableSslVerification') || false
-    });
+    }, context.globalState);
 
     const originalContentProvider = new (class implements vscode.TextDocumentContentProvider {
         private originalContent = new Map<string, string>();
@@ -1916,12 +1916,12 @@ ${fileContent}
         }
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.executeProject', async () => {
-        if (!ChatPanel.currentPanel) {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.executeProject', async (panel?: ChatPanel) => {
+        const activeChatPanel = panel || ChatPanel.currentPanel;
+        if (!activeChatPanel) {
             vscode.window.showErrorMessage("Please open a Lollms chat panel to see the execution results.");
             return;
         }
-        const activeChatPanel = ChatPanel.currentPanel;
     
         if (!activeWorkspaceFolder) {
             vscode.window.showErrorMessage("Please open a project folder to execute.");

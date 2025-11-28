@@ -42,6 +42,18 @@ export function initEventHandlers() {
     });
     
     dom.attachButton.addEventListener('click', () => dom.fileInput.click());
+    dom.copyFullPromptButton.addEventListener('click', () => {
+        const draftMessage = dom.messageInput.value;
+        vscode.postMessage({ command: 'copyFullPrompt', draftMessage: draftMessage });
+    });
+    
+    if (dom.copyContextButton) {
+        dom.copyContextButton.addEventListener('click', () => {
+            const draftMessage = dom.messageInput.value;
+            vscode.postMessage({ command: 'copyFullPrompt', draftMessage: draftMessage });
+        });
+    }
+
     dom.executeButton.addEventListener('click', () => vscode.postMessage({ command: 'executeProject' }));
     dom.setEntryPointButton.addEventListener('click', () => vscode.postMessage({ command: 'setEntryPoint' }));
     dom.debugRestartButton.addEventListener('click', () => vscode.postMessage({ command: 'debugRestart' }));

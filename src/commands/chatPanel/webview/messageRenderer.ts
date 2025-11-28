@@ -5,7 +5,7 @@ import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
 import Prism from 'prismjs';
 
-// CodeMirror Imports - STRICTLY use scoped packages to avoid version conflicts
+// ... (Imports from @codemirror/view, etc. remain the same) ...
 import { EditorView, keymap, drawSelection, highlightSpecialChars, highlightActiveLine, dropCursor } from "@codemirror/view";
 import { EditorState, Compartment } from "@codemirror/state";
 import { markdown } from "@codemirror/lang-markdown";
@@ -30,8 +30,9 @@ import {
     syntaxHighlighting 
 } from "@codemirror/language";
 
-const RENDER_THROTTLE_MS = 100;
+const RENDER_THROTTLE_MS = 200; // Increased to 200ms
 
+// ... (langMap, marked.setOptions, DOMPurify setup, vscodeTheme, minimalSetup remain the same) ...
 // --- Language Map for Prism ---
 const langMap: { [key: string]: string } = {
     'js': 'javascript',
@@ -228,7 +229,26 @@ function renderDiagram(codeElement: HTMLElement, language: string, container: HT
 }
 
 function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
-    const originalContent = JSON.parse(messageDiv.dataset.originalContent || '""');
+    let originalContent: any;
+    try {
+        originalContent = JSON.parse(messageDiv.dataset.originalContent || '""');
+    } catch (e) {
+        console.warn("Failed to parse original content for editing, falling back to empty string.", e);
+        originalContent = "";
+    }
+
+    let textContent = "";
+    if (typeof originalContent === 'string') {
+        textContent = originalContent;
+    } else if (Array.isArray(originalContent)) {
+        // Handle multipart content (images + text)
+        textContent = originalContent.map(part => {
+            if (part.type === 'text') return part.text;
+            // We can't edit image URLs here easily, so we skip or leave placeholder
+            return ''; 
+        }).join('\n');
+    }
+
     const contentDiv = messageDiv.querySelector('.message-content') as HTMLElement;
     const actionsDiv = messageDiv.querySelector('.message-actions') as HTMLElement;
 
@@ -355,10 +375,9 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
 
     // --- Setup CodeMirror ---
     
-    // Create a view first, using our clean setup
     const view = new EditorView({
         state: EditorState.create({
-            doc: originalContent,
+            doc: textContent,
             extensions: [
                 minimalSetup,
                 markdown(),
@@ -523,7 +542,7 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
 
     saveBtn.onclick = () => {
         const newContent = view.state.doc.toString();
-        if (newContent.trim() !== originalContent.trim()) {
+        if (newContent.trim() !== textContent.trim()) {
             messageDiv.dataset.originalContent = JSON.stringify(newContent);
             vscode.postMessage({
                 command: 'updateMessage',
@@ -704,8 +723,7 @@ function enhanceCodeBlocks(container: HTMLElement) {
         if (language === 'mermaid' || language === 'svg') {
             renderDiagram(code, language, details);
         } else {
-            // Force Prism highlight on elements that might have missed the initial pass
-            // due to being inserted dynamically.
+            // Re-enabled highlighting as client-side fallback
             Prism.highlightElement(code);
         }
     });
@@ -764,7 +782,7 @@ export function scheduleRender(messageId: string) {
     }, RENDER_THROTTLE_MS);
 }
 
-export function renderMessageContent(messageId: string, rawContent: any) {
+export function renderMessageContent(messageId: string, rawContent: any, isFinal: boolean = false) {
     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
     if (!wrapper) return;
     const contentDiv = wrapper.querySelector('.message-content') as HTMLElement;
@@ -786,18 +804,26 @@ export function renderMessageContent(messageId: string, rawContent: any) {
             contentDiv.innerHTML = htmlContent;
         } else if (typeof rawContent === 'string') {
             const { thoughts, processedContent } = processThinkTags(rawContent);
-            messageDiv.querySelectorAll('.thinking-collapsible').forEach(el => el.remove());
+            messageDiv.querySelectorAll('.plan-scratchpad').forEach(el => el.remove());
+            
             thoughts.forEach(thought => {
-                const details = document.createElement('details');
-                details.className = 'info-collapsible thinking-collapsible';
-                details.innerHTML = `<summary>🤔 Thinking Process</summary><div class="collapsible-content">${sanitizer.sanitize(marked.parse(thought) as string, SANITIZE_CONFIG)}</div>`;
-                messageDiv.insertBefore(details, contentDiv);
+                const thinkDiv = document.createElement('div');
+                thinkDiv.className = 'plan-scratchpad'; 
+                thinkDiv.innerHTML = `
+                    <details ${isFinal ? '' : 'open'}>
+                        <summary class="scratchpad-header"><span class="codicon codicon-lightbulb"></span> Thought Process</summary>
+                        <div class="scratchpad-content">${sanitizer.sanitize(marked.parse(thought) as string, SANITIZE_CONFIG)}</div>
+                    </details>`;
+                messageDiv.insertBefore(thinkDiv, contentDiv);
             });
+            
             contentDiv.innerHTML = sanitizer.sanitize(marked.parse(processedContent) as string, SANITIZE_CONFIG);
         }
 
-        enhanceWithCommandButtons(wrapper as HTMLElement);
-        enhanceCodeBlocks(wrapper as HTMLElement);
+        if (isFinal) {
+            enhanceWithCommandButtons(wrapper as HTMLElement);
+            enhanceCodeBlocks(wrapper as HTMLElement);
+        }
     } catch (e) {
         console.error("Error rendering message content:", e);
         contentDiv.innerText = "Error rendering content: " + e;
@@ -810,20 +836,19 @@ export function renderMessageContent(messageId: string, rawContent: any) {
     }
 }
 
-export function addMessage(message: any) {
+export function addMessage(message: any, isFinal: boolean = true) {
     if (message.role === 'system' && message.content && typeof message.content === 'string' && message.content.startsWith('Attached file:')) {
         addAttachment(message);
     } else {
-        addChatMessage(message);
+        addChatMessage(message, isFinal);
     }
 }
 
 function addAttachment(message: any) {
     if (!dom.attachmentsContainer) return;
-    const wrapper = dom.attachmentsContainer.closest('.info-collapsible');
-    if (!wrapper) return;
+    const wrapper = dom.attachmentsContainer.closest('.special-zone-message');
     
-    (wrapper as HTMLElement).style.display = 'block';
+    if (wrapper) (wrapper as HTMLElement).style.display = 'flex';
 
     let fileName = 'file';
     let contentHtml = '';
@@ -861,18 +886,18 @@ function addAttachment(message: any) {
     dom.attachmentsContainer.appendChild(details);
     
     const count = dom.attachmentsContainer.children.length;
-    const summary = wrapper.querySelector('summary');
-    if(summary) summary.textContent = `📎 Added Files (${count})`;
+    const headerTitle = wrapper?.querySelector('.role-name');
+    if(headerTitle) headerTitle.textContent = `Attached Files (${count})`;
 }
 
-function addChatMessage(message: any) {
+function addChatMessage(message: any, isFinal: boolean = true) {
     const { role, id, content: rawContent, startTime, model } = message;
     
     if (!dom.chatMessagesContainer) return;
 
     const existingWrapper = dom.chatMessagesContainer.querySelector(`.message-wrapper[data-message-id='${id}']`);
     if (existingWrapper) {
-        renderMessageContent(id, rawContent);
+        renderMessageContent(id, rawContent, isFinal);
         return;
     }
 
@@ -916,9 +941,11 @@ function addChatMessage(message: any) {
     contentDiv.className = 'message-content';
     contentDiv.id = `content-${id}`;
     
+    let isWaiting = false;
     if (role === 'assistant' && !rawContent && startTime) {
-        contentDiv.innerHTML = `<div class="waiting-animation"><div class="spinner"></div><span>Thinking...</span></div>`;
+        contentDiv.innerHTML = `<div class="waiting-animation"><div class="lollms-spinner"></div><span class="thinking-text">Thinking...</span></div>`;
         state.streamingMessages[id] = { buffer: '', timer: null };
+        isWaiting = true;
     }
     
     bodyDiv.appendChild(contentDiv);
@@ -930,6 +957,7 @@ function addChatMessage(message: any) {
         ? (rawContent.find(p => p.type === 'text')?.text || '') 
         : (typeof rawContent === 'string' ? rawContent : '');
 
+    // Buttons for User and Assistant
     if (role !== 'system') {
         if (!isMultipart) {
             actions.appendChild(createButton('', 'codicon-edit', () => startEdit(messageDiv, id, role), 'msg-action-btn'));
@@ -937,20 +965,24 @@ function addChatMessage(message: any) {
         if (role === 'user') {
             actions.appendChild(createButton('', 'codicon-sync', () => vscode.postMessage({ command: 'regenerateFromMessage', messageId: id }), 'msg-action-btn'));
         }
-        const copyBtn = createButton('', 'codicon-copy', () => {
-            vscode.postMessage({ command: 'copyToClipboard', text: textForClipboard });
-            copyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
-            setTimeout(() => { copyBtn.innerHTML = '<span class="codicon codicon-copy"></span>'; }, 2000);
-        }, 'msg-action-btn');
-        actions.appendChild(copyBtn);
+        
     }
+    
+    // Copy button for ALL (User, Assistant, System)
+    const copyBtn = createButton('', 'codicon-copy', () => {
+        vscode.postMessage({ command: 'copyToClipboard', text: textForClipboard });
+        copyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
+        setTimeout(() => { copyBtn.innerHTML = '<span class="codicon codicon-copy"></span>'; }, 2000);
+    }, 'msg-action-btn');
+    actions.appendChild(copyBtn);
+
     if (role === 'assistant') {
         actions.appendChild(createButton('', 'codicon-save', () => vscode.postMessage({ command: 'saveMessageAsPrompt', content: textForClipboard }), 'msg-action-btn'));
         actions.appendChild(createButton('', 'codicon-book', () => vscode.postMessage({ command: 'requestLog' }), 'msg-action-btn'));
     }
-    if (role !== 'system') {
-        actions.appendChild(createButton('', 'codicon-trash', () => vscode.postMessage({ command: 'requestDeleteMessage', messageId: id }), 'msg-action-btn'));
-    }
+    
+    // Delete button for ALL (User, Assistant, System)
+    actions.appendChild(createButton('', 'codicon-trash', () => vscode.postMessage({ command: 'requestDeleteMessage', messageId: id }), 'msg-action-btn'));
 
     messageDiv.appendChild(actions);
     messageWrapper.appendChild(messageDiv);
@@ -962,11 +994,35 @@ function addChatMessage(message: any) {
         dom.chatMessagesContainer.appendChild(messageWrapper);
     }
 
-    renderMessageContent(id, rawContent);
+    if (!isWaiting) {
+        renderMessageContent(id, rawContent, isFinal);
+    }
 }
 
+
+
 export function updateContext(contextText: string) {
-    if(dom.contextContainer) dom.contextContainer.innerHTML = contextText ? `<details class="info-collapsible"><summary>Project Context</summary><div class="collapsible-content"><pre>${sanitizer.sanitize(contextText)}</pre></div></details>` : '';
+    if(!dom.contextContainer) return;
+    
+    const innerHTML = `
+    <div class="message special-zone-message context-message">
+        <div class="message-avatar">
+            <span class="codicon codicon-library"></span>
+        </div>
+        <div class="message-body">
+            <div class="message-header"><span class="role-name">Project Context</span></div>
+            <div class="message-content">
+                <details class="info-collapsible">
+                    <summary>View Loaded Files</summary>
+                    <div class="collapsible-content">
+                        <pre>${sanitizer.sanitize(contextText)}</pre>
+                    </div>
+                </details>
+            </div>
+        </div>
+    </div>`;
+    
+    dom.contextContainer.innerHTML = contextText ? innerHTML : '';
 }
 
 function getStatusIcon(status: string) {
@@ -979,6 +1035,10 @@ function getStatusIcon(status: string) {
     }
 }
 
+function getToolBadge(toolName: string) {
+    return `<span class="tool-badge"><span class="codicon codicon-tools"></span> ${toolName}</span>`;
+}
+
 export function displayPlan(plan: any) {
     if(!dom.chatMessagesContainer) return;
     const existingPlan = dom.chatMessagesContainer.querySelector('.plan-wrapper');
@@ -986,53 +1046,67 @@ export function displayPlan(plan: any) {
     if (!plan) return;
 
     let scratchpadHtml = plan.scratchpad ? `
-        <details class="plan-scratchpad-details">
-            <summary>${plan.tasks.length === 0 ? "Agent Status & Scratchpad" : "View Agent Scratchpad"}</summary>
-            <div class="plan-scratchpad-content">${sanitizer.sanitize(marked.parse(plan.scratchpad) as string, SANITIZE_CONFIG)}</div>
-        </details>` : '';
+        <div class="plan-scratchpad">
+            <details open>
+                <summary class="scratchpad-header"><span class="codicon codicon-lightbulb"></span> Thought Process</summary>
+                <div class="scratchpad-content">${sanitizer.sanitize(marked.parse(plan.scratchpad) as string, SANITIZE_CONFIG)}</div>
+            </details>
+        </div>` : '';
 
     let tasksHtml = plan.tasks.map((task: any) => {
+        let statusClass = `status-${task.status}`;
+        let icon = getStatusIcon(task.status);
+        let toolBadge = task.action ? getToolBadge(task.action) : '';
+        
         let retryButtonHtml = '';
         if (task.status === 'failed' && task.can_retry) {
-            retryButtonHtml = `<button class="retry-btn" data-task-id="${task.id}" title="Retry this task"><span class="codicon codicon-debug-restart"></span>Retry</button>`;
+            retryButtonHtml = `<button class="retry-btn" data-task-id="${task.id}" title="Retry this task"><span class="codicon codicon-debug-restart"></span> Retry</button>`;
         }
         
-        const resultHtml = task.result ? `
-            <div class="task-result-details">
+        let resultHtml = task.result ? `
+            <div class="task-result">
                 <details ${task.status === 'failed' ? 'open' : ''}>
-                    <summary>View Details</summary>
-                    <div class="task-result-content">${sanitizer.sanitize(task.result)}</div>
+                    <summary class="task-result-summary">View Result</summary>
+                    <div class="task-result-box">${sanitizer.sanitize(task.result)}</div>
                 </details>
             </div>` : '';
 
         return `
-            <div class="plan-task" data-task-id="${task.id}">
-                <div class="task-status">${getStatusIcon(task.status)}</div>
-                <div class="task-main">
-                    <div class="task-description-wrapper">
-                        <div class="task-description"><strong>${task.id}. ${sanitizer.sanitize(task.description)}</strong></div>
+            <li class="plan-task" data-task-id="${task.id}">
+                <div class="task-header">
+                    <div class="task-status-icon ${statusClass}">${icon}</div>
+                    <div class="task-details">
+                        <div class="task-description">${sanitizer.sanitize(task.description)}</div>
+                        ${toolBadge}
                         ${retryButtonHtml}
                     </div>
-                    ${resultHtml}
                 </div>
-            </div>`;
+                ${resultHtml}
+            </li>`;
     }).join('');
 
     const planWrapper = document.createElement('div');
     planWrapper.className = 'plan-wrapper';
+    
     planWrapper.innerHTML = `
-        <details class="plan-container-details" open>
-            <summary class="plan-header">${plan.tasks.length > 0 ? '📝' : '🧠'} Agent Execution Plan</summary>
-            <div class="plan-body">
-               <div class="plan-objective"><b>Objective:</b> ${sanitizer.sanitize(plan.objective)}</div>
-               ${plan.tasks.length > 0 ? `<div id="plan-tasks-container">${tasksHtml}</div>` : ''}
-               ${scratchpadHtml}
-            </div>
-        </details>`;
+        <div class="plan-block">
+            <details class="plan-details" open>
+                <summary class="plan-header">
+                    <span class="codicon codicon-list-ordered"></span>
+                    <span>Agent Plan</span>
+                </summary>
+                <div class="plan-content">
+                    <div class="plan-objective"><strong>Objective:</strong> ${sanitizer.sanitize(plan.objective)}</div>
+                    <ul class="plan-tasks">${tasksHtml}</ul>
+                    ${scratchpadHtml}
+                </div>
+            </details>
+        </div>`;
 
     // Add event listeners for retry buttons
     planWrapper.querySelectorAll('.retry-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation(); // Prevent toggling details
             vscode.postMessage({ command: 'retryAgentTask', taskId: (btn as HTMLElement).dataset.taskId });
         });
     });
@@ -1100,3 +1174,5 @@ export function insertNewMessageEditor(role: 'user' | 'assistant') {
         (cancelBtn as HTMLElement).addEventListener('click', () => editorWrapper.remove());
     }
 }
+
+

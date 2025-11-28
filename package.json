@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.21",
+  "version": "0.5.23",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -19,7 +19,7 @@
     "Other",
     "Notebooks"
   ],
-  "l10n": "./out/l10n",
+  "l10n": "./l10n",
   "main": "./out/extension.js",
   "activationEvents": [
     "onStartupFinished",
@@ -279,6 +279,10 @@
         "title": "%command.setContextExcluded.title%"
       },
       {
+        "command": "lollms-vs-coder.setContextCollapsed",
+        "title": "C Show Collapsed (Content Hidden)"
+      },
+      {
         "command": "lollms-vs-coder.saveContextSelection",
         "title": "%command.saveContextSelection.title%",
         "icon": "$(save)"
@@ -312,6 +316,24 @@
           "type": "string",
           "default": "",
           "description": "%config.developerName.description%"
+        },
+        "lollmsVsCoder.searchProvider": {
+          "type": "string",
+          "default": "google_custom_search",
+          "description": "Provider for the 'search_web' tool.",
+          "enum": [
+            "google_custom_search"
+          ]
+        },
+        "lollmsVsCoder.searchApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API Key for the search provider (e.g., Google Custom Search API Key)."
+        },
+        "lollmsVsCoder.searchCx": {
+          "type": "string",
+          "default": "",
+          "description": "Search Engine ID (CX) for Google Custom Search."
         },
         "lollmsVsCoder.reasoningLevel": {
           "type": "string",
@@ -605,6 +627,11 @@
         {
           "command": "lollms-vs-coder.setContextExcluded",
           "group": "1_modification@3"
+        },
+        {
+          "command": "lollms-vs-coder.setContextCollapsed",
+          "group": "1_modification@4",
+          "when": "resourceIsFolder"
         }
       ],
       "scm/title": [
@@ -787,7 +814,7 @@
     "compile": "npm run clean && npm run copy-assets && npm run build-webview && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap",
     "watch": "npm run clean && npm run copy-assets && npm run build-webview && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap --watch",
     "esbuild-package": "npm run clean && npm run copy-assets && npm run minify-webview && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --minify",
-    "copy-assets": "cpx \"src/commands/chatPanel/webview/*.css\" out/webview && cpx \"l10n/**\" out/l10n && cpx \"media/**\" out/media && cpx \"node_modules/@vscode/codicons/dist/codicon.{css,ttf}\" out/styles && cpx \"node_modules/prismjs/themes/prism-tomorrow.css\" out/styles",
+    "copy-assets": "cpx \"src/commands/chatPanel/webview/*.css\" out/webview && cpx \"media/**\" out/media && cpx \"node_modules/@vscode/codicons/dist/codicon.{css,ttf}\" out/styles && cpx \"node_modules/prismjs/themes/prism-tomorrow.css\" out/styles",
     "package": "npm run build-and-package",
     "build-and-package": "npm run clean && npm run vscode:prepublish && npx @vscode/vsce package",
     "pretest": "npm run compile && npm audit",

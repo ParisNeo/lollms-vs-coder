@@ -1005,6 +1005,10 @@ ${fileContent}
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextExcluded', (primaryUri?: vscode.Uri, selectedUris?: vscode.Uri[]) => {
         handleSetState('fully-excluded', primaryUri, selectedUris);
     }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextCollapsed', (primaryUri?: vscode.Uri, selectedUris?: vscode.Uri[]) => {
+        handleSetState('collapsed', primaryUri, selectedUris);
+    }));
     
     async function startDiscussionWithInitialPrompt(prompt: string) {
         if (!discussionManager) return;

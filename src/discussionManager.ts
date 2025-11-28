@@ -143,7 +143,7 @@ export class DiscussionManager {
     
         const systemPrompt: ChatMessage = {
             role: 'system',
-            content: `You are a title generation AI. Your sole purpose is to create a concise, descriptive title (5 words or less) for a conversation.
+            content: `You are a title generation AI. Your sole purpose is to create a concise, descriptive title (5 words or less) for a conversation based on the user's initial input.
 
 <CRITICAL_OUTPUT_FORMAT>
 Your entire response MUST be a single, valid JSON object inside a \`\`\`json markdown block.
@@ -164,16 +164,25 @@ User: "how do I build a snake game in python?"
 `
         };
     
-        const userMessages = discussion.messages.filter(m => m.role === 'user').slice(0, 2);
-        if (userMessages.length === 0) return null;
-    
-        const conversationForTitle = userMessages
-            .map(m => `**${m.role}:** ${typeof m.content === 'string' ? m.content.substring(0, 500) : JSON.stringify(m.content)}`)
-            .join('\n\n');
+        const firstUserMessage = discussion.messages.find(m => m.role === 'user');
+        if (!firstUserMessage) return null;
+
+        let contentSnippet = '';
+        if (typeof firstUserMessage.content === 'string') {
+            // Limit to ~1000 tokens (approx 4000 characters) to avoid context bloat
+            contentSnippet = firstUserMessage.content.substring(0, 4000); 
+        } else if (Array.isArray(firstUserMessage.content)) {
+             // Handle multipart content (text parts), limiting total text length
+             contentSnippet = firstUserMessage.content
+                .filter(part => part.type === 'text')
+                .map(part => part.text)
+                .join('\n')
+                .substring(0, 4000);
+        }
     
         const userPrompt: ChatMessage = {
             role: 'user',
-            content: `Generate a title for this conversation:\n\n${conversationForTitle}`
+            content: `Generate a title for a conversation that starts with:\n\n"${contentSnippet}..."`
         };
     
         try {

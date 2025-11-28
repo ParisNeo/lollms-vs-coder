@@ -31,7 +31,7 @@ export class AgentManager {
     private isActive: boolean = false;
     private currentPlan: Plan | null = null;
     private chatHistory: ChatMessage[] = [];
-    private planParser: PlanParser;
+    public planParser: PlanParser;
     private processManager?: ProcessManager;
     public currentWorkspaceFolder?: vscode.WorkspaceFolder;
     private currentTaskIndex: number = 0;
@@ -293,6 +293,61 @@ export class AgentManager {
         this.currentPlan.scratchpad += `\n\n--- PLAN REVISED after failure of task ${failedTask.id} ---`;
         this.displayAndSavePlan(this.currentPlan);
         return true;
+    }
+
+    public async replan(instruction: string, signal: AbortSignal, modelOverride?: string): Promise<{ success: boolean; output: string; }> {
+        if (!this.currentPlan) {
+            return { success: false, output: "No active plan to modify." };
+        }
+
+        const completedTasks = this.currentPlan.tasks.filter(t => t.status === 'completed');
+        const tasksSummary = completedTasks.map(t => `- Task ${t.id} (${t.action}): Completed`).join('\n');
+        
+        const systemPrompt = this.planParser.getPlannerSystemPrompt(true); // Re-use the revision prompt
+        const promptContent = `
+The original objective was: "${this.currentPlan.objective}"
+
+We have successfully completed the following tasks:
+${tasksSummary}
+
+The user or an agent has issued a new instruction to modify the remaining plan:
+"${instruction}"
+
+Your task is to generate a NEW set of tasks to complete the objective, incorporating this new instruction. 
+These new tasks will replace all pending tasks in the current plan.
+Start the task IDs sequentially after the last completed task ID (${completedTasks.length > 0 ? completedTasks[completedTasks.length-1].id : 0}).
+`;
+
+        try {
+            const rawResponse = await this.lollmsApi.sendChat([systemPrompt, { role: 'user', content: promptContent }], null, signal, modelOverride);
+            const jsonString = this.planParser.extractJson(rawResponse);
+            
+            if (!jsonString) {
+                return { success: false, output: "Failed to parse new plan from AI response." };
+            }
+
+            const newPlanFragment = JSON.parse(jsonString) as Plan;
+            
+            // Remove all pending/future tasks
+            const splitIndex = this.currentTaskIndex + 1; // Keep current (if it called this tool) as completed/processing
+            this.currentPlan.tasks.splice(splitIndex);
+
+            // Append new tasks
+            let nextId = this.currentPlan.tasks.length > 0 ? Math.max(...this.currentPlan.tasks.map(t => t.id)) + 1 : 1;
+            for (const newTask of newPlanFragment.tasks) {
+                newTask.id = nextId++;
+                newTask.status = 'pending';
+                this.currentPlan.tasks.push(newTask);
+            }
+
+            this.currentPlan.scratchpad += `\n\n--- PLAN MODIFIED via edit_plan instruction: "${instruction}" ---`;
+            this.displayAndSavePlan(this.currentPlan);
+            
+            return { success: true, output: "Plan successfully modified." };
+
+        } catch (error: any) {
+            return { success: false, output: `Error rewriting plan: ${error.message}` };
+        }
     }
     
     private resolveParameters(task: Task): { [key: string]: any } {

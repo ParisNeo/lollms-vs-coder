@@ -1,4 +1,3 @@
-// src/commands/chatPanel/chatPanel.ts
 import * as vscode from 'vscode';
 import { LollmsAPI, ChatMessage } from '../../lollmsAPI';
 import { ContextManager, ContextResult } from '../../contextManager';
@@ -109,6 +108,57 @@ export class ChatPanel {
   
   public async loadDiscussion(): Promise<void> {
     console.log("ChatPanel: loadDiscussion called for", this.discussionId);
+
+    // 1. Load Data FIRST
+    // We check if we already have the correct discussion loaded in memory to avoid overwriting transient state (like streaming placeholders) with stale disk data.
+    if (!this._currentDiscussion || this._currentDiscussion.id !== this.discussionId) {
+        let discussion: Discussion | null;
+        if (this.discussionId.startsWith('temp-')) {
+            discussion = {
+                id: this.discussionId,
+                title: 'Temporary Discussion',
+                messages: [],
+                timestamp: Date.now(),
+                groupId: null,
+                plan: null
+            };
+        } else {
+            discussion = await this._discussionManager.getDiscussion(this.discussionId);
+        }
+
+        if (discussion) {
+            let needsSave = false;
+            if (!discussion.messages || !Array.isArray(discussion.messages)) {
+                discussion.messages = [];
+                needsSave = true;
+            }
+            discussion.messages.forEach(msg => {
+                if (!msg.id) {
+                    msg.id = Date.now().toString() + Math.random().toString(36).substring(2);
+                    needsSave = true;
+                }
+            });
+            if (!('plan' in discussion)) {
+                discussion.plan = null;
+                needsSave = true;
+            }
+
+            if (needsSave && !discussion.id.startsWith('temp-')) {
+                await this._discussionManager.saveDiscussion(discussion);
+            }
+
+            this._currentDiscussion = discussion;
+            this._panel.title = this._currentDiscussion.title;
+        } else {
+            // Discussion not found
+            this._panel.webview.postMessage({ command: 'updateTokenProgress' });
+            vscode.window.showErrorMessage(`Lollms: Could not load discussion ${this.discussionId}. It may have been deleted.`);
+            this.dispose();
+            return;
+        }
+    }
+
+    // 2. Check Webview Readiness
     if (!this._isWebviewReady) {
         console.log("ChatPanel: Webview not ready, queuing load.");
         this._isLoadPending = true;
@@ -116,71 +166,32 @@ export class ChatPanel {
     }
     this._isLoadPending = false;
 
-    let discussion: Discussion | null;
-    if (this.discussionId.startsWith('temp-')) {
-        discussion = {
-            id: this.discussionId,
-            title: 'Temporary Discussion',
-            messages: [],
-            timestamp: Date.now(),
-            groupId: null,
-            plan: null
-        };
-    } else {
-        discussion = await this._discussionManager.getDiscussion(this.discussionId);
+    // 3. Render UI
+    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+    const isInspectorEnabled = config.get<boolean>('enableCodeInspector', true);
+
+    // Send buffered context immediately to avoid "junky" empty feeling
+    if (this._contextManager) {
+        const cachedContext = this._contextManager.getLastContext();
+        if (cachedContext) {
+            this._panel.webview.postMessage({ command: 'updateContext', context: cachedContext.text });
+            this._panel.webview.postMessage({ command: 'updateImageContext', images: cachedContext.images });
+        }
     }
 
-    if (discussion) {
-        let needsSave = false;
-        
-        if (!discussion.messages || !Array.isArray(discussion.messages)) {
-            discussion.messages = [];
-            needsSave = true;
-        }
+    console.log("ChatPanel: Sending loadDiscussion message to webview with", this._currentDiscussion.messages.length, "messages");
+    
+    await this._panel.webview.postMessage({ 
+        command: 'loadDiscussion', 
+        messages: this._currentDiscussion.messages,
+        isInspectorEnabled: isInspectorEnabled
+    });
+    
+    this.displayPlan(this._currentDiscussion.plan);
+    this.updateGeneratingState();
 
-        discussion.messages.forEach(msg => {
-            if (!msg.id) {
-                msg.id = Date.now().toString() + Math.random().toString(36).substring(2);
-                needsSave = true;
-            }
-        });
-        if (!('plan' in discussion)) {
-            discussion.plan = null;
-            needsSave = true;
-        }
-
-        if (needsSave && !discussion.id.startsWith('temp-')) {
-            await this._discussionManager.saveDiscussion(discussion);
-        }
-
-        this._currentDiscussion = discussion;
-        this._panel.title = this._currentDiscussion.title;
-
-        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-        const isInspectorEnabled = config.get<boolean>('enableCodeInspector', true);
-
-        console.log("ChatPanel: Sending loadDiscussion message to webview with", this._currentDiscussion.messages.length, "messages");
-        // 1. Render the discussion UI first
-        await this._panel.webview.postMessage({ 
-            command: 'loadDiscussion', 
-            messages: this._currentDiscussion.messages,
-            isInspectorEnabled: isInspectorEnabled
-        });
-        
-        this.displayPlan(discussion.plan);
-        this.updateGeneratingState();
-
-        // 2. Then load models (using cache if available)
-        await this._fetchAndSetModels(false);
-
-        // 3. Finally compute tokens and context (heavy operation)
-        this._updateContextAndTokens();
-
-    } else {
-        this._panel.webview.postMessage({ command: 'updateTokenProgress' });
-        vscode.window.showErrorMessage(`Lollms: Could not load discussion ${this.discussionId}. It may have been deleted.`);
-        this.dispose();
-    }
+    await this._fetchAndSetModels(false);
+    this._updateContextAndTokens();
   }
 
   private async _fetchAndSetModels(forceRefresh: boolean = false) {
@@ -212,6 +223,9 @@ export class ChatPanel {
             this._panel.webview?.postMessage({ command: 'updateTokenProgress' });
             return;
         }
+        
+        // Report status: Scanning
+        this._panel.webview.postMessage({ command: 'updateStatus', status: 'Scanning project files...', type: 'info' });
         this._panel.webview.postMessage({ command: 'startContextLoading' });
 
         (async () => {
@@ -219,6 +233,9 @@ export class ChatPanel {
                 const context = await this._contextManager.getContextContent();
                 this._panel.webview.postMessage({ command: 'updateContext', context: context.text });
                 this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
+                
+                // Done scanning
+                this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready', type: 'info' });
         
                 const discussionContent = this._currentDiscussion!.messages.map(msg => {
                     if (typeof msg.content === 'string') return msg.content;
@@ -257,6 +274,7 @@ export class ChatPanel {
                     command: 'updateTokenProgress',
                     error: `API Error. Check console.`
                 });
+                this._panel.webview.postMessage({ command: 'updateStatus', status: 'Error scanning context', type: 'error' });
             }
         })();
     } catch (e) {
@@ -282,7 +300,10 @@ export class ChatPanel {
         this._currentDiscussion.messages.push(message);
     }
     
-    this._panel.webview.postMessage({ command: 'addMessage', message: message });
+    // Only post if webview is ready, otherwise loadDiscussion will handle it when ready
+    if (this._isWebviewReady) {
+        this._panel.webview.postMessage({ command: 'addMessage', message: message });
+    }
 
     if (!this._currentDiscussion.id.startsWith('temp-')) {
         this._currentDiscussion.timestamp = Date.now();
@@ -553,6 +574,56 @@ Your task is to re-analyze your previous code suggestion in light of this new er
     }
     await this.addMessageToDiscussion(chatMessage);
   }
+
+  private async copyFullPromptToClipboard(draftMessage: string) {
+    if (!this._contextManager) return;
+
+    try {
+        // 1. System Prompt
+        const systemPrompt = getProcessedSystemPrompt('chat');
+        
+        // 2. Context
+        const contextResult = await this._contextManager.getContextContent();
+        const contextText = contextResult.text;
+
+        let fullPrompt = "";
+
+        if (systemPrompt) {
+            fullPrompt += `### System Prompt\n${systemPrompt}\n\n`;
+        }
+
+        if (contextText) {
+            fullPrompt += `### Project Context\n${contextText}\n\n`;
+        }
+
+        if (this._currentDiscussion) {
+            fullPrompt += `### Chat History\n`;
+            this._currentDiscussion.messages.forEach(msg => {
+                const role = msg.role.toUpperCase();
+                let content = '';
+                if (typeof msg.content === 'string') {
+                    content = msg.content;
+                } else if (Array.isArray(msg.content)) {
+                    content = msg.content.map(part => {
+                        if (part.type === 'text') return part.text;
+                        if (part.type === 'image_url') return `[Image: ${part.image_url.url.substring(0, 50)}...]`;
+                        return '';
+                    }).join('\n');
+                }
+                fullPrompt += `**${role}**: ${content}\n\n`;
+            });
+        }
+
+        if (draftMessage && draftMessage.trim() !== '') {
+            fullPrompt += `### Current Draft Message\n**USER**: ${draftMessage}\n`;
+        }
+
+        await vscode.env.clipboard.writeText(fullPrompt);
+        vscode.window.showInformationMessage("Full prompt copied to clipboard!");
+    } catch (e: any) {
+        vscode.window.showErrorMessage(`Failed to copy prompt: ${e.message}`);
+    }
+  }
     
   private _setWebviewMessageListener(webview: vscode.Webview) {
     webview.onDidReceiveMessage(async (message) => {
@@ -578,6 +649,9 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         case 'addMessage':
           await this.addMessageToDiscussion(message.message);
           break;
+        case 'copyFullPrompt':
+            await this.copyFullPromptToClipboard(message.draftMessage);
+            break;
         case 'applyAllChanges':
             vscode.commands.executeCommand('lollms-vs-coder.applyAllChanges', message);
             break;
@@ -762,6 +836,11 @@ Your task is to re-analyze your previous code suggestion in light of this new er
           model: modelToUse
       };
       
+      // CRITICAL FIX: Add placeholder to in-memory discussion immediately.
+      // This ensures that if the webview reloads (e.g. webview-ready event) during streaming,
+      // the incomplete message is present and can be rendered.
+      this._currentDiscussion!.messages.push(assistantPlaceholder);
+
       try {
         const apiMessages: ChatMessage[] = [];
         const systemPrompt = getProcessedSystemPrompt('chat');
@@ -802,12 +881,22 @@ Your task is to re-analyze your previous code suggestion in light of this new er
   
         this._lastApiRequest = apiMessages;
   
-        this._panel.webview.postMessage({ command: 'addMessage', message: assistantPlaceholder });
+        if (this._isWebviewReady) {
+            this._panel.webview.postMessage({ command: 'addMessage', message: assistantPlaceholder });
+            this._panel.webview.postMessage({ command: 'updateStatus', status: 'Waiting for first token...', type: 'info' });
+        }
   
+        let hasStarted = false;
         const onChunk = (chunk: string) => {
           if (controller.signal.aborted) return;
+          if (!hasStarted) {
+              hasStarted = true;
+              if (this._isWebviewReady) this._panel.webview.postMessage({ command: 'updateStatus', status: 'Generating...', type: 'info' });
+          }
           (assistantPlaceholder.content as string) += chunk;
-          this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk: chunk });
+          if (this._isWebviewReady) {
+              this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk: chunk });
+          }
         };
   
         const fullResponseText = await this._lollmsAPI.sendChat(apiMessages, onChunk, controller.signal, modelToUse);
@@ -823,15 +912,24 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             console.error("Could not tokenize final response, TPS will be unavailable.", e);
         }
 
-        this._panel.webview.postMessage({ 
-            command: 'finalizeMessage', 
-            id: assistantMessageId, 
-            fullContent: fullResponseText,
-            tokenCount: tokenCount
-        });
+        if (this._isWebviewReady) {
+            this._panel.webview.postMessage({ 
+                command: 'finalizeMessage', 
+                id: assistantMessageId, 
+                fullContent: fullResponseText,
+                tokenCount: tokenCount
+            });
+            this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready', type: 'info' });
+        }
         
         assistantPlaceholder.content = fullResponseText;
-        await this.addMessageToDiscussion(assistantPlaceholder);
+        
+        // Save the completed message to disk
+        if (!this._currentDiscussion!.id.startsWith('temp-')) {
+            this._currentDiscussion!.timestamp = Date.now();
+            await this._discussionManager.saveDiscussion(this._currentDiscussion!);
+            vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
+        }
   
       } catch (error: any) {
         try {
@@ -842,7 +940,8 @@ Your task is to re-analyze your previous code suggestion in light of this new er
                 this._lastApiResponse = error.message;
 
                 if (assistantPlaceholder.content && (assistantPlaceholder.content as string).trim() !== '') {
-                    await this.addMessageToDiscussion(assistantPlaceholder);
+                    // Update the existing placeholder in the array if it has content
+                    // It's already in the array, so we just need to save.
                 }
 
                 const timeoutMessage: ChatMessage = {
@@ -856,17 +955,27 @@ Your task is to re-analyze your previous code suggestion in light of this new er
 
                 const errorContent = `<p style="color:var(--vscode-errorForeground);">❌ **${isAbortError ? 'Cancelled' : 'API Error'}:**</p><pre style="background-color:var(--vscode-textCodeBlock-background); padding:10px; border-radius:4px; white-space:pre-wrap;">${errorMessage}</pre>`;
 
-                this._panel.webview.postMessage({ 
-                    command: 'finalizeMessage', 
-                    id: assistantMessageId, 
-                    fullContent: errorContent,
-                    isHtml: true,
-                    tokenCount: 0
-                });
+                if (this._isWebviewReady) {
+                    this._panel.webview.postMessage({ 
+                        command: 'finalizeMessage', 
+                        id: assistantMessageId, 
+                        fullContent: errorContent,
+                        isHtml: true,
+                        tokenCount: 0
+                    });
+                }
+                // Ensure status is updated on error
+                if (this._isWebviewReady) {
+                     this._panel.webview.postMessage({ command: 'updateStatus', status: 'Error', type: 'error' });
+                }
 
                 assistantPlaceholder.content = errorContent;
                 assistantPlaceholder.role = 'system';
-                await this.addMessageToDiscussion(assistantPlaceholder);
+                
+                // Save the error state to disk
+                if (!this._currentDiscussion!.id.startsWith('temp-')) {
+                    await this._discussionManager.saveDiscussion(this._currentDiscussion!);
+                }
             }
         } catch (secondaryError) {
             console.error("Error while handling initial API error:", secondaryError);
@@ -931,11 +1040,17 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             
             <div id="context-container"></div>
             
-            <details id="attachments-collapsible-wrapper" class="info-collapsible" style="display: none;" open>
-                <summary id="attachments-summary">📎 Added Files</summary>
-                <div id="attachments-container" class="collapsible-content" style="padding: 5px 0 0 0;">
+            <div class="message special-zone-message" style="display: none;">
+                <div class="message-avatar">
+                    <span class="codicon codicon-file-text"></span>
                 </div>
-            </details>
+                <div class="message-body">
+                    <div class="message-header"><span class="role-name">Attached Files</span></div>
+                    <div class="message-content">
+                        <div id="attachments-container"></div>
+                    </div>
+                </div>
+            </div>
             
             <div id="welcome-message" style="display: none;">
                 <h3 id="welcome-title"></h3>
@@ -976,6 +1091,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         <div class="input-area-wrapper">
             <div id="more-actions-menu">
                 <button class="menu-item" id="attachButton"><i class="codicon codicon-add"></i><span>Attach Files</span></button>
+                <button class="menu-item" id="copyFullPromptButton"><i class="codicon codicon-copy"></i><span>Copy Full Prompt</span></button>
                 <button class="menu-item" id="configureToolsButton"><i class="codicon codicon-tools"></i><span>Configure Tools</span></button>
                 <button class="menu-item" id="setEntryPointButton"><i class="codicon codicon-target"></i><span>Set Project Entry Point</span></button>
                 <button class="menu-item" id="executeButton"><i class="codicon codicon-play"></i><span>Execute Project</span></button>
@@ -983,13 +1099,17 @@ Your task is to re-analyze your previous code suggestion in light of this new er
             </div>
 
             <div class="top-controls">
+                <div id="status-label" class="status-label">
+                    <div id="status-spinner" class="spinner"></div>
+                    <span id="status-text">Ready</span>
+                </div>
                 <div class="token-progress">
                     <div class="token-progress-container">
                         <div class="token-progress-bar" id="token-progress-bar"></div>
                     </div>
                     <div id="context-status-container" style="display: flex; align-items: center; gap: 8px;">
                         <span id="token-count-label">Tokens: 0 / 0</span>
-                        <button id="refresh-context-btn" class="icon-btn" title="Refresh Context"><i class="codicon codicon-sync"></i></button>
+                        <button id="refresh-context-btn" class="icon-btn" title="Refresh Context"><i class="codicon codicon-refresh"></i></button>
                     </div>
                     <div id="context-loading-spinner" style="display: none; align-items: center; gap: 8px; font-size: 0.9em; color: var(--vscode-descriptionForeground);">
                         <div class="spinner"></div>
@@ -1015,6 +1135,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
                 </div>
                 <textarea id="messageInput" placeholder="Enter your message (Shift+Enter for new line)..." rows="1"></textarea>
                 <div class="control-buttons">
+                    <button id="copyContextButton" title="Copy Context & Prompt"><i class="codicon codicon-files"></i></button>
                     <button id="sendButton" title="Send Message"><i class="codicon codicon-send"></i></button>
                     <button id="stopButton" title="Stop Generation" style="display: none;">
                         <div class="spinner"></div>

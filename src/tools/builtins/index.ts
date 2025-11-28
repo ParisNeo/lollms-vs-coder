@@ -12,6 +12,9 @@ import { readFileTool } from './readFile';
 import { requestUserInputTool } from './requestUserInput';
 import { setLaunchEntrypointTool } from './setLaunchEntrypoint';
 import { setVscodePythonInterpreterTool } from './setVscodePythonInterpreter';
+import { searchWebTool } from './searchWeb';
+import { generateImageTool } from './generateImage';
+import { editPlanTool } from './editPlan';
 
 export const allTools: ToolDefinition[] = [
     autoSelectContextFilesTool,
@@ -27,4 +30,7 @@ export const allTools: ToolDefinition[] = [
     requestUserInputTool,
     setLaunchEntrypointTool,
     setVscodePythonInterpreterTool,
+    searchWebTool,
+    generateImageTool,
+    editPlanTool
 ];

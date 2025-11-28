@@ -17,6 +17,8 @@ export class ContextManager {
   private lollmsAPI: LollmsAPI;
   private imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']);
   private docExtensions = new Set(['.pdf', '.docx', '.xlsx', '.pptx', '.msg']);
+  
+  private _lastContext: ContextResult | null = null;
 
   constructor(context: vscode.ExtensionContext, lollmsAPI: LollmsAPI) {
     this.context = context;
@@ -31,6 +33,10 @@ export class ContextManager {
     return this.contextStateProvider;
   }
 
+  public getLastContext(): ContextResult | null {
+      return this._lastContext;
+  }
+
   async getContextContent(): Promise<ContextResult> {
     const result: ContextResult = { text: '', images: [] };
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
@@ -38,11 +44,13 @@ export class ContextManager {
 
     if (!this.contextStateProvider) {
       result.text = this.getNoWorkspaceMessage();
+      this._lastContext = result;
       return result;
     }
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder) {
       result.text = this.getNoWorkspaceMessage();
+      this._lastContext = result;
       return result;
     }
 
@@ -117,9 +125,11 @@ export class ContextManager {
     }
 
     result.text = content;
+    this._lastContext = result;
     return result;
   }
   
+  // ... (getAutoSelectionForContext, extractJsonArray same as before) ...
   public async getAutoSelectionForContext(userPrompt: string): Promise<string[] | null> {
     if (!this.contextStateProvider) {
         vscode.window.showErrorMessage("Context State Provider not available.");
@@ -191,7 +201,7 @@ Based on the objective and the file tree, which files are the most relevant? Ret
     }
     return null;
   }
-  
+
   private async generateProjectTree(): Promise<string> {
     
     if (!this.contextStateProvider) {
@@ -199,7 +209,6 @@ Based on the objective and the file tree, which files are the most relevant? Ret
     }
 
     const allVisibleFiles = await this.contextStateProvider.getAllVisibleFiles();
-    
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder) {
       return '## Project Structure\n\n*No workspace folder found.*\n';
@@ -212,9 +221,8 @@ Based on the objective and the file tree, which files are the most relevant? Ret
       return tree;
     }
 
-    tree += '```'
-    tree += path.basename(workspaceFolder.uri.fsPath) + '/\n';
-
+    tree += '```text\n';
+    
     const fileTree: { [key: string]: any } = {};
     
     allVisibleFiles.forEach(filePath => {
@@ -231,7 +239,7 @@ Based on the objective and the file tree, which files are the most relevant? Ret
       });
     });
 
-    const generateTreeString = (obj: any, prefix: string = '', isLast: boolean = true): string => {
+    const generateTreeString = (obj: any, prefix: string = '', isLast: boolean = true, currentPath: string = ''): string => {
       let result = '';
       const keys = Object.keys(obj).sort((a, b) => {
         const aIsDir = obj[a] !== null;
@@ -244,11 +252,28 @@ Based on the objective and the file tree, which files are the most relevant? Ret
       keys.forEach((key, index) => {
         const isLastItem = index === keys.length - 1;
         const connector = isLastItem ? '└── ' : '├── ';
-        result += prefix + connector + key + '\n';
+        
+        let displayKey = key;
+        const fullPath = currentPath ? path.join(currentPath, key) : key;
+        
+        let isCollapsed = false;
+        if (this.contextStateProvider && workspaceFolder) {
+            const uri = vscode.Uri.joinPath(workspaceFolder.uri, fullPath);
+            const state = this.contextStateProvider.getStateForUri(uri);
+            if (state === 'collapsed') {
+                isCollapsed = true;
+            }
+        }
+
+        if (isCollapsed) {
+             displayKey += ' (Content Hidden)';
+        }
+        
+        result += prefix + connector + displayKey + '\n';
 
         if (obj[key] !== null) {
           const newPrefix = prefix + (isLastItem ? '    ' : '│   ');
-          result += generateTreeString(obj[key], newPrefix, isLastItem);
+          result += generateTreeString(obj[key], newPrefix, isLastItem, fullPath);
         }
       });
 

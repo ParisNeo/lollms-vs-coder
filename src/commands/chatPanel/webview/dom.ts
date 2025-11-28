@@ -43,6 +43,7 @@ export const dom = {
     get moreActionsButton() { return document.getElementById('moreActionsButton') as HTMLButtonElement; },
     get moreActionsMenu() { return document.getElementById('more-actions-menu') as HTMLDivElement; },
     get attachButton() { return document.getElementById('attachButton') as HTMLButtonElement; },
+    get copyFullPromptButton() { return document.getElementById('copyFullPromptButton') as HTMLButtonElement; },
     get executeButton() { return document.getElementById('executeButton') as HTMLButtonElement; },
     get setEntryPointButton() { return document.getElementById('setEntryPointButton') as HTMLButtonElement; },
     get debugRestartButton() { return document.getElementById('debugRestartButton') as HTMLButtonElement; },
@@ -72,4 +73,8 @@ export const dom = {
     get toolsListDiv() { return document.getElementById('tools-list') as HTMLDivElement; },
     get addUserMessageBtn() { return document.getElementById('add-user-message-btn') as HTMLButtonElement; },
     get addAiMessageBtn() { return document.getElementById('add-ai-message-btn') as HTMLButtonElement; },
+    get copyContextButton() { return document.getElementById('copyContextButton') as HTMLButtonElement; },
+    get statusLabel() { return document.getElementById('status-label') as HTMLDivElement; },
+    get statusText() { return document.getElementById('status-text') as HTMLSpanElement; },
+    get statusSpinner() { return document.getElementById('status-spinner') as HTMLDivElement; },
 };

@@ -1,7 +1,6 @@
 .vscode/**
 .vscode-test/**
 src/**
-l10n/**
 media/**
 !media/icon.png
 !media/lollms-icon.svg

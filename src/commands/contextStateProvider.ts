@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { minimatch } from 'minimatch';
 
-export type ContextState = 'included' | 'tree-only' | 'fully-excluded';
+export type ContextState = 'included' | 'tree-only' | 'fully-excluded' | 'collapsed';
 
 class ContextItem extends vscode.TreeItem {
     constructor(
@@ -10,9 +10,20 @@ class ContextItem extends vscode.TreeItem {
         public readonly state: ContextState,
         public readonly isDirectory: boolean
     ) {
-        super(vscode.workspace.asRelativePath(resourceUri, false), isDirectory ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None);
+        super(
+            vscode.workspace.asRelativePath(resourceUri, false), 
+            state === 'collapsed' 
+                ? vscode.TreeItemCollapsibleState.None 
+                : (isDirectory ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None)
+        );
         this.id = resourceUri.toString();
         this.contextValue = `contextItem:${state}`;
+
+        if (state === 'collapsed') {
+            this.iconPath = vscode.ThemeIcon.Folder;
+            this.description = " (Content Hidden)";
+            this.tooltip = "Folder exists but content is hidden from AI context to save tokens.";
+        }
     }
 }
 
@@ -26,6 +37,13 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     private workspaceRoot: string;
     private context: vscode.ExtensionContext;
     private stateKey: string;
+    
+    // Default folders to show as collapsed (content hidden)
+    private defaultCollapsedFolders = new Set([
+        'node_modules', 'dist', 'build', 'out', 'bin', 'obj', 'target',
+        'venv', '.venv', 'env', '.env', 
+        '__pycache__', '.git', '.idea', '.vscode'
+    ]);
 
     constructor(workspaceRoot: string, context: vscode.ExtensionContext) {
         this.workspaceRoot = workspaceRoot;
@@ -39,19 +57,45 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         });
 
         vscode.workspace.onDidDeleteFiles(e => this.handleFileDeletions(e.files));
-        this.cleanNonExistentFiles().then(() => this.refresh());
+        
+        // Perform cleanup and migration on init
+        this.cleanNonExistentFiles()
+            .then(() => this.migrateDefaultCollapsedFolders())
+            .then(() => this.refresh());
     }
 
     public async switchWorkspace(newWorkspaceRoot: string) {
         this.workspaceRoot = newWorkspaceRoot;
         this.stateKey = `context-state-${newWorkspaceRoot}`;
         await this.cleanNonExistentFiles();
+        await this.migrateDefaultCollapsedFolders();
         this.refresh();
     }
 
     refresh(): void {
         this._onDidChangeTreeData.fire();
         this._onDidChangeFileDecorations.fire();
+    }
+
+    private normalize(p: string): string {
+        return p.replace(/\\/g, '/');
+    }
+
+    private async migrateDefaultCollapsedFolders(): Promise<void> {
+        const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
+        let modified = false;
+        
+        for (const key of Object.keys(workspaceState)) {
+            const basename = path.basename(key);
+            if (this.defaultCollapsedFolders.has(basename) && workspaceState[key] === 'tree-only') {
+                delete workspaceState[key];
+                modified = true;
+            }
+        }
+
+        if (modified) {
+            await this.context.workspaceState.update(this.stateKey, workspaceState);
+        }
     }
 
     private async cleanNonExistentFiles(): Promise<void> {
@@ -66,7 +110,6 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             try {
                 await vscode.workspace.fs.stat(fileUri);
             } catch (error) {
-                // File does not exist, so mark it for removal
                 return key;
             }
             return null;
@@ -87,7 +130,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         let stateWasModified = false;
         
         for (const uri of deletedFiles) {
-            const relativePath = vscode.workspace.asRelativePath(uri, false);
+            const relativePath = this.normalize(vscode.workspace.asRelativePath(uri, false));
             if (workspaceState[relativePath]) {
                 delete workspaceState[relativePath];
                 stateWasModified = true;
@@ -109,6 +152,10 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             return [];
         }
 
+        if (element && element.state === 'collapsed') {
+            return [];
+        }
+
         const parentUri = element ? element.resourceUri : vscode.Uri.file(this.workspaceRoot);
         const entries = await vscode.workspace.fs.readDirectory(parentUri);
         
@@ -118,8 +165,14 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             if (this.isExcluded(uri)) {
                 continue;
             }
-            const state = this.getStateForUri(uri);
+            
             const isDirectory = type === vscode.FileType.Directory;
+            let state = this.getStateForUri(uri);
+            
+            if (!isDirectory && state === 'collapsed') {
+                state = 'tree-only';
+            }
+
             items.push(new ContextItem(uri, state, isDirectory));
         }
 
@@ -137,12 +190,17 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         if (!workspaceFolder) {
             return false;
         }
+        
+        const relativePath = this.normalize(path.relative(workspaceFolder.uri.fsPath, uri.fsPath));
+
+        // Always exclude .lollms folder
+        if (relativePath === '.lollms' || relativePath.startsWith('.lollms/')) {
+            return true;
+        }
     
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const exceptions = config.get<string[]>('contextFileExceptions') || [];
-        const relativePath = path.relative(workspaceFolder.uri.fsPath, uri.fsPath).replace(/\\/g, '/');
     
-        // If the path is empty, it's the root folder, which should not be excluded.
         if (relativePath === '') {
             return false;
         }
@@ -152,21 +210,48 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
     public getStateForUri(uri: vscode.Uri): ContextState {
         const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
-        const relativePath = vscode.workspace.asRelativePath(uri, false);
-        return workspaceState[relativePath] || 'tree-only';
+        const relativePath = this.normalize(vscode.workspace.asRelativePath(uri, false));
+        
+        // 1. Check exact match
+        if (workspaceState[relativePath]) {
+            return workspaceState[relativePath];
+        }
+
+        // 2. Check for ancestor state (inheritance for exclusion/collapsed)
+        let currentPath = relativePath;
+        while (currentPath.includes('/')) {
+            const lastSlash = currentPath.lastIndexOf('/');
+            currentPath = currentPath.substring(0, lastSlash);
+            
+            const parentState = workspaceState[currentPath];
+            if (parentState === 'fully-excluded') return 'fully-excluded';
+            if (parentState === 'collapsed') return 'collapsed';
+            
+            // Also check default collapsed folders for parents
+            if (this.defaultCollapsedFolders.has(path.basename(currentPath))) {
+                return 'collapsed';
+            }
+        }
+
+        const basename = path.basename(uri.fsPath);
+        if (this.defaultCollapsedFolders.has(basename)) {
+            return 'collapsed';
+        }
+
+        return 'tree-only';
     }
 
     public async setStateForUris(uris: vscode.Uri[], state: ContextState) {
         if (uris.length === 0) return;
     
         const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
-        const allUrisToFire = new Set<string>(); // Use a Set to avoid duplicates
+        const allUrisToFire = new Set<string>();
 
         for (const uri of uris) {
             const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
             if (!workspaceFolder) continue;
 
-            const relativePath = vscode.workspace.asRelativePath(uri, false);
+            const relativePath = this.normalize(vscode.workspace.asRelativePath(uri, false));
             allUrisToFire.add(uri.toString());
 
             const stat = await vscode.workspace.fs.stat(uri);
@@ -175,33 +260,33 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                 const descendantUris = await this.getAllDescendantUris(uri);
                 descendantUris.forEach(u => allUrisToFire.add(u.toString()));
 
-                // Clear out existing states for the directory and its children before setting the new state
+                // Remove existing states for children to enforce new parent state
                 Object.keys(workspaceState).forEach(key => {
-                    if (key.startsWith(relativePath + path.sep) || key === relativePath) {
+                    const normalizedKey = this.normalize(key);
+                    if (normalizedKey === relativePath || normalizedKey.startsWith(relativePath + '/')) {
                         delete workspaceState[key];
                     }
                 });
 
                 if (state === 'included') {
-                    // This will batch-add all children to the workspaceState object
+                    // "Included" means "explicitly add all children files"
                     await this.updateChildrenState(uri, 'add', workspaceState);
                 } else {
-                    // For tree-only or excluded, just set the state on the directory itself
                     workspaceState[relativePath] = state;
                 }
-            } else { // It's a file
-                workspaceState[relativePath] = state;
+            } else {
+                if (state === 'collapsed') {
+                    workspaceState[relativePath] = 'tree-only';
+                } else {
+                    workspaceState[relativePath] = state;
+                }
             }
         }
 
         await this.context.workspaceState.update(this.stateKey, workspaceState);
-        
-        // Convert Set of strings back to array of Uris
         const urisToUpdate = Array.from(allUrisToFire).map(s => vscode.Uri.parse(s));
-
-        // Fire events only once after all changes are made
-        this.refresh(); // Updates the tree view
-        this._onDidChangeFileDecorations.fire(urisToUpdate); // Updates file explorer decorations
+        this.refresh();
+        this._onDidChangeFileDecorations.fire(urisToUpdate);
     }
     
     public async setStateForUri(uri: vscode.Uri, state: ContextState) {
@@ -215,7 +300,6 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             try {
                 entries = await vscode.workspace.fs.readDirectory(currentDirUri);
             } catch (error) {
-                console.warn(`Could not read directory ${currentDirUri.fsPath}:`, error);
                 return;
             }
     
@@ -229,7 +313,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                 if (type === vscode.FileType.Directory) {
                     await processDirectory(entryUri);
                 } else if (type === vscode.FileType.File) {
-                    const relativePath = vscode.workspace.asRelativePath(entryUri, false);
+                    const relativePath = this.normalize(vscode.workspace.asRelativePath(entryUri, false));
                     if (action === 'add') {
                         workspaceState[relativePath] = 'included';
                     }
@@ -261,9 +345,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                 }
             };
             await processDirectory(dirUri);
-        } catch (e) {
-            // Ignore errors if directory cannot be read
-        }
+        } catch (e) {}
         return descendants;
     }
 
@@ -275,9 +357,18 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         if (!workspaceFolder) return [];
     
         const processDirectory = async (dirUri: vscode.Uri) => {
-            const relativePath = vscode.workspace.asRelativePath(dirUri, false);
-            if (workspaceState[relativePath] === 'fully-excluded' || this.isExcluded(dirUri)) {
+            const relativePath = this.normalize(vscode.workspace.asRelativePath(dirUri, false));
+            
+            // Check state with inheritance
+            let currentState = this.getStateForUri(dirUri);
+
+            if (currentState === 'fully-excluded' || this.isExcluded(dirUri)) {
                 return;
+            }
+
+            if (currentState === 'collapsed') {
+                visibleFiles.push(relativePath);
+                return; // Stop recursion
             }
     
             let entries;
@@ -289,16 +380,21 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     
             for (const [name, type] of entries) {
                 const entryUri = vscode.Uri.joinPath(dirUri, name);
-                const entryRelativePath = vscode.workspace.asRelativePath(entryUri, false);
+                const entryRelativePath = this.normalize(vscode.workspace.asRelativePath(entryUri, false));
     
-                if (workspaceState[entryRelativePath] === 'fully-excluded' || this.isExcluded(entryUri)) {
+                // Re-check child exclusion
+                if (this.isExcluded(entryUri)) {
                     continue;
                 }
     
                 if (type === vscode.FileType.Directory) {
                     await processDirectory(entryUri);
                 } else {
-                    visibleFiles.push(entryRelativePath);
+                    // Check if file is explicitly excluded or part of a collapsed/excluded parent
+                    const fileState = this.getStateForUri(entryUri);
+                    if (fileState !== 'fully-excluded') {
+                        visibleFiles.push(entryRelativePath);
+                    }
                 }
             }
         };
@@ -309,6 +405,11 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     
     public getIncludedFiles(): string[] {
         const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
+        // Only return explicitly included files. 
+        // We do NOT want to return files that are implicitly 'tree-only' (default).
+        // Since 'included' must be explicitly set on files (folders set to included propagate to files in updateChildrenState),
+        // we can just filter for 'included'.
+        
         return Object.keys(workspaceState).filter(key => workspaceState[key] === 'included');
     }
 
@@ -320,7 +421,8 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         const urisToFire: vscode.Uri[] = [];
 
         files.forEach(file => {
-            workspaceState[file] = 'included';
+            const normalizedFile = this.normalize(file);
+            workspaceState[normalizedFile] = 'included';
             urisToFire.push(vscode.Uri.joinPath(workspaceFolder.uri, file));
         });
 

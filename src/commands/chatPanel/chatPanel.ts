@@ -33,6 +33,7 @@ export class ChatPanel {
     const existingPanel = ChatPanel.panels.get(discussionId);
     if (existingPanel) {
       existingPanel._panel.reveal(column);
+      ChatPanel.currentPanel = existingPanel; // Update current panel reference
       return existingPanel;
     }
 
@@ -54,6 +55,7 @@ export class ChatPanel {
 
     const newPanel = new ChatPanel(panel, extensionUri, lollmsAPI, discussionManager, discussionId);
     ChatPanel.panels.set(discussionId, newPanel);
+    ChatPanel.currentPanel = newPanel; // Set as current immediately
     return newPanel;
   }
 
@@ -120,7 +122,13 @@ export class ChatPanel {
   }
 
   public showDebugLog() {
-      const logContent = this._executionLogs.join('\n');
+      if (this._executionLogs.length === 0) {
+          this.log("User requested debug log, but it was empty.");
+      }
+      const logContent = this._executionLogs.length > 0 
+        ? this._executionLogs.join('\n') 
+        : "(Log is empty. Activities will appear here.)";
+        
       InfoPanel.createOrShow(this._extensionUri, 'Lollms VS Coder Log', `\`\`\`log\n${logContent}\n\`\`\``);
   }
   
@@ -726,8 +734,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         vscode.window.showErrorMessage(`Failed to copy prompt: ${e.message}`);
     }
   }
-   
-        
+    
   private _setWebviewMessageListener(webview: vscode.Webview) {
     webview.onDidReceiveMessage(async (message) => {
       console.log("Lollms: Received message from webview:", message.command, message);
@@ -858,7 +865,7 @@ Your task is to re-analyze your previous code suggestion in light of this new er
         case 'requestLog':
           this.showDebugLog();
           return;
-         case 'regenerateFromMessage':
+        case 'regenerateFromMessage':
             await this.regenerateFromMessage(message.messageId);
             break;
         case 'insertMessage':
@@ -1225,11 +1232,15 @@ Your task is to re-analyze your previous code suggestion in light of this new er
                 <div class="control-buttons">
                     <button id="copyContextButton" title="Copy Context & Prompt"><i class="codicon codicon-files"></i></button>
                     <button id="sendButton" title="Send Message"><i class="codicon codicon-send"></i></button>
-                    <button id="stopButton" title="Stop Generation" style="display: none;">
-                        <div class="spinner"></div>
-                        <span>Stop</span>
-                    </button>
                 </div>
+            </div>
+            
+            <div id="generating-overlay" class="generating-overlay" style="display: none;">
+                <div class="generating-content">
+                    <div class="spinner"></div>
+                    <span>Generating...</span>
+                </div>
+                <button id="stopButton" class="stop-btn-red">Stop Generation</button>
             </div>
         </div>
         

@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.26",
+  "version": "0.5.27",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -30,6 +30,11 @@
       {
         "command": "lollms-vs-coder.startChat",
         "title": "%command.startChat.title%"
+      },
+      {
+        "command": "lollms-vs-coder.showLog",
+        "title": "Lollms: Show Log",
+        "icon": "$(output)"
       },
       {
         "command": "lollms-vs-coder.triggerCodeAction",
@@ -168,6 +173,11 @@
         "icon": "$(sparkle)"
       },
       {
+        "command": "lollms-vs-coder.titleAllDiscussions",
+        "title": "%command.titleAllDiscussions.title%",
+        "icon": "$(replace-all)"
+      },
+      {
         "command": "lollms-vs-coder.createDiscussionGroup",
         "title": "%command.createDiscussionGroup.title%",
         "icon": "$(new-folder)"
@@ -281,6 +291,10 @@
       {
         "command": "lollms-vs-coder.setContextCollapsed",
         "title": "C Show Collapsed (Content Hidden)"
+      },
+      {
+        "command": "lollms-vs-coder.setContextDefinitionsOnly",
+        "title": "D Show Definitions Only (Structure)"
       },
       {
         "command": "lollms-vs-coder.saveContextSelection",
@@ -630,12 +644,16 @@
           "group": "1_modification@2"
         },
         {
-          "command": "lollms-vs-coder.setContextExcluded",
+          "command": "lollms-vs-coder.setContextDefinitionsOnly",
           "group": "1_modification@3"
         },
         {
+          "command": "lollms-vs-coder.setContextExcluded",
+          "group": "1_modification@4"
+        },
+        {
           "command": "lollms-vs-coder.setContextCollapsed",
-          "group": "1_modification@4",
+          "group": "1_modification@5",
           "when": "resourceIsFolder"
         }
       ],
@@ -684,6 +702,11 @@
           "command": "lollms-vs-coder.refreshDiscussions",
           "when": "view == lollmsDiscussionsView",
           "group": "navigation@5"
+        },
+        {
+          "command": "lollms-vs-coder.titleAllDiscussions",
+          "when": "view == lollmsDiscussionsView",
+          "group": "navigation@6"
         },
         {
           "command": "lollms-vs-coder.buildCodeGraph",

@@ -18,6 +18,13 @@ class ActionItem extends vscode.TreeItem {
 }
 
 export class ActionsTreeProvider implements vscode.TreeDataProvider<ActionItem> {
+    private _onDidChangeTreeData: vscode.EventEmitter<ActionItem | undefined | null | void> = new vscode.EventEmitter<ActionItem | undefined | null | void>();
+    readonly onDidChangeTreeData: vscode.Event<ActionItem | undefined | null | void> = this._onDidChangeTreeData.event;
+
+    refresh(): void {
+        this._onDidChangeTreeData.fire();
+    }
+
     getTreeItem(element: ActionItem): vscode.TreeItem {
         return element;
     }
@@ -30,6 +37,7 @@ export class ActionsTreeProvider implements vscode.TreeDataProvider<ActionItem> 
         const actions: ActionItem[] = [
             new ActionItem('Settings', 'lollms-vs-coder.showConfigView', 'gear', 'Open Lollms settings panel'),
             new ActionItem('Help', 'lollms-vs-coder.showHelp', 'question', 'Show the help panel'),
+            new ActionItem('Show Debug Log', 'lollms-vs-coder.showLog', 'output', 'Show the debug log for the active chat'),
             new ActionItem('Show Code Graph', 'lollms-vs-coder.showCodeGraphPanel', 'git-compare', 'Show the interactive code graph'),
             new ActionItem('Auto-Select Context', 'lollms-vs-coder.autoSelectContextFiles', 'wand', 'Let the AI select relevant files for an objective'),
             new ActionItem('Export Context', 'lollms-vs-coder.exportContextContent', 'clippy', 'Copy the full project context to the clipboard'),

@@ -558,6 +558,14 @@ Please analyze this output (e.g., error log, script output, or configuration tex
         vscode.commands.executeCommand('lollms-vs-coder.newDiscussion');
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showLog', () => {
+        if (ChatPanel.currentPanel) {
+            ChatPanel.currentPanel.showDebugLog();
+        } else {
+            vscode.window.showErrorMessage("No active Lollms chat panel found to show logs from.");
+        }
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussion', async (item?: DiscussionGroupItem) => {
         if (!discussionManager) return;
         const groupId = item instanceof DiscussionGroupItem ? item.group.id : null;
@@ -670,6 +678,58 @@ Please analyze this output (e.g., error log, script output, or configuration tex
             await discussionManager.saveDiscussion(item.discussion);
             discussionTreeProvider?.refresh();
         }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.titleAllDiscussions', async () => {
+        if (!discussionManager) return;
+
+        const allDiscussions = await discussionManager.getAllDiscussions();
+        // Filter for generic titles
+        const untitledDiscussions = allDiscussions.filter(d => 
+            d.title === 'New Discussion' || 
+            d.title === 'Untitled Discussion' || 
+            d.title === 'From Clipboard'
+        );
+
+        if (untitledDiscussions.length === 0) {
+            vscode.window.showInformationMessage("No untitled discussions found.");
+            return;
+        }
+
+        const confirm = await vscode.window.showWarningMessage(
+            `Generate titles for ${untitledDiscussions.length} untitled discussions?`,
+            { modal: true },
+            "Yes"
+        );
+
+        if (confirm !== "Yes") return;
+
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Lollms: Titling discussions...",
+            cancellable: true
+        }, async (progress, token) => {
+            const increment = 100 / untitledDiscussions.length;
+            
+            for (const discussion of untitledDiscussions) {
+                if (token.isCancellationRequested) break;
+
+                progress.report({ message: `Analyzing ${discussion.id}...`, increment: 0 }); // Don't increment yet
+
+                // Check if discussion has messages
+                if (discussion.messages.length > 0) {
+                    const newTitle = await discussionManager!.generateDiscussionTitle(discussion);
+                    if (newTitle) {
+                        discussion.title = newTitle;
+                        await discussionManager!.saveDiscussion(discussion);
+                    }
+                }
+                
+                progress.report({ message: `Untitled: ${discussion.title}`, increment: increment });
+                // We could refresh incrementally but better to do it at the end to avoid flickering
+            }
+            discussionTreeProvider?.refresh();
+        });
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.createDiscussionGroup', async () => {
@@ -2019,6 +2079,11 @@ ${fileContent}
         }
 
         debugErrorManager.clearError();
+    }));
+        
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextDefinitionsOnly', (primaryUri?: vscode.Uri, selectedUris?: vscode.Uri[]) => {
+        handleSetState('definitions-only', primaryUri, selectedUris);
     }));
         
     console.log('Extension activation complete.');

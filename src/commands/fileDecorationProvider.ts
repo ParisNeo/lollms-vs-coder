@@ -43,6 +43,8 @@ export class FileDecorationProvider implements vscode.FileDecorationProvider {
                 return new vscode.FileDecoration('⊘', 'Excluded from AI Context', new vscode.ThemeColor('gitDecoration.ignoredResourceForeground'));
             case 'collapsed':
                 return new vscode.FileDecoration('C', 'Content Hidden (Collapsed)', new vscode.ThemeColor('gitDecoration.submoduleResourceForeground'));
+            case 'definitions-only':
+                return new vscode.FileDecoration('D', 'Definitions Only (Structure)', new vscode.ThemeColor('gitDecoration.modifiedResourceForeground'));
             case 'tree-only':
             default:
                 // No decoration for the default 'tree-only' state

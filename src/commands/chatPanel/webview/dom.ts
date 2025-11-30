@@ -82,4 +82,6 @@ export const dom = {
     get tokenCountingOverlay() { return document.getElementById('token-counting-overlay') as HTMLDivElement; },
     get tokenCountingText() { return document.querySelector('#token-counting-overlay span') as HTMLSpanElement; },
     get inputAreaWrapper() { return document.querySelector('.input-area-wrapper') as HTMLDivElement; },
+    get inputArea() { return document.querySelector('.input-area') as HTMLDivElement; },
+    get generatingOverlay() { return document.getElementById('generating-overlay') as HTMLDivElement; },
 };

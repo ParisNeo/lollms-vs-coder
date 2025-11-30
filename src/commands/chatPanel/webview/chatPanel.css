@@ -854,4 +854,53 @@ input:focus + .slider {
     );
 }
 
-/* ... existing CSS ... */
+/* --- Generating Overlay --- */
+.generating-overlay {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    gap: 15px;
+    background-color: var(--vscode-input-background);
+    border: 1px solid var(--vscode-input-border);
+    border-radius: 6px;
+}
+
+.generating-content {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 600;
+    color: var(--vscode-input-foreground);
+}
+
+.generating-content .spinner {
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--vscode-textLink-foreground);
+    border-bottom-color: transparent;
+    border-radius: 50%;
+    animation: lollms-rotation 1s linear infinite;
+}
+
+.stop-btn-red {
+    background-color: var(--vscode-charts-red);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: var(--vscode-font-family);
+    font-size: 12px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: background-color 0.2s;
+}
+
+.stop-btn-red:hover {
+    background-color: var(--vscode-errorForeground);
+    opacity: 0.9;
+}

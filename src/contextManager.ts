@@ -48,6 +48,72 @@ export class ContextManager {
       return chunk.includes(0);
   }
 
+  private async extractDefinitions(uri: vscode.Uri): Promise<string> {
+      try {
+          const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>(
+              'vscode.executeDocumentSymbolProvider', 
+              uri
+          );
+
+          if (!symbols || symbols.length === 0) {
+              return "(No definitions found)";
+          }
+
+          const formatSymbol = (symbol: vscode.DocumentSymbol, indent: string = ''): string => {
+              const kindMap: { [key: number]: string } = {
+                  [vscode.SymbolKind.Class]: 'class',
+                  [vscode.SymbolKind.Method]: 'method',
+                  [vscode.SymbolKind.Function]: 'function',
+                  [vscode.SymbolKind.Constructor]: 'constructor',
+                  [vscode.SymbolKind.Interface]: 'interface',
+                  [vscode.SymbolKind.Enum]: 'enum',
+                  [vscode.SymbolKind.Variable]: 'variable',
+                  [vscode.SymbolKind.Constant]: 'constant',
+                  [vscode.SymbolKind.Property]: 'property',
+                  [vscode.SymbolKind.Struct]: 'struct'
+              };
+              
+              const kindName = kindMap[symbol.kind] || 'symbol';
+              
+              // Only include significant symbols for context reduction
+              const significantKinds = [
+                  vscode.SymbolKind.Class, 
+                  vscode.SymbolKind.Method, 
+                  vscode.SymbolKind.Function, 
+                  vscode.SymbolKind.Interface,
+                  vscode.SymbolKind.Enum,
+                  vscode.SymbolKind.Constructor,
+                  vscode.SymbolKind.Struct
+              ];
+
+              if (!significantKinds.includes(symbol.kind)) {
+                  return ''; 
+              }
+
+              let output = `${indent}${kindName} ${symbol.name}`;
+              if (symbol.detail) {
+                  output += `: ${symbol.detail}`;
+              }
+              output += '\n';
+
+              for (const child of symbol.children) {
+                  output += formatSymbol(child, indent + '  ');
+              }
+              return output;
+          };
+
+          let definitions = '';
+          for (const symbol of symbols) {
+              definitions += formatSymbol(symbol);
+          }
+          
+          return definitions.trim() || "(No significant definitions found)";
+
+      } catch (e) {
+          return `(Error extracting definitions: ${e})`;
+      }
+  }
+
   async getContextContent(): Promise<ContextResult> {
     const result: ContextResult = { text: '', images: [] };
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
@@ -70,12 +136,17 @@ export class ContextManager {
     content += await this.generateProjectTree();
     content += '\n';
 
-    const includedFiles = contextFiles.filter(p => !p.endsWith(path.sep));
+    // contextFiles is now array of { path: string, state: ContextState }
+    const includedFiles = contextFiles.filter(f => !f.path.endsWith(path.sep));
+    
     if (includedFiles.length > 0) {
       content += `## File Contents (${includedFiles.length} files)\n\n`;
       content += `Warning: Only some files' contents are shown here. If you need more file contents, don't hesitate to ask the user to select more files that you need to see.\n\n`;
       
-      for (const filePath of contextFiles) {
+      for (const fileEntry of includedFiles) {
+        const filePath = fileEntry.path;
+        const contextState = fileEntry.state;
+
         try {
           const fullPath = vscode.Uri.joinPath(workspaceFolder.uri, filePath);
           const stat = await vscode.workspace.fs.stat(fullPath);
@@ -86,6 +157,15 @@ export class ContextManager {
           // 1. Check extension list first
           if (this.binaryExtensions.has(ext)) {
               content += `File: ${filePath}\n(Binary file content excluded)\n\n`;
+              continue;
+          }
+
+          if (contextState === 'definitions-only') {
+              const definitions = await this.extractDefinitions(fullPath);
+              content += `File: ${filePath} (Definitions Only)\n`;
+              content += '```text\n';
+              content += definitions;
+              content += '\n```\n\n';
               continue;
           }
 
@@ -152,6 +232,7 @@ export class ContextManager {
     return result;
   }
   
+  // ... rest of file
   public async getAutoSelectionForContext(userPrompt: string): Promise<string[] | null> {
     if (!this.contextStateProvider) {
         vscode.window.showErrorMessage("Context State Provider not available.");

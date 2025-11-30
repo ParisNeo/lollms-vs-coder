@@ -100,9 +100,10 @@ function localSetGeneratingState(isGenerating: boolean) {
     if(dom.attachButton) dom.attachButton.disabled = isGenerating;
     if(dom.executeButton) dom.executeButton.disabled = isGenerating;
     
-    if(dom.sendButton) dom.sendButton.style.display = isGenerating ? 'none' : 'flex';
-    if(dom.stopButton) dom.stopButton.style.display = isGenerating ? 'flex' : 'none';
-    
+    // Toggle main input / generating overlay
+    if (dom.inputArea) dom.inputArea.style.display = isGenerating ? 'none' : 'flex';
+    if (dom.generatingOverlay) dom.generatingOverlay.style.display = isGenerating ? 'flex' : 'none';
+
     if (!isGenerating) {
         if (!isScrolledToBottom(dom.messagesDiv)) {
             dom.scrollToBottomBtn.style.display = 'flex';
@@ -327,7 +328,12 @@ function initEventHandlers() {
     }
 
     if(dom.refreshContextBtn) dom.refreshContextBtn.addEventListener('click', () => vscode.postMessage({ command: 'calculateTokens' }));
-    if(dom.stopButton) dom.stopButton.addEventListener('click', () => vscode.postMessage({ command: 'stopGeneration' }));
+    
+    // Update stop button listener for the new button ID (it reuses the ID but in different location)
+    if(dom.stopButton) {
+        dom.stopButton.addEventListener('click', () => vscode.postMessage({ command: 'stopGeneration' }));
+    }
+    
     if(dom.addUserMessageBtn) dom.addUserMessageBtn.addEventListener('click', () => insertNewMessageEditor('user'));
     if(dom.addAiMessageBtn) dom.addAiMessageBtn.addEventListener('click', () => insertNewMessageEditor('assistant'));
     

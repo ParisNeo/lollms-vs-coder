@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { minimatch } from 'minimatch';
 
-export type ContextState = 'included' | 'tree-only' | 'fully-excluded' | 'collapsed';
+export type ContextState = 'included' | 'tree-only' | 'fully-excluded' | 'collapsed' | 'definitions-only';
 
 class ContextItem extends vscode.TreeItem {
     constructor(
@@ -23,6 +23,9 @@ class ContextItem extends vscode.TreeItem {
             this.iconPath = vscode.ThemeIcon.Folder;
             this.description = " (Content Hidden)";
             this.tooltip = "Folder exists but content is hidden from AI context to save tokens.";
+        } else if (state === 'definitions-only') {
+            this.description = " (Definitions)";
+            this.tooltip = "Only structure (classes, functions signatures) is sent to AI.";
         }
     }
 }
@@ -270,9 +273,9 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                     }
                 });
 
-                if (state === 'included') {
-                    // "Included" means "explicitly add all children files"
-                    await this.updateChildrenState(uri, 'add', workspaceState);
+                if (state === 'included' || state === 'definitions-only') {
+                    // Explicitly add all children files for these states
+                    await this.updateChildrenState(uri, state, workspaceState);
                 } else {
                     workspaceState[relativePath] = state;
                 }
@@ -295,7 +298,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         await this.setStateForUris([uri], state);
     }
 
-    private async updateChildrenState(dirUri: vscode.Uri, action: 'add', workspaceState: { [key: string]: ContextState }): Promise<vscode.Uri[]> {
+    private async updateChildrenState(dirUri: vscode.Uri, state: ContextState, workspaceState: { [key: string]: ContextState }): Promise<vscode.Uri[]> {
         const urisToFire: vscode.Uri[] = [dirUri];
         const processDirectory = async (currentDirUri: vscode.Uri) => {
             let entries;
@@ -316,9 +319,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                     await processDirectory(entryUri);
                 } else if (type === vscode.FileType.File) {
                     const relativePath = this.normalize(vscode.workspace.asRelativePath(entryUri, false));
-                    if (action === 'add') {
-                        workspaceState[relativePath] = 'included';
-                    }
+                    workspaceState[relativePath] = state;
                 }
             }
         };
@@ -405,14 +406,12 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         return visibleFiles;
     }
     
-    public getIncludedFiles(): string[] {
+    public getIncludedFiles(): { path: string, state: ContextState }[] {
         const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
-        // Only return explicitly included files. 
-        // We do NOT want to return files that are implicitly 'tree-only' (default).
-        // Since 'included' must be explicitly set on files (folders set to included propagate to files in updateChildrenState),
-        // we can just filter for 'included'.
         
-        return Object.keys(workspaceState).filter(key => workspaceState[key] === 'included');
+        return Object.entries(workspaceState)
+            .filter(([_, state]) => state === 'included' || state === 'definitions-only')
+            .map(([key, state]) => ({ path: key, state }));
     }
 
     public async addFilesToContext(files: string[]): Promise<void> {

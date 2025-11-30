@@ -30,9 +30,8 @@ import {
     syntaxHighlighting 
 } from "@codemirror/language";
 
-const RENDER_THROTTLE_MS = 200; // Increased to 200ms
+const RENDER_THROTTLE_MS = 200;
 
-// ... (langMap, marked.setOptions, DOMPurify setup, vscodeTheme, minimalSetup remain the same) ...
 // --- Language Map for Prism ---
 const langMap: { [key: string]: string } = {
     'js': 'javascript',
@@ -241,10 +240,8 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     if (typeof originalContent === 'string') {
         textContent = originalContent;
     } else if (Array.isArray(originalContent)) {
-        // Handle multipart content (images + text)
         textContent = originalContent.map(part => {
             if (part.type === 'text') return part.text;
-            // We can't edit image URLs here easily, so we skip or leave placeholder
             return ''; 
         }).join('\n');
     }
@@ -257,18 +254,15 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     const editOverlay = document.createElement('div');
     editOverlay.className = 'edit-overlay';
     
-    // --- Search Bar Container ---
     const searchBar = document.createElement('div');
     searchBar.className = 'edit-search-bar';
     
-    // --- Row 1: Find ---
     const findRow = document.createElement('div');
     findRow.style.display = 'flex';
     findRow.style.alignItems = 'center';
     findRow.style.gap = '4px';
     findRow.style.width = '100%';
 
-    // Toggle Replace Mode Button
     const toggleReplaceBtn = document.createElement('button');
     toggleReplaceBtn.className = 'edit-search-btn';
     toggleReplaceBtn.innerHTML = '<span class="codicon codicon-chevron-right"></span>';
@@ -313,14 +307,13 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     findRow.appendChild(prevBtn);
     findRow.appendChild(nextBtn);
 
-    // --- Row 2: Replace ---
     const replaceRow = document.createElement('div');
-    replaceRow.style.display = 'none'; // Hidden by default
+    replaceRow.style.display = 'none';
     replaceRow.style.alignItems = 'center';
     replaceRow.style.gap = '4px';
     replaceRow.style.width = '100%';
     replaceRow.style.marginTop = '4px';
-    replaceRow.style.paddingLeft = '24px'; // Indent to align with inputs
+    replaceRow.style.paddingLeft = '24px';
 
     const replaceInput = document.createElement('input');
     replaceInput.type = 'text';
@@ -345,11 +338,9 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     searchBar.appendChild(replaceRow);
     editOverlay.appendChild(searchBar);
 
-    // --- CodeMirror Editor ---
     const editorContainer = document.createElement('div');
     editorContainer.style.width = '100%';
     
-    // --- Footer Buttons ---
     const buttonsDiv = document.createElement('div');
     buttonsDiv.className = 'edit-buttons';
     
@@ -373,8 +364,6 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     contentDiv.appendChild(editOverlay);
     actionsDiv.style.display = 'none';
 
-    // --- Setup CodeMirror ---
-    
     const view = new EditorView({
         state: EditorState.create({
             doc: textContent,
@@ -382,12 +371,11 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
                 minimalSetup,
                 markdown(),
                 vscodeTheme,
-                search({ top: false }), // Enable search functionality
+                search({ top: false }),
                 EditorView.lineWrapping,
                 highlightSelectionMatches(),
                 EditorView.updateListener.of((update) => {
                     if (update.docChanged || update.selectionSet) {
-                        // Defer counting to avoid freezing on every keystroke
                         setTimeout(updateMatchCount, 10); 
                     }
                 })
@@ -397,7 +385,6 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     });
     view.focus();
 
-    // --- State & Handlers ---
     let searchState = {
         caseSensitive: false,
         wholeWord: false
@@ -422,7 +409,6 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
         const head = view.state.selection.main.head;
         let foundCurrent = false;
 
-        // Limit counting to avoid freezing on huge files
         const maxCount = 1000; 
 
         let item = cursor.next();
@@ -437,8 +423,6 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
         }
         
         const displayCount = count >= maxCount ? `${maxCount}+` : `${count}`;
-        
-        // If cursor is after the last match
         if (!foundCurrent && count > 0) currentIdx = 0; 
         
         searchCount.textContent = count > 0 ? `${currentIdx || '?'}/${displayCount}` : '0/0';
@@ -447,7 +431,6 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     const updateSearchEffect = () => {
         const query = searchInput.value;
         if (!query) {
-            // Clear search
             view.dispatch({ effects: setSearchQuery.of(new SearchQuery({ search: "", caseSensitive: searchState.caseSensitive, wholeWord: searchState.wholeWord })) });
             searchCount.textContent = '0/0';
             return;
@@ -463,8 +446,6 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
         view.dispatch({ effects: setSearchQuery.of(searchQuery) });
         updateMatchCount();
     };
-
-    // --- Event Listeners ---
 
     toggleReplaceBtn.onclick = () => {
         const isHidden = replaceRow.style.display === 'none';
@@ -494,7 +475,7 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
             } else {
                 findNext(view);
             }
-            view.focus(); // Ensure editor gets focus so highlight is visible
+            view.focus();
         }
     });
 
@@ -531,8 +512,6 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
         updateSearchEffect();
     });
 
-    // --- Cleanup & Save ---
-
     const cleanup = () => {
         view.destroy();
         contentDiv.innerHTML = originalHtml;
@@ -563,8 +542,8 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | null, path
     let inBlock = false;
 
     for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        if (line.trim().startsWith('```')) {
+        const line = lines[i].trim(); // Use trimmed line for checking start
+        if (line.startsWith('```')) {
             if (!inBlock) {
                 // Starting a block. Check previous lines for metadata.
                 let j = i - 1;
@@ -574,9 +553,10 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | null, path
                 let pathStr = '';
 
                 if (j >= 0) {
-                    const prevLine = lines[j];
-                    const fileMatch = prevLine.match(/^(?:File:|(?:\*\*|__)File:(?:\*\*|__))\s*(.+)$/i);
-                    const diffMatch = prevLine.match(/^(?:Diff:|(?:\*\*|__)Diff:(?:\*\*|__))\s*(.+)$/i);
+                    const prevLine = lines[j].trim();
+                    // improved regex to handle bold/italics and loose spacing
+                    const fileMatch = prevLine.match(/^(?:(?:\*\*|__)?File(?:\*\*|__)?[:\s])\s*(.+)$/i);
+                    const diffMatch = prevLine.match(/^(?:(?:\*\*|__)?Diff(?:\*\*|__)?[:\s])\s*(.+)$/i);
 
                     if (fileMatch) {
                         type = 'file';
@@ -588,11 +568,11 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | null, path
                 }
                 
                 if (pathStr) {
-                    // Remove wrapping backticks and bold/italic markers if they wrap the entire string
                     pathStr = pathStr.replace(/^`|`$/g, '');
-                    // Only remove markdown if it wraps the whole string to avoid corrupting names like __init__
-                    pathStr = pathStr.replace(/^\*\*|\*\*$/g, ''); 
+                    pathStr = pathStr.replace(/^\*\*|\*\*$/g, '');
                     pathStr = pathStr.replace(/^\*|\*$/g, '');
+                    // Remove any trailing punctuation if it looks like a sentence end (unlikely for paths but safe)
+                    pathStr = pathStr.replace(/[.:]+$/, ''); 
                 }
 
                 infos.push({ type, path: pathStr });
@@ -605,22 +585,30 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | null, path
     return infos;
 }
 
-function enhanceCodeBlocks(container: HTMLElement) {
+function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
     const pres = container.querySelectorAll('pre');
     if (pres.length === 0) return;
 
-    // Retrieve original content to accurately parsing file paths
     let originalContentText = '';
-    const messageDiv = container.querySelector('.message') as HTMLElement;
-    if (messageDiv && messageDiv.dataset.originalContent) {
-        try {
-            const raw = JSON.parse(messageDiv.dataset.originalContent);
-            if (Array.isArray(raw)) {
-                originalContentText = raw.map(p => p.type === 'text' ? p.text : '').join('\n');
-            } else {
-                originalContentText = raw;
-            }
-        } catch(e) {}
+    
+    if (contentSource !== undefined) {
+        if (Array.isArray(contentSource)) {
+            originalContentText = contentSource.map(p => p.type === 'text' ? p.text : '').join('\n');
+        } else {
+            originalContentText = String(contentSource);
+        }
+    } else {
+        const messageDiv = container.querySelector('.message') as HTMLElement;
+        if (messageDiv && messageDiv.dataset.originalContent) {
+            try {
+                const raw = JSON.parse(messageDiv.dataset.originalContent);
+                if (Array.isArray(raw)) {
+                    originalContentText = raw.map(p => p.type === 'text' ? p.text : '').join('\n');
+                } else {
+                    originalContentText = raw;
+                }
+            } catch(e) {}
+        }
     }
 
     const codeBlockInfos = extractFilePaths(originalContentText);
@@ -708,7 +696,7 @@ function enhanceCodeBlocks(container: HTMLElement) {
         if (prevEl && (prevEl.tagName === 'P' || prevEl.tagName === 'DIV')) {
              const text = prevEl.textContent || "";
              // Check if this paragraph likely contained the File/Diff marker we just consumed
-             if ((isFileBlock && text.includes('File:')) || (isDiff && text.includes('Diff:'))) {
+             if ((isFileBlock && /File:/i.test(text)) || (isDiff && /Diff:/i.test(text))) {
                  prevEl.style.display = 'none';
              }
         }
@@ -890,7 +878,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
         if (isFinal) {
             enhanceWithCommandButtons(wrapper as HTMLElement);
-            enhanceCodeBlocks(wrapper as HTMLElement);
+            enhanceCodeBlocks(wrapper as HTMLElement, rawContent);
         }
     } catch (e) {
         console.error("Error rendering message content:", e);

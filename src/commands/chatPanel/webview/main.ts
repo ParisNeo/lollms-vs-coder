@@ -268,6 +268,10 @@ function handleExtensionMessage(event: MessageEvent) {
                 break;
 
             case 'updateModels':
+                 if(dom.refreshModelsBtn) {
+                     const icon = dom.refreshModelsBtn.querySelector('.codicon');
+                     if(icon) icon.classList.remove('spin');
+                 }
                  if(dom.modelSelector) {
                     dom.modelSelector.innerHTML = '<option value="">Default Model</option>';
                     if (Array.isArray(message.models)) {
@@ -442,9 +446,10 @@ function initEventHandlers() {
     }
 
     // Add handler for the refresh models button
-    const refreshModelsBtn = document.getElementById('refresh-models-btn');
-    if (refreshModelsBtn) {
-        refreshModelsBtn.addEventListener('click', () => {
+    if (dom.refreshModelsBtn) {
+        dom.refreshModelsBtn.addEventListener('click', () => {
+            const icon = dom.refreshModelsBtn.querySelector('.codicon');
+            if(icon) icon.classList.add('spin');
             vscode.postMessage({ command: 'refreshModels' });
         });
     }

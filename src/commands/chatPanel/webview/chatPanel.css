@@ -499,6 +499,10 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     color: var(--vscode-foreground);
 }
 
+.spin {
+    animation: lollms-rotation 1s linear infinite;
+}
+
 /* --- Switch Toggle --- */
 .switch {
   position: relative;

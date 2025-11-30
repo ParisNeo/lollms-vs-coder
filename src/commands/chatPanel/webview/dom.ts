@@ -52,6 +52,7 @@ export const dom = {
     get agentModeCheckbox() { return document.getElementById('agentModeCheckbox') as HTMLInputElement; },
     get agentModeToggle() { return document.querySelector('.agent-mode-toggle') as HTMLLabelElement; },
     get modelSelector() { return document.getElementById('model-selector') as HTMLSelectElement; },
+    get refreshModelsBtn() { return document.getElementById('refresh-models-btn') as HTMLButtonElement; },
     get contextContainer() { return document.getElementById('context-container') as HTMLDivElement; },
     get attachmentsContainer() { return document.getElementById('attachments-container') as HTMLDivElement; },
     get welcomeMessage() { return document.getElementById('welcome-message') as HTMLDivElement; },

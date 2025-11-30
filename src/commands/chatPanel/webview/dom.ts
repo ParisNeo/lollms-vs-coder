@@ -43,6 +43,7 @@ export const dom = {
     get moreActionsButton() { return document.getElementById('moreActionsButton') as HTMLButtonElement; },
     get moreActionsMenu() { return document.getElementById('more-actions-menu') as HTMLDivElement; },
     get attachButton() { return document.getElementById('attachButton') as HTMLButtonElement; },
+    get importSkillsButton() { return document.getElementById('importSkillsButton') as HTMLButtonElement; }, // New
     get copyFullPromptButton() { return document.getElementById('copyFullPromptButton') as HTMLButtonElement; },
     get executeButton() { return document.getElementById('executeButton') as HTMLButtonElement; },
     get setEntryPointButton() { return document.getElementById('setEntryPointButton') as HTMLButtonElement; },

@@ -70,4 +70,63 @@ export class SkillsManager {
         skills = skills.filter(s => s.id !== skillId);
         await this.saveSkills(skills);
     }
+
+    // New: Export skills to a JSON file
+    public async exportSkills() {
+        const skills = await this.getSkills();
+        if (skills.length === 0) {
+            vscode.window.showInformationMessage("No skills to export.");
+            return;
+        }
+
+        const fileUri = await vscode.window.showSaveDialog({
+            title: "Export Skills",
+            filters: { "JSON": ["json"] },
+            defaultUri: vscode.Uri.file("skills_export.json")
+        });
+
+        if (fileUri) {
+            const content = Buffer.from(JSON.stringify(skills, null, 2), 'utf8');
+            await vscode.workspace.fs.writeFile(fileUri, content);
+            vscode.window.showInformationMessage(`Successfully exported ${skills.length} skills.`);
+        }
+    }
+
+    // New: Import skills from a JSON file
+    public async importSkills() {
+        const fileUris = await vscode.window.showOpenDialog({
+            title: "Import Skills",
+            filters: { "JSON": ["json"] },
+            canSelectMany: false
+        });
+
+        if (!fileUris || fileUris.length === 0) return;
+
+        try {
+            const content = await vscode.workspace.fs.readFile(fileUris[0]);
+            const importedSkills = JSON.parse(content.toString());
+
+            if (!Array.isArray(importedSkills)) {
+                throw new Error("Invalid format: expected an array of skills.");
+            }
+
+            const currentSkills = await this.getSkills();
+            let addedCount = 0;
+
+            for (const skill of importedSkills) {
+                if (skill.name && skill.content) {
+                    // Generate new ID to avoid collisions
+                    skill.id = Date.now().toString() + Math.random().toString(36).substring(2);
+                    skill.timestamp = Date.now();
+                    currentSkills.push(skill);
+                    addedCount++;
+                }
+            }
+
+            await this.saveSkills(currentSkills);
+            vscode.window.showInformationMessage(`Successfully imported ${addedCount} skills.`);
+        } catch (error: any) {
+            vscode.window.showErrorMessage(`Failed to import skills: ${error.message}`);
+        }
+    }
 }

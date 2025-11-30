@@ -508,7 +508,7 @@ export async function activate(context: vscode.ExtensionContext) {
             targetDiscussion = discussionManager.createNewDiscussion();
             await discussionManager.saveDiscussion(targetDiscussion);
             discussionTreeProvider?.refresh();
-            targetPanel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, targetDiscussion.id);
+            targetPanel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, targetDiscussion.id, skillsManager);
             setupChatPanel(targetPanel);
             await targetPanel.loadDiscussion();
         } else {
@@ -520,7 +520,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 return sendSelection(true); // Fallback to creating new
             }
             targetDiscussion = lastDiscussion;
-            targetPanel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, targetDiscussion.id);
+            targetPanel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, targetDiscussion.id, skillsManager);
             setupChatPanel(targetPanel);
             await targetPanel.loadDiscussion();
         }
@@ -572,7 +572,7 @@ Please analyze this output (e.g., error log, script output, or configuration tex
         const discussion = discussionManager.createNewDiscussion(groupId);
         await discussionManager.saveDiscussion(discussion);
         
-        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, discussion.id);
+        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, discussion.id, skillsManager);
         setupChatPanel(panel);
         await panel.loadDiscussion();
         discussionTreeProvider?.refresh();
@@ -608,7 +608,7 @@ Please analyze this output (e.g., error log, script output, or configuration tex
 
         await discussionManager.saveDiscussion(discussion);
         
-        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, discussion.id);
+        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, discussion.id, skillsManager);
         setupChatPanel(panel);
         await panel.loadDiscussion();
         
@@ -621,14 +621,14 @@ Please analyze this output (e.g., error log, script output, or configuration tex
             return;
         }
         const tempId = 'temp-' + Date.now().toString() + Math.random().toString(36).substring(2);
-        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, tempId);
+        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, tempId, skillsManager);
         setupChatPanel(panel);
         await panel.loadDiscussion();
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.switchDiscussion', async (discussionId: string) => {
         if (!discussionManager) return;
-        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, discussionId);
+        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, discussionId, skillsManager);
         setupChatPanel(panel);
         await panel.loadDiscussion();
     }));
@@ -840,7 +840,7 @@ Please analyze this output (e.g., error log, script output, or configuration tex
             await discussionManager.saveDiscussion(discussion);
             discussionTreeProvider?.refresh();
     
-            const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, discussion.id);
+            const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, discussion.id, skillsManager);
             setupChatPanel(panel);
             await panel.loadDiscussion();
     
@@ -1027,6 +1027,16 @@ ${fileContent}
         vscode.window.showInformationMessage(`Skill '${name}' has been learned.`);
     }));
 
+    // NEW COMMANDS
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.importSkills', async () => {
+        await skillsManager.importSkills();
+        skillsTreeProvider.refresh();
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.exportSkills', async () => {
+        await skillsManager.exportSkills();
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.learnSelectionAsSkill', async () => {
         const editor = vscode.window.activeTextEditor;
         if (!editor || editor.selection.isEmpty) {
@@ -1083,7 +1093,7 @@ ${fileContent}
         await discussionManager.saveDiscussion(discussion);
         discussionTreeProvider?.refresh();
     
-        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, discussion.id);
+        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, discussion.id, skillsManager);
         setupChatPanel(panel);
         await panel.loadDiscussion();
         panel.sendMessage(userMessage); // This triggers the API call

@@ -42,6 +42,13 @@ export function initEventHandlers() {
     });
     
     dom.attachButton.addEventListener('click', () => dom.fileInput.click());
+    
+    if (dom.importSkillsButton) {
+        dom.importSkillsButton.addEventListener('click', () => {
+            vscode.postMessage({ command: 'importSkills' });
+        });
+    }
+
     dom.copyFullPromptButton.addEventListener('click', () => {
         const draftMessage = dom.messageInput.value;
         vscode.postMessage({ command: 'copyFullPrompt', draftMessage: draftMessage });

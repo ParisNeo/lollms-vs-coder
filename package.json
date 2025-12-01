@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.29",
+  "version": "0.5.30",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -55,7 +55,10 @@
       {
         "command": "lollms-vs-coder.generateCommitMessage",
         "title": "%command.generateCommitMessage.title%",
-        "icon": "media/lollms-icon.svg"
+        "icon": {
+          "light": "media/lollms-icon-light.svg",
+          "dark": "media/lollms-icon-dark.svg"
+        }
       },
       {
         "command": "lollms-vs-coder.commitWithAIMessage",
@@ -672,8 +675,7 @@
         {
           "command": "lollms-vs-coder.generateCommitMessage",
           "when": "scmProvider == 'git'",
-          "group": "navigation",
-          "icon": "media/lollms-icon.svg"
+          "group": "navigation"
         },
         {
           "command": "lollms-vs-coder.inspectCommit",

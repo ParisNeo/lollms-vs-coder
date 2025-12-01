@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <g fill="none" stroke="#C5C5C5" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Brackets -->
+    <path d="M6 4H4v16h2" />
+    <path d="M18 4h2v16h-2" />
+    <!-- Crown -->
+    <path d="M8 8l2 2 2-3 2 3 2-2" />
+    <path d="M8 12h8" />
+  </g>
+</svg>

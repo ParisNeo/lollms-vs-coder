@@ -44,9 +44,71 @@ export const generateCodeTool: ToolDefinition = {
             return { success: false, output: "Error: 'file_path' parameter is required." };
         }
 
-        const projectContext = await env.contextManager.getContextContent();
-        let userPromptContent = params.user_prompt || `Generate code for ${params.file_path}`;
         const modelOverride = env.agentManager.getCurrentDiscussion()?.model;
+        let projectContextText = "";
+
+        // --- STEP 1: DYNAMIC CONTEXT RETRIEVAL ---
+        // Before generating code, ask the AI which OTHER files in the workspace are relevant.
+        if (env.workspaceRoot) {
+            try {
+                // 1. Get the list of all available files
+                const allFiles = await env.contextManager.getWorkspaceFilePaths();
+                const fileListString = allFiles.join('\n');
+
+                if (allFiles.length > 0) {
+                    // 2. Ask the AI to pick relevant files
+                    const selectionSystemPrompt: ChatMessage = {
+                        role: 'system',
+                        content: `You are a dependency analyzer. You are about to write code for the file: "${params.file_path}".
+Your task is to identify which *other* existing files in the project are crucial to read (e.g., for type definitions, utility functions, or base classes) to ensure the new code is correct and integrates well.
+
+**INSTRUCTIONS:**
+1. Review the provided file list.
+2. Select up to 5 most relevant files that you need to read.
+3. Return ONLY a valid JSON array of strings containing the relative paths.
+4. Do NOT select the target file "${params.file_path}" itself (we will read it separately).
+5. If no other files are needed, return an empty JSON array [].
+
+Example Output:
+["src/types.ts", "src/utils/helpers.ts"]`
+                    };
+
+                    const selectionUserPrompt: ChatMessage = {
+                        role: 'user',
+                        content: `**Target File to Write:** ${params.file_path}\n\n**User Instruction:** ${params.user_prompt}\n\n**Project File List:**\n${fileListString}`
+                    };
+
+                    // We use a separate short call here.
+                    const selectionResponse = await env.lollmsApi.sendChat([selectionSystemPrompt, selectionUserPrompt], null, signal, modelOverride);
+                    
+                    // 3. Parse JSON response
+                    const jsonMatch = selectionResponse.match(/\[.*\]/s);
+                    let selectedFiles: string[] = [];
+                    if (jsonMatch) {
+                        try {
+                            selectedFiles = JSON.parse(jsonMatch[0]);
+                        } catch (e) { console.error("Error parsing dependency selection JSON", e); }
+                    }
+
+                    // 4. Read content of selected files
+                    if (selectedFiles.length > 0) {
+                        const dependencyContext = await env.contextManager.readSpecificFiles(selectedFiles);
+                        if (dependencyContext) {
+                            projectContextText += `\n\n==== DYNAMICALLY LOADED DEPENDENCIES ====\nThe following files were identified as relevant dependencies and loaded for this task:\n\n${dependencyContext}\n=========================================\n`;
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error("Dynamic context retrieval failed:", e);
+                // Continue without dynamic context if this fails
+            }
+        }
+
+        // --- STEP 2: PREPARE MAIN PROMPT ---
+        const baseContext = await env.contextManager.getContextContent();
+        projectContextText += baseContext.text;
+
+        let userPromptContent = params.user_prompt || `Generate code for ${params.file_path}`;
 
         if (env.workspaceRoot) {
             try {
@@ -59,8 +121,10 @@ export const generateCodeTool: ToolDefinition = {
             }
         }
 
-        const coderSystemPrompt = getCoderSystemPrompt(params.system_prompt || '', env.currentPlan.objective, projectContext.text);
+        const coderSystemPrompt = getCoderSystemPrompt(params.system_prompt || '', env.currentPlan.objective, projectContextText);
         const coderUserPrompt: ChatMessage = { role: 'user', content: userPromptContent };
+        
+        // --- STEP 3: GENERATE CODE ---
         const responseText = await env.lollmsApi.sendChat([coderSystemPrompt, coderUserPrompt], null, signal, modelOverride);
 
         const codeBlockRegex = /```(?:[\w-]*)\n([\s\S]+?)\n```/s;

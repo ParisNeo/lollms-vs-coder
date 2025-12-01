@@ -114,6 +114,46 @@ export class ContextManager {
       }
   }
 
+  // NEW: Get all valid file paths in workspace (filtering out exclusions)
+  public async getWorkspaceFilePaths(): Promise<string[]> {
+      if (!this.contextStateProvider) return [];
+      return await this.contextStateProvider.getAllVisibleFiles();
+  }
+
+  // NEW: Read specific files for dynamic context injection
+  public async readSpecificFiles(filePaths: string[]): Promise<string> {
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      if (!workspaceFolder || !filePaths || filePaths.length === 0) return '';
+
+      let content = '';
+      for (const filePath of filePaths) {
+          try {
+              const fullPath = vscode.Uri.joinPath(workspaceFolder.uri, filePath);
+              const stat = await vscode.workspace.fs.stat(fullPath);
+              if (stat.type !== vscode.FileType.File) continue;
+
+              const ext = path.extname(filePath).toLowerCase();
+              if (this.binaryExtensions.has(ext)) continue;
+
+              const fileBytes = await vscode.workspace.fs.readFile(fullPath);
+              const buffer = Buffer.from(fileBytes);
+
+              if (this.isBinary(buffer)) continue;
+
+              const text = buffer.toString('utf8');
+              
+              content += `File: ${filePath}\n`;
+              const language = ext.substring(1) || 'plaintext';
+              content += '```' + language + '\n';
+              content += text;
+              content += '\n```\n\n';
+          } catch (error) {
+              // Skip files that can't be read
+          }
+      }
+      return content;
+  }
+
   async getContextContent(): Promise<ContextResult> {
     const result: ContextResult = { text: '', images: [] };
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');

@@ -168,9 +168,6 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
 
     if (!contentDiv || !actionsDiv) return;
 
-    // Save original HTML to restore on cancel
-    const originalHtml = contentDiv.innerHTML;
-
     const editOverlay = document.createElement('div');
     editOverlay.className = 'edit-overlay';
     
@@ -205,7 +202,7 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     textarea.focus();
 
     cancelBtn.onclick = () => {
-        contentDiv.innerHTML = originalHtml;
+        renderMessageContent(messageId, textContent, true);
         actionsDiv.style.display = '';
     };
 
@@ -218,8 +215,10 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
                 messageId: messageId,
                 newContent: newContent
             });
+            renderMessageContent(messageId, newContent, true);
+        } else {
+            renderMessageContent(messageId, textContent, true);
         }
-        contentDiv.innerHTML = originalHtml;
         actionsDiv.style.display = '';
     };
 }
@@ -229,12 +228,24 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | null, path
     const infos: { type: 'file' | 'diff' | null, path: string }[] = [];
     const lines = content.split('\n');
     let inBlock = false;
+    let fenceLength = 0;
 
     for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim(); // Use trimmed line for checking start
-        if (line.startsWith('```')) {
+        // Do NOT trim() the line before checking start. 
+        // Standard markdown code blocks must start with 0-3 spaces. 
+        // Indented code inside blocks (like logic in this file) will have more indentation.
+        const line = lines[i]; 
+        const match = line.match(/^(\s{0,3})(`{3,})/); // Match fence with optional 0-3 spaces indent
+
+        if (match) {
+            const currentFenceLength = match[2].length;
+
             if (!inBlock) {
-                // Starting a block. Check previous lines for metadata.
+                // Starting a block
+                inBlock = true;
+                fenceLength = currentFenceLength;
+
+                // Check previous lines for metadata
                 let j = i - 1;
                 while (j >= 0 && lines[j].trim() === '') j--; // Skip empty lines
                 
@@ -243,7 +254,6 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | null, path
 
                 if (j >= 0) {
                     const prevLine = lines[j].trim();
-                    // improved regex to handle bold/italics and loose spacing
                     const fileMatch = prevLine.match(/^(?:(?:\*\*|__)?File(?:\*\*|__)?[:\s])\s*(.+)$/i);
                     const diffMatch = prevLine.match(/^(?:(?:\*\*|__)?Diff(?:\*\*|__)?[:\s])\s*(.+)$/i);
 
@@ -260,14 +270,17 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | null, path
                     pathStr = pathStr.replace(/^`|`$/g, '');
                     pathStr = pathStr.replace(/^\*\*|\*\*$/g, '');
                     pathStr = pathStr.replace(/^\*|\*$/g, '');
-                    // Remove any trailing punctuation if it looks like a sentence end (unlikely for paths but safe)
                     pathStr = pathStr.replace(/[.:]+$/, ''); 
                 }
 
                 infos.push({ type, path: pathStr });
-                inBlock = true;
             } else {
-                inBlock = false;
+                // Ending a block?
+                // Closing fence must be at least as long as opening fence
+                if (currentFenceLength >= fenceLength) {
+                    inBlock = false;
+                    fenceLength = 0;
+                }
             }
         }
     }
@@ -301,9 +314,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
     }
 
     const codeBlockInfos = extractFilePaths(originalContentText);
-    
-    // We assume the order of pres in DOM matches the order of code blocks in original text.
-    // Marked.js usually guarantees this order.
     
     pres.forEach((pre, index) => {
         const code = pre.querySelector('code');
@@ -384,7 +394,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
         const prevEl = pre.previousElementSibling as HTMLElement;
         if (prevEl && (prevEl.tagName === 'P' || prevEl.tagName === 'DIV')) {
              const text = prevEl.textContent || "";
-             // Check if this paragraph likely contained the File/Diff marker we just consumed
              if ((isFileBlock && /File/i.test(text)) || (isDiff && /Diff/i.test(text))) {
                  prevEl.style.display = 'none';
              }
@@ -464,7 +473,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
              }
         }
 
-        // --- Safe DOM Insertion ---
         const parent = pre.parentNode;
         if (parent) {
             details.appendChild(summary);
@@ -475,7 +483,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
         if (language === 'mermaid' || language === 'svg') {
             renderDiagram(code, language, details);
         } else {
-            // Re-enabled highlighting as client-side fallback
             Prism.highlightElement(code);
         }
     });
@@ -572,7 +579,6 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             contentDiv.innerHTML = sanitizer.sanitize(marked.parse(processedContent) as string, SANITIZE_CONFIG);
         }
 
-        // Apply enhancements (buttons, etc.) ALWAYS to support real-time rendering
         enhanceWithCommandButtons(wrapper as HTMLElement);
         enhanceCodeBlocks(wrapper as HTMLElement, rawContent);
 
@@ -669,7 +675,6 @@ function addChatMessage(message: any, isFinal: boolean = true) {
     if (role === 'user') {
         avatarDiv.innerHTML = '<span class="codicon codicon-account"></span>';
     } else if (role === 'assistant') {
-        // Empty, handled by CSS background-image
     } else {
         avatarDiv.innerHTML = '<span class="codicon codicon-gear"></span>';
     }
@@ -709,7 +714,6 @@ function addChatMessage(message: any, isFinal: boolean = true) {
         ? (rawContent.find(p => p.type === 'text')?.text || '') 
         : (typeof rawContent === 'string' ? rawContent : '');
 
-    // Buttons for User and Assistant
     if (role !== 'system') {
         if (!isMultipart) {
             actions.appendChild(createButton('', 'codicon-edit', () => startEdit(messageDiv, id, role), 'msg-action-btn'));
@@ -720,7 +724,6 @@ function addChatMessage(message: any, isFinal: boolean = true) {
         
     }
     
-    // Copy button for ALL (User, Assistant, System)
     const copyBtn = createButton('', 'codicon-copy', () => {
         vscode.postMessage({ command: 'copyToClipboard', text: textForClipboard });
         copyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
@@ -733,7 +736,6 @@ function addChatMessage(message: any, isFinal: boolean = true) {
         actions.appendChild(createButton('', 'codicon-book', () => vscode.postMessage({ command: 'requestLog' }), 'msg-action-btn'));
     }
     
-    // Delete button for ALL (User, Assistant, System)
     actions.appendChild(createButton('', 'codicon-trash', () => vscode.postMessage({ command: 'requestDeleteMessage', messageId: id }), 'msg-action-btn'));
 
     messageDiv.appendChild(actions);
@@ -775,20 +777,6 @@ export function updateContext(contextText: string) {
     dom.contextContainer.innerHTML = contextText ? innerHTML : '';
 }
 
-function getStatusIcon(status: string) {
-    switch(status) {
-        case 'pending': return '<span class="codicon codicon-circle-large"></span>';
-        case 'in_progress': return '<span class="codicon codicon-sync spin"></span>';
-        case 'completed': return '<span class="codicon codicon-check"></span>';
-        case 'failed': return '<span class="codicon codicon-error"></span>';
-        default: return '<span class="codicon codicon-circle-slash"></span>';
-    }
-}
-
-function getToolBadge(toolName: string) {
-    return `<span class="tool-badge"><span class="codicon codicon-tools"></span> ${toolName}</span>`;
-}
-
 export function displayPlan(plan: any) {
     if(!dom.chatMessagesContainer) return;
     const existingPlan = dom.chatMessagesContainer.querySelector('.plan-wrapper');
@@ -802,6 +790,20 @@ export function displayPlan(plan: any) {
                 <div class="scratchpad-content">${sanitizer.sanitize(marked.parse(plan.scratchpad) as string, SANITIZE_CONFIG)}</div>
             </details>
         </div>` : '';
+
+    function getStatusIcon(status: string) {
+        switch(status) {
+            case 'pending': return '<span class="codicon codicon-circle-large"></span>';
+            case 'in_progress': return '<span class="codicon codicon-sync spin"></span>';
+            case 'completed': return '<span class="codicon codicon-check"></span>';
+            case 'failed': return '<span class="codicon codicon-error"></span>';
+            default: return '<span class="codicon codicon-circle-slash"></span>';
+        }
+    }
+
+    function getToolBadge(toolName: string) {
+        return `<span class="tool-badge"><span class="codicon codicon-tools"></span> ${toolName}</span>`;
+    }
 
     let tasksHtml = plan.tasks.map((task: any) => {
         let statusClass = `status-${task.status}`;
@@ -853,7 +855,6 @@ export function displayPlan(plan: any) {
             </details>
         </div>`;
 
-    // Add event listeners for retry buttons
     planWrapper.querySelectorAll('.retry-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation(); // Prevent toggling details

@@ -6,7 +6,7 @@ import { SettingsPanel } from './commands/configView';
 import { ContextManager } from './contextManager';
 import { GitIntegration } from './gitIntegration';
 import { applyDiff, getProcessedSystemPrompt, stripThinkingTags } from './utils';
-import { ContextStateProvider, ContextState } from './commands/contextStateProvider';
+import { ContextStateProvider, ContextState, ContextItem } from './commands/contextStateProvider';
 import { FileDecorationProvider } from './commands/fileDecorationProvider';
 import { DiscussionManager, Discussion } from './discussionManager';
 import { DiscussionTreeProvider, DiscussionItem, DiscussionGroupItem } from './commands/discussionTreeProvider';
@@ -35,6 +35,7 @@ import { SkillsManager } from './skillsManager';
 import { CodeGraphManager } from './codeGraphManager';
 import { ActionsTreeProvider } from './commands/actionsTreeProvider';
 import { DebugCodeLensProvider } from './commands/debugCodeLensProvider';
+import { CommitInspectorPanel } from './commands/commitInspectorPanel';
 
 const execAsync = promisify(exec);
 
@@ -732,6 +733,21 @@ Please analyze this output (e.g., error log, script output, or configuration tex
         });
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.cleanEmptyDiscussions', async () => {
+        if (!discussionManager) return;
+        const confirm = await vscode.window.showWarningMessage(
+            vscode.l10n.t('prompt.confirmCleanEmptyDiscussions'),
+            { modal: true },
+            vscode.l10n.t('label.yes')
+        );
+
+        if (confirm === vscode.l10n.t('label.yes')) {
+            const count = await discussionManager.cleanEmptyDiscussions();
+            discussionTreeProvider?.refresh();
+            vscode.window.showInformationMessage(vscode.l10n.t('info.cleanedEmptyDiscussions', count));
+        }
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.createDiscussionGroup', async () => {
         if (!discussionManager) return;
         const title = await vscode.window.showInputBox({ prompt: vscode.l10n.t("prompt.enterGroupTitle") });
@@ -1014,6 +1030,18 @@ ${fileContent}
         CodeExplorerPanel.createOrShow(context.extensionUri, codeGraphManager.getGraphData());
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.inspectCommit', async () => {
+        if (!activeWorkspaceFolder) {
+            vscode.window.showErrorMessage("No active workspace to inspect git commits.");
+            return;
+        }
+        if (!(await gitIntegration.isGitRepo(activeWorkspaceFolder))) {
+            vscode.window.showErrorMessage(vscode.l10n.t('error.notGitRepository'));
+            return;
+        }
+        CommitInspectorPanel.createOrShow(context.extensionUri, gitIntegration, lollmsAPI);
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.addSkill', async () => {
         const name = await vscode.window.showInputBox({ prompt: "Enter a name for the new skill" });
         if (!name) return;
@@ -1063,6 +1091,12 @@ ${fileContent}
             contextStateProvider.setStateForUris(urisToUpdate, state);
         }
     };
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.cycleFileState', async (item: ContextItem) => {
+        if (contextStateProvider && item) {
+            await contextStateProvider.cycleState(item);
+        }
+    }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextIncluded', (primaryUri?: vscode.Uri, selectedUris?: vscode.Uri[]) => {
         handleSetState('included', primaryUri, selectedUris);

@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.28",
+  "version": "0.5.29",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -54,11 +54,17 @@
       },
       {
         "command": "lollms-vs-coder.generateCommitMessage",
-        "title": "%command.generateCommitMessage.title%"
+        "title": "%command.generateCommitMessage.title%",
+        "icon": "media/lollms-icon.svg"
       },
       {
         "command": "lollms-vs-coder.commitWithAIMessage",
         "title": "%command.commitWithAIMessage.title%"
+      },
+      {
+        "command": "lollms-vs-coder.inspectCommit",
+        "title": "Lollms: Inspect Commit History",
+        "icon": "$(telescope)"
       },
       {
         "command": "lollmsApi.recreateClient",
@@ -176,6 +182,11 @@
         "command": "lollms-vs-coder.titleAllDiscussions",
         "title": "%command.titleAllDiscussions.title%",
         "icon": "$(replace-all)"
+      },
+      {
+        "command": "lollms-vs-coder.cleanEmptyDiscussions",
+        "title": "%command.cleanEmptyDiscussions.title%",
+        "icon": "$(trash)"
       },
       {
         "command": "lollms-vs-coder.createDiscussionGroup",
@@ -663,6 +674,12 @@
           "when": "scmProvider == 'git'",
           "group": "navigation",
           "icon": "media/lollms-icon.svg"
+        },
+        {
+          "command": "lollms-vs-coder.inspectCommit",
+          "when": "scmProvider == 'git'",
+          "group": "navigation",
+          "icon": "$(telescope)"
         }
       ],
       "debug/toolbar": [
@@ -707,6 +724,11 @@
           "command": "lollms-vs-coder.titleAllDiscussions",
           "when": "view == lollmsDiscussionsView",
           "group": "navigation@6"
+        },
+        {
+          "command": "lollms-vs-coder.cleanEmptyDiscussions",
+          "when": "view == lollmsDiscussionsView",
+          "group": "navigation@7"
         },
         {
           "command": "lollms-vs-coder.buildCodeGraph",

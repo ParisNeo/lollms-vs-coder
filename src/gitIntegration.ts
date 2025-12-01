@@ -7,6 +7,13 @@ import { getProcessedSystemPrompt, stripThinkingTags } from './utils';
 const execAsync = promisify(exec);
 const MAX_DIFF_LENGTH = 8000; // Set a reasonable character limit for the diff
 
+export interface GitCommit {
+    hash: string;
+    message: string;
+    author: string;
+    date: string;
+}
+
 export class GitIntegration {
   private lollmsAPI: LollmsAPI;
 
@@ -99,5 +106,34 @@ export class GitIntegration {
     } catch (error) {
       vscode.window.showErrorMessage('Git commit failed: ' + (error as Error).message);
     }
+  }
+
+  public async getCommitHistory(folder: vscode.WorkspaceFolder, count: number = 50): Promise<GitCommit[]> {
+    if (!folder) return [];
+    try {
+        const { stdout } = await execAsync(
+            `git log --pretty=format:"%H|%s|%an|%ad" --date=short -n ${count}`, 
+            { cwd: folder.uri.fsPath }
+        );
+        
+        return stdout.split('\n').filter(line => line.trim()).map(line => {
+            const [hash, message, author, date] = line.split('|');
+            return { hash, message, author, date };
+        });
+    } catch (error) {
+        console.error("Failed to fetch commit history:", error);
+        return [];
+    }
+  }
+
+  public async getCommitDiff(folder: vscode.WorkspaceFolder, commitHash: string): Promise<string> {
+      if (!folder || !commitHash) return '';
+      try {
+          const { stdout } = await execAsync(`git show ${commitHash}`, { cwd: folder.uri.fsPath });
+          return stdout;
+      } catch (error) {
+          console.error(`Failed to fetch diff for commit ${commitHash}:`, error);
+          throw error;
+      }
   }
 }

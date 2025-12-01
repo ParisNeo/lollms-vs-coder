@@ -107,6 +107,18 @@ export class DiscussionManager {
             console.error(`Failed to delete discussion ${id}:`, error);
         }
     }
+
+    async cleanEmptyDiscussions(): Promise<number> {
+        const allDiscussions = await this.getAllDiscussions();
+        let deletedCount = 0;
+        for (const discussion of allDiscussions) {
+            if (!discussion.messages || discussion.messages.length === 0) {
+                await this.deleteDiscussion(discussion.id);
+                deletedCount++;
+            }
+        }
+        return deletedCount;
+    }
     
     async getGroups(): Promise<DiscussionGroup[]> {
         try {

@@ -27,12 +27,5 @@
 
 # new stuff:
 
-- 0 - when showing the files list on the top of a discussion, we get an error
-- 1 - system messages need to be deletable
-- 2 - sometimes an ai message can't be deleted.
-- 3 - the tokens cnotext filling progressbar needs to be removed
-- 4 - create a compatible prompt for all platforms to allow using other platforms like chatgpt/gemini etc with vscoder
-- 5 - add a copy prompt button to the ui that instead of sending the prompt to the LLM stores the full context to the clipboard so you can use your favorite tool for generation
-- 6 - when pressing fix with lollms I get No active discussion. Please start a new one.
 - 7 - The AI should never use comments like this :# ... (imports and helper functions remain unchanged) It should instead rewrite that code
 - - 8 - upgrade the prompt to push the LLM to always explain before writing the code

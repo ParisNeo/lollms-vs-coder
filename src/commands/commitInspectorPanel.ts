@@ -66,6 +66,29 @@ export class CommitInspectorPanel {
         }
     }
 
+    private getAnalysisFilePath(folder: vscode.WorkspaceFolder, hash: string): vscode.Uri {
+        return vscode.Uri.joinPath(folder.uri, '.lollms', 'commit_analysis', `${hash}.md`);
+    }
+
+    private async loadAnalysis(folder: vscode.WorkspaceFolder, hash: string): Promise<string | null> {
+        const fileUri = this.getAnalysisFilePath(folder, hash);
+        try {
+            const content = await vscode.workspace.fs.readFile(fileUri);
+            return Buffer.from(content).toString('utf8');
+        } catch {
+            return null;
+        }
+    }
+
+    private async saveAnalysis(folder: vscode.WorkspaceFolder, hash: string, content: string) {
+        const fileUri = this.getAnalysisFilePath(folder, hash);
+        const parent = vscode.Uri.joinPath(fileUri, '..');
+        try {
+            await vscode.workspace.fs.createDirectory(parent);
+        } catch {}
+        await vscode.workspace.fs.writeFile(fileUri, Buffer.from(content, 'utf8'));
+    }
+
     private _setWebviewMessageListener(webview: vscode.Webview) {
         webview.onDidReceiveMessage(async (message) => {
             const folder = vscode.workspace.workspaceFolders?.[0];
@@ -74,6 +97,16 @@ export class CommitInspectorPanel {
             switch (message.command) {
                 case 'refresh':
                     await this.loadCommits();
+                    break;
+                case 'selectCommit':
+                    if (message.hash) {
+                        const existing = await this.loadAnalysis(folder, message.hash);
+                        if (existing) {
+                            this._panel.webview.postMessage({ command: 'showAnalysis', report: existing, hash: message.hash });
+                        } else {
+                            this._panel.webview.postMessage({ command: 'showStartAnalysis', hash: message.hash });
+                        }
+                    }
                     break;
                 case 'analyzeCommit':
                     if (message.hash) {
@@ -115,7 +148,8 @@ ${diff.substring(0, 15000)}
                 { role: 'user', content: userPrompt }
             ]);
 
-            this._panel.webview.postMessage({ command: 'showAnalysis', report: response });
+            await this.saveAnalysis(folder, hash, response);
+            this._panel.webview.postMessage({ command: 'showAnalysis', report: response, hash: hash });
 
         } catch (error: any) {
             this._panel.webview.postMessage({ command: 'error', message: `Analysis failed: ${error.message}` });
@@ -125,12 +159,26 @@ ${diff.substring(0, 15000)}
     }
 
     private _getHtmlForWebview(): string {
+        const markedUri = "https://cdn.jsdelivr.net/npm/marked@5.1.1/marked.min.js";
+        const domPurifyUri = "https://cdn.jsdelivr.net/npm/dompurify@3.0.5/dist/purify.min.js";
+        const prismJsUri = "https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js";
+        const prismCssUri = "https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css";
+
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Commit Inspector</title>
+    <script src="${markedUri}"></script>
+    <script src="${domPurifyUri}"></script>
+    <link href="${prismCssUri}" rel="stylesheet" />
+    <script src="${prismJsUri}"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-diff.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-javascript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-typescript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
     <style>
         body {
             font-family: var(--vscode-font-family);
@@ -174,15 +222,38 @@ ${diff.substring(0, 15000)}
             background-color: var(--vscode-button-background);
             color: var(--vscode-button-foreground);
             border: none; padding: 6px 12px; cursor: pointer;
+            border-radius: 2px;
         }
         button:hover { background-color: var(--vscode-button-hoverBackground); }
+        
+        .action-bar { margin-bottom: 15px; display: flex; gap: 10px; align-items: center; }
         
         #analysis-report {
             margin-top: 20px;
             line-height: 1.6;
         }
-        #loading { display: none; margin-top: 20px; font-style: italic; }
-        pre { background: var(--vscode-textCodeBlock-background); padding: 10px; overflow-x: auto; }
+        #analysis-report h1, #analysis-report h2, #analysis-report h3 { border-bottom: 1px solid var(--vscode-textSeparator-foreground); padding-bottom: 0.3em; }
+        
+        #loading { display: none; margin-top: 20px; font-style: italic; display: flex; align-items: center; gap: 10px; }
+        #placeholder { color: var(--vscode-descriptionForeground); margin-top: 20px; }
+        
+        /* Start Analysis UI */
+        #start-analysis-container { display: none; text-align: center; margin-top: 50px; }
+        #start-analysis-container p { margin-bottom: 20px; color: var(--vscode-descriptionForeground); }
+        
+        pre { border-radius: 4px; padding: 1em; overflow-x: auto; background-color: var(--vscode-textCodeBlock-background); }
+        code { font-family: var(--vscode-editor-font-family); }
+        
+        .spinner {
+            border: 2px solid var(--vscode-button-foreground);
+            border-top: 2px solid transparent;
+            border-radius: 50%;
+            width: 16px;
+            height: 16px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
@@ -197,20 +268,51 @@ ${diff.substring(0, 15000)}
     </div>
     <div class="main-content">
         <h1>Commit Analysis</h1>
-        <div id="placeholder">Select a commit from the sidebar to inspect it.</div>
-        <div id="loading">Analyzing commit... this may take a moment.</div>
-        <div id="analysis-report"></div>
+        <div id="placeholder">Select a commit from the sidebar to view or start an analysis.</div>
+        
+        <div id="loading" style="display:none;">
+            <div class="spinner"></div>
+            <span>Analyzing commit... this may take a moment.</span>
+        </div>
+
+        <div id="start-analysis-container">
+            <p>No analysis found for this commit.</p>
+            <button id="start-analysis-btn">Start Analysis</button>
+        </div>
+
+        <div id="analysis-view" style="display:none;">
+            <div class="action-bar">
+                <button id="regenerate-btn">Regenerate Analysis</button>
+            </div>
+            <div id="analysis-report"></div>
+        </div>
     </div>
 
     <script>
         const vscode = acquireVsCodeApi();
         const listContainer = document.getElementById('commit-list');
         const reportContainer = document.getElementById('analysis-report');
+        const analysisView = document.getElementById('analysis-view');
+        const startAnalysisContainer = document.getElementById('start-analysis-container');
         const loadingDiv = document.getElementById('loading');
         const placeholder = document.getElementById('placeholder');
+        
+        let currentHash = null;
 
         document.getElementById('refresh-btn').addEventListener('click', () => {
             vscode.postMessage({ command: 'refresh' });
+        });
+
+        document.getElementById('start-analysis-btn').addEventListener('click', () => {
+            if(currentHash) {
+                vscode.postMessage({ command: 'analyzeCommit', hash: currentHash });
+            }
+        });
+
+        document.getElementById('regenerate-btn').addEventListener('click', () => {
+            if(currentHash) {
+                vscode.postMessage({ command: 'analyzeCommit', hash: currentHash });
+            }
         });
 
         window.addEventListener('message', event => {
@@ -221,27 +323,35 @@ ${diff.substring(0, 15000)}
                     break;
                 case 'setLoading':
                     if (message.value) {
-                        loadingDiv.style.display = 'block';
-                        reportContainer.innerHTML = '';
+                        loadingDiv.style.display = 'flex';
+                        analysisView.style.display = 'none';
+                        startAnalysisContainer.style.display = 'none';
                         placeholder.style.display = 'none';
                     } else {
                         loadingDiv.style.display = 'none';
                     }
                     break;
                 case 'showAnalysis':
-                    // Simple markdown rendering regex replacement for bold/code
-                    let html = message.report
-                        .replace(/^### (.*$)/gim, '<h3>$1</h3>')
-                        .replace(/^## (.*$)/gim, '<h2>$1</h2>')
-                        .replace(/^# (.*$)/gim, '<h1>$1</h1>')
-                        .replace(/\\*\\*(.*)\\*\\*/gim, '<b>$1</b>')
-                        .replace(/\\n/gim, '<br>')
-                        .replace(/\`\`\`([\\s\\S]*?)\`\`\`/gim, '<pre>$1</pre>');
-                    
+                    currentHash = message.hash;
+                    // Render Markdown
+                    const html = DOMPurify.sanitize(marked.parse(message.report));
                     reportContainer.innerHTML = html;
+                    Prism.highlightAllUnder(reportContainer);
+                    
+                    analysisView.style.display = 'block';
+                    startAnalysisContainer.style.display = 'none';
+                    placeholder.style.display = 'none';
+                    break;
+                case 'showStartAnalysis':
+                    currentHash = message.hash;
+                    startAnalysisContainer.style.display = 'block';
+                    analysisView.style.display = 'none';
+                    placeholder.style.display = 'none';
+                    loadingDiv.style.display = 'none';
                     break;
                 case 'error':
-                    reportContainer.innerHTML = '<span style="color:red">Error: ' + message.message + '</span>';
+                    reportContainer.innerHTML = '<span style="color:var(--vscode-errorForeground)">Error: ' + message.message + '</span>';
+                    analysisView.style.display = 'block';
                     loadingDiv.style.display = 'none';
                     break;
             }
@@ -264,7 +374,8 @@ ${diff.substring(0, 15000)}
                     document.querySelectorAll('.commit-item').forEach(i => i.classList.remove('selected'));
                     el.classList.add('selected');
                     
-                    vscode.postMessage({ command: 'analyzeCommit', hash: commit.hash });
+                    // Instead of analyzing immediately, we select it
+                    vscode.postMessage({ command: 'selectCommit', hash: commit.hash });
                 });
                 listContainer.appendChild(el);
             });

@@ -73,7 +73,6 @@ function createButton(text: string, icon: string, onClick: () => void, className
     btn.onclick = (e) => {
         e.preventDefault();
         e.stopPropagation();
-        console.log(`[Button Click] Action: ${text}`);
         try {
             onClick();
         } catch (err) {
@@ -126,16 +125,28 @@ function renderDiagram(codeElement: HTMLElement, language: string, container: HT
     diagramContainer.className = 'diagram-container';
 
     if (language === 'mermaid') {
+        const id = `mermaid-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+        const text = codeElement.textContent || '';
+        
         try {
-            mermaid.render(`mermaid-${Date.now()}`, codeElement.textContent || '', (svgCode: string) => {
-                diagramContainer.innerHTML = sanitizer.sanitize(svgCode, { USE_PROFILES: { svg: true } });
+            mermaid.render(id, text).then((result: any) => {
+                const svg = typeof result === 'string' ? result : result.svg;
+                diagramContainer.innerHTML = sanitizer.sanitize(svg, { USE_PROFILES: { svg: true } });
+                container.appendChild(diagramContainer);
+                if(codeElement.parentElement) codeElement.parentElement.style.display = 'none';
+            }).catch((e: any) => {
+                console.error("Mermaid render error:", e);
+                const errorDiv = document.createElement('div');
+                errorDiv.style.color = 'var(--vscode-errorForeground)';
+                errorDiv.innerText = "Error rendering Mermaid diagram: " + e.message;
+                diagramContainer.appendChild(errorDiv);
+                if(codeElement.parentElement) codeElement.parentElement.style.display = 'block';
                 container.appendChild(diagramContainer);
             });
-            if(codeElement.parentElement) codeElement.parentElement.style.display = 'none';
-        } catch (e) {
-            console.error("Mermaid render error:", e);
-            diagramContainer.innerText = "Error rendering Mermaid diagram.";
-            container.appendChild(diagramContainer);
+        } catch (e: any) {
+             console.error("Mermaid sync error:", e);
+             diagramContainer.innerText = "Error rendering Mermaid diagram.";
+             container.appendChild(diagramContainer);
         }
     } else if (language === 'svg') {
         diagramContainer.innerHTML = sanitizer.sanitize(codeElement.textContent || '', { USE_PROFILES: { svg: true } });
@@ -174,7 +185,6 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     const textarea = document.createElement('textarea');
     textarea.className = 'edit-textarea';
     textarea.value = textContent;
-    // Auto-resize
     textarea.style.height = '200px';
     textarea.style.minHeight = '100px';
     
@@ -223,7 +233,6 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     };
 }
 
-// Helper to extract file paths from raw markdown content
 function extractFilePaths(content: string): { type: 'file' | 'diff' | null, path: string }[] {
     const infos: { type: 'file' | 'diff' | null, path: string }[] = [];
     const lines = content.split('\n');
@@ -231,23 +240,18 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | null, path
     let fenceLength = 0;
 
     for (let i = 0; i < lines.length; i++) {
-        // Do NOT trim() the line before checking start. 
-        // Standard markdown code blocks must start with 0-3 spaces. 
-        // Indented code inside blocks (like logic in this file) will have more indentation.
         const line = lines[i]; 
-        const match = line.match(/^(\s{0,3})(`{3,})/); // Match fence with optional 0-3 spaces indent
+        const match = line.match(/^(\s{0,3})(`{3,})/); 
 
         if (match) {
             const currentFenceLength = match[2].length;
 
             if (!inBlock) {
-                // Starting a block
                 inBlock = true;
                 fenceLength = currentFenceLength;
 
-                // Check previous lines for metadata
                 let j = i - 1;
-                while (j >= 0 && lines[j].trim() === '') j--; // Skip empty lines
+                while (j >= 0 && lines[j].trim() === '') j--; 
                 
                 let type: 'file' | 'diff' | null = null;
                 let pathStr = '';
@@ -275,8 +279,6 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | null, path
 
                 infos.push({ type, path: pathStr });
             } else {
-                // Ending a block?
-                // Closing fence must be at least as long as opening fence
                 if (currentFenceLength >= fenceLength) {
                     inBlock = false;
                     fenceLength = 0;
@@ -324,6 +326,9 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
         const language = langMatch ? langMatch[1] : 'plaintext';
         const codeText = code.innerText;
 
+        const blockId = `code-block-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        code.id = blockId;
+
         const details = document.createElement('details');
         details.className = 'code-collapsible';
         details.open = true;
@@ -333,7 +338,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
         const langLabel = document.createElement('span');
         langLabel.className = 'summary-lang-label';
         
-        // Initial label
         langLabel.textContent = language;
 
         const actions = document.createElement('div');
@@ -341,7 +345,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
         summary.appendChild(langLabel);
         summary.appendChild(actions);
 
-        // --- Standard Buttons ---
         const copyBtn = createButton('Copy', 'codicon-copy', () => {
             vscode.postMessage({ command: 'copyToClipboard', text: codeText });
             const icon = copyBtn.querySelector('.codicon');
@@ -362,7 +365,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             actions.appendChild(inspectBtn);
         }
 
-        // --- Special Logic Detection using extracted infos ---
         const info = codeBlockInfos[index];
         let filePath = '';
         let isFileBlock = false;
@@ -378,19 +380,17 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
                 isDiff = true;
             }
         } else {
-            // Fallback to auto-detection from diff content if no header found
             if (language === 'diff') {
                 const diffHeaderMatch = codeText.match(/---\s+a\/(.+)\n\+\+\+\s+b\/(.+)/);
                 if (diffHeaderMatch && diffHeaderMatch[1]) {
                     diffFilePath = diffHeaderMatch[1].trim();
                     isDiff = true;
                 } else {
-                    isDiff = true; // Still a diff, but unknown file
+                    isDiff = true; 
                 }
             }
         }
 
-        // Hide the "File: ..." paragraph from the DOM if we handled it
         const prevEl = pre.previousElementSibling as HTMLElement;
         if (prevEl && (prevEl.tagName === 'P' || prevEl.tagName === 'DIV')) {
              const text = prevEl.textContent || "";
@@ -398,8 +398,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
                  prevEl.style.display = 'none';
              }
         }
-
-        // --- Add Contextual Buttons ---
 
         if (isFileBlock && filePath) {
             langLabel.textContent = `${language} : ${filePath}`;
@@ -444,9 +442,19 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
 
         } else if (language === 'select') {
             const selectBtn = createButton('Add to Context', 'codicon-add', () => {
+                // Change button state to loading
+                selectBtn.innerHTML = `<span class="codicon codicon-sync spin"></span> Adding...`;
+                selectBtn.disabled = true;
+                
                 const files = codeText.trim().split('\n').map(f => f.trim()).filter(f => f);
-                vscode.postMessage({ command: 'addFilesToContext', files });
+                vscode.postMessage({ 
+                    command: 'addFilesToContext', 
+                    files: files,
+                    blockId: blockId 
+                });
             });
+            selectBtn.id = `btn-${blockId}`;
+            
             if (actions.firstChild) actions.insertBefore(selectBtn, actions.firstChild);
             else actions.appendChild(selectBtn);
 
@@ -873,7 +881,6 @@ export function insertNewMessageEditor(role: 'user' | 'assistant') {
 
     const editorWrapper = document.createElement('div');
     editorWrapper.className = 'message-wrapper new-message-editor-wrapper';
-    // Updated structure for new layout
     editorWrapper.innerHTML = `
         <div class="message ${role}-message" style="border: 1px dashed var(--vscode-focusBorder);">
             <div class="message-avatar">

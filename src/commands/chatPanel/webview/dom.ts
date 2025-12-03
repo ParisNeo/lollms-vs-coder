@@ -1,3 +1,5 @@
+import { EditorView } from "@codemirror/view";
+
 // Define the API interface
 export interface VsCodeApi {
     postMessage(message: any): void;
@@ -27,6 +29,7 @@ export const state: {
     currentMatchIndex: number,
     isInspectorEnabled: boolean,
     streamingMessages: { [key: string]: { buffer: string, timer: any } },
+    editor?: EditorView
 } = {
     searchMatches: [],
     currentMatchIndex: -1,
@@ -37,13 +40,13 @@ export const state: {
 export const dom = {
     get messagesDiv() { return document.getElementById('messages') as HTMLDivElement; },
     get chatMessagesContainer() { return document.getElementById('chat-messages-container') as HTMLDivElement; },
-    get messageInput() { return document.getElementById('messageInput') as HTMLTextAreaElement; },
+    get messageInputContainer() { return document.getElementById('messageInputContainer') as HTMLDivElement; },
     get sendButton() { return document.getElementById('sendButton') as HTMLButtonElement; },
     get stopButton() { return document.getElementById('stopButton') as HTMLButtonElement; },
     get moreActionsButton() { return document.getElementById('moreActionsButton') as HTMLButtonElement; },
     get moreActionsMenu() { return document.getElementById('more-actions-menu') as HTMLDivElement; },
     get attachButton() { return document.getElementById('attachButton') as HTMLButtonElement; },
-    get importSkillsButton() { return document.getElementById('importSkillsButton') as HTMLButtonElement; }, // New
+    get importSkillsButton() { return document.getElementById('importSkillsButton') as HTMLButtonElement; },
     get copyFullPromptButton() { return document.getElementById('copyFullPromptButton') as HTMLButtonElement; },
     get executeButton() { return document.getElementById('executeButton') as HTMLButtonElement; },
     get setEntryPointButton() { return document.getElementById('setEntryPointButton') as HTMLButtonElement; },

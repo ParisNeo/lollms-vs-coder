@@ -3,6 +3,9 @@ import * as path from 'path';
 import { ContextStateProvider } from './commands/contextStateProvider';
 import Jimp = require('jimp');
 import { LollmsAPI } from './lollmsAPI';
+import * as mammoth from 'mammoth';
+// Use require for pdf-parse to avoid some bundling issues with esbuild if not using default import
+const pdfParse = require('pdf-parse');
 
 export interface ContextResult {
   text: string;
@@ -114,13 +117,11 @@ export class ContextManager {
       }
   }
 
-  // NEW: Get all valid file paths in workspace (filtering out exclusions)
   public async getWorkspaceFilePaths(): Promise<string[]> {
       if (!this.contextStateProvider) return [];
       return await this.contextStateProvider.getAllVisibleFiles();
   }
 
-  // NEW: Read specific files for dynamic context injection
   public async readSpecificFiles(filePaths: string[]): Promise<string> {
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
       if (!workspaceFolder || !filePaths || filePaths.length === 0) return '';
@@ -154,6 +155,74 @@ export class ContextManager {
       return content;
   }
 
+  private async parsePdfLocal(buffer: Buffer): Promise<string> {
+      try {
+          const data = await pdfParse(buffer);
+          return data.text;
+      } catch (e) {
+          return `[Local PDF Parse Failed: ${e}]`;
+      }
+  }
+
+  private async parseDocxLocal(buffer: Buffer): Promise<string> {
+      try {
+          const result = await mammoth.extractRawText({ buffer: buffer });
+          return result.value;
+      } catch (e) {
+          return `[Local DOCX Parse Failed: ${e}]`;
+      }
+  }
+
+  /**
+   * Processes a file content buffer/base64 based on its extension.
+   * Handles text extraction for PDFs, DOCX, etc., and checks for binary content.
+   */
+  public async processFile(fileName: string, base64Data: string): Promise<string> {
+      const ext = path.extname(fileName).toLowerCase();
+      const buffer = Buffer.from(base64Data, 'base64');
+
+      if (this.binaryExtensions.has(ext)) {
+          return `(Binary file ${fileName} content excluded)`;
+      }
+
+      if (this.docExtensions.has(ext)) {
+          try {
+              return await this.lollmsAPI.extractText(base64Data, fileName);
+          } catch (apiError: any) {
+              // Fallback mechanism
+              if (ext === '.pdf') {
+                  return await this.parsePdfLocal(buffer);
+              } else if (ext === '.docx') {
+                  return await this.parseDocxLocal(buffer);
+              }
+              return `⚠️ **Error processing document:** ${(apiError as Error).message}`;
+          }
+      } else if (ext === '.ipynb') {
+          try {
+              const notebookJson = JSON.parse(buffer.toString('utf8'));
+              let fileContent = '';
+              if (notebookJson.cells && Array.isArray(notebookJson.cells)) {
+                  notebookJson.cells.forEach((cell: any, index: number) => {
+                      const source = Array.isArray(cell.source) ? cell.source.join('') : '';
+                      if (cell.cell_type === 'code') {
+                          fileContent += `--- Cell ${index + 1} (code) ---\n\`\`\`python\n${source}\n\`\`\`\n\n`;
+                      } else if (cell.cell_type === 'markdown') {
+                          fileContent += `--- Cell ${index + 1} (markdown) ---\n${source}\n\n`;
+                      }
+                  });
+              }
+              return fileContent;
+          } catch (e: any) {
+              return `⚠️ **Error parsing Jupyter Notebook:** ${e.message}`;
+          }
+      } else {
+          if (this.isBinary(buffer)) {
+              return `(Binary content detected in ${fileName} and excluded)`;
+          }
+          return buffer.toString('utf8');
+      }
+  }
+
   async getContextContent(): Promise<ContextResult> {
     const result: ContextResult = { text: '', images: [] };
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
@@ -176,7 +245,6 @@ export class ContextManager {
     content += await this.generateProjectTree();
     content += '\n';
 
-    // contextFiles is now array of { path: string, state: ContextState }
     const includedFiles = contextFiles.filter(f => !f.path.endsWith(path.sep));
     
     if (includedFiles.length > 0) {
@@ -194,7 +262,6 @@ export class ContextManager {
 
           const ext = path.extname(filePath).toLowerCase();
 
-          // 1. Check extension list first
           if (this.binaryExtensions.has(ext)) {
               content += `File: ${filePath}\n(Binary file content excluded)\n\n`;
               continue;
@@ -222,35 +289,46 @@ export class ContextManager {
             result.images.push({ filePath, data: base64Data });
             content += `### \`${filePath}\` (Image Attached)\n\n`;
             continue; 
-          } else if (this.docExtensions.has(ext)) {
-            try {
-                fileContent = await this.lollmsAPI.extractText(buffer.toString('base64'), filePath);
-            } catch (e: any) {
-                fileContent = `⚠️ **Error processing document on backend:** ${e.message}`;
-            }
-          } else if (ext === '.ipynb') {
-            try {
-              const notebookJson = JSON.parse(buffer.toString('utf8'));
-              if (notebookJson.cells && Array.isArray(notebookJson.cells)) {
-                  notebookJson.cells.forEach((cell: any, index: number) => {
-                      const source = Array.isArray(cell.source) ? cell.source.join('') : '';
-                      if (cell.cell_type === 'code') {
-                          fileContent += `--- Cell ${index + 1} (code) ---\n\`\`\`python\n${source}\n\`\`\`\n\n`;
-                      } else if (cell.cell_type === 'markdown') {
-                          fileContent += `--- Cell ${index + 1} (markdown) ---\n${source}\n\n`;
-                      }
-                  });
-              }
-            } catch (e: any) {
-                fileContent = `⚠️ **Error parsing Jupyter Notebook:** ${e.message}`;
-            }
           } else {
-            // 2. Fallback check for binary content content
-            if (this.isBinary(buffer)) {
-                content += `File: ${filePath}\n(Binary content detected and excluded)\n\n`;
-                continue;
+            // Reuse the processFile logic implicitly or reimplement to keep the flow
+            // Since we already have the buffer, avoiding base64 conversion back and forth unless necessary
+            // For now, let's keep the specific logic here to avoid re-reading
+            
+            if (this.docExtensions.has(ext)) {
+                try {
+                    fileContent = await this.lollmsAPI.extractText(buffer.toString('base64'), filePath);
+                } catch (apiError: any) {
+                    if (ext === '.pdf') {
+                        fileContent = await this.parsePdfLocal(buffer);
+                    } else if (ext === '.docx') {
+                        fileContent = await this.parseDocxLocal(buffer);
+                    } else {
+                        fileContent = `⚠️ **Error processing document on backend:** ${apiError.message}`;
+                    }
+                }
+            } else if (ext === '.ipynb') {
+                try {
+                    const notebookJson = JSON.parse(buffer.toString('utf8'));
+                    if (notebookJson.cells && Array.isArray(notebookJson.cells)) {
+                        notebookJson.cells.forEach((cell: any, index: number) => {
+                            const source = Array.isArray(cell.source) ? cell.source.join('') : '';
+                            if (cell.cell_type === 'code') {
+                                fileContent += `--- Cell ${index + 1} (code) ---\n\`\`\`python\n${source}\n\`\`\`\n\n`;
+                            } else if (cell.cell_type === 'markdown') {
+                                fileContent += `--- Cell ${index + 1} (markdown) ---\n${source}\n\n`;
+                            }
+                        });
+                    }
+                } catch (e: any) {
+                    fileContent = `⚠️ **Error parsing Jupyter Notebook:** ${e.message}`;
+                }
+            } else {
+                if (this.isBinary(buffer)) {
+                    content += `File: ${filePath}\n(Binary content detected and excluded)\n\n`;
+                    continue;
+                }
+                fileContent = buffer.toString('utf8');
             }
-            fileContent = buffer.toString('utf8');
           }
           
           content += `File: ${filePath}\n`;
@@ -272,7 +350,6 @@ export class ContextManager {
     return result;
   }
   
-  // ... rest of file
   public async getAutoSelectionForContext(userPrompt: string): Promise<string[] | null> {
     if (!this.contextStateProvider) {
         vscode.window.showErrorMessage("Context State Provider not available.");

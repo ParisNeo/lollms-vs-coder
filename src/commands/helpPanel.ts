@@ -80,6 +80,9 @@ export class HelpPanel {
         summary:hover { background-color: var(--vscode-list-hoverBackground); }
         .details-content { padding: 15px; border-top: 1px solid var(--vscode-widget-border); }
         .tool-tag { display: inline-block; background-color: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 2px 6px; border-radius: 4px; font-size: 0.8em; margin-right: 5px; }
+        .step-list { counter-reset: step; list-style: none; padding: 0; }
+        .step-list li { position: relative; padding-left: 35px; margin-bottom: 1em; }
+        .step-list li:before { content: counter(step); counter-increment: step; position: absolute; left: 0; top: 0; width: 25px; height: 25px; background-color: var(--vscode-button-background); color: var(--vscode-button-foreground); border-radius: 50%; text-align: center; line-height: 25px; font-weight: bold; font-size: 0.9em; }
     </style>
 </head>
 <body>
@@ -125,7 +128,27 @@ export class HelpPanel {
                     <li><span class="tool-tag">search_web</span> Queries Google/Stack Overflow for the error message.</li>
                     <li><span class="tool-tag">execute_command</span> Applies the suggested fix (e.g., installing a missing dependency).</li>
                 </ul>
-                <p><em>Note: Requires configuring Google Custom Search API keys in settings.</em></p>
+                
+                <h4>How to Configure Google Search</h4>
+                <p>To use the <code>search_web</code> tool, you must configure your Google Custom Search credentials in the extension settings.</p>
+                <ol class="step-list">
+                    <li>
+                        <strong>Get the API Key:</strong>
+                        <br>Go to the <a href="https://console.cloud.google.com/apis/credentials">Google Cloud Console Credentials</a> page. Create a new Project (if needed), then click "Create Credentials" -> "API Key". Copy the key.
+                    </li>
+                    <li>
+                        <strong>Get the Search Engine ID (CX):</strong>
+                        <br>Go to the <a href="https://programmablesearchengine.google.com/controlpanel/all">Programmable Search Engine</a> control panel. Create a new search engine (you can set "Sites to search" to <code>www.google.com</code> for a broad search). Once created, look for the "Search Engine ID" (often labeled as CX) in the Overview page.
+                    </li>
+                    <li>
+                        <strong>Enable the API:</strong>
+                        <br>In the Google Cloud Console, search for "Custom Search API" and enable it for your project.
+                    </li>
+                    <li>
+                        <strong>Configure Extension:</strong>
+                        <br>Open the Lollms settings (Click the gear icon in the "Lollms" sidebar). Enter the API Key and Search Engine ID in the "Tools & Search" section.
+                    </li>
+                </ol>
             </div>
         </details>
 
@@ -217,11 +240,27 @@ export class HelpPanel {
             <li><strong>File Ops:</strong> <code>read_file</code>, <code>list_files</code>, <code>generate_code</code> (creates/overwrites).</li>
             <li><strong>Execution:</strong> <code>execute_command</code> (shell), <code>execute_python_script</code>.</li>
             <li><strong>Python:</strong> <code>create_python_environment</code>, <code>install_python_dependencies</code>.</li>
-            <li><strong>Context:</strong> <code>auto_select_context_files</code> (finds relevant files for a task), <code>deselect_context_files</code>.</li>
-            <li><strong>Misc:</strong> <code>request_user_input</code> (ask you for clarification), <code>get_environment_details</code>.</li>
+            <li><strong>Context:</strong> <code>auto_select_context_files</code>, <code>deselect_context_files</code>.</li>
+            <li><strong>Visualization:</strong> <code>read_code_graph</code> (Agent reads project structure graph).</li>
+            <li><strong>Misc:</strong> <code>request_user_input</code>, <code>get_environment_details</code>.</li>
         </ul>
 
         <h2><span class="codicon codicon-tools"></span>Detailed Feature Guide</h2>
+
+        <h3><span class="codicon codicon-graph"></span> Code Explorer (Code Graph)</h3>
+        <p>The <strong>Code Explorer</strong> view provides interactive visualizations of your codebase.</p>
+        <ul>
+            <li><strong>Visualizations:</strong>
+                <ul>
+                    <li><strong>Call Graph:</strong> Visualizes function calls and symbol relationships.</li>
+                    <li><strong>Import Graph:</strong> Shows file dependencies and import hierarchies.</li>
+                    <li><strong>Class Diagram:</strong> Displays classes, methods, and their relationships.</li>
+                </ul>
+            </li>
+            <li><strong>Interaction:</strong> Click on nodes to jump directly to the code definition. Hover to see docstrings and types.</li>
+            <li><strong>AI Integration:</strong> Use the <strong>"Add View to Chat"</strong> button to send the current graph to the AI context. This allows the AI to understand the high-level architecture without reading every file.</li>
+            <li><strong>Persistence:</strong> The graph is saved to <code>.lollms/code_graph.json</code> for quick loading. Click <strong>"Recreate Graph"</strong> or <strong>"Build Graph"</strong> to refresh it after code changes.</li>
+        </ul>
 
         <h3>Interacting with AI Responses</h3>
         <ul>

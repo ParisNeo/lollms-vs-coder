@@ -107,22 +107,28 @@ export function getProcessedSystemPrompt(promptType: 'chat' | 'agent' | 'inspect
 
             const fullFileInstruction = `**CRITICAL: FULL FILE MODE - NO PLACEHOLDERS ALLOWED**
 To create or overwrite a file, use EXACTLY this format - ANY DEVIATION BREAKS THE EXTENSION:
-- Header (plain text, NO code block):
+
+1.  **Explanation**: Start by explaining what you are going to do.
+2.  **File Header**: On a new line, write \`File: path/to/the/file.ext\` (Plain text, NOT inside a code block, NO headings like # or ###).
+3.  **Code Block**: Immediately follow with a markdown code block containing the **COMPLETE** file content.
+
+FORMAT:
+Explanation of changes...
 
 File: path/to/the/file.ext
-- Immediately after header: Opening of markdown code block with language, e.g.,:
-\`\`\`typescript
-- Then: **COMPLETE** file content - NO placeholders like "// ...", NO simplifications, NO omissions. This REPLACES the entire file.
-- Close: 
+\`\`\`language
+// Full, complete code here - every line, import, function, export.
+// NO placeholders like "// ...", NO simplifications, NO omissions.
+// This REPLACES the entire file content.
 \`\`\`
 
-EXAMPLE:
-
-File: src/main.ts
-\`\`\`typescript
-// Full, complete code here - every line, import, function, export.
-export function example() { /* all details */ }
-\`\`\``;
+**DO NOT** do this:
+❌ ### File: path/to/file (No headings)
+❌ \`File: path/to/file\` (No inline code)
+❌ \`\`\`
+File: path/to/file
+code...
+\`\`\` (Header must be outside code block)`;
 
             const diffInstruction = `**CRITICAL: DIFF MODE - PRECISE PATCHES ONLY**
 To patch a file, use EXACTLY this format - MUST be valid unified diff:

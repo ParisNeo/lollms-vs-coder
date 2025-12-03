@@ -353,11 +353,10 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     }
 
     public async getAllVisibleFiles(): Promise<string[]> {
-        const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
+        // Use the configured workspaceRoot directly instead of finding it in workspaceFolders array by path string equality
+        // This avoids issues with path normalization/case sensitivity
+        const rootUri = vscode.Uri.file(this.workspaceRoot);
         const visibleFiles: string[] = [];
-    
-        const workspaceFolder = vscode.workspace.workspaceFolders?.find(f => f.uri.fsPath === this.workspaceRoot);
-        if (!workspaceFolder) return [];
     
         const processDirectory = async (dirUri: vscode.Uri) => {
             const relativePath = this.normalize(vscode.workspace.asRelativePath(dirUri, false));
@@ -402,7 +401,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             }
         };
     
-        await processDirectory(workspaceFolder.uri);
+        await processDirectory(rootUri);
         return visibleFiles;
     }
     

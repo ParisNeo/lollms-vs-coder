@@ -1,16 +1,18 @@
 import * as vscode from 'vscode';
-import { CodeGraph } from '../codeGraphManager';
+import { CodeGraph, CodeGraphManager } from '../codeGraphManager';
+import { ChatPanel } from './chatPanel/chatPanel';
 
 export class CodeExplorerPanel {
     public static currentPanel: CodeExplorerPanel | undefined;
     private readonly _panel: vscode.WebviewPanel;
     private readonly _extensionUri: vscode.Uri;
+    private _codeGraphManager: CodeGraphManager;
 
-    public static createOrShow(extensionUri: vscode.Uri, graphData: CodeGraph) {
+    public static createOrShow(extensionUri: vscode.Uri, codeGraphManager: CodeGraphManager) {
         const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
 
         if (CodeExplorerPanel.currentPanel) {
-            CodeExplorerPanel.currentPanel.updateGraph(graphData);
+            CodeExplorerPanel.currentPanel.updateGraph();
             CodeExplorerPanel.currentPanel._panel.reveal(column);
             return;
         }
@@ -21,43 +23,74 @@ export class CodeExplorerPanel {
             column || vscode.ViewColumn.One,
             {
                 enableScripts: true,
-                localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'media')]
+                localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'media')],
+                retainContextWhenHidden: true
             }
         );
 
-        CodeExplorerPanel.currentPanel = new CodeExplorerPanel(panel, extensionUri, graphData);
+        CodeExplorerPanel.currentPanel = new CodeExplorerPanel(panel, extensionUri, codeGraphManager);
     }
 
-    private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, initialGraphData: CodeGraph) {
+    private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, codeGraphManager: CodeGraphManager) {
         this._panel = panel;
         this._extensionUri = extensionUri;
+        this._codeGraphManager = codeGraphManager;
 
-        this._panel.webview.html = this._getHtmlForWebview(initialGraphData);
+        this._panel.webview.html = this._getHtmlForWebview();
         this._panel.onDidDispose(() => this.dispose(), null, []);
         this._setWebviewMessageListener();
+        
+        // Send initial data
+        this.updateGraph();
     }
     
     private _setWebviewMessageListener() {
         this._panel.webview.onDidReceiveMessage(async message => {
-            if (message.command === 'openFile' && message.filePath) {
-                const workspaceFolders = vscode.workspace.workspaceFolders;
-                if (workspaceFolders) {
-                    const fileUri = vscode.Uri.joinPath(workspaceFolders[0].uri, message.filePath);
-                    try {
-                        const document = await vscode.workspace.openTextDocument(fileUri);
-                        await vscode.window.showTextDocument(document, {
-                            selection: new vscode.Range(message.line, 0, message.line, 0)
-                        });
-                    } catch (e) {
-                        vscode.window.showErrorMessage(`Could not open file: ${message.filePath}`);
+            switch (message.command) {
+                case 'openFile':
+                    if (message.filePath) {
+                        const workspaceFolders = vscode.workspace.workspaceFolders;
+                        if (workspaceFolders) {
+                            const fileUri = vscode.Uri.joinPath(workspaceFolders[0].uri, message.filePath);
+                            try {
+                                const document = await vscode.workspace.openTextDocument(fileUri);
+                                await vscode.window.showTextDocument(document, {
+                                    selection: new vscode.Range(message.line, 0, message.line, 0)
+                                });
+                            } catch (e) {
+                                vscode.window.showErrorMessage(`Could not open file: ${message.filePath}`);
+                            }
+                        }
                     }
-                }
+                    break;
+                case 'rebuildGraph':
+                    await this._codeGraphManager.buildGraph();
+                    this.updateGraph();
+                    vscode.window.showInformationMessage("Code graph rebuilt successfully.");
+                    break;
+                case 'addToContext':
+                    const type = message.graphType; // 'import_graph' | 'class_diagram' | 'call_graph'
+                    const mermaid = this._codeGraphManager.generateMermaid(type);
+                    if (ChatPanel.currentPanel) {
+                        const msg = {
+                            role: 'user',
+                            content: `Here is the ${type.replace('_', ' ')} of the project:\n\`\`\`mermaid\n${mermaid}\n\`\`\``
+                        };
+                        // @ts-ignore
+                        ChatPanel.currentPanel.addMessageToDiscussion(msg);
+                        vscode.window.showInformationMessage(`${type} added to chat context.`);
+                    } else {
+                        vscode.window.showErrorMessage("No active chat panel to add context to.");
+                    }
+                    break;
             }
         });
     }
 
-    public updateGraph(graphData: CodeGraph) {
-        this._panel.webview.postMessage({ command: 'updateGraph', data: graphData });
+    public updateGraph() {
+        const graphData = this._codeGraphManager.getGraphData();
+        const buildState = this._codeGraphManager.getBuildState();
+        this._panel.webview.postMessage({ command: 'updateGraph', data: graphData, state: buildState });
     }
 
     public dispose() {
@@ -65,15 +98,13 @@ export class CodeExplorerPanel {
         this._panel.dispose();
     }
 
-    private _getHtmlForWebview(graphData: CodeGraph): string {
-        
-        // Pass translated strings to the webview
+    private _getHtmlForWebview(): string {
         const l10n = {
             viewLabel: vscode.l10n.t('view.codeGraph.viewLabel', "View:"),
             callGraph: vscode.l10n.t('view.codeGraph.callGraph', "Call Graph"),
             importGraph: vscode.l10n.t('view.codeGraph.importGraph', "Import Graph"),
             classDiagram: vscode.l10n.t('view.codeGraph.classDiagram', "Class Diagram"),
-            emptyState: vscode.l10n.t('view.codeGraph.emptyState', "No code structure found or graph has not been built yet. Click the diagram icon in the 'Discussions' view sidebar to build the graph."),
+            emptyState: vscode.l10n.t('view.codeGraph.emptyState', "Graph is empty."),
             tooltipType: vscode.l10n.t('tooltip.node.type', "Type:")
         };
 
@@ -85,69 +116,148 @@ export class CodeExplorerPanel {
     <title>Code Structure Graph</title>
     <script src="https://unpkg.com/cytoscape/dist/cytoscape.min.js"></script>
     <style>
+        :root {
+            --bg-color: var(--vscode-editor-background);
+            --fg-color: var(--vscode-editor-foreground);
+            --border-color: var(--vscode-panel-border);
+            --toolbar-bg: var(--vscode-editorWidget-background);
+            --toolbar-border: var(--vscode-widget-border);
+            --accent-color: var(--vscode-textLink-foreground);
+            --node-bg: var(--vscode-editor-background);
+            --node-border: var(--vscode-widget-border);
+            --node-file-bg: var(--vscode-sideBar-background);
+            --node-file-border: var(--vscode-sideBar-border);
+        }
         body, html {
             font-family: var(--vscode-font-family);
-            background-color: var(--vscode-editor-background);
-            color: var(--vscode-editor-foreground);
+            background-color: var(--bg-color);
+            color: var(--fg-color);
             margin: 0;
             padding: 0;
             height: 100%;
             width: 100%;
             overflow: hidden;
         }
-        #cy { width: 100%; height: 100%; display: block; }
-        .empty-state { text-align: center; margin-top: 3em; color: var(--vscode-descriptionForeground); }
+        #cy { width: 100%; height: 100%; display: block; background-color: var(--bg-color); }
+        .empty-state {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: var(--vscode-descriptionForeground);
+        }
         #toolbar {
             position: absolute;
-            top: 10px;
-            left: 10px;
-            z-index: 10;
-            background-color: var(--vscode-editorWidget-background);
-            padding: 8px;
-            border-radius: 5px;
-            border: 1px solid var(--vscode-panel-border);
+            top: 15px;
+            left: 15px;
+            z-index: 20;
+            background-color: var(--toolbar-bg);
+            padding: 8px 12px;
+            border-radius: 6px;
+            border: 1px solid var(--toolbar-border);
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         }
         #tooltip {
             position: absolute;
             display: none;
-            padding: 10px;
-            background-color: var(--vscode-menu-background);
-            border: 1px solid var(--vscode-menu-border);
-            border-radius: 5px;
-            max-width: 400px;
+            padding: 8px 12px;
+            background-color: var(--vscode-editorHoverWidget-background);
+            color: var(--vscode-editorHoverWidget-foreground);
+            border: 1px solid var(--vscode-editorHoverWidget-border);
+            border-radius: 4px;
+            max-width: 350px;
             z-index: 100;
             pointer-events: none;
-            font-size: 0.9em;
+            font-size: 13px;
             white-space: pre-wrap;
             word-wrap: break-word;
             box-shadow: 0 4px 8px rgba(0,0,0,0.2);
         }
-        #tooltip h4 { margin: 0 0 5px 0; }
-        #tooltip p { margin: 0; color: var(--vscode-descriptionForeground); }
-        #tooltip strong { color: var(--vscode-editor-foreground); }
+        #tooltip h4 { margin: 0 0 4px 0; font-size: 14px; font-weight: 600; }
+        #tooltip p { margin: 0; opacity: 0.9; }
+        
+        button {
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none;
+            padding: 6px 12px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-family: var(--vscode-font-family);
+            font-size: 12px;
+        }
+        button:hover {
+            background-color: var(--vscode-button-hoverBackground);
+        }
+        .secondary-btn {
+            background-color: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+        }
+        .secondary-btn:hover {
+            background-color: var(--vscode-button-secondaryHoverBackground);
+        }
+        select {
+            background-color: var(--vscode-dropdown-background);
+            color: var(--vscode-dropdown-foreground);
+            border: 1px solid var(--vscode-dropdown-border);
+            padding: 5px;
+            border-radius: 3px;
+            font-family: var(--vscode-font-family);
+            outline: none;
+            color: var(--vscode-editor-foreground);
+        }
+        select:focus {
+            border-color: var(--vscode-focusBorder);
+        }
+        label { font-size: 12px; font-weight: 500; }
     </style>
 </head>
 <body>
     <div id="toolbar">
-        <label for="view-selector">${l10n.viewLabel} </label>
-        <select id="view-selector">
-            <option value="call_graph" selected>${l10n.callGraph}</option>
-            <option value="import_graph">${l10n.importGraph}</option>
-            <option value="class_diagram">${l10n.classDiagram}</option>
-        </select>
+        <div>
+            <label for="view-selector">${l10n.viewLabel} </label>
+            <select id="view-selector">
+                <option value="call_graph" selected>${l10n.callGraph}</option>
+                <option value="import_graph">${l10n.importGraph}</option>
+                <option value="class_diagram">${l10n.classDiagram}</option>
+            </select>
+        </div>
+        <button id="recreate-btn">Recreate Graph</button>
+        <button id="add-context-btn" class="secondary-btn">Add View to Chat</button>
     </div>
+    
     <div id="cy"></div>
     <div id="tooltip"></div>
+    
     <div id="empty-state-container" class="empty-state" style="display: none;">
         <p>${l10n.emptyState}</p>
+        <button id="build-btn-empty">Build Graph</button>
     </div>
 
     <script>
         const vscode = acquireVsCodeApi();
         let cy;
-        let fullGraphData = ${JSON.stringify(graphData)};
+        let fullGraphData = { nodes: [], edges: [] };
         const tooltip = document.getElementById('tooltip');
         const viewSelector = document.getElementById('view-selector');
+        const emptyState = document.getElementById('empty-state-container');
+        const container = document.getElementById('cy');
+
+        document.getElementById('recreate-btn').addEventListener('click', () => {
+            vscode.postMessage({ command: 'rebuildGraph' });
+        });
+        
+        document.getElementById('build-btn-empty').addEventListener('click', () => {
+            vscode.postMessage({ command: 'rebuildGraph' });
+        });
+
+        document.getElementById('add-context-btn').addEventListener('click', () => {
+            vscode.postMessage({ command: 'addToContext', graphType: viewSelector.value });
+        });
 
         function applyViewFilter() {
             if (!fullGraphData || !fullGraphData.nodes) return [];
@@ -158,32 +268,28 @@ export class CodeExplorerPanel {
 
             if (selectedView === 'import_graph') {
                 const importEdges = allEdges.filter(e => e.data.label === 'imports');
-                const relevantNodeIds = new Set();
-                importEdges.forEach(e => {
-                    relevantNodeIds.add(e.data.source);
-                    relevantNodeIds.add(e.data.target);
-                });
-                const fileNodes = allNodes.filter(n => relevantNodeIds.has(n.data.id));
+                // SHOW ALL FILES even if disconnected
+                const fileNodes = allNodes.filter(n => n.data.type === 'file');
                 return [...fileNodes, ...importEdges];
             } else if (selectedView === 'class_diagram') {
-                const classNodes = allNodes.filter(n => n.data.type === 'class');
+                const classNodes = allNodes.filter(n => n.data.type === 'class' || n.data.type === 'interface');
                 const classNodeIds = new Set(classNodes.map(n => n.data.id));
 
                 const methodEdges = allEdges.filter(e => e.data.label === 'contains' && classNodeIds.has(e.data.source));
                 const methodIds = new Set(methodEdges.map(e => e.data.target));
                 const methodNodes = allNodes.filter(n => methodIds.has(n.data.id));
 
-                const callEdges = allEdges.filter(e => e.data.label === 'calls' && (methodIds.has(e.data.source) || methodIds.has(e.data.target)));
+                const callEdges = allEdges.filter(e => e.data.label === 'calls' && (methodIds.has(e.data.source) || methodIds.has(e.data.target) || classNodeIds.has(e.data.source) || classNodeIds.has(e.data.target)));
                 
                 return [...classNodes, ...methodNodes, ...methodEdges, ...callEdges];
-            } else { // default to call_graph
-                return [...allNodes, ...allEdges.filter(e => e.data.label !== 'imports')];
+            } else { // default to call_graph (functions + calls + containing files)
+                const relevantNodes = allNodes.filter(n => n.data.type === 'function' || n.data.type === 'file' || n.data.type === 'class'); 
+                const relevantEdges = allEdges.filter(e => e.data.label === 'calls' || e.data.label === 'contains');
+                return [...relevantNodes, ...relevantEdges];
             }
         }
 
         function initializeCytoscape() {
-            const container = document.getElementById('cy');
-            const emptyState = document.getElementById('empty-state-container');
             const elements = applyViewFilter();
 
             if (elements.length === 0) {
@@ -202,16 +308,117 @@ export class CodeExplorerPanel {
                 cy = cytoscape({
                     container: container,
                     elements: elements,
+                    minZoom: 0.1,
+                    maxZoom: 3,
+                    wheelSensitivity: 0.2,
                     style: [
-                        { selector: 'node', style: { 'label': 'data(label)', 'color': 'var(--vscode-editor-foreground)', 'font-size': '14px', 'font-weight': 'bold', 'text-valign': 'center', 'text-halign': 'center', 'background-color': 'var(--vscode-input-background)', 'border-color': 'var(--vscode-panel-border)', 'border-width': 2, 'min-zoomed-font-size': 10 } },
-                        { selector: 'node[type = "file"]', style: { 'shape': 'rectangle', 'width': 'label', 'height': 'label', 'padding': '15px', 'font-size': '16px' } },
-                        { selector: 'node[type = "class"]', style: { 'shape': 'octagon', 'background-color': 'var(--vscode-gitDecoration-modifiedResourceForeground)', 'border-color': 'var(--vscode-charts-yellow)' } },
-                        { selector: 'node[type = "function"]', style: { 'shape': 'ellipse', 'background-color': 'var(--vscode-gitDecoration-addedResourceForeground)', 'border-color': 'var(--vscode-charts-green)' } },
-                        { selector: 'edge', style: { 'width': 1.5, 'line-color': 'var(--vscode-panel-border)', 'target-arrow-color': 'var(--vscode-panel-border)', 'target-arrow-shape': 'triangle', 'curve-style': 'bezier' } },
-                        { selector: 'edge[label = "contains"]', style: { 'line-style': 'dashed', 'line-color': 'var(--vscode-descriptionForeground)' } },
-                        { selector: 'edge[label = "calls"]', style: { 'line-color': 'var(--vscode-charts-blue)' } },
-                        { selector: 'edge[label = "imports"]', style: { 'line-color': '#999', 'line-style': 'dotted' } },
-                        { selector: '.highlighted', style: { 'background-color': 'var(--vscode-list-hoverBackground)', 'line-color': 'var(--vscode-focusBorder)', 'target-arrow-color': 'var(--vscode-focusBorder)', 'transition-property': 'background-color, line-color, target-arrow-color', 'transition-duration': '0.2s' } }
+                        { 
+                            selector: 'node', 
+                            style: {
+                                'label': 'data(label)',
+                                'color': 'var(--vscode-editor-foreground)',
+                                'font-family': 'var(--vscode-font-family)',
+                                'font-size': '11px',
+                                'text-valign': 'center',
+                                'text-halign': 'center',
+                                'background-color': 'var(--node-bg)',
+                                'border-width': 1,
+                                'border-color': 'var(--node-border)',
+                                'width': 'label',
+                                'height': 'label',
+                                'padding': '8px',
+                                'shape': 'round-rectangle',
+                                'text-wrap': 'wrap',
+                                'text-max-width': '120px'
+                            }
+                        },
+                        { 
+                            selector: 'node[type = "file"]', 
+                            style: {
+                                'background-color': 'var(--node-file-bg)',
+                                'border-color': 'var(--node-file-border)',
+                                'shape': 'round-rectangle',
+                                'font-weight': 'bold',
+                                'border-width': 2,
+                                'padding': '10px'
+                            }
+                        },
+                        { 
+                            selector: 'node[type = "class"]', 
+                            style: {
+                                'border-color': 'var(--vscode-charts-orange)',
+                                'border-width': 2,
+                                'shape': 'cut-rectangle'
+                            }
+                        },
+                        { 
+                            selector: 'node[type = "interface"]', 
+                            style: {
+                                'border-color': 'var(--vscode-charts-green)',
+                                'border-style': 'dashed',
+                                'border-width': 2,
+                                'shape': 'cut-rectangle'
+                            }
+                        },
+                        { 
+                            selector: 'node[type = "function"]', 
+                            style: {
+                                'border-color': 'var(--vscode-charts-blue)',
+                                'border-width': 1,
+                                'shape': 'ellipse',
+                                'padding': '10px'
+                            }
+                        },
+                        { 
+                            selector: 'edge', 
+                            style: {
+                                'width': 1.5,
+                                'line-color': 'var(--vscode-scrollbarSlider-background)',
+                                'target-arrow-color': 'var(--vscode-scrollbarSlider-background)',
+                                'target-arrow-shape': 'triangle',
+                                'curve-style': 'bezier',
+                                'arrow-scale': 0.8
+                            }
+                        },
+                        { 
+                            selector: 'edge[label = "contains"]', 
+                            style: {
+                                'line-style': 'dashed',
+                                'line-color': 'var(--vscode-descriptionForeground)',
+                                'target-arrow-shape': 'none',
+                                'width': 1,
+                                'opacity': 0.7
+                            }
+                        },
+                        { 
+                            selector: 'edge[label = "calls"]', 
+                            style: {
+                                'line-color': 'var(--vscode-charts-blue)',
+                                'target-arrow-color': 'var(--vscode-charts-blue)',
+                                'opacity': 0.8
+                            }
+                        },
+                        { 
+                            selector: 'edge[label = "imports"]', 
+                            style: {
+                                'line-style': 'dotted',
+                                'line-color': 'var(--vscode-charts-green)',
+                                'target-arrow-color': 'var(--vscode-charts-green)',
+                                'opacity': 0.6
+                            }
+                        },
+                        { 
+                            selector: '.highlighted', 
+                            style: {
+                                'background-color': 'var(--vscode-list-hoverBackground)',
+                                'border-color': 'var(--vscode-focusBorder)',
+                                'line-color': 'var(--vscode-focusBorder)',
+                                'target-arrow-color': 'var(--vscode-focusBorder)',
+                                'transition-property': 'background-color, line-color, target-arrow-color',
+                                'transition-duration': '0.2s',
+                                'z-index': 100
+                            }
+                        }
                     ]
                 });
 
@@ -228,8 +435,10 @@ export class CodeExplorerPanel {
                     tooltip.innerHTML = content;
                     tooltip.style.display = 'block';
                     const pos = e.renderedPosition;
-                    tooltip.style.left = pos.x + 15 + 'px';
-                    tooltip.style.top = pos.y + 15 + 'px';
+                    const canvasBox = container.getBoundingClientRect();
+                    tooltip.style.left = (canvasBox.left + pos.x + 20) + 'px';
+                    tooltip.style.top = (canvasBox.top + pos.y + 20) + 'px';
+                    
                     node.addClass('highlighted');
                     node.neighborhood().addClass('highlighted');
                 });
@@ -243,8 +452,23 @@ export class CodeExplorerPanel {
             }
 
             cy.layout({
-                name: 'cose', animate: 'end', animationDuration: 300, idealEdgeLength: 180, nodeOverlap: 40,
-                fit: true, padding: 30, componentSpacing: 150, nodeRepulsion: 800000, edgeElasticity: 100, gravity: 60,
+                name: 'cose', 
+                animate: true, 
+                animationDuration: 800, 
+                idealEdgeLength: 100, 
+                nodeOverlap: 20,
+                fit: true, 
+                padding: 50, 
+                componentSpacing: 80, 
+                nodeRepulsion: 1000000, 
+                edgeElasticity: 50, 
+                nestingFactor: 5, 
+                gravity: 90, 
+                numIter: 1000, 
+                initialTemp: 200, 
+                coolingFactor: 0.95, 
+                minTemp: 1.0,
+                randomize: false
             }).run();
         }
 
@@ -257,8 +481,6 @@ export class CodeExplorerPanel {
                 initializeCytoscape();
             }
         });
-
-        initializeCytoscape();
     </script>
 </body>
 </html>`;

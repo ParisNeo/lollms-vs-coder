@@ -67,6 +67,7 @@
     "config.enableCodeActions.description": "Aktivieren Sie die Lollms CodeLens-Aktionen (z. B. 'Lollms-Aktionen...') über dem ausgewählten Code.",
     "config.enableInlineSuggestions.description": "Aktivieren Sie einzeilige, inline Code-Vorschläge während des Tippens (experimentell).",
     "config.disableSslVerification.description": "Deaktivieren Sie die SSL-Zertifikatsüberprüfung für API-Anfragen. Mit Vorsicht bei Servern mit selbstsignierten Zertifikaten verwenden.",
+    "config.sslCertPath.description": "Pfad zu einer benutzerdefinierten CA-Zertifikatsdatei (PEM/CRT) zur Überprüfung der Serveridentität.",
     "config.noThinkMode.description": "Stellt allen System-Prompts den Befehl /no_think voran, um den Denkprozess der KI zu deaktivieren (für Modelle, die dies unterstützen).",
     "config.apiKey.description": "API-Schlüssel zur Authentifizierung bei der Lollms-API.",
     "config.apiUrl.description": "URL des Lollms-API-Servers (einschließlich Protokoll und Port).",

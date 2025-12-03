@@ -67,6 +67,7 @@
     "config.enableCodeActions.description": "تمكين إجراءات Lollms CodeLens (على سبيل المثال، 'إجراءات Lollms...') فوق الكود المحدد.",
     "config.enableInlineSuggestions.description": "تمكين اقتراحات التعليمات البرمجية المضمنة أحادية السطر أثناء الكتابة (تجريبي).",
     "config.disableSslVerification.description": "تعطيل التحقق من شهادة SSL لطلبات واجهة برمجة التطبيقات. استخدم بحذر للخوادم ذات الشهادات الموقعة ذاتيًا.",
+    "config.sslCertPath.description": "مسار ملف شهادة CA مخصص (PEM/CRT) للتحقق من هوية الخادم.",
     "config.noThinkMode.description": "يبدأ جميع مطالبات النظام بالأمر /no_think لتعطيل عملية تفكير الذكاء الاصطناعي (للموديلات التي تدعمها).",
     "config.apiKey.description": "مفتاح API للمصادقة مع Lollms API.",
     "config.apiUrl.description": "عنوان URL لخادم Lollms API (بما في ذلك البروتوكول والمنفذ).",

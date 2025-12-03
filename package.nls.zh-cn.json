@@ -49,6 +49,7 @@
     "config.enableCodeActions.description": "在选定代码上方启用 Lollms CodeLens 操作 (例如，“Lollms 操作...”)。",
     "config.enableInlineSuggestions.description": "在您键入时启用单行内联代码建议 (实验性功能)。",
     "config.disableSslVerification.description": "为 API 请求禁用 SSL 证书验证。对于使用自签名证书的服务器，请谨慎使用。",
+    "config.sslCertPath.description": "用于验证服务器身份的自定义 CA 证书文件 (PEM/CRT) 的路径。",
     "config.apiKey.description": "用于向 Lollms API 进行身份验证的 API 密钥。",
     "config.apiUrl.description": "Lollms API 服务器的 URL (包括协议和端口)。",
     "config.modelName.description": "要使用的模型的名称",

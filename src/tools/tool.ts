@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { LollmsAPI } from '../lollmsAPI';
 import { ContextManager } from '../contextManager';
 import type { AgentManager } from '../agentManager';
+import type { CodeGraphManager } from '../codeGraphManager'; // Import CodeGraphManager type
 
 export interface Plan {
     objective: string;
@@ -13,6 +14,7 @@ export interface ToolExecutionEnv {
     workspaceRoot?: vscode.WorkspaceFolder;
     lollmsApi: LollmsAPI;
     contextManager: ContextManager;
+    codeGraphManager?: CodeGraphManager; // Add optional CodeGraphManager
     currentPlan: Plan | null;
     agentManager: AgentManager;
 }

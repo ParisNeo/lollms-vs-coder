@@ -14,6 +14,7 @@ import { DiscussionManager, Discussion } from './discussionManager';
 import * as fs from 'fs/promises';
 import { ToolManager } from './tools/toolManager';
 import { ToolExecutionEnv, ToolDefinition, Plan } from './tools/tool';
+import { CodeGraphManager } from './codeGraphManager'; // Import
 
 interface Task {
     id: number;
@@ -37,6 +38,7 @@ export class AgentManager {
     private currentTaskIndex: number = 0;
     private currentDiscussion?: Discussion;
     private toolManager: ToolManager;
+    private codeGraphManager: CodeGraphManager; // Add property
 
     constructor(
         private chatPanel: ChatPanel,
@@ -44,8 +46,10 @@ export class AgentManager {
         public contextManager: ContextManager,
         private gitIntegration: GitIntegration,
         private discussionManager: DiscussionManager,
-        private extensionUri: vscode.Uri
+        private extensionUri: vscode.Uri,
+        codeGraphManager: CodeGraphManager // Inject
     ) {
+        this.codeGraphManager = codeGraphManager;
         this.toolManager = new ToolManager();
         this.planParser = new PlanParser(this.lollmsApi, this.contextManager, this.toolManager);
     }
@@ -389,6 +393,7 @@ Start the task IDs sequentially after the last completed task ID (${completedTas
             workspaceRoot: this.currentWorkspaceFolder,
             lollmsApi: this.lollmsApi,
             contextManager: this.contextManager,
+            codeGraphManager: this.codeGraphManager, // Inject
             currentPlan: this.currentPlan,
             agentManager: this
         };

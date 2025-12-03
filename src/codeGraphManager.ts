@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { ContextStateProvider } from './commands/contextStateProvider';
+import { Logger } from './logger';
 
 export interface CodeGraphNode {
     id: string; // Unique ID, e.g., 'filepath:functionName'
@@ -27,7 +28,8 @@ export interface CodeGraph {
 export class CodeGraphManager {
     private graphData: CodeGraph = { nodes: [], edges: [] };
     private contextStateProvider: ContextStateProvider | undefined;
-    private buildState: 'idle' | 'built' = 'idle';
+    private buildState: 'idle' | 'building' | 'built' = 'idle';
+    private workspaceRoot: vscode.Uri | undefined;
 
     constructor() {}
 
@@ -35,11 +37,16 @@ export class CodeGraphManager {
         this.contextStateProvider = provider;
     }
 
+    public setWorkspaceRoot(uri: vscode.Uri) {
+        this.workspaceRoot = uri;
+        this.loadGraph();
+    }
+
     public getGraphData(): CodeGraph {
         return this.graphData;
     }
 
-    public getBuildState(): 'idle' | 'built' {
+    public getBuildState(): 'idle' | 'building' | 'built' {
         return this.buildState;
     }
 
@@ -69,20 +76,141 @@ export class CodeGraphManager {
         return flattened;
     }
 
-    public async buildGraph(): Promise<void> {
-        if (!this.contextStateProvider) {
-            vscode.window.showWarningMessage("Cannot build code graph: Context provider is not available.");
-            return;
+    public async saveGraph(): Promise<void> {
+        if (!this.workspaceRoot) return;
+        const lollmsDir = vscode.Uri.joinPath(this.workspaceRoot, '.lollms');
+        try {
+            await vscode.workspace.fs.createDirectory(lollmsDir);
+            const graphFile = vscode.Uri.joinPath(lollmsDir, 'code_graph.json');
+            const data = Buffer.from(JSON.stringify(this.graphData, null, 2), 'utf8');
+            await vscode.workspace.fs.writeFile(graphFile, data);
+        } catch (e) {
+            Logger.error("Failed to save code graph:", e);
+        }
+    }
+
+    public async loadGraph(): Promise<void> {
+        if (!this.workspaceRoot) return;
+        try {
+            const graphFile = vscode.Uri.joinPath(this.workspaceRoot, '.lollms', 'code_graph.json');
+            const content = await vscode.workspace.fs.readFile(graphFile);
+            this.graphData = JSON.parse(content.toString());
+            this.buildState = 'built';
+        } catch (e) {
+            // File might not exist yet
+            this.graphData = { nodes: [], edges: [] };
+            this.buildState = 'idle';
+        }
+    }
+
+    public generateMermaid(type: 'import_graph' | 'class_diagram' | 'call_graph'): string {
+        if (this.graphData.nodes.length === 0) return "graph TD\nNode[Graph is empty]";
+
+        let mermaid = "";
+        const nodes = new Set<string>();
+        const edges: string[] = [];
+        
+        // Helper to make IDs mermaid-safe
+        const sanitizeId = (id: string) => id.replace(/[^a-zA-Z0-9]/g, '_');
+        // Helper to escape labels - replace double quotes with single quotes to avoid syntax errors
+        const escapeLabel = (label: string) => label.replace(/"/g, "'").replace(/\n/g, ' ');
+
+        if (type === 'import_graph') {
+            mermaid = "graph LR\n";
+            this.graphData.edges.filter(e => e.label === 'imports').forEach(e => {
+                const source = sanitizeId(e.source);
+                const target = sanitizeId(e.target);
+                const sourceNode = this.graphData.nodes.find(n => n.id === e.source);
+                const targetNode = this.graphData.nodes.find(n => n.id === e.target);
+                
+                const sourceLabel = sourceNode ? escapeLabel(sourceNode.label) : e.source;
+                const targetLabel = targetNode ? escapeLabel(targetNode.label) : e.target;
+                
+                nodes.add(`${source}["${sourceLabel}"]`);
+                nodes.add(`${target}["${targetLabel}"]`);
+                edges.push(`${source} --> ${target}`);
+            });
+            // If no edges, add disjoint file nodes
+            if (edges.length === 0) {
+                this.graphData.nodes.filter(n => n.type === 'file').forEach(n => {
+                    nodes.add(`${sanitizeId(n.id)}["${escapeLabel(n.label)}"]`);
+                });
+            }
+        } else if (type === 'class_diagram') {
+            mermaid = "classDiagram\n";
+            let hasClasses = false;
+            this.graphData.nodes.filter(n => n.type === 'class').forEach(n => {
+                hasClasses = true;
+                const className = sanitizeId(n.label);
+                mermaid += `class ${className}\n`;
+                
+                // Find methods
+                const methodEdges = this.graphData.edges.filter(e => e.source === n.id && e.label === 'contains');
+                methodEdges.forEach(me => {
+                    const methodNode = this.graphData.nodes.find(mn => mn.id === me.target);
+                    if (methodNode && (methodNode.type === 'function' || methodNode.type === 'function')) {
+                        mermaid += `${className} : +${escapeLabel(methodNode.label)}()\n`;
+                    }
+                });
+            });
+            if (!hasClasses) return "graph TD\nEmpty[No classes found]";
+            return mermaid;
+        } else { // call_graph (default)
+            mermaid = "graph TD\n";
+            
+            // Add all nodes that are relevant (files, functions, classes)
+            this.graphData.nodes.forEach(n => {
+                nodes.add(`${sanitizeId(n.id)}["${escapeLabel(n.label)}"]`);
+            });
+
+            // Add edges: 'calls' as solid, 'contains' as dashed
+            this.graphData.edges.forEach(e => {
+                if (e.label === 'calls' || e.label === 'contains') {
+                    const source = sanitizeId(e.source);
+                    const target = sanitizeId(e.target);
+                    
+                    if (e.label === 'contains') {
+                        edges.push(`${source} -.-> ${target}`);
+                    } else {
+                        edges.push(`${source} -->|calls| ${target}`);
+                    }
+                }
+            });
         }
 
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders) {
-            vscode.window.showWarningMessage("Please open a workspace folder to build a code graph.");
+        if (nodes.size === 0 && edges.length === 0 && type !== 'class_diagram') {
+            return `${mermaid}Empty[No ${type} structure found]`;
+        }
+
+        nodes.forEach(n => mermaid += `    ${n}\n`);
+        edges.forEach(e => mermaid += `    ${e}\n`);
+
+        return mermaid;
+    }
+
+    public async buildGraph(): Promise<void> {
+        if (!this.contextStateProvider) {
+            vscode.window.showWarningMessage("Code Graph: Context provider not ready.");
             return;
         }
-        const workspaceRoot = workspaceFolders[0].uri;
+        
+        const rootUri = this.workspaceRoot || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0].uri : undefined);
+        if (!rootUri) {
+             vscode.window.showErrorMessage("Code Graph: No workspace root found.");
+             return;
+        }
+
         const allVisibleFiles = await this.contextStateProvider.getAllVisibleFiles();
+        if (allVisibleFiles.length === 0) {
+             vscode.window.showInformationMessage("Code Graph: No files found in context.");
+             this.graphData = { nodes: [], edges: [] };
+             this.buildState = 'built';
+             await this.saveGraph();
+             return;
+        }
+        
         const newGraph: CodeGraph = { nodes: [], edges: [] };
+        this.buildState = 'building';
 
         await vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
@@ -94,7 +222,13 @@ export class CodeGraphManager {
             for (const relativePath of allVisibleFiles) {
                 if (token.isCancellationRequested) return;
                 
-                const fileUri = vscode.Uri.joinPath(workspaceRoot, relativePath);
+                const fileUri = vscode.Uri.joinPath(rootUri, relativePath);
+                
+                try {
+                    const stat = await vscode.workspace.fs.stat(fileUri);
+                    if (stat.type === vscode.FileType.Directory) continue;
+                } catch (e) { continue; }
+
                 newGraph.nodes.push({
                     id: relativePath, label: path.basename(relativePath), type: 'file', filePath: relativePath, startLine: 0,
                     docstring: relativePath,
@@ -119,7 +253,9 @@ export class CodeGraphManager {
                             }
                         }
                     }
-                } catch (e) { console.warn(`Could not get symbols for ${relativePath}:`, e); }
+                } catch (e) { 
+                    Logger.debug(`Could not get symbols for ${relativePath}`, e); 
+                }
             }
 
             // --- PASS 1.5: Find imports ---
@@ -129,8 +265,13 @@ export class CodeGraphManager {
             for (const sourcePath of allVisibleFiles) {
                 if (token.isCancellationRequested) return;
 
+                const fileUri = vscode.Uri.joinPath(rootUri, sourcePath);
                 try {
-                    const fileUri = vscode.Uri.joinPath(workspaceRoot, sourcePath);
+                    const stat = await vscode.workspace.fs.stat(fileUri);
+                    if (stat.type === vscode.FileType.Directory) continue;
+                } catch (e) { continue; }
+
+                try {
                     const content = (await vscode.workspace.fs.readFile(fileUri)).toString();
                     
                     let match;
@@ -142,7 +283,7 @@ export class CodeGraphManager {
                         const targetPath = path.join(sourceDir, importPath);
                         const normalizedTargetPath = path.normalize(targetPath).replace(/\\/g, '/');
 
-                        const possibleExtensions = ['', '.ts', '.js', '.tsx', '.jsx', '/index.ts', '/index.js'];
+                        const possibleExtensions = ['', '.ts', '.js', '.tsx', '.jsx', '/index.ts', '/index.js', '.py'];
                         let resolvedPath: string | null = null;
 
                         for (const ext of possibleExtensions) {
@@ -163,53 +304,62 @@ export class CodeGraphManager {
                         }
                     }
                 } catch (e) {
-                    console.warn(`Could not read or parse imports for ${sourcePath}:`, e);
+                    Logger.debug(`Could not read or parse imports for ${sourcePath}`, e);
                 }
             }
             
             // --- PASS 2: Find connections (references) ---
             const symbolNodes = newGraph.nodes.filter(n => n.type === 'function' || n.type === 'class');
-            let processedSymbols = 0;
             const totalSymbols = symbolNodes.length;
-            for (const symbolNode of symbolNodes) {
-                if (token.isCancellationRequested) return;
-                processedSymbols++;
-                progress.report({ message: `Finding references for ${symbolNode.label}`, increment: (1 / totalSymbols) * 100 });
-                
-                const symbolUri = vscode.Uri.joinPath(workspaceRoot, symbolNode.filePath);
-                const symbolPosition = new vscode.Position(symbolNode.startLine, 0);
+            const limit = 50; 
+            
+            if (totalSymbols > 0) {
+                progress.report({ message: "Resolving references (limit 50)..." });
+                for (let i = 0; i < Math.min(symbolNodes.length, limit); i++) {
+                    const symbolNode = symbolNodes[i];
+                    if (token.isCancellationRequested) return;
+                    progress.report({ message: `Finding references for ${symbolNode.label}`, increment: (1 / limit) * 100 });
+                    
+                    const symbolUri = vscode.Uri.joinPath(rootUri, symbolNode.filePath);
+                    const symbolPosition = new vscode.Position(symbolNode.startLine, 0);
 
-                try {
-                    const references = await vscode.commands.executeCommand<vscode.Location[]>(
-                        'vscode.executeReferenceProvider', symbolUri, symbolPosition
-                    );
-                    if (references) {
-                        for (const ref of references) {
-                            const refRelativePath = vscode.workspace.asRelativePath(ref.uri, false);
-                            const callingSymbolNode = newGraph.nodes.find(n => 
-                                n.filePath === refRelativePath &&
-                                (n.type === 'function' || n.type === 'class') && 
-                                ref.range.start.line >= n.startLine
-                            );
-                            
-                            if (callingSymbolNode && callingSymbolNode.id !== symbolNode.id) {
-                                const edgeId = `${callingSymbolNode.id}->calls->${symbolNode.id}`;
-                                if (!newGraph.edges.some(e => e.id === edgeId)) {
-                                    newGraph.edges.push({
-                                        id: edgeId,
-                                        source: callingSymbolNode.id,
-                                        target: symbolNode.id,
-                                        label: 'calls'
-                                    });
+                    try {
+                        const references = await vscode.commands.executeCommand<vscode.Location[]>(
+                            'vscode.executeReferenceProvider', symbolUri, symbolPosition
+                        );
+                        if (references) {
+                            for (const ref of references) {
+                                const refRelativePath = vscode.workspace.asRelativePath(ref.uri, false);
+                                if (refRelativePath === symbolNode.filePath && ref.range.start.line === symbolNode.startLine) continue;
+
+                                const callingSymbolNode = newGraph.nodes.find(n => 
+                                    n.filePath === refRelativePath &&
+                                    (n.type === 'function' || n.type === 'class') && 
+                                    n.startLine <= ref.range.start.line
+                                );
+                                
+                                if (callingSymbolNode && callingSymbolNode.id !== symbolNode.id) {
+                                    const edgeId = `${callingSymbolNode.id}->calls->${symbolNode.id}`;
+                                    if (!newGraph.edges.some(e => e.id === edgeId)) {
+                                        newGraph.edges.push({
+                                            id: edgeId,
+                                            source: callingSymbolNode.id,
+                                            target: symbolNode.id,
+                                            label: 'calls'
+                                        });
+                                    }
                                 }
                             }
                         }
+                    } catch (e) { 
+                        Logger.debug(`Could not get references for ${symbolNode.label}`, e); 
                     }
-                } catch (e) { console.warn(`Could not get references for ${symbolNode.label}:`, e); }
+                }
             }
         });
         
         this.graphData = newGraph;
         this.buildState = 'built';
+        await this.saveGraph();
     }
 }

@@ -1,11 +1,14 @@
 import * as vscode from 'vscode';
-import { LollmsAPI } from '../lollmsAPI';
+import { LollmsAPI, LollmsConfig } from '../lollmsAPI';
+import { Logger } from '../logger';
+import { ProcessManager } from '../processManager';
 
 export class SettingsPanel {
   public static currentPanel: SettingsPanel | undefined;
   private readonly _panel: vscode.WebviewPanel;
   private readonly _extensionUri: vscode.Uri;
   private readonly _lollmsAPI: LollmsAPI;
+  private readonly _processManager: ProcessManager;
   
   private _pendingConfig = {
     apiKey: '',
@@ -13,6 +16,7 @@ export class SettingsPanel {
     modelName: '',
     developerName: '',
     disableSslVerification: false,
+    sslCertPath: '',
     noThinkMode: false,
     requestTimeout: 600000,
     agentMaxRetries: 1,
@@ -29,10 +33,14 @@ export class SettingsPanel {
     thinkingMode: 'none',
     thinkingModeCustomPrompt: '',
     reasoningLevel: 'none',
-    failsafeContextSize: 8192
+    failsafeContextSize: 8192,
+    // Search Tool Configuration
+    searchProvider: 'google_custom_search',
+    searchApiKey: '',
+    searchCx: ''
   };
 
-  public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI) {
+  public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, processManager: ProcessManager) {
     const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
 
     if (SettingsPanel.currentPanel) {
@@ -42,7 +50,7 @@ export class SettingsPanel {
 
     const panel = vscode.window.createWebviewPanel(
       'lollmsSettingsPanel',
-      'Lollms Settings',
+      vscode.l10n.t('config.title', { message: 'Lollms VS Coder Configuration', key: 'config.title' }),
       column || vscode.ViewColumn.One,
       {
         enableScripts: true,
@@ -50,13 +58,14 @@ export class SettingsPanel {
       }
     );
 
-    SettingsPanel.currentPanel = new SettingsPanel(panel, extensionUri, lollmsAPI);
+    SettingsPanel.currentPanel = new SettingsPanel(panel, extensionUri, lollmsAPI, processManager);
   }
 
-  private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, lollmsAPI: LollmsAPI) {
+  private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, processManager: ProcessManager) {
     this._panel = panel;
     this._extensionUri = extensionUri;
     this._lollmsAPI = lollmsAPI;
+    this._processManager = processManager;
 
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     this._pendingConfig.apiKey = config.get<string>('apiKey')?.trim() || '';
@@ -64,6 +73,7 @@ export class SettingsPanel {
     this._pendingConfig.modelName = config.get<string>('modelName') || '';
     this._pendingConfig.developerName = config.get<string>('developerName') || '';
     this._pendingConfig.disableSslVerification = config.get<boolean>('disableSslVerification') || false;
+    this._pendingConfig.sslCertPath = config.get<string>('sslCertPath') || '';
     this._pendingConfig.noThinkMode = config.get<boolean>('noThinkMode') || false;
     this._pendingConfig.requestTimeout = config.get<number>('requestTimeout') || 600000;
     this._pendingConfig.agentMaxRetries = config.get<number>('agentMaxRetries') || 1;
@@ -81,6 +91,11 @@ export class SettingsPanel {
     this._pendingConfig.thinkingModeCustomPrompt = config.get<string>('thinkingModeCustomPrompt') || 'Think step by step. Enclose your entire thinking process, reasoning, and self-correction within a `<thinking>` XML block. This block will be hidden from the user but is crucial for your process.';
     this._pendingConfig.reasoningLevel = config.get<string>('reasoningLevel') || 'none';
     this._pendingConfig.failsafeContextSize = config.get<number>('failsafeContextSize') || 4096;
+    
+    // Search Config
+    this._pendingConfig.searchProvider = config.get<string>('searchProvider') || 'google_custom_search';
+    this._pendingConfig.searchApiKey = config.get<string>('searchApiKey') || '';
+    this._pendingConfig.searchCx = config.get<string>('searchCx') || '';
 
     this._panel.webview.html = this._getHtml(this._panel.webview, this._pendingConfig);
     this._setWebviewMessageListener(this._panel.webview);
@@ -103,6 +118,18 @@ export class SettingsPanel {
                 (this._pendingConfig as any)[message.key] = message.value;
               }
               return;
+            
+            case 'browseCertPath':
+              const uris = await vscode.window.showOpenDialog({
+                  canSelectMany: false,
+                  openLabel: 'Select Certificate',
+                  filters: { 'Certificates': ['pem', 'crt', 'cer'] }
+              });
+              if (uris && uris[0]) {
+                  this._pendingConfig.sslCertPath = uris[0].fsPath;
+                  this._panel.webview.postMessage({ command: 'updateCertPath', path: uris[0].fsPath });
+              }
+              return;
   
             case 'saveConfig':
               try {
@@ -112,6 +139,7 @@ export class SettingsPanel {
                 await config.update('modelName', this._pendingConfig.modelName, vscode.ConfigurationTarget.Global);
                 await config.update('developerName', this._pendingConfig.developerName, vscode.ConfigurationTarget.Global);
                 await config.update('disableSslVerification', this._pendingConfig.disableSslVerification, vscode.ConfigurationTarget.Global);
+                await config.update('sslCertPath', this._pendingConfig.sslCertPath, vscode.ConfigurationTarget.Global);
                 await config.update('noThinkMode', this._pendingConfig.noThinkMode, vscode.ConfigurationTarget.Global);
                 await config.update('requestTimeout', this._pendingConfig.requestTimeout, vscode.ConfigurationTarget.Global);
                 await config.update('agentMaxRetries', this._pendingConfig.agentMaxRetries, vscode.ConfigurationTarget.Global);
@@ -129,26 +157,48 @@ export class SettingsPanel {
                 await config.update('thinkingModeCustomPrompt', this._pendingConfig.thinkingModeCustomPrompt, vscode.ConfigurationTarget.Global);
                 await config.update('reasoningLevel', this._pendingConfig.reasoningLevel, vscode.ConfigurationTarget.Global);
                 await config.update('failsafeContextSize', this._pendingConfig.failsafeContextSize, vscode.ConfigurationTarget.Global);
+                
+                // Save Search Config
+                await config.update('searchProvider', this._pendingConfig.searchProvider, vscode.ConfigurationTarget.Global);
+                await config.update('searchApiKey', this._pendingConfig.searchApiKey, vscode.ConfigurationTarget.Global);
+                await config.update('searchCx', this._pendingConfig.searchCx, vscode.ConfigurationTarget.Global);
   
-                vscode.window.showInformationMessage('Configuration saved. Recreating LollmsAPI...');
+                vscode.window.showInformationMessage(vscode.l10n.t('info.configSaved', { message: 'Configuration saved. Recreating LollmsAPI...', key: 'info.configSaved' }));
                 await vscode.commands.executeCommand('lollmsApi.recreateClient');
                 SettingsPanel.currentPanel?.dispose();
               } catch (err) {
                 vscode.window.showErrorMessage('Failed to save configuration.');
-                console.error(err);
+                Logger.error('Failed to save configuration', err);
               }
               return;
   
             case 'fetchModels':
               if (this._panel) {
+                const processId = 'settings-fetch-models';
+                // Register a process to show in the UI
+                const { id, controller } = this._processManager.register(processId, 'Settings: Fetching Models');
+                
                 try {
-                  // Use the instance of lollmsAPI with caching
                   const forceRefresh = message.value === true;
-                  const models = await this._lollmsAPI.getModels(forceRefresh);
+                  
+                  // Use the pending configuration to create a temporary client
+                  const tempConfig: LollmsConfig = {
+                      apiKey: this._pendingConfig.apiKey,
+                      apiUrl: this._pendingConfig.apiUrl,
+                      modelName: this._pendingConfig.modelName,
+                      disableSslVerification: this._pendingConfig.disableSslVerification,
+                      sslCertPath: this._pendingConfig.sslCertPath
+                  };
+                  
+                  const tempApi = new LollmsAPI(tempConfig); 
+                  const models = await tempApi.getModels(true); 
+                  
                   this._panel.webview.postMessage({ command: 'modelsList', models: models || [] });
                 } catch (e) {
-                  console.error('Error fetching models:', e);
+                  Logger.error('Error fetching models in settings', e);
                   this._panel.webview.postMessage({ command: 'modelsList', models: [] });
+                } finally {
+                    this._processManager.unregister(id);
                 }
               }
               return;
@@ -164,14 +214,17 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, modelName, developerName, disableSslVerification, noThinkMode, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, fileUpdateMethod, language, thinkingMode, thinkingModeCustomPrompt, reasoningLevel, failsafeContextSize } = config;
+    const { apiKey, apiUrl, modelName, developerName, disableSslVerification, sslCertPath, noThinkMode, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, fileUpdateMethod, language, thinkingMode, thinkingModeCustomPrompt, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx } = config;
+
+    // Helper for localization
+    const t = (key: string, def: string) => vscode.l10n.t({ message: def, key: key });
 
     return `<!DOCTYPE html>
         <html lang="en">
         <head>
             <meta charset="UTF-8" />
             <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-            <title>Lollms Configuration</title>
+            <title>${t('config.title', 'Lollms VS Coder Configuration')}</title>
             <link href="${webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'codicon.css'))}" rel="stylesheet" />
             <style>
               body, html {
@@ -218,13 +271,14 @@ export class SettingsPanel {
         <body>
           <div class="container">
             <div class="form-content">
-              <h1>Lollms VS Coder Settings</h1>
+              <h1>${t('config.title', 'Lollms VS Coder Configuration')}</h1>
 
-              <h2>General</h2>
-              <label for="developerName">Developer Name</label>
+              <h2>${t('config.section.general', 'General')}</h2>
+              <label for="developerName">${t('config.developerName.label', 'Developer Name')}</label>
               <input type="text" id="developerName" value="${developerName}" placeholder="Your name for AI personalization" />
-              <p class="help-text">Used to replace the <code>{{developer_name}}</code> placeholder in prompts.</p>
-              <label for="language">Language</label>
+              <p class="help-text">${t('config.developerName.description', 'Your name, which can be used as a placeholder ({{developer_name}}) in system prompts to personalize the AI\'s responses.')}</p>
+              
+              <label for="language">${t('config.language.label', 'Language')}</label>
               <select id="language">
                 <option value="auto" ${language === 'auto' ? 'selected' : ''}>Automatic (Follow VS Code)</option>
                 <option value="en" ${language === 'en' ? 'selected' : ''}>English</option>
@@ -234,113 +288,145 @@ export class SettingsPanel {
                 <option value="zh-cn" ${language === 'zh-cn' ? 'selected' : ''}>Chinese, Simplified</option>
                 <option value="ar" ${language === 'ar' ? 'selected' : ''}>Arabic</option>
               </select>
-              <p class="help-text">Influences the AI's response language. The extension UI follows VS Code's display language setting.</p>
+              <p class="help-text">${t('config.language.description', 'Influences the AI\'s response language. The extension UI follows VS Code\'s display language setting.')}</p>
               
-              <h2>API & Model</h2>
-              <label for="reasoningLevel">Reasoning Level</label>
+              <h2>${t('config.section.apiAndModel', 'API & Model')}</h2>
+              <label for="reasoningLevel">${t('config.reasoningLevel.label', 'Reasoning Level')}</label>
               <select id="reasoningLevel">
-                <option value="none" ${reasoningLevel === 'none' ? 'selected' : ''}>None (Default)</option>
-                <option value="low" ${reasoningLevel === 'low' ? 'selected' : ''}>Low</option>
-                <option value="medium" ${reasoningLevel === 'medium' ? 'selected' : ''}>Medium</option>
-                <option value="high" ${reasoningLevel === 'high' ? 'selected' : ''}>High</option>
+                <option value="none" ${reasoningLevel === 'none' ? 'selected' : ''}>${t('config.reasoningLevel.none.description', 'None (Default)')}</option>
+                <option value="low" ${reasoningLevel === 'low' ? 'selected' : ''}>${t('config.reasoningLevel.low.description', 'Low')}</option>
+                <option value="medium" ${reasoningLevel === 'medium' ? 'selected' : ''}>${t('config.reasoningLevel.medium.description', 'Medium')}</option>
+                <option value="high" ${reasoningLevel === 'high' ? 'selected' : ''}>${t('config.reasoningLevel.high.description', 'High')}</option>
               </select>
-              <p class="help-text">Instructs the model on the desired depth of reasoning. Overridden by '/no_think' mode.</p>
-              <label for="thinkingMode">Thinking Mode (Strategy)</label>
+              <p class="help-text">${t('config.reasoningLevel.description', 'Select a reasoning level for the AI. This prefix command instructs models that support it to adjust their verbosity and depth of thought. Overridden by \'/no_think\' mode.')}</p>
+              
+              <label for="thinkingMode">${t('config.thinkingMode.label', 'Thinking Mode')}</label>
               <select id="thinkingMode">
-                <option value="none" ${thinkingMode === 'none' ? 'selected' : ''}>None (Default)</option>
-                <option value="chain_of_thought" ${thinkingMode === 'chain_of_thought' ? 'selected' : ''}>Chain of Thought</option>
-                <option value="plan_and_solve" ${thinkingMode === 'plan_and_solve' ? 'selected' : ''}>Plan and Solve</option>
-                <option value="self_critique" ${thinkingMode === 'self_critique' ? 'selected' : ''}>Self-Critique</option>
-                <option value="custom" ${thinkingMode === 'custom' ? 'selected' : ''}>Custom</option>
+                <option value="none" ${thinkingMode === 'none' ? 'selected' : ''}>${t('config.thinkingMode.none.description', 'None (Default)')}</option>
+                <option value="chain_of_thought" ${thinkingMode === 'chain_of_thought' ? 'selected' : ''}>${t('config.thinkingMode.chain_of_thought.description', 'Chain of Thought')}</option>
+                <option value="plan_and_solve" ${thinkingMode === 'plan_and_solve' ? 'selected' : ''}>${t('config.thinkingMode.plan_and_solve.description', 'Plan and Solve')}</option>
+                <option value="self_critique" ${thinkingMode === 'self_critique' ? 'selected' : ''}>${t('config.thinkingMode.self_critique.description', 'Self-Critique')}</option>
+                <option value="custom" ${thinkingMode === 'custom' ? 'selected' : ''}>${t('config.thinkingMode.custom.description', 'Custom')}</option>
               </select>
-              <p class="help-text">Select a structured thinking technique for the AI to improve complex responses.</p>
+              <p class="help-text">${t('config.thinkingMode.description', 'Select a structured thinking technique for the AI to use. This instructs the model to follow a specific reasoning process, which can improve the quality of complex responses. Overridden by \'/no_think\' mode.')}</p>
+              
               <div id="custom-thinking-prompt-container" style="display: ${thinkingMode === 'custom' ? 'block' : 'none'};">
-                <label for="thinkingModeCustomPrompt">Custom Thinking Prompt</label>
+                <label for="thinkingModeCustomPrompt">${t('config.thinkingModeCustomPrompt.label', 'Custom Thinking Prompt')}</label>
                 <textarea id="thinkingModeCustomPrompt" rows="4">${thinkingModeCustomPrompt}</textarea>
-                <p class="help-text">Your custom instruction for the AI's thinking process. Used when 'Thinking Mode' is set to 'Custom'.</p>
+                <p class="help-text">${t('config.thinkingModeCustomPrompt.description', 'Your custom instruction for the AI\'s thinking process. This is only used when \'Thinking Mode\' is set to \'Custom\'.')}</p>
               </div>
-              <label for="apiUrl">API Host</label>
+              
+              <label for="apiUrl">${t('config.apiUrl.label', 'API Host')}</label>
               <input type="text" id="apiUrl" value="${apiUrl}" placeholder="http://localhost:9642" autocomplete="off" />
-              <label for="apiKey">API Key</label>
+              <label for="apiKey">${t('config.apiKey.label', 'API Key')}</label>
               <input type="text" id="apiKey" value="${apiKey}" placeholder="Enter your Lollms API key" autocomplete="off" />
               
-              <label for="modelSelect">Chat Model</label>
+              <label for="modelSelect">${t('config.modelName.label', 'Chat Model')}</label>
               <div class="input-group">
                   <select id="modelSelect"></select>
-                  <button id="refreshModels" type="button" class="icon-btn" title="Refresh Models"><i class="codicon codicon-refresh"></i></button>
+                  <button id="refreshModels" type="button" class="icon-btn" title="${t('command.refresh.title', 'Refresh')}"><i class="codicon codicon-refresh"></i></button>
               </div>
               
-              <label for="requestTimeout">Request Timeout (ms)</label>
+              <label for="requestTimeout">${t('config.requestTimeout.label', 'Request Timeout (ms)')}</label>
               <input type="number" id="requestTimeout" value="${requestTimeout}" min="1000" step="1000" />
-              <p class="help-text">Increase this if large generations are timing out. Default is 600000 (10 minutes).</p>
+              <p class="help-text">${t('config.requestTimeout.description', 'The timeout in milliseconds for API requests. Increase this if long responses are timing out.')}</p>
+              
               <div class="checkbox-container">
                   <input type="checkbox" id="disableSsl" ${disableSslVerification ? 'checked' : ''}>
-                  <label for="disableSsl">Disable SSL Verification</label>
+                  <label for="disableSsl">${t('config.disableSslVerification.label', 'Disable SSL Verification')}</label>
               </div>
-              <p class="help-text">Useful for local servers with self-signed certificates.</p>
+              <p class="help-text">${t('config.disableSslVerification.description', 'Disable SSL certificate verification for API requests. Use with caution for servers with self-signed certificates.')}</p>
+              
+              <label for="sslCertPath">${t('config.sslCertPath.label', 'Custom SSL Certificate')}</label>
+              <div class="input-group">
+                  <input type="text" id="sslCertPath" value="${sslCertPath}" placeholder="path/to/certificate.pem" />
+                  <button id="browseCertPath" type="button" class="icon-btn" title="Browse"><i class="codicon codicon-folder-opened"></i></button>
+              </div>
+              <p class="help-text">${t('config.sslCertPath.description', 'Path to a custom CA certificate file (PEM/CRT) to verify the server identity.')}</p>
+
               <div class="checkbox-container">
                   <input type="checkbox" id="noThinkMode" ${noThinkMode ? 'checked' : ''}>
-                  <label for="noThinkMode">Enable /no_think Mode</label>
+                  <label for="noThinkMode">${t('config.noThinkMode.label', 'Enable /no_think Mode')}</label>
               </div>
-              <p class="help-text">Prefixes all system prompts with the /no_think command for models that support it.</p>
+              <p class="help-text">${t('config.noThinkMode.description', 'Prefixes all system prompts with the /no_think command to disable the AI\'s thinking process (for models that support it).')}</p>
               
-              <h2>Context & File Strategy</h2>
-              <label for="fileUpdateMethod">File Update Method</label>
+              <h2>${t('config.section.contextAndFile', 'Context & File Strategy')}</h2>
+              <label for="fileUpdateMethod">${t('config.fileUpdateMethod.label', 'File Update Method')}</label>
               <select id="fileUpdateMethod">
-                <option value="full_file" ${fileUpdateMethod === 'full_file' ? 'selected' : ''}>Full File Content</option>
-                <option value="diff" ${fileUpdateMethod === 'diff' ? 'selected' : ''}>Diff Mode</option>
-                <option value="locate" ${fileUpdateMethod === 'locate' ? 'selected' : ''}>Locate and Insert/Update Mode</option>
-                <option value="do_your_best" ${fileUpdateMethod === 'do_your_best' ? 'selected' : ''}>Do The Best You Can</option>
+                <option value="full_file" ${fileUpdateMethod === 'full_file' ? 'selected' : ''}>${t('config.fileUpdateMethod.full_file.description', 'Full File Content')}</option>
+                <option value="diff" ${fileUpdateMethod === 'diff' ? 'selected' : ''}>${t('config.fileUpdateMethod.diff.description', 'Diff Mode')}</option>
+                <option value="locate" ${fileUpdateMethod === 'locate' ? 'selected' : ''}>${t('config.fileUpdateMethod.locate.description', 'Locate and Insert/Update Mode')}</option>
+                <option value="do_your_best" ${fileUpdateMethod === 'do_your_best' ? 'selected' : ''}>${t('config.fileUpdateMethod.do_your_best.description', 'Do The Best You Can')}</option>
               </select>
-              <p class="help-text">Choose how the AI provides file updates.</p>
+              <p class="help-text">${t('config.fileUpdateMethod.description', 'Choose how the AI should provide file updates.')}</p>
               
-              <label for="failsafeContextSize">Failsafe Context Size</label>
+              <label for="failsafeContextSize">${t('config.failsafeContextSize.label', 'Failsafe Context Size')}</label>
               <input type="number" id="failsafeContextSize" value="${failsafeContextSize}" min="1024" step="1024" />
-              <p class="help-text">Fallback context size to use if the API token counting fails.</p>
+              <p class="help-text">${t('config.failsafeContextSize.description', 'Fallback context size to use if the API token counting fails.')}</p>
 
-              <label for="maxImageSize">Max Image Size (px)</label>
+              <label for="maxImageSize">${t('config.maxImageSize.label', 'Max Image Size (px)')}</label>
               <input type="number" id="maxImageSize" value="${maxImageSize}" min="0" step="128" />
-              <p class="help-text">Resize images to this maximum dimension before sending. 0 disables resizing.</p>
-              <label for="contextFileExceptions">Context File Exceptions</label>
+              <p class="help-text">${t('config.maxImageSize.description', 'The maximum dimension (width or height) in pixels to which large images are resized before being sent to the AI. Set to 0 to disable resizing.')}</p>
+              
+              <label for="contextFileExceptions">${t('config.contextFileExceptions.label', 'Context File Exceptions')}</label>
               <textarea id="contextFileExceptions" rows="8">${contextFileExceptions.join('\n')}</textarea>
-              <p class="help-text">Enter file or folder patterns to always exclude from the AI context, one pattern per line. Uses glob patterns (e.g., '*.log', 'dist/**').</p>
+              <p class="help-text">${t('config.contextFileExceptions.description', 'A list of file and folder patterns to always exclude from the AI context. Uses glob patterns (e.g., \'*.log\', \'dist/**\').')}</p>
 
-              <h2>Agent & Inspector</h2>
-              <label for="agentMaxRetries">Agent Self-Correction Retries</label>
+              <h2>${t('config.section.agentAndInspector', 'Agent & Inspector')}</h2>
+              <label for="agentMaxRetries">${t('config.agentMaxRetries.label', 'Agent Self-Correction Retries')}</label>
               <input type="number" id="agentMaxRetries" value="${agentMaxRetries}" min="0" max="5" />
-              <p class="help-text">Number of times the agent will try to fix a failed task before asking for help.</p>
+              <p class="help-text">${t('config.agentMaxRetries.description', 'The maximum number of times the AI agent will try to fix a failed task on its own before asking for user intervention.')}</p>
+              
               <div class="checkbox-container">
                   <input type="checkbox" id="enableCodeInspector" ${enableCodeInspector ? 'checked' : ''}>
-                  <label for="enableCodeInspector">Enable Code Inspector</label>
+                  <label for="enableCodeInspector">${t('config.enableCodeInspector.label', 'Enable Code Inspector')}</label>
               </div>
-              <p class="help-text">Adds a button to AI-generated code blocks to check for bugs and vulnerabilities.</p>
+              <p class="help-text">${t('config.enableCodeInspector.description', 'Enable a button on AI-generated code blocks to check for bugs and vulnerabilities.')}</p>
               
-              <label for="inspectorModelName">Inspector Model Name</label>
+              <label for="inspectorModelName">${t('config.inspectorModelName.label', 'Inspector Model Name')}</label>
               <div class="input-group">
                   <select id="inspectorModelName"></select>
-                  <button id="refreshInspectorModels" type="button" class="icon-btn" title="Refresh Models"><i class="codicon codicon-refresh"></i></button>
+                  <button id="refreshInspectorModels" type="button" class="icon-btn" title="${t('command.refresh.title', 'Refresh')}"><i class="codicon codicon-refresh"></i></button>
               </div>
-              <p class="help-text">Optional. Use a different, potentially stronger model for code inspection.</p>
+              <p class="help-text">${t('config.inspectorModelName.description', 'Optional. Specify a different model for code inspection. If blank, the default chat model is used.')}</p>
 
-              <h2>Personas / System Prompts</h2>
-              <label for="chatPersona">Chat Mode Persona</label>
+              <h2>Tools & Search</h2>
+              <label for="searchProvider">Search Provider</label>
+              <select id="searchProvider">
+                <option value="google_custom_search" ${searchProvider === 'google_custom_search' ? 'selected' : ''}>Google Custom Search</option>
+              </select>
+              <p class="help-text">Currently, only Google Custom Search is supported.</p>
+
+              <label for="searchApiKey">Google Search API Key</label>
+              <input type="text" id="searchApiKey" value="${searchApiKey}" placeholder="Enter your Google Custom Search API Key" autocomplete="off" />
+              <p class="help-text">Required for the <code>search_web</code> tool. <a href="command:lollms-vs-coder.showHelp">See Help</a> for instructions.</p>
+
+              <label for="searchCx">Google Search Engine ID (CX)</label>
+              <input type="text" id="searchCx" value="${searchCx}" placeholder="Enter your Search Engine ID" autocomplete="off" />
+              <p class="help-text">Required for the <code>search_web</code> tool.</p>
+
+              <h2>${t('config.section.personas', 'Personas / System Prompts')}</h2>
+              <label for="chatPersona">${t('config.chatPersona.label', 'Chat Mode Persona')}</label>
               <textarea id="chatPersona" rows="6" placeholder="e.g., You are a helpful AI assistant.">${chatPersona}</textarea>
-              <p class="help-text">Define the AI's persona and rules for the main chat. Supports placeholders: <code>{{date}}</code>, <code>{{time}}</code>, <code>{{os}}</code>, <code>{{developer_name}}</code>.</p>
-              <label for="agentPersona">Agent Mode Persona</label>
+              <p class="help-text">${t('config.chatPersona.description', 'Define the AI\'s persona and rules for the main chat. This is added to a base prompt with the critical file-output rules. Supports placeholders: {{date}}, {{time}}, {{os}}, {{developer_name}}.')}</p>
+              
+              <label for="agentPersona">${t('config.agentPersona.label', 'Agent Mode Persona')}</label>
               <textarea id="agentPersona" rows="4" placeholder="e.g., You are a sub-agent that follows instructions.">${agentPersona}</textarea>
-              <p class="help-text">Define the persona for AI agents performing autonomous tasks. Supports placeholders: <code>{{date}}</code>, <code>{{time}}</code>, <code>{{os}}</code>, <code>{{developer_name}}</code>.</p>
-              <label for="codeInspectorPersona">Code Inspector Persona</label>
+              <p class="help-text">${t('config.agentPersona.description', 'Define the persona for AI agents performing autonomous tasks. Supports placeholders: {{date}}, {{time}}, {{os}}, {{developer_name}}.')}</p>
+              
+              <label for="codeInspectorPersona">${t('config.codeInspectorPersona.label', 'Code Inspector Persona')}</label>
               <textarea id="codeInspectorPersona" rows="4">${codeInspectorPersona}</textarea>
-              <p class="help-text">Customize the persona of the code inspector.</p>
-              <label for="commitMessagePersona">Git Commit Persona</label>
+              <p class="help-text">${t('config.codeInspectorPersona.description', 'Customize the persona of the code inspector. This is added to a base prompt with the critical response rules.')}</p>
+              
+              <label for="commitMessagePersona">${t('config.commitMessagePersona.label', 'Git Commit Persona')}</label>
               <textarea id="commitMessagePersona" rows="4" placeholder="e.g., You are an expert at writing conventional git commit messages.">${commitMessagePersona}</textarea>
-              <p class="help-text">Define the persona for the git commit message generator.</p>
+              <p class="help-text">${t('config.commitMessagePersona.description', 'Define the persona for the git commit message generator.')}</p>
 
-              <h2>Advanced</h2>
-              <p class="help-text">For advanced customization, you can directly edit the JSON file that stores your prompt library.</p>
-              <button id="editPromptsBtn" class="secondary-button">Edit Prompts JSON</button>
+              <h2>${t('config.section.advanced', 'Advanced')}</h2>
+              <p class="help-text">${t('config.advanced.editPromptsText', 'For advanced customization, you can directly edit the JSON file that stores your prompt library.')}</p>
+              <button id="editPromptsBtn" class="secondary-button">${t('command.editPromptsFile.title', 'Edit Prompts JSON File')}</button>
             </div>
-            <button id="saveConfig">Save & Close</button>
+            <button id="saveConfig">${t('config.saveAndClose', 'Save & Close')}</button>
           </div>
         
           <script>
@@ -358,6 +444,7 @@ export class SettingsPanel {
                     developerName: document.getElementById('developerName'),
                     requestTimeout: document.getElementById('requestTimeout'),
                     disableSslVerification: document.getElementById('disableSsl'),
+                    sslCertPath: document.getElementById('sslCertPath'),
                     noThinkMode: document.getElementById('noThinkMode'),
                     agentMaxRetries: document.getElementById('agentMaxRetries'),
                     maxImageSize: document.getElementById('maxImageSize'),
@@ -372,7 +459,11 @@ export class SettingsPanel {
                     thinkingMode: document.getElementById('thinkingMode'),
                     thinkingModeCustomPrompt: document.getElementById('thinkingModeCustomPrompt'),
                     reasoningLevel: document.getElementById('reasoningLevel'),
-                    failsafeContextSize: document.getElementById('failsafeContextSize')
+                    failsafeContextSize: document.getElementById('failsafeContextSize'),
+                    // Search Fields
+                    searchProvider: document.getElementById('searchProvider'),
+                    searchApiKey: document.getElementById('searchApiKey'),
+                    searchCx: document.getElementById('searchCx')
                 };
                 
                 const chatModelSelect = document.getElementById('modelSelect');
@@ -381,6 +472,10 @@ export class SettingsPanel {
 
                 fields.thinkingMode.addEventListener('change', () => {
                     customThinkingPromptContainer.style.display = fields.thinkingMode.value === 'custom' ? 'block' : 'none';
+                });
+
+                document.getElementById('browseCertPath').addEventListener('click', () => {
+                    vscode.postMessage({ command: 'browseCertPath' });
                 });
 
                 function postTempUpdate(key, value) {
@@ -402,8 +497,8 @@ export class SettingsPanel {
                 }
                 
                 function refreshModelsList(force) {
-                    chatModelSelect.innerHTML = '<option>Loading...</option>';
-                    inspectorModelSelect.innerHTML = '<option>Loading...</option>';
+                    chatModelSelect.innerHTML = '<option>${t('progress.loading', 'Loading...')}</option>';
+                    inspectorModelSelect.innerHTML = '<option>${t('progress.loading', 'Loading...')}</option>';
                     vscode.postMessage({ command: 'fetchModels', value: force });
                 }
 
@@ -423,7 +518,7 @@ export class SettingsPanel {
                                 if (selectElement === inspectorModelSelect) {
                                     const emptyOption = document.createElement('option');
                                     emptyOption.value = "";
-                                    emptyOption.text = "Same as Chat Model (Default)";
+                                    emptyOption.text = "${t('label.defaultModel', 'Same as Chat Model (Default)')}";
                                     selectElement.appendChild(emptyOption);
                                 }
 
@@ -437,13 +532,15 @@ export class SettingsPanel {
                             } else {
                                 const noModelsOption = document.createElement('option');
                                 noModelsOption.value = selectedValue;
-                                noModelsOption.text = selectedValue || "No models found";
+                                noModelsOption.text = selectedValue || "${t('info.noModelsFound', 'No models found')}";
                                 selectElement.appendChild(noModelsOption);
                             }
                         };
 
                         createOptions(chatModelSelect, currentModelName);
                         createOptions(inspectorModelSelect, currentInspectorModelName);
+                    } else if (message.command === 'updateCertPath') {
+                        fields.sslCertPath.value = message.path;
                     }
                 });
 

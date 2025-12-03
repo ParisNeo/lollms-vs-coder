@@ -5,6 +5,7 @@ export interface CustomActionData {
     actionType: 'generation' | 'information';
     save: boolean;
     title: string;
+    useContext: boolean;
 }
 
 
@@ -171,6 +172,14 @@ export class CustomActionModal {
 
                     <div class="checkbox-container">
                         <label class="switch">
+                            <input type="checkbox" id="use-context" checked>
+                            <span class="slider"></span>
+                        </label>
+                        <label for="use-context">Use Project Context (AI Context Files)</label>
+                    </div>
+
+                    <div class="checkbox-container">
+                        <label class="switch">
                             <input type="checkbox" id="save-prompt">
                             <span class="slider"></span>
                         </label>
@@ -193,6 +202,7 @@ export class CustomActionModal {
                 
                 const promptInput = document.getElementById('prompt');
                 const saveCheckbox = document.getElementById('save-prompt');
+                const useContextCheckbox = document.getElementById('use-context');
                 const saveTitleGroup = document.getElementById('save-title-group');
                 const saveTitleInput = document.getElementById('save-title');
                 
@@ -204,6 +214,7 @@ export class CustomActionModal {
                     const prompt = promptInput.value;
                     const actionType = document.querySelector('input[name="actionType"]:checked').value;
                     const save = saveCheckbox.checked;
+                    const useContext = useContextCheckbox.checked;
                     const title = saveTitleInput.value;
 
                     if (!prompt) {
@@ -217,7 +228,7 @@ export class CustomActionModal {
 
                     vscode.postMessage({ 
                         command: 'submit', 
-                        data: { prompt, actionType, save, title }
+                        data: { prompt, actionType, save, title, useContext }
                     });
                 });
 

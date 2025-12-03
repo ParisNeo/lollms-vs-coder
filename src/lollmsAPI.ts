@@ -1,13 +1,16 @@
 import fetch, { RequestInit, AbortError } from 'node-fetch';
 import * as https from 'https';
+import * as fs from 'fs';
 import { URL } from 'url';
 import * as vscode from 'vscode';
+import { Logger } from './logger';
 
 export interface LollmsConfig {
   apiUrl: string;
   apiKey: string;
   modelName: string;
   disableSslVerification: boolean;
+  sslCertPath?: string;
 }
 
 export interface ChatMessage {
@@ -54,34 +57,54 @@ export class LollmsAPI {
   private httpsAgent: https.Agent;
   private baseUrl: string;
   private _cachedModels: Array<{ id: string }> | null = null;
-  private globalState: vscode.Memento;
+  private globalState?: vscode.Memento;
 
-  constructor(config: LollmsConfig, globalState: vscode.Memento) {
+  constructor(config: LollmsConfig, globalState?: vscode.Memento) {
     this.config = config;
     this.globalState = globalState;
-    this.httpsAgent = new https.Agent({
-        rejectUnauthorized: !this.config.disableSslVerification,
-    });
-    const url = new URL(this.config.apiUrl);
-    this.baseUrl = `${url.protocol}//${url.host}`;
+    this.httpsAgent = this.createHttpsAgent();
+    
+    try {
+        const url = new URL(this.config.apiUrl);
+        this.baseUrl = `${url.protocol}//${url.host}`;
+    } catch (e) {
+        Logger.error("LollmsAPI initialized with invalid URL", this.config.apiUrl);
+        this.baseUrl = "";
+    }
+  }
+
+  private createHttpsAgent(): https.Agent {
+      const options: https.AgentOptions = {
+          rejectUnauthorized: !this.config.disableSslVerification,
+      };
+
+      if (this.config.sslCertPath && fs.existsSync(this.config.sslCertPath)) {
+          try {
+              options.ca = fs.readFileSync(this.config.sslCertPath);
+              Logger.info(`Loaded custom SSL certificate from: ${this.config.sslCertPath}`);
+          } catch (e) {
+              Logger.error(`Failed to read SSL certificate file: ${this.config.sslCertPath}`, e);
+          }
+      }
+
+      return new https.Agent(options);
   }
 
   public updateConfig(newConfig: LollmsConfig) {
     const oldUrl = this.config.apiUrl;
     this.config = newConfig;
-    this.httpsAgent = new https.Agent({
-        rejectUnauthorized: !this.config.disableSslVerification,
-    });
+    this.httpsAgent = this.createHttpsAgent();
+    
     try {
         const url = new URL(this.config.apiUrl);
         this.baseUrl = `${url.protocol}//${url.host}`;
     } catch (error) {
-        console.error("Invalid API URL provided:", this.config.apiUrl);
+        Logger.error("Invalid API URL updated:", this.config.apiUrl);
         this.baseUrl = ''; 
     }
     
-    // Only clear cache if the URL or Key has changed, implying a different server or auth
-    if (oldUrl !== newConfig.apiUrl) {
+    // Only clear cache if the URL or Key has changed
+    if (oldUrl !== newConfig.apiUrl && this.globalState) {
         this._cachedModels = null;
         this.globalState.update('lollms_models_cache', undefined);
     }
@@ -92,21 +115,27 @@ export class LollmsAPI {
   }
 
   public async getModels(forceRefresh: boolean = false): Promise<Array<{ id: string }>> {
+    Logger.info(`Fetching models from ${this.baseUrl} (Force: ${forceRefresh})`);
+
     // 1. Try in-memory cache first
     if (this._cachedModels && this._cachedModels.length > 0 && !forceRefresh) {
         return this._cachedModels;
     }
 
     // 2. Try persistent storage cache next (if not forcing refresh)
-    if (!forceRefresh) {
+    if (!forceRefresh && this.globalState) {
         const storedModels = this.globalState.get<Array<{ id: string }>>('lollms_models_cache');
         if (storedModels && storedModels.length > 0) {
             this._cachedModels = storedModels;
+            Logger.debug("Using cached models from global state");
             return storedModels;
         }
     }
 
     // 3. Fetch from API
+    if (!this.baseUrl) {
+        throw new Error("Invalid API URL");
+    }
     const modelsUrl = `${this.baseUrl}/v1/models`;
     const isHttps = modelsUrl.startsWith('https');
 
@@ -129,16 +158,22 @@ export class LollmsAPI {
         
         // Update caches
         this._cachedModels = models;
-        await this.globalState.update('lollms_models_cache', models);
+        if (this.globalState) {
+            await this.globalState.update('lollms_models_cache', models);
+        }
         
+        Logger.info(`Successfully fetched ${models.length} models`);
         return models;
     } catch (error) {
+        Logger.error("Error fetching models", error);
         // If fetch fails but we have stale cache in storage, return that as fallback
-        const storedModels = this.globalState.get<Array<{ id: string }>>('lollms_models_cache');
-        if (storedModels && storedModels.length > 0) {
-            console.warn("Lollms: Failed to fetch models, using stale cache.", error);
-            this._cachedModels = storedModels;
-            return storedModels;
+        if (this.globalState) {
+            const storedModels = this.globalState.get<Array<{ id: string }>>('lollms_models_cache');
+            if (storedModels && storedModels.length > 0) {
+                Logger.warn("Using stale cached models due to fetch error.");
+                this._cachedModels = storedModels;
+                return storedModels;
+            }
         }
         throw error;
     }
@@ -170,7 +205,7 @@ export class LollmsAPI {
     const response = await fetch(tokenizeUrl, options);
     if (!response.ok) {
         const errorBody = await response.text();
-        console.error('Lollms Tokenize API Error Body:', errorBody);
+        Logger.error('Lollms Tokenize API Error:', errorBody);
         throw new Error(`Failed to tokenize text: ${response.status} ${response.statusText}`);
     }
     return await response.json() as TokenizeResponse;
@@ -202,7 +237,7 @@ export class LollmsAPI {
     const response = await fetch(contextSizeUrl, options);
     if (!response.ok) {
         const errorBody = await response.text();
-        console.error('Lollms Context Size API Error Body:', errorBody);
+        Logger.error('Lollms Context Size API Error:', errorBody);
         throw new Error(`Failed to get context size: ${response.status} ${response.statusText}`);
     }
     return await response.json() as ContextSizeResponse;
@@ -230,7 +265,7 @@ export class LollmsAPI {
     const response = await fetch(extractUrl, options);
     if (!response.ok) {
         const errorBody = await response.text();
-        console.error('Lollms Text Extraction API Error:', errorBody);
+        Logger.error('Lollms Text Extraction API Error:', errorBody);
         throw new Error(`Failed to extract text: ${response.status} ${response.statusText}`);
     }
     const data = await response.json();
@@ -278,7 +313,7 @@ export class LollmsAPI {
 
         if (!response.ok) {
             const errorBody = await response.text();
-            console.error('Lollms Image Generation API Error Body:', errorBody);
+            Logger.error('Lollms Image Generation API Error:', errorBody);
             throw new Error(`Lollms Image API error: ${response.status} ${response.statusText} - ${errorBody}`);
         }
 
@@ -354,12 +389,14 @@ export class LollmsAPI {
         options.agent = this.httpsAgent;
       }
 
+      Logger.debug("Sending chat request", { url: chatUrl, model: modelToSend, stream });
+
       const response = await fetch(chatUrl, options);
 
       if (!response.ok) {
         const errorBody = await response.text();
-        console.error('Lollms API Error Body:', errorBody);
-        // Construct a more informative error message
+        Logger.error('Lollms API Error:', errorBody);
+        
         let detailedError = `Lollms API error: ${response.status} ${response.statusText}.`;
         try {
             const parsedError = JSON.parse(errorBody);
@@ -389,11 +426,11 @@ export class LollmsAPI {
                 }
                 buffer += decoder.decode(chunk as any, { stream: true });
                 const lines = buffer.split('\n');
-                buffer = lines.pop() || ''; // Keep the last, possibly incomplete line
+                buffer = lines.pop() || '';
 
                 for (const line of lines) {
                     const trimmedLine = line.trim();
-                    if (trimmedLine === '') continue; // Skip empty lines
+                    if (trimmedLine === '') continue;
 
                     if (trimmedLine.startsWith('data: ')) {
                         const data = trimmedLine.substring(6).trim();
@@ -408,7 +445,7 @@ export class LollmsAPI {
                                 onChunk(content);
                             }
                         } catch (e) {
-                            console.error('Error parsing stream data line:', data, e);
+                            Logger.error('Error parsing stream data line:', data);
                         }
                     }
                 }
@@ -430,6 +467,7 @@ export class LollmsAPI {
             }
             throw error;
         }
+        Logger.error("SendChat Failed", error);
         throw error;
     } finally {
       clearTimeout(timeout);

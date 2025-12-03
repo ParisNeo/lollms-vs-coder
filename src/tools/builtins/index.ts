@@ -15,6 +15,7 @@ import { setVscodePythonInterpreterTool } from './setVscodePythonInterpreter';
 import { searchWebTool } from './searchWeb';
 import { generateImageTool } from './generateImage';
 import { editPlanTool } from './editPlan';
+import { readCodeGraphTool } from './readCodeGraph'; // Import new tool
 
 export const allTools: ToolDefinition[] = [
     autoSelectContextFilesTool,
@@ -32,5 +33,6 @@ export const allTools: ToolDefinition[] = [
     setVscodePythonInterpreterTool,
     searchWebTool,
     generateImageTool,
-    editPlanTool
+    editPlanTool,
+    readCodeGraphTool // Register new tool
 ];

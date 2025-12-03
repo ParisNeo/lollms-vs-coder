@@ -36,6 +36,7 @@ import { CodeGraphManager } from './codeGraphManager';
 import { ActionsTreeProvider } from './commands/actionsTreeProvider';
 import { DebugCodeLensProvider } from './commands/debugCodeLensProvider';
 import { CommitInspectorPanel } from './commands/commitInspectorPanel';
+import { Logger } from './logger';
 
 const execAsync = promisify(exec);
 
@@ -57,6 +58,7 @@ const debugErrorManager = {
         this.lastError = { message, stack, filePath, line };
         vscode.commands.executeCommand('setContext', 'lollms:hasDebugError', true);
         this._onDidChange.fire();
+        Logger.info(`Debug error captured: ${message}`, { stack, filePath, line });
     },
 
     clearError() {
@@ -114,7 +116,7 @@ class LollmsDebugAdapterTrackerFactory implements vscode.DebugAdapterTrackerFact
                                                         preview: true
                                                     });
                                                 } catch (e) {
-                                                    console.error("Lollms: Could not open document from stack trace.", e);
+                                                    Logger.error("Lollms: Could not open document from stack trace.", e);
                                                 }
                                             }
                                             break; 
@@ -157,7 +159,8 @@ async function buildCodeActionPrompt(
     actionType: 'generation' | 'information' | undefined,
     editor: vscode.TextEditor, 
     extensionUri: vscode.Uri,
-    contextManager: ContextManager
+    contextManager: ContextManager,
+    useContext: boolean = false
 ): Promise<{ systemPrompt: string, userPrompt: string } | null> {
     
     const selection = editor.selection;
@@ -179,7 +182,15 @@ async function buildCodeActionPrompt(
     const fileName = path.basename(document.fileName);
     const languageId = document.languageId;
     
-    let userPrompt = `I am working on the file \`${fileName}\` which is a \`${languageId}\` file.\n\nHere is the code selection:\n\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\nINSTRUCTION: **${userInstruction}**`;
+    let contextText = '';
+    if (useContext) {
+        const contextResult = await contextManager.getContextContent();
+        if (contextResult && contextResult.text && !contextResult.text.includes("**No workspace folder is currently open.**")) {
+            contextText = `\n\n==== PROJECT CONTEXT ====\n${contextResult.text}\n=========================\n`;
+        }
+    }
+
+    let userPrompt = `I am working on the file \`${fileName}\` which is a \`${languageId}\` file.\n\nHere is the code selection:\n\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\nINSTRUCTION: **${userInstruction}**${contextText}`;
 
     const agentPersonaPrompt = getProcessedSystemPrompt('agent');
     let systemPrompt = '';
@@ -210,7 +221,7 @@ User preferences: ${agentPersonaPrompt}`;
             userPrompt += `==== CONTEXT AFTER (DO NOT INCLUDE IN OUTPUT) ====\n\`\`\`${languageId}\n${codeAfter}\n\`\`\`\n\n`;
         }
 
-        userPrompt += `INSTRUCTION: **${userInstruction}**\n\n`;
+        userPrompt += `INSTRUCTION: **${userInstruction}**\n${contextText}\n\n`;
         userPrompt += `⚠️ CRITICAL: Your response must contain ONLY the modified selected code block. Do not include any BEFORE or AFTER context code in your response.`;
 
         systemPrompt = `You are a surgical code modification tool. You must modify ONLY the selected code block and return ONLY that modified block.
@@ -253,7 +264,7 @@ async function buildDebugErrorPrompt(
             const errorLineContent = document.lineAt(errorDetails.line - 1).text;
             prompt += `\n\n**Here is the line of code that is causing the error:**\n\`\`\`\n${errorLineContent.trim()}\n\`\`\``;
         } catch (e) {
-            console.error("Lollms: Could not read the specific error line from the document.", e);
+            Logger.error("Lollms: Could not read the specific error line from the document.", e);
         }
 
         let fileIsInContext = false;
@@ -275,7 +286,7 @@ async function buildDebugErrorPrompt(
 
                 prompt += `\n\n**Here is the full content of \`${relativePath}\` for your analysis:**\n\`\`\`${languageId}\n${contentString}\n\`\`\`\n\nPlease analyze the error and the file content, then provide a fix.`;
             } catch (e) {
-                console.error("Failed to read file from stack trace for debug prompt:", e);
+                Logger.error("Failed to read file from stack trace for debug prompt:", e);
                 prompt += `\n\nI was unable to read the content of the file. Please provide a general analysis based on the error and stack trace.`;
             }
         }
@@ -289,7 +300,8 @@ async function buildDebugErrorPrompt(
 
 
 export async function activate(context: vscode.ExtensionContext) {
-    console.log('Lollms VS Coder is now active!');
+    Logger.initialize(context);
+    Logger.info('Lollms VS Coder is now active!');
 
     let activeWorkspaceFolder: vscode.WorkspaceFolder | undefined;
 
@@ -300,7 +312,7 @@ export async function activate(context: vscode.ExtensionContext) {
         }
         pythonExtApi = pythonExt.exports;
     } else {
-        vscode.window.showWarningMessage("The Microsoft Python extension is not installed. Python execution will use the generic 'python' command.");
+        Logger.warn("The Microsoft Python extension is not installed. Python execution will use the generic 'python' command.");
     }
 
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
@@ -308,7 +320,8 @@ export async function activate(context: vscode.ExtensionContext) {
         apiUrl: config.get<string>('apiUrl') || 'http://localhost:9642',
         apiKey: config.get<string>('apiKey')?.trim() || '',
         modelName: config.get<string>('modelName') || 'ollama/mistral',
-        disableSslVerification: config.get<boolean>('disableSslVerification') || false
+        disableSslVerification: config.get<boolean>('disableSslVerification') || false,
+        sslCertPath: config.get<string>('sslCertPath') || ''
     }, context.globalState);
 
     const originalContentProvider = new (class implements vscode.TextDocumentContentProvider {
@@ -387,11 +400,25 @@ export async function activate(context: vscode.ExtensionContext) {
     
     const setupChatPanel = (panel: ChatPanel) => {
         if (!panel.agentManager) {
-            panel.agentManager = new AgentManager(panel, lollmsAPI, contextManager, gitIntegration, discussionManager!, context.extensionUri);
+            // Inject codeGraphManager into AgentManager
+            panel.agentManager = new AgentManager(panel, lollmsAPI, contextManager, gitIntegration, discussionManager!, context.extensionUri, codeGraphManager);
         }
         panel.setProcessManager(processManager);
         panel.agentManager.setProcessManager(processManager);
         panel.setContextManager(contextManager);
+    };
+
+    const revealDiscussion = (discussion: Discussion) => {
+        if (discussionView && !discussion.id.startsWith('temp-')) {
+            setTimeout(async () => {
+                try {
+                    const item = new DiscussionItem(discussion, context.extensionUri);
+                    await discussionView?.reveal(item, { select: true, focus: false, expand: true });
+                } catch (e) {
+                    // Ignore
+                }
+            }, 300);
+        }
     };
 
     async function switchActiveWorkspace(folder: vscode.WorkspaceFolder) {
@@ -412,6 +439,10 @@ export async function activate(context: vscode.ExtensionContext) {
         
         await skillsManager.switchWorkspace(folder.uri);
         skillsTreeProvider.refresh();
+        
+        // Pass workspace to CodeGraphManager
+        codeGraphManager.setWorkspaceRoot(folder.uri);
+        codeExplorerTreeProvider.refresh();
         
         if (contextStateProvider) {
             await contextStateProvider.switchWorkspace(folder.uri.fsPath);
@@ -512,6 +543,7 @@ export async function activate(context: vscode.ExtensionContext) {
             targetPanel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, targetDiscussion.id, skillsManager);
             setupChatPanel(targetPanel);
             await targetPanel.loadDiscussion();
+            revealDiscussion(targetDiscussion);
         } else {
             // Last Discussion
             const allDiscussions = await discussionManager.getAllDiscussions();
@@ -560,11 +592,8 @@ Please analyze this output (e.g., error log, script output, or configuration tex
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showLog', () => {
-        if (ChatPanel.currentPanel) {
-            ChatPanel.currentPanel.showDebugLog();
-        } else {
-            vscode.window.showErrorMessage("No active Lollms chat panel found to show logs from.");
-        }
+        // Updated to show the global logger
+        Logger.show();
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussion', async (item?: DiscussionGroupItem) => {
@@ -577,6 +606,7 @@ Please analyze this output (e.g., error log, script output, or configuration tex
         setupChatPanel(panel);
         await panel.loadDiscussion();
         discussionTreeProvider?.refresh();
+        revealDiscussion(discussion);
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussionFromClipboard', async () => {
@@ -614,6 +644,7 @@ Please analyze this output (e.g., error log, script output, or configuration tex
         await panel.loadDiscussion();
         
         discussionTreeProvider?.refresh();
+        revealDiscussion(discussion);
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newTempDiscussion', async () => {
@@ -859,6 +890,7 @@ Please analyze this output (e.g., error log, script output, or configuration tex
             const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, discussion.id, skillsManager);
             setupChatPanel(panel);
             await panel.loadDiscussion();
+            revealDiscussion(discussion);
     
             const config = vscode.workspace.getConfiguration('lollmsVsCoder');
             const inspectorModel = config.get<string>('inspectorModelName') || discussion.model || lollmsAPI.getModelName();
@@ -892,11 +924,13 @@ ${fileContent}
         }
     
         let targetPrompt: Prompt | undefined;
+        let useContext = true; // Default to true
 
         if (promptOrArg && (promptOrArg as { isCustom: true }).isCustom === true) {
             const customActionData = await CustomActionModal.createOrShow(context.extensionUri);
             if (!customActionData) return; // User cancelled
-    
+            
+            useContext = customActionData.useContext;
             const fullContent = `${customActionData.prompt}\n{{SELECTED_CODE}}`;
 
             if (customActionData.save && customActionData.title) {
@@ -938,7 +972,8 @@ ${fileContent}
             if (!selection.prompt) { // User chose "Custom Prompt..."
                 const customActionData = await CustomActionModal.createOrShow(context.extensionUri);
                 if (!customActionData) return;
-    
+                
+                useContext = customActionData.useContext;
                 const fullContent = `${customActionData.prompt}\n{{SELECTED_CODE}}`;
 
                 if (customActionData.save && customActionData.title) {
@@ -967,12 +1002,21 @@ ${fileContent}
                 };
             } else {
                 targetPrompt = selection.prompt;
+                // For existing saved prompts, we default to using context as requested
+                useContext = true; 
             }
         }
     
         if (!targetPrompt || typeof targetPrompt.content !== 'string') { return; }
 
-        const promptData = await buildCodeActionPrompt(targetPrompt.content, targetPrompt.action_type, editor, context.extensionUri, contextManager);
+        const promptData = await buildCodeActionPrompt(
+            targetPrompt.content, 
+            targetPrompt.action_type, 
+            editor, 
+            context.extensionUri, 
+            contextManager,
+            useContext
+        );
         if (promptData === null) return;
         const { systemPrompt, userPrompt } = promptData;
     
@@ -1007,15 +1051,24 @@ ${fileContent}
                 const document = editor.document;
                 originalContentProvider.set(document.uri, document.getText());
 
-                await editor.edit(editBuilder => {
-                    editBuilder.replace(editor.selection, modifiedCode);
-                });
+                try {
+                    const workspaceEdit = new vscode.WorkspaceEdit();
+                    workspaceEdit.replace(document.uri, editor.selection, modifiedCode);
+                    const success = await vscode.workspace.applyEdit(workspaceEdit);
+                    
+                    if (!success) {
+                        vscode.window.showErrorMessage(vscode.l10n.t("error.failedToApplyFileContent", "Failed to apply changes via WorkspaceEdit."));
+                        return;
+                    }
 
-                const originalUri = document.uri.with({ scheme: 'lollms-original' });
-                const modifiedUri = document.uri;
+                    const originalUri = document.uri.with({ scheme: 'lollms-original' });
+                    const modifiedUri = document.uri;
 
-                const title = `${path.basename(document.fileName)} (Original) ↔ ${path.basename(document.fileName)} (AI Suggestion)`;
-                await vscode.commands.executeCommand('vscode.diff', originalUri, modifiedUri, title);
+                    const title = `${path.basename(document.fileName)} (Original) ↔ ${path.basename(document.fileName)} (AI Suggestion)`;
+                    await vscode.commands.executeCommand('vscode.diff', originalUri, modifiedUri, title);
+                } catch (e: any) {
+                    vscode.window.showErrorMessage(`Failed to apply edits: ${e.message}`);
+                }
             }
         });
     }));
@@ -1023,11 +1076,16 @@ ${fileContent}
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.buildCodeGraph', async () => {
         await codeGraphManager.buildGraph();
         codeExplorerTreeProvider.refresh();
+        vscode.window.showInformationMessage("Code graph rebuilt.");
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showCodeGraphPanel', async () => {
-        await codeGraphManager.buildGraph();
-        CodeExplorerPanel.createOrShow(context.extensionUri, codeGraphManager.getGraphData());
+        // Only load, don't force rebuild unless empty
+        const graph = codeGraphManager.getGraphData();
+        if (graph.nodes.length === 0) {
+             await codeGraphManager.loadGraph();
+        }
+        CodeExplorerPanel.createOrShow(context.extensionUri, codeGraphManager);
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.inspectCommit', async () => {
@@ -1094,7 +1152,7 @@ ${fileContent}
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.cycleFileState', async (item: ContextItem) => {
         if (contextStateProvider && item) {
-            await contextStateProvider.cycleState(item);
+            await contextStateProvider.setStateForUri(item.resourceUri, item.state === 'included' ? 'tree-only' : item.state === 'tree-only' ? 'fully-excluded' : 'included');
         }
     }));
 
@@ -1131,6 +1189,7 @@ ${fileContent}
         setupChatPanel(panel);
         await panel.loadDiscussion();
         panel.sendMessage(userMessage); // This triggers the API call
+        revealDiscussion(discussion);
     }
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.autoSelectContextFiles', async () => {
@@ -1442,7 +1501,7 @@ ${fileContent}
         }
     }));
     
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showConfigView', () => SettingsPanel.createOrShow(context.extensionUri, lollmsAPI)));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showConfigView', () => SettingsPanel.createOrShow(context.extensionUri, lollmsAPI, processManager)));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showHelp', () => HelpPanel.createOrShow(context.extensionUri)));
 
         
@@ -1820,7 +1879,8 @@ ${fileContent}
             apiKey: newConfigValues.get<string>('apiKey')?.trim() || '',
             apiUrl: newConfigValues.get<string>('apiUrl') || 'http://localhost:9642',
             modelName: newConfigValues.get<string>('modelName') || 'ollama/mistral',
-            disableSslVerification: newConfigValues.get<boolean>('disableSslVerification') || false
+            disableSslVerification: newConfigValues.get<boolean>('disableSslVerification') || false,
+            sslCertPath: newConfigValues.get<string>('sslCertPath') || ''
         };
         lollmsAPI.updateConfig(newConfig);
         updateModelStatus();
@@ -1858,7 +1918,8 @@ ${fileContent}
         if (e.affectsConfiguration('lollmsVsCoder.modelName') || 
             e.affectsConfiguration('lollmsVsCoder.apiUrl') ||
             e.affectsConfiguration('lollmsVsCoder.apiKey') ||
-            e.affectsConfiguration('lollmsVsCoder.disableSslVerification')) {
+            e.affectsConfiguration('lollmsVsCoder.disableSslVerification') ||
+            e.affectsConfiguration('lollmsVsCoder.sslCertPath')) {
             vscode.commands.executeCommand('lollmsApi.recreateClient');
         }
     }));

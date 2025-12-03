@@ -23,17 +23,21 @@ import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
 import Prism from 'prismjs';
 
+// CodeMirror imports
+import { EditorState, Compartment } from "@codemirror/state";
+import { EditorView, keymap, placeholder } from "@codemirror/view";
+import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { searchKeymap, openSearchPanel } from "@codemirror/search";
+import { markdown } from "@codemirror/lang-markdown";
+import { oneDark } from "@codemirror/theme-one-dark";
+
 // --- PrismJS Dependencies (Order Matters) ---
-
-// 1. Core & Bases
 import 'prismjs/components/prism-clike';
-import 'prismjs/components/prism-markup'; // html, xml, svg
-import 'prismjs/components/prism-markup-templating'; // Required for PHP, ERB, etc.
-
-// 2. Common Languages
+import 'prismjs/components/prism-markup';
+import 'prismjs/components/prism-markup-templating';
 import 'prismjs/components/prism-css';
-import 'prismjs/components/prism-javascript'; // Depends on clike
-import 'prismjs/components/prism-typescript'; // Depends on javascript
+import 'prismjs/components/prism-javascript';
+import 'prismjs/components/prism-typescript';
 import 'prismjs/components/prism-python';
 import 'prismjs/components/prism-bash';
 import 'prismjs/components/prism-json';
@@ -45,13 +49,11 @@ import 'prismjs/components/prism-go';
 import 'prismjs/components/prism-rust';
 import 'prismjs/components/prism-sql';
 import 'prismjs/components/prism-yaml';
-import 'prismjs/components/prism-markdown'; // Depends on markup
-
-// 3. Scripting & Config
+import 'prismjs/components/prism-markdown';
 import 'prismjs/components/prism-powershell';
 import 'prismjs/components/prism-batch';
 import 'prismjs/components/prism-lua';
-import 'prismjs/components/prism-php'; // Depends on markup-templating
+import 'prismjs/components/prism-php';
 import 'prismjs/components/prism-r';
 import 'prismjs/components/prism-swift';
 import 'prismjs/components/prism-kotlin';
@@ -63,12 +65,10 @@ import 'prismjs/components/prism-nginx';
 import 'prismjs/components/prism-http';
 import 'prismjs/components/prism-latex';
 import 'prismjs/components/prism-perl';
-
-// 4. Web Frameworks & Extensions
 import 'prismjs/components/prism-sass';
 import 'prismjs/components/prism-scss';
-import 'prismjs/components/prism-jsx'; // Depends on javascript, markup
-import 'prismjs/components/prism-tsx'; // Depends on jsx, typescript
+import 'prismjs/components/prism-jsx';
+import 'prismjs/components/prism-tsx';
 
 // Initialize DOMPurify
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
@@ -85,15 +85,23 @@ import {
     renderMessageContent, 
     updateContext, 
     displayPlan, 
-    scheduleRender,
-    insertNewMessageEditor 
+    scheduleRender
 } from './messageRenderer.js';
-import { performSearch, navigateSearch, clearSearch } from './search.js';
 import { isScrolledToBottom } from './utils.js';
+import { initEventHandlers, sendMessage } from './events.js'; 
+
+// Export editable compartment for ui.ts to use
+export const editableCompartment = new Compartment();
 
 // =================================== UI Functions ===================================
 function localSetGeneratingState(isGenerating: boolean) {
-    if(dom.messageInput) dom.messageInput.disabled = isGenerating;
+    // CodeMirror editable state
+    if (state.editor) {
+        state.editor.dispatch({
+            effects: editableCompartment.reconfigure(EditorView.editable.of(!isGenerating))
+        });
+    }
+
     if(dom.agentModeCheckbox) dom.agentModeCheckbox.disabled = isGenerating;
     if(dom.agentModeToggle) dom.agentModeToggle.classList.toggle('disabled', isGenerating);
     if(dom.modelSelector) dom.modelSelector.disabled = isGenerating;
@@ -101,7 +109,8 @@ function localSetGeneratingState(isGenerating: boolean) {
     if(dom.executeButton) dom.executeButton.disabled = isGenerating;
     
     // Toggle main input / generating overlay
-    if (dom.inputArea) dom.inputArea.style.display = isGenerating ? 'none' : 'flex';
+    // If generating, overlay is shown, input area hidden/disabled
+    if (dom.inputArea) dom.inputArea.classList.toggle('disabled', isGenerating);
     if (dom.generatingOverlay) dom.generatingOverlay.style.display = isGenerating ? 'flex' : 'none';
 
     if (!isGenerating) {
@@ -110,6 +119,8 @@ function localSetGeneratingState(isGenerating: boolean) {
         } else {
             dom.scrollToBottomBtn.style.display = 'none';
         }
+        // Refocus editor
+        if (state.editor) state.editor.focus();
     }
 }
 
@@ -177,7 +188,6 @@ function handleExtensionMessage(event: MessageEvent) {
                     if (stream.timer) clearTimeout(stream.timer);
                     delete state.streamingMessages[message.id];
                 }
-                // Pass true for isFinal to enable buttons (Execute, Apply, etc.)
                 renderMessageContent(message.id, message.fullContent, true);
                 break;
             }
@@ -198,11 +208,16 @@ function handleExtensionMessage(event: MessageEvent) {
                         const toolItem = document.createElement('div');
                         toolItem.className = 'tool-item';
                         toolItem.innerHTML = `
-                            <input type="checkbox" class="tool-item-checkbox" id="tool-${tool.name}" value="${tool.name}" ${isChecked ? 'checked' : ''}>
-                            <label for="tool-${tool.name}" class="tool-item-details">
-                                <h4>${tool.name}</h4>
-                                <p>${tool.description}</p>
-                            </label>
+                            <div class="checkbox-container">
+                                <label class="switch">
+                                    <input type="checkbox" class="tool-item-checkbox" id="tool-${tool.name}" value="${tool.name}" ${isChecked ? 'checked' : ''}>
+                                    <span class="slider"></span>
+                                </label>
+                                <label for="tool-${tool.name}" class="tool-item-details">
+                                    <strong>${tool.name}</strong><br>
+                                    <span style="font-weight:normal; font-size: 0.9em; opacity: 0.8;">${tool.description}</span>
+                                </label>
+                            </div>
                         `;
                         dom.toolsListDiv.appendChild(toolItem);
                     });
@@ -300,6 +315,49 @@ function handleExtensionMessage(event: MessageEvent) {
                     }
                 }
                 break;
+            
+            case 'filesAddedToContext':
+                const { results, blockId } = message;
+                const btnId = `btn-${blockId}`;
+                const actionBtn = document.getElementById(btnId) as HTMLButtonElement;
+                if (actionBtn) {
+                    actionBtn.innerHTML = `<span class="codicon codicon-check"></span> Added!`;
+                    actionBtn.classList.add('success');
+                    setTimeout(() => {
+                        actionBtn.innerHTML = `<span class="codicon codicon-add"></span> Add to Context`;
+                        actionBtn.classList.remove('success');
+                        actionBtn.disabled = false;
+                    }, 3000);
+                }
+                const codeBlock = document.getElementById(blockId);
+                if (codeBlock) {
+                    const originalText = codeBlock.textContent || '';
+                    const lines = originalText.trim().split('\n');
+                    let newHtml = '';
+                    lines.forEach(line => {
+                        const path = line.trim();
+                        if (results[path] === true) {
+                            newHtml += `<div class="select-line-valid">${path}</div>`;
+                        } else if (results[path] === false) {
+                            newHtml += `<div class="select-line-invalid">${path} (Not found)</div>`;
+                        } else {
+                            newHtml += `<div>${path}</div>`;
+                        }
+                    });
+                    codeBlock.classList.remove('language-select');
+                    codeBlock.innerHTML = newHtml;
+                }
+                break;
+                
+            case 'setInputText':
+                if (state.editor) {
+                    const transaction = state.editor.state.update({
+                        changes: { from: 0, to: state.editor.state.doc.length, insert: message.text }
+                    });
+                    state.editor.dispatch(transaction);
+                    state.editor.focus();
+                }
+                break;
         }
     } catch (e: any) {
         console.error("Error processing extension message:", e);
@@ -307,182 +365,6 @@ function handleExtensionMessage(event: MessageEvent) {
             vscode.postMessage({ command: 'showError', message: 'Webview Message Error: ' + e.message });
         }
     }
-}
-
-// =================================== Event Handlers ===================================
-function initEventHandlers() {
-    if(!dom.sendButton || !dom.messageInput) {
-        console.warn("Critical DOM elements missing. Retrying setup in 100ms...");
-        return;
-    }
-
-    if(dom.sendButton) dom.sendButton.addEventListener('click', sendMessage);
-    
-    if(dom.messageInput) {
-        dom.messageInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-            }
-        });
-        dom.messageInput.addEventListener('input', () => {
-            dom.messageInput.style.height = 'auto';
-            dom.messageInput.style.height = dom.messageInput.scrollHeight + 'px';
-        });
-    }
-
-    if(dom.refreshContextBtn) dom.refreshContextBtn.addEventListener('click', () => vscode.postMessage({ command: 'calculateTokens' }));
-    
-    // Update stop button listener for the new button ID (it reuses the ID but in different location)
-    if(dom.stopButton) {
-        dom.stopButton.addEventListener('click', () => vscode.postMessage({ command: 'stopGeneration' }));
-    }
-    
-    if(dom.addUserMessageBtn) dom.addUserMessageBtn.addEventListener('click', () => insertNewMessageEditor('user'));
-    if(dom.addAiMessageBtn) dom.addAiMessageBtn.addEventListener('click', () => insertNewMessageEditor('assistant'));
-    
-    if(dom.agentModeCheckbox) {
-        dom.agentModeCheckbox.addEventListener('change', () => vscode.postMessage({ command: 'toggleAgentMode' }));
-    }
-    
-    if(dom.executeButton) {
-        dom.executeButton.addEventListener('click', () => vscode.postMessage({ command: 'executeProject' }));
-    }
-    
-    if(dom.setEntryPointButton) {
-        dom.setEntryPointButton.addEventListener('click', () => vscode.postMessage({ command: 'setEntryPoint' }));
-    }
-    
-    if(dom.debugRestartButton) {
-        dom.debugRestartButton.addEventListener('click', () => vscode.postMessage({ command: 'debugRestart' }));
-    }
-    
-    if(dom.attachButton) {
-        dom.attachButton.addEventListener('click', () => dom.fileInput.click());
-    }
-
-    if(dom.fileInput) {
-        dom.fileInput.addEventListener('change', () => {
-            if (!dom.fileInput.files) return;
-            for (const file of dom.fileInput.files) {
-                const reader = new FileReader();
-                const isImage = file.type.startsWith('image/');
-                reader.onload = (e) => {
-                    if(e.target?.result) {
-                        vscode.postMessage({
-                            command: 'loadFile',
-                            file: { name: file.name, content: e.target.result, isImage }
-                        });
-                    }
-                };
-                reader.readAsDataURL(file);
-            }
-            dom.fileInput.value = '';
-        });
-    }
-
-    // Search handlers
-    if(dom.searchInput) dom.searchInput.addEventListener('input', performSearch);
-    if(dom.searchNextBtn) dom.searchNextBtn.addEventListener('click', () => navigateSearch(1));
-    if(dom.searchPrevBtn) dom.searchPrevBtn.addEventListener('click', () => navigateSearch(-1));
-    if(dom.searchCloseBtn) dom.searchCloseBtn.addEventListener('click', () => {
-        if(dom.searchBar) dom.searchBar.style.display = 'none';
-        clearSearch();
-        if(dom.messageInput) dom.messageInput.focus();
-    });
-
-    document.addEventListener('keydown', (e: KeyboardEvent) => {
-        if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
-            e.preventDefault();
-            if(dom.searchBar) dom.searchBar.style.display = 'flex';
-            if(dom.searchInput) {
-                dom.searchInput.focus();
-                dom.searchInput.select();
-            }
-        }
-        if (dom.searchBar && dom.searchBar.style.display !== 'none') {
-            if (e.key === 'Escape') {
-                dom.searchBar.style.display = 'none';
-                clearSearch();
-                if(dom.messageInput) dom.messageInput.focus();
-            } else if (e.key === 'Enter') {
-                navigateSearch(e.shiftKey ? -1 : 1);
-            }
-        }
-    });
-
-    if(dom.moreActionsButton) {
-        dom.moreActionsButton.addEventListener('click', (event: MouseEvent) => {
-            event.stopPropagation();
-            if(dom.moreActionsMenu) dom.moreActionsMenu.classList.toggle('visible');
-        });
-    }
-    
-    if(dom.configureToolsButton) {
-        dom.configureToolsButton.addEventListener('click', () => {
-            vscode.postMessage({ command: 'requestAvailableTools' });
-            // Modal visibility handled in handleExtensionMessage response
-        });
-    }
-    
-    if(dom.closeToolsModal) {
-        dom.closeToolsModal.addEventListener('click', () => {
-            if(dom.toolsModal) dom.toolsModal.classList.remove('visible');
-        });
-    }
-    
-    if(dom.saveToolsBtn) {
-        dom.saveToolsBtn.addEventListener('click', () => {
-            if(dom.toolsListDiv) {
-                const enabledTools = Array.from(dom.toolsListDiv.querySelectorAll('input:checked')).map(cb => (cb as HTMLInputElement).value);
-                vscode.postMessage({ command: 'updateEnabledTools', tools: enabledTools });
-                if(dom.toolsModal) dom.toolsModal.classList.remove('visible');
-            }
-        });
-    }
-
-    if(dom.modelSelector) {
-        dom.modelSelector.addEventListener('change', (event) => vscode.postMessage({ command: 'updateDiscussionModel', model: (event.target as HTMLSelectElement).value }));
-    }
-
-    // Add handler for the refresh models button
-    if (dom.refreshModelsBtn) {
-        dom.refreshModelsBtn.addEventListener('click', () => {
-            const icon = dom.refreshModelsBtn.querySelector('.codicon');
-            if(icon) icon.classList.add('spin');
-            vscode.postMessage({ command: 'refreshModels' });
-        });
-    }
-
-    window.addEventListener('click', (event: MouseEvent) => {
-        if (dom.moreActionsMenu && event.target instanceof Node && !dom.moreActionsMenu.contains(event.target) && event.target !== dom.moreActionsButton) {
-            dom.moreActionsMenu.classList.remove('visible');
-        }
-        if (dom.toolsModal && event.target === dom.toolsModal) {
-            dom.toolsModal.classList.remove('visible');
-        }
-    });
-}
-
-function sendMessage() {
-    if(!dom.messageInput) return;
-    const text = dom.messageInput.value.trim();
-    if (!text) return;
-    
-    localSetGeneratingState(true);
-    const id = 'user_' + Date.now();
-    const message = { id, role: 'user', content: text };
-    
-    vscode.postMessage({ command: 'addMessage', message });
-    
-    if (dom.agentModeCheckbox && dom.agentModeCheckbox.checked) {
-        vscode.postMessage({ command: 'runAgent', objective: text, message });
-    } else {
-        vscode.postMessage({ command: 'sendMessage', message });
-    }
-    
-    dom.messageInput.value = '';
-    dom.messageInput.style.height = 'auto';
 }
 
 // --- Initialization ---
@@ -499,6 +381,7 @@ function sendMessage() {
             console.log("DEBUG: DOMContentLoaded.");
             
             if (typeof l10n !== 'undefined' && dom.welcomeMessage) {
+                // ... l10n logic ...
                 const title = dom.welcomeMessage.querySelector('#welcome-title');
                 if(title) title.innerHTML = l10n.welcomeTitle || "Welcome";
                 
@@ -527,9 +410,77 @@ function sendMessage() {
             } catch (e) { console.warn("Marked init:", e); }
 
             try {
-                 mermaid.initialize({ startOnLoad: false });
+                 mermaid.initialize({ 
+                     startOnLoad: false,
+                     theme: 'base',
+                     themeVariables: {
+                         darkMode: true,
+                         background: 'var(--vscode-editor-background)',
+                         primaryColor: 'var(--vscode-button-background)',
+                         primaryTextColor: 'var(--vscode-editor-foreground)',
+                         primaryBorderColor: 'var(--vscode-widget-border)',
+                         lineColor: 'var(--vscode-editor-foreground)',
+                         secondaryColor: 'var(--vscode-editorWidget-background)',
+                         tertiaryColor: 'var(--vscode-sideBar-background)',
+                         noteBkgColor: 'var(--vscode-editorWidget-background)',
+                         noteTextColor: 'var(--vscode-editor-foreground)'
+                     },
+                     fontFamily: 'var(--vscode-font-family)',
+                     securityLevel: 'loose'
+                 });
             } catch(e) { console.warn("Mermaid init:", e); }
 
+            // Initialize CodeMirror Editor
+            if (dom.messageInputContainer) {
+                const startState = EditorState.create({
+                    doc: "",
+                    extensions: [
+                        keymap.of([
+                            ...defaultKeymap,
+                            ...searchKeymap,
+                            ...historyKeymap,
+                            {
+                                key: "Enter",
+                                run: (view) => {
+                                    sendMessage();
+                                    return true;
+                                }
+                            },
+                            {
+                                key: "Shift-Enter",
+                                run: (view) => {
+                                    view.dispatch(view.state.replaceSelection("\n"));
+                                    return true;
+                                }
+                            },
+                            {
+                                key: "Mod-f",
+                                run: openSearchPanel
+                            }
+                        ]),
+                        history(),
+                        markdown(),
+                        oneDark,
+                        EditorView.lineWrapping,
+                        placeholder("Enter your message (Shift+Enter for new line)..."),
+                        editableCompartment.of(EditorView.editable.of(true)),
+                        EditorView.updateListener.of((update) => {
+                            if (update.docChanged) {
+                                // Can add logic here if needed
+                            }
+                        })
+                    ]
+                });
+
+                state.editor = new EditorView({
+                    state: startState,
+                    parent: dom.messageInputContainer
+                });
+            } else {
+                console.error("Critical: messageInputContainer not found in DOM");
+            }
+
+            // Call the imported initEventHandlers, ensuring we don't have a local shadowed version.
             initEventHandlers();
 
             // Notify extension that we are ready

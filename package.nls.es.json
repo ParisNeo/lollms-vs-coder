@@ -62,6 +62,7 @@
     "config.enableCodeActions.description": "Habilitar las acciones CodeLens de Lollms (p. ej., 'Acciones de Lollms...') sobre el código seleccionado.",
     "config.enableInlineSuggestions.description": "Habilitar sugerencias de código en línea de una sola línea mientras escribe (experimental).",
     "config.disableSslVerification.description": "Deshabilitar la verificación de certificados SSL para las solicitudes de la API. Usar con precaución para servidores con certificados autofirmados.",
+    "config.sslCertPath.description": "Ruta a un archivo de certificado de CA personalizado (PEM/CRT) para verificar la identidad del servidor.",
     "config.noThinkMode.description": "Prefija todas las indicaciones del sistema con el comando /no_think para desactivar el proceso de pensamiento de la IA (para modelos que lo admiten).",
     "config.apiKey.description": "Clave de API para autenticarse con la API de Lollms.",
     "config.apiUrl.description": "URL del servidor de la API de Lollms (incluyendo protocolo y puerto).",

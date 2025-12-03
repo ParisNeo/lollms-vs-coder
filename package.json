@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.31",
+  "version": "0.5.34",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -334,6 +334,16 @@
         "command": "lollms-vs-coder.sendSelectionToLastDiscussion",
         "title": "%command.sendSelectionToLastDiscussion.title%",
         "icon": "$(reply)"
+      },
+      {
+        "command": "lollms-vs-coder.importSkills",
+        "title": "Lollms: Import Skills",
+        "icon": "$(cloud-download)"
+      },
+      {
+        "command": "lollms-vs-coder.exportSkills",
+        "title": "Lollms: Export Skills",
+        "icon": "$(cloud-upload)"
       }
     ],
     "configuration": {
@@ -435,6 +445,11 @@
           "type": "boolean",
           "default": false,
           "description": "%config.disableSslVerification.description%"
+        },
+        "lollmsVsCoder.sslCertPath": {
+          "type": "string",
+          "default": "",
+          "description": "%config.sslCertPath.description%"
         },
         "lollmsVsCoder.noThinkMode": {
           "type": "boolean",
@@ -743,6 +758,16 @@
           "group": "navigation@1"
         },
         {
+          "command": "lollms-vs-coder.importSkills",
+          "when": "view == lollmsSkillsView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "lollms-vs-coder.exportSkills",
+          "when": "view == lollmsSkillsView",
+          "group": "navigation@3"
+        },
+        {
           "command": "lollms-vs-coder.createPrompt",
           "when": "view == lollmsChatPromptsView || view == lollmsCodeActionsView",
           "group": "navigation@1"
@@ -883,6 +908,7 @@
     "@types/prismjs": "^1.26.4",
     "@types/vscode": "1.74.0",
     "@vscode/vsce": "^2.26.0",
+    "@types/pdf-parse": "^1.1.1",
     "cpx2": "^4.2.0",
     "esbuild": "^0.25.10",
     "rimraf": "^5.0.5",
@@ -904,6 +930,7 @@
     "mermaid": "^10.9.1",
     "minimatch": "^9.0.5",
     "node-fetch": "2.7.0",
+    "pdf-parse": "^1.1.1",
     "prismjs": "^1.29.0"
   },
   "overrides": {

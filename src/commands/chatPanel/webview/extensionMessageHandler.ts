@@ -7,94 +7,68 @@ export function handleExtensionMessage(event: MessageEvent) {
     try {
         const message = event.data;
         switch (message.command) {
+            // ... (other cases) ...
             case 'addMessage':
                 addMessage(message.message);
                 break;
-            case 'appendMessageChunk': {
-                const stream = state.streamingMessages[message.id];
-                if (!stream) break;
+            case 'appendMessageChunk':
+                // ... implementation ...
+                {
+                    const stream = state.streamingMessages[message.id];
+                    if (!stream) break;
 
-                const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.id}']`) as HTMLElement;
-                if (!wrapper) break;
-                if (!wrapper.dataset.firstTokenReceived) {
-                    wrapper.dataset.firstTokenReceived = 'true';
-                    wrapper.dataset.firstTokenTime = String(Date.now());
-                    
-                    const waitingAnim = wrapper.querySelector('.waiting-animation');
-                    if (waitingAnim) waitingAnim.remove();
+                    const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.id}']`) as HTMLElement;
+                    if (!wrapper) break;
+                    if (!wrapper.dataset.firstTokenReceived) {
+                        wrapper.dataset.firstTokenReceived = 'true';
+                        wrapper.dataset.firstTokenTime = String(Date.now());
+                        
+                        const waitingAnim = wrapper.querySelector('.waiting-animation');
+                        if (waitingAnim) waitingAnim.remove();
 
-                    const startTime = parseInt(wrapper.dataset.startTime || '0', 10);
-                    const ttft = ((Date.now() - startTime) / 1000).toFixed(1);
-                    
-                    const modelName = wrapper.dataset.model || 'Default';
-                    
-                    const header = wrapper.querySelector('.message-header');
-                    if(header){
-                        let annotationSpan = header.querySelector('.generation-stats');
-                        if (!annotationSpan) {
-                            annotationSpan = document.createElement('span');
-                            annotationSpan.className = 'generation-stats';
-                            header.appendChild(annotationSpan);
-                        }
-                        annotationSpan.textContent = `(${modelName} | TTFT: ${ttft}s)`;
-                    }
-                }
-
-                stream.buffer += message.chunk;
-                const messageDiv = wrapper.querySelector('.message') as HTMLElement;
-                if(messageDiv) {
-                    messageDiv.dataset.originalContent = JSON.stringify(stream.buffer);
-                }
-
-                scheduleRender(message.id);
-                break;
-            }
-            case 'finalizeMessage': {
-                const stream = state.streamingMessages[message.id];
-                if (stream) {
-                    if (stream.timer) clearTimeout(stream.timer);
-                    delete state.streamingMessages[message.id];
-                }
-
-                const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.id}']`) as HTMLElement;
-                if(wrapper) {
-                    const firstTokenTime = parseInt(wrapper.dataset.firstTokenTime || '0', 10);
-                    if (firstTokenTime) {
-                        const duration = (Date.now() - firstTokenTime) / 1000;
-                        const tokenCount = message.tokenCount;
-                        if (duration > 0.05 && tokenCount > 1) {
-                            const tps = (tokenCount / duration).toFixed(1);
-                            const annotationSpan = wrapper.querySelector('.generation-stats');
-                            if (annotationSpan) annotationSpan.textContent += ` | ${tps} t/s`;
+                        const startTime = parseInt(wrapper.dataset.startTime || '0', 10);
+                        const ttft = ((Date.now() - startTime) / 1000).toFixed(1);
+                        
+                        const modelName = wrapper.dataset.model || 'Default';
+                        
+                        const header = wrapper.querySelector('.message-header');
+                        if(header){
+                            let annotationSpan = header.querySelector('.generation-stats');
+                            if (!annotationSpan) {
+                                annotationSpan = document.createElement('span');
+                                annotationSpan.className = 'generation-stats';
+                                header.appendChild(annotationSpan);
+                            }
+                            annotationSpan.textContent = `(${modelName} | TTFT: ${ttft}s)`;
                         }
                     }
 
-                    const contentDiv = wrapper.querySelector('.message-content');
-                    const messageDiv = wrapper.querySelector('.message');
-                    if (contentDiv && messageDiv) {
-                        if (message.isHtml) {
-                            contentDiv.innerHTML = DOMPurify.sanitize(message.fullContent);
-                            messageDiv.classList.replace('assistant-message', 'system-message');
-                        } else {
-                            (messageDiv as HTMLElement).dataset.originalContent = JSON.stringify(message.fullContent);
-                            // PASS TRUE FOR IS_FINAL TO ENABLE BUTTONS
-                            renderMessageContent(message.id, message.fullContent, true);
-                        }
-                        dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+                    stream.buffer += message.chunk;
+                    const messageDiv = wrapper.querySelector('.message') as HTMLElement;
+                    if(messageDiv) {
+                        messageDiv.dataset.originalContent = JSON.stringify(stream.buffer);
                     }
+
+                    scheduleRender(message.id);
                 }
                 break;
-            }
+            case 'finalizeMessage':
+                // ... implementation ...
+                {
+                    const stream = state.streamingMessages[message.id];
+                    if (stream) {
+                        if (stream.timer) clearTimeout(stream.timer);
+                        delete state.streamingMessages[message.id];
+                    }
+                    // Pass true for isFinal to enable buttons
+                    renderMessageContent(message.id, message.fullContent, true);
+                }
+                break;
             case 'setGeneratingState':
                 setGeneratingState(message.isGenerating);
                 break;
-            case 'startContextLoading':
-                dom.contextStatusContainer.style.display = 'none';
-                if(dom.tokenProgressContainer) dom.tokenProgressContainer.style.display = 'none';
-                dom.contextLoadingSpinner.style.display = 'flex';
-                // Set spinner text
-                const loadingText = dom.contextLoadingSpinner.querySelector('#loading-files-text');
-                if (loadingText) loadingText.textContent = "Computing tokens length...";
+            case 'updateContext':
+                updateContext(message.context);
                 break;
             case 'displayPlan':
                 const isFinished = !message.plan || message.plan.tasks.every((t: any) => t.status === 'completed' || t.status === 'failed');
@@ -102,68 +76,41 @@ export function handleExtensionMessage(event: MessageEvent) {
                 displayPlan(message.plan);
                 break;
             case 'loadDiscussion':
-                dom.attachmentsContainer.innerHTML = '';
-
-                // Clear existing messages
-                const messagesToRemove: Element[] = [];
-                for (const child of Array.from(dom.chatMessagesContainer.children)) {
-                    if (child.id !== 'message-insertion-controls') {
-                        messagesToRemove.push(child);
-                    }
-                }
-                messagesToRemove.forEach(child => child.remove());
-
-                const attachmentsCollapsible = dom.attachmentsContainer.closest('.special-zone-message');
-                if (attachmentsCollapsible) {
-                    (attachmentsCollapsible as HTMLElement).style.display = 'none';
-                }
-                
-                state.isInspectorEnabled = message.isInspectorEnabled;
-                
-                let hasChatContent = false;
-                
-                // ASYNC BATCH RENDERING to prevent UI freeze
-                if (Array.isArray(message.messages)) {
-                    const messagesToRender = message.messages;
-                    const batchSize = 10;
-                    let currentIndex = 0;
-
-                    const renderBatch = () => {
-                        const chunk = messagesToRender.slice(currentIndex, currentIndex + batchSize);
-                        chunk.forEach((msg: any) => {
-                            // Pass true for isFinal because these are historical messages
-                            addMessage(msg, true);
-                            if ((msg.role === 'user' || msg.role === 'assistant') && (!msg.id || !msg.id.startsWith('attachment_'))) {
-                                hasChatContent = true;
+                // ... implementation ...
+                {
+                    dom.attachmentsContainer.innerHTML = '';
+                    if (dom.chatMessagesContainer) {
+                        Array.from(dom.chatMessagesContainer.children).forEach(child => {
+                            if (child.id !== 'message-insertion-controls') {
+                                child.remove();
                             }
                         });
-                        currentIndex += batchSize;
-
-                        if (currentIndex < messagesToRender.length) {
-                            // Schedule next batch
-                            requestAnimationFrame(renderBatch);
-                        } else {
-                            // Finished rendering all messages
-                            const attachmentCount = dom.attachmentsContainer.children.length;
-                            if (attachmentCount > 0 && attachmentsCollapsible) {
-                                (attachmentsCollapsible as HTMLElement).style.display = 'flex';
-                                const headerTitle = attachmentsCollapsible.querySelector('.role-name');
-                                if(headerTitle) headerTitle.textContent = `Attached Files (${attachmentCount})`;
-                            }
-
-                            dom.welcomeMessage.style.display = (attachmentCount > 0 || hasChatContent) ? 'none' : 'block';
-                            setGeneratingState(false);
-                            // Scroll to bottom after full load
-                            setTimeout(() => {
-                                dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
-                            }, 50);
-                        }
-                    };
+                    }
                     
-                    // Start the rendering loop
-                    renderBatch();
-                } else {
+                    if(message.isInspectorEnabled !== undefined) {
+                        state.isInspectorEnabled = message.isInspectorEnabled;
+                    }
+                    
+                    let hasChatContent = false;
+                    if (Array.isArray(message.messages)) {
+                        message.messages.forEach((msg: any) => {
+                            try {
+                                addMessage(msg, true);
+                                if ((msg.role === 'user' || msg.role === 'assistant') && (!msg.id || !msg.id.startsWith('attachment_'))) {
+                                    hasChatContent = true;
+                                }
+                            } catch (e) {
+                                console.error("Error adding message:", e);
+                            }
+                        });
+                    }
+
+                    if (dom.welcomeMessage) {
+                        dom.welcomeMessage.style.display = hasChatContent ? 'none' : 'block';
+                    }
+                    
                     setGeneratingState(false);
+                    if(dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
                 }
                 break;
             case 'updateModels':
@@ -178,44 +125,29 @@ export function handleExtensionMessage(event: MessageEvent) {
                 }
                 dom.modelSelector.value = message.currentModel || '';
                 break;
-            case 'updateContext':
-                updateContext(message.context);
-                break;
             case 'updateTokenProgress':
-                dom.contextStatusContainer.style.display = 'flex';
-                dom.contextLoadingSpinner.style.display = 'none';
-                if(dom.tokenProgressContainer) dom.tokenProgressContainer.style.display = 'block';
-
-                const { totalTokens, contextSize, error } = message;
-
-                if (error) {
-                    dom.tokenCountLabel.textContent = `Tokens: ${error}`;
-                    dom.tokenProgressBar.style.width = '100%';
-                    dom.tokenProgressBar.classList.remove('green', 'yellow');
-                    dom.tokenProgressBar.classList.add('red');
-                } else if (typeof totalTokens === 'number') {
-                    // Handle edge case where contextSize might be 0/undefined/null
-                    const size = (typeof contextSize === 'number' && contextSize > 0) ? contextSize : 0;
-                    
-                    if (size > 0) {
-                        const percentage = Math.min((totalTokens / size) * 100, 100);
-                        dom.tokenProgressBar.style.width = `${percentage}%`;
+                // ... implementation ...
+                if(dom.tokenCountLabel) {
+                    const { totalTokens, contextSize, error, isApproximate } = message;
+                     if (error) {
+                        dom.tokenCountLabel.textContent = `Tokens: ${error}`;
+                        dom.tokenProgressBar.style.width = '100%';
+                        dom.tokenProgressBar.classList.add('red');
+                    } else if (typeof totalTokens === 'number') {
+                        const size = (typeof contextSize === 'number' && contextSize > 0) ? contextSize : 0;
+                        dom.tokenCountLabel.textContent = size > 0 ? `Tokens: ${totalTokens} / ${size}` : `Tokens: ${totalTokens} / ?`;
                         
-                        dom.tokenProgressBar.classList.remove('green', 'yellow', 'red');
-                        if (percentage > 90) dom.tokenProgressBar.classList.add('red');
-                        else if (percentage > 75) dom.tokenProgressBar.classList.add('yellow');
-                        else dom.tokenProgressBar.classList.add('green');
-                        
-                        dom.tokenCountLabel.textContent = `Tokens: ${totalTokens} / ${size}`;
-                    } else {
-                        // Fallback if size is missing but we have token count
-                        dom.tokenProgressBar.style.width = '0%';
-                        dom.tokenCountLabel.textContent = `Tokens: ${totalTokens} / ?`;
+                        if (size > 0) {
+                            const percentage = Math.min((totalTokens / size) * 100, 100);
+                            dom.tokenProgressBar.style.width = `${percentage}%`;
+                            dom.tokenProgressBar.classList.remove('green', 'yellow', 'red');
+                            if (percentage > 90) dom.tokenProgressBar.classList.add('red');
+                            else if (percentage > 75) dom.tokenProgressBar.classList.add('yellow');
+                            else dom.tokenProgressBar.classList.add('green');
+                        } else {
+                            dom.tokenProgressBar.style.width = '0%';
+                        }
                     }
-                } else {
-                    dom.tokenCountLabel.textContent = `Tokens: Press 🔃 to calculate`;
-                    dom.tokenProgressBar.style.width = '0%';
-                    dom.tokenProgressBar.classList.remove('green', 'yellow', 'red');
                 }
                 break;
             case 'updateAgentMode':
@@ -224,12 +156,16 @@ export function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'error':
                 setGeneratingState(false);
-                // System errors are final
                 addMessage({ id: 'error_' + Date.now(), role: 'system', content: '❌ Error: ' + message.content }, true);
                 break;
             case 'setInputText':
-                dom.messageInput.value = message.text;
-                dom.messageInput.focus();
+                if (state.editor) {
+                    const transaction = state.editor.state.update({
+                        changes: { from: 0, to: state.editor.state.doc.length, insert: message.text }
+                    });
+                    state.editor.dispatch(transaction);
+                    state.editor.focus();
+                }
                 break;
             case 'forceScrollToBottom':
                 dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
@@ -249,8 +185,9 @@ export function handleExtensionMessage(event: MessageEvent) {
                 }
                 break;
             case 'showAvailableTools':
+                // ... implementation ...
                 dom.toolsListDiv.innerHTML = '';
-                message.allTools.forEach((tool: {name: string, description: string}) => {
+                message.allTools.forEach((tool: any) => {
                     const isChecked = message.enabledTools.includes(tool.name);
                     const toolItem = document.createElement('div');
                     toolItem.className = 'tool-item';
@@ -270,6 +207,7 @@ export function handleExtensionMessage(event: MessageEvent) {
                 });
                 break;
             case 'updateStatus':
+                // ... implementation ...
                 if (dom.statusLabel && dom.statusText) {
                     dom.statusText.textContent = message.status;
                     if (message.type === 'error') {
@@ -280,8 +218,6 @@ export function handleExtensionMessage(event: MessageEvent) {
                         if(dom.statusSpinner) dom.statusSpinner.style.display = (message.status === 'Ready' || message.status.includes('Error')) ? 'none' : 'block';
                     }
                     dom.statusLabel.classList.add('visible');
-                    
-                    // Auto-hide after 3 seconds if 'Ready'
                     if (message.status === 'Ready') {
                         setTimeout(() => {
                             dom.statusLabel.classList.remove('visible');
@@ -289,6 +225,55 @@ export function handleExtensionMessage(event: MessageEvent) {
                     }
                 }
                 break;
+            case 'filesAddedToContext': {
+                const { results, blockId } = message;
+                console.log("Webview received filesAddedToContext for block:", blockId, results);
+                
+                // 1. Update Button Visuals
+                const btnId = `btn-${blockId}`;
+                const actionBtn = document.getElementById(btnId) as HTMLButtonElement;
+                if (actionBtn) {
+                    actionBtn.innerHTML = `<span class="codicon codicon-check"></span> Added!`;
+                    actionBtn.classList.add('success');
+                    
+                    // Reset button after 3 seconds
+                    setTimeout(() => {
+                        actionBtn.innerHTML = `<span class="codicon codicon-add"></span> Add to Context`;
+                        actionBtn.classList.remove('success');
+                        actionBtn.disabled = false;
+                    }, 3000);
+                } else {
+                    console.warn(`Button with ID ${btnId} not found.`);
+                }
+
+                // 2. Update Code Block Lines (Green/Red)
+                const codeBlock = document.getElementById(blockId);
+                if (codeBlock) {
+                    // Use textContent to get raw lines, ignoring existing HTML
+                    const originalText = codeBlock.textContent || '';
+                    const lines = originalText.trim().split('\n');
+                    
+                    let newHtml = '';
+                    lines.forEach(line => {
+                        const path = line.trim();
+                        if (results[path] === true) {
+                            newHtml += `<div class="select-line-valid">${path}</div>`;
+                        } else if (results[path] === false) {
+                            newHtml += `<div class="select-line-invalid">${path} (Not found)</div>`;
+                        } else {
+                            newHtml += `<div>${path}</div>`;
+                        }
+                    });
+                    
+                    // Disable Prism if it was active
+                    codeBlock.classList.remove('language-select');
+                    // Replace content with our styled divs
+                    codeBlock.innerHTML = newHtml;
+                } else {
+                    console.warn(`Code block with ID ${blockId} not found.`);
+                }
+                break;
+            }
         }
     } catch(e: any) {
         console.error("Lollms Webview Error: Failed to process message from extension.", e);

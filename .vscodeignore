@@ -1,9 +1,6 @@
 .vscode/**
 .vscode-test/**
 src/**
-media/**
-!media/icon.png
-!media/lollms-icon.svg
 node_modules/**
 .git/**
 .gitignore

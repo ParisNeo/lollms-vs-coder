@@ -25,6 +25,7 @@ export interface ToolDefinition {
     longDescription?: string;
     isAgentic: boolean;
     isDefault: boolean;
+    hasSettings?: boolean; // Indicates if the tool has configuration settings
     parameters: {
         name: string;
         type: string;

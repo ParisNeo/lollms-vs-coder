@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.34",
+  "version": "0.5.38",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -281,6 +281,11 @@
         "command": "lollms-vs-coder.cancelProcess",
         "title": "%command.cancel.title%",
         "icon": "$(stop-circle)"
+      },
+      {
+        "command": "lollms-vs-coder.showRunningProcesses",
+        "title": "Lollms: Show Running Processes",
+        "icon": "$(sync)"
       },
       {
         "command": "lollms-vs-coder.generateNextNotebookCell",
@@ -619,11 +624,6 @@
           "id": "lollmsCodeActionsView",
           "name": "%view.codeActions.name%",
           "when": "workspaceFolderCount > 0"
-        },
-        {
-          "id": "lollmsProcessView",
-          "name": "%view.processes.name%",
-          "when": "workspaceFolderCount > 0"
         }
       ]
     },
@@ -794,11 +794,6 @@
         }
       ],
       "view/item/context": [
-        {
-          "command": "lollms-vs-coder.cancelProcess",
-          "when": "view == lollmsProcessView && viewItem == 'process'",
-          "group": "inline"
-        },
         {
           "command": "lollms-vs-coder.deleteDiscussion",
           "when": "view == lollmsDiscussionsView && viewItem == 'discussion'",

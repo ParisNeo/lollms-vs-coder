@@ -5,6 +5,14 @@ import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
 import Prism from 'prismjs';
 
+// CodeMirror imports
+import { EditorState } from "@codemirror/state";
+import { EditorView, keymap } from "@codemirror/view";
+import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { searchKeymap, openSearchPanel, search } from "@codemirror/search"; // Import search extension
+import { markdown } from "@codemirror/lang-markdown";
+import { oneDark } from "@codemirror/theme-one-dark";
+
 const RENDER_THROTTLE_MS = 200;
 
 // --- Language Map for Prism ---
@@ -182,11 +190,9 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     const editOverlay = document.createElement('div');
     editOverlay.className = 'edit-overlay';
     
-    const textarea = document.createElement('textarea');
-    textarea.className = 'edit-textarea';
-    textarea.value = textContent;
-    textarea.style.height = '200px';
-    textarea.style.minHeight = '100px';
+    // Create editor container
+    const editorContainer = document.createElement('div');
+    editorContainer.className = 'edit-editor-container';
     
     const buttonsDiv = document.createElement('div');
     buttonsDiv.className = 'edit-buttons';
@@ -202,14 +208,46 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     buttonsDiv.appendChild(cancelBtn);
     buttonsDiv.appendChild(saveBtn);
     
-    editOverlay.appendChild(textarea);
+    editOverlay.appendChild(editorContainer);
     editOverlay.appendChild(buttonsDiv);
     
     contentDiv.innerHTML = '';
     contentDiv.appendChild(editOverlay);
     actionsDiv.style.display = 'none';
     
-    textarea.focus();
+    // Initialize CodeMirror editor
+    const editState = EditorState.create({
+        doc: textContent,
+        extensions: [
+            keymap.of([
+                ...defaultKeymap,
+                ...historyKeymap,
+                ...searchKeymap, // Adds Ctrl+F / Mod+F bindings
+                {
+                    key: "Mod-s",
+                    run: (view) => {
+                        saveBtn.click();
+                        return true;
+                    }
+                },
+                {
+                    key: "Mod-f",
+                    run: openSearchPanel
+                }
+            ]),
+            search({ top: true }), // Enable search functionality with search panel at top
+            history(),
+            markdown(),
+            oneDark,
+            EditorView.lineWrapping,
+        ]
+    });
+
+    const editView = new EditorView({
+        state: editState,
+        parent: editorContainer
+    });
+    editView.focus();
 
     cancelBtn.onclick = () => {
         renderMessageContent(messageId, textContent, true);
@@ -217,7 +255,7 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     };
 
     saveBtn.onclick = () => {
-        const newContent = textarea.value;
+        const newContent = editView.state.doc.toString();
         if (newContent.trim() !== textContent.trim()) {
             messageDiv.dataset.originalContent = JSON.stringify(newContent);
             vscode.postMessage({

@@ -4,9 +4,9 @@ import { ContextStateProvider } from './commands/contextStateProvider';
 import { Logger } from './logger';
 
 export interface CodeGraphNode {
-    id: string; // Unique ID, e.g., 'filepath:functionName'
+    id: string;
     label: string;
-    type: 'file' | 'class' | 'function';
+    type: 'file' | 'class' | 'interface' | 'function' | 'property' | 'variable';
     filePath: string;
     startLine: number;
     docstring?: string;
@@ -15,9 +15,9 @@ export interface CodeGraphNode {
 
 export interface CodeGraphEdge {
     id: string;
-    source: string; // ID of the source node
-    target: string; // ID of the target node
-    label: 'contains' | 'calls' | 'imports';
+    source: string;
+    target: string;
+    label: 'contains' | 'calls' | 'imports' | 'inherits';
 }
 
 export interface CodeGraph {
@@ -53,27 +53,76 @@ export class CodeGraphManager {
     private symbolKindToNodeType(kind: vscode.SymbolKind): CodeGraphNode['type'] | null {
         switch (kind) {
             case vscode.SymbolKind.Class:
-            case vscode.SymbolKind.Interface:
             case vscode.SymbolKind.Struct:
                 return 'class';
+            case vscode.SymbolKind.Interface:
+                return 'interface';
             case vscode.SymbolKind.Function:
             case vscode.SymbolKind.Method:
             case vscode.SymbolKind.Constructor:
                 return 'function';
+            case vscode.SymbolKind.Property:
+            case vscode.SymbolKind.Field:
+            case vscode.SymbolKind.Variable:
+            case vscode.SymbolKind.EnumMember:
+            case vscode.SymbolKind.Enum: 
+                return kind === vscode.SymbolKind.Enum ? 'class' : 'property';
             default:
                 return null;
         }
     }
     
-    private flattenSymbols(symbols: vscode.DocumentSymbol[]): vscode.DocumentSymbol[] {
-        const flattened: vscode.DocumentSymbol[] = [];
-        const queue = [...symbols];
-        while (queue.length > 0) {
-            const symbol = queue.shift()!;
-            flattened.push(symbol);
-            queue.push(...symbol.children);
+    private processSymbols(
+        relativePath: string, 
+        symbols: vscode.DocumentSymbol[], 
+        parentId: string, 
+        nodes: CodeGraphNode[], 
+        edges: CodeGraphEdge[], 
+        fileUri: vscode.Uri
+    ) {
+        for (const symbol of symbols) {
+            const nodeType = this.symbolKindToNodeType(symbol.kind);
+            
+            if (nodeType) {
+                const nodeId = `${parentId}:${symbol.name}`;
+                
+                if (!nodes.some(n => n.id === nodeId)) {
+                    nodes.push({
+                        id: nodeId,
+                        label: symbol.name,
+                        type: nodeType,
+                        filePath: relativePath,
+                        startLine: symbol.range.start.line,
+                        docstring: symbol.detail || undefined,
+                        command: { command: 'vscode.open', title: 'Go to Definition', arguments: [fileUri, { selection: symbol.selectionRange }] }
+                    });
+
+                    edges.push({
+                        id: `${parentId}->${nodeId}`,
+                        source: parentId,
+                        target: nodeId,
+                        label: 'contains'
+                    });
+                }
+
+                if (symbol.children && symbol.children.length > 0) {
+                    this.processSymbols(relativePath, symbol.children, nodeId, nodes, edges, fileUri);
+                }
+            } else {
+                if (symbol.kind === vscode.SymbolKind.Module || symbol.kind === vscode.SymbolKind.Namespace || symbol.kind === vscode.SymbolKind.Package) {
+                     const nodeId = `${parentId}:${symbol.name}`;
+                     nodes.push({
+                        id: nodeId, label: symbol.name, type: 'file',
+                        filePath: relativePath, startLine: symbol.range.start.line,
+                        command: { command: 'vscode.open', title: 'Go to Definition', arguments: [fileUri, { selection: symbol.selectionRange }] }
+                     });
+                     edges.push({ id: `${parentId}->${nodeId}`, source: parentId, target: nodeId, label: 'contains' });
+                     if (symbol.children) this.processSymbols(relativePath, symbol.children, nodeId, nodes, edges, fileUri);
+                } else if (symbol.children && symbol.children.length > 0) {
+                    this.processSymbols(relativePath, symbol.children, parentId, nodes, edges, fileUri);
+                }
+            }
         }
-        return flattened;
     }
 
     public async saveGraph(): Promise<void> {
@@ -97,22 +146,19 @@ export class CodeGraphManager {
             this.graphData = JSON.parse(content.toString());
             this.buildState = 'built';
         } catch (e) {
-            // File might not exist yet
             this.graphData = { nodes: [], edges: [] };
             this.buildState = 'idle';
         }
     }
 
-    public generateMermaid(type: 'import_graph' | 'class_diagram' | 'call_graph'): string {
+    public generateMermaid(type: 'import_graph' | 'class_diagram' | 'call_graph' | 'inheritance_graph'): string {
         if (this.graphData.nodes.length === 0) return "graph TD\nNode[Graph is empty]";
 
         let mermaid = "";
         const nodes = new Set<string>();
         const edges: string[] = [];
         
-        // Helper to make IDs mermaid-safe
         const sanitizeId = (id: string) => id.replace(/[^a-zA-Z0-9]/g, '_');
-        // Helper to escape labels - replace double quotes with single quotes to avoid syntax errors
         const escapeLabel = (label: string) => label.replace(/"/g, "'").replace(/\n/g, ' ');
 
         if (type === 'import_graph') {
@@ -130,7 +176,6 @@ export class CodeGraphManager {
                 nodes.add(`${target}["${targetLabel}"]`);
                 edges.push(`${source} --> ${target}`);
             });
-            // If no edges, add disjoint file nodes
             if (edges.length === 0) {
                 this.graphData.nodes.filter(n => n.type === 'file').forEach(n => {
                     nodes.add(`${sanitizeId(n.id)}["${escapeLabel(n.label)}"]`);
@@ -139,36 +184,71 @@ export class CodeGraphManager {
         } else if (type === 'class_diagram') {
             mermaid = "classDiagram\n";
             let hasClasses = false;
-            this.graphData.nodes.filter(n => n.type === 'class').forEach(n => {
+            this.graphData.nodes.filter(n => n.type === 'class' || n.type === 'interface').forEach(n => {
                 hasClasses = true;
                 const className = sanitizeId(n.label);
-                mermaid += `class ${className}\n`;
                 
-                // Find methods
-                const methodEdges = this.graphData.edges.filter(e => e.source === n.id && e.label === 'contains');
-                methodEdges.forEach(me => {
-                    const methodNode = this.graphData.nodes.find(mn => mn.id === me.target);
-                    if (methodNode && (methodNode.type === 'function' || methodNode.type === 'function')) {
-                        mermaid += `${className} : +${escapeLabel(methodNode.label)}()\n`;
+                if (n.type === 'interface') {
+                    mermaid += `class ${className} {\n    <<interface>>\n`;
+                } else {
+                    mermaid += `class ${className} {\n`;
+                }
+                
+                const childrenEdges = this.graphData.edges.filter(e => e.source === n.id && e.label === 'contains');
+                childrenEdges.forEach(ce => {
+                    const childNode = this.graphData.nodes.find(cn => cn.id === ce.target);
+                    if (childNode) {
+                        if (childNode.type === 'function') {
+                            mermaid += `    +${escapeLabel(childNode.label)}()\n`;
+                        } else if (childNode.type === 'property' || childNode.type === 'variable') {
+                            mermaid += `    +${escapeLabel(childNode.label)}\n`;
+                        }
+                    }
+                });
+                mermaid += `}\n`;
+                
+                const inheritEdges = this.graphData.edges.filter(e => e.source === n.id && e.label === 'inherits');
+                inheritEdges.forEach(ie => {
+                    const parentNode = this.graphData.nodes.find(pn => pn.id === ie.target);
+                    if (parentNode) {
+                        mermaid += `${sanitizeId(parentNode.label)} <|-- ${className}\n`;
                     }
                 });
             });
             if (!hasClasses) return "graph TD\nEmpty[No classes found]";
             return mermaid;
-        } else { // call_graph (default)
+        } else if (type === 'inheritance_graph') {
             mermaid = "graph TD\n";
+            const inheritEdges = this.graphData.edges.filter(e => e.label === 'inherits');
             
-            // Add all nodes that are relevant (files, functions, classes)
-            this.graphData.nodes.forEach(n => {
-                nodes.add(`${sanitizeId(n.id)}["${escapeLabel(n.label)}"]`);
+            inheritEdges.forEach(e => {
+                const source = sanitizeId(e.source);
+                const target = sanitizeId(e.target);
+                const sourceNode = this.graphData.nodes.find(n => n.id === e.source);
+                const targetNode = this.graphData.nodes.find(n => n.id === e.target);
+                
+                if (sourceNode && targetNode) {
+                    nodes.add(`${source}["${escapeLabel(sourceNode.label)}"]`);
+                    nodes.add(`${target}["${escapeLabel(targetNode.label)}"]`);
+                    edges.push(`${target} --> ${source}`); // Parent points to child in TD, or Child -> Parent. UML is Child -> Parent.
+                }
             });
-
-            // Add edges: 'calls' as solid, 'contains' as dashed
+            if (edges.length === 0) return "graph TD\nEmpty[No inheritance relationships found]";
+        } else { // call_graph
+            mermaid = "graph TD\n";
+            this.graphData.nodes.forEach(n => {
+                if (n.type !== 'property' && n.type !== 'variable') {
+                    nodes.add(`${sanitizeId(n.id)}["${escapeLabel(n.label)}"]`);
+                }
+            });
             this.graphData.edges.forEach(e => {
                 if (e.label === 'calls' || e.label === 'contains') {
+                    const sourceNode = this.graphData.nodes.find(n => n.id === e.source);
+                    const targetNode = this.graphData.nodes.find(n => n.id === e.target);
+                    if (sourceNode?.type === 'property' || targetNode?.type === 'property') return;
+
                     const source = sanitizeId(e.source);
                     const target = sanitizeId(e.target);
-                    
                     if (e.label === 'contains') {
                         edges.push(`${source} -.-> ${target}`);
                     } else {
@@ -217,18 +297,21 @@ export class CodeGraphManager {
             title: "Building Code Graph",
             cancellable: true
         }, async (progress, token) => {
-            // --- PASS 1: Find all files and symbols ---
-            progress.report({ message: "Scanning files for symbols..." });
+            progress.report({ message: "Scanning files..." });
+            
+            // Regex for inheritance: 
+            // TS/JS: class Child extends Parent
+            // Python: class Child(Parent):
+            const tsInheritanceRegex = /class\s+([a-zA-Z0-9_]+)(?:\s*<[^>]*>)?\s+extends\s+([a-zA-Z0-9_]+)/g;
+            const pyInheritanceRegex = /class\s+([a-zA-Z0-9_]+)\s*\(\s*([a-zA-Z0-9_]+)\s*\):/g;
+            const importRegex = /^(?:import|export)(?:[^{}]*|\{[^}]*\})\s*from\s*['"]([^'"]+)['"];?|import\s*['"]([^'"]+)['"];?|require\s*\(\s*['"]([^'"]+)['"]\s*\)/gm;
+
             for (const relativePath of allVisibleFiles) {
                 if (token.isCancellationRequested) return;
                 
                 const fileUri = vscode.Uri.joinPath(rootUri, relativePath);
                 
-                try {
-                    const stat = await vscode.workspace.fs.stat(fileUri);
-                    if (stat.type === vscode.FileType.Directory) continue;
-                } catch (e) { continue; }
-
+                // Add File Node
                 newGraph.nodes.push({
                     id: relativePath, label: path.basename(relativePath), type: 'file', filePath: relativePath, startLine: 0,
                     docstring: relativePath,
@@ -236,50 +319,61 @@ export class CodeGraphManager {
                 });
 
                 try {
+                    const contentBytes = await vscode.workspace.fs.readFile(fileUri);
+                    const content = Buffer.from(contentBytes).toString('utf8');
+
+                    // 1. Process Symbols
                     const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>(
                         'vscode.executeDocumentSymbolProvider', fileUri
                     );
                     if (symbols) {
-                        for (const symbol of this.flattenSymbols(symbols)) {
-                            const nodeType = this.symbolKindToNodeType(symbol.kind);
-                            if (nodeType) {
-                                const nodeId = `${relativePath}:${symbol.name}`;
-                                newGraph.nodes.push({
-                                    id: nodeId, label: symbol.name, type: nodeType, filePath: relativePath, startLine: symbol.range.start.line,
-                                    docstring: symbol.detail || `A ${nodeType} defined in ${path.basename(relativePath)}`,
-                                    command: { command: 'vscode.open', title: 'Go to Definition', arguments: [fileUri, { selection: symbol.selectionRange }] }
-                                });
-                                newGraph.edges.push({ id: `${relativePath}->${nodeId}`, source: relativePath, target: nodeId, label: 'contains' });
-                            }
+                        this.processSymbols(relativePath, symbols, relativePath, newGraph.nodes, newGraph.edges, fileUri);
+                    }
+
+                    // 2. Process Inheritance (Regex)
+                    let match;
+                    const ext = path.extname(relativePath).toLowerCase();
+                    const regex = (ext === '.py') ? pyInheritanceRegex : tsInheritanceRegex;
+                    
+                    // Reset regex state
+                    regex.lastIndex = 0;
+                    
+                    while ((match = regex.exec(content)) !== null) {
+                        const className = match[1];
+                        const parentName = match[2];
+                        
+                        // Find nodes for these classes in the current file first
+                        // Note: Parent might be imported, so finding it is harder without full resolution.
+                        // We will try to find a class node with matching name in the graph.
+                        // Ideally we restrict to this file or imported files, but for now we search globally to link them.
+                        
+                        // We need the ID. The class node ID format is "filepath:ClassName"
+                        const classNode = newGraph.nodes.find(n => n.label === className && (n.type === 'class' || n.type === 'interface') && n.filePath === relativePath);
+                        
+                        if (classNode) {
+                            // Find parent node. It might not be scanned yet if it's in a later file.
+                            // We will do a second pass or just store the relationship strings and link later.
+                            // For simplicity in this pass, we store the edge with a placeholder ID if we can't find it,
+                            // or better, postpone linking.
+                            // Actually, let's just push a potential edge and filter invalid ones later or use a label matching heuristic.
+                            
+                            // Strategy: Add a temporary edge request
+                            newGraph.edges.push({
+                                id: `REQ_INHERIT:${classNode.id}:${parentName}`,
+                                source: classNode.id,
+                                target: `POTENTIAL:${parentName}`, // Placeholder
+                                label: 'inherits'
+                            });
                         }
                     }
-                } catch (e) { 
-                    Logger.debug(`Could not get symbols for ${relativePath}`, e); 
-                }
-            }
 
-            // --- PASS 1.5: Find imports ---
-            progress.report({ message: "Scanning for imports..." });
-            const importRegex = /^(?:import|export)(?:[^{}]*|\{[^}]*\})\s*from\s*['"]([^'"]+)['"];?|import\s*['"]([^'"]+)['"];?|require\s*\(\s*['"]([^'"]+)['"]\s*\)/gm;
-
-            for (const sourcePath of allVisibleFiles) {
-                if (token.isCancellationRequested) return;
-
-                const fileUri = vscode.Uri.joinPath(rootUri, sourcePath);
-                try {
-                    const stat = await vscode.workspace.fs.stat(fileUri);
-                    if (stat.type === vscode.FileType.Directory) continue;
-                } catch (e) { continue; }
-
-                try {
-                    const content = (await vscode.workspace.fs.readFile(fileUri)).toString();
-                    
-                    let match;
+                    // 3. Process Imports (Regex)
+                    importRegex.lastIndex = 0;
                     while ((match = importRegex.exec(content)) !== null) {
                         const importPath = match[1] || match[2] || match[3];
-                        if (!importPath || !importPath.startsWith('.')) continue; // Only handle relative imports
+                        if (!importPath || !importPath.startsWith('.')) continue;
 
-                        const sourceDir = path.dirname(sourcePath);
+                        const sourceDir = path.dirname(relativePath);
                         const targetPath = path.join(sourceDir, importPath);
                         const normalizedTargetPath = path.normalize(targetPath).replace(/\\/g, '/');
 
@@ -296,29 +390,53 @@ export class CodeGraphManager {
 
                         if (resolvedPath) {
                             newGraph.edges.push({
-                                id: `${sourcePath}->import->${resolvedPath}`,
-                                source: sourcePath,
+                                id: `${relativePath}->import->${resolvedPath}`,
+                                source: relativePath,
                                 target: resolvedPath,
                                 label: 'imports'
                             });
                         }
                     }
-                } catch (e) {
-                    Logger.debug(`Could not read or parse imports for ${sourcePath}`, e);
+
+                } catch (e) { 
+                    Logger.debug(`Error processing file ${relativePath}`, e); 
                 }
             }
+
+            // --- PASS 2: Resolve Inheritance and References ---
             
-            // --- PASS 2: Find connections (references) ---
+            // 2a. Fix Inheritance Edges
+            // We have edges with target `POTENTIAL:ParentName`. We try to find a class node with label `ParentName`.
+            const inheritRequests = newGraph.edges.filter(e => e.target.startsWith('POTENTIAL:'));
+            const finalEdges = newGraph.edges.filter(e => !e.target.startsWith('POTENTIAL:'));
+            
+            for (const req of inheritRequests) {
+                const parentName = req.target.replace('POTENTIAL:', '');
+                // Try to find a class with this name. 
+                // Priority: Same file > Imported files > Global
+                // Simplified: Global search for class with that name
+                const parentNode = newGraph.nodes.find(n => n.label === parentName && (n.type === 'class' || n.type === 'interface'));
+                
+                if (parentNode) {
+                    finalEdges.push({
+                        id: `${req.source}->inherits->${parentNode.id}`,
+                        source: req.source,
+                        target: parentNode.id,
+                        label: 'inherits'
+                    });
+                }
+            }
+            newGraph.edges = finalEdges;
+
+            // 2b. References (Limit 50)
             const symbolNodes = newGraph.nodes.filter(n => n.type === 'function' || n.type === 'class');
-            const totalSymbols = symbolNodes.length;
             const limit = 50; 
             
-            if (totalSymbols > 0) {
+            if (symbolNodes.length > 0) {
                 progress.report({ message: "Resolving references (limit 50)..." });
                 for (let i = 0; i < Math.min(symbolNodes.length, limit); i++) {
                     const symbolNode = symbolNodes[i];
                     if (token.isCancellationRequested) return;
-                    progress.report({ message: `Finding references for ${symbolNode.label}`, increment: (1 / limit) * 100 });
                     
                     const symbolUri = vscode.Uri.joinPath(rootUri, symbolNode.filePath);
                     const symbolPosition = new vscode.Position(symbolNode.startLine, 0);
@@ -351,9 +469,7 @@ export class CodeGraphManager {
                                 }
                             }
                         }
-                    } catch (e) { 
-                        Logger.debug(`Could not get references for ${symbolNode.label}`, e); 
-                    }
+                    } catch (e) { }
                 }
             }
         });

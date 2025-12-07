@@ -14,7 +14,7 @@ import { Logger } from '../../logger';
 // ... existing imports ...
 
 export class ChatPanel {
-  // ... existing static/private properties ...
+  // ... existing properties ...
   public static panels: Map<string, ChatPanel> = new Map();
   public static currentPanel: ChatPanel | undefined;
   public readonly _panel: vscode.WebviewPanel;
@@ -32,7 +32,6 @@ export class ChatPanel {
   private _inputResolver: ((value: string) => void) | null = null;
   private _skillsManager: SkillsManager;
 
-  // ... createOrShow and constructor ...
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, discussionManager: DiscussionManager, discussionId: string, skillsManager?: SkillsManager): ChatPanel {
     const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
 
@@ -86,7 +85,6 @@ export class ChatPanel {
     this._setWebviewMessageListener(this._panel.webview);
   }
 
-  // ... log, _updateHtmlForWebview, setContextManager, etc. (unchanged) ...
   private log(message: string, level: 'INFO' | 'WARN' | 'ERROR' = 'INFO') {
       const timestamp = new Date().toLocaleTimeString();
       const logEntry = `[${timestamp}] [${level}] ${message}`;
@@ -224,7 +222,6 @@ export class ChatPanel {
     await this._fetchAndSetModels(false);
   }
 
-  // ... (Other methods: _fetchAndSetModels, _updateContextAndTokens, sendMessage, etc. remain unchanged unless shown below) ...
   private async _fetchAndSetModels(forceRefresh: boolean = false) {
     try {
         if (!this._panel.webview) return;
@@ -351,7 +348,6 @@ export class ChatPanel {
     }
   }
 
-  // ... (sendMessage, handleInspectCode, sendIsolatedMessage, handleProjectExecutionResult, requestUserInput, analyzeExecutionResult, handleSaveSkill, handleImportSkills, copyFullPromptToClipboard, deleteMessage, regenerateFromMessage, insertMessage, updateMessage, _handleFileAttachment, dispose) ...
   public async sendMessage(message: ChatMessage) {
     if (!this._currentDiscussion) {
         vscode.window.showErrorMessage("No active discussion found.");
@@ -496,6 +492,7 @@ export class ChatPanel {
 
   public handleProjectExecutionResult(output: string, success: boolean) {
       const message: ChatMessage = {
+          id: 'system_exec_' + Date.now() + Math.random().toString(36).substring(2),
           role: 'system',
           content: success 
             ? `✅ **Project Executed Successfully**\n\`\`\`\n${output}\n\`\`\``
@@ -509,6 +506,7 @@ export class ChatPanel {
           this._inputResolver = resolve;
           
           const questionMessage: ChatMessage = {
+              id: 'assistant_ask_' + Date.now(),
               role: 'assistant',
               content: `❓ **Clarification Needed:** ${question}\n\n*Please type your answer in the chat input.*`
           };
@@ -546,7 +544,11 @@ export class ChatPanel {
       this.updateGeneratingState();
 
       try {
-          const userMsg: ChatMessage = { role: 'user', content: "Fix the error in the script above." };
+          const userMsg: ChatMessage = { 
+              id: 'user_fix_' + Date.now(),
+              role: 'user', 
+              content: "Fix the error in the script above." 
+          };
           await this.addMessageToDiscussion(userMsg);
 
           const context = await this._contextManager.getContextContent();
@@ -629,6 +631,7 @@ export class ChatPanel {
               });
 
               const skillMessage: ChatMessage = {
+                  id: 'system_skill_' + Date.now(),
                   role: 'system',
                   content: `Loaded Skills Context:\n${skillText}`
               };
@@ -729,6 +732,7 @@ export class ChatPanel {
   private async _handleFileAttachment(name: string, content: string, isImage: boolean) {
       if (isImage) {
           const msg: ChatMessage = {
+              id: 'user_img_' + Date.now() + Math.random().toString(36).substring(2),
               role: 'user',
               content: [
                   { type: 'text', text: `Attached image: ${name}` },
@@ -741,6 +745,7 @@ export class ChatPanel {
           const text = await this._contextManager.processFile(name, base64);
           
           const systemMsg: ChatMessage = {
+              id: 'system_file_' + Date.now() + Math.random().toString(36).substring(2),
               role: 'system',
               content: `Attached file: **${name}**\n\`\`\`\n${text}\n\`\`\``
           };
@@ -760,7 +765,6 @@ export class ChatPanel {
       console.log("Lollms: Received message from webview:", message.command, message);
       const activeWorkspaceFolder = vscode.workspace.workspaceFolders?.[0];
       switch (message.command) {
-        // ... other cases ...
         case 'webview-bootstrap-ok':
         case 'webview-html-loaded':
             console.log("ChatPanel: HTML Loaded signal received.");
@@ -800,7 +804,6 @@ export class ChatPanel {
             
             if (!activeWorkspaceFolder) {
                 vscode.window.showErrorMessage("No active workspace to add files from.");
-                // Ensure we return a result to stop the spinner even on failure
                 files.forEach(f => results[f] = false);
                 webview.postMessage({
                     command: 'filesAddedToContext',
@@ -812,8 +815,6 @@ export class ChatPanel {
 
             try {
                 const validFiles: string[] = [];
-
-                // 1. Validate files exist
                 for (const filePath of files) {
                     try {
                         const uri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, filePath);
@@ -825,19 +826,16 @@ export class ChatPanel {
                     }
                 }
 
-                // 2. Add valid files to context
                 if (validFiles.length > 0) {
                     await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', validFiles);
                 }
 
-                // 3. Update Token Count
                 this._updateContextAndTokens();
 
             } catch (err: any) {
                 this.log("Error adding files to context: " + err.message, 'ERROR');
                 vscode.window.showErrorMessage("Error adding files: " + err.message);
             } finally {
-                // 4. Always send feedback to unlock the UI
                 webview.postMessage({
                     command: 'filesAddedToContext',
                     results: results,
@@ -998,6 +996,9 @@ export class ChatPanel {
         case 'importSkills':
             await this.handleImportSkills();
             break;
+        case 'openSettings':
+            vscode.commands.executeCommand('lollms-vs-coder.showConfigView');
+            break;
       }
     });
   }
@@ -1108,7 +1109,7 @@ export class ChatPanel {
             <div id="more-actions-menu">
                 <button class="menu-item" id="attachButton"><i class="codicon codicon-add"></i><span>Attach Files</span></button>
                 <button class="menu-item" id="importSkillsButton"><i class="codicon codicon-lightbulb"></i><span>Import Skill</span></button>
-                <button class="menu-item" id="copyFullPromptButton"><i class="codicon codicon-copy"></i><span>Copy Full Prompt</span></button>
+                <button class="menu-item" id="copyFullPromptButton"><i class="codicon codicon-copy"></i><span>Copy Context & Prompt</span></button>
                 <button class="menu-item" id="configureToolsButton"><i class="codicon codicon-tools"></i><span>Configure Tools</span></button>
                 <button class="menu-item" id="setEntryPointButton"><i class="codicon codicon-target"></i><span>Set Project Entry Point</span></button>
                 <button class="menu-item" id="executeButton"><i class="codicon codicon-play"></i><span>Execute Project</span></button>
@@ -1151,10 +1152,10 @@ export class ChatPanel {
                 <div class="control-buttons">
                     <button id="moreActionsButton" title="More Actions"><i class="codicon codicon-ellipsis"></i></button>
                 </div>
-                <!-- CodeMirror container -->
-                <div id="messageInputContainer"></div>
+                
+                <textarea id="messageInput" placeholder="Enter your message (Shift+Enter for new line)..."></textarea>
+
                 <div class="control-buttons">
-                    <button id="copyContextButton" title="Copy Context & Prompt"><i class="codicon codicon-files"></i></button>
                     <button id="sendButton" title="Send Message"><i class="codicon codicon-send"></i></button>
                 </div>
             </div>

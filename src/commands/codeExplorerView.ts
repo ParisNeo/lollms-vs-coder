@@ -69,7 +69,7 @@ export class CodeExplorerPanel {
                     vscode.window.showInformationMessage("Code graph rebuilt successfully.");
                     break;
                 case 'addToContext':
-                    const type = message.graphType; // 'import_graph' | 'class_diagram' | 'call_graph'
+                    const type = message.graphType; 
                     const mermaid = this._codeGraphManager.generateMermaid(type);
                     if (ChatPanel.currentPanel) {
                         const msg = {
@@ -122,11 +122,14 @@ export class CodeExplorerPanel {
             --border-color: var(--vscode-panel-border);
             --toolbar-bg: var(--vscode-editorWidget-background);
             --toolbar-border: var(--vscode-widget-border);
-            --accent-color: var(--vscode-textLink-foreground);
-            --node-bg: var(--vscode-editor-background);
-            --node-border: var(--vscode-widget-border);
-            --node-file-bg: var(--vscode-sideBar-background);
-            --node-file-border: var(--vscode-sideBar-border);
+            
+            /* Consistent Color Palette */
+            --node-file-color: var(--vscode-charts-blue);
+            --node-class-color: var(--vscode-charts-orange);
+            --node-interface-color: var(--vscode-charts-green);
+            --node-function-color: var(--vscode-charts-purple);
+            --node-property-color: var(--vscode-charts-yellow);
+            --edge-color: var(--vscode-scrollbarSlider-background);
         }
         body, html {
             font-family: var(--vscode-font-family);
@@ -224,6 +227,7 @@ export class CodeExplorerPanel {
                 <option value="call_graph" selected>${l10n.callGraph}</option>
                 <option value="import_graph">${l10n.importGraph}</option>
                 <option value="class_diagram">${l10n.classDiagram}</option>
+                <option value="inheritance_graph">Inheritance Graph</option>
             </select>
         </div>
         <button id="recreate-btn">Recreate Graph</button>
@@ -263,29 +267,40 @@ export class CodeExplorerPanel {
             if (!fullGraphData || !fullGraphData.nodes) return [];
 
             const selectedView = viewSelector.value;
+            // Clone data to avoid mutating original
             const allNodes = fullGraphData.nodes.map(n => ({ data: { ...n } }));
             const allEdges = fullGraphData.edges.map(e => ({ data: { ...e } }));
 
             if (selectedView === 'import_graph') {
                 const importEdges = allEdges.filter(e => e.data.label === 'imports');
-                // SHOW ALL FILES even if disconnected
                 const fileNodes = allNodes.filter(n => n.data.type === 'file');
                 return [...fileNodes, ...importEdges];
+            } else if (selectedView === 'inheritance_graph') {
+                const inheritEdges = allEdges.filter(e => e.data.label === 'inherits');
+                const nodeIds = new Set();
+                inheritEdges.forEach(e => { nodeIds.add(e.data.source); nodeIds.add(e.data.target); });
+                const relevantNodes = allNodes.filter(n => nodeIds.has(n.data.id));
+                return [...relevantNodes, ...inheritEdges];
             } else if (selectedView === 'class_diagram') {
                 const classNodes = allNodes.filter(n => n.data.type === 'class' || n.data.type === 'interface');
                 const classNodeIds = new Set(classNodes.map(n => n.data.id));
 
                 const methodEdges = allEdges.filter(e => e.data.label === 'contains' && classNodeIds.has(e.data.source));
                 const methodIds = new Set(methodEdges.map(e => e.data.target));
-                const methodNodes = allNodes.filter(n => methodIds.has(n.data.id));
+                const memberNodes = allNodes.filter(n => methodIds.has(n.data.id)); 
 
                 const callEdges = allEdges.filter(e => e.data.label === 'calls' && (methodIds.has(e.data.source) || methodIds.has(e.data.target) || classNodeIds.has(e.data.source) || classNodeIds.has(e.data.target)));
-                
-                return [...classNodes, ...methodNodes, ...methodEdges, ...callEdges];
-            } else { // default to call_graph (functions + calls + containing files)
+                const inheritEdges = allEdges.filter(e => e.data.label === 'inherits');
+
+                return [...classNodes, ...memberNodes, ...methodEdges, ...callEdges, ...inheritEdges];
+            } else { // default to call_graph
                 const relevantNodes = allNodes.filter(n => n.data.type === 'function' || n.data.type === 'file' || n.data.type === 'class'); 
                 const relevantEdges = allEdges.filter(e => e.data.label === 'calls' || e.data.label === 'contains');
-                return [...relevantNodes, ...relevantEdges];
+                
+                const nodeIds = new Set(relevantNodes.map(n => n.data.id));
+                const validEdges = relevantEdges.filter(e => nodeIds.has(e.data.source) && nodeIds.has(e.data.target));
+
+                return [...relevantNodes, ...validEdges];
             }
         }
 
@@ -311,6 +326,25 @@ export class CodeExplorerPanel {
                     minZoom: 0.1,
                     maxZoom: 3,
                     wheelSensitivity: 0.2,
+                    layout: {
+                        name: 'cose', 
+                        animate: true, 
+                        animationDuration: 800, 
+                        idealEdgeLength: 120, 
+                        nodeOverlap: 20,
+                        fit: true, 
+                        padding: 50, 
+                        componentSpacing: 80, 
+                        nodeRepulsion: 1000000, 
+                        edgeElasticity: 50, 
+                        nestingFactor: 5, 
+                        gravity: 90, 
+                        numIter: 1000, 
+                        initialTemp: 200, 
+                        coolingFactor: 0.95, 
+                        minTemp: 1.0,
+                        randomize: false
+                    },
                     style: [
                         { 
                             selector: 'node', 
@@ -321,60 +355,77 @@ export class CodeExplorerPanel {
                                 'font-size': '11px',
                                 'text-valign': 'center',
                                 'text-halign': 'center',
-                                'background-color': 'var(--node-bg)',
-                                'border-width': 1,
-                                'border-color': 'var(--node-border)',
+                                'text-wrap': 'wrap',
+                                'text-max-width': '100px',
+                                'border-width': 2,
                                 'width': 'label',
                                 'height': 'label',
-                                'padding': '8px',
-                                'shape': 'round-rectangle',
-                                'text-wrap': 'wrap',
-                                'text-max-width': '120px'
+                                'padding': '12px'
                             }
                         },
+                        /* --- Files (Blue, Round Rect) --- */
                         { 
                             selector: 'node[type = "file"]', 
                             style: {
-                                'background-color': 'var(--node-file-bg)',
-                                'border-color': 'var(--node-file-border)',
+                                'background-color': 'var(--node-file-color)',
+                                'border-color': 'var(--node-file-color)',
                                 'shape': 'round-rectangle',
-                                'font-weight': 'bold',
-                                'border-width': 2,
-                                'padding': '10px'
+                                'color': '#ffffff',
+                                'font-weight': 'bold'
                             }
                         },
+                        /* --- Classes (Orange, Rectangle) --- */
                         { 
                             selector: 'node[type = "class"]', 
                             style: {
-                                'border-color': 'var(--vscode-charts-orange)',
-                                'border-width': 2,
-                                'shape': 'cut-rectangle'
+                                'background-color': 'var(--vscode-editor-background)',
+                                'border-color': 'var(--node-class-color)',
+                                'shape': 'rectangle',
+                                'color': 'var(--node-class-color)',
+                                'border-width': 3
                             }
                         },
+                        /* --- Interfaces (Green, Diamond/Rhombus) --- */
                         { 
                             selector: 'node[type = "interface"]', 
                             style: {
-                                'border-color': 'var(--vscode-charts-green)',
+                                'background-color': 'var(--vscode-editor-background)',
+                                'border-color': 'var(--node-interface-color)',
+                                'shape': 'cut-rectangle',
                                 'border-style': 'dashed',
-                                'border-width': 2,
-                                'shape': 'cut-rectangle'
+                                'color': 'var(--node-interface-color)'
                             }
                         },
+                        /* --- Functions (Purple, Round Rect) --- */
                         { 
                             selector: 'node[type = "function"]', 
                             style: {
-                                'border-color': 'var(--vscode-charts-blue)',
-                                'border-width': 1,
-                                'shape': 'ellipse',
-                                'padding': '10px'
+                                'background-color': 'var(--vscode-editor-background)',
+                                'border-color': 'var(--node-function-color)',
+                                'shape': 'round-rectangle',
+                                'color': 'var(--node-function-color)'
                             }
                         },
+                        /* --- Properties (Yellow, Ellipse) --- */
+                        { 
+                            selector: 'node[type = "property"], node[type = "variable"]', 
+                            style: {
+                                'background-color': 'var(--vscode-editor-background)',
+                                'border-color': 'var(--node-property-color)',
+                                'shape': 'ellipse',
+                                'color': 'var(--node-property-color)',
+                                'width': 'label',
+                                'height': 'label',
+                                'padding': '5px'
+                            }
+                        },
+                        /* --- Edges --- */
                         { 
                             selector: 'edge', 
                             style: {
                                 'width': 1.5,
-                                'line-color': 'var(--vscode-scrollbarSlider-background)',
-                                'target-arrow-color': 'var(--vscode-scrollbarSlider-background)',
+                                'line-color': 'var(--edge-color)',
+                                'target-arrow-color': 'var(--edge-color)',
                                 'target-arrow-shape': 'triangle',
                                 'curve-style': 'bezier',
                                 'arrow-scale': 0.8
@@ -384,17 +435,24 @@ export class CodeExplorerPanel {
                             selector: 'edge[label = "contains"]', 
                             style: {
                                 'line-style': 'dashed',
-                                'line-color': 'var(--vscode-descriptionForeground)',
-                                'target-arrow-shape': 'none',
                                 'width': 1,
-                                'opacity': 0.7
+                                'opacity': 0.6
+                            }
+                        },
+                        { 
+                            selector: 'edge[label = "inherits"]', 
+                            style: {
+                                'line-color': 'var(--node-class-color)',
+                                'target-arrow-color': 'var(--node-class-color)',
+                                'target-arrow-shape': 'triangle-backcurve',
+                                'width': 2
                             }
                         },
                         { 
                             selector: 'edge[label = "calls"]', 
                             style: {
-                                'line-color': 'var(--vscode-charts-blue)',
-                                'target-arrow-color': 'var(--vscode-charts-blue)',
+                                'line-color': 'var(--node-function-color)',
+                                'target-arrow-color': 'var(--node-function-color)',
                                 'opacity': 0.8
                             }
                         },
@@ -402,19 +460,20 @@ export class CodeExplorerPanel {
                             selector: 'edge[label = "imports"]', 
                             style: {
                                 'line-style': 'dotted',
-                                'line-color': 'var(--vscode-charts-green)',
-                                'target-arrow-color': 'var(--vscode-charts-green)',
+                                'line-color': 'var(--node-interface-color)',
+                                'target-arrow-color': 'var(--node-interface-color)',
                                 'opacity': 0.6
                             }
                         },
+                        /* --- Interaction States --- */
                         { 
                             selector: '.highlighted', 
                             style: {
                                 'background-color': 'var(--vscode-list-hoverBackground)',
-                                'border-color': 'var(--vscode-focusBorder)',
+                                'border-width': 4,
                                 'line-color': 'var(--vscode-focusBorder)',
                                 'target-arrow-color': 'var(--vscode-focusBorder)',
-                                'transition-property': 'background-color, line-color, target-arrow-color',
+                                'transition-property': 'background-color, line-color, target-arrow-color, border-width',
                                 'transition-duration': '0.2s',
                                 'z-index': 100
                             }
@@ -436,6 +495,7 @@ export class CodeExplorerPanel {
                     tooltip.style.display = 'block';
                     const pos = e.renderedPosition;
                     const canvasBox = container.getBoundingClientRect();
+                    // Adjust tooltip position to stay on screen
                     tooltip.style.left = (canvasBox.left + pos.x + 20) + 'px';
                     tooltip.style.top = (canvasBox.top + pos.y + 20) + 'px';
                     
@@ -450,12 +510,13 @@ export class CodeExplorerPanel {
                 });
                 cy.on('pan zoom', function(){ tooltip.style.display = 'none'; });
             }
-
+            
+            // Re-run layout on data update to ensure good spacing
             cy.layout({
                 name: 'cose', 
                 animate: true, 
                 animationDuration: 800, 
-                idealEdgeLength: 100, 
+                idealEdgeLength: 120, 
                 nodeOverlap: 20,
                 fit: true, 
                 padding: 50, 

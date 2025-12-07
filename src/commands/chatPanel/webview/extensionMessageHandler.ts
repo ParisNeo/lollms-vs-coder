@@ -1,5 +1,4 @@
-import { dom } from './dom.js';
-import { state, vscode } from './main.js';
+import { dom, vscode, state } from './dom.js';
 import { addMessage, renderMessageContent, updateContext, displayPlan, scheduleRender } from './messageRenderer.js';
 import { setGeneratingState } from './ui.js';
 
@@ -7,12 +6,10 @@ export function handleExtensionMessage(event: MessageEvent) {
     try {
         const message = event.data;
         switch (message.command) {
-            // ... (other cases) ...
             case 'addMessage':
                 addMessage(message.message);
                 break;
             case 'appendMessageChunk':
-                // ... implementation ...
                 {
                     const stream = state.streamingMessages[message.id];
                     if (!stream) break;
@@ -53,7 +50,6 @@ export function handleExtensionMessage(event: MessageEvent) {
                 }
                 break;
             case 'finalizeMessage':
-                // ... implementation ...
                 {
                     const stream = state.streamingMessages[message.id];
                     if (stream) {
@@ -76,9 +72,8 @@ export function handleExtensionMessage(event: MessageEvent) {
                 displayPlan(message.plan);
                 break;
             case 'loadDiscussion':
-                // ... implementation ...
                 {
-                    dom.attachmentsContainer.innerHTML = '';
+                    if (dom.attachmentsContainer) dom.attachmentsContainer.innerHTML = '';
                     if (dom.chatMessagesContainer) {
                         Array.from(dom.chatMessagesContainer.children).forEach(child => {
                             if (child.id !== 'message-insertion-controls') {
@@ -114,44 +109,76 @@ export function handleExtensionMessage(event: MessageEvent) {
                 }
                 break;
             case 'updateModels':
-                dom.modelSelector.innerHTML = '<option value="">Default Model</option>';
-                if (Array.isArray(message.models)) {
-                    message.models.forEach((model: {id: string}) => {
-                        const option = document.createElement('option');
-                        option.value = model.id;
-                        option.textContent = model.id;
-                        dom.modelSelector.appendChild(option);
-                    });
+                if(dom.refreshModelsBtn) {
+                    const icon = dom.refreshModelsBtn.querySelector('.codicon');
+                    if(icon) icon.classList.remove('spin');
                 }
-                dom.modelSelector.value = message.currentModel || '';
+                if(dom.modelSelector) {
+                    dom.modelSelector.innerHTML = '<option value="">Default Model</option>';
+                    if (Array.isArray(message.models)) {
+                        message.models.forEach((model: {id: string}) => {
+                            const option = document.createElement('option');
+                            option.value = model.id;
+                            option.textContent = model.id;
+                            dom.modelSelector.appendChild(option);
+                        });
+                    }
+                    dom.modelSelector.value = message.currentModel || '';
+                }
+                break;
+            case 'tokenCalculationStarted':
+                if (dom.tokenCountingOverlay) {
+                    dom.tokenCountingOverlay.style.display = 'flex';
+                    if (dom.tokenCountingText && message.text) {
+                        dom.tokenCountingText.textContent = message.text;
+                    }
+                }
+                if (dom.inputAreaWrapper) dom.inputAreaWrapper.style.display = 'none';
+                break;
+            case 'tokenCalculationFinished':
+                if (dom.tokenCountingOverlay) dom.tokenCountingOverlay.style.display = 'none';
+                if (dom.inputAreaWrapper) dom.inputAreaWrapper.style.display = 'block';
                 break;
             case 'updateTokenProgress':
-                // ... implementation ...
                 if(dom.tokenCountLabel) {
                     const { totalTokens, contextSize, error, isApproximate } = message;
                      if (error) {
                         dom.tokenCountLabel.textContent = `Tokens: ${error}`;
-                        dom.tokenProgressBar.style.width = '100%';
-                        dom.tokenProgressBar.classList.add('red');
+                        if (dom.tokenProgressBar) {
+                            dom.tokenProgressBar.style.width = '100%';
+                            dom.tokenProgressBar.classList.add('red');
+                        }
                     } else if (typeof totalTokens === 'number') {
                         const size = (typeof contextSize === 'number' && contextSize > 0) ? contextSize : 0;
-                        dom.tokenCountLabel.textContent = size > 0 ? `Tokens: ${totalTokens} / ${size}` : `Tokens: ${totalTokens} / ?`;
+                        const labelText = isApproximate 
+                            ? `Est. Tokens: ${totalTokens} / ${size} (Approx)` 
+                            : `Tokens: ${totalTokens} / ${size}`;
                         
-                        if (size > 0) {
-                            const percentage = Math.min((totalTokens / size) * 100, 100);
-                            dom.tokenProgressBar.style.width = `${percentage}%`;
-                            dom.tokenProgressBar.classList.remove('green', 'yellow', 'red');
-                            if (percentage > 90) dom.tokenProgressBar.classList.add('red');
-                            else if (percentage > 75) dom.tokenProgressBar.classList.add('yellow');
-                            else dom.tokenProgressBar.classList.add('green');
-                        } else {
-                            dom.tokenProgressBar.style.width = '0%';
+                        dom.tokenCountLabel.textContent = labelText;
+                        
+                        if (dom.tokenProgressBar) {
+                            if (size > 0) {
+                                const percentage = Math.min((totalTokens / size) * 100, 100);
+                                dom.tokenProgressBar.style.width = `${percentage}%`;
+                                dom.tokenProgressBar.classList.remove('green', 'yellow', 'red', 'approximate');
+                                if (isApproximate) {
+                                    dom.tokenProgressBar.classList.add('approximate');
+                                } else if (percentage > 90) {
+                                    dom.tokenProgressBar.classList.add('red');
+                                } else if (percentage > 75) {
+                                    dom.tokenProgressBar.classList.add('yellow');
+                                } else {
+                                    dom.tokenProgressBar.classList.add('green');
+                                }
+                            } else {
+                                dom.tokenProgressBar.style.width = '0%';
+                            }
                         }
                     }
                 }
                 break;
             case 'updateAgentMode':
-                dom.agentModeCheckbox.checked = message.isActive;
+                if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = message.isActive;
                 if (!message.isActive) setGeneratingState(false);
                 break;
             case 'error':
@@ -159,16 +186,13 @@ export function handleExtensionMessage(event: MessageEvent) {
                 addMessage({ id: 'error_' + Date.now(), role: 'system', content: '❌ Error: ' + message.content }, true);
                 break;
             case 'setInputText':
-                if (state.editor) {
-                    const transaction = state.editor.state.update({
-                        changes: { from: 0, to: state.editor.state.doc.length, insert: message.text }
-                    });
-                    state.editor.dispatch(transaction);
-                    state.editor.focus();
+                if (dom.messageInput) {
+                    dom.messageInput.value = message.text;
+                    dom.messageInput.focus();
                 }
                 break;
             case 'forceScrollToBottom':
-                dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+                if(dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
                 break;
             case 'imageGenerationResult':
                 const btn = document.getElementById(message.buttonId) as HTMLButtonElement;
@@ -185,29 +209,51 @@ export function handleExtensionMessage(event: MessageEvent) {
                 }
                 break;
             case 'showAvailableTools':
-                // ... implementation ...
-                dom.toolsListDiv.innerHTML = '';
-                message.allTools.forEach((tool: any) => {
-                    const isChecked = message.enabledTools.includes(tool.name);
-                    const toolItem = document.createElement('div');
-                    toolItem.className = 'tool-item';
-                    toolItem.innerHTML = `
-                        <div class="checkbox-container">
-                            <label class="switch">
-                                <input type="checkbox" class="tool-item-checkbox" id="tool-${tool.name}" value="${tool.name}" ${isChecked ? 'checked' : ''}>
-                                <span class="slider"></span>
-                            </label>
-                            <label for="tool-${tool.name}" class="tool-item-details">
-                                <strong>${tool.name}</strong><br>
-                                <span style="font-weight:normal; font-size: 0.9em; opacity: 0.8;">${tool.description}</span>
-                            </label>
-                        </div>
-                    `;
-                    dom.toolsListDiv.appendChild(toolItem);
-                });
+                if (dom.toolsListDiv) {
+                    dom.toolsListDiv.innerHTML = '';
+                    message.allTools.forEach((tool: any) => {
+                        const isChecked = message.enabledTools.includes(tool.name);
+                        const toolItem = document.createElement('div');
+                        toolItem.className = 'tool-item';
+                        
+                        let settingsHtml = '';
+                        if (tool.hasSettings) {
+                            settingsHtml = `<button class="icon-btn tool-settings-btn" title="Configure Tool" data-tool="${tool.name}"><i class="codicon codicon-settings-gear"></i></button>`;
+                        }
+
+                        toolItem.innerHTML = `
+                            <div class="checkbox-container" style="justify-content: space-between;">
+                                <div style="display: flex; align-items: center;">
+                                    <label class="switch">
+                                        <input type="checkbox" class="tool-item-checkbox" id="tool-${tool.name}" value="${tool.name}" ${isChecked ? 'checked' : ''}>
+                                        <span class="slider"></span>
+                                    </label>
+                                    <label for="tool-${tool.name}" class="tool-item-details">
+                                        <strong>${tool.name}</strong><br>
+                                        <span style="font-weight:normal; font-size: 0.9em; opacity: 0.8;">${tool.description}</span>
+                                    </label>
+                                </div>
+                                ${settingsHtml}
+                            </div>
+                        `;
+                        dom.toolsListDiv.appendChild(toolItem);
+                    });
+
+                    // Add event listeners for settings buttons
+                    const settingsBtns = dom.toolsListDiv.querySelectorAll('.tool-settings-btn');
+                    settingsBtns.forEach(btn => {
+                        btn.addEventListener('click', (e) => {
+                            e.stopPropagation(); // Prevent modal close or other clicks
+                            // Currently we only open global settings, but we could be more specific
+                            vscode.postMessage({ command: 'openSettings' });
+                        });
+                    });
+                }
+                if (dom.toolsModal) {
+                    dom.toolsModal.classList.add('visible');
+                }
                 break;
             case 'updateStatus':
-                // ... implementation ...
                 if (dom.statusLabel && dom.statusText) {
                     dom.statusText.textContent = message.status;
                     if (message.type === 'error') {
@@ -227,32 +273,21 @@ export function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'filesAddedToContext': {
                 const { results, blockId } = message;
-                console.log("Webview received filesAddedToContext for block:", blockId, results);
-                
-                // 1. Update Button Visuals
                 const btnId = `btn-${blockId}`;
                 const actionBtn = document.getElementById(btnId) as HTMLButtonElement;
                 if (actionBtn) {
                     actionBtn.innerHTML = `<span class="codicon codicon-check"></span> Added!`;
                     actionBtn.classList.add('success');
-                    
-                    // Reset button after 3 seconds
                     setTimeout(() => {
                         actionBtn.innerHTML = `<span class="codicon codicon-add"></span> Add to Context`;
                         actionBtn.classList.remove('success');
                         actionBtn.disabled = false;
                     }, 3000);
-                } else {
-                    console.warn(`Button with ID ${btnId} not found.`);
                 }
-
-                // 2. Update Code Block Lines (Green/Red)
                 const codeBlock = document.getElementById(blockId);
                 if (codeBlock) {
-                    // Use textContent to get raw lines, ignoring existing HTML
                     const originalText = codeBlock.textContent || '';
                     const lines = originalText.trim().split('\n');
-                    
                     let newHtml = '';
                     lines.forEach(line => {
                         const path = line.trim();
@@ -264,13 +299,8 @@ export function handleExtensionMessage(event: MessageEvent) {
                             newHtml += `<div>${path}</div>`;
                         }
                     });
-                    
-                    // Disable Prism if it was active
                     codeBlock.classList.remove('language-select');
-                    // Replace content with our styled divs
                     codeBlock.innerHTML = newHtml;
-                } else {
-                    console.warn(`Code block with ID ${blockId} not found.`);
                 }
                 break;
             }

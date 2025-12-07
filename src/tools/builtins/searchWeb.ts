@@ -7,6 +7,7 @@ export const searchWebTool: ToolDefinition = {
     description: "Performs a web search to retrieve information, documentation, or solutions from the internet (e.g., StackOverflow, libraries).",
     isAgentic: true,
     isDefault: true,
+    hasSettings: true,
     parameters: [
         { name: "query", type: "string", description: "The search query string.", required: true }
     ],
@@ -22,7 +23,10 @@ export const searchWebTool: ToolDefinition = {
 
         if (provider === 'google_custom_search') {
             if (!apiKey || !cx) {
-                return { success: false, output: "Error: Google Custom Search requires 'searchApiKey' and 'searchCx' to be configured in extension settings." };
+                return { 
+                    success: false, 
+                    output: "Configuration Missing: Google Custom Search requires 'searchApiKey' and 'searchCx'. Please configure them in the extension settings (click the gear icon next to this tool in the tools list)." 
+                };
             }
 
             try {

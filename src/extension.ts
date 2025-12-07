@@ -24,7 +24,6 @@ import { InfoPanel } from './commands/infoPanel';
 import { CustomActionModal } from './commands/customActionModal';
 import * as https from 'https';
 import { ProcessManager } from './processManager';
-import { ProcessTreeProvider } from './commands/processTreeProvider';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { LollmsNotebookCellActionProvider } from './notebookTools';
@@ -358,8 +357,6 @@ export async function activate(context: vscode.ExtensionContext) {
     const actionsTreeProvider = new ActionsTreeProvider();
     context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsActionsView', actionsTreeProvider));
     
-    let processTreeProvider: ProcessTreeProvider | undefined;
-
     const chatPromptTreeProvider = new ChatPromptTreeProvider(promptManager);
     context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsChatPromptsView', chatPromptTreeProvider));
     const codeActionTreeProvider = new CodeActionTreeProvider(promptManager);
@@ -484,14 +481,62 @@ export async function activate(context: vscode.ExtensionContext) {
         discussionTreeProvider = new DiscussionTreeProvider(discussionManager, context.extensionUri);
         discussionView = vscode.window.createTreeView('lollmsDiscussionsView', { treeDataProvider: discussionTreeProvider });
         
-        processTreeProvider = new ProcessTreeProvider(processManager);
-        context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsProcessView', processTreeProvider));
+        // Process Management View (REMOVED)
+        // processTreeProvider = new ProcessTreeProvider(processManager);
+        // context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsProcessView', processTreeProvider));
         
-        context.subscriptions.push(processManager.onDidProcessChange(() => {
-            processTreeProvider?.refresh();
+        // Status bar item for processes
+        const processesStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 97);
+        processesStatusBarItem.command = 'lollms-vs-coder.showRunningProcesses';
+        context.subscriptions.push(processesStatusBarItem);
+
+        const updateProcessStatus = () => {
+            const processes = processManager.getAll();
+            if (processes.length > 0) {
+                processesStatusBarItem.text = `$(sync~spin) Lollms: ${processes.length} Running`;
+                processesStatusBarItem.show();
+            } else {
+                processesStatusBarItem.hide();
+            }
+            // Update panels as before
             ChatPanel.panels.forEach(panel => {
                 panel.updateGeneratingState();
             });
+        };
+
+        context.subscriptions.push(processManager.onDidProcessChange(updateProcessStatus));
+        
+        // Register command to show processes
+        context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showRunningProcesses', async () => {
+            const processes = processManager.getAll();
+            if (processes.length === 0) {
+                vscode.window.showInformationMessage('No running Lollms processes.');
+                return;
+            }
+            
+            const items = processes.map(p => ({
+                label: p.description,
+                description: `ID: ${p.id}`,
+                detail: `Discussion: ${p.discussionId}`,
+                processId: p.id,
+                discussionId: p.discussionId
+            }));
+            
+            const selected = await vscode.window.showQuickPick(items, {
+                placeHolder: 'Select a running process to manage',
+            });
+            
+            if (selected) {
+                const action = await vscode.window.showQuickPick(['Go to Discussion', 'Cancel Process'], {
+                    placeHolder: `Action for: ${selected.label}`
+                });
+                
+                if (action === 'Go to Discussion') {
+                    vscode.commands.executeCommand('lollms-vs-coder.switchDiscussion', selected.discussionId);
+                } else if (action === 'Cancel Process') {
+                    processManager.cancel(selected.processId);
+                }
+            }
         }));
 
         switchActiveWorkspace(initialWorkspace);
@@ -2184,6 +2229,36 @@ ${fileContent}
         }
 
         debugErrorManager.clearError();
+    }));
+
+    // Register Quick Fix Command
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.fixDiagnostic', async (document: vscode.TextDocument, diagnostic: vscode.Diagnostic) => {
+        if (!discussionManager) {
+            vscode.window.showErrorMessage("Lollms: Cannot start a discussion, a workspace must be active.");
+            return;
+        }
+
+        // Get context around the error (e.g., 10 lines before and after)
+        const line = diagnostic.range.start.line;
+        const startLine = Math.max(0, line - 10);
+        const endLine = Math.min(document.lineCount - 1, line + 10);
+        const range = new vscode.Range(startLine, 0, endLine, document.lineAt(endLine).text.length);
+        const codeContext = document.getText(range);
+        const relativePath = vscode.workspace.asRelativePath(document.uri);
+
+        const prompt = `I have an error in my code and I need you to fix it.
+
+**File:** \`${relativePath}\`
+**Error:** \`${diagnostic.message}\`
+**Source:** ${diagnostic.source || 'Unknown'}
+**Code Context:**
+\`\`\`${document.languageId}
+${codeContext}
+\`\`\`
+
+Please analyze the error and provide a corrected version of the code or instructions to fix it.`;
+
+        await startDiscussionWithInitialPrompt(prompt);
     }));
         
 

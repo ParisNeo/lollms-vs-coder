@@ -28,8 +28,7 @@ export const state: {
     searchMatches: HTMLElement[],
     currentMatchIndex: number,
     isInspectorEnabled: boolean,
-    streamingMessages: { [key: string]: { buffer: string, timer: any } },
-    editor?: EditorView
+    streamingMessages: { [key: string]: { buffer: string, timer: any } }
 } = {
     searchMatches: [],
     currentMatchIndex: -1,
@@ -40,7 +39,7 @@ export const state: {
 export const dom = {
     get messagesDiv() { return document.getElementById('messages') as HTMLDivElement; },
     get chatMessagesContainer() { return document.getElementById('chat-messages-container') as HTMLDivElement; },
-    get messageInputContainer() { return document.getElementById('messageInputContainer') as HTMLDivElement; },
+    get messageInput() { return document.getElementById('messageInput') as HTMLTextAreaElement; },
     get sendButton() { return document.getElementById('sendButton') as HTMLButtonElement; },
     get stopButton() { return document.getElementById('stopButton') as HTMLButtonElement; },
     get moreActionsButton() { return document.getElementById('moreActionsButton') as HTMLButtonElement; },

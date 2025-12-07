@@ -5,8 +5,9 @@ import { setGeneratingState } from './ui.js';
 import { isScrolledToBottom } from './utils.js';
 
 export function sendMessage() {
-    if (!state.editor) return;
-    const messageText = state.editor.state.doc.toString().trim();
+    const messageInput = dom.messageInput;
+    if (!messageInput) return;
+    const messageText = messageInput.value.trim();
     if (!messageText) return;
 
     setGeneratingState(true);
@@ -22,10 +23,8 @@ export function sendMessage() {
         vscode.postMessage({ command: 'sendMessage', message: userMessage });
     }
     
-    // Clear editor
-    state.editor.dispatch({
-        changes: { from: 0, to: state.editor.state.doc.length, insert: "" }
-    });
+    messageInput.value = '';
+    messageInput.style.height = 'auto'; // Reset height
 }
 
 function closeMenu() {
@@ -37,6 +36,50 @@ function closeMenu() {
 export function initEventHandlers() {
     if (dom.sendButton) {
         dom.sendButton.addEventListener('click', sendMessage);
+    }
+    
+    if (dom.messageInput) {
+        dom.messageInput.addEventListener('keydown', (e: KeyboardEvent) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+        
+        dom.messageInput.addEventListener('input', () => {
+            const textarea = dom.messageInput;
+            textarea.style.height = 'auto';
+            textarea.style.height = (textarea.scrollHeight) + 'px';
+        });
+
+        dom.messageInput.addEventListener('paste', (e: ClipboardEvent) => {
+            const items = e.clipboardData?.items;
+            if (!items) return;
+
+            for (let i = 0; i < items.length; i++) {
+                const item = items[i];
+                if (item.type.indexOf('image') !== -1) {
+                    const file = item.getAsFile();
+                    if (file) {
+                        e.preventDefault(); // Prevent pasting the binary string/filename
+                        const reader = new FileReader();
+                        reader.onload = (event) => {
+                            if (event.target?.result) {
+                                vscode.postMessage({
+                                    command: 'loadFile',
+                                    file: { 
+                                        name: file.name || `pasted_image_${Date.now()}.png`, 
+                                        content: event.target.result, 
+                                        isImage: true 
+                                    }
+                                });
+                            }
+                        };
+                        reader.readAsDataURL(file);
+                    }
+                }
+            }
+        });
     }
     
     if (dom.stopButton) {
@@ -60,14 +103,14 @@ export function initEventHandlers() {
     if (dom.copyFullPromptButton) {
         dom.copyFullPromptButton.addEventListener('click', () => {
             closeMenu();
-            const draftMessage = state.editor ? state.editor.state.doc.toString() : "";
+            const draftMessage = dom.messageInput ? dom.messageInput.value : "";
             vscode.postMessage({ command: 'copyFullPrompt', draftMessage: draftMessage });
         });
     }
     
     if (dom.copyContextButton) {
         dom.copyContextButton.addEventListener('click', () => {
-            const draftMessage = state.editor ? state.editor.state.doc.toString() : "";
+            const draftMessage = dom.messageInput ? dom.messageInput.value : "";
             vscode.postMessage({ command: 'copyFullPrompt', draftMessage: draftMessage });
         });
     }
@@ -143,13 +186,19 @@ export function initEventHandlers() {
         dom.searchCloseBtn.addEventListener('click', () => {
             if (dom.searchBar) dom.searchBar.style.display = 'none';
             clearSearch();
-            if (state.editor) state.editor.focus();
+            if (dom.messageInput) dom.messageInput.focus();
         });
     }
 
     document.addEventListener('keydown', (e: KeyboardEvent) => {
         if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
-            if (!state.editor || !state.editor.hasFocus) {
+            const activeElement = document.activeElement;
+            const isMainInput = activeElement === dom.messageInput;
+            // Check if active element is part of a CodeMirror editor (e.g. editing a message)
+            const isCodeMirror = activeElement?.closest('.cm-editor') || activeElement?.classList.contains('cm-content');
+
+            // Only trigger global search if focus is NOT in the main input AND NOT in a CodeMirror editor
+            if (!isMainInput && !isCodeMirror) {
                 e.preventDefault();
                 if (dom.searchBar) dom.searchBar.style.display = 'flex';
                 if (dom.searchInput) {
@@ -162,7 +211,7 @@ export function initEventHandlers() {
             if (e.key === 'Escape') {
                 dom.searchBar.style.display = 'none';
                 clearSearch();
-                if (state.editor) state.editor.focus();
+                if (dom.messageInput) dom.messageInput.focus();
             } else if (e.key === 'Enter') {
                 navigateSearch(e.shiftKey ? -1 : 1);
             }

@@ -421,7 +421,6 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 }
 
 /* --- Input Area Wrapper --- */
-/* CRITICAL FIX: Ensure this container allows the absolute menu to pop out */
 .input-area-wrapper {
     padding: 16px;
     background-color: var(--vscode-sideBar-background);
@@ -435,14 +434,14 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 #more-actions-menu {
     display: none; 
     position: absolute; 
-    bottom: 100%; /* Positions it right above the input wrapper */
+    bottom: 100%; 
     left: 12px; 
     width: 220px;
     background-color: var(--vscode-menu-background); 
     border: 1px solid var(--vscode-menu-border);
     box-shadow: 0 4px 12px rgba(0,0,0,0.25); 
     border-radius: 6px; 
-    z-index: 100000; /* Extremely high Z-index */
+    z-index: 100000; 
     flex-direction: column; 
     padding: 4px; 
     margin-bottom: 8px;
@@ -519,26 +518,50 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 .input-area:focus-within { border-color: var(--vscode-focusBorder); }
 .input-area.disabled { opacity: 0.6; pointer-events: none; }
 
-/* CodeMirror Container */
-#messageInputContainer {
-    flex-grow: 1;
+/* Textarea styling replacement for CM */
+#messageInput {
+    flex: 1;
+    min-height: 24px;
     max-height: 300px;
-    overflow: hidden;
-    border-radius: 4px;
+    background-color: transparent;
+    color: var(--vscode-input-foreground);
+    border: none;
+    outline: none;
+    font-family: var(--vscode-editor-font-family);
+    font-size: var(--vscode-editor-font-size);
+    resize: none;
+    overflow-y: auto; /* Vertical scrollbar when needed */
+    padding: 4px;
+    line-height: 1.4;
 }
 
-/* CodeMirror Specific Styles */
+/* Edit Overlay - Uses CodeMirror now, so style container */
+.edit-editor-container {
+    width: 100%;
+    /* Removed min/max height here to allow scroller to control size */
+    background-color: var(--vscode-input-background);
+    border: 1px solid var(--vscode-input-border);
+    border-radius: 4px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
 .cm-editor {
-    height: 100%;
-    min-height: 40px;
-    max-height: 300px;
+    /* height: 100%; REMOVED to allow auto-height */
     font-family: var(--vscode-editor-font-family) !important;
     font-size: 13px !important;
-    background-color: transparent !important;
+    background-color: var(--vscode-input-background) !important;
     color: var(--vscode-input-foreground) !important;
 }
 
-.cm-scroller { font-family: inherit; overflow: auto; }
+.cm-scroller { 
+    font-family: inherit; 
+    overflow: auto; 
+    min-height: 100px; /* Moved constraint here */
+    max-height: 600px; /* Moved constraint here */
+}
+
 .cm-content { font-family: inherit; padding: 4px 0 !important; }
 .cm-line { padding: 0 4px !important; }
 .cm-cursor { border-left-color: var(--vscode-editorCursor-foreground) !important; }
@@ -546,7 +569,6 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 .cm-activeLine, .cm-activeLineGutter { background-color: transparent !important; }
 .cm-focused { outline: none !important; }
 
-/* CodeMirror Search Panel Override */
 .cm-search-panel {
     background-color: var(--vscode-editorWidget-background) !important;
     color: var(--vscode-editorWidget-foreground) !important;
@@ -574,6 +596,7 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     display: flex;
     flex-direction: column;
     gap: 4px;
+    flex-shrink: 0; /* Prevents buttons from disappearing or shrinking */
 }
 
 .control-buttons button {
@@ -712,6 +735,7 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
     border: 1px solid var(--vscode-input-border); border-radius: 4px;
     padding: 8px; font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size);
     outline: none;
+    resize: vertical;
 }
 .edit-textarea:focus { border-color: var(--vscode-focusBorder); }
 .edit-buttons { display: flex; justify-content: flex-end; gap: 8px; }

@@ -55,12 +55,13 @@ class CodeGraphItem extends vscode.TreeItem {
 
         const iconMapping = {
             file: 'file-code',
-            symbol: node.type === 'class' ? 'symbol-class' : 'symbol-method',
+            symbol: node.type === 'class' ? 'symbol-class' : (node.type === 'interface' ? 'symbol-interface' : (node.type === 'property' ? 'symbol-property' : 'symbol-method')),
             'calls-group': 'arrow-right',
             'called-by-group': 'arrow-left',
             'call-site': 'symbol-method',
         };
-        this.iconPath = new vscode.ThemeIcon(iconMapping[itemType]);
+        // @ts-ignore
+        this.iconPath = new vscode.ThemeIcon(iconMapping[itemType] || 'circle-outline');
     }
 
     getChildren(graph: CodeGraph): CodeGraphItem[] {
@@ -76,17 +77,29 @@ class CodeGraphItem extends vscode.TreeItem {
             });
         } else if (this.itemType === 'symbol' && this.graph) {
             // Children of a symbol are "Calls" and "Called By" groups
-            const calls = this.graph.edges.filter(e => e.source === this.node.id && e.label === 'calls');
-            const calledBy = this.graph.edges.filter(e => e.target === this.node.id && e.label === 'calls');
-            if (calls.length > 0) {
-                 children.push(new CodeGraphItem({ ...this.node, id: `${this.node.id}:calls`, label: 'Calls' }, 'calls-group', this.graph));
+            // But only if it's a function/method
+            if (this.node.type === 'function') {
+                const calls = this.graph.edges.filter(e => e.source === this.node.id && e.label === 'calls');
+                const calledBy = this.graph.edges.filter(e => e.target === this.node.id && e.label === 'calls');
+                if (calls.length > 0) {
+                     children.push(new CodeGraphItem({ ...this.node, id: `${this.node.id}:calls`, label: 'Calls' }, 'calls-group', this.graph));
+                }
+                if (calledBy.length > 0) {
+                     children.push(new CodeGraphItem({ ...this.node, id: `${this.node.id}:called-by`, label: 'Called By' }, 'called-by-group', this.graph));
+                }
             }
-            if (calledBy.length > 0) {
-                 children.push(new CodeGraphItem({ ...this.node, id: `${this.node.id}:called-by`, label: 'Called By' }, 'called-by-group', this.graph));
+            // If it's a class, show its members (methods/properties)
+            if (this.node.type === 'class' || this.node.type === 'interface') {
+                 this.graph.edges.filter(e => e.source === this.node.id && e.label === 'contains').forEach(edge => {
+                    const targetNode = this.graph!.nodes.find(n => n.id === edge.target);
+                    if (targetNode) {
+                        children.push(new CodeGraphItem(targetNode, 'symbol', this.graph));
+                    }
+                });
             }
         } else if (this.itemType === 'calls-group' && this.graph) {
             // Children of "Calls" are the functions it calls
-            this.graph.edges.filter(e => e.source === this.node.id && e.label === 'calls').forEach(edge => {
+            this.graph.edges.filter(e => e.source === this.node.id.replace(':calls', '') && e.label === 'calls').forEach(edge => {
                 const targetNode = this.graph!.nodes.find(n => n.id === edge.target);
                 if (targetNode) {
                     children.push(new CodeGraphItem(targetNode, 'call-site', this.graph));
@@ -94,7 +107,7 @@ class CodeGraphItem extends vscode.TreeItem {
             });
         } else if (this.itemType === 'called-by-group' && this.graph) {
             // Children of "Called By" are the functions that call it
-            this.graph.edges.filter(e => e.target === this.node.id && e.label === 'calls').forEach(edge => {
+            this.graph.edges.filter(e => e.target === this.node.id.replace(':called-by', '') && e.label === 'calls').forEach(edge => {
                 const sourceNode = this.graph!.nodes.find(n => n.id === edge.source);
                 if (sourceNode) {
                     children.push(new CodeGraphItem(sourceNode, 'call-site', this.graph));

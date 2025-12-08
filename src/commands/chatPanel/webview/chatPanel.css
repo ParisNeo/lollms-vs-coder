@@ -639,7 +639,7 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     color: var(--vscode-descriptionForeground);
 }
 
-#model-selector {
+#model-selector, #personality-selector {
     flex: 1;
     background-color: var(--vscode-dropdown-background);
     color: var(--vscode-dropdown-foreground);
@@ -649,7 +649,7 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     outline: none;
 }
 
-#model-selector:focus {
+#model-selector:focus, #personality-selector:focus {
     border-color: var(--vscode-focusBorder);
 }
 
@@ -773,10 +773,76 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
 .task-result { margin-top: 8px; margin-left: 24px; font-size: 12px; }
 .task-result-summary { cursor: pointer; color: var(--vscode-textLink-foreground); font-size: 11px; opacity: 0.9; outline: none; }
 .task-result-box { margin-top: 4px; background-color: var(--vscode-textCodeBlock-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px; padding: 8px; overflow-x: auto; font-family: var(--vscode-editor-font-family); white-space: pre-wrap; max-height: 200px; overflow-y: auto; }
-.plan-scratchpad { border-top: 1px solid var(--vscode-widget-border); background-color: var(--vscode-editor-background); }
-.scratchpad-header { padding: 8px 12px; font-size: 12px; font-weight: 600; color: var(--vscode-descriptionForeground); cursor: pointer; display: flex; align-items: center; gap: 6px; }
+
+/* --- Thinking Indicator --- */
+.thinking-indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background-color: var(--thinking-color);
+    color: white;
+    font-size: 11px;
+    font-weight: 600;
+    margin-right: 8px;
+    animation: pulse-border 2s infinite;
+}
+
+/* --- Web Search Indicator --- */
+.websearch-indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background-color: var(--websearch-color);
+    color: white;
+    font-size: 11px;
+    font-weight: 600;
+    margin-right: 8px;
+    animation: pulse-border-blue 2s infinite;
+}
+
+@keyframes pulse-border {
+    0% { box-shadow: 0 0 0 0 rgba(155, 89, 182, 0.4); }
+    70% { box-shadow: 0 0 0 4px rgba(155, 89, 182, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(155, 89, 182, 0); }
+}
+
+@keyframes pulse-border-blue {
+    0% { box-shadow: 0 0 0 0 rgba(52, 152, 219, 0.4); }
+    70% { box-shadow: 0 0 0 4px rgba(52, 152, 219, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(52, 152, 219, 0); }
+}
+
+/* --- Plan & Scratchpad (Update for Deep Thinking) --- */
+.plan-scratchpad {
+    border-top: 1px solid var(--vscode-widget-border);
+    background-color: var(--vscode-editor-background);
+    border-left: 3px solid var(--thinking-color); /* Add purple border */
+    margin-top: 8px;
+    border-radius: 4px;
+}
+
+.scratchpad-header {
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--thinking-color); /* Purple text */
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* Modify existing blockquote style if needed inside scratchpad */
+.scratchpad-content blockquote {
+    border-left-color: var(--thinking-color);
+    background-color: rgba(155, 89, 182, 0.05);
+}
+
 .scratchpad-content { padding: 10px 12px; font-size: 13px; line-height: 1.5; color: var(--vscode-editor-foreground); border-top: 1px dashed var(--vscode-widget-border); }
-.scratchpad-content blockquote { border-left-color: var(--vscode-charts-purple); background-color: rgba(100, 100, 100, 0.05); }
 .retry-btn { background-color: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: none; padding: 4px 8px; border-radius: 3px; cursor: pointer; font-size: 11px; display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
 .retry-btn:hover { background-color: var(--vscode-button-secondaryHoverBackground); }
 
@@ -870,71 +936,4 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 10px;
-}
-/* --- Thinking Indicator --- */
-.thinking-indicator {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 2px 8px;
-    border-radius: 4px;
-    background-color: var(--thinking-color);
-    color: white;
-    font-size: 11px;
-    font-weight: 600;
-    margin-right: 8px;
-    animation: pulse-border 2s infinite;
-}
-
-/* --- Web Search Indicator --- */
-.websearch-indicator {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 2px 8px;
-    border-radius: 4px;
-    background-color: var(--websearch-color);
-    color: white;
-    font-size: 11px;
-    font-weight: 600;
-    margin-right: 8px;
-    animation: pulse-border-blue 2s infinite;
-}
-
-@keyframes pulse-border {
-    0% { box-shadow: 0 0 0 0 rgba(155, 89, 182, 0.4); }
-    70% { box-shadow: 0 0 0 4px rgba(155, 89, 182, 0); }
-    100% { box-shadow: 0 0 0 0 rgba(155, 89, 182, 0); }
-}
-
-@keyframes pulse-border-blue {
-    0% { box-shadow: 0 0 0 0 rgba(52, 152, 219, 0.4); }
-    70% { box-shadow: 0 0 0 4px rgba(52, 152, 219, 0); }
-    100% { box-shadow: 0 0 0 0 rgba(52, 152, 219, 0); }
-}
-
-/* --- Plan & Scratchpad (Update for Deep Thinking) --- */
-.plan-scratchpad {
-    border-top: 1px solid var(--vscode-widget-border);
-    background-color: var(--vscode-editor-background);
-    border-left: 3px solid var(--thinking-color); /* Add purple border */
-    margin-top: 8px;
-    border-radius: 4px;
-}
-
-.scratchpad-header {
-    padding: 8px 12px;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--thinking-color); /* Purple text */
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
-
-/* Modify existing blockquote style if needed inside scratchpad */
-.scratchpad-content blockquote {
-    border-left-color: var(--thinking-color);
-    background-color: rgba(155, 89, 182, 0.05);
 }

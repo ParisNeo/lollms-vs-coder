@@ -39,6 +39,7 @@ export const state: {
 
 // ... dom object ...
 export const dom = {
+    get personalitySelector() { return document.getElementById('personality-selector') as HTMLSelectElement; },
     get messagesDiv() { return document.getElementById('messages') as HTMLDivElement; },
     get chatMessagesContainer() { return document.getElementById('chat-messages-container') as HTMLDivElement; },
     get thinkingIndicator() { return document.getElementById('thinking-indicator') as HTMLDivElement; },

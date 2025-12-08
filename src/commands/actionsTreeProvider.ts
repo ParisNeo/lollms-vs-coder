@@ -35,6 +35,7 @@ export class ActionsTreeProvider implements vscode.TreeDataProvider<ActionItem> 
         }
 
         const actions: ActionItem[] = [
+            new ActionItem('Generate Educative Notebook', 'lollms-vs-coder.generateEducativeNotebookFromAction', 'book', 'Generate a comprehensive notebook from a prompt'),
             new ActionItem('Settings', 'lollms-vs-coder.showConfigView', 'gear', 'Open Lollms settings panel'),
             new ActionItem('Help', 'lollms-vs-coder.showHelp', 'question', 'Show the help panel'),
             new ActionItem('Show Debug Log', 'lollms-vs-coder.showLog', 'output', 'Show the debug log for the active chat'),

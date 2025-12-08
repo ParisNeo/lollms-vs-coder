@@ -11,9 +11,10 @@ export interface Discussion {
     messages: ChatMessage[];
     timestamp: number;
     groupId: string | null;
-    plan?: Plan | null;
+    plan?: Plan | null; 
     model?: string;
-    capabilities?: DiscussionCapabilities;
+    capabilities?: DiscussionCapabilities; 
+    personalityId?: string; // NEW
 }
 
 export interface DiscussionGroup {
@@ -80,7 +81,8 @@ export class DiscussionManager {
             timestamp: Date.now(),
             groupId,
             plan: null,
-            capabilities: caps
+            capabilities: caps,
+            personalityId: 'default_coder' // Default personality
         };
     }
 

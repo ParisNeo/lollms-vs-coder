@@ -77,12 +77,13 @@ export async function applyDiff(diffContent: string) {
     await document.save();
 }
 
-
-export function getProcessedSystemPrompt(promptType: 'chat' | 'agent' | 'inspector' | 'commit', capabilities?: DiscussionCapabilities): string {
+export function getProcessedSystemPrompt(
+    promptType: 'chat' | 'agent' | 'inspector' | 'commit', 
+    capabilities?: DiscussionCapabilities,
+    customPersonaContent?: string // NEW
+): string {
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const reasoningLevel = config.get<string>('reasoningLevel') || 'none';
-    
-    // Prefer capability setting, fall back to global config (excluding no_think check which is now capability only)
     const thinkingMode = capabilities?.thinkingMode || config.get<string>('thinkingMode') || 'none';
     const developerName = config.get<string>('developerName') || 'Developer';
 
@@ -204,7 +205,6 @@ search query here
 \`\`\`
 `;
             }
-
             basePrompt = `You are a VSCode Assistant. Your goal is to assist with code, debugging, and project tasks.
 
 **MANDATORY OUTPUT FORMATS:**
@@ -223,14 +223,23 @@ ${updateInstructions}
             break;
     }
 
-    let userPersona = config.get<string>(personaKey) || '';
+    let userPersona = '';
+    
+    // If a custom personality content is provided (e.g. from Personality Manager via ChatPanel), use it.
+    // Otherwise fallback to config.
+    if (customPersonaContent) {
+        userPersona = customPersonaContent;
+    } else {
+        userPersona = config.get<string>(personaKey) || '';
+    }
     
     if (capabilities?.funMode) {
         userPersona += "\n\n**FUN MODE ACTIVATED:** Be quirky, humorous, and use plenty of emojis! 🤪 Make coding fun!";
     }
 
     let combinedPrompt = `${thinkingInstructions}${basePrompt}\n\n**YOUR PERSONA:**\n${userPersona}`;
-
+    
+    // ... placeholder replacement ...
     const now = new Date();
     const date = now.toISOString().split('T')[0];
     const time = now.toTimeString().split(' ')[0];
@@ -245,7 +254,6 @@ ${updateInstructions}
 
     let finalPrompt = processedPrompt.trim();
 
-    // Changed: noThinkMode is now handled via thinkingMode capability
     if (thinkingMode === 'no_think') {
         finalPrompt = `/no_think\n${finalPrompt}`;
     } else if (reasoningLevel !== 'none') {

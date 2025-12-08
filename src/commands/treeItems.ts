@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { Prompt, PromptGroup } from '../promptManager';
 import { RunningProcess } from '../processManager';
+import { Personality } from '../personalityManager';
 
 export class PromptItem extends vscode.TreeItem {
     constructor(
@@ -11,7 +12,6 @@ export class PromptItem extends vscode.TreeItem {
         this.contextValue = 'prompt';
         this.tooltip = `▶ ${this.prompt.title}\n\n${this.prompt.content}`;
         
-        // Use description if available, otherwise truncate content
         this.description = this.prompt.description || (this.prompt.content.substring(0, 40).replace(/\r?\n|\r/g, ' ') + '...');
         
         if (this.prompt.is_default) {
@@ -20,7 +20,6 @@ export class PromptItem extends vscode.TreeItem {
             this.iconPath = new vscode.ThemeIcon(this.prompt.type === 'code_action' ? 'wrench' : 'comment');
         }
 
-        // The command is set to trigger the appropriate action when the item is clicked
         if (this.prompt.type === 'chat') {
             this.command = {
                 command: 'lollms-vs-coder.useChatPrompt',
@@ -28,8 +27,6 @@ export class PromptItem extends vscode.TreeItem {
                 arguments: [this.prompt]
             };
         } else if (this.prompt.type === 'code_action') {
-            // For code actions, clicking it might not be the primary way to trigger it,
-            // but we can set it for consistency. The main trigger is via CodeLens/command palette.
             this.command = {
                 command: 'lollms-vs-coder.triggerCodeAction',
                 title: 'Use Code Action',
@@ -66,6 +63,30 @@ export class ProcessItem extends vscode.TreeItem {
             command: 'lollms-vs-coder.switchDiscussion',
             title: 'Go to Discussion',
             arguments: [process.discussionId]
+        };
+    }
+}
+
+export class PersonalityItem extends vscode.TreeItem {
+    constructor(
+        public readonly personality: Personality
+    ) {
+        super(personality.name, vscode.TreeItemCollapsibleState.None);
+        this.id = personality.id;
+        this.contextValue = 'personality';
+        this.description = personality.description;
+        this.tooltip = new vscode.MarkdownString(`**${personality.name}**\n\n${personality.description}\n\n\`\`\`\n${personality.systemPrompt}\n\`\`\``);
+        
+        if (personality.isDefault) {
+            this.iconPath = new vscode.ThemeIcon('lock');
+        } else {
+            this.iconPath = new vscode.ThemeIcon('account');
+        }
+        
+        this.command = {
+            command: 'lollms-vs-coder.editPersonality',
+            title: 'Edit Personality',
+            arguments: [this]
         };
     }
 }

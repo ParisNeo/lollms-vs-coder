@@ -284,10 +284,11 @@ export class ContextManager {
       }
   }
 
-  async getContextContent(): Promise<ContextResult> {
+  async getContextContent(options?: { includeTree?: boolean }): Promise<ContextResult> {
     const result: ContextResult = { text: '', images: [] };
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const maxImageSize = config.get<number>('maxImageSize') || 1024;
+    const includeTree = options?.includeTree !== false; // Default true
 
     if (!this.contextStateProvider) {
       result.text = this.getNoWorkspaceMessage();
@@ -303,8 +304,11 @@ export class ContextManager {
 
     const contextFiles = this.contextStateProvider.getIncludedFiles();
     let content = `# Project Context\n\n**Workspace:** ${path.basename(workspaceFolder.uri.fsPath)}\n\n`;
-    content += await this.generateProjectTree();
-    content += '\n';
+    
+    if (includeTree) {
+        content += await this.generateProjectTree();
+        content += '\n';
+    }
 
     const includedFiles = contextFiles.filter(f => !f.path.endsWith(path.sep));
     

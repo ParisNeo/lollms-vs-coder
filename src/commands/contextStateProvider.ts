@@ -4,7 +4,7 @@ import { minimatch } from 'minimatch';
 
 export type ContextState = 'included' | 'tree-only' | 'fully-excluded' | 'collapsed' | 'definitions-only';
 
-class ContextItem extends vscode.TreeItem {
+export class ContextItem extends vscode.TreeItem {
     constructor(
         public readonly resourceUri: vscode.Uri,
         public readonly state: ContextState,

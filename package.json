@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.41",
+  "version": "0.5.43",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -330,6 +330,26 @@
         "icon": "$(book)"
       },
       {
+        "command": "lollms-vs-coder.generateEducativeNotebookFromAction",
+        "title": "Generate Educative Notebook",
+        "icon": "$(book)"
+      },
+      {
+        "command": "lollms-vs-coder.createPersonality",
+        "title": "New Personality",
+        "icon": "$(add)"
+      },
+      {
+        "command": "lollms-vs-coder.editPersonality",
+        "title": "Edit",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "lollms-vs-coder.deletePersonality",
+        "title": "Delete",
+        "icon": "$(trash)"
+      },
+      {
         "command": "lollms-vs-coder.setContextIncluded",
         "title": "%command.setContextIncluded.title%"
       },
@@ -628,6 +648,11 @@
           "when": "workspaceFolderCount > 0"
         },
         {
+          "id": "lollmsPersonalitiesView",
+          "name": "Personalities",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
           "id": "lollmsCodeExplorerView",
           "name": "%view.codeExplorer.name%",
           "when": "workspaceFolderCount > 0"
@@ -777,6 +802,11 @@
           "group": "navigation@7"
         },
         {
+          "command": "lollms-vs-coder.createPersonality",
+          "when": "view == lollmsPersonalitiesView",
+          "group": "navigation@1"
+        },
+        {
           "command": "lollms-vs-coder.buildCodeGraph",
           "when": "view == lollmsCodeExplorerView",
           "group": "navigation@1"
@@ -856,6 +886,21 @@
         {
           "command": "lollms-vs-coder.deleteDiscussionGroup",
           "when": "view == lollmsDiscussionsView && viewItem == 'discussionGroup'",
+          "group": "9_delete"
+        },
+        {
+          "command": "lollms-vs-coder.editPersonality",
+          "when": "view == lollmsPersonalitiesView && viewItem == 'personality'",
+          "group": "inline"
+        },
+        {
+          "command": "lollms-vs-coder.editPersonality",
+          "when": "view == lollmsPersonalitiesView && viewItem == 'personality'",
+          "group": "1_modification"
+        },
+        {
+          "command": "lollms-vs-coder.deletePersonality",
+          "when": "view == lollmsPersonalitiesView && viewItem == 'personality'",
           "group": "9_delete"
         },
         {

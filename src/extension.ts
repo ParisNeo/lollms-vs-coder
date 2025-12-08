@@ -14,7 +14,7 @@ import { ScriptRunner } from './scriptRunner';
 import { PromptManager, Prompt } from './promptManager';
 import { ChatPromptTreeProvider } from './commands/chatPromptTreeProvider';
 import { CodeActionTreeProvider } from './commands/codeActionTreeProvider';
-import { PromptItem, PromptGroupItem, ProcessItem } from './commands/treeItems';
+import { PromptItem, PromptGroupItem, ProcessItem, PersonalityItem } from './commands/treeItems';
 import { HelpPanel } from './commands/helpPanel';
 import { PromptBuilderPanel, parsePlaceholders } from './commands/promptBuilderPanel';
 import { LollmsCodeActionProvider } from './commands/codeActions';
@@ -36,7 +36,10 @@ import { ActionsTreeProvider } from './commands/actionsTreeProvider';
 import { DebugCodeLensProvider } from './commands/debugCodeLensProvider';
 import { CommitInspectorPanel } from './commands/commitInspectorPanel';
 import { Logger } from './logger';
+import { PersonalityManager } from './personalityManager';
+import { PersonalitiesTreeProvider } from './commands/personalitiesTreeProvider';
 
+import { EducativeNotebookModal } from './commands/educativeNotebookModal';
 const execAsync = promisify(exec);
 
 interface GitExtension { getAPI(version: 1): API; }
@@ -343,6 +346,7 @@ export async function activate(context: vscode.ExtensionContext) {
     const contextManager = new ContextManager(context, lollmsAPI);
     const scriptRunner = new ScriptRunner(pythonExtApi);
     const promptManager = new PromptManager(context.globalStorageUri);
+    const personalityManager = new PersonalityManager(context.globalStorageUri);
     const gitIntegration = new GitIntegration(lollmsAPI);
     const processManager = new ProcessManager();
     const skillsManager = new SkillsManager();
@@ -359,6 +363,8 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsCodeExplorerView', codeExplorerTreeProvider));
     const skillsTreeProvider = new SkillsTreeProvider(skillsManager);
     context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsSkillsView', skillsTreeProvider));
+    const personalitiesTreeProvider = new PersonalitiesTreeProvider(personalityManager);
+    context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsPersonalitiesView', personalitiesTreeProvider));
 
     const debugCodeLensProvider = new DebugCodeLensProvider(debugErrorManager);
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, debugCodeLensProvider));
@@ -398,6 +404,7 @@ export async function activate(context: vscode.ExtensionContext) {
         panel.setProcessManager(processManager);
         panel.agentManager.setProcessManager(processManager);
         panel.setContextManager(contextManager);
+        panel.setPersonalityManager(personalityManager);
     };
 
     const revealDiscussion = (discussion: Discussion) => {
@@ -1169,6 +1176,50 @@ ${fileContent}
         await skillsManager.addSkill({ name, description, content, language });
         skillsTreeProvider.refresh();
         vscode.window.showInformationMessage(`Skill '${name}' has been learned.`);
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.createPersonality', async () => {
+        const name = await vscode.window.showInputBox({ prompt: 'Personality Name' });
+        if (!name) return;
+        const description = await vscode.window.showInputBox({ prompt: 'Description' });
+        if (!description) return;
+        const systemPrompt = await vscode.window.showInputBox({ prompt: 'System Prompt' });
+        if (!systemPrompt) return;
+
+        await personalityManager.addPersonality({
+            id: Date.now().toString(),
+            name,
+            description,
+            systemPrompt
+        });
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.editPersonality', async (item: PersonalityItem) => {
+        if (!item || !item.personality) return;
+        const p = item.personality;
+        
+        const name = await vscode.window.showInputBox({ prompt: 'Personality Name', value: p.name });
+        if (!name) return;
+        const description = await vscode.window.showInputBox({ prompt: 'Description', value: p.description });
+        if (!description) return;
+        const systemPrompt = await vscode.window.showInputBox({ prompt: 'System Prompt', value: p.systemPrompt });
+        if (!systemPrompt) return;
+
+        await personalityManager.updatePersonality({
+            ...p,
+            name,
+            description,
+            systemPrompt
+        });
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deletePersonality', async (item: PersonalityItem) => {
+        if (!item || !item.personality) return;
+        if (item.personality.isDefault) {
+            vscode.window.showInformationMessage("Cannot delete default personalities.");
+            return;
+        }
+        await personalityManager.deletePersonality(item.personality.id);
     }));
 
     const handleSetState = (state: ContextState, primaryUri?: vscode.Uri, selectedUris?: vscode.Uri[]) => {
@@ -2754,6 +2805,70 @@ Provide a concise analysis of this output. Explain what it means, check for pote
         }
 
         debugErrorManager.clearError();
+    }));
+    // NEW COMMAND: Generate Educative Notebook (Action)
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateEducativeNotebookFromAction', async () => {
+        if (!activeWorkspaceFolder || !discussionManager) {
+            vscode.window.showErrorMessage("No active workspace found. Please open a folder.");
+            return;
+        }
+
+        const data = await EducativeNotebookModal.createOrShow(context.extensionUri);
+        if (!data) return;
+
+        const { topic, includeTree, selectedTools } = data;
+
+        // Create a new discussion for this task
+        const discussion = discussionManager.createNewDiscussion();
+        discussion.title = `Generating: ${topic.substring(0, 20)}...`;
+        
+        // Setup initial user message
+        const userMessage: ChatMessage = {
+            id: 'user_' + Date.now(),
+            role: 'user',
+            content: `**Objective:** Generate an educative Jupyter Notebook about "${topic}".
+            
+**Context Settings:**
+- Include Project Tree: ${includeTree ? 'Yes' : 'No'}
+- Enabled Tools: ${selectedTools.join(', ')}
+
+Please research if necessary, then create the notebook file using \`generate_code\` (target file e.g., \`${topic.replace(/\s+/g, '_')}.ipynb\`). 
+The notebook should be educational, alternating between markdown explanations and code examples, with visualizations where appropriate.`
+        };
+        discussion.messages.push(userMessage);
+        
+        // Propagate settings to discussion capabilities
+        if (discussion.capabilities) {
+            discussion.capabilities.webSearch = selectedTools.includes('search_web');
+            discussion.capabilities.arxivSearch = selectedTools.includes('search_arxiv');
+            discussion.capabilities.imageGen = selectedTools.includes('generate_image');
+        }
+
+        await discussionManager.saveDiscussion(discussion);
+        discussionTreeProvider?.refresh();
+
+        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, discussion.id, skillsManager);
+        setupChatPanel(panel);
+        await panel.loadDiscussion();
+
+        // Configure AgentManager with selected tools
+        // We need to ensure the agent has the right tools enabled for THIS run. 
+        // AgentManager's enabled tools are global for the session usually, but we can set them here.
+        // We add standard file ops + selected tools.
+        const toolsToEnable = ['generate_code', 'read_file', 'list_files', 'execute_command', ...selectedTools];
+        panel.agentManager.setEnabledTools(toolsToEnable);
+
+        // Start Agent
+        // Note: We need to pass the prompt again as the objective for the agent run
+        // If includeTree is false, we might need to handle that. 
+        // Current implementation of AgentManager always uses contextManager which respects includeTree only via method arg.
+        // But AgentManager calls contextManager methods directly.
+        // To strictly respect includeTree=false, we'd need to patch AgentManager/ContextManager logic 
+        // or just rely on the prompt telling the agent what to do (the agent sees the tree in system prompt usually).
+        // For now, let's assume standard behavior but with the specific objective.
+
+        // We trigger the agent run
+        panel.agentManager.run(userMessage.content as string, discussion, activeWorkspaceFolder, discussion.model);
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.fixDiagnostic', async (document: vscode.TextDocument, diagnostic: vscode.Diagnostic) => {

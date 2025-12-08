@@ -10,6 +10,7 @@ import { ProcessManager } from '../../processManager';
 import { getNonce } from './getNonce';
 import { SkillsManager } from '../../skillsManager';
 import { Logger } from '../../logger';
+import { PersonalityManager } from '../../personalityManager';
 
 export class ChatPanel {
   public static panels: Map<string, ChatPanel> = new Map();
@@ -28,6 +29,7 @@ export class ChatPanel {
   private _isLoadPending = false;
   private _inputResolver: ((value: string) => void) | null = null;
   private _skillsManager: SkillsManager;
+  private _personalityManager?: PersonalityManager;
   
   private _discussionCapabilities: DiscussionCapabilities;
 
@@ -71,7 +73,7 @@ export class ChatPanel {
     this.discussionId = discussionId;
     this._skillsManager = skillsManager || new SkillsManager();
 
-    // Initialize capabilities with defaults or last used settings
+    // Initialize capabilities with last used settings
     this._discussionCapabilities = this._discussionManager.getLastCapabilities();
 
     this.log(`ChatPanel initialized for discussion: ${discussionId}`);
@@ -85,6 +87,10 @@ export class ChatPanel {
     this._panel.onDidDispose(() => this.dispose(), null, []);
     this._updateHtmlForWebview(); 
     this._setWebviewMessageListener(this._panel.webview);
+  }
+  
+  public setPersonalityManager(manager: PersonalityManager) {
+      this._personalityManager = manager;
   }
 
   private log(message: string, level: 'INFO' | 'WARN' | 'ERROR' = 'INFO') {
@@ -154,7 +160,8 @@ export class ChatPanel {
                 timestamp: Date.now(),
                 groupId: null,
                 plan: null,
-                capabilities: this._discussionCapabilities // Use current/last defaults
+                capabilities: this._discussionCapabilities, // Use current/last defaults
+                personalityId: 'default_coder'
             };
         } else {
             discussion = await this._discussionManager.getDiscussion(this.discussionId);
@@ -182,6 +189,12 @@ export class ChatPanel {
                 this._discussionCapabilities = discussion.capabilities;
             } else {
                 discussion.capabilities = this._discussionCapabilities;
+                needsSave = true;
+            }
+            
+            // Restore personality
+            if (!discussion.personalityId) {
+                discussion.personalityId = 'default_coder';
                 needsSave = true;
             }
 
@@ -231,8 +244,15 @@ export class ChatPanel {
         capabilities: this._discussionCapabilities 
     });
     
-    // Also trigger updateThinkingMode separately to ensure visual sync on load
     this._panel.webview.postMessage({ command: 'updateThinkingMode', mode: this._discussionCapabilities.thinkingMode });
+
+    if (this._personalityManager) {
+        this._panel.webview.postMessage({
+            command: 'updatePersonalities',
+            personalities: this._personalityManager.getPersonalities(),
+            currentPersonalityId: this._currentDiscussion.personalityId
+        });
+    }
 
     this.displayPlan(this._currentDiscussion.plan);
     this.updateGeneratingState();
@@ -379,7 +399,13 @@ export class ChatPanel {
     this.updateGeneratingState();
 
     try {
-        const systemPrompt = getProcessedSystemPrompt('chat', this._discussionCapabilities);
+        let personaContent = '';
+        if (this._personalityManager && this._currentDiscussion.personalityId) {
+            const p = this._personalityManager.getPersonality(this._currentDiscussion.personalityId);
+            if (p) personaContent = p.systemPrompt;
+        }
+
+        const systemPrompt = getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent);
         const context = await this._contextManager.getContextContent();
         
         const systemMessage: ChatMessage = { role: 'system', content: systemPrompt };
@@ -1082,6 +1108,14 @@ Task:
             this.log(`Updated Discussion Capabilities: ${JSON.stringify(this._discussionCapabilities)}`);
             this._panel.webview.postMessage({ command: 'updateThinkingMode', mode: this._discussionCapabilities.thinkingMode });
             break;
+        case 'updateDiscussionPersonality':
+            if (this._currentDiscussion) {
+                this._currentDiscussion.personalityId = message.personalityId;
+                if (!this._currentDiscussion.id.startsWith('temp-')) {
+                    await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                }
+            }
+            break;
         case 'runTool':
             const toolName = message.tool;
             const toolParams = message.params;
@@ -1365,6 +1399,10 @@ Task:
                     <label for="model-selector">Model:</label>
                     <select id="model-selector"></select>
                     <button id="refresh-models-btn" title="Refresh Models" class="icon-btn"><i class="codicon codicon-refresh"></i></button>
+                </div>
+                <div class="model-selector-container">
+                    <label for="personality-selector">Persona:</label>
+                    <select id="personality-selector"></select>
                 </div>
                 <div class="agent-mode-toggle">
                     <span>🤖 Agent Mode</span>

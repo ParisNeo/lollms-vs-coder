@@ -170,7 +170,18 @@ export function handleExtensionMessage(event: MessageEvent) {
                     dom.modelSelector.value = message.currentModel || '';
                 }
                 break;
-            // ... [Other existing cases] ...
+            case 'updatePersonalities':
+                if (dom.personalitySelector) {
+                    dom.personalitySelector.innerHTML = '';
+                    message.personalities.forEach((p: any) => {
+                        const option = document.createElement('option');
+                        option.value = p.id;
+                        option.textContent = p.name;
+                        dom.personalitySelector.appendChild(option);
+                    });
+                    dom.personalitySelector.value = message.currentPersonalityId || 'default_coder';
+                }
+                break;
             case 'tokenCalculationStarted':
                 if (dom.tokenCountingOverlay) {
                     dom.tokenCountingOverlay.style.display = 'flex';
@@ -352,4 +363,3 @@ export function handleExtensionMessage(event: MessageEvent) {
         vscode.postMessage({ command: 'showError', message: 'Webview error: ' + e.message });
     }
 }
-

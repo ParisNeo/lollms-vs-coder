@@ -83,6 +83,12 @@ export function initEventHandlers() {
     if (dom.debugRestartButton) dom.debugRestartButton.addEventListener('click', () => { closeMenu(); vscode.postMessage({ command: 'debugRestart' }); });
     if (dom.agentModeCheckbox) dom.agentModeCheckbox.addEventListener('change', () => vscode.postMessage({ command: 'toggleAgentMode' }));
     if (dom.modelSelector) dom.modelSelector.addEventListener('change', (event) => vscode.postMessage({ command: 'updateDiscussionModel', model: (event.target as HTMLSelectElement).value }));
+    if (dom.personalitySelector) {
+        dom.personalitySelector.addEventListener('change', (e) => {
+            const pid = (e.target as HTMLSelectElement).value;
+            vscode.postMessage({ command: 'updateDiscussionPersonality', personalityId: pid });
+        });
+    }
     if (dom.refreshContextBtn) dom.refreshContextBtn.addEventListener('click', () => vscode.postMessage({ command: 'calculateTokens' }));
     if (dom.fileInput) {
         dom.fileInput.addEventListener('change', () => {

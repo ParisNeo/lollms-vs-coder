@@ -15,7 +15,11 @@ import { setVscodePythonInterpreterTool } from './setVscodePythonInterpreter';
 import { searchWebTool } from './searchWeb';
 import { generateImageTool } from './generateImage';
 import { editPlanTool } from './editPlan';
-import { readCodeGraphTool } from './readCodeGraph'; // Import new tool
+import { readCodeGraphTool } from './readCodeGraph';
+import { searchArxivTool } from './searchArxiv';
+import { scrapeWebsiteTool } from './scrapeWebsite';
+import { searchFilesTool } from './searchFiles';
+import { buildSkillTool } from './buildSkill';
 
 export const allTools: ToolDefinition[] = [
     autoSelectContextFilesTool,
@@ -34,5 +38,9 @@ export const allTools: ToolDefinition[] = [
     searchWebTool,
     generateImageTool,
     editPlanTool,
-    readCodeGraphTool // Register new tool
+    readCodeGraphTool,
+    searchArxivTool,
+    scrapeWebsiteTool,
+    searchFilesTool,
+    buildSkillTool
 ];

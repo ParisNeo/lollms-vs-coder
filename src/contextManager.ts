@@ -25,6 +25,62 @@ export class ContextManager {
       '.zip', '.tar', '.gz', '.7z', '.rar', '.iso', '.img', '.db', '.sqlite', '.sqlite3',
       '.pyc', '.pyo', '.pyd'
   ]);
+
+  private extensionToLanguageMap: { [key: string]: string } = {
+      'py': 'python',
+      'js': 'javascript',
+      'jsx': 'javascript',
+      'ts': 'typescript',
+      'tsx': 'typescript',
+      'vue': 'vue',
+      'rs': 'rust',
+      'sh': 'bash',
+      'md': 'markdown',
+      'json': 'json',
+      'html': 'html',
+      'css': 'css',
+      'scss': 'scss',
+      'less': 'less',
+      'cpp': 'cpp',
+      'c': 'c',
+      'h': 'c',
+      'hpp': 'cpp',
+      'cs': 'csharp',
+      'go': 'go',
+      'java': 'java',
+      'php': 'php',
+      'rb': 'ruby',
+      'swift': 'swift',
+      'kt': 'kotlin',
+      'lua': 'lua',
+      'r': 'r',
+      'sql': 'sql',
+      'yaml': 'yaml',
+      'yml': 'yaml',
+      'xml': 'xml',
+      'bat': 'batch',
+      'ps1': 'powershell',
+      'tex': 'latex',
+      'vb': 'vb',
+      'fs': 'fsharp',
+      'erl': 'erlang',
+      'ex': 'elixir',
+      'pl': 'perl',
+      'dart': 'dart',
+      'm': 'objectivec',
+      'mm': 'objectivec',
+      'scala': 'scala',
+      'hs': 'haskell',
+      'clj': 'clojure',
+      'cljs': 'clojure',
+      'dockerfile': 'dockerfile',
+      'groovy': 'groovy',
+      'gradle': 'groovy',
+      'toml': 'toml',
+      'ini': 'ini',
+      'tf': 'terraform',
+      'svelte': 'svelte'
+  };
   
   private _lastContext: ContextResult | null = null;
 
@@ -49,6 +105,11 @@ export class ContextManager {
       // Check first 1024 bytes for null bytes, which is a strong indicator of binary content
       const chunk = buffer.slice(0, Math.min(buffer.length, 1024));
       return chunk.includes(0);
+  }
+
+  private getLanguageId(filePath: string): string {
+      const ext = path.extname(filePath).toLowerCase().substring(1);
+      return this.extensionToLanguageMap[ext] || ext || 'plaintext';
   }
 
   private async extractDefinitions(uri: vscode.Uri): Promise<string> {
@@ -144,7 +205,7 @@ export class ContextManager {
               const text = buffer.toString('utf8');
               
               content += `File: ${filePath}\n`;
-              const language = ext.substring(1) || 'plaintext';
+              const language = this.getLanguageId(filePath);
               content += '```' + language + '\n';
               content += text;
               content += '\n```\n\n';
@@ -332,7 +393,7 @@ export class ContextManager {
           }
           
           content += `File: ${filePath}\n`;
-          const language = path.extname(filePath).substring(1) || 'plaintext';
+          const language = this.getLanguageId(filePath);
           content += '```' + language + '\n';
           content += fileContent;
           content += '\n```\n\n';

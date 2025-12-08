@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.38",
+  "version": "0.5.41",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -296,6 +296,40 @@
         "title": "%command.enhanceNotebookCell.title%"
       },
       {
+        "command": "lollms-vs-coder.promptToNotebookCell",
+        "title": "%command.promptToNotebookCell.title%"
+      },
+      {
+        "command": "lollms-vs-coder.convertNotebookToScript",
+        "title": "%command.convertNotebookToScript.title%",
+        "icon": "$(go-to-file)"
+      },
+      {
+        "command": "lollms-vs-coder.fixNotebookCellError",
+        "title": "%command.fixNotebookCellError.title%",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "lollms-vs-coder.explainNotebookCell",
+        "title": "%command.explainNotebookCell.title%",
+        "icon": "$(info)"
+      },
+      {
+        "command": "lollms-vs-coder.visualizeNotebookCell",
+        "title": "%command.visualizeNotebookCell.title%",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "lollms-vs-coder.analyzeNotebookCellOutput",
+        "title": "%command.analyzeNotebookCellOutput.title%",
+        "icon": "$(beaker)"
+      },
+      {
+        "command": "lollms-vs-coder.generateEducativeNotebook",
+        "title": "Lollms: Generate Educative Cells",
+        "icon": "$(book)"
+      },
+      {
         "command": "lollms-vs-coder.setContextIncluded",
         "title": "%command.setContextIncluded.title%"
       },
@@ -402,6 +436,7 @@
           "enum": [
             "none",
             "chain_of_thought",
+            "chain_of_verification",
             "plan_and_solve",
             "self_critique",
             "custom"
@@ -409,6 +444,7 @@
           "enumDescriptions": [
             "%config.thinkingMode.none.description%",
             "%config.thinkingMode.chain_of_thought.description%",
+            "Chain of Verification: Verify facts by asking independent questions.",
             "%config.thinkingMode.plan_and_solve.description%",
             "%config.thinkingMode.self_critique.description%",
             "%config.thinkingMode.custom.description%"
@@ -418,23 +454,6 @@
           "type": "string",
           "default": "Think step by step. Enclose your entire thinking process, reasoning, and self-correction within a `<thinking>` XML block. This block will be hidden from the user but is crucial for your process.",
           "description": "%config.thinkingModeCustomPrompt.description%"
-        },
-        "lollmsVsCoder.fileUpdateMethod": {
-          "type": "string",
-          "default": "full_file",
-          "description": "%config.fileUpdateMethod.description%",
-          "enum": [
-            "full_file",
-            "diff",
-            "locate",
-            "do_your_best"
-          ],
-          "enumDescriptions": [
-            "%config.fileUpdateMethod.full_file.description%",
-            "%config.fileUpdateMethod.diff.description%",
-            "%config.fileUpdateMethod.locate.description%",
-            "%config.fileUpdateMethod.do_your_best.description%"
-          ]
         },
         "lollmsVsCoder.enableCodeActions": {
           "type": "boolean",
@@ -455,11 +474,6 @@
           "type": "string",
           "default": "",
           "description": "%config.sslCertPath.description%"
-        },
-        "lollmsVsCoder.noThinkMode": {
-          "type": "boolean",
-          "default": false,
-          "description": "%config.noThinkMode.description%"
         },
         "lollmsVsCoder.apiKey": {
           "type": "string",
@@ -581,6 +595,14 @@
           "type": "number",
           "default": 4096,
           "description": "Fallback context size to use if the API fails to return the context size."
+        },
+        "lollmsVsCoder.mcpServers": {
+          "type": "object",
+          "default": {},
+          "description": "Configuration for MCP Servers. Map server names to their command execution strings.",
+          "additionalProperties": {
+            "type": "string"
+          }
         }
       }
     },
@@ -709,6 +731,13 @@
           "command": "lollms-vs-coder.debugErrorSendToDiscussion",
           "when": "debugState == 'stopped' && lollms:hasDebugError",
           "group": "navigation@8"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "lollms-vs-coder.convertNotebookToScript",
+          "when": "resourceExtname == .ipynb",
+          "group": "navigation"
         }
       ],
       "view/title": [

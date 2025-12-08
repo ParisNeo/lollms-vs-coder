@@ -75,8 +75,15 @@ export class LollmsAPI {
 
   private createHttpsAgent(): https.Agent {
       const options: https.AgentOptions = {
+          keepAlive: true,
           rejectUnauthorized: !this.config.disableSslVerification,
       };
+
+      if (this.config.disableSslVerification) {
+          // Explicitly disable hostname verification when SSL verification is disabled
+          // This helps when 'rejectUnauthorized: false' isn't enough for some environments
+          options.checkServerIdentity = () => undefined;
+      }
 
       if (this.config.sslCertPath && fs.existsSync(this.config.sslCertPath)) {
           try {
@@ -112,6 +119,23 @@ export class LollmsAPI {
 
   public getModelName(): string {
       return this.config.modelName;
+  }
+
+  public async testConnection(): Promise<{ success: boolean; message: string; details?: string }> {
+      try {
+          const models = await this.getModels(true);
+          return { 
+              success: true, 
+              message: `✅ Connection Successful! Found ${models.length} models.`,
+              details: `URL: ${this.baseUrl}\nSSL Verification: ${!this.config.disableSslVerification ? 'Enabled' : 'Disabled'}`
+          };
+      } catch (error: any) {
+          return { 
+              success: false, 
+              message: `❌ Connection Failed: ${error.message}`,
+              details: `URL: ${this.baseUrl}\nSSL Verification: ${!this.config.disableSslVerification ? 'Enabled' : 'Disabled'}\n\nStack Trace:\n${error.stack}`
+          };
+      }
   }
 
   public async getModels(forceRefresh: boolean = false): Promise<Array<{ id: string }>> {

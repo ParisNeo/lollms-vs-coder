@@ -14,7 +14,8 @@ import { DiscussionManager, Discussion } from './discussionManager';
 import * as fs from 'fs/promises';
 import { ToolManager } from './tools/toolManager';
 import { ToolExecutionEnv, ToolDefinition, Plan } from './tools/tool';
-import { CodeGraphManager } from './codeGraphManager'; // Import
+import { CodeGraphManager } from './codeGraphManager';
+import { SkillsManager } from './skillsManager';
 
 interface Task {
     id: number;
@@ -38,7 +39,8 @@ export class AgentManager {
     private currentTaskIndex: number = 0;
     private currentDiscussion?: Discussion;
     private toolManager: ToolManager;
-    private codeGraphManager: CodeGraphManager; // Add property
+    private codeGraphManager: CodeGraphManager;
+    private skillsManager: SkillsManager;
 
     constructor(
         private chatPanel: ChatPanel,
@@ -47,9 +49,11 @@ export class AgentManager {
         private gitIntegration: GitIntegration,
         private discussionManager: DiscussionManager,
         private extensionUri: vscode.Uri,
-        codeGraphManager: CodeGraphManager // Inject
+        codeGraphManager: CodeGraphManager,
+        skillsManager: SkillsManager
     ) {
         this.codeGraphManager = codeGraphManager;
+        this.skillsManager = skillsManager;
         this.toolManager = new ToolManager();
         this.planParser = new PlanParser(this.lollmsApi, this.contextManager, this.toolManager);
     }
@@ -115,7 +119,15 @@ export class AgentManager {
             };
             this.displayAndSavePlan(initialPlanState);
     
-            const planResult = await this.planParser.generateAndParsePlan(initialObjective, undefined, undefined, undefined, controller.signal, modelOverride);
+            const planResult = await this.planParser.generateAndParsePlan(
+                initialObjective, 
+                undefined, 
+                undefined, 
+                undefined, 
+                controller.signal, 
+                modelOverride,
+                this.chatHistory
+            );
             
             if (controller.signal.aborted) {
                 this.chatPanel.addMessageToDiscussion({ role: 'system', content: '🛑 **Execution Halted:** User cancelled during planning.' });
@@ -257,6 +269,29 @@ export class AgentManager {
         this.deactivateAgent();
     }
 
+    // ... (revisePlanForFailure, replan, resolveParameters, etc. unchanged)
+
+    private async executeTask(action: string, params: any, signal: AbortSignal): Promise<{ success: boolean, output: string }> {
+        const tool = this.toolManager.getTool(action);
+        if (!tool) {
+            return { success: false, output: `Unknown action: ${action}` };
+        }
+
+        const env: ToolExecutionEnv = {
+            workspaceRoot: this.currentWorkspaceFolder,
+            lollmsApi: this.lollmsApi,
+            contextManager: this.contextManager,
+            codeGraphManager: this.codeGraphManager,
+            skillsManager: this.skillsManager,
+            currentPlan: this.currentPlan,
+            agentManager: this
+        };
+        
+        return tool.execute(params, env, signal);
+    }
+    
+    // ... (rest of methods)
+    
     private async revisePlanForFailure(failedTask: Task, signal: AbortSignal, modelOverride?: string): Promise<boolean> {
         if (!this.currentPlan) return false;
         
@@ -270,7 +305,8 @@ export class AgentManager {
             failedTask.id,
             failedTask.result,
             signal,
-            modelOverride
+            modelOverride,
+            this.chatHistory
         );
 
         if (signal.aborted) { return false; }
@@ -383,24 +419,6 @@ Start the task IDs sequentially after the last completed task ID (${completedTas
         return resolvedParams;
     }
 
-    private async executeTask(action: string, params: any, signal: AbortSignal): Promise<{ success: boolean, output: string }> {
-        const tool = this.toolManager.getTool(action);
-        if (!tool) {
-            return { success: false, output: `Unknown action: ${action}` };
-        }
-
-        const env: ToolExecutionEnv = {
-            workspaceRoot: this.currentWorkspaceFolder,
-            lollmsApi: this.lollmsApi,
-            contextManager: this.contextManager,
-            codeGraphManager: this.codeGraphManager, // Inject
-            currentPlan: this.currentPlan,
-            agentManager: this
-        };
-        
-        return tool.execute(params, env, signal);
-    }
-    
     public async generateFileTree(startPath: string, prefix: string = ''): Promise<string> {
         let result = '';
         let entries;

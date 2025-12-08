@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
 import { ContextManager } from './contextManager';
-import { stripThinkingTags } from './utils'; // CORRECTED IMPORT PATH
+import { stripThinkingTags } from './utils';
 import * as os from 'os';
 import { ToolManager } from './tools/toolManager';
 import { Plan, ToolDefinition } from './tools/tool';
@@ -21,7 +21,8 @@ export class PlanParser {
         failedTaskId?: number,
         failureReason?: string | null,
         signal?: AbortSignal,
-        modelOverride?: string
+        modelOverride?: string,
+        chatHistory: ChatMessage[] = []
     ): Promise<{ plan: Plan | null, rawResponse: string, error?: string }> {
         let lastResponse = "";
         let lastError = "";
@@ -29,6 +30,7 @@ export class PlanParser {
             try {
                 let userPromptContent: string;
                 const systemPrompt = this.getPlannerSystemPrompt(!!existingPlan);
+                let messages: ChatMessage[] = [systemPrompt];
 
                 if (i === 0) { // First attempt
                     if (existingPlan && failedTaskId !== undefined && failureReason) {
@@ -42,11 +44,26 @@ Here is the plan up to the point of failure:
 ${JSON.stringify({ ...existingPlan, tasks: existingPlan.tasks.filter(t => t.id <= failedTaskId) }, null, 2)}
 \`\`\`
 Your task is to generate a NEW set of tasks to recover from this failure and complete the objective. The new plan fragment will replace the failed task and all subsequent tasks.`;
+                        // In revision mode, we typically don't need full chat history, just the failure context, 
+                        // but adding it doesn't hurt if context window allows. For now, keep it focused.
+                        messages.push({ role: 'user', content: userPromptContent });
                     } else {
                         const projectContext = await this.contextManager.getContextContent();
+                        
+                        // Inject Chat History here to allow the planner to see previous tool outputs (like search results)
+                        if (chatHistory && chatHistory.length > 0) {
+                            // We filter out any previous system prompts to avoid confusion, 
+                            // keeping only user, assistant, and tool outputs (which are currently role='system' in this extension)
+                            // Ideally tool outputs should be distinct, but Lollms vs Coder uses role='system' for tool output.
+                            // We'll trust the history passed in.
+                            messages.push(...chatHistory);
+                        }
+
                         userPromptContent = `My objective is: **${objective}**\n\nHere is the project context:\n${projectContext.text}`;
+                        messages.push({ role: 'user', content: userPromptContent });
                     }
-                    lastResponse = await this.lollmsApi.sendChat([systemPrompt, { role: 'user', content: userPromptContent }], null, signal, modelOverride);
+                    
+                    lastResponse = await this.lollmsApi.sendChat(messages, null, signal, modelOverride);
                 } else { // Retry attempt
                      const correctionPrompt = this.getCorrectionPrompt(lastResponse, lastError);
                      lastResponse = await this.lollmsApi.sendChat([correctionPrompt], null, signal, modelOverride);
@@ -56,13 +73,7 @@ Your task is to generate a NEW set of tasks to recover from this failure and com
                 console.log(lastResponse);
 
                 const cleanResponse = stripThinkingTags(lastResponse);
-                console.log("--- Lollms Agent Debug: Response after stripping <think> tags ---");
-                console.log(cleanResponse);
-                
                 const jsonString = this.extractJson(cleanResponse);
-                console.log("--- Lollms Agent Debug: Extracted JSON string ---");
-                console.log(jsonString);
-
 
                 if (!jsonString) {
                     console.error("--- Lollms Agent Debug: FAILED to extract JSON ---");
@@ -70,7 +81,6 @@ Your task is to generate a NEW set of tasks to recover from this failure and com
                 }
 
                 const plan = JSON.parse(jsonString) as Plan;
-                console.log("--- Lollms Agent Debug: Parsed Plan Object ---", plan);
                 this.validateAndInitializePlan(plan);
 
                 return { plan, rawResponse: lastResponse };
@@ -91,17 +101,15 @@ Your task is to generate a NEW set of tasks to recover from this failure and com
             throw new Error("The response is not a JSON object.");
         }
         
-        // Allow scratchpad to be an object, but ensure it's a string for internal use.
         if (typeof plan.objective !== 'string' || (typeof plan.scratchpad !== 'string' && typeof plan.scratchpad !== 'object') || !Array.isArray(plan.tasks)) {
             throw new Error("The plan must have 'objective' (string), 'scratchpad' (string or object), and 'tasks' (array) properties.");
         }
     
-        // If scratchpad is an object, stringify it for consistent handling.
         if (typeof plan.scratchpad === 'object' && plan.scratchpad !== null) {
             plan.scratchpad = JSON.stringify(plan.scratchpad, null, 2);
         }
     
-        if (plan.tasks.length === 0 && !plan.objective.startsWith("Thank you")) { // Allow empty tasks for thank you messages
+        if (plan.tasks.length === 0 && !plan.objective.startsWith("Thank you")) { 
             throw new Error("The plan must contain at least one task.");
         }
     
@@ -133,13 +141,12 @@ Your task is to generate a NEW set of tasks to recover from this failure and com
         const contentStartIndex = text.indexOf(blockStartTag);
     
         if (contentStartIndex === -1) {
-            // Fallback for non-markdown or non-specified JSON
             const firstBrace = text.indexOf('{');
             const lastBrace = text.lastIndexOf('}');
             if (firstBrace !== -1 && lastBrace > firstBrace) {
                 const potentialJson = text.substring(firstBrace, lastBrace + 1);
                 try {
-                    JSON.parse(potentialJson); // Validate it's actual JSON
+                    JSON.parse(potentialJson); 
                     return potentialJson;
                 } catch (e) {
                     return null;
@@ -156,27 +163,23 @@ Your task is to generate a NEW set of tasks to recover from this failure and com
             const nextFence = text.indexOf('```', currentIndex);
     
             if (nextFence === -1) {
-                return null; // No more fences found, block is unclosed
+                return null; 
             }
     
-            // Check for a language specifier immediately after the fence
             const specifierMatch = text.substring(nextFence + 3).match(/^\s*([a-zA-Z0-9]+)/);
     
             if (specifierMatch) {
-                // This is an opening fence for a nested block
                 depth++;
                 currentIndex = nextFence + 3 + specifierMatch.length;
             } else {
-                // This is a closing fence
                 depth--;
                 if (depth === 0) {
-                    // We found the matching closing fence
                     return text.substring(jsonStart, nextFence).trim();
                 }
                 currentIndex = nextFence + 3;
             }
         }
-        return null; // Loop completed without finding a balanced closing fence
+        return null;
     }
 
     private getCorrectionPrompt(faultyResponse: string, errorMessage: string): ChatMessage {

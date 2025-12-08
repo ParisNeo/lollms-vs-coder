@@ -9,13 +9,12 @@ import Prism from 'prismjs';
 import { EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
-import { searchKeymap, openSearchPanel, search } from "@codemirror/search"; // Import search extension
+import { searchKeymap, openSearchPanel, search } from "@codemirror/search";
 import { markdown } from "@codemirror/lang-markdown";
 import { oneDark } from "@codemirror/theme-one-dark";
 
 const RENDER_THROTTLE_MS = 200;
 
-// --- Language Map for Prism ---
 const langMap: { [key: string]: string } = {
     'js': 'javascript',
     'ts': 'typescript',
@@ -31,24 +30,15 @@ const langMap: { [key: string]: string } = {
     'md': 'markdown',
     'yml': 'yaml',
     'json': 'json',
-    'skill': 'json'
+    'skill': 'json',
+    'vue': 'html'
 };
 
-// Configure Marked
 try {
     marked.setOptions({
         breaks: true,
         gfm: true,
         highlight: (code, lang) => {
-            const language = langMap[lang.toLowerCase()] || lang.toLowerCase();
-            if (Prism.languages[language]) {
-                try {
-                    return Prism.highlight(code, Prism.languages[language], language);
-                } catch (e) {
-                    console.warn(`Prism highlight failed for ${language}:`, e);
-                    return code;
-                }
-            }
             return code;
         },
     });
@@ -56,20 +46,12 @@ try {
     console.error("Failed to configure marked:", e);
 }
 
-// Initialize DOMPurify
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
 
+// Define SANITIZE_CONFIG
 const SANITIZE_CONFIG = {
-    ALLOWED_TAGS: [
-        'a', 'b', 'blockquote', 'br', 'code', 'dd', 'del', 'details', 'div', 'dl', 'dt', 'em', 
-        'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'i', 'img', 'ins', 'kbd', 'li', 'ol', 'p', 
-        'pre', 'q', 'rp', 'rt', 'ruby', 's', 'samp', 'span', 'strike', 'strong', 'sub', 
-        'summary', 'sup', 'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'tt', 'ul', 'var'
-    ],
-    ALLOWED_ATTR: [
-        'align', 'alt', 'class', 'height', 'href', 'id', 'src', 'style', 'target', 'title', 
-        'type', 'width', 'data-language', 'start'
-    ]
+    ADD_TAGS: ['iframe', 'script', 'style'],
+    ADD_ATTR: ['target', 'allow', 'allowfullscreen', 'frameborder', 'scrolling']
 };
 
 function createButton(text: string, icon: string, onClick: () => void, className = 'code-action-btn'): HTMLButtonElement {
@@ -97,7 +79,7 @@ function createGenerationBlock(type: string, filePath: string, prompt: string): 
     
     const header = document.createElement('div');
     header.className = 'generation-header';
-    header.innerHTML = `<span class="summary-lang-label">${type}: ${filePath}</span>`;
+    header.innerHTML = `<span class="summary-lang-label">${type}${filePath ? ': ' + filePath : ''}</span>`;
     
     const actions = document.createElement('div');
     actions.className = 'code-actions';
@@ -110,7 +92,7 @@ function createGenerationBlock(type: string, filePath: string, prompt: string): 
         vscode.postMessage({
             command: 'generateImage',
             prompt: prompt,
-            filePath: filePath,
+            filePath: filePath, // filePath might be empty string
             buttonId: buttonId
         });
     }, 'code-action-btn apply-btn');
@@ -121,6 +103,45 @@ function createGenerationBlock(type: string, filePath: string, prompt: string): 
     const body = document.createElement('div');
     body.className = 'generation-body';
     body.innerHTML = `<p><strong>Prompt:</strong> ${sanitizer.sanitize(prompt)}</p>`;
+    
+    block.appendChild(header);
+    block.appendChild(body);
+    
+    return block;
+}
+
+// Helper to create Search block (for web/arxiv)
+function createSearchBlock(type: string, query: string): HTMLElement {
+    const block = document.createElement('div');
+    block.className = 'generation-block';
+    
+    const header = document.createElement('div');
+    header.className = 'generation-header';
+    header.innerHTML = `<span class="summary-lang-label">${type}</span>`;
+    
+    const actions = document.createElement('div');
+    actions.className = 'code-actions';
+    header.appendChild(actions);
+
+    const buttonId = `search-btn-${Date.now()}${Math.random()}`;
+    const searchBtn = createButton('Search', 'codicon-search', () => {
+        searchBtn.innerHTML = `<div class="spinner"></div> Searching...`;
+        searchBtn.disabled = true;
+        
+        vscode.postMessage({
+            command: 'runTool',
+            tool: type === 'ArXiv Search' ? 'search_arxiv' : 'search_web',
+            params: { query: query }
+        });
+        
+    }, 'code-action-btn apply-btn');
+    searchBtn.id = buttonId;
+
+    actions.appendChild(searchBtn);
+    
+    const body = document.createElement('div');
+    body.className = 'generation-body';
+    body.innerHTML = `<p><strong>Query:</strong> ${sanitizer.sanitize(query)}</p>`;
     
     block.appendChild(header);
     block.appendChild(body);
@@ -190,7 +211,6 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     const editOverlay = document.createElement('div');
     editOverlay.className = 'edit-overlay';
     
-    // Create editor container
     const editorContainer = document.createElement('div');
     editorContainer.className = 'edit-editor-container';
     
@@ -215,14 +235,13 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     contentDiv.appendChild(editOverlay);
     actionsDiv.style.display = 'none';
     
-    // Initialize CodeMirror editor
     const editState = EditorState.create({
         doc: textContent,
         extensions: [
             keymap.of([
                 ...defaultKeymap,
                 ...historyKeymap,
-                ...searchKeymap, // Adds Ctrl+F / Mod+F bindings
+                ...searchKeymap,
                 {
                     key: "Mod-s",
                     run: (view) => {
@@ -235,7 +254,7 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
                     run: openSearchPanel
                 }
             ]),
-            search({ top: true }), // Enable search functionality with search panel at top
+            search({ top: true }), 
             history(),
             markdown(),
             oneDark,
@@ -332,6 +351,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
     if (pres.length === 0) return;
 
     let originalContentText = '';
+    // ... (content extraction logic)
     
     if (contentSource !== undefined) {
         if (Array.isArray(contentSource)) {
@@ -366,6 +386,65 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
 
         const blockId = `code-block-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         code.id = blockId;
+
+        // Check file info
+        const info = codeBlockInfos[index];
+        let filePath = '';
+        let isFileBlock = false;
+        let isDiff = false;
+        let diffFilePath = '';
+
+        if (info) {
+            if (info.type === 'file') {
+                filePath = info.path;
+                isFileBlock = true;
+            } else if (info.type === 'diff') {
+                diffFilePath = info.path;
+                isDiff = true;
+            }
+        } else {
+            if (language === 'diff') {
+                const diffHeaderMatch = codeText.match(/---\s+a\/(.+)\n\+\+\+\s+b\/(.+)/);
+                if (diffHeaderMatch && diffHeaderMatch[1]) {
+                    diffFilePath = diffHeaderMatch[1].trim();
+                    isDiff = true;
+                } else {
+                    isDiff = true; 
+                }
+            }
+        }
+
+        // Hide "File: ..." or "Diff: ..." lines if we detected them
+        const prevEl = pre.previousElementSibling as HTMLElement;
+        if (prevEl && (prevEl.tagName === 'P' || prevEl.tagName === 'DIV')) {
+             const text = prevEl.textContent || "";
+             if ((isFileBlock && /File/i.test(text)) || (isDiff && /Diff/i.test(text))) {
+                 prevEl.style.display = 'none';
+             }
+        }
+
+        // --- PRIORITY HANDLING FOR SPECIAL BLOCKS ---
+        
+        if (language === 'image_prompt') {
+             // Use filePath if present (for saving)
+             const genBlock = createGenerationBlock('Image', filePath, codeText);
+             if (pre.parentNode) pre.parentNode.replaceChild(genBlock, pre);
+             return;
+        } 
+        
+        if (language === 'search_web') {
+             const searchBlock = createSearchBlock('Web Search', codeText);
+             if (pre.parentNode) pre.parentNode.replaceChild(searchBlock, pre);
+             return;
+        } 
+        
+        if (language === 'search_arxiv') {
+             const searchBlock = createSearchBlock('ArXiv Search', codeText);
+             if (pre.parentNode) pre.parentNode.replaceChild(searchBlock, pre);
+             return;
+        }
+
+        // --- STANDARD BLOCKS ---
 
         const details = document.createElement('details');
         details.className = 'code-collapsible';
@@ -403,40 +482,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             actions.appendChild(inspectBtn);
         }
 
-        const info = codeBlockInfos[index];
-        let filePath = '';
-        let isFileBlock = false;
-        let isDiff = false;
-        let diffFilePath = '';
-
-        if (info) {
-            if (info.type === 'file') {
-                filePath = info.path;
-                isFileBlock = true;
-            } else if (info.type === 'diff') {
-                diffFilePath = info.path;
-                isDiff = true;
-            }
-        } else {
-            if (language === 'diff') {
-                const diffHeaderMatch = codeText.match(/---\s+a\/(.+)\n\+\+\+\s+b\/(.+)/);
-                if (diffHeaderMatch && diffHeaderMatch[1]) {
-                    diffFilePath = diffHeaderMatch[1].trim();
-                    isDiff = true;
-                } else {
-                    isDiff = true; 
-                }
-            }
-        }
-
-        const prevEl = pre.previousElementSibling as HTMLElement;
-        if (prevEl && (prevEl.tagName === 'P' || prevEl.tagName === 'DIV')) {
-             const text = prevEl.textContent || "";
-             if ((isFileBlock && /File/i.test(text)) || (isDiff && /Diff/i.test(text))) {
-                 prevEl.style.display = 'none';
-             }
-        }
-
+        // Determine if we should show Apply buttons
         if (isFileBlock && filePath) {
             langLabel.textContent = `${language} : ${filePath}`;
             
@@ -448,6 +494,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             else actions.appendChild(applyBtn);
 
         } else if (isDiff) {
+            // ... (diff handling)
             const path = diffFilePath || 'patch';
             langLabel.textContent = `${language} : Diff: ${path}`;
             
@@ -479,8 +526,8 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             else actions.appendChild(deleteBtn);
 
         } else if (language === 'select') {
+            // ...
             const selectBtn = createButton('Add to Context', 'codicon-add', () => {
-                // Change button state to loading
                 selectBtn.innerHTML = `<span class="codicon codicon-sync spin"></span> Adding...`;
                 selectBtn.disabled = true;
                 
@@ -496,10 +543,14 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             if (actions.firstChild) actions.insertBefore(selectBtn, actions.firstChild);
             else actions.appendChild(selectBtn);
 
-        } else if (language === 'image_prompt' && isFileBlock) {
-             const genBlock = createGenerationBlock('Image', filePath, codeText);
-             if (pre.parentNode) pre.parentNode.replaceChild(genBlock, pre);
-             return;
+        } else if (language === 'context_reset' || language === 'reset_context') {
+            // ...
+            const resetBtn = createButton('Reset Context', 'codicon-clear-all', () => {
+                vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'resetContext', params: {} } });
+            }, 'code-action-btn delete-btn');
+            if (actions.firstChild) actions.insertBefore(resetBtn, actions.firstChild);
+            else actions.appendChild(resetBtn);
+
         } else if (language === 'skill') {
             langLabel.textContent = `New Skill`;
             const saveSkillBtn = createButton('Save Skill', 'codicon-lightbulb', () => {
@@ -507,6 +558,13 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             }, 'code-action-btn apply-btn');
             if (actions.firstChild) actions.insertBefore(saveSkillBtn, actions.firstChild);
             else actions.appendChild(saveSkillBtn);
+        } else if (language === 'git_commit') {
+            langLabel.textContent = "Git Commit Message";
+            const commitBtn = createButton('Git Commit', 'codicon-git-commit', () => {
+                vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'gitCommit', params: { message: codeText } } });
+            }, 'code-action-btn apply-btn');
+            if (actions.firstChild) actions.insertBefore(commitBtn, actions.firstChild);
+            else actions.appendChild(commitBtn);
         } else {
              const runnableLanguages = ['python', 'py', 'javascript', 'js', 'typescript', 'ts', 'bash', 'sh', 'shell', 'powershell', 'pwsh', 'batch', 'cmd', 'bat'];
              if (runnableLanguages.includes(language.toLowerCase())) {
@@ -534,7 +592,9 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
     });
 }
 
+// ... (rest of file)
 function enhanceWithCommandButtons(container: HTMLElement) {
+    // ... implementation
     const content = container.querySelector('.message-content');
     if (!content) return;
     const commandRegex = /\[command:(\w+)\|label:([^|]+)\|params:({[^}]+})\]/g;
@@ -564,7 +624,6 @@ function enhanceWithCommandButtons(container: HTMLElement) {
     content.innerHTML = newHtml;
 }
 
-
 export function processThinkTags(content: string): { thoughts: string[], processedContent: string } {
     const thoughts: string[] = [];
     if (typeof content !== 'string') return { thoughts, processedContent: '' };
@@ -584,7 +643,7 @@ export function scheduleRender(messageId: string) {
             renderMessageContent(messageId, state.streamingMessages[messageId].buffer);
             state.streamingMessages[messageId].timer = null;
         }
-    }, RENDER_THROTTLE_MS);
+    }, RENDER_THROTTLE_MS); // RENDER_THROTTLE_MS
 }
 
 export function renderMessageContent(messageId: string, rawContent: any, isFinal: boolean = false) {
@@ -598,6 +657,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
     try {
         if (Array.isArray(rawContent)) {
+            // ... [Multipart handling] ...
             let htmlContent = '';
             rawContent.forEach(part => {
                 if (part.type === 'text') {
@@ -614,12 +674,17 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             thoughts.forEach(thought => {
                 const thinkDiv = document.createElement('div');
                 thinkDiv.className = 'plan-scratchpad'; 
+                // Determine title based on indicator visibility or generic
+                // Or just use "Deep Thinking Process" if it's a thinking block
+                const title = "Deep Thinking Process";
                 thinkDiv.innerHTML = `
                     <details ${isFinal ? '' : 'open'}>
-                        <summary class="scratchpad-header"><span class="codicon codicon-lightbulb"></span> Thought Process</summary>
+                        <summary class="scratchpad-header"><span class="codicon codicon-beaker"></span> ${title}</summary>
                         <div class="scratchpad-content">${sanitizer.sanitize(marked.parse(thought) as string, SANITIZE_CONFIG)}</div>
                     </details>`;
-                messageDiv.insertBefore(thinkDiv, contentDiv);
+                if (contentDiv.parentNode) {
+                    contentDiv.parentNode.insertBefore(thinkDiv, contentDiv);
+                }
             });
             
             contentDiv.innerHTML = sanitizer.sanitize(marked.parse(processedContent) as string, SANITIZE_CONFIG);
@@ -648,6 +713,7 @@ export function addMessage(message: any, isFinal: boolean = true) {
     }
 }
 
+// ... addAttachment, addChatMessage etc.
 function addAttachment(message: any) {
     if (!dom.attachmentsContainer) return;
     const wrapper = dom.attachmentsContainer.closest('.special-zone-message');
@@ -721,6 +787,7 @@ function addChatMessage(message: any, isFinal: boolean = true) {
     if (role === 'user') {
         avatarDiv.innerHTML = '<span class="codicon codicon-account"></span>';
     } else if (role === 'assistant') {
+        // Icon handled by CSS but class needed
     } else {
         avatarDiv.innerHTML = '<span class="codicon codicon-gear"></span>';
     }
@@ -767,7 +834,6 @@ function addChatMessage(message: any, isFinal: boolean = true) {
         if (role === 'user') {
             actions.appendChild(createButton('', 'codicon-sync', () => vscode.postMessage({ command: 'regenerateFromMessage', messageId: id }), 'msg-action-btn'));
         }
-        
     }
     
     const copyBtn = createButton('', 'codicon-copy', () => {

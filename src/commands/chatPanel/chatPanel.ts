@@ -3,7 +3,7 @@ import { LollmsAPI, ChatMessage } from '../../lollmsAPI';
 import { ContextManager, ContextResult } from '../../contextManager';
 import { Discussion, DiscussionManager } from '../../discussionManager';
 import { AgentManager } from '../../agentManager';
-import { getProcessedSystemPrompt, stripThinkingTags } from '../../utils';
+import { getProcessedSystemPrompt, stripThinkingTags, DiscussionCapabilities } from '../../utils';
 import * as path from 'path';
 import { InfoPanel } from '../infoPanel';
 import { ProcessManager } from '../../processManager';
@@ -11,10 +11,7 @@ import { getNonce } from './getNonce';
 import { SkillsManager } from '../../skillsManager';
 import { Logger } from '../../logger';
 
-// ... existing imports ...
-
 export class ChatPanel {
-  // ... existing properties ...
   public static panels: Map<string, ChatPanel> = new Map();
   public static currentPanel: ChatPanel | undefined;
   public readonly _panel: vscode.WebviewPanel;
@@ -31,6 +28,8 @@ export class ChatPanel {
   private _isLoadPending = false;
   private _inputResolver: ((value: string) => void) | null = null;
   private _skillsManager: SkillsManager;
+  
+  private _discussionCapabilities: DiscussionCapabilities;
 
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, discussionManager: DiscussionManager, discussionId: string, skillsManager?: SkillsManager): ChatPanel {
     const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
@@ -71,6 +70,9 @@ export class ChatPanel {
     this._discussionManager = discussionManager;
     this.discussionId = discussionId;
     this._skillsManager = skillsManager || new SkillsManager();
+
+    // Initialize capabilities with defaults or last used settings
+    this._discussionCapabilities = this._discussionManager.getLastCapabilities();
 
     this.log(`ChatPanel initialized for discussion: ${discussionId}`);
 
@@ -151,7 +153,8 @@ export class ChatPanel {
                 messages: [],
                 timestamp: Date.now(),
                 groupId: null,
-                plan: null
+                plan: null,
+                capabilities: this._discussionCapabilities // Use current/last defaults
             };
         } else {
             discussion = await this._discussionManager.getDiscussion(this.discussionId);
@@ -171,6 +174,14 @@ export class ChatPanel {
             });
             if (!('plan' in discussion)) {
                 discussion.plan = null;
+                needsSave = true;
+            }
+
+            // Restore capabilities from discussion or save defaults to it
+            if (discussion.capabilities) {
+                this._discussionCapabilities = discussion.capabilities;
+            } else {
+                discussion.capabilities = this._discussionCapabilities;
                 needsSave = true;
             }
 
@@ -215,6 +226,14 @@ export class ChatPanel {
         isInspectorEnabled: isInspectorEnabled
     });
     
+    this._panel.webview.postMessage({ 
+        command: 'updateDiscussionCapabilities', 
+        capabilities: this._discussionCapabilities 
+    });
+    
+    // Also trigger updateThinkingMode separately to ensure visual sync on load
+    this._panel.webview.postMessage({ command: 'updateThinkingMode', mode: this._discussionCapabilities.thinkingMode });
+
     this.displayPlan(this._currentDiscussion.plan);
     this.updateGeneratingState();
 
@@ -360,7 +379,7 @@ export class ChatPanel {
     this.updateGeneratingState();
 
     try {
-        const systemPrompt = getProcessedSystemPrompt('chat');
+        const systemPrompt = getProcessedSystemPrompt('chat', this._discussionCapabilities);
         const context = await this._contextManager.getContextContent();
         
         const systemMessage: ChatMessage = { role: 'system', content: systemPrompt };
@@ -496,9 +515,10 @@ export class ChatPanel {
           role: 'system',
           content: success 
             ? `✅ **Project Executed Successfully**\n\`\`\`\n${output}\n\`\`\``
-            : `❌ **Project Execution Failed**\n\`\`\`\n${output}\n\`\`\`\n\nWould you like me to analyze this error?`
+            : `❌ **Project Execution Failed**\n\`\`\`\n${output}\n\`\`\``
       };
       this.addMessageToDiscussion(message);
+      this.analyzeExecutionResult(null, null, output, success ? 0 : 1);
   }
 
   public requestUserInput(question: string, signal: AbortSignal): Promise<string> {
@@ -534,20 +554,34 @@ export class ChatPanel {
       });
   }
 
-  public async analyzeExecutionResult(code: string, language: string, output: string, exitCode: number) {
-      if (exitCode === 0) return;
+  public async analyzeExecutionResult(code: string | null, language: string | null, output: string, exitCode: number) {
+      if (exitCode === 0 && !output.trim()) return;
 
-      const systemPrompt = getProcessedSystemPrompt('chat');
-      const userPrompt = `I executed the following ${language} script and it failed with exit code ${exitCode}.\n\n**Script:**\n\`\`\`${language}\n${code}\n\`\`\`\n\n**Output/Error:**\n\`\`\`\n${output}\n\`\`\`\n\nPlease analyze the error and provide a fixed version of the code.`;
+      const systemPrompt = getProcessedSystemPrompt('chat', this._discussionCapabilities);
+      let userPrompt = "";
 
-      const { id: processId, controller } = this.processManager.register(this.discussionId, 'Analyzing error...');
+      if (code && language) {
+          if (exitCode !== 0) {
+              userPrompt = `I executed the following ${language} script and it failed with exit code ${exitCode}.\n\n**Script:**\n\`\`\`${language}\n${code}\n\`\`\`\n\n**Output/Error:**\n\`\`\`\n${output}\n\`\`\`\n\nPlease analyze the error and provide a fixed version of the code.`;
+          } else {
+              userPrompt = `I executed the following ${language} script and it finished with exit code 0.\n\n**Script:**\n\`\`\`${language}\n${code}\n\`\`\`\n\n**Output:**\n\`\`\`\n${output}\n\`\`\`\n\nPlease analyze the output. If there are any warnings, errors, or unexpected behaviors in the text output, please explain them and suggest a fix. If everything looks good, just say "Execution successful."`;
+          }
+      } else {
+          if (exitCode !== 0) {
+               userPrompt = `I executed the project and it failed with exit code ${exitCode}.\n\n**Output/Error:**\n\`\`\`\n${output}\n\`\`\`\n\nPlease analyze the error and suggest a fix.`;
+          } else {
+               userPrompt = `I executed the project and it finished with exit code 0.\n\n**Output:**\n\`\`\`\n${output}\n\`\`\`\n\nPlease analyze the output. If there are any warnings or issues in the logs, please explain them and suggest fixes. If it looks clean, just confirm it was successful.`;
+          }
+      }
+
+      const { id: processId, controller } = this.processManager.register(this.discussionId, 'Analyzing output...');
       this.updateGeneratingState();
 
       try {
           const userMsg: ChatMessage = { 
-              id: 'user_fix_' + Date.now(),
+              id: 'user_analyze_' + Date.now(),
               role: 'user', 
-              content: "Fix the error in the script above." 
+              content: userPrompt 
           };
           await this.addMessageToDiscussion(userMsg);
 
@@ -555,8 +589,7 @@ export class ChatPanel {
           const messages: ChatMessage[] = [
               { role: 'system', content: systemPrompt },
               { role: 'system', content: context.text }, 
-              ...this._currentDiscussion!.messages,
-              { role: 'user', content: userPrompt }
+              ...this._currentDiscussion!.messages
           ];
 
           const assistantMessageId = 'assistant_' + Date.now();
@@ -645,7 +678,7 @@ export class ChatPanel {
   }
   
   private async copyFullPromptToClipboard(draftMessage: string) {
-      const systemPrompt = getProcessedSystemPrompt('chat');
+      const systemPrompt = getProcessedSystemPrompt('chat', this._discussionCapabilities);
       const context = await this._contextManager.getContextContent();
       
       let fullText = `--- SYSTEM PROMPT ---\n${systemPrompt}\n\n`;
@@ -818,7 +851,7 @@ export class ChatPanel {
                 for (const filePath of files) {
                     try {
                         const uri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, filePath);
-                        await vscode.workspace.fs.stat(uri); // Throws if not found
+                        await vscode.workspace.fs.stat(uri); 
                         results[filePath] = true;
                         validFiles.push(filePath);
                     } catch (e) {
@@ -869,6 +902,27 @@ export class ChatPanel {
                 vscode.commands.executeCommand('lollms-vs-coder.createNotebook', params.path, params.cellContent);
             } else if (command === 'gitCommit') {
                 vscode.commands.executeCommand('lollms-vs-coder.gitCommit', params.message);
+            } else if (command === 'resetContext') {
+                vscode.commands.executeCommand('lollms-vs-coder.resetContextSelection');
+            } else if (command === 'synthesizeSearchResults') {
+                if (!this.agentManager.getIsActive()) {
+                    this.agentManager.toggleAgentMode();
+                }
+                const query = params.query;
+                const objective = `Research the following query: "${query}"
+                
+Look at the previous message which contains search results and links.
+
+Task:
+1. Use the \`scrape_website\` tool to read the content of the relevant links found in the previous search results (limit to top 3).
+2. Synthesize the information gathered from these pages.
+3. Provide a comprehensive answer to the query based on the scraped content.`;
+
+                if (activeWorkspaceFolder) {
+                    this.agentManager.run(objective, this._currentDiscussion!, activeWorkspaceFolder, this._currentDiscussion?.model);
+                } else {
+                    vscode.window.showErrorMessage("Active workspace required for agent execution.");
+                }
             }
             break;
         case 'inspectCode':
@@ -914,8 +968,8 @@ export class ChatPanel {
             this.agentManager?.retryFailedTask(parseInt(message.taskId, 10));
             break;
         case 'loadFile':
-            const { name, content, isImage } = message.file;
-            await this._handleFileAttachment(name, content, isImage);
+            const { name: fileName, content: fileContent, isImage } = message.file;
+            await this._handleFileAttachment(fileName, fileContent, isImage);
             break;
         case 'requestDeleteMessage':
             await this.deleteMessage(message.messageId);
@@ -978,11 +1032,26 @@ export class ChatPanel {
                         webview.postMessage({ command: 'imageGenerationResult', buttonId: message.buttonId, success: false });
                         return;
                     }
-                    if (activeWorkspaceFolder) {
-                        const fileUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, message.filePath);
-                        await vscode.workspace.fs.writeFile(fileUri, Buffer.from(b64_json, 'base64'));
-                        const webviewUri = webview.asWebviewUri(fileUri);
+                    
+                    let saveUri: vscode.Uri | undefined;
+                    
+                    if (message.filePath && activeWorkspaceFolder) {
+                        saveUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, message.filePath);
+                    } else {
+                        // Ask user where to save
+                        saveUri = await vscode.window.showSaveDialog({
+                            title: 'Save Generated Image',
+                            filters: { 'Images': ['png'] },
+                            defaultUri: activeWorkspaceFolder ? vscode.Uri.joinPath(activeWorkspaceFolder.uri, 'generated_image.png') : undefined
+                        });
+                    }
+
+                    if (saveUri) {
+                        await vscode.workspace.fs.writeFile(saveUri, Buffer.from(b64_json, 'base64'));
+                        const webviewUri = webview.asWebviewUri(saveUri);
                         webview.postMessage({ command: 'imageGenerationResult', buttonId: message.buttonId, success: true, webviewUri: webviewUri.toString() });
+                    } else {
+                         webview.postMessage({ command: 'imageGenerationResult', buttonId: message.buttonId, success: false }); 
                     }
                 } catch (error: any) {
                     webview.postMessage({ command: 'imageGenerationResult', buttonId: message.buttonId, success: false });
@@ -998,6 +1067,53 @@ export class ChatPanel {
             break;
         case 'openSettings':
             vscode.commands.executeCommand('lollms-vs-coder.showConfigView');
+            break;
+        case 'updateDiscussionCapabilities':
+            this._discussionCapabilities = message.capabilities;
+            if (this._currentDiscussion) {
+                this._currentDiscussion.capabilities = this._discussionCapabilities;
+                if (!this._currentDiscussion.id.startsWith('temp-')) {
+                    await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                }
+            }
+            // Save settings as new default for future discussions
+            await this._discussionManager.saveLastCapabilities(this._discussionCapabilities);
+            
+            this.log(`Updated Discussion Capabilities: ${JSON.stringify(this._discussionCapabilities)}`);
+            this._panel.webview.postMessage({ command: 'updateThinkingMode', mode: this._discussionCapabilities.thinkingMode });
+            break;
+        case 'runTool':
+            const toolName = message.tool;
+            const toolParams = message.params;
+            if (this.agentManager) {
+                const toolDef = this.agentManager.getTools().find(t => t.name === toolName);
+                if (toolDef) {
+                    const { id: processId, controller } = this.processManager.register(this.discussionId, `Running tool: ${toolName}...`);
+                    this.updateGeneratingState();
+                    try {
+                        const env = {
+                            workspaceRoot: vscode.workspace.workspaceFolders?.[0],
+                            lollmsApi: this._lollmsAPI,
+                            contextManager: this._contextManager,
+                            agentManager: this.agentManager,
+                            currentPlan: null
+                        };
+                        const result = await toolDef.execute(toolParams, env as any, controller.signal);
+                        const resultMessage: ChatMessage = {
+                            role: 'system',
+                            content: `**Tool Output (${toolName}):**\n\n${result.output}`
+                        };
+                        this.addMessageToDiscussion(resultMessage);
+                    } catch (e: any) {
+                        this.addMessageToDiscussion({ role: 'system', content: `❌ Tool execution failed: ${e.message}` });
+                    } finally {
+                        this.processManager.unregister(processId);
+                        this.updateGeneratingState();
+                    }
+                } else {
+                    vscode.window.showErrorMessage(`Tool '${toolName}' not found.`);
+                }
+            }
             break;
       }
     });
@@ -1092,10 +1208,11 @@ export class ChatPanel {
             <i class="codicon codicon-arrow-down"></i>
         </button>
 
+        <!-- AGENT TOOLS MODAL -->
         <div id="tools-modal" class="modal">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2>Configure Tools</h2>
+                    <h2>Agent Tools</h2>
                     <span class="close-btn" id="close-tools-modal">&times;</span>
                 </div>
                 <div class="modal-body" id="tools-list"></div>
@@ -1105,12 +1222,110 @@ export class ChatPanel {
             </div>
         </div>
 
+        <!-- DISCUSSION TOOLS MODAL -->
+        <div id="discussion-tools-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Discussion Tools</h2>
+                    <span class="close-btn" id="close-discussion-tools-modal">&times;</span>
+                </div>
+                <div class="modal-body">
+                    <div class="modal-section">
+                        <h3>Thinking Process</h3>
+                        <div class="form-group">
+                            <label for="cap-thinkingMode" style="display:block; margin-bottom:5px; font-weight:600; color:var(--vscode-descriptionForeground);">Reasoning Strategy</label>
+                            <select id="cap-thinkingMode" style="width: 100%; padding: 6px; background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 2px;">
+                                <option value="none">None (Standard)</option>
+                                <option value="chain_of_thought">Chain of Thought</option>
+                                <option value="chain_of_verification">Chain of Verification</option>
+                                <option value="plan_and_solve">Plan and Solve</option>
+                                <option value="self_critique">Self Critique</option>
+                                <option value="no_think">No Think (Force Disable)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="modal-section">
+                        <h3>Code Generation</h3>
+                        <div class="radio-group">
+                            <label class="radio-option">
+                                <input type="radio" name="codeGenType" value="full" checked> Full File Mode (Recommended)
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="codeGenType" value="diff"> Diff Mode
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="codeGenType" value="none"> None (Chat Only)
+                            </label>
+                        </div>
+                    </div>
+
+                    <div class="modal-section">
+                        <h3>File Capabilities</h3>
+                        <div class="checkbox-grid">
+                            <div class="checkbox-container">
+                                <label class="switch"><input type="checkbox" id="cap-fileRename" checked><span class="slider"></span></label>
+                                <label for="cap-fileRename">Rename/Move</label>
+                            </div>
+                            <div class="checkbox-container">
+                                <label class="switch"><input type="checkbox" id="cap-fileDelete" checked><span class="slider"></span></label>
+                                <label for="cap-fileDelete">Delete</label>
+                            </div>
+                            <div class="checkbox-container">
+                                <label class="switch"><input type="checkbox" id="cap-fileSelect" checked><span class="slider"></span></label>
+                                <label for="cap-fileSelect">Select (Add Context)</label>
+                            </div>
+                            <div class="checkbox-container">
+                                <label class="switch"><input type="checkbox" id="cap-fileReset" checked><span class="slider"></span></label>
+                                <label for="cap-fileReset">Reset (Clear Context)</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="modal-section">
+                        <h3>External Tools</h3>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-imageGen" checked><span class="slider"></span></label>
+                            <label for="cap-imageGen">Image Generation</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-webSearch"><span class="slider"></span></label>
+                            <label for="cap-webSearch">Web Search (Google)</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-arxivSearch"><span class="slider"></span></label>
+                            <label for="cap-arxivSearch">ArXiv Search</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-gitCommit" checked><span class="slider"></span></label>
+                            <label for="cap-gitCommit">Git Commit</label>
+                        </div>
+                    </div>
+
+                    <div class="modal-section" style="border:none;">
+                        <h3>Modes</h3>
+                        <div class="checkbox-grid">
+                            <div class="checkbox-container">
+                                <label class="switch"><input type="checkbox" id="mode-funMode"><span class="slider"></span></label>
+                                <label for="mode-funMode">Fun Mode 🤪</label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="save-discussion-tools-btn">Apply</button>
+                </div>
+            </div>
+        </div>
+
         <div class="input-area-wrapper">
             <div id="more-actions-menu">
+                <button class="menu-item" id="discussionToolsButton"><i class="codicon codicon-settings"></i><span>Discussion Tools</span></button>
+                <button class="menu-item" id="agentToolsButton"><i class="codicon codicon-tools"></i><span>Agent Tools</span></button>
+                <div style="border-top: 1px solid var(--vscode-menu-separatorBackground); margin: 4px 0;"></div>
                 <button class="menu-item" id="attachButton"><i class="codicon codicon-add"></i><span>Attach Files</span></button>
                 <button class="menu-item" id="importSkillsButton"><i class="codicon codicon-lightbulb"></i><span>Import Skill</span></button>
                 <button class="menu-item" id="copyFullPromptButton"><i class="codicon codicon-copy"></i><span>Copy Context & Prompt</span></button>
-                <button class="menu-item" id="configureToolsButton"><i class="codicon codicon-tools"></i><span>Configure Tools</span></button>
                 <button class="menu-item" id="setEntryPointButton"><i class="codicon codicon-target"></i><span>Set Project Entry Point</span></button>
                 <button class="menu-item" id="executeButton"><i class="codicon codicon-play"></i><span>Execute Project</span></button>
                 <button class="menu-item" id="debugRestartButton"><i class="codicon codicon-debug-restart"></i><span>Re-run Last Debug</span></button>
@@ -1122,6 +1337,17 @@ export class ChatPanel {
                     <div id="status-spinner" class="spinner"></div>
                     <span id="status-text">Ready</span>
                 </div>
+                <!-- Deep Thinking Indicator -->
+                <div id="thinking-indicator" class="thinking-indicator" title="Deep Thinking Mode Active" style="display: none;">
+                    <i class="codicon codicon-beaker"></i>
+                    <span>Deep Thinking</span>
+                </div>
+                <!-- Web Search Indicator -->
+                <div id="websearch-indicator" class="websearch-indicator" title="Web Search Active" style="display: none;">
+                    <i class="codicon codicon-globe"></i>
+                    <span>Web Search</span>
+                </div>
+                <div id="active-tools-indicator" class="active-tools-indicator"></div>
                 <div class="token-progress">
                     <div class="token-progress-container">
                         <div class="token-progress-bar" id="token-progress-bar"></div>
@@ -1160,13 +1386,14 @@ export class ChatPanel {
                 </div>
             </div>
             
-            <div id="generating-overlay" class="generating-overlay" style="display: none;">
-                <div class="generating-content">
-                    <div class="spinner"></div>
-                    <span>Generating...</span>
-                </div>
-                <button id="stopButton" class="stop-btn-red">Stop Generation</button>
+        </div>
+        
+        <div id="generating-overlay" class="generating-overlay" style="display: none;">
+            <div class="generating-content">
+                <div class="spinner"></div>
+                <span>Generating...</span>
             </div>
+            <button id="stopButton" class="stop-btn-red">Stop Generation</button>
         </div>
         
         <div id="token-counting-overlay" class="token-counting-overlay" style="display: none;">

@@ -1,10 +1,8 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
-import { getProcessedSystemPrompt, stripThinkingTags } from './utils';
+import { getProcessedSystemPrompt, stripThinkingTags, DiscussionCapabilities } from './utils';
 import { ProcessManager } from './processManager';
-
-// Assuming Plan is defined in planParser.ts and imported where needed
 import { Plan } from './tools/tool';
 
 export interface Discussion {
@@ -13,13 +11,14 @@ export interface Discussion {
     messages: ChatMessage[];
     timestamp: number;
     groupId: string | null;
-    plan?: Plan | null; // Added for agent state persistence
+    plan?: Plan | null;
     model?: string;
+    capabilities?: DiscussionCapabilities;
 }
 
 export interface DiscussionGroup {
     id: string;
-    title:string;
+    title: string;
     description: string;
     timestamp: number;
 }
@@ -29,10 +28,12 @@ export class DiscussionManager {
     private groupsFile!: vscode.Uri;
     private lollmsAPI: LollmsAPI;
     private processManager: ProcessManager;
+    private context: vscode.ExtensionContext;
 
-    constructor(lollmsAPI: LollmsAPI, processManager: ProcessManager) {
+    constructor(lollmsAPI: LollmsAPI, processManager: ProcessManager, context: vscode.ExtensionContext) {
         this.lollmsAPI = lollmsAPI;
         this.processManager = processManager;
+        this.context = context;
     }
 
     public async switchWorkspace(workspaceRoot: vscode.Uri) {
@@ -49,21 +50,43 @@ export class DiscussionManager {
         }
     }
 
+    public async saveLastCapabilities(caps: DiscussionCapabilities) {
+        await this.context.globalState.update('lollms_last_capabilities', caps);
+    }
+
+    public getLastCapabilities(): DiscussionCapabilities {
+        return this.context.globalState.get<DiscussionCapabilities>('lollms_last_capabilities') || {
+            codeGenType: 'full',
+            fileRename: true,
+            fileDelete: true,
+            fileSelect: true,
+            fileReset: true,
+            imageGen: true,
+            webSearch: false,
+            arxivSearch: false,
+            funMode: false,
+            thinkingMode: 'none',
+            gitCommit: true
+        };
+    }
+
     createNewDiscussion(groupId: string | null = null): Discussion {
         const id = Date.now().toString() + Math.random().toString(36).substring(2);
+        const caps = this.getLastCapabilities();
         return {
             id,
             title: 'New Discussion',
             messages: [],
             timestamp: Date.now(),
             groupId,
-            plan: null
+            plan: null,
+            capabilities: caps
         };
     }
 
     async saveDiscussion(discussion: Discussion): Promise<void> {
         if (discussion.id.startsWith('temp-')) {
-            return; // Do not save temporary discussions
+            return;
         }
         const filePath = vscode.Uri.joinPath(this.discussionsDir, `${discussion.id}.json`);
         const content = Buffer.from(JSON.stringify(discussion, null, 2), 'utf8');
@@ -149,10 +172,10 @@ export class DiscussionManager {
     }
 
     async generateDiscussionTitle(discussion: Discussion): Promise<string | null> {
-        if (discussion.messages.length === 0) {
-            return null;
-        }
-    
+        // ... (existing implementation)
+        if (discussion.messages.length === 0) return null;
+        // ...
+        // Reusing existing logic...
         const systemPrompt: ChatMessage = {
             role: 'system',
             content: `You are a title generation AI. Your sole purpose is to create a concise, descriptive title (5 words or less) for a conversation based on the user's initial input.
@@ -175,16 +198,13 @@ User: "how do I build a snake game in python?"
 \`\`\`
 `
         };
-    
         const firstUserMessage = discussion.messages.find(m => m.role === 'user');
         if (!firstUserMessage) return null;
 
         let contentSnippet = '';
         if (typeof firstUserMessage.content === 'string') {
-            // Limit to ~1000 tokens (approx 4000 characters) to avoid context bloat
             contentSnippet = firstUserMessage.content.substring(0, 4000); 
         } else if (Array.isArray(firstUserMessage.content)) {
-             // Handle multipart content (text parts), limiting total text length
              contentSnippet = firstUserMessage.content
                 .filter(part => part.type === 'text')
                 .map(part => part.text)
@@ -224,10 +244,9 @@ User: "how do I build a snake game in python?"
                 }
             }
             
-            console.warn("AI did not return valid JSON for title generation. Using first line of response instead. Raw response:", rawResponse);
             const firstLine = cleanResponse.split('\n')[0].trim();
             if (firstLine.length > 80 || firstLine.includes('```')) {
-                return "Untitled Discussion"; // A safe default if the response looks like an answer
+                return "Untitled Discussion"; 
             }
             return firstLine.replace(/["']/g, '');
     

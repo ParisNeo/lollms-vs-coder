@@ -2,6 +2,22 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
 
+export interface DiscussionCapabilities {
+    codeGenType: 'full' | 'diff' | 'none';
+    fileRename: boolean;
+    fileDelete: boolean;
+    fileSelect: boolean;
+    fileReset: boolean;
+    imageGen: boolean;
+    webSearch: boolean;
+    arxivSearch: boolean;
+    funMode: boolean;
+    // Updated: added 'no_think' to allow disabling thinking via discussion capability
+    thinkingMode: 'none' | 'chain_of_thought' | 'chain_of_verification' | 'plan_and_solve' | 'self_critique' | 'no_think';
+    // NEW
+    gitCommit: boolean;
+}
+
 export async function applyDiff(diffContent: string) {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders) {
@@ -9,7 +25,6 @@ export async function applyDiff(diffContent: string) {
     }
     const workspaceRoot = workspaceFolders[0].uri;
 
-    // Basic parsing to find the file path from '--- a/path/to/file' or '+++ b/path/to/file'
     const fileMatch = diffContent.match(/^(?:--- a\/|\+\+\+ b\/)(.*)$/m);
     if (!fileMatch) {
         throw new Error('Could not determine file path from diff.');
@@ -28,7 +43,7 @@ export async function applyDiff(diffContent: string) {
     const diffLines = diffContent.split('\n');
     const edit = new vscode.WorkspaceEdit();
 
-    let originalLineIndex = -1; // -1 because hunk headers are 1-based
+    let originalLineIndex = -1;
 
     for (const line of diffLines) {
         if (line.startsWith('@@')) {
@@ -39,12 +54,9 @@ export async function applyDiff(diffContent: string) {
         } else if (line.startsWith('-')) {
             if (originalLineIndex >= 0) {
                 const range = new vscode.Range(new vscode.Position(originalLineIndex, 0), new vscode.Position(originalLineIndex + 1, 0));
-                // Verify the line matches before deleting
                 if (originalLines[originalLineIndex].trimEnd() === line.substring(1).trimEnd()) {
                     edit.delete(fileUri, range);
                     originalLineIndex++;
-                } else {
-                   // Ignore if doesn't match, could be context mismatch
                 }
             }
         } else if (line.startsWith('+')) {
@@ -62,25 +74,29 @@ export async function applyDiff(diffContent: string) {
     if (!success) {
         throw new Error('VS Code failed to apply edits.');
     }
-    // Save the document after applying changes
     await document.save();
 }
 
 
-export function getProcessedSystemPrompt(promptType: 'chat' | 'agent' | 'inspector' | 'commit'): string {
+export function getProcessedSystemPrompt(promptType: 'chat' | 'agent' | 'inspector' | 'commit', capabilities?: DiscussionCapabilities): string {
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-    const noThinkMode = config.get<boolean>('noThinkMode') || false;
     const reasoningLevel = config.get<string>('reasoningLevel') || 'none';
-    const thinkingMode = config.get<string>('thinkingMode') || 'none';
+    
+    // Prefer capability setting, fall back to global config (excluding no_think check which is now capability only)
+    const thinkingMode = capabilities?.thinkingMode || config.get<string>('thinkingMode') || 'none';
     const developerName = config.get<string>('developerName') || 'Developer';
 
     let thinkingInstructions = '';
 
-    if (!noThinkMode && thinkingMode !== 'none') {
+    // Handle Thinking Mode
+    if (thinkingMode !== 'none' && thinkingMode !== 'no_think') {
         let instructionText = '';
         switch (thinkingMode) {
             case 'chain_of_thought':
                 instructionText = "Before providing your final answer, you must engage in a step-by-step thinking process. Outline your reasoning, the steps you'll take, and any assumptions you're making.";
+                break;
+            case 'chain_of_verification':
+                instructionText = "Implement a Chain of Verification process:\n1. Generate a preliminary response (internal thought).\n2. Create a list of verification questions to check the facts and logic in your preliminary response.\n3. Answer these questions independently to verify the information.\n4. Specify any corrections needed.\n5. Generate the final, verified response.";
                 break;
             case 'plan_and_solve':
                 instructionText = "First, create a high-level plan to solve the user's request. Then, execute the plan. This helps in structuring your response for complex tasks.";
@@ -93,7 +109,7 @@ export function getProcessedSystemPrompt(promptType: 'chat' | 'agent' | 'inspect
                 break;
         }
         if (instructionText) {
-            thinkingInstructions = `**THINKING PROCESS INSTRUCTIONS:**\nYou are required to use the following thinking process: ${instructionText} Enclose your entire thinking process, reasoning, and self-correction within a \`<thinking>\` XML block. This block will be hidden from the user but is crucial for your process.\n\n`;
+            thinkingInstructions = `**THINKING PROCESS INSTRUCTIONS:**\nYou are required to use the following thinking process: ${instructionText} Enclose your entire thinking process, reasoning, and self-correction within a \`<thinking>\` XML block. This block will be hidden from the user but is crucial for your quality.\n\n`;
         }
     }
 
@@ -102,151 +118,117 @@ export function getProcessedSystemPrompt(promptType: 'chat' | 'agent' | 'inspect
 
     switch (promptType) {
         case 'chat': {
-            const fileUpdateMethod = config.get<string>('fileUpdateMethod') || 'full_file';
             let updateInstructions = '';
 
-            const fullFileInstruction = `**CRITICAL: FULL FILE MODE - NO PLACEHOLDERS ALLOWED**
-To create or overwrite a file, use EXACTLY this format - ANY DEVIATION BREAKS THE EXTENSION:
-
-1.  **Explanation**: Start by explaining what you are going to do.
-2.  **File Header**: On a new line, write \`File: path/to/the/file.ext\` (Plain text, NOT inside a code block, NO headings like # or ###).
-3.  **Code Block**: Immediately follow with a markdown code block containing the **COMPLETE** file content.
-
-FORMAT:
-Explanation of changes...
-
+            const fullFileInstruction = `**FULL FILE MODE (ENABLED):**
+To create or overwrite a file, use EXACTLY this format:
 File: path/to/the/file.ext
 \`\`\`language
-// Full, complete code here - every line, import, function, export.
-// NO placeholders like "// ...", NO simplifications, NO omissions.
-// This REPLACES the entire file content.
+// Full file content here
 \`\`\`
+**IMPORTANT:** Do NOT use diffs, patches, or git diff format. Output the **entire** file content.
+`;
 
-**DO NOT** do this:
-❌ ### File: path/to/file (No headings)
-❌ \`File: path/to/file\` (No inline code)
-❌ \`\`\`
-File: path/to/file
-code...
-\`\`\` (Header must be outside code block)`;
-
-            const diffInstruction = `**CRITICAL: DIFF MODE - PRECISE PATCHES ONLY**
-To patch a file, use EXACTLY this format - MUST be valid unified diff:
-- Header (plain text, NO code block):
-
+            const diffInstruction = `**DIFF MODE (ENABLED):**
+To patch a file, use:
 Diff: path/to/the/file.ext
-- Immediately after header: 
 \`\`\`diff
-- Then: Valid diff hunk(s) with @@ headers, -/+ lines, context. NO extra text.
-- Close: 
+@@ -1,1 +1,1 @@
+- old
++ new
 \`\`\`
+`;
 
-Example:
-
-Diff: src/app.ts
-\`\`\`diff
-@@ -10,3 +10,4 @@
-- old line1
-- old line2
-+ new line1
-+ new line2
-+ new line3
-\`\`\``;
-
-            const locateInstruction = `**CRITICAL: LOCATE MODE - PRECISE EDITS**
-To insert/replace at exact line, use EXACTLY:
-\`\`\`locate
-file: path/to/your/file.ext
-line: 123
-action: insert_after  // or replace_line
----
-const newCode = "full code block here";
-\`\`\`
-NO other text inside block.`;
-
-            if (fileUpdateMethod === 'full_file') {
+            // Changed: Removed fallback to config 'fileUpdateMethod', default to 'full' if no capability provided
+            const codeGenType = capabilities ? capabilities.codeGenType : 'full';
+            
+            if (codeGenType === 'full') {
                 updateInstructions = fullFileInstruction;
-            } else if (fileUpdateMethod === 'diff') {
+            } else if (codeGenType === 'diff') {
                 updateInstructions = diffInstruction;
-            } else if (fileUpdateMethod === 'locate') {
-                updateInstructions = locateInstruction;
-            } else if (fileUpdateMethod === 'do_your_best') {
-                updateInstructions = `**CHOOSE BEST METHOD - But follow EXACT formats below. Prefer full for new/major changes; diff for small; locate for precise.**
-
-${fullFileInstruction}
-
-${diffInstruction}
-
-${locateInstruction}`;
+            }
+            
+            let otherFileActions = '';
+            
+            if (!capabilities || capabilities.fileRename) {
+                otherFileActions += `- **Rename/Move:** \`\`\`rename\nold1 -> new1\nold2 -> new2\n\`\`\` (Support multiple per block)\n`;
+            }
+            if (!capabilities || capabilities.fileDelete) {
+                otherFileActions += `- **Delete:** \`\`\`delete\npath/to/file1\npath/to/file2\n\`\`\` (Support multiple per block)\n`;
+            }
+            if (!capabilities || capabilities.fileSelect) {
+                otherFileActions += `- **Select Files (Add to Context):** \`\`\`select\npath/to/file1\npath/to/file2\n\`\`\`\n`;
+            }
+            if (!capabilities || capabilities.fileReset) {
+                otherFileActions += `- **Reset Files (Clear Context):** \`\`\`context_reset\ntrue\n\`\`\`\n`;
             }
 
-            basePrompt = `You are a VSCode Assistant: A precise, code-savvy helper embedded in Visual Studio Code. Your goal is to assist developers with file edits, refactoring, debugging, and project tasks. Always prioritize accuracy, brevity, and parseable outputs—never hallucinate paths, code, or formats.
+            // Git Commit Tool
+            if (capabilities?.gitCommit) {
+                otherFileActions += `- **Git Commit:** \`\`\`git_commit\nCommit message\n\`\`\` (Stages all changes and commits)\n`;
+            }
 
-**MANDATORY WORKFLOW:**
-1. **Explain the Problem:** Briefly explain the issue or task you have identified.
-2. **Explain the Plan:** Briefly outline what you are going to do to fix it.
-3. **Execute:** Provide the code blocks or file updates following the strict formats below.
-**DO NOT** engage in code generation without this initial explanation.
+            if (otherFileActions) {
+                updateInstructions += `\n**OTHER FILE ACTIONS:**\n${otherFileActions}`;
+            }
 
-Think like a senior engineer: ensure changes fit the workspace context. Respond helpfully but concisely; if unsure, request clarification via a \`select\` block for more context.
+            const enableImageGen = capabilities ? capabilities.imageGen : true;
+            if (enableImageGen) {
+                updateInstructions += `
+**IMAGE GENERATION:**
+To generate an image, use:
+File: path/to/save/image.png
+\`\`\`image_prompt
+Detailed prompt...
+\`\`\`
+If you provide a File path, it will be saved there. If not, the user will be asked where to save it.
+`;
+            }
 
-**VSCODE ASSISTANT: OUTPUT MUST BE PARSEABLE. DEVIATE AND IT BREAKS.**
+            if (capabilities?.webSearch) {
+                updateInstructions += `
+**WEB SEARCH:**
+To search the web, use:
+\`\`\`search_web
+search query here
+\`\`\`
+`;
+            }
 
-**FILE MODS (${fileUpdateMethod.toUpperCase()}):**
+            if (capabilities?.arxivSearch) {
+                updateInstructions += `
+**ARXIV SEARCH:**
+To search Arxiv, use:
+\`\`\`search_arxiv
+search query here
+\`\`\`
+`;
+            }
+
+            basePrompt = `You are a VSCode Assistant. Your goal is to assist with code, debugging, and project tasks.
+
+**MANDATORY OUTPUT FORMATS:**
 ${updateInstructions}
 
-**OTHER ACTIONS (Use ONLY these blocks when needed):**
-- **Rename/Move:** 
-\`\`\`rename
-old/path.ext -> new/path.ext
-old2/path2.ext -> new2/path2.ext
-\`\`\` (Triggers "Move/Rename" UI button; one rename per line for multiples)
-  Example for multiple:
-\`\`\`rename
-src/old1.ts -> src/new1.ts
-utils/old2.js -> lib/new2.js
-\`\`\`
-- **Delete:** 
-\`\`\`delete
-path/to/delete.ext
-another/file.js
-\`\`\` (Triggers "Delete" UI button; one path per line)
-  Example:
-\`\`\`delete
-temp/unneeded.txt
-logs/old.log
-\`\`\`
-- **Add Context:** If missing files, 
-\`\`\`select
-src/api.ts
-utils/db.ts
-\`\`\` (Triggers "Add to Context" UI button; one path per line)
-  Example:
-\`\`\`select
-config/env.ts
-tests/unit.test.js
-\`\`\`
-- **Image Gen:** File: path/to/image.png
-\`\`\`image_prompt
-Detailed prompt for AI image gen here.
-\`\`\` (Triggers image creation)
+**GENERAL CHAT:** No actions? Respond in clean Markdown.
 
-**GENERAL CHAT:** No actions? Respond in clean Markdown. NEVER mix formats or add extras.
-
-**ABSOLUTE RULE:** Formats are sacred - test mentally: "Does this parse without errors?"`;
+**ABSOLUTE RULE:** Formats are sacred. Any deviation breaks the parser.`;
             personaKey = 'chatPersona';
             break;
         }
         case 'agent':
         case 'inspector':
         case 'commit':
-            // These prompts are defined in their respective managers/integrations
-            // and don't need a base here. We just need the persona.
             personaKey = `${promptType}Persona`;
             break;
     }
 
-    const userPersona = config.get<string>(personaKey) || '';
+    let userPersona = config.get<string>(personaKey) || '';
+    
+    if (capabilities?.funMode) {
+        userPersona += "\n\n**FUN MODE ACTIVATED:** Be quirky, humorous, and use plenty of emojis! 🤪 Make coding fun!";
+    }
+
     let combinedPrompt = `${thinkingInstructions}${basePrompt}\n\n**YOUR PERSONA:**\n${userPersona}`;
 
     const now = new Date();
@@ -263,7 +245,8 @@ Detailed prompt for AI image gen here.
 
     let finalPrompt = processedPrompt.trim();
 
-    if (noThinkMode) {
+    // Changed: noThinkMode is now handled via thinkingMode capability
+    if (thinkingMode === 'no_think') {
         finalPrompt = `/no_think\n${finalPrompt}`;
     } else if (reasoningLevel !== 'none') {
         finalPrompt = `/reasoning_${reasoningLevel}\n${finalPrompt}`;
@@ -277,3 +260,4 @@ export function stripThinkingTags(responseText: string): string {
     const thinkRegex = /<(think|thinking)>[\s\S]*?<\/\1>/g;
     return responseText.replace(thinkRegex, '').trim();
 }
+

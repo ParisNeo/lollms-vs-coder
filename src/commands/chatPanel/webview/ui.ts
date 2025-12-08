@@ -1,7 +1,9 @@
-import { dom } from "./dom.js";
+import { dom, state } from "./dom.js";
 import { isScrolledToBottom } from "./utils.js";
 
 export function setGeneratingState(isGenerating: boolean) {
+    state.isGenerating = isGenerating;
+
     if (dom.messageInput) {
         dom.messageInput.disabled = isGenerating;
     }
@@ -14,13 +16,12 @@ export function setGeneratingState(isGenerating: boolean) {
     if(dom.setEntryPointButton) dom.setEntryPointButton.disabled = isGenerating;
     if(dom.debugRestartButton) dom.debugRestartButton.disabled = isGenerating;
 
-    // Toggle the input container and the generating overlay
-    if (dom.inputArea) {
-        // Use class for visual disabling instead of hiding
-        dom.inputArea.classList.toggle('disabled', isGenerating);
-        // Ensure it is visible (in case it was hidden by previous logic or other states)
-        dom.inputArea.style.display = 'flex';
+    // Toggle the input container visibility completely
+    if (dom.inputAreaWrapper) {
+        dom.inputAreaWrapper.style.display = isGenerating ? 'none' : 'block';
     }
+
+    // Toggle the generating overlay
     if (dom.generatingOverlay) {
         dom.generatingOverlay.style.display = isGenerating ? 'flex' : 'none';
     }
@@ -36,7 +37,4 @@ export function setGeneratingState(isGenerating: boolean) {
     } else {
         dom.scrollToBottomBtn.style.display = 'none';
     }
-    
-    // Ensure Send Button is always flex (visible) when input area is shown
-    if (dom.sendButton) dom.sendButton.style.display = 'flex';
 }

@@ -39,7 +39,6 @@ import { Logger } from './logger';
 
 const execAsync = promisify(exec);
 
-
 interface GitExtension { getAPI(version: 1): API; }
 interface API { repositories: Repository[]; }
 interface Repository { inputBox: { value: string }; rootUri: vscode.Uri; }
@@ -47,7 +46,6 @@ interface Repository { inputBox: { value: string }; rootUri: vscode.Uri; }
 let lollmsExecutionTerminal: vscode.Terminal | null = null;
 let pythonExtApi: any = null; 
 
-// Simple manager to hold the state of the last captured debug error
 const debugErrorManager = {
     _onDidChange: new vscode.EventEmitter<void>(),
     get onDidChange(): vscode.Event<void> { return this._onDidChange.event; },
@@ -125,7 +123,6 @@ class LollmsDebugAdapterTrackerFactory implements vscode.DebugAdapterTrackerFact
                             }
                             debugErrorManager.setError(fullMessage, stackTrace, errorFileUri, errorLine);
 
-                            // Show an information message with a button
                             const fixButton = 'Fix with Lollms';
                             const sendToDiscussionButton = 'Send to Discussion';
                             vscode.window.showInformationMessage(`Lollms captured a debug error: ${exceptionText}`, fixButton, sendToDiscussionButton).then(selection => {
@@ -152,7 +149,6 @@ class LollmsDebugAdapterTrackerFactory implements vscode.DebugAdapterTrackerFact
     }
 }
 
-
 async function buildCodeActionPrompt(
     promptTemplate: string, 
     actionType: 'generation' | 'information' | undefined,
@@ -161,7 +157,6 @@ async function buildCodeActionPrompt(
     contextManager: ContextManager,
     useContext: boolean = false
 ): Promise<{ systemPrompt: string, userPrompt: string } | null> {
-    
     const selection = editor.selection;
     const document = editor.document;
 
@@ -297,7 +292,6 @@ async function buildDebugErrorPrompt(
     return prompt;
 }
 
-
 export async function activate(context: vscode.ExtensionContext) {
     Logger.initialize(context);
     Logger.info('Lollms VS Coder is now active!');
@@ -383,6 +377,7 @@ export async function activate(context: vscode.ExtensionContext) {
         );
     }
     
+    // Pass context to DiscussionManager for globalState access
     let discussionManager: DiscussionManager | undefined;
     let discussionTreeProvider: DiscussionTreeProvider | undefined;
     let discussionView: vscode.TreeView<vscode.TreeItem> | undefined;
@@ -397,8 +392,8 @@ export async function activate(context: vscode.ExtensionContext) {
     
     const setupChatPanel = (panel: ChatPanel) => {
         if (!panel.agentManager) {
-            // Inject codeGraphManager into AgentManager
-            panel.agentManager = new AgentManager(panel, lollmsAPI, contextManager, gitIntegration, discussionManager!, context.extensionUri, codeGraphManager);
+            // Inject codeGraphManager and skillsManager into AgentManager
+            panel.agentManager = new AgentManager(panel, lollmsAPI, contextManager, gitIntegration, discussionManager!, context.extensionUri, codeGraphManager, skillsManager);
         }
         panel.setProcessManager(processManager);
         panel.agentManager.setProcessManager(processManager);
@@ -437,7 +432,6 @@ export async function activate(context: vscode.ExtensionContext) {
         await skillsManager.switchWorkspace(folder.uri);
         skillsTreeProvider.refresh();
         
-        // Pass workspace to CodeGraphManager
         codeGraphManager.setWorkspaceRoot(folder.uri);
         codeExplorerTreeProvider.refresh();
         
@@ -450,7 +444,6 @@ export async function activate(context: vscode.ExtensionContext) {
             fileDecorationProvider.updateStateProvider(contextStateProvider);
         }
 
-        // Close all existing chat panels when switching workspace to avoid context confusion
         ChatPanel.panels.forEach(panel => panel.dispose());
         vscode.window.showInformationMessage(`Lollms workspace switched to '${folder.name}'. All chat panels have been closed.`);
     }
@@ -477,15 +470,10 @@ export async function activate(context: vscode.ExtensionContext) {
             ? (workspaceFolders.find(f => f.uri.toString() === activeWorkspaceFolder!.uri.toString()) || workspaceFolders[0])
             : workspaceFolders[0];
         
-        discussionManager = new DiscussionManager(lollmsAPI, processManager);
+        discussionManager = new DiscussionManager(lollmsAPI, processManager, context);
         discussionTreeProvider = new DiscussionTreeProvider(discussionManager, context.extensionUri);
         discussionView = vscode.window.createTreeView('lollmsDiscussionsView', { treeDataProvider: discussionTreeProvider });
         
-        // Process Management View (REMOVED)
-        // processTreeProvider = new ProcessTreeProvider(processManager);
-        // context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsProcessView', processTreeProvider));
-        
-        // Status bar item for processes
         const processesStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 97);
         processesStatusBarItem.command = 'lollms-vs-coder.showRunningProcesses';
         context.subscriptions.push(processesStatusBarItem);
@@ -498,7 +486,6 @@ export async function activate(context: vscode.ExtensionContext) {
             } else {
                 processesStatusBarItem.hide();
             }
-            // Update panels as before
             ChatPanel.panels.forEach(panel => {
                 panel.updateGeneratingState();
             });
@@ -506,7 +493,6 @@ export async function activate(context: vscode.ExtensionContext) {
 
         context.subscriptions.push(processManager.onDidProcessChange(updateProcessStatus));
         
-        // Register command to show processes
         context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showRunningProcesses', async () => {
             const processes = processManager.getAll();
             if (processes.length === 0) {
@@ -565,6 +551,14 @@ export async function activate(context: vscode.ExtensionContext) {
         }
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.gitCommit', async (message: string) => {
+        if (!activeWorkspaceFolder) {
+            vscode.window.showErrorMessage("No active workspace.");
+            return;
+        }
+        await gitIntegration.stageAllAndCommit(message, activeWorkspaceFolder);
+    }));
+
     const sendSelection = async (createNew: boolean) => {
         if (!activeWorkspaceFolder || !discussionManager) {
             vscode.window.showInformationMessage(vscode.l10n.t("info.openFolderToUseChat"));
@@ -581,7 +575,6 @@ export async function activate(context: vscode.ExtensionContext) {
         let targetPanel: ChatPanel | undefined;
 
         if (createNew) {
-            // New Discussion
             targetDiscussion = discussionManager.createNewDiscussion();
             await discussionManager.saveDiscussion(targetDiscussion);
             discussionTreeProvider?.refresh();
@@ -590,12 +583,11 @@ export async function activate(context: vscode.ExtensionContext) {
             await targetPanel.loadDiscussion();
             revealDiscussion(targetDiscussion);
         } else {
-            // Last Discussion
             const allDiscussions = await discussionManager.getAllDiscussions();
             const lastDiscussion = allDiscussions[0];
             if (!lastDiscussion) {
                 vscode.window.showInformationMessage("No previous discussion found. Starting a new one.");
-                return sendSelection(true); // Fallback to creating new
+                return sendSelection(true); 
             }
             targetDiscussion = lastDiscussion;
             targetPanel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, targetDiscussion.id, skillsManager);
@@ -637,7 +629,6 @@ Please analyze this output (e.g., error log, script output, or configuration tex
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showLog', () => {
-        // Updated to show the global logger
         Logger.show();
     }));
 
@@ -730,7 +721,7 @@ Please analyze this output (e.g., error log, script output, or configuration tex
         const confirm = await vscode.window.showWarningMessage(vscode.l10n.t('prompt.confirmDelete', item.discussion.title), { modal: true }, deleteButton);
         if (confirm?.id === 'delete') {
             const panel = ChatPanel.panels.get(item.discussion.id);
-            panel?.dispose(); // Close the panel if it's open
+            panel?.dispose(); 
             
             await discussionManager.deleteDiscussion(item.discussion.id);
             discussionTreeProvider?.refresh();
@@ -791,9 +782,8 @@ Please analyze this output (e.g., error log, script output, or configuration tex
             for (const discussion of untitledDiscussions) {
                 if (token.isCancellationRequested) break;
 
-                progress.report({ message: `Analyzing ${discussion.id}...`, increment: 0 }); // Don't increment yet
+                progress.report({ message: `Analyzing ${discussion.id}...`, increment: 0 }); 
 
-                // Check if discussion has messages
                 if (discussion.messages.length > 0) {
                     const newTitle = await discussionManager!.generateDiscussionTitle(discussion);
                     if (newTitle) {
@@ -803,7 +793,6 @@ Please analyze this output (e.g., error log, script output, or configuration tex
                 }
                 
                 progress.report({ message: `Untitled: ${discussion.title}`, increment: increment });
-                // We could refresh incrementally but better to do it at the end to avoid flickering
             }
             discussionTreeProvider?.refresh();
         });
@@ -884,10 +873,8 @@ Please analyze this output (e.g., error log, script output, or configuration tex
         }
     
         if (args && args.code) {
-            // Called from webview button
             ChatPanel.currentPanel.handleInspectCode(args);
         } else {
-            // Called from command palette or somewhere else
             const editor = vscode.window.activeTextEditor;
             if (editor && !editor.selection.isEmpty) {
                 const code = editor.document.getText(editor.selection);
@@ -969,11 +956,11 @@ ${fileContent}
         }
     
         let targetPrompt: Prompt | undefined;
-        let useContext = true; // Default to true
+        let useContext = true; 
 
         if (promptOrArg && (promptOrArg as { isCustom: true }).isCustom === true) {
             const customActionData = await CustomActionModal.createOrShow(context.extensionUri);
-            if (!customActionData) return; // User cancelled
+            if (!customActionData) return; 
             
             useContext = customActionData.useContext;
             const fullContent = `${customActionData.prompt}\n{{SELECTED_CODE}}`;
@@ -1014,7 +1001,7 @@ ${fileContent}
 
             if (!selection) return;
     
-            if (!selection.prompt) { // User chose "Custom Prompt..."
+            if (!selection.prompt) {
                 const customActionData = await CustomActionModal.createOrShow(context.extensionUri);
                 if (!customActionData) return;
                 
@@ -1047,7 +1034,6 @@ ${fileContent}
                 };
             } else {
                 targetPrompt = selection.prompt;
-                // For existing saved prompts, we default to using context as requested
                 useContext = true; 
             }
         }
@@ -1125,7 +1111,6 @@ ${fileContent}
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showCodeGraphPanel', async () => {
-        // Only load, don't force rebuild unless empty
         const graph = codeGraphManager.getGraphData();
         if (graph.nodes.length === 0) {
              await codeGraphManager.loadGraph();
@@ -1158,7 +1143,6 @@ ${fileContent}
         vscode.window.showInformationMessage(`Skill '${name}' has been learned.`);
     }));
 
-    // NEW COMMANDS
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.importSkills', async () => {
         await skillsManager.importSkills();
         skillsTreeProvider.refresh();
@@ -1233,7 +1217,7 @@ ${fileContent}
         const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, discussion.id, skillsManager);
         setupChatPanel(panel);
         await panel.loadDiscussion();
-        panel.sendMessage(userMessage); // This triggers the API call
+        panel.sendMessage(userMessage); 
         revealDiscussion(discussion);
     }
 
@@ -1321,7 +1305,6 @@ ${fileContent}
                 const stateKey = `context-state-${currentWorkspaceFolder.uri.fsPath}`;
                 await context.workspaceState.update(stateKey, loadedState);
 
-                // Re-initialize the provider to make it reload the state from workspaceState
                 contextStateProvider = new ContextStateProvider(currentWorkspaceFolder.uri.fsPath, context);
                 contextManager.setContextStateProvider(contextStateProvider);
                 fileDecorationProvider.updateStateProvider(contextStateProvider);
@@ -1624,10 +1607,16 @@ ${fileContent}
             title: "Lollms: Applying all file changes...",
             cancellable: false
         }, async (progress) => {
-            // Apply full file updates
             if (updates) {
                 for (const update of updates) {
                     const { filePath, content } = update;
+                    
+                    if (content.match(/^--- a\/.*\n\+\+\+ b\//m) || content.match(/^@@ -\d+,?\d* \+\d+,?\d* @@/m)) {
+                         vscode.window.showWarningMessage(`Skipped ${filePath}: Content looked like a diff but was marked as full file.`);
+                         errorCount++;
+                         continue;
+                    }
+
                     progress.report({ message: `Applying to ${filePath}` });
                     const fileUri = vscode.Uri.joinPath(currentWorkspaceFolder.uri, filePath);
                     try {
@@ -1642,7 +1631,6 @@ ${fileContent}
                     }
                 }
             }
-            // Apply patches
             if (patches) {
                  for (const patch of patches) {
                     const { filePath, content } = patch;
@@ -1678,6 +1666,23 @@ ${fileContent}
             return;
         }
         const currentWorkspaceFolder = activeWorkspaceFolder;
+        
+        if (content.match(/^--- a\/.*\n\+\+\+ b\//m) || content.match(/^@@ -\d+,?\d* \+\d+,?\d* @@/m)) {
+            const choice = await vscode.window.showWarningMessage(
+                "The content looks like a Diff/Patch but 'Apply to File' was clicked. This will overwrite the file with the diff text. Do you want to apply it as a patch instead?",
+                "Apply as Patch",
+                "Overwrite Anyway"
+            );
+            
+            if (choice === "Apply as Patch") {
+                vscode.commands.executeCommand('lollms-vs-coder.applyPatchContent', filePath, content);
+                return;
+            }
+            if (choice !== "Overwrite Anyway") {
+                return;
+            }
+        }
+
         const fileUri = vscode.Uri.joinPath(currentWorkspaceFolder.uri, filePath);
     
         let originalContent = '';
@@ -1896,8 +1901,6 @@ ${fileContent}
     });
     context.subscriptions.push(saveCodeCommand, applyDiffCommand);
 
-    // ================== Status Bar Items ==================
-    
     const chatStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     chatStatusBar.text = '$(comment-discussion) Lollms Chat';
     chatStatusBar.command = 'lollms-vs-coder.startChat';
@@ -1973,7 +1976,6 @@ ${fileContent}
         processManager.cancel(item.process.id);
     }));
 
-    // ================== Notebook and Execution Logic ==================
     context.subscriptions.push(vscode.notebooks.registerNotebookCellStatusBarItemProvider('jupyter-notebook', new LollmsNotebookCellActionProvider()));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.enhanceNotebookCell', async (cell: vscode.NotebookCell) => {
         if (!cell) return;
@@ -1992,8 +1994,8 @@ ${fileContent}
     
             const cellContent = cell.document.getText();
             const languageId = cell.document.languageId;
-            const systemPrompt = getProcessedSystemPrompt('agent'); // Using agent prompt for direct code tasks
-            const userPrompt = `${refactorPrompt.content.replace('{{SELECTED_CODE}}', '')}\n\n\`\`\`${languageId}\n${cellContent}\n\`\`\``;
+            const systemPrompt = getProcessedSystemPrompt('agent');
+            const userPrompt = `${refactorPrompt.content.replace('{{SELECTED_CODE}}', '')}\n\n\`\`\`${languageId}\n${cellContent}\n\`\`\`\n\nPlease output ONLY the improved code block.`;
     
             const responseText = await lollmsAPI.sendChat([
                 { role: 'system', content: systemPrompt },
@@ -2054,7 +2056,530 @@ ${fileContent}
                 await vscode.workspace.applyEdit(edit);
             }
         });
-    }));    
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.promptToNotebookCell', async (cell: vscode.NotebookCell) => {
+        if (!cell) return;
+
+        const prompt = await vscode.window.showInputBox({
+            prompt: "Enter instructions for this cell",
+            placeHolder: "e.g., 'Load the csv file and plot the first 2 columns' or 'Refactor to use list comprehension'"
+        });
+
+        if (!prompt) return;
+
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Lollms: Processing cell...",
+            cancellable: true
+        }, async (progress, token) => {
+            const cellContent = cell.document.getText();
+            const languageId = cell.document.languageId;
+            const systemPrompt = getProcessedSystemPrompt('agent');
+            
+            let userPrompt = '';
+            if (cellContent.trim().length > 0) {
+                userPrompt = `I have the following code in a notebook cell:\n\`\`\`${languageId}\n${cellContent}\n\`\`\`\n\nMy instruction is: **${prompt}**\n\nPlease provide the updated code for this cell. Output ONLY the code in a markdown block.`;
+            } else {
+                userPrompt = `Generate code for a notebook cell based on this instruction: **${prompt}**\n\nOutput ONLY the code in a markdown block.`;
+            }
+
+            const responseText = await lollmsAPI.sendChat([
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt }
+            ]);
+
+            if (token.isCancellationRequested) return;
+
+            const codeBlockRegex = /```(?:[\w-]*)\n([\s\S]+?)\n```/s;
+            const match = responseText.match(codeBlockRegex);
+            const newCode = match ? match[1] : stripThinkingTags(responseText);
+
+            if (newCode) {
+                const edit = new vscode.WorkspaceEdit();
+                const notebookEdit = vscode.NotebookEdit.replaceCells(
+                    new vscode.NotebookRange(cell.index, cell.index + 1),
+                    [new vscode.NotebookCellData(cell.kind, newCode, languageId)]
+                );
+                edit.set(cell.notebook.uri, [notebookEdit]);
+                await vscode.workspace.applyEdit(edit);
+            }
+        });
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.convertNotebookToScript', async () => {
+        const editor = vscode.window.activeNotebookEditor;
+        if (!editor) {
+            vscode.window.showErrorMessage("No active notebook found.");
+            return;
+        }
+
+        const notebook = editor.notebook;
+        let codeContent = "";
+        
+        for (const cell of notebook.getCells()) {
+            if (cell.kind === vscode.NotebookCellKind.Code) {
+                codeContent += `\n# Cell ${cell.index + 1}\n${cell.document.getText()}\n`;
+            }
+        }
+
+        if (!codeContent.trim()) {
+            vscode.window.showWarningMessage("Notebook has no code cells.");
+            return;
+        }
+
+        const mode = await vscode.window.showQuickPick(
+            [
+                { label: "Direct Conversion", description: "Concatenate code cells into a .py file" },
+                { label: "AI Refactor", description: "Reorganize into functions/classes and clean up" }
+            ],
+            { placeHolder: "Select conversion mode" }
+        );
+
+        if (!mode) return;
+
+        let finalScript = "";
+
+        if (mode.label === "Direct Conversion") {
+            finalScript = codeContent;
+        } else {
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: "Lollms: Converting and refactoring...",
+                cancellable: true
+            }, async (progress, token) => {
+                const systemPrompt = getProcessedSystemPrompt('agent');
+                const userPrompt = `Convert the following Jupyter Notebook code cells into a clean, well-structured Python script.
+                
+**Requirements:**
+- Organize code into functions and/or classes where appropriate.
+- Use \`if __name__ == "__main__":\` block for the main execution logic.
+- Remove redundant prints or notebook-specific commands (like !pip install, %matplotlib inline).
+- Add docstrings and comments.
+- Return ONLY the python code in a markdown block.
+
+**Notebook Content:**
+\`\`\`python
+${codeContent}
+\`\`\`
+`;
+                const controller = new AbortController();
+                token.onCancellationRequested(() => controller.abort());
+
+                const response = await lollmsAPI.sendChat([
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: userPrompt }
+                ], null, controller.signal);
+
+                if (!token.isCancellationRequested) {
+                    const codeBlockRegex = /```(?:python)?\n([\s\S]+?)\n```/s;
+                    const match = response.match(codeBlockRegex);
+                    finalScript = match ? match[1] : stripThinkingTags(response);
+                }
+            });
+        }
+
+        if (finalScript) {
+            const defaultUri = vscode.Uri.file(notebook.uri.fsPath.replace(/\.ipynb$/, '.py'));
+            const saveUri = await vscode.window.showSaveDialog({
+                defaultUri: defaultUri,
+                filters: { 'Python': ['py'] }
+            });
+
+            if (saveUri) {
+                await vscode.workspace.fs.writeFile(saveUri, Buffer.from(finalScript, 'utf8'));
+                vscode.window.showInformationMessage(`Successfully converted to ${path.basename(saveUri.fsPath)}`);
+                vscode.window.showTextDocument(saveUri);
+            }
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.explainNotebookCell', async (cell: vscode.NotebookCell) => {
+        if (!cell) return;
+
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Lollms: Generating explanation...",
+            cancellable: true
+        }, async (progress, token) => {
+            const code = cell.document.getText();
+            const languageId = cell.document.languageId;
+            const systemPrompt = getProcessedSystemPrompt('agent');
+            const userPrompt = `Explain the following ${languageId} code cell.
+            
+**Code:**
+\`\`\`${languageId}
+${code}
+\`\`\`
+
+**Requirements:**
+- Provide a clear, concise explanation of what the code does.
+- Use markdown formatting.
+- Do not include the code itself in the output, just the explanation.
+`;
+            
+            const controller = new AbortController();
+            token.onCancellationRequested(() => controller.abort());
+
+            const response = await lollmsAPI.sendChat([
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt }
+            ], null, controller.signal);
+
+            if (!token.isCancellationRequested) {
+                const explanation = stripThinkingTags(response);
+                if (explanation) {
+                    const edit = new vscode.WorkspaceEdit();
+                    const notebookEdit = vscode.NotebookEdit.insertCells(
+                        cell.index, // Insert before
+                        [new vscode.NotebookCellData(vscode.NotebookCellKind.Markup, explanation, 'markdown')]
+                    );
+                    edit.set(cell.notebook.uri, [notebookEdit]);
+                    await vscode.workspace.applyEdit(edit);
+                }
+            }
+        });
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.visualizeNotebookCell', async (cell: vscode.NotebookCell) => {
+        if (!cell) return;
+
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Lollms: Generating visualization...",
+            cancellable: true
+        }, async (progress, token) => {
+            const code = cell.document.getText();
+            let outputText = "";
+            if (cell.outputs.length > 0) {
+                const lastOutput = cell.outputs[cell.outputs.length - 1];
+                for (const item of lastOutput.items) {
+                    if (item.mime === 'text/plain') {
+                        outputText = new TextDecoder().decode(item.data);
+                        break;
+                    }
+                }
+            }
+            
+            const truncatedOutput = outputText.length > 2000 ? outputText.substring(0, 2000) + "...(truncated)" : outputText;
+
+            const systemPrompt = getProcessedSystemPrompt('agent');
+            const userPrompt = `I have a notebook cell that produced the following output (likely a dataframe or array). I want to visualize this data.
+            
+**Cell Code:**
+\`\`\`python
+${code}
+\`\`\`
+
+**Output Snippet:**
+\`\`\`text
+${truncatedOutput}
+\`\`\`
+
+**Task:**
+Generate a new Python code cell using \`matplotlib\` or \`seaborn\` to visualize this data.
+- Infer the variable name from the code if possible, or assume the last expression.
+- Choose a suitable plot type (histogram, scatter, line, bar) based on the data structure.
+- Output ONLY the python code in a markdown block.
+`;
+
+            const controller = new AbortController();
+            token.onCancellationRequested(() => controller.abort());
+
+            const response = await lollmsAPI.sendChat([
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt }
+            ], null, controller.signal);
+
+            if (!token.isCancellationRequested) {
+                const codeBlockRegex = /```(?:python)?\n([\s\S]+?)\n```/s;
+                const match = response.match(codeBlockRegex);
+                const newCode = match ? match[1] : stripThinkingTags(response);
+
+                if (newCode) {
+                    const edit = new vscode.WorkspaceEdit();
+                    const notebookEdit = vscode.NotebookEdit.insertCells(
+                        cell.index + 1, // Insert after
+                        [new vscode.NotebookCellData(vscode.NotebookCellKind.Code, newCode, 'python')]
+                    );
+                    edit.set(cell.notebook.uri, [notebookEdit]);
+                    await vscode.workspace.applyEdit(edit);
+                }
+            }
+        });
+    }));
+
+    // NEW COMMAND: Fix Notebook Cell Error (Updated logic)
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.fixNotebookCellError', async (cell: vscode.NotebookCell) => {
+        if (!cell) return;
+
+        // 1. Get Code of failed cell
+        const code = cell.document.getText();
+        const languageId = cell.document.languageId;
+
+        // 2. Get Error Output
+        let errorText = "";
+        for (const output of cell.outputs) {
+            for (const item of output.items) {
+                if (item.mime === 'application/vnd.code.notebook.error') {
+                    try {
+                        const errorJson = JSON.parse(new TextDecoder().decode(item.data));
+                        errorText += `Error Name: ${errorJson.name}\nMessage: ${errorJson.message}\nStack:\n${errorJson.stack}\n`;
+                    } catch (e) {
+                        errorText += new TextDecoder().decode(item.data) + "\n";
+                    }
+                } else if (item.mime === 'text/plain' && errorText === "") {
+                    const text = new TextDecoder().decode(item.data);
+                    if (text.toLowerCase().includes("error") || text.toLowerCase().includes("exception")) {
+                         errorText += text + "\n";
+                    }
+                }
+            }
+        }
+
+        if (!errorText.trim()) {
+            vscode.window.showWarningMessage("No error output found to analyze.");
+            return;
+        }
+
+        // 3. Gather Global Context (Project Context)
+        const contextContent = await contextManager.getContextContent();
+        let globalContextStr = "";
+        if (contextContent && contextContent.text && !contextContent.text.includes("**No workspace folder is currently open.**")) {
+             globalContextStr = `\n\n==== GLOBAL PROJECT CONTEXT ====\n${contextContent.text}\n================================\n`;
+        }
+
+        // 4. Gather Notebook Context (Previous cells)
+        let notebookContext = "";
+        const notebook = cell.notebook;
+        for (let i = 0; i < cell.index; i++) {
+            const prevCell = notebook.cellAt(i);
+            if (prevCell.kind === vscode.NotebookCellKind.Code) {
+                notebookContext += `\n# [Cell ${i+1}]\n${prevCell.document.getText()}\n`;
+            }
+        }
+        if (notebookContext) {
+            notebookContext = `\n\n==== NOTEBOOK CONTEXT (PREVIOUS CELLS) ====\n${notebookContext}\n===========================================\n`;
+        }
+
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Lollms: Fixing cell error...",
+            cancellable: true
+        }, async (progress, token) => {
+            const systemPrompt = getProcessedSystemPrompt('agent');
+            const userPrompt = `I have a ${languageId} code cell that failed to execute.
+            
+**Code:**
+\`\`\`${languageId}
+${code}
+\`\`\`
+
+**Error:**
+\`\`\`text
+${errorText}
+\`\`\`
+
+${notebookContext}
+
+${globalContextStr}
+
+Please analyze the error, taking into account the notebook execution flow and global context, and provide the corrected code for the cell.
+**Requirements:**
+- Fix the error described.
+- Maintain the original logic as much as possible.
+- Return ONLY the corrected code in a single markdown block.
+`;
+
+            const controller = new AbortController();
+            token.onCancellationRequested(() => controller.abort());
+
+            try {
+                const response = await lollmsAPI.sendChat([
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: userPrompt }
+                ], null, controller.signal);
+
+                if (!token.isCancellationRequested) {
+                    const codeBlockRegex = /```(?:[\w-]*)\n([\s\S]+?)\n```/s;
+                    const match = response.match(codeBlockRegex);
+                    const newCode = match ? match[1] : stripThinkingTags(response);
+
+                    if (newCode) {
+                        const edit = new vscode.WorkspaceEdit();
+                        const notebookEdit = vscode.NotebookEdit.replaceCells(
+                            new vscode.NotebookRange(cell.index, cell.index + 1),
+                            [new vscode.NotebookCellData(cell.kind, newCode, languageId)]
+                        );
+                        edit.set(cell.notebook.uri, [notebookEdit]);
+                        await vscode.workspace.applyEdit(edit);
+                        vscode.window.showInformationMessage("Cell corrected by Lollms.");
+                    } else {
+                        vscode.window.showErrorMessage("Failed to parse corrected code from AI response.");
+                    }
+                }
+            } catch (error: any) {
+                vscode.window.showErrorMessage(`Fix failed: ${error.message}`);
+            }
+        });
+    }));
+
+    // NEW COMMAND: Generate Educative Notebook
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateEducativeNotebook', async (cell: vscode.NotebookCell) => {
+        if (!cell) return;
+
+        const topic = await vscode.window.showInputBox({
+            prompt: "Enter the topic or function you want to demonstrate",
+            placeHolder: "e.g., 'Linear Regression from scratch' or 'Data Visualization with Seaborn'"
+        });
+
+        if (!topic) return;
+
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Lollms: Generating educative content...",
+            cancellable: true
+        }, async (progress, token) => {
+            const systemPrompt = getProcessedSystemPrompt('agent');
+            const userPrompt = `Generate a series of educative notebook cells for the topic: "${topic}".
+
+**Requirements:**
+1.  **Structure:** Alternate between Markdown cells (explanation) and Code cells (implementation).
+2.  **Visualization:** ALWAYS include plots or charts to visualize data or results. Use standard libraries like matplotlib, seaborn, or plotly.
+3.  **Educational Value:** Explain concepts clearly before showing code. Add comments in the code.
+4.  **Format:** Return the content as a valid JSON object with a "cells" array. Each object in the array must have:
+    - "kind": "markdown" or "code"
+    - "value": The content string (markdown text or python code).
+    - "language": "markdown" or "python"
+
+**Example Output Format:**
+\`\`\`json
+{
+  "cells": [
+    { "kind": "markdown", "value": "# Intro\\n...", "language": "markdown" },
+    { "kind": "code", "value": "import matplotlib.pyplot as plt\\n...", "language": "python" }
+  ]
+}
+\`\`\`
+`;
+            
+            const controller = new AbortController();
+            token.onCancellationRequested(() => controller.abort());
+
+            try {
+                const response = await lollmsAPI.sendChat([
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: userPrompt }
+                ], null, controller.signal);
+
+                if (token.isCancellationRequested) return;
+
+                const jsonMatch = response.match(/```json\s*([\s\S]+?)\s*```/);
+                let jsonStr = jsonMatch ? jsonMatch[1] : response;
+                
+                // Fallback cleanup if model returns non-json text
+                jsonStr = stripThinkingTags(jsonStr);
+
+                try {
+                    const data = JSON.parse(jsonStr);
+                    if (data.cells && Array.isArray(data.cells)) {
+                        const newCells = data.cells.map((c: any) => {
+                            const kind = c.kind === 'code' ? vscode.NotebookCellKind.Code : vscode.NotebookCellKind.Markup;
+                            return new vscode.NotebookCellData(kind, c.value, c.language);
+                        });
+
+                        const edit = new vscode.WorkspaceEdit();
+                        const notebookEdit = vscode.NotebookEdit.insertCells(
+                            cell.index + 1,
+                            newCells
+                        );
+                        edit.set(cell.notebook.uri, [notebookEdit]);
+                        await vscode.workspace.applyEdit(edit);
+                        vscode.window.showInformationMessage("Educative cells generated successfully.");
+                    } else {
+                        throw new Error("Invalid JSON structure");
+                    }
+                } catch (e) {
+                    vscode.window.showErrorMessage("Failed to parse generated notebook content. Please try again.");
+                    console.error("JSON Parse Error:", e, jsonStr);
+                }
+
+            } catch (error: any) {
+                vscode.window.showErrorMessage(`Generation failed: ${error.message}`);
+            }
+        });
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.analyzeNotebookCellOutput', async (cell: vscode.NotebookCell) => {
+        if (!cell) return;
+
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Lollms: Analyzing output...",
+            cancellable: true
+        }, async (progress, token) => {
+            const code = cell.document.getText();
+            const languageId = cell.document.languageId;
+            
+            let outputText = "";
+            for (const output of cell.outputs) {
+                for (const item of output.items) {
+                    if (item.mime === 'text/plain' || item.mime === 'application/vnd.code.notebook.stdout' || item.mime === 'application/vnd.code.notebook.stderr') {
+                        try {
+                            outputText += new TextDecoder().decode(item.data) + "\n";
+                        } catch(e) {
+                            outputText += "[Error decoding output]\n";
+                        }
+                    }
+                }
+            }
+            
+            if (!outputText.trim()) {
+                vscode.window.showInformationMessage("No textual output found to analyze.");
+                return;
+            }
+
+            const truncatedOutput = outputText.length > 4000 ? outputText.substring(0, 4000) + "\n...(truncated)" : outputText;
+
+            const systemPrompt = getProcessedSystemPrompt('agent');
+            const userPrompt = `Analyze the output of the following ${languageId} code cell.
+            
+**Code:**
+\`\`\`${languageId}
+${code}
+\`\`\`
+
+**Output:**
+\`\`\`text
+${truncatedOutput}
+\`\`\`
+
+**Task:**
+Provide a concise analysis of this output. Explain what it means, check for potential issues, or highlight key results. Return the analysis as markdown text.
+`;
+
+            const controller = new AbortController();
+            token.onCancellationRequested(() => controller.abort());
+
+            const response = await lollmsAPI.sendChat([
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt }
+            ], null, controller.signal);
+
+            if (!token.isCancellationRequested) {
+                const analysis = stripThinkingTags(response);
+                if (analysis) {
+                    const edit = new vscode.WorkspaceEdit();
+                    const notebookEdit = vscode.NotebookEdit.insertCells(
+                        cell.index + 1, 
+                        [new vscode.NotebookCellData(vscode.NotebookCellKind.Markup, `### Output Analysis\n\n${analysis}`, 'markdown')]
+                    );
+                    edit.set(cell.notebook.uri, [notebookEdit]);
+                    await vscode.workspace.applyEdit(edit);
+                }
+            }
+        });
+    }));
 
     context.subscriptions.push(vscode.window.onDidCloseTerminal(terminal => {
         if (lollmsExecutionTerminal && terminal === lollmsExecutionTerminal) {
@@ -2231,14 +2756,12 @@ ${fileContent}
         debugErrorManager.clearError();
     }));
 
-    // Register Quick Fix Command
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.fixDiagnostic', async (document: vscode.TextDocument, diagnostic: vscode.Diagnostic) => {
         if (!discussionManager) {
             vscode.window.showErrorMessage("Lollms: Cannot start a discussion, a workspace must be active.");
             return;
         }
 
-        // Get context around the error (e.g., 10 lines before and after)
         const line = diagnostic.range.start.line;
         const startLine = Math.max(0, line - 10);
         const endLine = Math.min(document.lineCount - 1, line + 10);

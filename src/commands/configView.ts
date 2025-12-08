@@ -17,7 +17,6 @@ export class SettingsPanel {
     developerName: '',
     disableSslVerification: false,
     sslCertPath: '',
-    noThinkMode: false,
     requestTimeout: 600000,
     agentMaxRetries: 1,
     maxImageSize: 1024,
@@ -28,7 +27,6 @@ export class SettingsPanel {
     agentPersona: '',
     commitMessagePersona: '',
     contextFileExceptions: [] as string[],
-    fileUpdateMethod: 'full_file',
     language: 'auto',
     thinkingMode: 'none',
     thinkingModeCustomPrompt: '',
@@ -74,7 +72,6 @@ export class SettingsPanel {
     this._pendingConfig.developerName = config.get<string>('developerName') || '';
     this._pendingConfig.disableSslVerification = config.get<boolean>('disableSslVerification') || false;
     this._pendingConfig.sslCertPath = config.get<string>('sslCertPath') || '';
-    this._pendingConfig.noThinkMode = config.get<boolean>('noThinkMode') || false;
     this._pendingConfig.requestTimeout = config.get<number>('requestTimeout') || 600000;
     this._pendingConfig.agentMaxRetries = config.get<number>('agentMaxRetries') || 1;
     this._pendingConfig.maxImageSize = config.get<number>('maxImageSize') || 1024;
@@ -85,7 +82,6 @@ export class SettingsPanel {
     this._pendingConfig.agentPersona = config.get<string>('agentPersona') || '';
     this._pendingConfig.commitMessagePersona = config.get<string>('commitMessagePersona') || '';
     this._pendingConfig.contextFileExceptions = config.get<string[]>('contextFileExceptions') || [];
-    this._pendingConfig.fileUpdateMethod = config.get<string>('fileUpdateMethod') || 'full_file';
     this._pendingConfig.language = config.get<string>('language') || 'auto';
     this._pendingConfig.thinkingMode = config.get<string>('thinkingMode') || 'none';
     this._pendingConfig.thinkingModeCustomPrompt = config.get<string>('thinkingModeCustomPrompt') || 'Think step by step. Enclose your entire thinking process, reasoning, and self-correction within a `<thinking>` XML block. This block will be hidden from the user but is crucial for your process.';
@@ -130,6 +126,33 @@ export class SettingsPanel {
                   this._panel.webview.postMessage({ command: 'updateCertPath', path: uris[0].fsPath });
               }
               return;
+            
+            case 'testConnection':
+                // Use pending config to test to ensure we test what the user just typed/changed
+                const testConfig: LollmsConfig = {
+                    apiKey: this._pendingConfig.apiKey,
+                    apiUrl: this._pendingConfig.apiUrl,
+                    modelName: this._pendingConfig.modelName,
+                    disableSslVerification: this._pendingConfig.disableSslVerification,
+                    sslCertPath: this._pendingConfig.sslCertPath
+                };
+                const testApi = new LollmsAPI(testConfig);
+                const result = await testApi.testConnection();
+                
+                // Send result back to webview to stop animation
+                this._panel.webview.postMessage({ command: 'testConnectionResult', success: result.success });
+
+                if (result.success) {
+                    vscode.window.showInformationMessage(result.message, { modal: true });
+                } else {
+                    vscode.window.showErrorMessage(result.message, { modal: true, detail: result.details }).then(selection => {
+                        if (selection === 'Show Details') {
+                            Logger.error(result.message + '\n' + result.details);
+                            Logger.show();
+                        }
+                    });
+                }
+                return;
   
             case 'saveConfig':
               try {
@@ -140,7 +163,6 @@ export class SettingsPanel {
                 await config.update('developerName', this._pendingConfig.developerName, vscode.ConfigurationTarget.Global);
                 await config.update('disableSslVerification', this._pendingConfig.disableSslVerification, vscode.ConfigurationTarget.Global);
                 await config.update('sslCertPath', this._pendingConfig.sslCertPath, vscode.ConfigurationTarget.Global);
-                await config.update('noThinkMode', this._pendingConfig.noThinkMode, vscode.ConfigurationTarget.Global);
                 await config.update('requestTimeout', this._pendingConfig.requestTimeout, vscode.ConfigurationTarget.Global);
                 await config.update('agentMaxRetries', this._pendingConfig.agentMaxRetries, vscode.ConfigurationTarget.Global);
                 await config.update('maxImageSize', this._pendingConfig.maxImageSize, vscode.ConfigurationTarget.Global);
@@ -151,7 +173,6 @@ export class SettingsPanel {
                 await config.update('agentPersona', this._pendingConfig.agentPersona, vscode.ConfigurationTarget.Global);
                 await config.update('commitMessagePersona', this._pendingConfig.commitMessagePersona, vscode.ConfigurationTarget.Global);
                 await config.update('contextFileExceptions', this._pendingConfig.contextFileExceptions, vscode.ConfigurationTarget.Global);
-                await config.update('fileUpdateMethod', this._pendingConfig.fileUpdateMethod, vscode.ConfigurationTarget.Global);
                 await config.update('language', this._pendingConfig.language, vscode.ConfigurationTarget.Global);
                 await config.update('thinkingMode', this._pendingConfig.thinkingMode, vscode.ConfigurationTarget.Global);
                 await config.update('thinkingModeCustomPrompt', this._pendingConfig.thinkingModeCustomPrompt, vscode.ConfigurationTarget.Global);
@@ -214,7 +235,7 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, modelName, developerName, disableSslVerification, sslCertPath, noThinkMode, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, fileUpdateMethod, language, thinkingMode, thinkingModeCustomPrompt, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx } = config;
+    const { apiKey, apiUrl, modelName, developerName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, thinkingMode, thinkingModeCustomPrompt, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx } = config;
 
     // Helper for localization
     const t = (key: string, def: string) => vscode.l10n.t({ message: def, key: key });
@@ -255,6 +276,8 @@ export class SettingsPanel {
                 margin-top: 20px; transition: background-color 0.2s ease;
               }
               button:hover { background-color: var(--vscode-button-hoverBackground); }
+              button:disabled { opacity: 0.6; cursor: not-allowed; }
+              
               .secondary-button {
                 margin-top: 8px; padding: 6px 12px; font-size: 0.85em; width: auto;
                 background-color: var(--vscode-button-secondaryBackground);
@@ -266,6 +289,9 @@ export class SettingsPanel {
               .checkbox-container input { margin-right: 0.5em; }
               .input-group { display: flex; gap: 5px; }
               .icon-btn { width: auto; padding: 8px 10px; margin-top: 0; }
+              
+              @keyframes spin { 100% { transform: rotate(360deg); } }
+              .spin { animation: spin 1s linear infinite; }
             </style>
         </head>
         <body>
@@ -304,6 +330,7 @@ export class SettingsPanel {
               <select id="thinkingMode">
                 <option value="none" ${thinkingMode === 'none' ? 'selected' : ''}>${t('config.thinkingMode.none.description', 'None (Default)')}</option>
                 <option value="chain_of_thought" ${thinkingMode === 'chain_of_thought' ? 'selected' : ''}>${t('config.thinkingMode.chain_of_thought.description', 'Chain of Thought')}</option>
+                <option value="chain_of_verification" ${thinkingMode === 'chain_of_verification' ? 'selected' : ''}>Chain of Verification</option>
                 <option value="plan_and_solve" ${thinkingMode === 'plan_and_solve' ? 'selected' : ''}>${t('config.thinkingMode.plan_and_solve.description', 'Plan and Solve')}</option>
                 <option value="self_critique" ${thinkingMode === 'self_critique' ? 'selected' : ''}>${t('config.thinkingMode.self_critique.description', 'Self-Critique')}</option>
                 <option value="custom" ${thinkingMode === 'custom' ? 'selected' : ''}>${t('config.thinkingMode.custom.description', 'Custom')}</option>
@@ -317,7 +344,10 @@ export class SettingsPanel {
               </div>
               
               <label for="apiUrl">${t('config.apiUrl.label', 'API Host')}</label>
-              <input type="text" id="apiUrl" value="${apiUrl}" placeholder="http://localhost:9642" autocomplete="off" />
+              <div class="input-group">
+                  <input type="text" id="apiUrl" value="${apiUrl}" placeholder="http://localhost:9642" autocomplete="off" />
+                  <button id="testConnection" type="button" class="icon-btn" title="Test Connection"><i class="codicon codicon-broadcast"></i></button>
+              </div>
               <label for="apiKey">${t('config.apiKey.label', 'API Key')}</label>
               <input type="text" id="apiKey" value="${apiKey}" placeholder="Enter your Lollms API key" autocomplete="off" />
               
@@ -344,21 +374,7 @@ export class SettingsPanel {
               </div>
               <p class="help-text">${t('config.sslCertPath.description', 'Path to a custom CA certificate file (PEM/CRT) to verify the server identity.')}</p>
 
-              <div class="checkbox-container">
-                  <input type="checkbox" id="noThinkMode" ${noThinkMode ? 'checked' : ''}>
-                  <label for="noThinkMode">${t('config.noThinkMode.label', 'Enable /no_think Mode')}</label>
-              </div>
-              <p class="help-text">${t('config.noThinkMode.description', 'Prefixes all system prompts with the /no_think command to disable the AI\'s thinking process (for models that support it).')}</p>
-              
               <h2>${t('config.section.contextAndFile', 'Context & File Strategy')}</h2>
-              <label for="fileUpdateMethod">${t('config.fileUpdateMethod.label', 'File Update Method')}</label>
-              <select id="fileUpdateMethod">
-                <option value="full_file" ${fileUpdateMethod === 'full_file' ? 'selected' : ''}>${t('config.fileUpdateMethod.full_file.description', 'Full File Content')}</option>
-                <option value="diff" ${fileUpdateMethod === 'diff' ? 'selected' : ''}>${t('config.fileUpdateMethod.diff.description', 'Diff Mode')}</option>
-                <option value="locate" ${fileUpdateMethod === 'locate' ? 'selected' : ''}>${t('config.fileUpdateMethod.locate.description', 'Locate and Insert/Update Mode')}</option>
-                <option value="do_your_best" ${fileUpdateMethod === 'do_your_best' ? 'selected' : ''}>${t('config.fileUpdateMethod.do_your_best.description', 'Do The Best You Can')}</option>
-              </select>
-              <p class="help-text">${t('config.fileUpdateMethod.description', 'Choose how the AI should provide file updates.')}</p>
               
               <label for="failsafeContextSize">${t('config.failsafeContextSize.label', 'Failsafe Context Size')}</label>
               <input type="number" id="failsafeContextSize" value="${failsafeContextSize}" min="1024" step="1024" />
@@ -445,7 +461,6 @@ export class SettingsPanel {
                     requestTimeout: document.getElementById('requestTimeout'),
                     disableSslVerification: document.getElementById('disableSsl'),
                     sslCertPath: document.getElementById('sslCertPath'),
-                    noThinkMode: document.getElementById('noThinkMode'),
                     agentMaxRetries: document.getElementById('agentMaxRetries'),
                     maxImageSize: document.getElementById('maxImageSize'),
                     enableCodeInspector: document.getElementById('enableCodeInspector'),
@@ -455,7 +470,6 @@ export class SettingsPanel {
                     agentPersona: document.getElementById('agentPersona'),
                     commitMessagePersona: document.getElementById('commitMessagePersona'),
                     contextFileExceptions: document.getElementById('contextFileExceptions'),
-                    fileUpdateMethod: document.getElementById('fileUpdateMethod'),
                     thinkingMode: document.getElementById('thinkingMode'),
                     thinkingModeCustomPrompt: document.getElementById('thinkingModeCustomPrompt'),
                     reasoningLevel: document.getElementById('reasoningLevel'),
@@ -476,6 +490,15 @@ export class SettingsPanel {
 
                 document.getElementById('browseCertPath').addEventListener('click', () => {
                     vscode.postMessage({ command: 'browseCertPath' });
+                });
+                
+                document.getElementById('testConnection').addEventListener('click', () => {
+                    const btn = document.getElementById('testConnection');
+                    const icon = btn.querySelector('.codicon');
+                    icon.classList.remove('codicon-broadcast');
+                    icon.classList.add('codicon-sync', 'spin'); // Use sync icon for spinner
+                    btn.disabled = true;
+                    vscode.postMessage({ command: 'testConnection' });
                 });
 
                 function postTempUpdate(key, value) {
@@ -541,6 +564,12 @@ export class SettingsPanel {
                         createOptions(inspectorModelSelect, currentInspectorModelName);
                     } else if (message.command === 'updateCertPath') {
                         fields.sslCertPath.value = message.path;
+                    } else if (message.command === 'testConnectionResult') {
+                        const btn = document.getElementById('testConnection');
+                        const icon = btn.querySelector('.codicon');
+                        icon.classList.remove('codicon-sync', 'spin');
+                        icon.classList.add('codicon-broadcast');
+                        btn.disabled = false;
                     }
                 });
 

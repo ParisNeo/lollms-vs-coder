@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import { LollmsAPI } from '../lollmsAPI';
 import { ContextManager } from '../contextManager';
 import type { AgentManager } from '../agentManager';
-import type { CodeGraphManager } from '../codeGraphManager'; // Import CodeGraphManager type
+import type { CodeGraphManager } from '../codeGraphManager';
+import { SkillsManager } from '../skillsManager';
 
 export interface Plan {
     objective: string;
@@ -14,7 +15,8 @@ export interface ToolExecutionEnv {
     workspaceRoot?: vscode.WorkspaceFolder;
     lollmsApi: LollmsAPI;
     contextManager: ContextManager;
-    codeGraphManager?: CodeGraphManager; // Add optional CodeGraphManager
+    codeGraphManager?: CodeGraphManager;
+    skillsManager?: SkillsManager;
     currentPlan: Plan | null;
     agentManager: AgentManager;
 }
@@ -25,7 +27,7 @@ export interface ToolDefinition {
     longDescription?: string;
     isAgentic: boolean;
     isDefault: boolean;
-    hasSettings?: boolean; // Indicates if the tool has configuration settings
+    hasSettings?: boolean; 
     parameters: {
         name: string;
         type: string;

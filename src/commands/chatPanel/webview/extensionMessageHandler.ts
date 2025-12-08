@@ -13,21 +13,16 @@ export function handleExtensionMessage(event: MessageEvent) {
                 {
                     const stream = state.streamingMessages[message.id];
                     if (!stream) break;
-
                     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.id}']`) as HTMLElement;
                     if (!wrapper) break;
                     if (!wrapper.dataset.firstTokenReceived) {
                         wrapper.dataset.firstTokenReceived = 'true';
                         wrapper.dataset.firstTokenTime = String(Date.now());
-                        
                         const waitingAnim = wrapper.querySelector('.waiting-animation');
                         if (waitingAnim) waitingAnim.remove();
-
                         const startTime = parseInt(wrapper.dataset.startTime || '0', 10);
                         const ttft = ((Date.now() - startTime) / 1000).toFixed(1);
-                        
                         const modelName = wrapper.dataset.model || 'Default';
-                        
                         const header = wrapper.querySelector('.message-header');
                         if(header){
                             let annotationSpan = header.querySelector('.generation-stats');
@@ -39,13 +34,11 @@ export function handleExtensionMessage(event: MessageEvent) {
                             annotationSpan.textContent = `(${modelName} | TTFT: ${ttft}s)`;
                         }
                     }
-
                     stream.buffer += message.chunk;
                     const messageDiv = wrapper.querySelector('.message') as HTMLElement;
                     if(messageDiv) {
                         messageDiv.dataset.originalContent = JSON.stringify(stream.buffer);
                     }
-
                     scheduleRender(message.id);
                 }
                 break;
@@ -56,7 +49,6 @@ export function handleExtensionMessage(event: MessageEvent) {
                         if (stream.timer) clearTimeout(stream.timer);
                         delete state.streamingMessages[message.id];
                     }
-                    // Pass true for isFinal to enable buttons
                     renderMessageContent(message.id, message.fullContent, true);
                 }
                 break;
@@ -67,8 +59,6 @@ export function handleExtensionMessage(event: MessageEvent) {
                 updateContext(message.context);
                 break;
             case 'displayPlan':
-                const isFinished = !message.plan || message.plan.tasks.every((t: any) => t.status === 'completed' || t.status === 'failed');
-                setGeneratingState(!isFinished);
                 displayPlan(message.plan);
                 break;
             case 'loadDiscussion':
@@ -81,11 +71,9 @@ export function handleExtensionMessage(event: MessageEvent) {
                             }
                         });
                     }
-                    
                     if(message.isInspectorEnabled !== undefined) {
                         state.isInspectorEnabled = message.isInspectorEnabled;
                     }
-                    
                     let hasChatContent = false;
                     if (Array.isArray(message.messages)) {
                         message.messages.forEach((msg: any) => {
@@ -99,15 +87,71 @@ export function handleExtensionMessage(event: MessageEvent) {
                             }
                         });
                     }
-
                     if (dom.welcomeMessage) {
                         dom.welcomeMessage.style.display = hasChatContent ? 'none' : 'block';
                     }
-                    
                     setGeneratingState(false);
                     if(dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
                 }
                 break;
+
+            case 'updateDiscussionCapabilities':
+                const caps = message.capabilities;
+                if (caps) {
+                    // Update Modal State
+                    if (dom.radioCodeGenFull && caps.codeGenType === 'full') dom.radioCodeGenFull.checked = true;
+                    if (dom.radioCodeGenDiff && caps.codeGenType === 'diff') dom.radioCodeGenDiff.checked = true;
+                    if (dom.radioCodeGenNone && caps.codeGenType === 'none') dom.radioCodeGenNone.checked = true;
+
+                    if(dom.capFileRename) dom.capFileRename.checked = caps.fileRename;
+                    if(dom.capFileDelete) dom.capFileDelete.checked = caps.fileDelete;
+                    if(dom.capFileSelect) dom.capFileSelect.checked = caps.fileSelect;
+                    if(dom.capFileReset) dom.capFileReset.checked = caps.fileReset;
+
+                    if(dom.capImageGen) dom.capImageGen.checked = caps.imageGen;
+                    if(dom.capWebSearch) dom.capWebSearch.checked = caps.webSearch;
+                    if(dom.capArxivSearch) dom.capArxivSearch.checked = caps.arxivSearch;
+                    
+                    // NEW: Git Commit
+                    if(dom.capGitCommit) dom.capGitCommit.checked = caps.gitCommit;
+                    
+                    if(dom.modeFunMode) dom.modeFunMode.checked = caps.funMode;
+                    if(dom.modeHeavyCot) dom.modeHeavyCot.checked = caps.heavyCot;
+                    
+                    // NEW: Update Thinking Mode selector
+                    if (dom.capThinkingMode && caps.thinkingMode) {
+                        dom.capThinkingMode.value = caps.thinkingMode;
+                    }
+
+                    // Update Visual Indicators
+                    if (dom.activeToolsIndicator) {
+                        dom.activeToolsIndicator.innerHTML = '';
+                        if (caps.arxivSearch) {
+                            dom.activeToolsIndicator.innerHTML += `<div class="active-tool-icon active" title="ArXiv Search Enabled"><i class="codicon codicon-book"></i></div>`;
+                        }
+                    }
+
+                    // Toggle Web Search Indicator
+                    if (dom.webSearchIndicator) {
+                        dom.webSearchIndicator.style.display = caps.webSearch ? 'flex' : 'none';
+                    }
+                }
+                break;
+            
+            case 'updateThinkingMode':
+                if (dom.thinkingIndicator) {
+                    const mode = message.mode;
+                    if (mode && mode !== 'none' && mode !== 'no_think') {
+                        dom.thinkingIndicator.style.display = 'flex';
+                        // Format label based on mode enum (e.g. chain_of_thought -> Chain of Thought)
+                        let label = mode.replace(/_/g, ' ').replace(/\b\w/g, (l:string) => l.toUpperCase());
+                        dom.thinkingIndicator.querySelector('span')!.textContent = label;
+                    } else {
+                        dom.thinkingIndicator.style.display = 'none';
+                    }
+                }
+                break;
+
             case 'updateModels':
                 if(dom.refreshModelsBtn) {
                     const icon = dom.refreshModelsBtn.querySelector('.codicon');
@@ -126,6 +170,7 @@ export function handleExtensionMessage(event: MessageEvent) {
                     dom.modelSelector.value = message.currentModel || '';
                 }
                 break;
+            // ... [Other existing cases] ...
             case 'tokenCalculationStarted':
                 if (dom.tokenCountingOverlay) {
                     dom.tokenCountingOverlay.style.display = 'flex';
@@ -137,7 +182,9 @@ export function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'tokenCalculationFinished':
                 if (dom.tokenCountingOverlay) dom.tokenCountingOverlay.style.display = 'none';
-                if (dom.inputAreaWrapper) dom.inputAreaWrapper.style.display = 'block';
+                if (dom.inputAreaWrapper && !state.isGenerating) {
+                    dom.inputAreaWrapper.style.display = 'block';
+                }
                 break;
             case 'updateTokenProgress':
                 if(dom.tokenCountLabel) {
@@ -215,12 +262,10 @@ export function handleExtensionMessage(event: MessageEvent) {
                         const isChecked = message.enabledTools.includes(tool.name);
                         const toolItem = document.createElement('div');
                         toolItem.className = 'tool-item';
-                        
                         let settingsHtml = '';
                         if (tool.hasSettings) {
                             settingsHtml = `<button class="icon-btn tool-settings-btn" title="Configure Tool" data-tool="${tool.name}"><i class="codicon codicon-settings-gear"></i></button>`;
                         }
-
                         toolItem.innerHTML = `
                             <div class="checkbox-container" style="justify-content: space-between;">
                                 <div style="display: flex; align-items: center;">
@@ -238,13 +283,10 @@ export function handleExtensionMessage(event: MessageEvent) {
                         `;
                         dom.toolsListDiv.appendChild(toolItem);
                     });
-
-                    // Add event listeners for settings buttons
                     const settingsBtns = dom.toolsListDiv.querySelectorAll('.tool-settings-btn');
                     settingsBtns.forEach(btn => {
                         btn.addEventListener('click', (e) => {
-                            e.stopPropagation(); // Prevent modal close or other clicks
-                            // Currently we only open global settings, but we could be more specific
+                            e.stopPropagation();
                             vscode.postMessage({ command: 'openSettings' });
                         });
                     });
@@ -310,3 +352,4 @@ export function handleExtensionMessage(event: MessageEvent) {
         vscode.postMessage({ command: 'showError', message: 'Webview error: ' + e.message });
     }
 }
+

@@ -2,6 +2,8 @@
     --code-bg: var(--vscode-editor-background);
     --code-header-bg: var(--vscode-keybindingTable-headerBackground);
     --code-border: var(--vscode-widget-border);
+    --thinking-color: #9b59b6; /* Purple for deep thinking */
+    --websearch-color: #3498db; /* Blue for web search */
 }
 
 body { 
@@ -471,8 +473,8 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     color: var(--vscode-menu-selectionForeground); 
 }
 
-/* --- Tools Modal --- */
-#tools-modal.modal {
+/* --- Modals (Generic) --- */
+.modal {
     display: none;
     position: fixed;
     z-index: 9999;
@@ -482,7 +484,8 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     justify-content: center;
     align-items: center;
 }
-#tools-modal.modal.visible { display: flex !important; }
+.modal.visible { display: flex !important; }
+
 .modal-content {
     background-color: var(--vscode-editorWidget-background);
     border: 1px solid var(--vscode-widget-border);
@@ -801,8 +804,137 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     padding: 20px; gap: 15px; background-color: var(--vscode-input-background);
     border: 1px solid var(--vscode-input-border); border-radius: 6px;
+    margin: 16px;
+    flex-shrink: 0;
 }
 .generating-content { display: flex; align-items: center; gap: 10px; font-weight: 600; color: var(--vscode-input-foreground); }
+
 .generating-content .spinner { width: 16px; height: 16px; border: 2px solid var(--vscode-textLink-foreground); border-bottom-color: transparent; border-radius: 50%; animation: lollms-rotation 1s linear infinite; }
 .stop-btn-red { background-color: var(--vscode-charts-red); color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-family: var(--vscode-font-family); font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; transition: background-color 0.2s; }
 .stop-btn-red:hover { background-color: var(--vscode-errorForeground); opacity: 0.9; }
+
+/* Active Tools Indicator */
+.active-tools-indicator {
+    display: flex;
+    gap: 6px;
+    margin-right: 10px;
+    font-size: 14px;
+    color: var(--vscode-textLink-foreground);
+}
+.active-tool-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+    background-color: var(--vscode-editor-inactiveSelectionBackground);
+    cursor: help;
+}
+.active-tool-icon.active {
+    background-color: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+}
+
+/* Modal Styling Improvements */
+.modal-body h3 {
+    margin-top: 0;
+    margin-bottom: 12px;
+    font-size: 13px;
+    text-transform: uppercase;
+    color: var(--vscode-descriptionForeground);
+    font-weight: 600;
+}
+
+.modal-section {
+    margin-bottom: 20px;
+    padding-bottom: 15px;
+    border-bottom: 1px solid var(--vscode-widget-border);
+}
+.modal-section:last-child { border-bottom: none; }
+
+.radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.radio-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+.radio-option input { margin: 0; }
+
+.checkbox-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+/* --- Thinking Indicator --- */
+.thinking-indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background-color: var(--thinking-color);
+    color: white;
+    font-size: 11px;
+    font-weight: 600;
+    margin-right: 8px;
+    animation: pulse-border 2s infinite;
+}
+
+/* --- Web Search Indicator --- */
+.websearch-indicator {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background-color: var(--websearch-color);
+    color: white;
+    font-size: 11px;
+    font-weight: 600;
+    margin-right: 8px;
+    animation: pulse-border-blue 2s infinite;
+}
+
+@keyframes pulse-border {
+    0% { box-shadow: 0 0 0 0 rgba(155, 89, 182, 0.4); }
+    70% { box-shadow: 0 0 0 4px rgba(155, 89, 182, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(155, 89, 182, 0); }
+}
+
+@keyframes pulse-border-blue {
+    0% { box-shadow: 0 0 0 0 rgba(52, 152, 219, 0.4); }
+    70% { box-shadow: 0 0 0 4px rgba(52, 152, 219, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(52, 152, 219, 0); }
+}
+
+/* --- Plan & Scratchpad (Update for Deep Thinking) --- */
+.plan-scratchpad {
+    border-top: 1px solid var(--vscode-widget-border);
+    background-color: var(--vscode-editor-background);
+    border-left: 3px solid var(--thinking-color); /* Add purple border */
+    margin-top: 8px;
+    border-radius: 4px;
+}
+
+.scratchpad-header {
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--thinking-color); /* Purple text */
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+/* Modify existing blockquote style if needed inside scratchpad */
+.scratchpad-content blockquote {
+    border-left-color: var(--thinking-color);
+    background-color: rgba(155, 89, 182, 0.05);
+}

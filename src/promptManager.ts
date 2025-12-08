@@ -45,6 +45,18 @@ Return only the fully modified code block with the added documentation. Do not a
         type: 'code_action', 
         action_type: 'generation', 
         is_default: true 
+    },
+    {
+        id: 'default-reorg-project',
+        groupId: null,
+        title: 'Reorganize Project',
+        description: 'Analyzes the project structure and proposes a better organization, starting with a git commit.',
+        content: `I want to reorganize this project structure to be more cleaner and maintainable.
+First, perform a git commit of the current state to ensure we can roll back if needed.
+Then, analyze the project structure and propose a better organization.
+Finally, create a plan to move files and update imports.`,
+        type: 'chat',
+        is_default: true
     }
 ];
 

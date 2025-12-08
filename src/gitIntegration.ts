@@ -6,6 +6,7 @@ import { getProcessedSystemPrompt, stripThinkingTags } from './utils';
 
 const execAsync = promisify(exec);
 const MAX_DIFF_LENGTH = 8000; // Set a reasonable character limit for the diff
+const MAX_BUFFER_SIZE = 20 * 1024 * 1024; // 20MB buffer for git operations
 
 export interface GitCommit {
     hash: string;
@@ -34,9 +35,13 @@ export class GitIntegration {
   private async _getDiff(args: string, folder: vscode.WorkspaceFolder): Promise<string> {
     if (!folder) return '';
     try {
-      const { stdout } = await execAsync(`git diff ${args}`, { cwd: folder.uri.fsPath });
+      const { stdout } = await execAsync(`git diff ${args}`, { 
+        cwd: folder.uri.fsPath,
+        maxBuffer: MAX_BUFFER_SIZE
+      });
       return stdout || '';
     } catch (error) {
+      console.error(`Git diff error for args '${args}':`, error);
       // Errors are expected if there are no changes, so we can often ignore them.
       return '';
     }
@@ -108,6 +113,22 @@ export class GitIntegration {
     }
   }
 
+  public async stageAllAndCommit(message: string, folder: vscode.WorkspaceFolder): Promise<void> {
+    if (!folder) return;
+    try {
+      await execAsync('git add .', { cwd: folder.uri.fsPath });
+      await execAsync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd: folder.uri.fsPath });
+      vscode.window.showInformationMessage('Staged and committed changes.');
+    } catch (error) {
+      // Check if "nothing to commit"
+      if ((error as any).stdout && (error as any).stdout.includes('nothing to commit')) {
+          vscode.window.showInformationMessage('Nothing to commit.');
+          return;
+      }
+      vscode.window.showErrorMessage('Git commit failed: ' + (error as Error).message);
+    }
+  }
+
   public async getCommitHistory(folder: vscode.WorkspaceFolder, count: number = 50): Promise<GitCommit[]> {
     if (!folder) return [];
     try {
@@ -129,7 +150,10 @@ export class GitIntegration {
   public async getCommitDiff(folder: vscode.WorkspaceFolder, commitHash: string): Promise<string> {
       if (!folder || !commitHash) return '';
       try {
-          const { stdout } = await execAsync(`git show ${commitHash}`, { cwd: folder.uri.fsPath });
+          const { stdout } = await execAsync(`git show ${commitHash}`, { 
+              cwd: folder.uri.fsPath,
+              maxBuffer: MAX_BUFFER_SIZE
+          });
           return stdout;
       } catch (error) {
           console.error(`Failed to fetch diff for commit ${commitHash}:`, error);

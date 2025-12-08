@@ -49,6 +49,11 @@ export const searchWebTool: ToolDefinition = {
                     output += `${index + 1}. **${item.title}**\n   ${item.snippet}\n   [Link](${item.link})\n\n`;
                 });
 
+                // Add the Synthesize button
+                // We escape the query for the JSON parameter to avoid breaking the regex in messageRenderer.ts
+                const safeQuery = params.query.replace(/"/g, '&quot;');
+                output += `\n[command:synthesizeSearchResults|label:Synthesize & Deep Search|params:{"query":"${safeQuery}"}]`;
+
                 return { success: true, output };
 
             } catch (error: any) {

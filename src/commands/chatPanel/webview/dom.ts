@@ -1,13 +1,13 @@
 import { EditorView } from "@codemirror/view";
 
-// Define the API interface
+// ... VsCodeApi definition ...
 export interface VsCodeApi {
     postMessage(message: any): void;
     getState(): any;
     setState(state: any): void;
 }
 
-// Robust API Accessor using Proxy
+// ... vscode proxy ...
 export const vscode = new Proxy({} as VsCodeApi, {
     get: (target, prop) => {
         const api = (window as any).vscode;
@@ -18,27 +18,31 @@ export const vscode = new Proxy({} as VsCodeApi, {
             }
             return value;
         }
-        console.error(`CRITICAL: VS Code API '${String(prop)}' accessed but 'window.vscode' is missing. Check bootstrap.`);
-        // Return no-op to prevent crash
         return () => console.warn(`Ignored call to ${String(prop)} because API is missing.`);
     }
 });
 
+// ... state object ...
 export const state: {
     searchMatches: HTMLElement[],
     currentMatchIndex: number,
     isInspectorEnabled: boolean,
-    streamingMessages: { [key: string]: { buffer: string, timer: any } }
+    streamingMessages: { [key: string]: { buffer: string, timer: any } },
+    isGenerating: boolean
 } = {
     searchMatches: [],
     currentMatchIndex: -1,
     isInspectorEnabled: false,
     streamingMessages: {},
+    isGenerating: false
 };
 
+// ... dom object ...
 export const dom = {
     get messagesDiv() { return document.getElementById('messages') as HTMLDivElement; },
     get chatMessagesContainer() { return document.getElementById('chat-messages-container') as HTMLDivElement; },
+    get thinkingIndicator() { return document.getElementById('thinking-indicator') as HTMLDivElement; },
+    get webSearchIndicator() { return document.getElementById('websearch-indicator') as HTMLDivElement; },
     get messageInput() { return document.getElementById('messageInput') as HTMLTextAreaElement; },
     get sendButton() { return document.getElementById('sendButton') as HTMLButtonElement; },
     get stopButton() { return document.getElementById('stopButton') as HTMLButtonElement; },
@@ -72,10 +76,14 @@ export const dom = {
     get searchPrevBtn() { return document.getElementById('search-prev') as HTMLButtonElement; },
     get searchNextBtn() { return document.getElementById('search-next') as HTMLButtonElement; },
     get searchCloseBtn() { return document.getElementById('search-close') as HTMLButtonElement; },
-    get configureToolsButton() { return document.getElementById('configureToolsButton') as HTMLButtonElement; },
+    get agentToolsButton() { return document.getElementById('agentToolsButton') as HTMLButtonElement; },
+    get discussionToolsButton() { return document.getElementById('discussionToolsButton') as HTMLButtonElement; },
     get toolsModal() { return document.getElementById('tools-modal') as HTMLDivElement; },
+    get discussionToolsModal() { return document.getElementById('discussion-tools-modal') as HTMLDivElement; },
     get closeToolsModal() { return document.getElementById('close-tools-modal') as HTMLSpanElement; },
+    get closeDiscussionToolsModal() { return document.getElementById('close-discussion-tools-modal') as HTMLSpanElement; },
     get saveToolsBtn() { return document.getElementById('save-tools-btn') as HTMLButtonElement; },
+    get saveDiscussionToolsBtn() { return document.getElementById('save-discussion-tools-btn') as HTMLButtonElement; },
     get toolsListDiv() { return document.getElementById('tools-list') as HTMLDivElement; },
     get addUserMessageBtn() { return document.getElementById('add-user-message-btn') as HTMLButtonElement; },
     get addAiMessageBtn() { return document.getElementById('add-ai-message-btn') as HTMLButtonElement; },
@@ -88,4 +96,31 @@ export const dom = {
     get inputAreaWrapper() { return document.querySelector('.input-area-wrapper') as HTMLDivElement; },
     get inputArea() { return document.querySelector('.input-area') as HTMLDivElement; },
     get generatingOverlay() { return document.getElementById('generating-overlay') as HTMLDivElement; },
+    get activeToolsIndicator() { return document.getElementById('active-tools-indicator') as HTMLDivElement; },
+    
+    // Discussion Capabilities Inputs
+    // Code Gen Type Radios
+    get radioCodeGenFull() { return document.querySelector('input[name="codeGenType"][value="full"]') as HTMLInputElement; },
+    get radioCodeGenDiff() { return document.querySelector('input[name="codeGenType"][value="diff"]') as HTMLInputElement; },
+    get radioCodeGenNone() { return document.querySelector('input[name="codeGenType"][value="none"]') as HTMLInputElement; },
+    
+    // File Tools
+    get capFileRename() { return document.getElementById('cap-fileRename') as HTMLInputElement; },
+    get capFileDelete() { return document.getElementById('cap-fileDelete') as HTMLInputElement; },
+
+    get capFileSelect() { return document.getElementById('cap-fileSelect') as HTMLInputElement; },
+    get capFileReset() { return document.getElementById('cap-fileReset') as HTMLInputElement; },
+
+    // Capabilities
+    get capImageGen() { return document.getElementById('cap-imageGen') as HTMLInputElement; },
+    get capWebSearch() { return document.getElementById('cap-webSearch') as HTMLInputElement; },
+    get capArxivSearch() { return document.getElementById('cap-arxivSearch') as HTMLInputElement; },
+    // NEW
+    get capGitCommit() { return document.getElementById('cap-gitCommit') as HTMLInputElement; },
+
+    get modeFunMode() { return document.getElementById('mode-funMode') as HTMLInputElement; },
+    get modeHeavyCot() { return document.getElementById('mode-heavyCot') as HTMLInputElement; },
+    // NEW: Thinking Mode Select
+    get capThinkingMode() { return document.getElementById('cap-thinkingMode') as HTMLSelectElement; },
+    get inputAreaWrapperDiv() { return document.querySelector('.input-area-wrapper') as HTMLDivElement; }
 };

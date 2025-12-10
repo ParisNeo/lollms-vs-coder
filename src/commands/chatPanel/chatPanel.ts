@@ -856,6 +856,15 @@ export class ChatPanel {
         case 'deleteFile':
             vscode.commands.executeCommand('lollms-vs-coder.deleteFile', message.filePaths);
             break;
+        case 'insertCode':
+            vscode.commands.executeCommand('lollms-vs-coder.insertCode', message.filePath, message.content);
+            break;
+        case 'replaceCode':
+            vscode.commands.executeCommand('lollms-vs-coder.replaceCode', message.filePath, message.content);
+            break;
+        case 'deleteCodeBlock':
+            vscode.commands.executeCommand('lollms-vs-coder.deleteCodeBlock', message.filePath, message.content);
+            break;
         case 'addFilesToContext':
             const blockId = message.blockId;
             const files = message.files as string[];

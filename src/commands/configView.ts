@@ -35,7 +35,9 @@ export class SettingsPanel {
     // Search Tool Configuration
     searchProvider: 'google_custom_search',
     searchApiKey: '',
-    searchCx: ''
+    searchCx: '',
+    // NEW: Auto Update Changelog
+    autoUpdateChangelog: false
   };
 
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, processManager: ProcessManager) {
@@ -92,6 +94,8 @@ export class SettingsPanel {
     this._pendingConfig.searchProvider = config.get<string>('searchProvider') || 'google_custom_search';
     this._pendingConfig.searchApiKey = config.get<string>('searchApiKey') || '';
     this._pendingConfig.searchCx = config.get<string>('searchCx') || '';
+    // Changelog
+    this._pendingConfig.autoUpdateChangelog = config.get<boolean>('autoUpdateChangelog') || false;
 
     this._panel.webview.html = this._getHtml(this._panel.webview, this._pendingConfig);
     this._setWebviewMessageListener(this._panel.webview);
@@ -183,6 +187,9 @@ export class SettingsPanel {
                 await config.update('searchProvider', this._pendingConfig.searchProvider, vscode.ConfigurationTarget.Global);
                 await config.update('searchApiKey', this._pendingConfig.searchApiKey, vscode.ConfigurationTarget.Global);
                 await config.update('searchCx', this._pendingConfig.searchCx, vscode.ConfigurationTarget.Global);
+                
+                // Save Changelog Config
+                await config.update('autoUpdateChangelog', this._pendingConfig.autoUpdateChangelog, vscode.ConfigurationTarget.Global);
   
                 vscode.window.showInformationMessage(vscode.l10n.t('info.configSaved', { message: 'Configuration saved. Recreating LollmsAPI...', key: 'info.configSaved' }));
                 await vscode.commands.executeCommand('lollmsApi.recreateClient');
@@ -235,7 +242,7 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, modelName, developerName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, thinkingMode, thinkingModeCustomPrompt, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx } = config;
+    const { apiKey, apiUrl, modelName, developerName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, thinkingMode, thinkingModeCustomPrompt, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog } = config;
 
     // Helper for localization
     const t = (key: string, def: string) => vscode.l10n.t({ message: def, key: key });
@@ -406,6 +413,13 @@ export class SettingsPanel {
               </div>
               <p class="help-text">${t('config.inspectorModelName.description', 'Optional. Specify a different model for code inspection. If blank, the default chat model is used.')}</p>
 
+              <h2>Git Integration</h2>
+              <div class="checkbox-container">
+                  <input type="checkbox" id="autoUpdateChangelog" ${autoUpdateChangelog ? 'checked' : ''}>
+                  <label for="autoUpdateChangelog">Auto-update CHANGELOG.md</label>
+              </div>
+              <p class="help-text">Automatically append a new entry to CHANGELOG.md (if it exists) when generating a commit message via the Source Control panel.</p>
+
               <h2>Tools & Search</h2>
               <label for="searchProvider">Search Provider</label>
               <select id="searchProvider">
@@ -477,7 +491,8 @@ export class SettingsPanel {
                     // Search Fields
                     searchProvider: document.getElementById('searchProvider'),
                     searchApiKey: document.getElementById('searchApiKey'),
-                    searchCx: document.getElementById('searchCx')
+                    searchCx: document.getElementById('searchCx'),
+                    autoUpdateChangelog: document.getElementById('autoUpdateChangelog')
                 };
                 
                 const chatModelSelect = document.getElementById('modelSelect');

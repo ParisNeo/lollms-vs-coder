@@ -140,6 +140,41 @@ Diff: path/to/the/file.ext
 \`\`\`
 `;
 
+            const insertInstruction = `**INSERT MODE (ENABLED):**
+To insert code into a file at a specific location, use:
+Insert: path/to/the/file.ext
+\`\`\`insertion
+<<<<
+context line(s) to locate the insertion point
+====
+code to insert after the context
+>>>>
+\`\`\`
+The code will be inserted immediately AFTER the context lines.
+`;
+
+            const replaceInstruction = `**REPLACE MODE (ENABLED):**
+To replace a specific block of code, use:
+Replace: path/to/the/file.ext
+\`\`\`replacement
+<<<<
+original code to be replaced
+====
+new code to replace it with
+>>>>
+\`\`\`
+`;
+
+            const deleteInstruction = `**DELETE CODE MODE (ENABLED):**
+To delete a specific block of code, use:
+DeleteCode: path/to/the/file.ext
+\`\`\`deletion
+<<<<
+code to be deleted
+>>>>
+\`\`\`
+`;
+
             // Changed: Removed fallback to config 'fileUpdateMethod', default to 'full' if no capability provided
             const codeGenType = capabilities ? capabilities.codeGenType : 'full';
             
@@ -149,13 +184,16 @@ Diff: path/to/the/file.ext
                 updateInstructions = diffInstruction;
             }
             
+            // Add insert/replace/delete instructions as secondary available tools
+            updateInstructions += `\n${insertInstruction}\n${replaceInstruction}\n${deleteInstruction}`;
+            
             let otherFileActions = '';
             
             if (!capabilities || capabilities.fileRename) {
                 otherFileActions += `- **Rename/Move:** \`\`\`rename\nold1 -> new1\nold2 -> new2\n\`\`\` (Support multiple per block)\n`;
             }
             if (!capabilities || capabilities.fileDelete) {
-                otherFileActions += `- **Delete:** \`\`\`delete\npath/to/file1\npath/to/file2\n\`\`\` (Support multiple per block)\n`;
+                otherFileActions += `- **Delete File:** \`\`\`delete\npath/to/file1\npath/to/file2\n\`\`\` (Support multiple per block)\n`;
             }
             if (!capabilities || capabilities.fileSelect) {
                 otherFileActions += `- **Select Files (Add to Context):** \`\`\`select\npath/to/file1\npath/to/file2\n\`\`\`\n`;
@@ -170,7 +208,7 @@ Diff: path/to/the/file.ext
             }
 
             if (otherFileActions) {
-                updateInstructions += `\n**OTHER FILE ACTIONS:**\n${otherFileActions}`;
+                updateInstructions += `\n**OTHER ACTIONS:**\n${otherFileActions}`;
             }
 
             const enableImageGen = capabilities ? capabilities.imageGen : true;
@@ -218,7 +256,30 @@ ${updateInstructions}
         }
         case 'agent':
         case 'inspector':
+            personaKey = `${promptType}Persona`;
+            break;
         case 'commit':
+            basePrompt = `**IDENTITY:** You are an expert developer writing git commit messages.
+**TASK:** Generate a concise, standardized git commit message based on the provided code changes.
+**FORMAT:** Follow the Conventional Commits specification:
+\`type(scope): subject\`
+
+\`body\`
+
+**MANDATORY OUTPUT:**
+- You MUST wrap the commit message in a code block (\`\`\`).
+- Do NOT include any introductory text like "Here is the commit message".
+- Do NOT include any closing text.
+- The output should contain *only* the code block.
+
+**Example Output:**
+\`\`\`
+feat(auth): add JWT-based authentication
+
+- Implement login endpoint
+- Add token verification middleware
+\`\`\`
+`;
             personaKey = `${promptType}Persona`;
             break;
     }
@@ -268,4 +329,3 @@ export function stripThinkingTags(responseText: string): string {
     const thinkRegex = /<(think|thinking)>[\s\S]*?<\/\1>/g;
     return responseText.replace(thinkRegex, '').trim();
 }
-

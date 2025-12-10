@@ -105,6 +105,7 @@
     "config.commitMessagePersona.description": "Define the persona for the git commit message generator.",
     "config.contextFileExceptions.description": "A list of file and folder patterns to always exclude from the AI context. Uses glob patterns (e.g., '*.log', 'dist/**').",
     "config.language.description": "Influences the AI's response language. The extension UI follows VS Code's display language setting.",
+    "config.autoUpdateChangelog.description": "Automatically append an entry to CHANGELOG.md (if present) when generating a commit message.",
     "views.container.title": "Lollms",
     "view.actions.name": "Actions",
     "view.discussions.name": "Discussions",

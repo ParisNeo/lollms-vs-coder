@@ -22,14 +22,20 @@ export class PlanParser {
         failureReason?: string | null,
         signal?: AbortSignal,
         modelOverride?: string,
-        chatHistory: ChatMessage[] = []
+        chatHistory: ChatMessage[] = [],
+        allowedTools?: ToolDefinition[] // NEW parameter
     ): Promise<{ plan: Plan | null, rawResponse: string, error?: string }> {
+        
+        // Default to all enabled tools if not specified
+        const toolsToUse = allowedTools || this.toolManager.getEnabledTools();
+
         let lastResponse = "";
         let lastError = "";
         for (let i = 0; i <= this.maxRetries; i++) {
             try {
                 let userPromptContent: string;
-                const systemPrompt = this.getPlannerSystemPrompt(!!existingPlan);
+                // Pass toolsToUse to system prompt generator
+                const systemPrompt = this.getPlannerSystemPrompt(!!existingPlan, toolsToUse);
                 let messages: ChatMessage[] = [systemPrompt];
 
                 if (i === 0) { // First attempt
@@ -44,18 +50,11 @@ Here is the plan up to the point of failure:
 ${JSON.stringify({ ...existingPlan, tasks: existingPlan.tasks.filter(t => t.id <= failedTaskId) }, null, 2)}
 \`\`\`
 Your task is to generate a NEW set of tasks to recover from this failure and complete the objective. The new plan fragment will replace the failed task and all subsequent tasks.`;
-                        // In revision mode, we typically don't need full chat history, just the failure context, 
-                        // but adding it doesn't hurt if context window allows. For now, keep it focused.
                         messages.push({ role: 'user', content: userPromptContent });
                     } else {
                         const projectContext = await this.contextManager.getContextContent();
                         
-                        // Inject Chat History here to allow the planner to see previous tool outputs (like search results)
                         if (chatHistory && chatHistory.length > 0) {
-                            // We filter out any previous system prompts to avoid confusion, 
-                            // keeping only user, assistant, and tool outputs (which are currently role='system' in this extension)
-                            // Ideally tool outputs should be distinct, but Lollms vs Coder uses role='system' for tool output.
-                            // We'll trust the history passed in.
                             messages.push(...chatHistory);
                         }
 
@@ -69,67 +68,50 @@ Your task is to generate a NEW set of tasks to recover from this failure and com
                      lastResponse = await this.lollmsApi.sendChat([correctionPrompt], null, signal, modelOverride);
                 }
                 
-                console.log("--- Lollms Agent Debug: Raw Response from API ---");
-                console.log(lastResponse);
-
                 const cleanResponse = stripThinkingTags(lastResponse);
                 const jsonString = this.extractJson(cleanResponse);
 
                 if (!jsonString) {
-                    console.error("--- Lollms Agent Debug: FAILED to extract JSON ---");
-                    throw new Error("No valid JSON object could be extracted from the response. The response must contain a single JSON object inside a ```json markdown block.");
+                    throw new Error("No valid JSON object could be extracted from the response.");
                 }
 
                 const plan = JSON.parse(jsonString) as Plan;
-                this.validateAndInitializePlan(plan);
+                this.validateAndInitializePlan(plan, toolsToUse);
 
                 return { plan, rawResponse: lastResponse };
 
             } catch (error: any) {
                 lastError = error.message;
-                console.error(`--- Lollms Agent Debug: Attempt ${i + 1} failed ---`, lastError);
                 if (i >= this.maxRetries) {
                     return { plan: null, rawResponse: lastResponse, error: `Failed after ${i + 1} attempts. Last error: ${lastError}` };
                 }
             }
         }
-        return { plan: null, rawResponse: lastResponse, error: "Failed to generate a valid plan after multiple retries." };
+        return { plan: null, rawResponse: lastResponse, error: "Failed to generate a valid plan." };
     }
 
-    private validateAndInitializePlan(plan: any): void {
-        if (!plan || typeof plan !== 'object') {
-            throw new Error("The response is not a JSON object.");
-        }
+    private validateAndInitializePlan(plan: any, allowedTools: ToolDefinition[]): void {
+        if (!plan || typeof plan !== 'object') throw new Error("Response is not a JSON object.");
         
         if (typeof plan.objective !== 'string' || (typeof plan.scratchpad !== 'string' && typeof plan.scratchpad !== 'object') || !Array.isArray(plan.tasks)) {
-            throw new Error("The plan must have 'objective' (string), 'scratchpad' (string or object), and 'tasks' (array) properties.");
+            throw new Error("Plan missing required fields (objective, scratchpad, tasks).");
         }
     
         if (typeof plan.scratchpad === 'object' && plan.scratchpad !== null) {
             plan.scratchpad = JSON.stringify(plan.scratchpad, null, 2);
         }
     
-        if (plan.tasks.length === 0 && !plan.objective.startsWith("Thank you")) { 
-            throw new Error("The plan must contain at least one task.");
-        }
-    
-        const allowedTools = new Set(this.toolManager.getAllTools().map((t: ToolDefinition) => t.name));
+        const validToolNames = new Set(allowedTools.map(t => t.name));
     
         for (const task of plan.tasks) {
-            const baseKeys = ['id', 'task_type', 'action', 'description', 'parameters'];
-            for (const key of baseKeys) {
-                if (task[key] === undefined) {
-                    throw new Error(`A task is missing the required property: '${key}'. Full task: ${JSON.stringify(task)}`);
-                }
+            if (!task.action || !task.description) {
+                throw new Error(`Task missing action or description.`);
             }
     
-            if (!allowedTools.has(task.action)) {
-                throw new Error(`Invalid action '${task.action}'. Action must be one of the allowed tools.`);
+            if (!validToolNames.has(task.action)) {
+                throw new Error(`Invalid action '${task.action}'. Must be one of: ${Array.from(validToolNames).join(', ')}`);
             }
-    
-            if (typeof task.parameters !== 'object' || task.parameters === null) {
-                 throw new Error(`The 'parameters' property for task ${task.id} must be a JSON object.`);
-            }
+            
             task.status = 'pending';
             task.result = null;
             task.retries = 0;
@@ -139,97 +121,61 @@ Your task is to generate a NEW set of tasks to recover from this failure and com
     public extractJson(text: string): string | null {
         const blockStartTag = '```json';
         const contentStartIndex = text.indexOf(blockStartTag);
-    
         if (contentStartIndex === -1) {
-            const firstBrace = text.indexOf('{');
-            const lastBrace = text.lastIndexOf('}');
-            if (firstBrace !== -1 && lastBrace > firstBrace) {
-                const potentialJson = text.substring(firstBrace, lastBrace + 1);
-                try {
-                    JSON.parse(potentialJson); 
-                    return potentialJson;
-                } catch (e) {
-                    return null;
-                }
-            }
+            // Try finding just a brace
+            const first = text.indexOf('{');
+            const last = text.lastIndexOf('}');
+            if (first !== -1 && last > first) return text.substring(first, last + 1);
             return null;
         }
-    
         const jsonStart = contentStartIndex + blockStartTag.length;
-        let depth = 1;
-        let currentIndex = jsonStart;
-    
-        while (depth > 0 && currentIndex < text.length) {
-            const nextFence = text.indexOf('```', currentIndex);
-    
-            if (nextFence === -1) {
-                return null; 
-            }
-    
-            const specifierMatch = text.substring(nextFence + 3).match(/^\s*([a-zA-Z0-9]+)/);
-    
-            if (specifierMatch) {
-                depth++;
-                currentIndex = nextFence + 3 + specifierMatch.length;
-            } else {
-                depth--;
-                if (depth === 0) {
-                    return text.substring(jsonStart, nextFence).trim();
-                }
-                currentIndex = nextFence + 3;
-            }
-        }
-        return null;
+        const jsonEnd = text.indexOf('```', jsonStart);
+        if (jsonEnd === -1) return null;
+        return text.substring(jsonStart, jsonEnd).trim();
     }
 
     private getCorrectionPrompt(faultyResponse: string, errorMessage: string): ChatMessage {
         return {
             role: 'system',
-            content: `You previously provided the following text which failed validation.
---- FAULTY RESPONSE ---
-${faultyResponse}
---- ERROR MESSAGE ---
-${errorMessage}
----
-Your task is to correct the JSON. You MUST provide ONLY the fixed, valid JSON object that adheres to the required schema, inside a markdown code block. Ensure every task has all required keys: 'id', 'task_type', 'action', 'description', 'parameters', and that the parameters for each action are correct.`
+            content: `Your previous JSON response was invalid.\nError: ${errorMessage}\nPlease fix the JSON and return ONLY the valid JSON object in a markdown block.`
         };
     }
 
-    public getPlannerSystemPrompt(isRevision: boolean = false): ChatMessage {
+    public getPlannerSystemPrompt(isRevision: boolean = false, allowedTools: ToolDefinition[]): ChatMessage {
         const intro = isRevision
-            ? "You are an expert AI agent planner specializing in failure recovery. Your task is to create a new plan fragment to achieve the original objective, starting from the point of failure."
-            : "You are a meticulous, programmatic AI agent planner. Your sole function is to create a detailed, step-by-step execution plan in JSON format based on a user's objective and project context.";
+            ? "You are an expert AI agent planner specializing in failure recovery."
+            : "You are a meticulous, programmatic AI agent planner.";
 
-        const tools = this.toolManager.getEnabledTools();
-        const toolDescriptions = tools.map((tool: ToolDefinition) => {
-            const params = tool.parameters.map((p: { name: string; type: string; description: string; required: boolean; }) => `{"name": "${p.name}", "type": "${p.type}", "description": "${p.description}", "required": ${p.required}}`).join(',\n');
-            return `* **"${tool.name}"**: ${tool.description}\n  - Parameters: \`[${params}]\`\n  - Type: \`${tool.isAgentic ? 'agentic_action' : 'simple_action'}\``;
+        const toolDescriptions = allowedTools.map((tool: ToolDefinition) => {
+            const params = tool.parameters.map((p: { name: string; type: string; description: string; required: boolean; }) => `{"name": "${p.name}", "type": "${p.type}", "description": "${p.description}", "required": ${p.required}}`).join(', ');
+            return `* **"${tool.name}"**: ${tool.description}\n  - Params: \`[${params}]\``;
         }).join('\n');
 
-        let content = `${intro}
+        let groundingInstruction = "";
+        const hasSearch = allowedTools.some(t => t.name === 'search_web');
+        if (hasSearch) {
+            groundingInstruction = `7. **GROUNDING:** You have access to \`search_web\`. If you encounter an unknown error or need documentation, create a task to SEARCH for it. Do not guess.`;
+        } else {
+            groundingInstruction = `7. **GROUNDING:** You do NOT have internet access. Rely on the provided context files and your internal knowledge.`;
+        }
 
-**<MASTER_RULE>**
-YOUR ENTIRE RESPONSE MUST BE A SINGLE, VALID JSON OBJECT, AND IT MUST BE ENCLOSED IN A \`\`\`json MARKDOWN BLOCK. ANY TEXT, EXPLANATION, OR APOLOGY OUTSIDE THIS BLOCK WILL CAUSE A SYSTEM FAILURE. ADHERE TO THIS FORMAT WITH ABSOLUTE PRECISION.
-**</MASTER_RULE>**
+        const content = `${intro}
 
-**CONTEXT & ENVIRONMENT:**
-- You are operating inside a VS Code workspace at the project root. All file paths MUST be relative.
-- The user's operating system is: \`${os.platform()}\`. All shell commands must be OS-compatible.
-- For Python projects, it is mandatory to first create and use a virtual environment (e.g., \`create_python_environment\`) to ensure isolation.
-- It is a best practice to start by using \`get_environment_details\` to understand available tools.
+**CONTEXT:**
+- Operating System: \`${os.platform()}\`.
+- Workspace Root: Project root directory.
 
 **<CRITICAL_INSTRUCTIONS>**
-1.  **JSON ONLY:** Your entire response MUST be a single, valid JSON object inside a \`\`\`json block.
-2.  **NO EXTRA TEXT:** Do not add any conversational text or explanations before or after the JSON block.
-3.  **SCRATCHPAD IS A STRING:** The 'scratchpad' field MUST be a single string for your internal notes. Do not use a JSON object for it.
-4.  **DECOMPOSE TASKS:** Break complex goals into a sequence of smaller, logical, and verifiable steps. This is crucial. For example, instead of 'build the app', create tasks for 'list files', 'setup environment', 'create file', 'write component A', 'write component B', etc.
-5.  **SAFETY:** Avoid destructive commands. Use \`request_user_input\` for any potentially risky operation.
-6.  **AUTONOMY:** You have tools to read and write files (\`read_file\`, \`generate_code\`). **NEVER** ask the user to provide file content or paste code (e.g., "ask user to paste file"). Use \`read_file\` to get the content yourself. If you are unsure of the file path, use \`list_files\` first. Only ask the user for clarification on requirements/intent.
+1.  **JSON ONLY:** Return a single valid JSON object in a \`\`\`json block.
+2.  **NO EXTRA TEXT:** No conversation.
+3.  **DECOMPOSE TASKS:** Break goals into logical steps.
+4.  **AUTONOMY:** Use \`read_file\` to get content. Do not ask user for files.
+5.  **SAFETY:** Use \`request_user_input\` for dangerous operations.
+6.  **PYTHON:** Create/use venv for python tasks.
+${groundingInstruction}
 **</CRITICAL_INSTRUCTIONS>**
 
-**JSON SCHEMA DEFINITION & ALLOWED ACTIONS:**
-Your JSON output must conform to this schema, using only the actions listed below.
-
+**JSON SCHEMA:**
 \`\`\`json
 {
   "objective": "string",
@@ -240,37 +186,21 @@ Your JSON output must conform to this schema, using only the actions listed belo
       "task_type": "'simple_action' or 'agentic_action'",
       "action": "string",
       "description": "string",
-      "parameters": {
-        // action-specific parameters go here
-      }
+      "parameters": { ... }
     }
   ]
 }
 \`\`\`
 
----
-
-### **ALLOWED ACTIONS & PARAMETERS:**
+**AVAILABLE TOOLS:**
 ${toolDescriptions}
-
----
-**<FINAL_REMINDER>**
-- Every task object **MUST** contain all keys: "id", "task_type", "action", "description", "parameters".
-- The "action" **MUST** be one of the allowed actions.
-- The "parameters" for each action **MUST** match the required structure.
-- Task IDs **MUST** be unique sequential integers.
-**</FINAL_REMINDER>**
 `;
         
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const noThinkMode = config.get<boolean>('noThinkMode') || false;
-        if (noThinkMode) {
-            content = `/no_think\n${content}`;
-        }
-
         return {
             role: 'system',
-            content: content
+            content: noThinkMode ? `/no_think\n${content}` : content
         };
     }
 }

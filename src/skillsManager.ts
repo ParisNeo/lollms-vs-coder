@@ -8,217 +8,290 @@ export interface Skill {
     content: string;
     language?: string;
     timestamp: number;
+    category?: string;
 }
 
-const LOLLMS_CLIENT_DOCS = `# LoLLMs Client Library
+const LOLLMS_INSTANTIATION = `# LoLLMs Client Instantiation
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![PyPI version](https://badge.fury.io/py/lollms_client.svg)](https://badge.fury.io/py/lollms_client)
-[![Python Versions](https://img.shields.io/pypi/pyversions/lollms_client.svg)](https://pypi.org/project/lollms-client/)
-[![Downloads](https://static.pepy.tech/personalized-badge/lollms-client?period=total&units=international_system&left_color=grey&right_color=green&left_text=Downloads)](https://pepy.tech/project/lollms-client)
-
-**\`lollms_client\`** is a powerful and flexible Python library designed to simplify interactions with the **LoLLMs (Lord of Large Language Models)** ecosystem and various other Large Language Model (LLM) backends. It provides a unified API for text generation, multimodal operations (text-to-image, text-to-speech, etc.), and robust function calling through the Model Context Protocol (MCP).
-
-Whether you're connecting to a remote LoLLMs server, an Ollama instance, the OpenAI API, or running models locally using GGUF (via \`llama-cpp-python\` or a managed \`llama.cpp\` server), Hugging Face Transformers, or vLLM, \`lollms-client\` offers a consistent and developer-friendly experience.
-
-## Key Features
-
-*   🔌 **Versatile Binding System:** Seamlessly switch between different LLM backends (LoLLMs, Ollama, OpenAI, Llama.cpp, Transformers, vLLM, OpenLLM, Gemini, Claude, Groq, OpenRouter, Hugging Face Inference API) using a unified \`llm_binding_config\` dictionary for all parameters.
-*   🗣️ **Comprehensive Multimodal Support:** Interact with models capable of processing images and generate various outputs like speech (TTS), video (TTV), and music (TTM).
-*   🎨 **Advanced Image Generation and Editing:** A new \`diffusers\` binding provides powerful text-to-image capabilities. It supports a wide range of models from Hugging Face and Civitai, including specialized models like \`Qwen-Image-Edit\` for single-image editing and the cutting-edge \`Qwen-Image-Edit-2509\` for **multi-image fusion, pose transfer, and character swapping**.
-*   🖼️ **Selective Image Activation:** Control which images in a message are active and sent to the model, allowing for fine-grained multimodal context management without deleting the original data.
-*   🤖 **Agentic Workflows with MCP:** Empower LLMs to act as sophisticated agents, breaking down complex tasks, selecting and executing external tools (e.g., internet search, code interpreter, file I/O, image generation) through the Model Context Protocol (MCP) using a robust "observe-think-act" loop.
-*   🎭 **Personalities as Agents:** Personalities can now define their own set of required tools (MCPs) and have access to static or dynamic knowledge bases (\`data_source\`), turning them into self-contained, ready-to-use agents.
-*   🚀 **Streaming & Callbacks:** Efficiently handle real-time text generation with customizable callback functions across all generation methods, including during agentic (MCP) interactions.
-*   📑 **Long Context Processing:** The \`long_context_processing\` method (formerly \`sequential_summarize\`) intelligently chunks and synthesizes texts that exceed the model's context window, suitable for summarization or deep analysis.
-*   📝 **Advanced Structured Content Generation:** Reliably generate structured JSON output from natural language prompts using the \`generate_structured_content\` helper method, enforcing a specific schema.
-*   💬 **Advanced Discussion Management:** Robustly manage conversation histories with \`LollmsDiscussion\`, featuring branching, context exporting, and automatic pruning.
-*   🧠 **Persistent Memory & Data Zones:** \`LollmsDiscussion\` now supports multiple, distinct data zones (\`user_data_zone\`, \`discussion_data_zone\`, \`personality_data_zone\`) and a long-term \`memory\` field. This allows for sophisticated context layering and state management, enabling agents to learn and remember over time.
-*   ✍️ **Structured Memorization:** The \`memorize()\` method analyzes a conversation to extract its essence (e.g., a problem and its solution), creating a structured "memory" with a title and content. These memories are stored and can be explicitly loaded into the AI's context, providing a more robust and manageable long-term memory system.
-*   📊 **Detailed Context Analysis:** The \`get_context_status()\` method provides a rich, detailed breakdown of the prompt context, showing the content and token count for each individual component (system prompt, data zones, message history).
-*   ⚙️ **Standardized Configuration Management:** A unified dictionary-based system (\`llm_binding_config\`) to configure any binding in a consistent manner.
-*   🧩 **Extensible:** Designed to easily incorporate new LLM backends and modality services, including custom MCP toolsets.
-*   📝 **High-Level Operations:** Includes convenience methods for complex tasks like sequential summarization and deep text analysis directly within \`LollmsClient\`.
+The \`LollmsClient\` is the main entry point. You can configure it to use different bindings (backends) using the \`llm_binding_config\` dictionary.
 
 ## Installation
-
-You can install \`lollms_client\` directly from PyPI:
 
 \`\`\`bash
 pip install lollms-client
 \`\`\`
 
-## Core Generation Methods
+## Examples
 
-### Basic Text Generation (\`generate_text\`)
+### LoLLMs Server (Default)
+Connects to a running LoLLMs server (e.g., lollms-webui).
+
+\`\`\`python
+from lollms_client import LollmsClient
+
+lc = LollmsClient(
+    llm_binding_name="lollms", 
+    llm_binding_config={
+        "host_address": "http://localhost:9642",
+    }
+)
+\`\`\`
+
+### Ollama
+Connects to a local Ollama instance.
+
+\`\`\`python
+lc = LollmsClient(
+    llm_binding_name="ollama", 
+    llm_binding_config={
+        "model_name": "llama3",
+        "host_address": "http://localhost:11434"
+    }
+)
+\`\`\`
+
+### OpenAI
+Connects to OpenAI API.
+
+\`\`\`python
+lc = LollmsClient(
+    llm_binding_name="openai",
+    llm_binding_config={
+        "model_name": "gpt-4o", 
+        "service_key": "sk-..." 
+    }
+)
+\`\`\`
+
+### Anthropic Claude
+\`\`\`python
+lc = LollmsClient(
+    llm_binding_name="openrouter", # Example using OpenRouter or specific binding if available
+    llm_binding_config={
+        "model_name": "claude-3-5-sonnet-20240620", 
+        "service_key": "sk-ant-..." 
+    }
+)
+\`\`\`
+`;
+
+const LOLLMS_TEXT_GENERATION = `# LoLLMs Text Generation
+
+Generate text using \`generate_text\` or \`generate_from_messages\`.
+
+## Basic Text Generation
 
 \`\`\`python
 from lollms_client import LollmsClient, MSG_TYPE
-from ascii_colors import ASCIIColors
-import os
 
-# Callback for streaming output
-def simple_streaming_callback(chunk: str, msg_type: MSG_TYPE, params=None, metadata=None) -> bool:
+# Callback for streaming
+def simple_callback(chunk: str, msg_type: MSG_TYPE, params=None, metadata=None) -> bool:
     if msg_type == MSG_TYPE.MSG_TYPE_CHUNK:
         print(chunk, end="", flush=True)
-    return True # True to continue streaming
+    return True
 
-try:
-    # Initialize client to connect to a LoLLMs server.
-    lc = LollmsClient(
-        llm_binding_name="lollms", 
-        llm_binding_config={
-            "host_address": "http://localhost:9642",
-        }
-    )
+lc = LollmsClient(llm_binding_name="ollama", llm_binding_config={"model_name": "llama3"})
 
-    prompt = "Tell me a fun fact about space."
-    response_text = lc.generate_text(
-        prompt,
-        n_predict=100,
-        stream=True,
-        streaming_callback=simple_streaming_callback
-    )
-except Exception as e:
-    ASCIIColors.error(f"An unexpected error occurred: {e}")
+response = lc.generate_text(
+    prompt="Explain quantum computing in one sentence.",
+    n_predict=100,
+    stream=True,
+    streaming_callback=simple_callback
+)
+print(f"\\nResponse: {response}")
 \`\`\`
 
-### Generating from Message Lists (\`generate_from_messages\`)
+## From Messages (Chat Format)
 
 \`\`\`python
-from lollms_client import LollmsClient, MSG_TYPE
-import os
+messages = [
+    {"role": "system", "content": "You are a pirate."},
+    {"role": "user", "content": "Hello!"}
+]
+
+response = lc.generate_from_messages(
+    messages=messages,
+    n_predict=200,
+    stream=True
+)
+print(response)
+\`\`\`
+`;
+
+const LOLLMS_STRUCTURED_CONTENT = `# LoLLMs Structured Content Generation
+
+Use \`generate_structured_content\` to force the LLM to output valid JSON conforming to a specific structure.
+
+\`\`\`python
+from lollms_client import LollmsClient
+
+lc = LollmsClient(llm_binding_name="ollama", llm_binding_config={"model_name": "llama3"})
+
+prompt = "Generate a profile for a fantasy character named Eldrin."
+
+# Define the expected structure instructions (or schema)
+structure_instruction = """
+{
+    "name": "string",
+    "class": "string",
+    "level": "integer",
+    "inventory": ["string"]
+}
+"""
 
 try:
-    lc = LollmsClient(
-        llm_binding_name="ollama", 
-        llm_binding_config={
-            "model_name": "llama3",
-            "host_address": "http://localhost:11434"
-        }
+    # This helper method constructs a prompt to enforce JSON output
+    # Note: Availability of this method depends on library version updates.
+    # If not available directly, you can use generate_text with a system prompt enforcing JSON.
+    character_json = lc.generate_structured_content(
+        prompt, 
+        structure_instruction
     )
-
-    messages = [
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Hello!"}
-    ]
-
-    response_text = lc.generate_from_messages(
-        messages=messages,
-        n_predict=200,
-        stream=True
-    )
-except Exception as e:
-    print(f"Error: {e}")
+    print(character_json)
+except AttributeError:
+    # Manual fallback
+    full_prompt = f"{prompt}\\n\\nOutput valid JSON only matching this structure:\\n{structure_instruction}"
+    print(lc.generate_text(full_prompt))
 \`\`\`
+`;
 
-## Advanced Discussion Management
+const LOLLMS_CODE_GENERATION = `# LoLLMs Code Generation
 
-### Basic Chat with \`LollmsDiscussion\`
+You can use the client to generate code. For advanced use cases, use an Agentic workflow (Personality) with a code interpreter MCP.
+
+## Simple Code Generation
 
 \`\`\`python
-from lollms_client import LollmsClient, LollmsDiscussion, MSG_TYPE, LollmsDataManager
+from lollms_client import LollmsClient
+
+lc = LollmsClient(llm_binding_name="ollama", llm_binding_config={"model_name": "codellama"})
+
+prompt = "Write a Python function to calculate the Fibonacci sequence recursively."
+code = lc.generate_text(prompt)
+print(code)
+\`\`\`
+
+## Agentic Code Generation (Conceptual)
+
+\`\`\`python
+from lollms_client import LollmsPersonality
+
+# Define a coder personality that uses tools
+coder = LollmsPersonality(
+    name="Python Coder",
+    system_prompt="You are a Python expert. Write code to solve the user's problem.",
+    active_mcps=["python_code_interpreter"] # Assuming this MCP is available
+)
+
+# Use in a discussion (see Chat skill)
+# discussion.chat("Write a script to scrape a website", personality=coder)
+\`\`\`
+`;
+
+const LOLLMS_IMAGE_GENERATION = `# LoLLMs Image Generation
+
+Use the \`diffusers\` binding or other TTI (Text-to-Image) bindings to generate images.
+
+\`\`\`python
+from lollms_client import LollmsClient
+
+# Initialize with a TTI binding
+lc = LollmsClient(
+    tti_binding_name="diffusers",
+    tti_binding_config={
+        "model_name": "runwayml/stable-diffusion-v1-5" 
+        # Or specialized models like "Qwen-Image-Edit"
+    }
+)
+
+# Generate
+try:
+    # Returns bytes or base64 depending on configuration
+    image_data = lc.generate_image("A futuristic city on Mars, cyberpunk style")
+    
+    with open("mars_city.png", "wb") as f:
+        f.write(image_data)
+    print("Image saved to mars_city.png")
+except Exception as e:
+    print(f"Generation failed: {e}")
+\`\`\`
+`;
+
+const LOLLMS_LONG_CONTEXT = `# LoLLMs Long Context Management
+
+The \`long_context_processing\` (or \`sequential_summarize\`) method helps process texts larger than the model's context window.
+
+\`\`\`python
+from lollms_client import LollmsClient
+
+lc = LollmsClient(llm_binding_name="ollama", llm_binding_config={"model_name": "llama3"})
+
+long_text = "..." # Huge text file content
+
+summary = lc.long_context_processing(
+    long_text,
+    prompt="Summarize the key points of this section.",
+    chunk_size=4096, # Adjust based on model context
+    overlap=100
+)
+
+print(summary)
+\`\`\`
+`;
+
+const LOLLMS_MCP_GENERATION = `# LoLLMs Generation with MCP (Model Context Protocol)
+
+Enable LLMs to use external tools (MCPs) to perform actions (web search, file I/O, etc.).
+
+\`\`\`python
+from lollms_client import LollmsClient, LollmsPersonality
+
+# 1. Define a Personality with MCPs
+agent = LollmsPersonality(
+    name="Research Agent",
+    system_prompt="You are a researcher. Use the search tool to find information.",
+    active_mcps=["google_search", "wikipedia"] # Names of available MCP tools
+)
+
+lc = LollmsClient(llm_binding_name="ollama", llm_binding_config={"model_name": "llama3"})
+
+# 2. Interactions typically happen within a LollmsDiscussion to maintain state/observation loop
+# See "LoLLMs Chat" skill for discussion setup.
+\`\`\`
+`;
+
+const LOLLMS_CHAT = `# LoLLMs Chat (Discussion Management)
+
+Use \`LollmsDiscussion\` to manage conversation history, context, and state.
+
+\`\`\`python
+from lollms_client import LollmsClient, LollmsDiscussion, LollmsDataManager
 from pathlib import Path
 import tempfile
 
+# 1. Setup Database
 with tempfile.TemporaryDirectory() as tmpdir:
     db_path = Path(tmpdir) / "discussion_db.sqlite"
     db_manager = LollmsDataManager(f"sqlite:///{db_path}")
     
+    # 2. Setup Client
     lc = LollmsClient(llm_binding_name="ollama", llm_binding_config={"model_name": "llama3"})
 
+    # 3. Create Discussion
     discussion = LollmsDiscussion.create_new(
         lollms_client=lc,
         db_manager=db_manager,
-        id="basic_chat_example",
+        id="my_chat_session",
         autosave=True
     )
     
-    response = discussion.chat(user_message="Hello, how are you?")
-    print(response['ai_message'].content)
-\`\`\`
+    # 4. Chat
+    response = discussion.chat(user_message="Hello! Who are you?")
+    print("AI:", response['ai_message'].content)
 
-### Managing Multimodal Context: Activating and Deactivating Images
-
-When working with multimodal models, you can control which images in a message are active.
-
-\`\`\`python
-# ... setup discussion ...
-discussion.add_message(
-    sender="user", 
-    content="What is in the image?", 
-    images=[img1_b64, img2_b64]
-)
-user_message = discussion.get_messages()[-1]
-
-# Deactivate irrelevant images
-user_message.toggle_image_activation(index=0, active=False)
-discussion.commit()
-\`\`\`
-
-### Agentic Workflows
-
-Example of a Python Coder Agent using \`LollmsPersonality\`:
-
-\`\`\`python
-from lollms_client import LollmsClient, LollmsPersonality, LollmsDiscussion
-
-coder_personality = LollmsPersonality(
-    name="Python Coder Agent",
-    author="lollms-client",
-    category="Coding",
-    description="An agent that writes and executes Python code.",
-    system_prompt="You are an expert Python programmer. Use the python_code_interpreter tool.",
-    active_mcps=["python_code_interpreter"]
-)
-
-lc = LollmsClient(
-    llm_binding_name="ollama",          
-    llm_binding_config={"model_name": "codellama"},
-    mcp_binding_name="local_mcp" 
-)
-
-# ... setup discussion ...
-response = discussion.chat(
-    user_message="Write a Python function to sum two numbers.",
-    personality=coder_personality,
-    max_llm_iterations=5
-)
-\`\`\`
-
-## Using LoLLMs Client with Different Bindings
-
-You can configure different backends using \`llm_binding_config\`:
-
-**LoLLMs Server:**
-\`\`\`python
-config = { "host_address": "http://localhost:9642" }
-\`\`\`
-
-**Ollama:**
-\`\`\`python
-config = { "model_name": "llama3", "host_address": "http://localhost:11434" }
-\`\`\`
-
-**OpenAI:**
-\`\`\`python
-config = { "model_name": "gpt-4o", "service_key": "sk-..." }
-\`\`\`
-
-**Anthropic Claude:**
-\`\`\`python
-config = { "model_name": "claude-3-5-sonnet-20240620", "service_key": "sk-ant-..." }
-\`\`\`
-
-**Diffusers (Local Image Gen):**
-\`\`\`python
-lc = LollmsClient(
-    tti_binding_name="diffusers",
-    tti_binding_config={
-        "model_name": "runwayml/stable-diffusion-v1-5"
-    }
-)
-image_bytes = lc.generate_image("Astronaut on Mars")
+    # 5. Multimodal Chat (Images)
+    # discussion.add_message(sender="user", content="Look at this", images=[base64_img])
+    # response = discussion.chat() # Processes last added message
 \`\`\`
 `;
 
@@ -252,31 +325,43 @@ export class SkillsManager {
 
     private async ensureDefaultSkills() {
         const skills = await this.getSkills();
-        const defaultSkillId = 'lollms-client-lib';
         
-        const defaultSkill: Skill = {
-            id: defaultSkillId,
-            name: 'LoLLMs Client Library',
-            description: 'Comprehensive documentation for the lollms_client Python library.',
-            content: LOLLMS_CLIENT_DOCS,
-            language: 'markdown',
-            timestamp: Date.now() // Always update timestamp to keep it relevant? Or keep old? 
-                                  // Let's rely on existence check.
-        };
+        // Remove the old monolithic skill if it exists to avoid duplication/confusion
+        const oldSkillIndex = skills.findIndex(s => s.id === 'lollms-client-lib');
+        if (oldSkillIndex !== -1) {
+            skills.splice(oldSkillIndex, 1);
+        }
 
-        if (!skills.some(s => s.id === defaultSkillId)) {
-            skills.push(defaultSkill);
-            await this.saveSkills(skills);
-        } else {
-            // Optional: Update the content if it already exists to ensure latest docs
-            // Uncomment the lines below if you want to force update the docs on reload
-            /*
-            const index = skills.findIndex(s => s.id === defaultSkillId);
-            if (index !== -1) {
-                skills[index].content = LOLLMS_CLIENT_DOCS;
-                await this.saveSkills(skills);
+        const category = "python/lollms_client";
+        const defaults = [
+            { id: 'lollms-instantiation', name: 'Instantiation', desc: 'Initialize LollmsClient with different bindings.', content: LOLLMS_INSTANTIATION },
+            { id: 'lollms-text-gen', name: 'Text Generation', desc: 'Basic and streaming text generation.', content: LOLLMS_TEXT_GENERATION },
+            { id: 'lollms-structured', name: 'Structured Content', desc: 'Generate JSON output.', content: LOLLMS_STRUCTURED_CONTENT },
+            { id: 'lollms-code-gen', name: 'Code Generation', desc: 'Generate code and simple agents.', content: LOLLMS_CODE_GENERATION },
+            { id: 'lollms-image-gen', name: 'Image Generation', desc: 'Generate images using TTI bindings.', content: LOLLMS_IMAGE_GENERATION },
+            { id: 'lollms-long-context', name: 'Long Context', desc: 'Process large texts.', content: LOLLMS_LONG_CONTEXT },
+            { id: 'lollms-mcp', name: 'Generation with MCP', desc: 'Using Model Context Protocol tools.', content: LOLLMS_MCP_GENERATION },
+            { id: 'lollms-chat', name: 'Chat', desc: 'Manage discussions and history.', content: LOLLMS_CHAT }
+        ];
+
+        let modified = false;
+        for (const def of defaults) {
+            if (!skills.some(s => s.id === def.id)) {
+                skills.push({
+                    id: def.id,
+                    name: def.name,
+                    description: def.desc,
+                    content: def.content,
+                    language: 'markdown',
+                    timestamp: Date.now(),
+                    category: category
+                });
+                modified = true;
             }
-            */
+        }
+
+        if (modified || oldSkillIndex !== -1) {
+            await this.saveSkills(skills);
         }
     }
 
@@ -316,7 +401,6 @@ export class SkillsManager {
         await this.saveSkills(skills);
     }
 
-    // New: Export skills to a JSON file
     public async exportSkills() {
         const skills = await this.getSkills();
         if (skills.length === 0) {
@@ -337,7 +421,6 @@ export class SkillsManager {
         }
     }
 
-    // New: Import skills from a JSON file
     public async importSkills() {
         const fileUris = await vscode.window.showOpenDialog({
             title: "Import Skills",
@@ -360,7 +443,6 @@ export class SkillsManager {
 
             for (const skill of importedSkills) {
                 if (skill.name && skill.content) {
-                    // Generate new ID to avoid collisions
                     skill.id = Date.now().toString() + Math.random().toString(36).substring(2);
                     skill.timestamp = Date.now();
                     currentSkills.push(skill);

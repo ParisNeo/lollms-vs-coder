@@ -110,7 +110,6 @@ function createGenerationBlock(type: string, filePath: string, prompt: string): 
     return block;
 }
 
-// Helper to create Search block (for web/arxiv)
 function createSearchBlock(type: string, query: string): HTMLElement {
     const block = document.createElement('div');
     block.className = 'generation-block';
@@ -290,8 +289,8 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     };
 }
 
-function extractFilePaths(content: string): { type: 'file' | 'diff' | null, path: string }[] {
-    const infos: { type: 'file' | 'diff' | null, path: string }[] = [];
+function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | null, path: string }[] {
+    const infos: { type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | null, path: string }[] = [];
     const lines = content.split('\n');
     let inBlock = false;
     let fenceLength = 0;
@@ -310,13 +309,16 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | null, path
                 let j = i - 1;
                 while (j >= 0 && lines[j].trim() === '') j--; 
                 
-                let type: 'file' | 'diff' | null = null;
+                let type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | null = null;
                 let pathStr = '';
 
                 if (j >= 0) {
                     const prevLine = lines[j].trim();
                     const fileMatch = prevLine.match(/^(?:(?:\*\*|__)?File(?:\*\*|__)?[:\s])\s*(.+)$/i);
                     const diffMatch = prevLine.match(/^(?:(?:\*\*|__)?Diff(?:\*\*|__)?[:\s])\s*(.+)$/i);
+                    const insertMatch = prevLine.match(/^(?:(?:\*\*|__)?Insert(?:\*\*|__)?[:\s])\s*(.+)$/i);
+                    const replaceMatch = prevLine.match(/^(?:(?:\*\*|__)?Replace(?:\*\*|__)?[:\s])\s*(.+)$/i);
+                    const deleteMatch = prevLine.match(/^(?:(?:\*\*|__)?DeleteCode(?:\*\*|__)?[:\s])\s*(.+)$/i);
 
                     if (fileMatch) {
                         type = 'file';
@@ -324,6 +326,15 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | null, path
                     } else if (diffMatch) {
                         type = 'diff';
                         pathStr = diffMatch[1].trim();
+                    } else if (insertMatch) {
+                        type = 'insert';
+                        pathStr = insertMatch[1].trim();
+                    } else if (replaceMatch) {
+                        type = 'replace';
+                        pathStr = replaceMatch[1].trim();
+                    } else if (deleteMatch) {
+                        type = 'delete';
+                        pathStr = deleteMatch[1].trim();
                     }
                 }
                 
@@ -351,7 +362,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
     if (pres.length === 0) return;
 
     let originalContentText = '';
-    // ... (content extraction logic)
     
     if (contentSource !== undefined) {
         if (Array.isArray(contentSource)) {
@@ -393,6 +403,9 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
         let isFileBlock = false;
         let isDiff = false;
         let diffFilePath = '';
+        let isInsert = false;
+        let isReplace = false;
+        let isDeleteCode = false;
 
         if (info) {
             if (info.type === 'file') {
@@ -401,6 +414,15 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             } else if (info.type === 'diff') {
                 diffFilePath = info.path;
                 isDiff = true;
+            } else if (info.type === 'insert') {
+                filePath = info.path;
+                isInsert = true;
+            } else if (info.type === 'replace') {
+                filePath = info.path;
+                isReplace = true;
+            } else if (info.type === 'delete') {
+                filePath = info.path;
+                isDeleteCode = true;
             }
         } else {
             if (language === 'diff') {
@@ -414,19 +436,19 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             }
         }
 
-        // Hide "File: ..." or "Diff: ..." lines if we detected them
         const prevEl = pre.previousElementSibling as HTMLElement;
         if (prevEl && (prevEl.tagName === 'P' || prevEl.tagName === 'DIV')) {
              const text = prevEl.textContent || "";
-             if ((isFileBlock && /File/i.test(text)) || (isDiff && /Diff/i.test(text))) {
+             if ((isFileBlock && /File/i.test(text)) || 
+                 (isDiff && /Diff/i.test(text)) || 
+                 (isInsert && /Insert/i.test(text)) ||
+                 (isReplace && /Replace/i.test(text)) ||
+                 (isDeleteCode && /DeleteCode/i.test(text))) {
                  prevEl.style.display = 'none';
              }
         }
 
-        // --- PRIORITY HANDLING FOR SPECIAL BLOCKS ---
-        
         if (language === 'image_prompt') {
-             // Use filePath if present (for saving)
              const genBlock = createGenerationBlock('Image', filePath, codeText);
              if (pre.parentNode) pre.parentNode.replaceChild(genBlock, pre);
              return;
@@ -443,8 +465,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
              if (pre.parentNode) pre.parentNode.replaceChild(searchBlock, pre);
              return;
         }
-
-        // --- STANDARD BLOCKS ---
 
         const details = document.createElement('details');
         details.className = 'code-collapsible';
@@ -482,7 +502,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             actions.appendChild(inspectBtn);
         }
 
-        // Determine if we should show Apply buttons
         if (isFileBlock && filePath) {
             langLabel.textContent = `${language} : ${filePath}`;
             
@@ -494,7 +513,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             else actions.appendChild(applyBtn);
 
         } else if (isDiff) {
-            // ... (diff handling)
             const path = diffFilePath || 'patch';
             langLabel.textContent = `${language} : Diff: ${path}`;
             
@@ -504,6 +522,33 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             
             if (actions.firstChild) actions.insertBefore(applyPatchBtn, actions.firstChild);
             else actions.appendChild(applyPatchBtn);
+
+        } else if (isInsert) {
+            langLabel.textContent = `Insert into ${filePath}`;
+            const insertBtn = createButton('Insert Code', 'codicon-arrow-right', () => {
+                vscode.postMessage({ command: 'insertCode', filePath: filePath, content: codeText });
+            }, 'code-action-btn apply-btn');
+            
+            if (actions.firstChild) actions.insertBefore(insertBtn, actions.firstChild);
+            else actions.appendChild(insertBtn);
+
+        } else if (isReplace) {
+            langLabel.textContent = `Replace in ${filePath}`;
+            const replaceBtn = createButton('Replace Code', 'codicon-arrow-swap', () => {
+                vscode.postMessage({ command: 'replaceCode', filePath: filePath, content: codeText });
+            }, 'code-action-btn apply-btn');
+            
+            if (actions.firstChild) actions.insertBefore(replaceBtn, actions.firstChild);
+            else actions.appendChild(replaceBtn);
+
+        } else if (isDeleteCode) {
+            langLabel.textContent = `Delete from ${filePath}`;
+            const deleteCodeBtn = createButton('Delete Code', 'codicon-trash', () => {
+                vscode.postMessage({ command: 'deleteCodeBlock', filePath: filePath, content: codeText });
+            }, 'code-action-btn delete-btn');
+            
+            if (actions.firstChild) actions.insertBefore(deleteCodeBtn, actions.firstChild);
+            else actions.appendChild(deleteCodeBtn);
 
         } else if (language === 'rename') {
             const renameBtn = createButton('Move/Rename', 'codicon-git-compare', () => {
@@ -526,7 +571,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             else actions.appendChild(deleteBtn);
 
         } else if (language === 'select') {
-            // ...
             const selectBtn = createButton('Add to Context', 'codicon-add', () => {
                 selectBtn.innerHTML = `<span class="codicon codicon-sync spin"></span> Adding...`;
                 selectBtn.disabled = true;
@@ -544,7 +588,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             else actions.appendChild(selectBtn);
 
         } else if (language === 'context_reset' || language === 'reset_context') {
-            // ...
             const resetBtn = createButton('Reset Context', 'codicon-clear-all', () => {
                 vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'resetContext', params: {} } });
             }, 'code-action-btn delete-btn');
@@ -592,9 +635,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
     });
 }
 
-// ... (rest of file)
 function enhanceWithCommandButtons(container: HTMLElement) {
-    // ... implementation
     const content = container.querySelector('.message-content');
     if (!content) return;
     const commandRegex = /\[command:(\w+)\|label:([^|]+)\|params:({[^}]+})\]/g;
@@ -643,7 +684,7 @@ export function scheduleRender(messageId: string) {
             renderMessageContent(messageId, state.streamingMessages[messageId].buffer);
             state.streamingMessages[messageId].timer = null;
         }
-    }, RENDER_THROTTLE_MS); // RENDER_THROTTLE_MS
+    }, RENDER_THROTTLE_MS);
 }
 
 export function renderMessageContent(messageId: string, rawContent: any, isFinal: boolean = false) {
@@ -657,7 +698,6 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
     try {
         if (Array.isArray(rawContent)) {
-            // ... [Multipart handling] ...
             let htmlContent = '';
             rawContent.forEach(part => {
                 if (part.type === 'text') {
@@ -674,8 +714,6 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             thoughts.forEach(thought => {
                 const thinkDiv = document.createElement('div');
                 thinkDiv.className = 'plan-scratchpad'; 
-                // Determine title based on indicator visibility or generic
-                // Or just use "Deep Thinking Process" if it's a thinking block
                 const title = "Deep Thinking Process";
                 thinkDiv.innerHTML = `
                     <details ${isFinal ? '' : 'open'}>
@@ -713,7 +751,6 @@ export function addMessage(message: any, isFinal: boolean = true) {
     }
 }
 
-// ... addAttachment, addChatMessage etc.
 function addAttachment(message: any) {
     if (!dom.attachmentsContainer) return;
     const wrapper = dom.attachmentsContainer.closest('.special-zone-message');

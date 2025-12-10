@@ -101,6 +101,24 @@ export class AgentManager {
         this.chatPanel.displayPlan(plan);
     }
 
+    /**
+     * Filters available tools based on the discussion capabilities.
+     * This ensures the planner doesn't try to use tools that are disabled.
+     */
+    private getContextAwareTools(discussion: Discussion): ToolDefinition[] {
+        const baseTools = this.toolManager.getEnabledTools();
+        const caps = discussion.capabilities;
+        
+        if (!caps) return baseTools;
+
+        return baseTools.filter(tool => {
+            if (tool.name === 'search_web' && !caps.webSearch) return false;
+            if (tool.name === 'search_arxiv' && !caps.arxivSearch) return false;
+            if (tool.name === 'generate_image' && !caps.imageGen) return false;
+            return true;
+        });
+    }
+
     public async run(initialObjective: string, discussion: Discussion, workspaceFolder: vscode.WorkspaceFolder, modelOverride?: string) {
         if (!this.isActive || !this.processManager) return;
         
@@ -109,9 +127,11 @@ export class AgentManager {
         try {
             this.currentWorkspaceFolder = workspaceFolder;
             this.currentDiscussion = discussion;
-    
             this.chatHistory = [...discussion.messages];
             
+            // Filter tools based on capabilities
+            const allowedTools = this.getContextAwareTools(discussion);
+
             const initialPlanState: Plan = { 
                 objective: initialObjective,
                 scratchpad: "🧠 Thinking... Generating the initial execution plan.",
@@ -126,7 +146,8 @@ export class AgentManager {
                 undefined, 
                 controller.signal, 
                 modelOverride,
-                this.chatHistory
+                this.chatHistory,
+                allowedTools // Pass filtered tools
             );
             
             if (controller.signal.aborted) {
@@ -138,7 +159,7 @@ export class AgentManager {
             if (!planResult.plan) {
                  const failedPlanState: Plan = {
                     objective: initialObjective,
-                    scratchpad: `❌ **Plan Generation Failed:** Could not generate a valid plan, even after self-correction attempts. \n\n**Error:** ${planResult.error}\n\n**Final Raw Response from Model:**\n\`\`\`\n${planResult.rawResponse}\n\`\`\``,
+                    scratchpad: `❌ **Plan Generation Failed:** ${planResult.error}\n\nRaw:\n\`\`\`\n${planResult.rawResponse}\n\`\`\``,
                     tasks: []
                 };
                 this.displayAndSavePlan(failedPlanState);
@@ -151,7 +172,7 @@ export class AgentManager {
 
         } catch (error: any) {
             if (error.name !== 'AbortError') {
-                this.chatPanel.addMessageToDiscussion({ role: 'system', content: `❌ **Critical Error during planning:** ${error.message}` });
+                this.chatPanel.addMessageToDiscussion({ role: 'system', content: `❌ **Critical Error:** ${error.message}` });
             }
             this.deactivateAgent();
             return;
@@ -242,20 +263,20 @@ export class AgentManager {
                         let userChoice: string | undefined = '';
                         while (userChoice !== 'Stop' && userChoice !== 'Continue Anyway') {
                             userChoice = await vscode.window.showErrorMessage(
-                                `Agent task "${task.description}" failed after ${task.retries} attempt(s). What should I do?`,
+                                `Agent task "${task.description}" failed. What should I do?`,
                                 { modal: true },
                                 'Stop', 'Continue Anyway', 'View Log'
                             );
     
                             if (userChoice === 'View Log') {
-                                InfoPanel.createOrShow(this.extensionUri, `Log for Failed Task: ${task.id}`, `## Task Description\n${task.description}\n\n## Failure Log\n\`\`\`\n${task.result || 'No output available.'}\n\`\`\``);
+                                InfoPanel.createOrShow(this.extensionUri, `Log for Task: ${task.id}`, `## Failure Log\n\`\`\`\n${task.result}\n\`\`\``);
                             } else if (userChoice === undefined) {
                                 userChoice = 'Stop';
                             }
                         }
     
                         if (userChoice === 'Stop') {
-                            this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🛑 **Execution Halted:** User chose to stop after failed attempts.` });
+                            this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🛑 **Execution Halted:** User chose to stop.` });
                             this.deactivateAgent();
                             return;
                         }
@@ -269,12 +290,15 @@ export class AgentManager {
         this.deactivateAgent();
     }
 
-    // ... (revisePlanForFailure, replan, resolveParameters, etc. unchanged)
-
     private async executeTask(action: string, params: any, signal: AbortSignal): Promise<{ success: boolean, output: string }> {
         const tool = this.toolManager.getTool(action);
         if (!tool) {
             return { success: false, output: `Unknown action: ${action}` };
+        }
+
+        // Check again if allowed in discussion (Double safety)
+        if (this.currentDiscussion && this.currentDiscussion.capabilities) {
+            if (action === 'search_web' && !this.currentDiscussion.capabilities.webSearch) return { success: false, output: "Web Search disabled."};
         }
 
         const env: ToolExecutionEnv = {
@@ -290,13 +314,15 @@ export class AgentManager {
         return tool.execute(params, env, signal);
     }
     
-    // ... (rest of methods)
+    // ... (rest of methods: revisePlanForFailure, replan, etc. - ensure revisePlan passes allowedTools too)
     
     private async revisePlanForFailure(failedTask: Task, signal: AbortSignal, modelOverride?: string): Promise<boolean> {
-        if (!this.currentPlan) return false;
+        if (!this.currentPlan || !this.currentDiscussion) return false;
         
+        const allowedTools = this.getContextAwareTools(this.currentDiscussion);
+
         failedTask.retries++;
-        this.currentPlan.scratchpad += `\n\n---\n⚠️ **Task ${failedTask.id} Failed.** Attempting to self-correct (Attempt ${failedTask.retries})...\n---`;
+        this.currentPlan.scratchpad += `\n\n---\n⚠️ **Task ${failedTask.id} Failed.** Attempting to self-correct...\n---`;
         this.displayAndSavePlan(this.currentPlan);
 
         const planResult = await this.planParser.generateAndParsePlan(
@@ -306,22 +332,21 @@ export class AgentManager {
             failedTask.result,
             signal,
             modelOverride,
-            this.chatHistory
+            this.chatHistory,
+            allowedTools
         );
 
         if (signal.aborted) { return false; }
 
         if (!planResult.plan) {
-            this.currentPlan.scratchpad += `\n\n❌ **Self-Correction Failed:** The fixer agent's response was invalid.\n\n**Raw Response:**\n${planResult.rawResponse}`;
+            this.currentPlan.scratchpad += `\n\n❌ **Self-Correction Failed:** Invalid response.\n${planResult.rawResponse}`;
             this.displayAndSavePlan(this.currentPlan);
             return false;
         }
 
         const revisedPlanFragment = planResult.plan;
-        
         const failedTaskIndex = this.currentPlan.tasks.findIndex(t => t.id === failedTask.id);
-        if (failedTaskIndex === -1) return false;
-
+        
         this.currentPlan.tasks.splice(failedTaskIndex);
 
         let nextId = this.currentPlan.tasks.length > 0 ? Math.max(...this.currentPlan.tasks.map(t => t.id)) + 1 : 1;
@@ -330,49 +355,41 @@ export class AgentManager {
             this.currentPlan.tasks.push(newTask);
         }
         
-        this.currentPlan.scratchpad += `\n\n--- PLAN REVISED after failure of task ${failedTask.id} ---`;
+        this.currentPlan.scratchpad += `\n\n--- PLAN REVISED ---`;
         this.displayAndSavePlan(this.currentPlan);
         return true;
     }
 
     public async replan(instruction: string, signal: AbortSignal, modelOverride?: string): Promise<{ success: boolean; output: string; }> {
-        if (!this.currentPlan) {
-            return { success: false, output: "No active plan to modify." };
-        }
+        if (!this.currentPlan) return { success: false, output: "No active plan." };
 
         const completedTasks = this.currentPlan.tasks.filter(t => t.status === 'completed');
         const tasksSummary = completedTasks.map(t => `- Task ${t.id} (${t.action}): Completed`).join('\n');
         
-        const systemPrompt = this.planParser.getPlannerSystemPrompt(true); // Re-use the revision prompt
+        const allowedTools = this.currentDiscussion ? this.getContextAwareTools(this.currentDiscussion) : this.toolManager.getEnabledTools();
+        const systemPrompt = this.planParser.getPlannerSystemPrompt(true, allowedTools);
+        
         const promptContent = `
 The original objective was: "${this.currentPlan.objective}"
-
-We have successfully completed the following tasks:
+Completed tasks:
 ${tasksSummary}
 
-The user or an agent has issued a new instruction to modify the remaining plan:
-"${instruction}"
+New Instruction: "${instruction}"
 
-Your task is to generate a NEW set of tasks to complete the objective, incorporating this new instruction. 
-These new tasks will replace all pending tasks in the current plan.
-Start the task IDs sequentially after the last completed task ID (${completedTasks.length > 0 ? completedTasks[completedTasks.length-1].id : 0}).
+Generate a NEW set of tasks to replace the pending ones.
+Start ID from: ${completedTasks.length > 0 ? completedTasks[completedTasks.length-1].id + 1 : 1}.
 `;
 
         try {
             const rawResponse = await this.lollmsApi.sendChat([systemPrompt, { role: 'user', content: promptContent }], null, signal, modelOverride);
-            const jsonString = this.planParser.extractJson(rawResponse);
+            const jsonString = this.planParser.extractJson(stripThinkingTags(rawResponse));
             
-            if (!jsonString) {
-                return { success: false, output: "Failed to parse new plan from AI response." };
-            }
+            if (!jsonString) return { success: false, output: "Failed to parse new plan." };
 
             const newPlanFragment = JSON.parse(jsonString) as Plan;
-            
-            // Remove all pending/future tasks
-            const splitIndex = this.currentTaskIndex + 1; // Keep current (if it called this tool) as completed/processing
+            const splitIndex = this.currentTaskIndex + 1;
             this.currentPlan.tasks.splice(splitIndex);
 
-            // Append new tasks
             let nextId = this.currentPlan.tasks.length > 0 ? Math.max(...this.currentPlan.tasks.map(t => t.id)) + 1 : 1;
             for (const newTask of newPlanFragment.tasks) {
                 newTask.id = nextId++;
@@ -380,9 +397,8 @@ Start the task IDs sequentially after the last completed task ID (${completedTas
                 this.currentPlan.tasks.push(newTask);
             }
 
-            this.currentPlan.scratchpad += `\n\n--- PLAN MODIFIED via edit_plan instruction: "${instruction}" ---`;
+            this.currentPlan.scratchpad += `\n\n--- PLAN MODIFIED: "${instruction}" ---`;
             this.displayAndSavePlan(this.currentPlan);
-            
             return { success: true, output: "Plan successfully modified." };
 
         } catch (error: any) {
@@ -391,9 +407,7 @@ Start the task IDs sequentially after the last completed task ID (${completedTas
     }
     
     private resolveParameters(task: Task): { [key: string]: any } {
-        if (!this.currentPlan) {
-            throw new Error("Cannot resolve parameters without a current plan.");
-        }
+        if (!this.currentPlan) throw new Error("No current plan.");
         const resolvedParams: { [key: string]: any } = {};
         const regex = /\{\{tasks\[(\d+)\]\.result\}\}/g;
 
@@ -408,7 +422,7 @@ Start the task IDs sequentially after the last completed task ID (${completedTas
                     if (sourceTask && sourceTask.status === 'completed' && sourceTask.result !== null) {
                         resolvedValue = resolvedValue.replace(match[0], sourceTask.result);
                     } else {
-                        throw new Error(`Could not resolve parameter: Source task ${taskId} has not completed successfully or has no result.`);
+                        throw new Error(`Dependant task ${taskId} not completed.`);
                     }
                 }
                 resolvedParams[key] = resolvedValue;
@@ -456,31 +470,24 @@ Start the task IDs sequentially after the last completed task ID (${completedTas
     public async runCommand(command: string, signal: AbortSignal): Promise<{ success: boolean, output: string }> {
         return new Promise(resolve => {
             if (!this.currentWorkspaceFolder) {
-                resolve({ success: false, output: "Error: Agent has no active workspace folder to run command in." });
+                resolve({ success: false, output: "Error: No active workspace." });
                 return;
             }
             const child = exec(command, { cwd: this.currentWorkspaceFolder.uri.fsPath }, (error, stdout, stderr) => {
-                const stdoutContent = stdout.trim();
-                const stderrContent = stderr.trim();
                 let output = '';
-    
-                if (stdoutContent) {
-                    output += `STDOUT:\n${stdoutContent}\n\n`;
-                }
-                if (stderrContent) {
-                    output += `STDERR:\n${stderrContent}`;
-                }
+                if (stdout.trim()) output += `STDOUT:\n${stdout.trim()}\n\n`;
+                if (stderr.trim()) output += `STDERR:\n${stderr.trim()}`;
     
                 if (error) {
-                    resolve({ success: false, output: `Error during command execution:\n${output.trim()}\n\nError Object:\n${error.message}` });
+                    resolve({ success: false, output: `Error:\n${output.trim()}\n\nCode: ${error.code}` });
                     return;
                 }
-                resolve({ success: true, output: `Command executed successfully.\n${output.trim() || '(No output)'}` });
+                resolve({ success: true, output: `Success.\n${output.trim() || '(No output)'}` });
             });
             
             signal.addEventListener('abort', () => {
                 child.kill();
-                resolve({ success: false, output: 'Command cancelled by user.' });
+                resolve({ success: false, output: 'Command cancelled.' });
             });
         });
     }

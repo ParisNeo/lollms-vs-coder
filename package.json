@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.43",
+  "version": "0.5.44",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -30,6 +30,15 @@
       {
         "command": "lollms-vs-coder.startChat",
         "title": "%command.startChat.title%"
+      },
+      {
+        "command": "lollms-vs-coder.quickEdit",
+        "title": "Lollms: Quick Edit / Ask",
+        "icon": "$(sparkle)"
+      },
+      {
+        "command": "lollms-vs-coder.checkConnection",
+        "title": "Lollms: Check Connection"
       },
       {
         "command": "lollms-vs-coder.showLog",
@@ -405,6 +414,14 @@
         "icon": "$(cloud-upload)"
       }
     ],
+    "keybindings": [
+      {
+        "command": "lollms-vs-coder.quickEdit",
+        "key": "ctrl+shift+l",
+        "mac": "cmd+shift+l",
+        "when": "editorTextFocus"
+      }
+    ],
     "configuration": {
       "type": "object",
       "title": "%config.title%",
@@ -431,6 +448,11 @@
           "type": "string",
           "default": "",
           "description": "Search Engine ID (CX) for Google Custom Search."
+        },
+        "lollmsVsCoder.autoUpdateChangelog": {
+          "type": "boolean",
+          "default": false,
+          "description": "%config.autoUpdateChangelog.description%"
         },
         "lollmsVsCoder.reasoningLevel": {
           "type": "string",

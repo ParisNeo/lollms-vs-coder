@@ -1,1 +1,11 @@
-
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Lollms Default Run",
+            "request": "launch",
+            "type": "node",
+            "program": "${workspaceFolder}/src/extension.ts"
+        }
+    ]
+}

@@ -22,7 +22,6 @@ import { LollmsInlineCompletionProvider } from './commands/inlineSuggestions';
 import { AgentManager } from './agentManager';
 import { InfoPanel } from './commands/infoPanel';
 import { CustomActionModal } from './commands/customActionModal';
-import * as https from 'https';
 import { ProcessManager } from './processManager';
 import { exec } from 'child_process';
 import { promisify } from 'util';
@@ -38,8 +37,10 @@ import { CommitInspectorPanel } from './commands/commitInspectorPanel';
 import { Logger } from './logger';
 import { PersonalityManager } from './personalityManager';
 import { PersonalitiesTreeProvider } from './commands/personalitiesTreeProvider';
-
 import { EducativeNotebookModal } from './commands/educativeNotebookModal';
+import { QuickEditManager } from './quickEditManager';
+import { InlineDiffProvider } from './commands/inlineDiffProvider';
+
 const execAsync = promisify(exec);
 
 interface GitExtension { getAPI(version: 1): API; }
@@ -243,13 +244,14 @@ User preferences: ${agentPersonaPrompt}`;
 async function buildDebugErrorPrompt(
     errorDetails: { message: string, stack?: string, filePath?: vscode.Uri, line?: number } | null, 
     contextManager: ContextManager, 
-    contextStateProvider: ContextStateProvider | undefined
+    contextStateProvider: ContextStateProvider | undefined,
+    isSearchAvailable: boolean
 ): Promise<string> {
     if (!errorDetails) {
         return "No debug error has been captured.";
     }
 
-    let prompt = `I'm encountering an error while debugging my project. Can you help me fix it?\n\n**Error Message:**\n\`\`\`\n${errorDetails.message}\n\`\`\`\n\n**Full Stack Trace:**\n\`\`\`\n${errorDetails.stack || 'No stack trace available.'}\n\`\`\``;
+    let prompt = `I'm encountering an error while debugging my project.\n\n**Error Message:**\n\`\`\`\n${errorDetails.message}\n\`\`\`\n\n**Full Stack Trace:**\n\`\`\`\n${errorDetails.stack || 'No stack trace available.'}\n\`\`\``;
 
     if (errorDetails.filePath && errorDetails.line) {
         const fileUri = errorDetails.filePath;
@@ -290,6 +292,14 @@ async function buildDebugErrorPrompt(
     } else {
          const contextContent = await contextManager.getContextContent();
          prompt += `\n\nHere is the current project context which might be relevant:\n${contextContent.text}\n\nPlease analyze the error and provide a fix.`;
+    }
+
+    // Add specific instruction for agent to use grounding IF available
+    prompt += `\n\n**INSTRUCTION:** Fix this error.`;
+    if (isSearchAvailable) {
+        prompt += ` If the error involves a specific library or the solution is not obvious, **USE \`search_web\`** to find the solution. Do NOT guess.`;
+    } else {
+        prompt += ` Analyze the code and error log to find the solution.`;
     }
 
     return prompt;
@@ -369,6 +379,30 @@ export async function activate(context: vscode.ExtensionContext) {
     const debugCodeLensProvider = new DebugCodeLensProvider(debugErrorManager);
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, debugCodeLensProvider));
     
+    // --- QUICK EDIT / INLINE DIFF INIT ---
+    const inlineDiffProvider = new InlineDiffProvider(lollmsAPI);
+    // Register it for files and notebooks
+    context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, inlineDiffProvider));
+    context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'untitled' }, inlineDiffProvider));
+    context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'vscode-notebook-cell' }, inlineDiffProvider));
+
+    const quickEditManager = new QuickEditManager(lollmsAPI, inlineDiffProvider);
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.quickEdit', () => {
+        quickEditManager.triggerQuickEdit();
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.acceptDiff', (sessionId: string) => {
+        inlineDiffProvider.accept(sessionId);
+    }));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.rejectDiff', (sessionId: string) => {
+        inlineDiffProvider.reject(sessionId);
+    }));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refineDiff', (sessionId: string) => {
+        inlineDiffProvider.refine(sessionId);
+    }));
+    // -------------------------------------
+
     context.subscriptions.push(
         vscode.languages.registerCodeActionsProvider('*', 
             new LollmsCodeActionProvider(promptManager), {
@@ -383,7 +417,6 @@ export async function activate(context: vscode.ExtensionContext) {
         );
     }
     
-    // Pass context to DiscussionManager for globalState access
     let discussionManager: DiscussionManager | undefined;
     let discussionTreeProvider: DiscussionTreeProvider | undefined;
     let discussionView: vscode.TreeView<vscode.TreeItem> | undefined;
@@ -398,7 +431,6 @@ export async function activate(context: vscode.ExtensionContext) {
     
     const setupChatPanel = (panel: ChatPanel) => {
         if (!panel.agentManager) {
-            // Inject codeGraphManager and skillsManager into AgentManager
             panel.agentManager = new AgentManager(panel, lollmsAPI, contextManager, gitIntegration, discussionManager!, context.extensionUri, codeGraphManager, skillsManager);
         }
         panel.setProcessManager(processManager);
@@ -633,6 +665,136 @@ Please analyze this output (e.g., error log, script output, or configuration tex
             return;
         }
         vscode.commands.executeCommand('lollms-vs-coder.newDiscussion');
+    }));
+
+    const saveCodeCommand = vscode.commands.registerCommand('lollms-vs-coder.saveCodeToFile', async (content: string, language: string) => {
+        const fileExtension = language === 'python' ? 'py' : language === 'javascript' ? 'js' : language === 'typescript' ? 'ts' : language;
+        const uri = await vscode.window.showSaveDialog({
+            filters: {
+                [language]: [fileExtension]
+            }
+        });
+        if (uri) {
+            await vscode.workspace.fs.writeFile(uri, Buffer.from(content));
+            vscode.window.showInformationMessage('Code saved successfully.');
+        }
+    });
+
+    const applyDiffCommand = vscode.commands.registerCommand('lollms-vs-coder.applyDiff', async (diffContent: string) => {
+        try { await applyDiff(diffContent); vscode.window.showInformationMessage(vscode.l10n.t('info.diffApplied')); } 
+        catch (error: any) { vscode.window.showErrorMessage(vscode.l10n.t('error.failedToApplyDiff', error.message)); }
+    });
+    context.subscriptions.push(saveCodeCommand, applyDiffCommand);
+
+    const chatStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
+    chatStatusBar.text = '$(comment-discussion) Lollms Chat';
+    chatStatusBar.command = 'lollms-vs-coder.startChat';
+    chatStatusBar.tooltip = vscode.l10n.t('tooltip.startNewDiscussion');
+    chatStatusBar.show();
+    context.subscriptions.push(chatStatusBar);
+
+    // --- NEW: Quick Edit Button (Companion) ---
+    const quickEditStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 102);
+    quickEditStatusBar.text = '$(sparkle) lollms';
+    quickEditStatusBar.command = 'lollms-vs-coder.quickEdit';
+    quickEditStatusBar.tooltip = 'Open Lollms Companion (Quick Edit/Ask) - Ctrl+Shift+L';
+    quickEditStatusBar.show();
+    context.subscriptions.push(quickEditStatusBar);
+
+    // --- NEW: Companion Connection Status Indicator ---
+    const companionStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 101);
+    companionStatusBarItem.command = 'lollms-vs-coder.checkConnection';
+    companionStatusBarItem.text = '$(sync~spin) Lollms: Checking...';
+    companionStatusBarItem.tooltip = 'Click to re-check connection to Lollms Server';
+    companionStatusBarItem.show();
+    context.subscriptions.push(companionStatusBarItem);
+
+    const checkConnection = async () => {
+        companionStatusBarItem.text = '$(sync~spin) Lollms: Checking...';
+        try {
+            await lollmsAPI.getModels(true);
+            companionStatusBarItem.text = '$(pulse) Lollms: Online';
+            companionStatusBarItem.backgroundColor = undefined; 
+            companionStatusBarItem.tooltip = 'Lollms Server is Online. Click to re-check.';
+        } catch (error) {
+            companionStatusBarItem.text = '$(circle-slash) Lollms: Offline';
+            companionStatusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+            companionStatusBarItem.tooltip = 'Lollms Server is Offline. Click to retry connection.';
+        }
+    };
+    checkConnection();
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.checkConnection', async () => await checkConnection()));
+    const connectionInterval = setInterval(checkConnection, 60000);
+    context.subscriptions.push({ dispose: () => clearInterval(connectionInterval) });
+    // --- End Companion Status ---
+
+    const modelStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
+    modelStatusBarItem.command = 'lollms-vs-coder.selectModel';
+    modelStatusBarItem.tooltip = vscode.l10n.t('tooltip.selectModel');
+    
+    function updateModelStatus() {
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const modelName = config.get('modelName') as string || vscode.l10n.t('label.notSet');
+        modelStatusBarItem.text = `$(chip) ${modelName}`;
+        modelStatusBarItem.show();
+    }
+    updateModelStatus();
+    context.subscriptions.push(modelStatusBarItem);
+    
+    context.subscriptions.push(vscode.commands.registerCommand('lollmsApi.recreateClient', async () => {
+        const newConfigValues = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const newConfig: LollmsConfig = {
+            apiKey: newConfigValues.get<string>('apiKey')?.trim() || '',
+            apiUrl: newConfigValues.get<string>('apiUrl') || 'http://localhost:9642',
+            modelName: newConfigValues.get<string>('modelName') || 'ollama/mistral',
+            disableSslVerification: newConfigValues.get<boolean>('disableSslVerification') || false,
+            sslCertPath: newConfigValues.get<string>('sslCertPath') || ''
+        };
+        lollmsAPI.updateConfig(newConfig);
+        updateModelStatus();
+        await checkConnection();
+        vscode.window.showInformationMessage(vscode.l10n.t('info.apiReconfigured'));
+    }));
+    
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.selectModel', async () => {
+        try {
+            const models = await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: vscode.l10n.t("progress.fetchingModels"),
+                cancellable: false
+            }, () => lollmsAPI.getModels());
+
+            if (!models || models.length === 0) {
+                vscode.window.showWarningMessage(vscode.l10n.t("info.noModelsFound"));
+                return;
+            }
+
+            const modelItems = models.map(m => ({ label: m.id }));
+            const selectedModel = await vscode.window.showQuickPick(modelItems, {
+                placeHolder: vscode.l10n.t("prompt.selectModel")
+            });
+
+            if (selectedModel) {
+                const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+                await config.update('modelName', selectedModel.label, vscode.ConfigurationTarget.Global);
+            }
+        } catch (error: any) {
+            vscode.window.showErrorMessage(vscode.l10n.t('error.failedToFetchModels', error.message));
+        }
+    }));    
+
+    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+        if (e.affectsConfiguration('lollmsVsCoder.modelName') || 
+            e.affectsConfiguration('lollmsVsCoder.apiUrl') ||
+            e.affectsConfiguration('lollmsVsCoder.apiKey') ||
+            e.affectsConfiguration('lollmsVsCoder.disableSslVerification') ||
+            e.affectsConfiguration('lollmsVsCoder.sslCertPath')) {
+            vscode.commands.executeCommand('lollmsApi.recreateClient');
+        }
+    }));
+    
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.cancelProcess', (item: ProcessItem) => {
+        processManager.cancel(item.process.id);
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showLog', () => {
@@ -1638,6 +1800,189 @@ ${fileContent}
         }
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.insertCode', async (filePath: string, content: string) => {
+        if (!activeWorkspaceFolder) {
+            vscode.window.showErrorMessage("No active workspace.");
+            return;
+        }
+        
+        const match = content.match(/<<<<([\s\S]*?)====([\s\S]*?)(?:>>>>|$)/);
+        if (!match) {
+             vscode.window.showErrorMessage("Invalid insertion block format.");
+             return;
+        }
+        
+        const contextCode = match[1].replace(/^\s*[\r\n]/, '').replace(/[\r\n]\s*$/, ''); 
+        const insertCode = match[2].replace(/^\s*[\r\n]/, '').replace(/[\r\n]\s*$/, '');
+        
+        if (!contextCode.trim()) {
+             vscode.window.showErrorMessage("Insertion context is empty.");
+             return;
+        }
+
+        const fileUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, filePath);
+        
+        try {
+            const document = await vscode.workspace.openTextDocument(fileUri);
+            const text = document.getText();
+            
+            const normalizedText = text.replace(/\r\n/g, '\n');
+            const normalizedContext = contextCode.replace(/\r\n/g, '\n');
+            
+            const index = normalizedText.indexOf(normalizedContext);
+            if (index === -1) {
+                vscode.window.showErrorMessage(`Could not locate context code in ${filePath}.`);
+                return;
+            }
+            
+            const position = document.positionAt(index + normalizedContext.length);
+            const insertText = '\n' + insertCode;
+            
+            const fileContentBytes = await vscode.workspace.fs.readFile(fileUri);
+            originalContentProvider.set(fileUri, fileContentBytes.toString());
+            
+            const edit = new vscode.WorkspaceEdit();
+            edit.insert(fileUri, position, insertText);
+            const success = await vscode.workspace.applyEdit(edit);
+            
+            if (!success) {
+                vscode.window.showErrorMessage("Failed to apply insertion edit.");
+                return;
+            }
+            
+            vscode.window.showInformationMessage(`Code inserted into ${filePath}.`);
+            const originalUriForDiff = fileUri.with({ scheme: 'lollms-original' });
+            const title = `${path.basename(fileUri.path)} (Original) ↔ ${path.basename(fileUri.path)} (After Insertion)`;
+            await vscode.commands.executeCommand('vscode.diff', originalUriForDiff, fileUri, title);
+            
+        } catch(e: any) {
+            vscode.window.showErrorMessage(`Error accessing file: ${e.message}`);
+        }
+    }));
+
+    // --- NEW: REPLACE CODE COMMAND ---
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string) => {
+        if (!activeWorkspaceFolder) {
+            vscode.window.showErrorMessage("No active workspace.");
+            return;
+        }
+        
+        const match = content.match(/<<<<([\s\S]*?)====([\s\S]*?)(?:>>>>|$)/);
+        if (!match) {
+             vscode.window.showErrorMessage("Invalid replacement block format.");
+             return;
+        }
+        
+        const originalCode = match[1].replace(/^\s*[\r\n]/, '').replace(/[\r\n]\s*$/, ''); 
+        const replacementCode = match[2].replace(/^\s*[\r\n]/, '').replace(/[\r\n]\s*$/, '');
+        
+        if (!originalCode.trim()) {
+             vscode.window.showErrorMessage("Original code context is empty.");
+             return;
+        }
+
+        const fileUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, filePath);
+        
+        try {
+            const document = await vscode.workspace.openTextDocument(fileUri);
+            const text = document.getText();
+            
+            const normalizedText = text.replace(/\r\n/g, '\n');
+            const normalizedOriginal = originalCode.replace(/\r\n/g, '\n');
+            
+            const index = normalizedText.indexOf(normalizedOriginal);
+            if (index === -1) {
+                vscode.window.showErrorMessage(`Could not locate code to replace in ${filePath}.`);
+                return;
+            }
+            
+            const startPos = document.positionAt(index);
+            const endPos = document.positionAt(index + normalizedOriginal.length);
+            const range = new vscode.Range(startPos, endPos);
+            
+            const fileContentBytes = await vscode.workspace.fs.readFile(fileUri);
+            originalContentProvider.set(fileUri, fileContentBytes.toString());
+            
+            const edit = new vscode.WorkspaceEdit();
+            edit.replace(fileUri, range, replacementCode);
+            const success = await vscode.workspace.applyEdit(edit);
+            
+            if (!success) {
+                vscode.window.showErrorMessage("Failed to apply replacement edit.");
+                return;
+            }
+            
+            vscode.window.showInformationMessage(`Code replaced in ${filePath}.`);
+            const originalUriForDiff = fileUri.with({ scheme: 'lollms-original' });
+            const title = `${path.basename(fileUri.path)} (Original) ↔ ${path.basename(fileUri.path)} (After Replacement)`;
+            await vscode.commands.executeCommand('vscode.diff', originalUriForDiff, fileUri, title);
+            
+        } catch(e: any) {
+            vscode.window.showErrorMessage(`Error accessing file: ${e.message}`);
+        }
+    }));
+
+    // --- NEW: DELETE CODE COMMAND ---
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deleteCodeBlock', async (filePath: string, content: string) => {
+        if (!activeWorkspaceFolder) {
+            vscode.window.showErrorMessage("No active workspace.");
+            return;
+        }
+        
+        const match = content.match(/<<<<([\s\S]*?)(?:>>>>|$)/);
+        if (!match) {
+             vscode.window.showErrorMessage("Invalid deletion block format.");
+             return;
+        }
+        
+        const codeToDelete = match[1].replace(/^\s*[\r\n]/, '').replace(/[\r\n]\s*$/, ''); 
+        
+        if (!codeToDelete.trim()) {
+             vscode.window.showErrorMessage("Code to delete is empty.");
+             return;
+        }
+
+        const fileUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, filePath);
+        
+        try {
+            const document = await vscode.workspace.openTextDocument(fileUri);
+            const text = document.getText();
+            
+            const normalizedText = text.replace(/\r\n/g, '\n');
+            const normalizedDeletion = codeToDelete.replace(/\r\n/g, '\n');
+            
+            const index = normalizedText.indexOf(normalizedDeletion);
+            if (index === -1) {
+                vscode.window.showErrorMessage(`Could not locate code to delete in ${filePath}.`);
+                return;
+            }
+            
+            const startPos = document.positionAt(index);
+            const endPos = document.positionAt(index + normalizedDeletion.length);
+            const range = new vscode.Range(startPos, endPos);
+            
+            const fileContentBytes = await vscode.workspace.fs.readFile(fileUri);
+            originalContentProvider.set(fileUri, fileContentBytes.toString());
+            
+            const edit = new vscode.WorkspaceEdit();
+            edit.delete(fileUri, range);
+            const success = await vscode.workspace.applyEdit(edit);
+            
+            if (!success) {
+                vscode.window.showErrorMessage("Failed to apply deletion edit.");
+                return;
+            }
+            
+            vscode.window.showInformationMessage(`Code deleted from ${filePath}.`);
+            const originalUriForDiff = fileUri.with({ scheme: 'lollms-original' });
+            const title = `${path.basename(fileUri.path)} (Original) ↔ ${path.basename(fileUri.path)} (After Deletion)`;
+            await vscode.commands.executeCommand('vscode.diff', originalUriForDiff, fileUri, title);
+            
+        } catch(e: any) {
+            vscode.window.showErrorMessage(`Error accessing file: ${e.message}`);
+        }
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyAllChanges', async (changes: { updates: {filePath: string, content: string}[], patches: {filePath: string, content: string}[] }) => {
         if (!activeWorkspaceFolder) {
             vscode.window.showErrorMessage(vscode.l10n.t('error.openWorkspaceToApplyChanges'));
@@ -1775,1037 +2120,8 @@ ${fileContent}
         }
     }));
     
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyPatchContent', async (filePath: string, patchContent: string) => {
-        if (!activeWorkspaceFolder){
-            vscode.window.showErrorMessage('No active workspace folder.');
-            return;
-        }
-        const currentWorkspaceFolder = activeWorkspaceFolder;
-        try {
-            const fileUri = vscode.Uri.joinPath(currentWorkspaceFolder.uri, filePath);
-            let originalContent = '';
-            try {
-                const fileContentBytes = await vscode.workspace.fs.readFile(fileUri);
-                originalContent = Buffer.from(fileContentBytes).toString('utf8');
-            } catch (error) {
-                vscode.window.showErrorMessage(`Cannot apply patch: file ${filePath} not found.`);
-                return;
-            }
-            originalContentProvider.set(fileUri, originalContent);
-
-            let finalPatch = patchContent;
-            if (!patchContent.trim().startsWith('--- a/')) {
-                finalPatch = `--- a/${filePath}\n+++ b/${filePath}\n${patchContent}`;
-            }
+    // Duplicated block removed from here
     
-            await applyDiff(finalPatch);
-            vscode.window.showInformationMessage(vscode.l10n.t('info.patchApplySuccess', filePath));
-
-            const originalUriForDiff = fileUri.with({ scheme: 'lollms-original' });
-            const title = `${path.basename(fileUri.path)} (Original) ↔ ${path.basename(fileUri.path)} (Patched)`;
-            await vscode.commands.executeCommand('vscode.diff', originalUriForDiff, fileUri, title);
-    
-        } catch (error: any) {
-            vscode.window.showErrorMessage(vscode.l10n.t('error.failedToApplyPatch', error.message));
-        }
-    }));
-    
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.renameFile', async (originalPath: string, newPath: string) => {
-        if (!activeWorkspaceFolder) {
-            vscode.window.showErrorMessage('No active workspace folder.');
-            return;
-        }
-        const currentWorkspaceFolder = activeWorkspaceFolder;
-        const originalUri = vscode.Uri.joinPath(currentWorkspaceFolder.uri, originalPath);
-        const newUri = vscode.Uri.joinPath(currentWorkspaceFolder.uri, newPath);
-    
-        try {
-            await vscode.workspace.fs.rename(originalUri, newUri, { overwrite: true });
-            vscode.window.showInformationMessage(`Successfully renamed/moved '${originalPath}' to '${newPath}'.`);
-        } catch (error: any) {
-            vscode.window.showErrorMessage(`Failed to rename file: ${error.message}`);
-        }
-    }));
-    
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deleteFile', async (filePathsStr: string) => {
-        if (!activeWorkspaceFolder) {
-            vscode.window.showErrorMessage('No active workspace folder.');
-            return;
-        }
-        const currentWorkspaceFolder = activeWorkspaceFolder;
-        
-        const filesToDelete = filePathsStr.split('\n').map(f => f.trim()).filter(f => f);
-        if (filesToDelete.length === 0) {
-            vscode.window.showWarningMessage("No valid file paths found to delete.");
-            return;
-        }
-    
-        const fileListForPrompt = filesToDelete.length > 5 
-            ? filesToDelete.slice(0, 5).join('\n') + `\n...and ${filesToDelete.length - 5} more files.`
-            : filesToDelete.join('\n');
-        
-        const confirm = await vscode.window.showWarningMessage(
-            `Are you sure you want to delete ${filesToDelete.length} file(s)?\n\n${fileListForPrompt}\n\nThis will move the file(s) to the Trash.`,
-            { modal: true },
-            'Delete'
-        );
-    
-        if (confirm === 'Delete') {
-            let successCount = 0;
-            let errorCount = 0;
-            let lastError = '';
-    
-            await vscode.window.withProgress({
-                location: vscode.ProgressLocation.Notification,
-                title: `Deleting ${filesToDelete.length} file(s)...`,
-                cancellable: false
-            }, async (progress) => {
-                for (const filePath of filesToDelete) {
-                    progress.report({ message: `Deleting ${filePath}` });
-                    const fileUri = vscode.Uri.joinPath(currentWorkspaceFolder.uri, filePath);
-                    try {
-                        await vscode.workspace.fs.delete(fileUri, { useTrash: true });
-                        successCount++;
-                    } catch (error: any) {
-                        errorCount++;
-                        lastError = error.message;
-                        console.error(`Failed to delete file ${filePath}:`, error);
-                    }
-                }
-            });
-    
-            if (errorCount > 0) {
-                vscode.window.showErrorMessage(`Failed to delete ${errorCount} file(s). Last error: ${lastError}`);
-            }
-            if (successCount > 0) {
-                vscode.window.showInformationMessage(`Successfully deleted ${successCount} file(s).`);
-            }
-        }
-    }));
-
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.addFilesToContext', async (files: string[]) => {
-        if (contextStateProvider && files && files.length > 0) {
-            await contextStateProvider.addFilesToContext(files);
-            vscode.window.showInformationMessage(`Added ${files.length} file(s) to the AI context.`);
-        }
-    }));
-
-    const saveCodeCommand = vscode.commands.registerCommand('lollms-vs-coder.saveCodeToFile', async (code: string, language?: string) => {
-        const languageToFileFilter = (lang?: string): { [name: string]: string[] } => {
-            if (!lang) return { [vscode.l10n.t('filter.allFiles')]: ['*'] };
-            const langLower = lang.toLowerCase();
-            const fileTypes: { [key: string]: string } = {
-                'python': 'filter.pythonFiles',
-                'javascript': 'filter.javascriptFiles',
-                'typescript': 'filter.typescriptFiles',
-                'html': 'filter.htmlFiles',
-                'css': 'filter.cssFiles',
-                'json': 'filter.jsonFiles',
-                'markdown': 'filter.markdownFiles',
-                'shell': 'filter.shellScripts',
-                'bash': 'filter.shellScripts',
-                'sh': 'filter.shellScripts'
-            };
-            const fileExtensions: { [key: string]: string[] } = {
-                'python': ['py'],
-                'javascript': ['js'],
-                'typescript': ['ts'],
-                'html': ['html'],
-                'css': ['css'],
-                'json': ['json'],
-                'markdown': ['md'],
-                'shell': ['sh'],
-                'bash': ['sh'],
-                'sh': ['sh']
-            };
-
-            if (fileTypes[langLower]) {
-                const filter: { [name: string]: string[] } = {};
-                filter[vscode.l10n.t(fileTypes[langLower])] = fileExtensions[langLower];
-                return filter;
-            }
-            
-            const defaultFilter: { [name: string]: string[] } = {};
-            defaultFilter[vscode.l10n.t('filter.languageFiles', lang.toUpperCase())] = [lang];
-            defaultFilter[vscode.l10n.t('filter.allFiles')] = ['*'];
-            return defaultFilter;
-        };
-
-        try {
-            const fileUri = await vscode.window.showSaveDialog({
-                title: vscode.l10n.t('title.saveCodeSnippet'),
-                filters: languageToFileFilter(language)
-            });
-
-            if (fileUri) {
-                await vscode.workspace.fs.writeFile(fileUri, Buffer.from(code, 'utf8'));
-                vscode.window.showInformationMessage(vscode.l10n.t('info.codeSaved', path.basename(fileUri.fsPath)));
-            }
-        } catch (error: any) {
-            vscode.window.showErrorMessage(vscode.l10n.t('error.failedToSaveFile', error.message));
-        }
-    });
-    
-    const applyDiffCommand = vscode.commands.registerCommand('lollms-vs-coder.applyDiff', async (diffContent: string) => {
-        try { await applyDiff(diffContent); vscode.window.showInformationMessage(vscode.l10n.t('info.diffApplied')); } 
-        catch (error: any) { vscode.window.showErrorMessage(vscode.l10n.t('error.failedToApplyDiff', error.message)); }
-    });
-    context.subscriptions.push(saveCodeCommand, applyDiffCommand);
-
-    const chatStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
-    chatStatusBar.text = '$(comment-discussion) Lollms Chat';
-    chatStatusBar.command = 'lollms-vs-coder.startChat';
-    chatStatusBar.tooltip = vscode.l10n.t('tooltip.startNewDiscussion');
-    chatStatusBar.show();
-    context.subscriptions.push(chatStatusBar);
-
-    const modelStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
-    modelStatusBarItem.command = 'lollms-vs-coder.selectModel';
-    modelStatusBarItem.tooltip = vscode.l10n.t('tooltip.selectModel');
-    
-    function updateModelStatus() {
-        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-        const modelName = config.get('modelName') as string || vscode.l10n.t('label.notSet');
-        modelStatusBarItem.text = `$(chip) ${modelName}`;
-        modelStatusBarItem.show();
-    }
-    updateModelStatus();
-    context.subscriptions.push(modelStatusBarItem);
-    
-    context.subscriptions.push(vscode.commands.registerCommand('lollmsApi.recreateClient', async () => {
-        const newConfigValues = vscode.workspace.getConfiguration('lollmsVsCoder');
-        const newConfig: LollmsConfig = {
-            apiKey: newConfigValues.get<string>('apiKey')?.trim() || '',
-            apiUrl: newConfigValues.get<string>('apiUrl') || 'http://localhost:9642',
-            modelName: newConfigValues.get<string>('modelName') || 'ollama/mistral',
-            disableSslVerification: newConfigValues.get<boolean>('disableSslVerification') || false,
-            sslCertPath: newConfigValues.get<string>('sslCertPath') || ''
-        };
-        lollmsAPI.updateConfig(newConfig);
-        updateModelStatus();
-        vscode.window.showInformationMessage(vscode.l10n.t('info.apiReconfigured'));
-    }));
-    
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.selectModel', async () => {
-        try {
-            const models = await vscode.window.withProgress({
-                location: vscode.ProgressLocation.Notification,
-                title: vscode.l10n.t("progress.fetchingModels"),
-                cancellable: false
-            }, () => lollmsAPI.getModels());
-
-            if (!models || models.length === 0) {
-                vscode.window.showWarningMessage(vscode.l10n.t("info.noModelsFound"));
-                return;
-            }
-
-            const modelItems = models.map(m => ({ label: m.id }));
-            const selectedModel = await vscode.window.showQuickPick(modelItems, {
-                placeHolder: vscode.l10n.t("prompt.selectModel")
-            });
-
-            if (selectedModel) {
-                const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-                await config.update('modelName', selectedModel.label, vscode.ConfigurationTarget.Global);
-            }
-        } catch (error: any) {
-            vscode.window.showErrorMessage(vscode.l10n.t('error.failedToFetchModels', error.message));
-        }
-    }));    
-
-    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
-        if (e.affectsConfiguration('lollmsVsCoder.modelName') || 
-            e.affectsConfiguration('lollmsVsCoder.apiUrl') ||
-            e.affectsConfiguration('lollmsVsCoder.apiKey') ||
-            e.affectsConfiguration('lollmsVsCoder.disableSslVerification') ||
-            e.affectsConfiguration('lollmsVsCoder.sslCertPath')) {
-            vscode.commands.executeCommand('lollmsApi.recreateClient');
-        }
-    }));
-    
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.cancelProcess', (item: ProcessItem) => {
-        processManager.cancel(item.process.id);
-    }));
-
-    context.subscriptions.push(vscode.notebooks.registerNotebookCellStatusBarItemProvider('jupyter-notebook', new LollmsNotebookCellActionProvider()));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.enhanceNotebookCell', async (cell: vscode.NotebookCell) => {
-        if (!cell) return;
-    
-        await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: "Lollms: Enhancing cell...",
-            cancellable: true
-        }, async (progress, token) => {
-            const prompts = await promptManager.getCodeActionPrompts();
-            const refactorPrompt = prompts.find(p => p.id === 'default-refactor');
-            if (!refactorPrompt) {
-                vscode.window.showErrorMessage("Could not find the default refactor prompt.");
-                return;
-            }
-    
-            const cellContent = cell.document.getText();
-            const languageId = cell.document.languageId;
-            const systemPrompt = getProcessedSystemPrompt('agent');
-            const userPrompt = `${refactorPrompt.content.replace('{{SELECTED_CODE}}', '')}\n\n\`\`\`${languageId}\n${cellContent}\n\`\`\`\n\nPlease output ONLY the improved code block.`;
-    
-            const responseText = await lollmsAPI.sendChat([
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: userPrompt }
-            ]);
-    
-            if (token.isCancellationRequested) return;
-    
-            const codeBlockRegex = /```(?:[\w-]*)\n([\s\S]+?)\n```/s;
-            const match = responseText.match(codeBlockRegex);
-            const newCode = match ? match[1] : stripThinkingTags(responseText);
-    
-            if (newCode) {
-                const edit = new vscode.WorkspaceEdit();
-                const notebookEdit = vscode.NotebookEdit.replaceCells(
-                    new vscode.NotebookRange(cell.index, cell.index + 1),
-                    [new vscode.NotebookCellData(cell.kind, newCode, cell.document.languageId)]
-                );
-                edit.set(cell.notebook.uri, [notebookEdit]);
-                await vscode.workspace.applyEdit(edit);
-            }
-        });
-    }));
-
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateNextNotebookCell', async (cell: vscode.NotebookCell) => {
-        if (!cell) return;
-    
-        await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: "Lollms: Generating next cell...",
-            cancellable: true
-        }, async (progress, token) => {
-            const cellContent = cell.document.getText();
-            const cellType = cell.kind === vscode.NotebookCellKind.Markup ? 'markdown' : 'code';
-            const languageId = cell.document.languageId;
-    
-            const systemPrompt = getProcessedSystemPrompt('agent');
-            const userPrompt = `Based on the content of the previous ${cellType} cell (language: ${languageId}), generate the next logical code cell. Only output the code itself in a single markdown block.\n\n**Previous Cell Content:**\n\`\`\`${languageId}\n${cellContent}\n\`\`\``;
-    
-            const responseText = await lollmsAPI.sendChat([
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: userPrompt }
-            ]);
-    
-            if (token.isCancellationRequested) return;
-    
-            const codeBlockRegex = /```(?:[\w-]*)\n([\s\S]+?)\n```/s;
-            const match = responseText.match(codeBlockRegex);
-            const newCode = match ? match[1] : stripThinkingTags(responseText);
-    
-            if (newCode) {
-                const edit = new vscode.WorkspaceEdit();
-                const notebookEdit = vscode.NotebookEdit.insertCells(
-                    cell.index + 1,
-                    [new vscode.NotebookCellData(vscode.NotebookCellKind.Code, newCode, languageId)]
-                );
-                edit.set(cell.notebook.uri, [notebookEdit]);
-                await vscode.workspace.applyEdit(edit);
-            }
-        });
-    }));
-
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.promptToNotebookCell', async (cell: vscode.NotebookCell) => {
-        if (!cell) return;
-
-        const prompt = await vscode.window.showInputBox({
-            prompt: "Enter instructions for this cell",
-            placeHolder: "e.g., 'Load the csv file and plot the first 2 columns' or 'Refactor to use list comprehension'"
-        });
-
-        if (!prompt) return;
-
-        await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: "Lollms: Processing cell...",
-            cancellable: true
-        }, async (progress, token) => {
-            const cellContent = cell.document.getText();
-            const languageId = cell.document.languageId;
-            const systemPrompt = getProcessedSystemPrompt('agent');
-            
-            let userPrompt = '';
-            if (cellContent.trim().length > 0) {
-                userPrompt = `I have the following code in a notebook cell:\n\`\`\`${languageId}\n${cellContent}\n\`\`\`\n\nMy instruction is: **${prompt}**\n\nPlease provide the updated code for this cell. Output ONLY the code in a markdown block.`;
-            } else {
-                userPrompt = `Generate code for a notebook cell based on this instruction: **${prompt}**\n\nOutput ONLY the code in a markdown block.`;
-            }
-
-            const responseText = await lollmsAPI.sendChat([
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: userPrompt }
-            ]);
-
-            if (token.isCancellationRequested) return;
-
-            const codeBlockRegex = /```(?:[\w-]*)\n([\s\S]+?)\n```/s;
-            const match = responseText.match(codeBlockRegex);
-            const newCode = match ? match[1] : stripThinkingTags(responseText);
-
-            if (newCode) {
-                const edit = new vscode.WorkspaceEdit();
-                const notebookEdit = vscode.NotebookEdit.replaceCells(
-                    new vscode.NotebookRange(cell.index, cell.index + 1),
-                    [new vscode.NotebookCellData(cell.kind, newCode, languageId)]
-                );
-                edit.set(cell.notebook.uri, [notebookEdit]);
-                await vscode.workspace.applyEdit(edit);
-            }
-        });
-    }));
-
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.convertNotebookToScript', async () => {
-        const editor = vscode.window.activeNotebookEditor;
-        if (!editor) {
-            vscode.window.showErrorMessage("No active notebook found.");
-            return;
-        }
-
-        const notebook = editor.notebook;
-        let codeContent = "";
-        
-        for (const cell of notebook.getCells()) {
-            if (cell.kind === vscode.NotebookCellKind.Code) {
-                codeContent += `\n# Cell ${cell.index + 1}\n${cell.document.getText()}\n`;
-            }
-        }
-
-        if (!codeContent.trim()) {
-            vscode.window.showWarningMessage("Notebook has no code cells.");
-            return;
-        }
-
-        const mode = await vscode.window.showQuickPick(
-            [
-                { label: "Direct Conversion", description: "Concatenate code cells into a .py file" },
-                { label: "AI Refactor", description: "Reorganize into functions/classes and clean up" }
-            ],
-            { placeHolder: "Select conversion mode" }
-        );
-
-        if (!mode) return;
-
-        let finalScript = "";
-
-        if (mode.label === "Direct Conversion") {
-            finalScript = codeContent;
-        } else {
-            await vscode.window.withProgress({
-                location: vscode.ProgressLocation.Notification,
-                title: "Lollms: Converting and refactoring...",
-                cancellable: true
-            }, async (progress, token) => {
-                const systemPrompt = getProcessedSystemPrompt('agent');
-                const userPrompt = `Convert the following Jupyter Notebook code cells into a clean, well-structured Python script.
-                
-**Requirements:**
-- Organize code into functions and/or classes where appropriate.
-- Use \`if __name__ == "__main__":\` block for the main execution logic.
-- Remove redundant prints or notebook-specific commands (like !pip install, %matplotlib inline).
-- Add docstrings and comments.
-- Return ONLY the python code in a markdown block.
-
-**Notebook Content:**
-\`\`\`python
-${codeContent}
-\`\`\`
-`;
-                const controller = new AbortController();
-                token.onCancellationRequested(() => controller.abort());
-
-                const response = await lollmsAPI.sendChat([
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: userPrompt }
-                ], null, controller.signal);
-
-                if (!token.isCancellationRequested) {
-                    const codeBlockRegex = /```(?:python)?\n([\s\S]+?)\n```/s;
-                    const match = response.match(codeBlockRegex);
-                    finalScript = match ? match[1] : stripThinkingTags(response);
-                }
-            });
-        }
-
-        if (finalScript) {
-            const defaultUri = vscode.Uri.file(notebook.uri.fsPath.replace(/\.ipynb$/, '.py'));
-            const saveUri = await vscode.window.showSaveDialog({
-                defaultUri: defaultUri,
-                filters: { 'Python': ['py'] }
-            });
-
-            if (saveUri) {
-                await vscode.workspace.fs.writeFile(saveUri, Buffer.from(finalScript, 'utf8'));
-                vscode.window.showInformationMessage(`Successfully converted to ${path.basename(saveUri.fsPath)}`);
-                vscode.window.showTextDocument(saveUri);
-            }
-        }
-    }));
-
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.explainNotebookCell', async (cell: vscode.NotebookCell) => {
-        if (!cell) return;
-
-        await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: "Lollms: Generating explanation...",
-            cancellable: true
-        }, async (progress, token) => {
-            const code = cell.document.getText();
-            const languageId = cell.document.languageId;
-            const systemPrompt = getProcessedSystemPrompt('agent');
-            const userPrompt = `Explain the following ${languageId} code cell.
-            
-**Code:**
-\`\`\`${languageId}
-${code}
-\`\`\`
-
-**Requirements:**
-- Provide a clear, concise explanation of what the code does.
-- Use markdown formatting.
-- Do not include the code itself in the output, just the explanation.
-`;
-            
-            const controller = new AbortController();
-            token.onCancellationRequested(() => controller.abort());
-
-            const response = await lollmsAPI.sendChat([
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: userPrompt }
-            ], null, controller.signal);
-
-            if (!token.isCancellationRequested) {
-                const explanation = stripThinkingTags(response);
-                if (explanation) {
-                    const edit = new vscode.WorkspaceEdit();
-                    const notebookEdit = vscode.NotebookEdit.insertCells(
-                        cell.index, // Insert before
-                        [new vscode.NotebookCellData(vscode.NotebookCellKind.Markup, explanation, 'markdown')]
-                    );
-                    edit.set(cell.notebook.uri, [notebookEdit]);
-                    await vscode.workspace.applyEdit(edit);
-                }
-            }
-        });
-    }));
-
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.visualizeNotebookCell', async (cell: vscode.NotebookCell) => {
-        if (!cell) return;
-
-        await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: "Lollms: Generating visualization...",
-            cancellable: true
-        }, async (progress, token) => {
-            const code = cell.document.getText();
-            let outputText = "";
-            if (cell.outputs.length > 0) {
-                const lastOutput = cell.outputs[cell.outputs.length - 1];
-                for (const item of lastOutput.items) {
-                    if (item.mime === 'text/plain') {
-                        outputText = new TextDecoder().decode(item.data);
-                        break;
-                    }
-                }
-            }
-            
-            const truncatedOutput = outputText.length > 2000 ? outputText.substring(0, 2000) + "...(truncated)" : outputText;
-
-            const systemPrompt = getProcessedSystemPrompt('agent');
-            const userPrompt = `I have a notebook cell that produced the following output (likely a dataframe or array). I want to visualize this data.
-            
-**Cell Code:**
-\`\`\`python
-${code}
-\`\`\`
-
-**Output Snippet:**
-\`\`\`text
-${truncatedOutput}
-\`\`\`
-
-**Task:**
-Generate a new Python code cell using \`matplotlib\` or \`seaborn\` to visualize this data.
-- Infer the variable name from the code if possible, or assume the last expression.
-- Choose a suitable plot type (histogram, scatter, line, bar) based on the data structure.
-- Output ONLY the python code in a markdown block.
-`;
-
-            const controller = new AbortController();
-            token.onCancellationRequested(() => controller.abort());
-
-            const response = await lollmsAPI.sendChat([
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: userPrompt }
-            ], null, controller.signal);
-
-            if (!token.isCancellationRequested) {
-                const codeBlockRegex = /```(?:python)?\n([\s\S]+?)\n```/s;
-                const match = response.match(codeBlockRegex);
-                const newCode = match ? match[1] : stripThinkingTags(response);
-
-                if (newCode) {
-                    const edit = new vscode.WorkspaceEdit();
-                    const notebookEdit = vscode.NotebookEdit.insertCells(
-                        cell.index + 1, // Insert after
-                        [new vscode.NotebookCellData(vscode.NotebookCellKind.Code, newCode, 'python')]
-                    );
-                    edit.set(cell.notebook.uri, [notebookEdit]);
-                    await vscode.workspace.applyEdit(edit);
-                }
-            }
-        });
-    }));
-
-    // NEW COMMAND: Fix Notebook Cell Error (Updated logic)
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.fixNotebookCellError', async (cell: vscode.NotebookCell) => {
-        if (!cell) return;
-
-        // 1. Get Code of failed cell
-        const code = cell.document.getText();
-        const languageId = cell.document.languageId;
-
-        // 2. Get Error Output
-        let errorText = "";
-        for (const output of cell.outputs) {
-            for (const item of output.items) {
-                if (item.mime === 'application/vnd.code.notebook.error') {
-                    try {
-                        const errorJson = JSON.parse(new TextDecoder().decode(item.data));
-                        errorText += `Error Name: ${errorJson.name}\nMessage: ${errorJson.message}\nStack:\n${errorJson.stack}\n`;
-                    } catch (e) {
-                        errorText += new TextDecoder().decode(item.data) + "\n";
-                    }
-                } else if (item.mime === 'text/plain' && errorText === "") {
-                    const text = new TextDecoder().decode(item.data);
-                    if (text.toLowerCase().includes("error") || text.toLowerCase().includes("exception")) {
-                         errorText += text + "\n";
-                    }
-                }
-            }
-        }
-
-        if (!errorText.trim()) {
-            vscode.window.showWarningMessage("No error output found to analyze.");
-            return;
-        }
-
-        // 3. Gather Global Context (Project Context)
-        const contextContent = await contextManager.getContextContent();
-        let globalContextStr = "";
-        if (contextContent && contextContent.text && !contextContent.text.includes("**No workspace folder is currently open.**")) {
-             globalContextStr = `\n\n==== GLOBAL PROJECT CONTEXT ====\n${contextContent.text}\n================================\n`;
-        }
-
-        // 4. Gather Notebook Context (Previous cells)
-        let notebookContext = "";
-        const notebook = cell.notebook;
-        for (let i = 0; i < cell.index; i++) {
-            const prevCell = notebook.cellAt(i);
-            if (prevCell.kind === vscode.NotebookCellKind.Code) {
-                notebookContext += `\n# [Cell ${i+1}]\n${prevCell.document.getText()}\n`;
-            }
-        }
-        if (notebookContext) {
-            notebookContext = `\n\n==== NOTEBOOK CONTEXT (PREVIOUS CELLS) ====\n${notebookContext}\n===========================================\n`;
-        }
-
-        await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: "Lollms: Fixing cell error...",
-            cancellable: true
-        }, async (progress, token) => {
-            const systemPrompt = getProcessedSystemPrompt('agent');
-            const userPrompt = `I have a ${languageId} code cell that failed to execute.
-            
-**Code:**
-\`\`\`${languageId}
-${code}
-\`\`\`
-
-**Error:**
-\`\`\`text
-${errorText}
-\`\`\`
-
-${notebookContext}
-
-${globalContextStr}
-
-Please analyze the error, taking into account the notebook execution flow and global context, and provide the corrected code for the cell.
-**Requirements:**
-- Fix the error described.
-- Maintain the original logic as much as possible.
-- Return ONLY the corrected code in a single markdown block.
-`;
-
-            const controller = new AbortController();
-            token.onCancellationRequested(() => controller.abort());
-
-            try {
-                const response = await lollmsAPI.sendChat([
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: userPrompt }
-                ], null, controller.signal);
-
-                if (!token.isCancellationRequested) {
-                    const codeBlockRegex = /```(?:[\w-]*)\n([\s\S]+?)\n```/s;
-                    const match = response.match(codeBlockRegex);
-                    const newCode = match ? match[1] : stripThinkingTags(response);
-
-                    if (newCode) {
-                        const edit = new vscode.WorkspaceEdit();
-                        const notebookEdit = vscode.NotebookEdit.replaceCells(
-                            new vscode.NotebookRange(cell.index, cell.index + 1),
-                            [new vscode.NotebookCellData(cell.kind, newCode, languageId)]
-                        );
-                        edit.set(cell.notebook.uri, [notebookEdit]);
-                        await vscode.workspace.applyEdit(edit);
-                        vscode.window.showInformationMessage("Cell corrected by Lollms.");
-                    } else {
-                        vscode.window.showErrorMessage("Failed to parse corrected code from AI response.");
-                    }
-                }
-            } catch (error: any) {
-                vscode.window.showErrorMessage(`Fix failed: ${error.message}`);
-            }
-        });
-    }));
-
-    // NEW COMMAND: Generate Educative Notebook
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateEducativeNotebook', async (cell: vscode.NotebookCell) => {
-        if (!cell) return;
-
-        const topic = await vscode.window.showInputBox({
-            prompt: "Enter the topic or function you want to demonstrate",
-            placeHolder: "e.g., 'Linear Regression from scratch' or 'Data Visualization with Seaborn'"
-        });
-
-        if (!topic) return;
-
-        await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: "Lollms: Generating educative content...",
-            cancellable: true
-        }, async (progress, token) => {
-            const systemPrompt = getProcessedSystemPrompt('agent');
-            const userPrompt = `Generate a series of educative notebook cells for the topic: "${topic}".
-
-**Requirements:**
-1.  **Structure:** Alternate between Markdown cells (explanation) and Code cells (implementation).
-2.  **Visualization:** ALWAYS include plots or charts to visualize data or results. Use standard libraries like matplotlib, seaborn, or plotly.
-3.  **Educational Value:** Explain concepts clearly before showing code. Add comments in the code.
-4.  **Format:** Return the content as a valid JSON object with a "cells" array. Each object in the array must have:
-    - "kind": "markdown" or "code"
-    - "value": The content string (markdown text or python code).
-    - "language": "markdown" or "python"
-
-**Example Output Format:**
-\`\`\`json
-{
-  "cells": [
-    { "kind": "markdown", "value": "# Intro\\n...", "language": "markdown" },
-    { "kind": "code", "value": "import matplotlib.pyplot as plt\\n...", "language": "python" }
-  ]
-}
-\`\`\`
-`;
-            
-            const controller = new AbortController();
-            token.onCancellationRequested(() => controller.abort());
-
-            try {
-                const response = await lollmsAPI.sendChat([
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: userPrompt }
-                ], null, controller.signal);
-
-                if (token.isCancellationRequested) return;
-
-                const jsonMatch = response.match(/```json\s*([\s\S]+?)\s*```/);
-                let jsonStr = jsonMatch ? jsonMatch[1] : response;
-                
-                // Fallback cleanup if model returns non-json text
-                jsonStr = stripThinkingTags(jsonStr);
-
-                try {
-                    const data = JSON.parse(jsonStr);
-                    if (data.cells && Array.isArray(data.cells)) {
-                        const newCells = data.cells.map((c: any) => {
-                            const kind = c.kind === 'code' ? vscode.NotebookCellKind.Code : vscode.NotebookCellKind.Markup;
-                            return new vscode.NotebookCellData(kind, c.value, c.language);
-                        });
-
-                        const edit = new vscode.WorkspaceEdit();
-                        const notebookEdit = vscode.NotebookEdit.insertCells(
-                            cell.index + 1,
-                            newCells
-                        );
-                        edit.set(cell.notebook.uri, [notebookEdit]);
-                        await vscode.workspace.applyEdit(edit);
-                        vscode.window.showInformationMessage("Educative cells generated successfully.");
-                    } else {
-                        throw new Error("Invalid JSON structure");
-                    }
-                } catch (e) {
-                    vscode.window.showErrorMessage("Failed to parse generated notebook content. Please try again.");
-                    console.error("JSON Parse Error:", e, jsonStr);
-                }
-
-            } catch (error: any) {
-                vscode.window.showErrorMessage(`Generation failed: ${error.message}`);
-            }
-        });
-    }));
-
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.analyzeNotebookCellOutput', async (cell: vscode.NotebookCell) => {
-        if (!cell) return;
-
-        await vscode.window.withProgress({
-            location: vscode.ProgressLocation.Notification,
-            title: "Lollms: Analyzing output...",
-            cancellable: true
-        }, async (progress, token) => {
-            const code = cell.document.getText();
-            const languageId = cell.document.languageId;
-            
-            let outputText = "";
-            for (const output of cell.outputs) {
-                for (const item of output.items) {
-                    if (item.mime === 'text/plain' || item.mime === 'application/vnd.code.notebook.stdout' || item.mime === 'application/vnd.code.notebook.stderr') {
-                        try {
-                            outputText += new TextDecoder().decode(item.data) + "\n";
-                        } catch(e) {
-                            outputText += "[Error decoding output]\n";
-                        }
-                    }
-                }
-            }
-            
-            if (!outputText.trim()) {
-                vscode.window.showInformationMessage("No textual output found to analyze.");
-                return;
-            }
-
-            const truncatedOutput = outputText.length > 4000 ? outputText.substring(0, 4000) + "\n...(truncated)" : outputText;
-
-            const systemPrompt = getProcessedSystemPrompt('agent');
-            const userPrompt = `Analyze the output of the following ${languageId} code cell.
-            
-**Code:**
-\`\`\`${languageId}
-${code}
-\`\`\`
-
-**Output:**
-\`\`\`text
-${truncatedOutput}
-\`\`\`
-
-**Task:**
-Provide a concise analysis of this output. Explain what it means, check for potential issues, or highlight key results. Return the analysis as markdown text.
-`;
-
-            const controller = new AbortController();
-            token.onCancellationRequested(() => controller.abort());
-
-            const response = await lollmsAPI.sendChat([
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: userPrompt }
-            ], null, controller.signal);
-
-            if (!token.isCancellationRequested) {
-                const analysis = stripThinkingTags(response);
-                if (analysis) {
-                    const edit = new vscode.WorkspaceEdit();
-                    const notebookEdit = vscode.NotebookEdit.insertCells(
-                        cell.index + 1, 
-                        [new vscode.NotebookCellData(vscode.NotebookCellKind.Markup, `### Output Analysis\n\n${analysis}`, 'markdown')]
-                    );
-                    edit.set(cell.notebook.uri, [notebookEdit]);
-                    await vscode.workspace.applyEdit(edit);
-                }
-            }
-        });
-    }));
-
-    context.subscriptions.push(vscode.window.onDidCloseTerminal(terminal => {
-        if (lollmsExecutionTerminal && terminal === lollmsExecutionTerminal) {
-            lollmsExecutionTerminal = null;
-            if (ChatPanel.currentPanel) {
-                ChatPanel.currentPanel.updateGeneratingState();
-            }
-        }
-    }));
-
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.stopExecution', () => {
-        if (lollmsExecutionTerminal) {
-            lollmsExecutionTerminal.dispose();
-            lollmsExecutionTerminal = null;
-            if (ChatPanel.currentPanel) {
-                const stopMessage: ChatMessage = {
-                    role: 'system',
-                    content: '🛑 Execution stopped by user.'
-                };
-                ChatPanel.currentPanel.addMessageToDiscussion(stopMessage);
-                ChatPanel.currentPanel.updateGeneratingState();
-            }
-        }
-    }));
-
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setEntryPoint', async () => {
-        if (!activeWorkspaceFolder) {
-            vscode.window.showErrorMessage("Please select an active Lollms workspace to set an entry point.");
-            return;
-        }
-        const currentWorkspaceFolder = activeWorkspaceFolder;
-
-        const launchJsonPath = vscode.Uri.joinPath(currentWorkspaceFolder.uri, '.vscode', 'launch.json');
-        let launchConfig: any;
-        try {
-            const fileContent = await vscode.workspace.fs.readFile(launchJsonPath);
-            launchConfig = JSON.parse(fileContent.toString());
-        } catch (error) {
-            try { await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(currentWorkspaceFolder.uri, '.vscode')); } catch (e) {}
-            launchConfig = { version: '0.2.0', configurations: [] };
-        }
-
-        if (!launchConfig.configurations || !Array.isArray(launchConfig.configurations)) {
-            launchConfig.configurations = [];
-        }
-
-        if (launchConfig.configurations.length === 0) {
-            launchConfig.configurations.push({ name: 'Lollms Default Run', request: 'launch', type: 'node', program: '' });
-        }
-        let mainConfig = launchConfig.configurations[0];
-
-        const fileUris = await vscode.window.showOpenDialog({
-            canSelectMany: false,
-            openLabel: 'Select as Execution Entry Point',
-            title: 'Select the main file to run for the project',
-            defaultUri: currentWorkspaceFolder.uri
-        });
-
-        if (fileUris && fileUris[0]) {
-            const relativePath = path.relative(currentWorkspaceFolder.uri.fsPath, fileUris[0].fsPath).replace(/\\/g, '/');
-            mainConfig.program = `\${workspaceFolder}/${relativePath}`;
-            
-            const ext = path.extname(relativePath).toLowerCase();
-            if (ext === '.py') { mainConfig.type = 'python'; }
-            if (ext === '.js' || ext === '.ts') { mainConfig.type = 'node'; }
-
-            await vscode.workspace.fs.writeFile(launchJsonPath, Buffer.from(JSON.stringify(launchConfig, null, 4), 'utf8'));
-            vscode.window.showInformationMessage(`Set '${relativePath}' as the execution entry point for '${currentWorkspaceFolder.name}'.`);
-        }
-    }));
-
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.executeProject', async (panel?: ChatPanel) => {
-        const activeChatPanel = panel || ChatPanel.currentPanel;
-        if (!activeChatPanel) {
-            vscode.window.showErrorMessage("Please open a Lollms chat panel to see the execution results.");
-            return;
-        }
-    
-        if (!activeWorkspaceFolder) {
-            vscode.window.showErrorMessage("Please open a project folder to execute.");
-            activeChatPanel.addMessageToDiscussion({ role: 'system', content: 'Execution failed: No workspace folder open.' });
-            return;
-        }
-        const workspaceFolder = activeWorkspaceFolder;
-        
-        activeChatPanel.updateGeneratingState();
-    
-        const launchJsonPath = vscode.Uri.joinPath(workspaceFolder.uri, '.vscode', 'launch.json');
-        let launchConfig: any;
-        try {
-            const fileContent = await vscode.workspace.fs.readFile(launchJsonPath);
-            launchConfig = JSON.parse(fileContent.toString());
-            if (!launchConfig.configurations || launchConfig.configurations.length === 0 || !launchConfig.configurations[0].program) {
-                throw new Error("No valid entry point configured in launch.json.");
-            }
-        } catch (error: any) {
-            vscode.window.showErrorMessage('No project entry point is configured. Please set one using the "Set Entry Point" (target icon) button.');
-            activeChatPanel.handleProjectExecutionResult(`Failed to start: ${error.message}`, false);
-            return;
-        }
-        
-        let mainConfig = launchConfig.configurations[0];
-        let programPath = mainConfig.program.replace('${workspaceFolder}', workspaceFolder.uri.fsPath);
-    
-        let command: string;
-        if (mainConfig.type === 'python') {
-            let pythonPath = 'python';
-            if (pythonExtApi) {
-                const environment = await pythonExtApi.environments.getActiveEnvironmentPath(workspaceFolder.uri);
-                if (environment?.path) {
-                    pythonPath = `"${environment.path}"`;
-                }
-            }
-            command = `${pythonPath} -u "${programPath}"`;
-        } else if (mainConfig.type === 'node') {
-            command = `node "${programPath}"`;
-        } else {
-            const errorMsg = `Unsupported launch configuration type for direct execution: ${mainConfig.type}`;
-            vscode.window.showErrorMessage(errorMsg);
-            activeChatPanel.handleProjectExecutionResult(errorMsg, false);
-            return;
-        }
-    
-        await activeChatPanel.addMessageToDiscussion({ role: 'system', content: `🚀 Executing in background: \`${command}\`` });
-    
-        try {
-            const { stdout, stderr } = await execAsync(command, { cwd: workspaceFolder.uri.fsPath });
-            const fullOutput = `STDOUT:\n${stdout}\n\nSTDERR:\n${stderr}`;
-            activeChatPanel.handleProjectExecutionResult(fullOutput, true);
-        } catch (error: any) {
-            const fullOutput = `STDOUT:\n${error.stdout}\n\nSTDERR:\n${error.stderr}`;
-            activeChatPanel.handleProjectExecutionResult(fullOutput, false);
-        }
-    }));
-
-    context.subscriptions.push(vscode.debug.registerDebugAdapterTrackerFactory('*', new LollmsDebugAdapterTrackerFactory()));
-    
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.debugErrorWithAI', async () => {
-        if (!debugErrorManager.lastError) {
-            vscode.window.showInformationMessage("Lollms: No debug error has been captured.");
-            return;
-        }
-    
-        if (!discussionManager || !activeWorkspaceFolder) {
-            vscode.window.showErrorMessage("Lollms: Cannot start a discussion, a workspace must be active.");
-            return;
-        }
-    
-        const prompt = await buildDebugErrorPrompt(debugErrorManager.lastError, contextManager, contextStateProvider);
-        await startDiscussionWithInitialPrompt(prompt);
-        debugErrorManager.clearError();
-    }));
-
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.debugErrorSendToDiscussion', async () => {
-        if (!debugErrorManager.lastError) {
-            vscode.window.showInformationMessage("Lollms: No debug error has been captured.");
-            return;
-        }
-
-        const prompt = await buildDebugErrorPrompt(debugErrorManager.lastError, contextManager, contextStateProvider);
-
-        const currentPanel = ChatPanel.currentPanel;
-        if (currentPanel) {
-            const userMessage: ChatMessage = {
-                id: 'user_' + Date.now().toString() + Math.random().toString(36).substring(2),
-                role: 'user',
-                content: prompt
-            };
-            await currentPanel.sendMessage(userMessage);
-        } else {
-            await startDiscussionWithInitialPrompt(prompt);
-        }
-
-        debugErrorManager.clearError();
-    }));
     // NEW COMMAND: Generate Educative Notebook (Action)
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateEducativeNotebookFromAction', async () => {
         if (!activeWorkspaceFolder || !discussionManager) {

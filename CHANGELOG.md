@@ -4,7 +4,8 @@ Of course! Here is the updated changelog for version **0.3.7**, incorporating th
 
 All notable changes to the "Lollms VS Coder" extension will be documented in this file.
 
-## [Unreleased]
+#
+- fix(config): sanitize SSL cert path input and clean up config# [Unreleased]
 
 - feat(chat): enhance chat panel with persona support and UI improvements
 

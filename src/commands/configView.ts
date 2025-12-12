@@ -14,7 +14,6 @@ export class SettingsPanel {
     apiKey: '',
     apiUrl: '',
     modelName: '',
-    // developerName removed
     disableSslVerification: false,
     sslCertPath: '',
     requestTimeout: 600000,
@@ -36,10 +35,8 @@ export class SettingsPanel {
     searchApiKey: '',
     searchCx: '',
     autoUpdateChangelog: false,
-    // Companion
     companionEnableWebSearch: false,
     companionEnableArxivSearch: false,
-    // User Info
     userInfoName: '',
     userInfoEmail: '',
     userInfoLicense: '',
@@ -77,7 +74,6 @@ export class SettingsPanel {
     this._pendingConfig.apiKey = config.get<string>('apiKey')?.trim() || '';
     this._pendingConfig.apiUrl = config.get<string>('apiUrl') || 'http://localhost:9642';
     this._pendingConfig.modelName = config.get<string>('modelName') || '';
-    // developerName removed
     this._pendingConfig.disableSslVerification = config.get<boolean>('disableSslVerification') || false;
     this._pendingConfig.sslCertPath = config.get<string>('sslCertPath') || '';
     this._pendingConfig.requestTimeout = config.get<number>('requestTimeout') || 600000;
@@ -151,7 +147,8 @@ export class SettingsPanel {
                     apiUrl: this._pendingConfig.apiUrl,
                     modelName: this._pendingConfig.modelName,
                     disableSslVerification: this._pendingConfig.disableSslVerification,
-                    sslCertPath: this._pendingConfig.sslCertPath
+                    // Ensure sanitization here too for immediate testing
+                    sslCertPath: this._pendingConfig.sslCertPath ? this._pendingConfig.sslCertPath.replace(/^['"]|['"]$/g, '').trim() : ''
                 };
                 const testApi = new LollmsAPI(testConfig);
                 const result = await testApi.testConnection();
@@ -172,11 +169,15 @@ export class SettingsPanel {
   
             case 'saveConfig':
               try {
+                // Sanitize cert path
+                if (this._pendingConfig.sslCertPath) {
+                    this._pendingConfig.sslCertPath = this._pendingConfig.sslCertPath.replace(/^['"]|['"]$/g, '').trim();
+                }
+
                 const config = vscode.workspace.getConfiguration('lollmsVsCoder');
                 await config.update('apiKey', this._pendingConfig.apiKey, vscode.ConfigurationTarget.Global);
                 await config.update('apiUrl', this._pendingConfig.apiUrl, vscode.ConfigurationTarget.Global);
                 await config.update('modelName', this._pendingConfig.modelName, vscode.ConfigurationTarget.Global);
-                // developerName removed
                 await config.update('disableSslVerification', this._pendingConfig.disableSslVerification, vscode.ConfigurationTarget.Global);
                 await config.update('sslCertPath', this._pendingConfig.sslCertPath, vscode.ConfigurationTarget.Global);
                 await config.update('requestTimeout', this._pendingConfig.requestTimeout, vscode.ConfigurationTarget.Global);
@@ -230,7 +231,7 @@ export class SettingsPanel {
                       apiUrl: this._pendingConfig.apiUrl,
                       modelName: this._pendingConfig.modelName,
                       disableSslVerification: this._pendingConfig.disableSslVerification,
-                      sslCertPath: this._pendingConfig.sslCertPath
+                      sslCertPath: this._pendingConfig.sslCertPath ? this._pendingConfig.sslCertPath.replace(/^['"]|['"]$/g, '').trim() : ''
                   };
                   
                   const tempApi = new LollmsAPI(tempConfig); 
@@ -257,6 +258,8 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
+    // ... (rest of the HTML generation method remains exactly the same)
+    // I am including it here to ensure the full file is parseable
     const { apiKey, apiUrl, modelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, thinkingMode, thinkingModeCustomPrompt, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle } = config;
 
     const t = (key: string, def: string) => vscode.l10n.t({ message: def, key: key });

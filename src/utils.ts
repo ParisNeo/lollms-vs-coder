@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
+import { MemoryManager } from './memoryManager';
 
 export interface DiscussionCapabilities {
     codeGenType: 'full' | 'diff' | 'none';
@@ -12,9 +13,7 @@ export interface DiscussionCapabilities {
     webSearch: boolean;
     arxivSearch: boolean;
     funMode: boolean;
-    // Updated: added 'no_think' to allow disabling thinking via discussion capability
     thinkingMode: 'none' | 'chain_of_thought' | 'chain_of_verification' | 'plan_and_solve' | 'self_critique' | 'no_think';
-    // NEW
     gitCommit: boolean;
 }
 
@@ -77,19 +76,29 @@ export async function applyDiff(diffContent: string) {
     await document.save();
 }
 
-export function getProcessedSystemPrompt(
+export async function getProcessedSystemPrompt(
     promptType: 'chat' | 'agent' | 'inspector' | 'commit', 
     capabilities?: DiscussionCapabilities,
-    customPersonaContent?: string // NEW
-): string {
+    customPersonaContent?: string,
+    memoryManager?: MemoryManager
+): Promise<string> {
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const reasoningLevel = config.get<string>('reasoningLevel') || 'none';
     const thinkingMode = capabilities?.thinkingMode || config.get<string>('thinkingMode') || 'none';
-    const developerName = config.get<string>('developerName') || 'Developer';
+    
+    // User Info
+    const userName = config.get<string>('userInfo.name') || 'Developer';
+    const userEmail = config.get<string>('userInfo.email') || '';
+    const userLicense = config.get<string>('userInfo.license') || 'MIT';
+    const userStyle = config.get<string>('userInfo.codingStyle') || '';
+
+    let memoryContent = "";
+    if (memoryManager) {
+        memoryContent = await memoryManager.getMemory();
+    }
 
     let thinkingInstructions = '';
 
-    // Handle Thinking Mode
     if (thinkingMode !== 'none' && thinkingMode !== 'no_think') {
         let instructionText = '';
         switch (thinkingMode) {
@@ -175,7 +184,6 @@ code to be deleted
 \`\`\`
 `;
 
-            // Changed: Removed fallback to config 'fileUpdateMethod', default to 'full' if no capability provided
             const codeGenType = capabilities ? capabilities.codeGenType : 'full';
             
             if (codeGenType === 'full') {
@@ -184,7 +192,6 @@ code to be deleted
                 updateInstructions = diffInstruction;
             }
             
-            // Add insert/replace/delete instructions as secondary available tools
             updateInstructions += `\n${insertInstruction}\n${replaceInstruction}\n${deleteInstruction}`;
             
             let otherFileActions = '';
@@ -202,7 +209,6 @@ code to be deleted
                 otherFileActions += `- **Reset Files (Clear Context):** \`\`\`context_reset\ntrue\n\`\`\`\n`;
             }
 
-            // Git Commit Tool
             if (capabilities?.gitCommit) {
                 otherFileActions += `- **Git Commit:** \`\`\`git_commit\nCommit message\n\`\`\` (Stages all changes and commits)\n`;
             }
@@ -286,8 +292,6 @@ feat(auth): add JWT-based authentication
 
     let userPersona = '';
     
-    // If a custom personality content is provided (e.g. from Personality Manager via ChatPanel), use it.
-    // Otherwise fallback to config.
     if (customPersonaContent) {
         userPersona = customPersonaContent;
     } else {
@@ -298,9 +302,50 @@ feat(auth): add JWT-based authentication
         userPersona += "\n\n**FUN MODE ACTIVATED:** Be quirky, humorous, and use plenty of emojis! 🤪 Make coding fun!";
     }
 
-    let combinedPrompt = `${thinkingInstructions}${basePrompt}\n\n**YOUR PERSONA:**\n${userPersona}`;
+    // --- User Info & Memory Injection ---
+    let userInfoBlock = `
+**USER CONTEXT:**
+- Name: ${userName}
+- Email: ${userEmail}
+- Preferred License: ${userLicense}
+- Coding Style: ${userStyle}
+
+**INSTRUCTIONS ON USER CONTEXT:**
+1. Use the provided Name and Email when generating file headers, comments, or documentation that requires authorship.
+2. Use the Preferred License when generating new files that require a license header.
+3. Adhere to the Coding Style preferences provided.
+`;
+
+    let memoryBlock = "";
+    if (memoryContent.trim()) {
+        memoryBlock = `
+**LONG-TERM MEMORY:**
+The following is information you have learned about the user or project from previous interactions:
+\`\`\`
+${memoryContent}
+\`\`\`
+
+**MEMORY MANAGEMENT:**
+If you learn something new and important about the user (preferences, specific project details, tech stack constraints), you can update this memory.
+To update memory, include a block at the end of your response like this:
+<memory>
+[Rewritten full memory content merging old and new info]
+</memory>
+This tag will be hidden from the user but saved to the system. Keep memory concise and relevant.
+`;
+    } else {
+        memoryBlock = `
+**MEMORY MANAGEMENT:**
+You have a memory system. If you learn something important about the user (e.g., they hate semicolons, they work in React), store it.
+To store memory, include a block at the end of your response:
+<memory>
+User prefers [preference]...
+</memory>
+`;
+    }
+
+    let combinedPrompt = `${thinkingInstructions}${basePrompt}\n${userInfoBlock}\n${memoryBlock}\n\n**YOUR PERSONA:**\n${userPersona}`;
     
-    // ... placeholder replacement ...
     const now = new Date();
     const date = now.toISOString().split('T')[0];
     const time = now.toTimeString().split(' ')[0];
@@ -311,7 +356,7 @@ feat(auth): add JWT-based authentication
         .replace(/{{time}}/g, time)
         .replace(/{{datetime}}/g, `${date} ${time}`)
         .replace(/{{os}}/g, platform)
-        .replace(/{{developer_name}}/g, developerName);
+        .replace(/{{developer_name}}/g, userName);
 
     let finalPrompt = processedPrompt.trim();
 
@@ -324,8 +369,21 @@ feat(auth): add JWT-based authentication
     return finalPrompt ? `${finalPrompt}\n\n` : '';
 }
 
-
 export function stripThinkingTags(responseText: string): string {
     const thinkRegex = /<(think|thinking)>[\s\S]*?<\/\1>/g;
     return responseText.replace(thinkRegex, '').trim();
+}
+
+export function extractAndStripMemory(responseText: string): { content: string, memory: string | null } {
+    const memoryRegex = /<memory>([\s\S]*?)<\/memory>/;
+    const match = responseText.match(memoryRegex);
+    let memory = null;
+    let content = responseText;
+
+    if (match) {
+        memory = match[1].trim();
+        content = responseText.replace(memoryRegex, '').trim();
+    }
+
+    return { content, memory };
 }

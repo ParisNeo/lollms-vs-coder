@@ -405,13 +405,19 @@ export class ChatPanel {
             if (p) personaContent = p.systemPrompt;
         }
 
-        const systemPrompt = getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent);
+        const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent);
         const context = await this._contextManager.getContextContent();
         
-        const systemMessage: ChatMessage = { role: 'system', content: systemPrompt };
-        const contextMessage: ChatMessage = { role: 'system', content: context.text };
+        // Combine system prompt and context into a single message to ensure models see it.
+        // Some models or backends may ignore subsequent system messages.
+        let combinedSystemContent = systemPrompt;
+        if (context.text && context.text.trim().length > 0) {
+            combinedSystemContent += `\n\n${context.text}`;
+        }
+
+        const systemMessage: ChatMessage = { role: 'system', content: combinedSystemContent };
         
-        let messagesToSend: ChatMessage[] = [systemMessage, contextMessage];
+        let messagesToSend: ChatMessage[] = [systemMessage];
         
         if (context.images.length > 0) {
             const imageContent = context.images.map(img => ({
@@ -419,6 +425,7 @@ export class ChatPanel {
                 image_url: { url: `data:image/jpeg;base64,${img.data}` }
             }));
             if (imageContent.length > 0) {
+                // Add images as a user message immediately after system/context
                 messagesToSend.push({ role: 'user', content: imageContent as any });
             }
         }
@@ -497,7 +504,7 @@ export class ChatPanel {
   public async handleInspectCode(args: { code: string, language: string }) {
       const config = vscode.workspace.getConfiguration('lollmsVsCoder');
       const model = config.get<string>('inspectorModelName') || this._currentDiscussion?.model || this._lollmsAPI.getModelName();
-      const systemPrompt = getProcessedSystemPrompt('inspector');
+      const systemPrompt = await getProcessedSystemPrompt('inspector');
       const userPrompt = `Review the following ${args.language} code for bugs, security vulnerabilities, and logic errors. Provide a detailed report.\n\n\`\`\`${args.language}\n${args.code}\n\`\`\``;
 
       await this.sendIsolatedMessage(systemPrompt, userPrompt, model);
@@ -583,7 +590,7 @@ export class ChatPanel {
   public async analyzeExecutionResult(code: string | null, language: string | null, output: string, exitCode: number) {
       if (exitCode === 0 && !output.trim()) return;
 
-      const systemPrompt = getProcessedSystemPrompt('chat', this._discussionCapabilities);
+      const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities);
       let userPrompt = "";
 
       if (code && language) {
@@ -612,9 +619,14 @@ export class ChatPanel {
           await this.addMessageToDiscussion(userMsg);
 
           const context = await this._contextManager.getContextContent();
+          
+          let combinedSystemContent = systemPrompt;
+          if (context.text && context.text.trim().length > 0) {
+              combinedSystemContent += `\n\n${context.text}`;
+          }
+
           const messages: ChatMessage[] = [
-              { role: 'system', content: systemPrompt },
-              { role: 'system', content: context.text }, 
+              { role: 'system', content: combinedSystemContent },
               ...this._currentDiscussion!.messages
           ];
 
@@ -704,7 +716,7 @@ export class ChatPanel {
   }
   
   private async copyFullPromptToClipboard(draftMessage: string) {
-      const systemPrompt = getProcessedSystemPrompt('chat', this._discussionCapabilities);
+      const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities);
       const context = await this._contextManager.getContextContent();
       
       let fullText = `--- SYSTEM PROMPT ---\n${systemPrompt}\n\n`;

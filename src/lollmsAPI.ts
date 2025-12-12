@@ -74,6 +74,9 @@ export class LollmsAPI {
   }
 
   private createHttpsAgent(): https.Agent {
+      // Remove quotes if user pasted path with them
+      const certPath = this.config.sslCertPath ? this.config.sslCertPath.replace(/^['"]|['"]$/g, '') : '';
+
       const options: https.AgentOptions = {
           keepAlive: true,
           rejectUnauthorized: !this.config.disableSslVerification,
@@ -81,17 +84,19 @@ export class LollmsAPI {
 
       if (this.config.disableSslVerification) {
           // Explicitly disable hostname verification when SSL verification is disabled
-          // This helps when 'rejectUnauthorized: false' isn't enough for some environments
           options.checkServerIdentity = () => undefined;
+          Logger.info("SSL Verification Disabled: Ignoring cert errors and hostname mismatch.");
       }
 
-      if (this.config.sslCertPath && fs.existsSync(this.config.sslCertPath)) {
+      if (certPath && fs.existsSync(certPath)) {
           try {
-              options.ca = fs.readFileSync(this.config.sslCertPath);
-              Logger.info(`Loaded custom SSL certificate from: ${this.config.sslCertPath}`);
+              options.ca = fs.readFileSync(certPath);
+              Logger.info(`Loaded custom SSL certificate from: ${certPath}`);
           } catch (e) {
-              Logger.error(`Failed to read SSL certificate file: ${this.config.sslCertPath}`, e);
+              Logger.error(`Failed to read SSL certificate file: ${certPath}`, e);
           }
+      } else if (certPath) {
+          Logger.warn(`SSL Certificate file not found at: ${certPath}`);
       }
 
       return new https.Agent(options);
@@ -130,10 +135,13 @@ export class LollmsAPI {
               details: `URL: ${this.baseUrl}\nSSL Verification: ${!this.config.disableSslVerification ? 'Enabled' : 'Disabled'}`
           };
       } catch (error: any) {
+          const code = error.code ? `\nCode: ${error.code}` : '';
+          const cause = error.cause ? `\nCause: ${error.cause}` : '';
+          
           return { 
               success: false, 
-              message: `❌ Connection Failed: ${error.message}`,
-              details: `URL: ${this.baseUrl}\nSSL Verification: ${!this.config.disableSslVerification ? 'Enabled' : 'Disabled'}\n\nStack Trace:\n${error.stack}`
+              message: `❌ Connection Failed: ${error.message}${code}`,
+              details: `URL: ${this.baseUrl}\nSSL Verification: ${!this.config.disableSslVerification ? 'Enabled' : 'Disabled'}\n\nStack Trace:\n${error.stack}${cause}`
           };
       }
   }
@@ -188,8 +196,14 @@ export class LollmsAPI {
         
         Logger.info(`Successfully fetched ${models.length} models`);
         return models;
-    } catch (error) {
-        Logger.error("Error fetching models", error);
+    } catch (error: any) {
+        Logger.error(`Error fetching models from ${modelsUrl}`, error);
+        
+        // Detailed error logging for debugging
+        if (error.code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE' || error.code === 'DEPTH_ZERO_SELF_SIGNED_CERT') {
+            Logger.warn("SSL/TLS Certificate Error detected. Consider disabling SSL verification in settings or providing a valid CA cert.");
+        }
+
         // If fetch fails but we have stale cache in storage, return that as fallback
         if (this.globalState) {
             const storedModels = this.globalState.get<Array<{ id: string }>>('lollms_models_cache');

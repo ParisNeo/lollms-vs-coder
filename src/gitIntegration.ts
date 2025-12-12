@@ -182,7 +182,7 @@ export class GitIntegration {
       }
     }
 
-    const systemPromptContent = getProcessedSystemPrompt('commit');
+    const systemPromptContent = await getProcessedSystemPrompt('commit');
 
     const prompt: ChatMessage[] =  [
       { role: 'system', content: systemPromptContent },

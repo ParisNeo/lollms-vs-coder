@@ -18,7 +18,7 @@ export interface ToolExecutionEnv {
     codeGraphManager?: CodeGraphManager;
     skillsManager?: SkillsManager;
     currentPlan: Plan | null;
-    agentManager: AgentManager;
+    agentManager?: AgentManager; // Made optional for Companion use
 }
 
 export interface ToolDefinition {

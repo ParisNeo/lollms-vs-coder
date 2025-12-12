@@ -8,3 +8,7 @@ node_modules/**
 package-lock.json
 tsconfig.json
 out/**/*.map
+.lollms/**
+todo.md
+!l10n/**
+!package.nls*.json

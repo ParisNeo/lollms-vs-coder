@@ -12,13 +12,15 @@ export const searchWebTool: ToolDefinition = {
         { name: "query", type: "string", description: "The search query string.", required: true }
     ],
     async execute(params: { query: string }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
-        // 1. Transparency Check: Capability
-        const discussion = env.agentManager.getCurrentDiscussion();
-        if (discussion && discussion.capabilities && !discussion.capabilities.webSearch) {
-            return { 
-                success: false, 
-                output: "🛑 **Access Denied:** Web Search is disabled for this discussion. To use this feature, please enable 'Web Search' in the Discussion Tools settings (click the gear icon in the chat)." 
-            };
+        // 1. Transparency Check: Capability (Only if agentManager exists)
+        if (env.agentManager) {
+            const discussion = env.agentManager.getCurrentDiscussion();
+            if (discussion && discussion.capabilities && !discussion.capabilities.webSearch) {
+                return { 
+                    success: false, 
+                    output: "🛑 **Access Denied:** Web Search is disabled for this discussion. To use this feature, please enable 'Web Search' in the Discussion Tools settings (click the gear icon in the chat)." 
+                };
+            }
         }
 
         if (!params.query) {

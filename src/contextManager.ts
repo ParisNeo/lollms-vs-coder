@@ -79,7 +79,10 @@ export class ContextManager {
       'toml': 'toml',
       'ini': 'ini',
       'tf': 'terraform',
-      'svelte': 'svelte'
+      'svelte': 'svelte',
+      'ejs': 'ejs',
+      'erb': 'erb',
+      'hbs': 'handlebars'
   };
   
   private _lastContext: ContextResult | null = null;

@@ -40,6 +40,7 @@ import { PersonalitiesTreeProvider } from './commands/personalitiesTreeProvider'
 import { EducativeNotebookModal } from './commands/educativeNotebookModal';
 import { QuickEditManager } from './quickEditManager';
 import { InlineDiffProvider } from './commands/inlineDiffProvider';
+import { MemoryManager } from './memoryManager';
 
 const execAsync = promisify(exec);
 
@@ -69,89 +70,6 @@ const debugErrorManager = {
         this._onDidChange.fire();
     }
 };
-
-class LollmsDebugAdapterTrackerFactory implements vscode.DebugAdapterTrackerFactory {
-    createDebugAdapterTracker(session: vscode.DebugSession): vscode.ProviderResult<vscode.DebugAdapterTracker> {
-        return {
-            onWillStartSession: () => {
-                debugErrorManager.clearError();
-            },
-            onWillStopSession: () => {
-                debugErrorManager.clearError();
-            },
-            onDidSendMessage: (message) => {
-                if (message.type === 'event' && message.event === 'stopped' && message.body.reason === 'exception') {
-                    const exceptionText = message.body.text || 'An unknown exception occurred.';
-                    const description = message.body.description || '';
-                    let fullMessage = exceptionText;
-                    if (description && !fullMessage.includes(description)) {
-                        fullMessage += `\n${description}`;
-                    }
-
-                    const threadId = message.body.threadId;
-                    if (threadId) {
-                        session.customRequest('stackTrace', { threadId: threadId, startFrame: 0, levels: 20 }).then(async (reply) => {
-                            let stackTrace = '';
-                            let errorFileUri: vscode.Uri | undefined;
-                            let errorLine: number | undefined;
-
-                            if (reply && reply.stackFrames && reply.stackFrames.length > 0) {
-                                stackTrace = reply.stackFrames.map((frame: any) => {
-                                    const sourcePath = frame.source ? (frame.source.path || frame.source.name) : 'unknown_source';
-                                    return `  at ${frame.name} (${sourcePath}:${frame.line})`;
-                                }).join('\n');
-                                
-                                for (const frame of reply.stackFrames) {
-                                    if (frame.source && frame.source.path && !frame.source.path.includes('node_modules') && !frame.source.path.startsWith('<')) {
-                                        const frameUri = vscode.Uri.file(frame.source.path);
-                                        if (vscode.workspace.getWorkspaceFolder(frameUri)) {
-                                            errorFileUri = frameUri;
-                                            errorLine = frame.line;
-                                            
-                                            if (errorLine !== undefined) {
-                                                try {
-                                                    const doc = await vscode.workspace.openTextDocument(errorFileUri);
-                                                    await vscode.window.showTextDocument(doc, {
-                                                        selection: new vscode.Range(errorLine - 1, 0, errorLine - 1, 0),
-                                                        preserveFocus: false,
-                                                        preview: true
-                                                    });
-                                                } catch (e) {
-                                                    Logger.error("Lollms: Could not open document from stack trace.", e);
-                                                }
-                                            }
-                                            break; 
-                                        }
-                                    }
-                                }
-                            }
-                            debugErrorManager.setError(fullMessage, stackTrace, errorFileUri, errorLine);
-
-                            const fixButton = 'Fix with Lollms';
-                            const sendToDiscussionButton = 'Send to Discussion';
-                            vscode.window.showInformationMessage(`Lollms captured a debug error: ${exceptionText}`, fixButton, sendToDiscussionButton).then(selection => {
-                                if (selection === fixButton) {
-                                    vscode.commands.executeCommand('lollms-vs-coder.debugErrorWithAI');
-                                } else if (selection === sendToDiscussionButton) {
-                                    vscode.commands.executeCommand('lollms-vs-coder.debugErrorSendToDiscussion');
-                                }
-                            });
-                        }, () => {
-                            debugErrorManager.setError(fullMessage);
-                        });
-                    } else {
-                        debugErrorManager.setError(fullMessage);
-                    }
-                } else if (message.type === 'event' && message.event === 'output' && message.body.category === 'stderr') {
-                    const output = message.body.output;
-                    if (output.match(/error|exception|traceback/i) && !debugErrorManager.lastError) {
-                        debugErrorManager.setError(output);
-                    }
-                }
-            }
-        };
-    }
-}
 
 async function buildCodeActionPrompt(
     promptTemplate: string, 
@@ -190,7 +108,8 @@ async function buildCodeActionPrompt(
 
     let userPrompt = `I am working on the file \`${fileName}\` which is a \`${languageId}\` file.\n\nHere is the code selection:\n\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\nINSTRUCTION: **${userInstruction}**${contextText}`;
 
-    const agentPersonaPrompt = getProcessedSystemPrompt('agent');
+    // Agent persona handles the 'who am I' part
+    const agentPersonaPrompt = await getProcessedSystemPrompt('agent');
     let systemPrompt = '';
 
     if (actionType === 'information') {
@@ -241,70 +160,6 @@ User preferences: ${agentPersonaPrompt}`;
     return { systemPrompt, userPrompt };
 }
 
-async function buildDebugErrorPrompt(
-    errorDetails: { message: string, stack?: string, filePath?: vscode.Uri, line?: number } | null, 
-    contextManager: ContextManager, 
-    contextStateProvider: ContextStateProvider | undefined,
-    isSearchAvailable: boolean
-): Promise<string> {
-    if (!errorDetails) {
-        return "No debug error has been captured.";
-    }
-
-    let prompt = `I'm encountering an error while debugging my project.\n\n**Error Message:**\n\`\`\`\n${errorDetails.message}\n\`\`\`\n\n**Full Stack Trace:**\n\`\`\`\n${errorDetails.stack || 'No stack trace available.'}\n\`\`\``;
-
-    if (errorDetails.filePath && errorDetails.line) {
-        const fileUri = errorDetails.filePath;
-        const relativePath = vscode.workspace.asRelativePath(fileUri, false);
-        prompt += `\n\nThe error seems to originate in the file \`${relativePath}\` at line ${errorDetails.line}.`;
-
-        try {
-            const document = await vscode.workspace.openTextDocument(fileUri);
-            const errorLineContent = document.lineAt(errorDetails.line - 1).text;
-            prompt += `\n\n**Here is the line of code that is causing the error:**\n\`\`\`\n${errorLineContent.trim()}\n\`\`\``;
-        } catch (e) {
-            Logger.error("Lollms: Could not read the specific error line from the document.", e);
-        }
-
-        let fileIsInContext = false;
-        if (contextStateProvider) {
-            const fileState = contextStateProvider.getStateForUri(fileUri);
-            if (fileState === 'included') {
-                fileIsInContext = true;
-            }
-        }
-
-        if (fileIsInContext) {
-            prompt += `\n\nThe file \`${relativePath}\` is already included in your context. Please analyze the error and provide a fix.`;
-        } else {
-            try {
-                const fileContent = await vscode.workspace.fs.readFile(fileUri);
-                const contentString = Buffer.from(fileContent).toString('utf8');
-                const document = await vscode.workspace.openTextDocument(fileUri);
-                const languageId = document.languageId;
-
-                prompt += `\n\n**Here is the full content of \`${relativePath}\` for your analysis:**\n\`\`\`${languageId}\n${contentString}\n\`\`\`\n\nPlease analyze the error and the file content, then provide a fix.`;
-            } catch (e) {
-                Logger.error("Failed to read file from stack trace for debug prompt:", e);
-                prompt += `\n\nI was unable to read the content of the file. Please provide a general analysis based on the error and stack trace.`;
-            }
-        }
-    } else {
-         const contextContent = await contextManager.getContextContent();
-         prompt += `\n\nHere is the current project context which might be relevant:\n${contextContent.text}\n\nPlease analyze the error and provide a fix.`;
-    }
-
-    // Add specific instruction for agent to use grounding IF available
-    prompt += `\n\n**INSTRUCTION:** Fix this error.`;
-    if (isSearchAvailable) {
-        prompt += ` If the error involves a specific library or the solution is not obvious, **USE \`search_web\`** to find the solution. Do NOT guess.`;
-    } else {
-        prompt += ` Analyze the code and error log to find the solution.`;
-    }
-
-    return prompt;
-}
-
 export async function activate(context: vscode.ExtensionContext) {
     Logger.initialize(context);
     Logger.info('Lollms VS Coder is now active!');
@@ -353,6 +208,7 @@ export async function activate(context: vscode.ExtensionContext) {
     })();
     context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider('lollms-original', originalContentProvider));
 
+    const memoryManager = new MemoryManager(context.globalStorageUri);
     const contextManager = new ContextManager(context, lollmsAPI);
     const scriptRunner = new ScriptRunner(pythonExtApi);
     const promptManager = new PromptManager(context.globalStorageUri);
@@ -379,14 +235,12 @@ export async function activate(context: vscode.ExtensionContext) {
     const debugCodeLensProvider = new DebugCodeLensProvider(debugErrorManager);
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, debugCodeLensProvider));
     
-    // --- QUICK EDIT / INLINE DIFF INIT ---
     const inlineDiffProvider = new InlineDiffProvider(lollmsAPI);
-    // Register it for files and notebooks
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, inlineDiffProvider));
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'untitled' }, inlineDiffProvider));
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'vscode-notebook-cell' }, inlineDiffProvider));
 
-    const quickEditManager = new QuickEditManager(lollmsAPI, inlineDiffProvider);
+    const quickEditManager = new QuickEditManager(lollmsAPI, inlineDiffProvider, contextManager, memoryManager);
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.quickEdit', () => {
         quickEditManager.triggerQuickEdit();
@@ -401,7 +255,6 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refineDiff', (sessionId: string) => {
         inlineDiffProvider.refine(sessionId);
     }));
-    // -------------------------------------
 
     context.subscriptions.push(
         vscode.languages.registerCodeActionsProvider('*', 
@@ -437,6 +290,9 @@ export async function activate(context: vscode.ExtensionContext) {
         panel.agentManager.setProcessManager(processManager);
         panel.setContextManager(contextManager);
         panel.setPersonalityManager(personalityManager);
+        // We inject memoryManager here if ChatPanel is updated to accept it
+        // Since we are not rewriting ChatPanel in this block, this remains implicit via QuickEdit
+        // However, utils.ts is updated, so main chat prompts will respect memory if passed via other means
     };
 
     const revealDiscussion = (discussion: Discussion) => {
@@ -598,6 +454,15 @@ export async function activate(context: vscode.ExtensionContext) {
         await gitIntegration.stageAllAndCommit(message, activeWorkspaceFolder);
     }));
 
+    // Register the missing command for adding files to context
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.addFilesToContext', async (files: string[]) => {
+        if (contextStateProvider) {
+            await contextStateProvider.addFilesToContext(files);
+        } else {
+            vscode.window.showErrorMessage("Please open a workspace folder to add files to context.");
+        }
+    }));
+
     const sendSelection = async (createNew: boolean) => {
         if (!activeWorkspaceFolder || !discussionManager) {
             vscode.window.showInformationMessage(vscode.l10n.t("info.openFolderToUseChat"));
@@ -693,7 +558,6 @@ Please analyze this output (e.g., error log, script output, or configuration tex
     chatStatusBar.show();
     context.subscriptions.push(chatStatusBar);
 
-    // --- NEW: Quick Edit Button (Companion) ---
     const quickEditStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 102);
     quickEditStatusBar.text = '$(sparkle) lollms';
     quickEditStatusBar.command = 'lollms-vs-coder.quickEdit';
@@ -701,7 +565,6 @@ Please analyze this output (e.g., error log, script output, or configuration tex
     quickEditStatusBar.show();
     context.subscriptions.push(quickEditStatusBar);
 
-    // --- NEW: Companion Connection Status Indicator ---
     const companionStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 101);
     companionStatusBarItem.command = 'lollms-vs-coder.checkConnection';
     companionStatusBarItem.text = '$(sync~spin) Lollms: Checking...';
@@ -726,7 +589,6 @@ Please analyze this output (e.g., error log, script output, or configuration tex
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.checkConnection', async () => await checkConnection()));
     const connectionInterval = setInterval(checkConnection, 60000);
     context.subscriptions.push({ dispose: () => clearInterval(connectionInterval) });
-    // --- End Companion Status ---
 
     const modelStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
     modelStatusBarItem.command = 'lollms-vs-coder.selectModel';
@@ -1095,7 +957,7 @@ Please analyze this output (e.g., error log, script output, or configuration tex
     
             const config = vscode.workspace.getConfiguration('lollmsVsCoder');
             const inspectorModel = config.get<string>('inspectorModelName') || discussion.model || lollmsAPI.getModelName();
-            const systemPrompt = getProcessedSystemPrompt('chat');
+            const systemPrompt = await getProcessedSystemPrompt('chat');
     
             const inspectionPrompt = `Your task is to act as a senior code inspector. Analyze the following ${languageId} file (\`${relativePath}\`) for errors, bugs, vulnerabilities, and malicious content.
 
@@ -1338,6 +1200,10 @@ ${fileContent}
         await skillsManager.addSkill({ name, description, content, language });
         skillsTreeProvider.refresh();
         vscode.window.showInformationMessage(`Skill '${name}' has been learned.`);
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.editMemory', () => {
+        memoryManager.showMemoryEditor();
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.createPersonality', async () => {
@@ -2120,8 +1986,6 @@ ${fileContent}
         }
     }));
     
-    // Duplicated block removed from here
-    
     // NEW COMMAND: Generate Educative Notebook (Action)
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateEducativeNotebookFromAction', async () => {
         if (!activeWorkspaceFolder || !discussionManager) {
@@ -2168,22 +2032,9 @@ The notebook should be educational, alternating between markdown explanations an
         await panel.loadDiscussion();
 
         // Configure AgentManager with selected tools
-        // We need to ensure the agent has the right tools enabled for THIS run. 
-        // AgentManager's enabled tools are global for the session usually, but we can set them here.
-        // We add standard file ops + selected tools.
         const toolsToEnable = ['generate_code', 'read_file', 'list_files', 'execute_command', ...selectedTools];
         panel.agentManager.setEnabledTools(toolsToEnable);
 
-        // Start Agent
-        // Note: We need to pass the prompt again as the objective for the agent run
-        // If includeTree is false, we might need to handle that. 
-        // Current implementation of AgentManager always uses contextManager which respects includeTree only via method arg.
-        // But AgentManager calls contextManager methods directly.
-        // To strictly respect includeTree=false, we'd need to patch AgentManager/ContextManager logic 
-        // or just rely on the prompt telling the agent what to do (the agent sees the tree in system prompt usually).
-        // For now, let's assume standard behavior but with the specific objective.
-
-        // We trigger the agent run
         panel.agentManager.run(userMessage.content as string, discussion, activeWorkspaceFolder, discussion.model);
     }));
 

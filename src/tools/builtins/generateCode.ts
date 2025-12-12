@@ -3,8 +3,8 @@ import { ToolDefinition, ToolExecutionEnv } from '../tool';
 import { getProcessedSystemPrompt } from '../../utils';
 import { ChatMessage } from '../../lollmsAPI';
 
-function getCoderSystemPrompt(customPrompt: string, planObjective: string, projectContext: string): ChatMessage {
-    const agentPersonaPrompt = getProcessedSystemPrompt('agent');
+async function getCoderSystemPrompt(customPrompt: string, planObjective: string, projectContext: string): Promise<ChatMessage> {
+    const agentPersonaPrompt = await getProcessedSystemPrompt('agent');
     return {
         role: 'system',
         content: `You are a code generation AI. You will be given instructions and context to write or modify a file.
@@ -44,7 +44,7 @@ export const generateCodeTool: ToolDefinition = {
             return { success: false, output: "Error: 'file_path' parameter is required." };
         }
 
-        const modelOverride = env.agentManager.getCurrentDiscussion()?.model;
+        const modelOverride = env.agentManager?.getCurrentDiscussion()?.model;
         let projectContextText = "";
 
         // --- STEP 1: DYNAMIC CONTEXT RETRIEVAL ---
@@ -121,7 +121,7 @@ Example Output:
             }
         }
 
-        const coderSystemPrompt = getCoderSystemPrompt(params.system_prompt || '', env.currentPlan.objective, projectContextText);
+        const coderSystemPrompt = await getCoderSystemPrompt(params.system_prompt || '', env.currentPlan.objective, projectContextText);
         const coderUserPrompt: ChatMessage = { role: 'user', content: userPromptContent };
         
         // --- STEP 3: GENERATE CODE ---

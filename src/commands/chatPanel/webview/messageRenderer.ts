@@ -29,9 +29,18 @@ const langMap: { [key: string]: string } = {
     'txt': 'plaintext',
     'md': 'markdown',
     'yml': 'yaml',
+    'yaml': 'yaml',
     'json': 'json',
     'skill': 'json',
-    'vue': 'html'
+    'vue': 'html',
+    'svelte': 'html',
+    'ejs': 'html',
+    'erb': 'html',
+    'hbs': 'html',
+    'handlebars': 'html',
+    'xml': 'xml',
+    'htm': 'html',
+    'html': 'html'
 };
 
 try {
@@ -391,7 +400,15 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
         if (pre.parentElement?.classList.contains('code-collapsible')) return;
 
         const langMatch = code.className.match(/language-(\S+)/);
-        const language = langMatch ? langMatch[1] : 'plaintext';
+        let language = langMatch ? langMatch[1] : 'plaintext';
+        
+        // Remap language if needed (e.g. vue -> html) for highlighting
+        if (langMap[language.toLowerCase()]) {
+            language = langMap[language.toLowerCase()];
+            code.className = `language-${language}`;
+            pre.className = `language-${language}`;
+        }
+
         const codeText = code.innerText;
 
         const blockId = `code-block-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;

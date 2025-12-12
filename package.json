@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.44",
+  "version": "0.5.50",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -101,6 +101,10 @@
         "command": "lollms-vs-coder.autoSelectContextFiles",
         "title": "%command.autoSelectContextFiles.title%",
         "icon": "$(wand)"
+      },
+      {
+        "command": "lollms-vs-coder.addFilesToContext",
+        "title": "Lollms: Add Files to Context"
       },
       {
         "command": "lollms-vs-coder.saveNewFile",
@@ -412,6 +416,11 @@
         "command": "lollms-vs-coder.exportSkills",
         "title": "Lollms: Export Skills",
         "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "lollms-vs-coder.editMemory",
+        "title": "Lollms: Edit AI Memory",
+        "icon": "$(book)"
       }
     ],
     "keybindings": [
@@ -426,11 +435,6 @@
       "type": "object",
       "title": "%config.title%",
       "properties": {
-        "lollmsVsCoder.developerName": {
-          "type": "string",
-          "default": "",
-          "description": "%config.developerName.description%"
-        },
         "lollmsVsCoder.searchProvider": {
           "type": "string",
           "default": "google_custom_search",
@@ -645,6 +649,36 @@
           "additionalProperties": {
             "type": "string"
           }
+        },
+        "lollmsVsCoder.companion.enableWebSearch": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow the Companion (Quick Edit) to use Web Search."
+        },
+        "lollmsVsCoder.companion.enableArxivSearch": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow the Companion (Quick Edit) to use ArXiv Search."
+        },
+        "lollmsVsCoder.userInfo.name": {
+          "type": "string",
+          "default": "",
+          "description": "Your full name. Used by the AI for file headers and personalization."
+        },
+        "lollmsVsCoder.userInfo.email": {
+          "type": "string",
+          "default": "",
+          "description": "Your email address. Used for file headers."
+        },
+        "lollmsVsCoder.userInfo.license": {
+          "type": "string",
+          "default": "MIT",
+          "description": "Default license to use in generated code headers."
+        },
+        "lollmsVsCoder.userInfo.codingStyle": {
+          "type": "string",
+          "default": "",
+          "description": "Brief description of your preferred coding style (e.g., 'Functional', 'PEP8', 'Concise')."
         }
       }
     },

@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.50",
+  "version": "0.5.51",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -536,6 +536,11 @@
           "default": "ollama/mistral",
           "description": "%config.modelName.description%"
         },
+        "lollmsVsCoder.architectModelName": {
+          "type": "string",
+          "default": "",
+          "description": "The 'Big' model used for planning and reasoning in Multi-Agent mode. Leave empty to use the Chat Model."
+        },
         "lollmsVsCoder.requestTimeout": {
           "type": "number",
           "default": 600000,
@@ -1007,7 +1012,7 @@
         "id": "lollms-vs-coder.terminalSelectionSubmenu",
         "label": "%menu.lollmsTerminalSelection.title%"
       }
-    ]
+    ]  
   },
   "scripts": {
     "vscode:prepublish": "npm run esbuild-package",

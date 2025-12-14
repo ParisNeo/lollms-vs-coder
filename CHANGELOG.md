@@ -9,6 +9,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - feat(chat): enhance chat panel with persona support and UI improvements
 
+## [Unreleased]
+
+- chore(core): bump version to 0.5.51 and update agent, companion panel, extension, notebook tools, quick edit, and code generation utilities
+
 ## [0.5.4] - 2025-10-22
 
 ### ✨ Features

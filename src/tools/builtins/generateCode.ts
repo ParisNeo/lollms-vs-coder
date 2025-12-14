@@ -47,7 +47,7 @@ export const generateCodeTool: ToolDefinition = {
         const modelOverride = env.agentManager?.getCurrentDiscussion()?.model;
         let projectContextText = "";
 
-        // --- STEP 1: DYNAMIC CONTEXT RETRIEVAL ---
+        // --- STEP 1: DYNAMIC CONTEXT RETRIEVAL (Anti-Hallucination) ---
         // Before generating code, ask the AI which OTHER files in the workspace are relevant.
         if (env.workspaceRoot) {
             try {
@@ -56,15 +56,15 @@ export const generateCodeTool: ToolDefinition = {
                 const fileListString = allFiles.join('\n');
 
                 if (allFiles.length > 0) {
-                    // 2. Ask the AI to pick relevant files
+                    // 2. Ask the AI to pick relevant files (Pre-check to prevent hallucinations)
                     const selectionSystemPrompt: ChatMessage = {
                         role: 'system',
                         content: `You are a dependency analyzer. You are about to write code for the file: "${params.file_path}".
-Your task is to identify which *other* existing files in the project are crucial to read (e.g., for type definitions, utility functions, or base classes) to ensure the new code is correct and integrates well.
+Your task is to identify which *other* existing files in the project are crucial to read (e.g., for type definitions, utility functions, signatures, or base classes) to ensure the new code is correct and DOES NOT HALLUCINATE functions.
 
 **INSTRUCTIONS:**
 1. Review the provided file list.
-2. Select up to 5 most relevant files that you need to read.
+2. Select up to 10 most relevant files that you need to read to get signatures and definitions.
 3. Return ONLY a valid JSON array of strings containing the relative paths.
 4. Do NOT select the target file "${params.file_path}" itself (we will read it separately).
 5. If no other files are needed, return an empty JSON array [].
@@ -78,8 +78,11 @@ Example Output:
                         content: `**Target File to Write:** ${params.file_path}\n\n**User Instruction:** ${params.user_prompt}\n\n**Project File List:**\n${fileListString}`
                     };
 
-                    // We use a separate short call here.
-                    const selectionResponse = await env.lollmsApi.sendChat([selectionSystemPrompt, selectionUserPrompt], null, signal, modelOverride);
+                    // Use the architect model if available for better reasoning on dependencies
+                    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+                    const architectModel = config.get<string>('architectModelName') || modelOverride;
+
+                    const selectionResponse = await env.lollmsApi.sendChat([selectionSystemPrompt, selectionUserPrompt], null, signal, architectModel);
                     
                     // 3. Parse JSON response
                     const jsonMatch = selectionResponse.match(/\[.*\]/s);
@@ -94,7 +97,7 @@ Example Output:
                     if (selectedFiles.length > 0) {
                         const dependencyContext = await env.contextManager.readSpecificFiles(selectedFiles);
                         if (dependencyContext) {
-                            projectContextText += `\n\n==== DYNAMICALLY LOADED DEPENDENCIES ====\nThe following files were identified as relevant dependencies and loaded for this task:\n\n${dependencyContext}\n=========================================\n`;
+                            projectContextText += `\n\n==== DYNAMICALLY LOADED DEPENDENCIES (READ THESE FOR SIGNATURES) ====\nThe following files were identified as relevant dependencies. Use their definitions to avoid hallucinating functions:\n\n${dependencyContext}\n=========================================\n`;
                         }
                     }
                 }

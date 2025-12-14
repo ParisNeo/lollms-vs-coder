@@ -163,8 +163,27 @@ export class CompanionPanel {
         }
         const doc = this._lastActiveEditor.document;
         const sel = this._lastActiveEditor.selection;
-        const relativePath = vscode.workspace.asRelativePath(doc.uri);
-        let info = `${relativePath}`;
+        
+        let info = "";
+        
+        // Handle Notebook Cell
+        if (doc.uri.scheme === 'vscode-notebook-cell') {
+            const notebook = vscode.window.visibleNotebookEditors.find(ne => ne.notebook.getCells().some(c => c.document === doc))?.notebook;
+            const nbName = notebook ? vscode.workspace.asRelativePath(notebook.uri) : "Notebook Cell";
+            
+            // Find cell index
+            let cellIndexStr = "";
+            if (notebook) {
+                const cell = notebook.getCells().find(c => c.document === doc);
+                if (cell) {
+                    cellIndexStr = ` (Cell ${cell.index + 1})`;
+                }
+            }
+            info = `${nbName}${cellIndexStr}`;
+        } else {
+            info = vscode.workspace.asRelativePath(doc.uri);
+        }
+
         if (!sel.isEmpty) {
             info += ` (Lines ${sel.start.line+1}-${sel.end.line+1} Selected)`;
         } else {

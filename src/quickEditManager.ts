@@ -21,14 +21,11 @@ export class QuickEditManager {
     ) {}
 
     public async triggerQuickEdit() {
-        // Just open the panel. Context tracking is handled internally by CompanionPanel.
         const panel = CompanionPanel.createOrShow(
             vscode.extensions.getExtension('parisneo.lollms-vs-coder')!.extensionUri, 
             "Lollms Companion"
         );
 
-        // Ensure listeners are set up only once per panel instance (effectively)
-        // Since we re-create the listener list every trigger, we dispose old ones first.
         this.panelDisposables.forEach(d => d.dispose());
         this.panelDisposables = [];
         
@@ -38,7 +35,6 @@ export class QuickEditManager {
     }
 
     private async processInstruction(instruction: string, panel: CompanionPanel) {
-        // Get the ACTIVE editor tracked by the panel
         const editor = panel.getActiveEditor();
         if (!editor) {
             vscode.window.showErrorMessage("No active text editor found to apply instructions to.");
@@ -50,7 +46,31 @@ export class QuickEditManager {
         const selectedText = document.getText(selection);
         const hasSelection = !selection.isEmpty && selectedText.trim().length > 0;
         const languageId = document.languageId;
-        const relativePath = vscode.workspace.asRelativePath(document.uri);
+        
+        // Notebook Detection
+        const isNotebook = document.uri.scheme === 'vscode-notebook-cell';
+        let relativePath = vscode.workspace.asRelativePath(document.uri);
+        let notebookContext = "";
+
+        if (isNotebook) {
+             const notebookEditor = vscode.window.visibleNotebookEditors.find(ne => 
+                ne.notebook.getCells().some(c => c.document.uri.toString() === document.uri.toString())
+             );
+             if (notebookEditor) {
+                 relativePath = vscode.workspace.asRelativePath(notebookEditor.notebook.uri);
+                 const currentCell = notebookEditor.notebook.getCells().find(c => c.document.uri.toString() === document.uri.toString());
+                 if (currentCell) {
+                     relativePath += ` (Cell ${currentCell.index + 1})`;
+                     
+                     for (const cell of notebookEditor.notebook.getCells()) {
+                        if (cell === currentCell) break;
+                        const content = cell.document.getText();
+                        if (content.length > 2000) continue; 
+                        notebookContext += `Cell ${cell.index + 1} (${cell.kind === vscode.NotebookCellKind.Code ? 'Code' : 'Markdown'}):\n\`\`\`\n${content}\n\`\`\`\n\n`;
+                     }
+                 }
+             }
+        }
 
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const enableWebSearch = config.get<boolean>('companion.enableWebSearch');
@@ -61,7 +81,6 @@ export class QuickEditManager {
         if (enableArxivSearch) tools.push(searchArxivTool);
         const hasTools = tools.length > 0;
 
-        // Set UI loading state
         panel.setLoading(true);
 
         try {
@@ -101,9 +120,29 @@ export class QuickEditManager {
                             `**Instruction/Question:** "${instruction}"\n\n`;
             }
 
+            if (isNotebook && notebookContext) {
+                prompt = `**NOTEBOOK CONTEXT (Preceding Cells):**\n${notebookContext}\n\n` + prompt;
+            }
+
             prompt += `Please respond with markdown. If you provide code, use code blocks.`;
 
-            const systemPromptContent = await getProcessedSystemPrompt('chat', undefined, undefined, this.memoryManager);
+            let systemPromptContent = await getProcessedSystemPrompt('chat', undefined, undefined, this.memoryManager);
+
+            if (isNotebook) {
+                // Remove general chat instructions if they conflict, or append specific notebook overrides.
+                // The user requested: "only import notbook specific system prompt if we are editing a ntebook"
+                // This might imply REPLACING the system prompt or appending to a clean one.
+                // However, preserving persona is usually good.
+                // I will add a strong instruction header for Notebook Mode.
+                systemPromptContent += `\n\n**NOTEBOOK MODE ACTIVATED**
+You are an expert Jupyter Notebook assistant.
+- You are editing a specific cell (or selection) within a notebook.
+- The preceding cells are provided as context.
+- When asked to modify code, provide the code block for the CURRENT CELL.
+- Do NOT rewrite the entire notebook unless explicitly asked.
+- Do NOT include conversational filler if the user asks for a direct replacement.
+`;
+            }
 
             let systemPrompt = systemPromptContent + 
                 "\nYou are Lollms, a helpful AI coding companion. Provide clear, concise answers.";
@@ -142,7 +181,6 @@ export class QuickEditManager {
                         const tool = tools.find(t => t.name === toolCall.tool);
                         
                         if (tool) {
-                            // progress.report({ message: `Executing ${tool.name}...` });
                             messages.push({ role: 'assistant', content: response });
 
                             const env: ToolExecutionEnv = {

@@ -261,6 +261,15 @@ ${updateInstructions}
             break;
         }
         case 'agent':
+            // Overwrite agent prompt to be more specific about observation
+            basePrompt = `You are a meticulous, autonomous AI Agent. You break down complex goals into tools and steps.
+**CRITICAL RULES:**
+1. **OBSERVE FIRST:** Before deciding a task failed, read the tool output CAREFULLY. If looking for a name or IP, check every line. Do not hallucinate failures if the data is present.
+2. **NO LOOPS:** If a strategy fails, do NOT repeat it exactly. Try a different approach. Check the scratchpad for past failures.
+3. **BACKUPS:** Before destructive actions, use the git tools to stage changes.
+4. **DEPENDENCIES:** When writing code, ALWAYS verify imports exist. Do not assume.`;
+            personaKey = 'agentPersona';
+            break;
         case 'inspector':
             personaKey = `${promptType}Persona`;
             break;

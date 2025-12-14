@@ -25,7 +25,7 @@ import { CustomActionModal } from './commands/customActionModal';
 import { ProcessManager } from './processManager';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { LollmsNotebookCellActionProvider } from './notebookTools';
+import { LollmsNotebookCellActionProvider, NotebookManager } from './notebookTools';
 import { CodeExplorerPanel } from './commands/codeExplorerView';
 import { CodeExplorerTreeProvider } from './commands/codeExplorerTreeProvider';
 import { SkillsTreeProvider } from './commands/skillsTreeProvider';
@@ -217,6 +217,7 @@ export async function activate(context: vscode.ExtensionContext) {
     const processManager = new ProcessManager();
     const skillsManager = new SkillsManager();
     const codeGraphManager = new CodeGraphManager();
+    const notebookManager = new NotebookManager(lollmsAPI);
 
     const actionsTreeProvider = new ActionsTreeProvider();
     context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsActionsView', actionsTreeProvider));
@@ -239,6 +240,11 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, inlineDiffProvider));
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'untitled' }, inlineDiffProvider));
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'vscode-notebook-cell' }, inlineDiffProvider));
+
+    const notebookProvider = new LollmsNotebookCellActionProvider();
+    context.subscriptions.push(
+        vscode.notebooks.registerNotebookCellStatusBarItemProvider('jupyter-notebook', notebookProvider)
+    );
 
     const quickEditManager = new QuickEditManager(lollmsAPI, inlineDiffProvider, contextManager, memoryManager);
 
@@ -290,9 +296,6 @@ export async function activate(context: vscode.ExtensionContext) {
         panel.agentManager.setProcessManager(processManager);
         panel.setContextManager(contextManager);
         panel.setPersonalityManager(personalityManager);
-        // We inject memoryManager here if ChatPanel is updated to accept it
-        // Since we are not rewriting ChatPanel in this block, this remains implicit via QuickEdit
-        // However, utils.ts is updated, so main chat prompts will respect memory if passed via other means
     };
 
     const revealDiscussion = (discussion: Discussion) => {
@@ -587,8 +590,6 @@ Please analyze this output (e.g., error log, script output, or configuration tex
     };
     checkConnection();
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.checkConnection', async () => await checkConnection()));
-    const connectionInterval = setInterval(checkConnection, 60000);
-    context.subscriptions.push({ dispose: () => clearInterval(connectionInterval) });
 
     const modelStatusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 99);
     modelStatusBarItem.command = 'lollms-vs-coder.selectModel';
@@ -1988,7 +1989,7 @@ ${fileContent}
     
     // NEW COMMAND: Generate Educative Notebook (Action)
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateEducativeNotebookFromAction', async () => {
-        if (!activeWorkspaceFolder || !discussionManager) {
+        if (!activeWorkspaceFolder) {
             vscode.window.showErrorMessage("No active workspace found. Please open a folder.");
             return;
         }
@@ -1996,46 +1997,128 @@ ${fileContent}
         const data = await EducativeNotebookModal.createOrShow(context.extensionUri);
         if (!data) return;
 
-        const { topic, includeTree, selectedTools } = data;
+        const { topic, includeTree } = data; // selectedTools might be less relevant if we just generate text/code, but we can include instructions to use libraries if needed.
 
-        // Create a new discussion for this task
-        const discussion = discussionManager.createNewDiscussion();
-        discussion.title = `Generating: ${topic.substring(0, 20)}...`;
-        
-        // Setup initial user message
-        const userMessage: ChatMessage = {
-            id: 'user_' + Date.now(),
-            role: 'user',
-            content: `**Objective:** Generate an educative Jupyter Notebook about "${topic}".
+        // Sanitize filename
+        const safeTopic = topic.replace(/[^a-z0-9]/gi, '_').toLowerCase().substring(0, 50);
+        const fileName = `${safeTopic}.ipynb`;
+        const fileUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, fileName);
+
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: `Generating notebook: ${fileName}...`,
+            cancellable: true
+        }, async (progress, token) => {
             
-**Context Settings:**
-- Include Project Tree: ${includeTree ? 'Yes' : 'No'}
-- Enabled Tools: ${selectedTools.join(', ')}
+            const systemPrompt = `You are a technical educator. Create a comprehensive, step-by-step Jupyter Notebook tutorial about "${topic}".
+            
+**Structure:**
+1.  **Introduction**: Markdown cell explaining the concept.
+2.  **Setup**: Code cell with necessary imports/installations (if needed).
+3.  **Examples**: Alternating Markdown explanations and Python Code cells demonstrating the concept.
+4.  **Conclusion**: Summary.
 
-Please research if necessary, then create the notebook file using \`generate_code\` (target file e.g., \`${topic.replace(/\s+/g, '_')}.ipynb\`). 
-The notebook should be educational, alternating between markdown explanations and code examples, with visualizations where appropriate.`
-        };
-        discussion.messages.push(userMessage);
-        
-        // Propagate settings to discussion capabilities
-        if (discussion.capabilities) {
-            discussion.capabilities.webSearch = selectedTools.includes('search_web');
-            discussion.capabilities.arxivSearch = selectedTools.includes('search_arxiv');
-            discussion.capabilities.imageGen = selectedTools.includes('generate_image');
-        }
+**FORMATTING RULES:**
+- Output ONLY the raw content separated by the delimiter "### CELL_SPLIT ###".
+- Precede each cell content with "TYPE: MARKDOWN" or "TYPE: CODE".
+- Do not use markdown code fences (\`\`\`) to wrap the whole response.
+- Example format:
+TYPE: MARKDOWN
+# Introduction
+This is a tutorial...
+### CELL_SPLIT ###
+TYPE: CODE
+import numpy as np
+print("Hello")
+### CELL_SPLIT ###
+...
+`;
+            
+            // Add context if requested
+            let userContent = `Topic: ${topic}`;
+            if (includeTree) {
+                 // We might need contextManager here if we want to include tree, but for a general tutorial, maybe not critical unless it's "Explain THIS project".
+                 // If the user wants to explain the project, we need the tree.
+                 // contextManager is available in activation scope.
+                 // let's try to get tree if requested.
+                 const tree = await contextManager.getContextContent({ includeTree: true });
+                 if(tree.text) {
+                     userContent += `\n\nProject Context:\n${tree.text}`;
+                 }
+            }
 
-        await discussionManager.saveDiscussion(discussion);
-        discussionTreeProvider?.refresh();
+            const response = await lollmsAPI.sendChat([
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userContent }
+            ], null, undefined); // undefined signal for now, could wire up token
 
-        const panel = ChatPanel.createOrShow(context.extensionUri, lollmsAPI, discussionManager, discussion.id, skillsManager);
-        setupChatPanel(panel);
-        await panel.loadDiscussion();
+            if (token.isCancellationRequested) return;
 
-        // Configure AgentManager with selected tools
-        const toolsToEnable = ['generate_code', 'read_file', 'list_files', 'execute_command', ...selectedTools];
-        panel.agentManager.setEnabledTools(toolsToEnable);
+            const cleanResponse = stripThinkingTags(response);
+            const parts = cleanResponse.split('### CELL_SPLIT ###');
+            
+            const cells = [];
+            for (let part of parts) {
+                part = part.trim();
+                if (!part) continue;
+                
+                let cellType = "markdown";
+                let source = part;
 
-        panel.agentManager.run(userMessage.content as string, discussion, activeWorkspaceFolder, discussion.model);
+                if (part.startsWith("TYPE: CODE")) {
+                    cellType = "code";
+                    source = part.replace("TYPE: CODE", "").trim();
+                    // Remove markdown fences if model added them inside the block
+                    source = source.replace(/^```python\s*/, '').replace(/^```\s*/, '').replace(/```$/, '');
+                } else if (part.startsWith("TYPE: MARKDOWN")) {
+                    cellType = "markdown";
+                    source = part.replace("TYPE: MARKDOWN", "").trim();
+                } else {
+                    // Fallback heuristic
+                    if (part.includes("import ") || part.includes("print(")) {
+                        cellType = "code";
+                    }
+                }
+
+                cells.push({
+                    cell_type: cellType,
+                    metadata: {},
+                    source: source.split('\n').map(l => l + '\n')
+                });
+            }
+
+            const notebookJson = {
+                cells: cells,
+                metadata: {
+                    kernelspec: {
+                        display_name: "Python 3",
+                        language: "python",
+                        name: "python3"
+                    },
+                    language_info: {
+                        codemirror_mode: {
+                            name: "ipython",
+                            version: 3
+                        },
+                        file_extension: ".py",
+                        mimetype: "text/x-python",
+                        name: "python",
+                        nbconvert_exporter: "python",
+                        pygments_lexer: "ipython3",
+                        version: "3.8.5"
+                    }
+                },
+                nbformat: 4,
+                nbformat_minor: 4
+            };
+
+            const contentBuffer = Buffer.from(JSON.stringify(notebookJson, null, 2), 'utf8');
+            await vscode.workspace.fs.writeFile(fileUri, contentBuffer);
+            
+            // Open it
+            await vscode.window.showNotebookDocument(await vscode.workspace.openNotebookDocument(fileUri));
+            vscode.window.showInformationMessage(`Notebook '${fileName}' generated and opened.`);
+        });
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.fixDiagnostic', async (document: vscode.TextDocument, diagnostic: vscode.Diagnostic) => {
@@ -2070,6 +2153,16 @@ Please analyze the error and provide a corrected version of the code or instruct
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setContextDefinitionsOnly', (primaryUri?: vscode.Uri, selectedUris?: vscode.Uri[]) => {
         handleSetState('definitions-only', primaryUri, selectedUris);
     }));
+
+    // Register notebook commands using notebookManager instance
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.promptToNotebookCell', (cell: vscode.NotebookCell) => notebookManager.promptToNotebookCell(cell)));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.enhanceNotebookCell', (cell: vscode.NotebookCell) => notebookManager.enhanceNotebookCell(cell)));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateNextNotebookCell', (cell: vscode.NotebookCell) => notebookManager.generateNextNotebookCell(cell)));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.explainNotebookCell', (cell: vscode.NotebookCell) => notebookManager.explainNotebookCell(cell)));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.visualizeNotebookCell', (cell: vscode.NotebookCell) => notebookManager.visualizeNotebookCell(cell)));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.analyzeNotebookCellOutput', (cell: vscode.NotebookCell) => notebookManager.analyzeNotebookCellOutput(cell)));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.fixNotebookCellError', (cell: vscode.NotebookCell) => notebookManager.fixNotebookCellError(cell)));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateEducativeNotebook', (cell: vscode.NotebookCell) => notebookManager.generateEducativeNotebook(cell)));
         
     console.log('Extension activation complete.');
 }

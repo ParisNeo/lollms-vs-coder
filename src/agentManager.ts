@@ -41,6 +41,7 @@ export class AgentManager {
     private toolManager: ToolManager;
     private codeGraphManager: CodeGraphManager;
     private skillsManager: SkillsManager;
+    private globalFailureLog: string[] = []; // Stores failures to prevent loops
 
     constructor(
         private chatPanel: ChatPanel,
@@ -101,10 +102,6 @@ export class AgentManager {
         this.chatPanel.displayPlan(plan);
     }
 
-    /**
-     * Filters available tools based on the discussion capabilities.
-     * This ensures the planner doesn't try to use tools that are disabled.
-     */
     private getContextAwareTools(discussion: Discussion): ToolDefinition[] {
         const baseTools = this.toolManager.getEnabledTools();
         const caps = discussion.capabilities;
@@ -128,8 +125,8 @@ export class AgentManager {
             this.currentWorkspaceFolder = workspaceFolder;
             this.currentDiscussion = discussion;
             this.chatHistory = [...discussion.messages];
+            this.globalFailureLog = []; // Reset logs for new objective
             
-            // Filter tools based on capabilities
             const allowedTools = this.getContextAwareTools(discussion);
 
             const initialPlanState: Plan = { 
@@ -139,15 +136,21 @@ export class AgentManager {
             };
             this.displayAndSavePlan(initialPlanState);
     
+            // --- Multi-Agent Simulation: Architect ---
+            // If an "Architect" model is configured, use it for planning.
+            const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+            const architectModel = config.get<string>('architectModelName');
+            const plannerModel = architectModel ? architectModel : modelOverride;
+
             const planResult = await this.planParser.generateAndParsePlan(
                 initialObjective, 
                 undefined, 
                 undefined, 
                 undefined, 
                 controller.signal, 
-                modelOverride,
+                plannerModel, // Use Architect
                 this.chatHistory,
-                allowedTools // Pass filtered tools
+                allowedTools
             );
             
             if (controller.signal.aborted) {
@@ -168,6 +171,7 @@ export class AgentManager {
             }
             
             this.displayAndSavePlan(planResult.plan);
+            // Execute with default/worker model (or override if provided)
             await this.executePlan(0, controller.signal, modelOverride);
 
         } catch (error: any) {
@@ -178,6 +182,16 @@ export class AgentManager {
             return;
         } finally {
             this.processManager.unregister(processId);
+        }
+    }
+
+    private async performGitBackup(reason: string) {
+        if (!this.currentWorkspaceFolder) return;
+        try {
+            this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🔒 **Creating safety backup:** ${reason}...` });
+            await this.gitIntegration.stageAllAndCommit(`Auto-backup: ${reason}`, this.currentWorkspaceFolder);
+        } catch (e) {
+            console.error("Backup failed", e);
         }
     }
 
@@ -198,7 +212,11 @@ export class AgentManager {
             failedTask.can_retry = false;
             this.displayAndSavePlan(this.currentPlan);
             
-            const revisionSucceeded = await this.revisePlanForFailure(failedTask, controller.signal, this.currentDiscussion.model);
+            // Re-planning uses Architect model if available
+            const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+            const architectModel = config.get<string>('architectModelName') || this.currentDiscussion.model;
+
+            const revisionSucceeded = await this.revisePlanForFailure(failedTask, controller.signal, architectModel);
             if (revisionSucceeded) {
                 await this.executePlan(failedTaskIndex, controller.signal, this.currentDiscussion.model);
             } else {
@@ -228,6 +246,11 @@ export class AgentManager {
             const task = this.currentPlan.tasks[this.currentTaskIndex];
     
             if (task.status === 'pending') {
+                // Auto-Backup before critical actions
+                if (task.action === 'generate_code' || task.action === 'execute_command') {
+                    await this.performGitBackup(`Before task ${task.id} (${task.action})`);
+                }
+
                 task.status = 'in_progress';
                 this.displayAndSavePlan(this.currentPlan);
     
@@ -246,9 +269,15 @@ export class AgentManager {
                 this.displayAndSavePlan(this.currentPlan);
     
                 if (!result.success) {
+                    // Record failure globally to prevent loops
+                    this.globalFailureLog.push(`Task ${task.id} (${task.action}) failed with: ${result.output.substring(0, 200)}...`);
+
                     const maxRetries = vscode.workspace.getConfiguration('lollmsVsCoder').get<number>('agentMaxRetries') || 1;
                     if (task.retries < maxRetries) {
-                        const revisionSucceeded = await this.revisePlanForFailure(task, signal, modelOverride);
+                        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+                        const architectModel = config.get<string>('architectModelName') || modelOverride;
+                        
+                        const revisionSucceeded = await this.revisePlanForFailure(task, signal, architectModel);
                         if (revisionSucceeded) {
                             continue;
                         } else {
@@ -296,7 +325,6 @@ export class AgentManager {
             return { success: false, output: `Unknown action: ${action}` };
         }
 
-        // Check again if allowed in discussion (Double safety)
         if (this.currentDiscussion && this.currentDiscussion.capabilities) {
             if (action === 'search_web' && !this.currentDiscussion.capabilities.webSearch) return { success: false, output: "Web Search disabled."};
         }
@@ -314,15 +342,17 @@ export class AgentManager {
         return tool.execute(params, env, signal);
     }
     
-    // ... (rest of methods: revisePlanForFailure, replan, etc. - ensure revisePlan passes allowedTools too)
-    
     private async revisePlanForFailure(failedTask: Task, signal: AbortSignal, modelOverride?: string): Promise<boolean> {
         if (!this.currentPlan || !this.currentDiscussion) return false;
         
         const allowedTools = this.getContextAwareTools(this.currentDiscussion);
 
         failedTask.retries++;
-        this.currentPlan.scratchpad += `\n\n---\n⚠️ **Task ${failedTask.id} Failed.** Attempting to self-correct...\n---`;
+        
+        // Inject failure log into scratchpad to warn the model
+        const failureHistory = this.globalFailureLog.join('\n');
+        this.currentPlan.scratchpad += `\n\n---\n⚠️ **Task ${failedTask.id} Failed.**\n**GLOBAL FAILURE LOG (DO NOT REPEAT THESE MISTAKES):**\n${failureHistory}\n\nAttempting to self-correct...\n---`;
+        
         this.displayAndSavePlan(this.currentPlan);
 
         const planResult = await this.planParser.generateAndParsePlan(
@@ -369,10 +399,14 @@ export class AgentManager {
         const allowedTools = this.currentDiscussion ? this.getContextAwareTools(this.currentDiscussion) : this.toolManager.getEnabledTools();
         const systemPrompt = this.planParser.getPlannerSystemPrompt(true, allowedTools);
         
+        // Include Global Failure Log in prompt for better context awareness
+        const failureHistory = this.globalFailureLog.length > 0 ? `\n\n**PAST FAILURES:**\n${this.globalFailureLog.join('\n')}` : '';
+
         const promptContent = `
 The original objective was: "${this.currentPlan.objective}"
 Completed tasks:
 ${tasksSummary}
+${failureHistory}
 
 New Instruction: "${instruction}"
 
@@ -380,8 +414,12 @@ Generate a NEW set of tasks to replace the pending ones.
 Start ID from: ${completedTasks.length > 0 ? completedTasks[completedTasks.length-1].id + 1 : 1}.
 `;
 
+        // Use Architect model for replanning if available
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const plannerModel = config.get<string>('architectModelName') || modelOverride;
+
         try {
-            const rawResponse = await this.lollmsApi.sendChat([systemPrompt, { role: 'user', content: promptContent }], null, signal, modelOverride);
+            const rawResponse = await this.lollmsApi.sendChat([systemPrompt, { role: 'user', content: promptContent }], null, signal, plannerModel);
             const jsonString = this.planParser.extractJson(stripThinkingTags(rawResponse));
             
             if (!jsonString) return { success: false, output: "Failed to parse new plan." };
@@ -406,6 +444,7 @@ Start ID from: ${completedTasks.length > 0 ? completedTasks[completedTasks.lengt
         }
     }
     
+    // ... resolveParameters, generateFileTree, runCommand, requestUserInput ...
     private resolveParameters(task: Task): { [key: string]: any } {
         if (!this.currentPlan) throw new Error("No current plan.");
         const resolvedParams: { [key: string]: any } = {};

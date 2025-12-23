@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.51",
+  "version": "0.5.52",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -458,6 +458,16 @@
           "default": false,
           "description": "%config.autoUpdateChangelog.description%"
         },
+        "lollmsVsCoder.autoGenerateTitle": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically generate a title using AI when creating a new discussion from clipboard."
+        },
+        "lollmsVsCoder.addPedagogicalInstruction": {
+          "type": "boolean",
+          "default": false,
+          "description": "%config.addPedagogicalInstruction.description%"
+        },
         "lollmsVsCoder.reasoningLevel": {
           "type": "string",
           "default": "none",
@@ -530,6 +540,26 @@
           "type": "string",
           "default": "http://localhost:9642",
           "description": "%config.apiUrl.description%"
+        },
+        "lollmsVsCoder.backendType": {
+          "type": "string",
+          "default": "lollms",
+          "description": "Select the backend API type.",
+          "enum": [
+            "lollms",
+            "openai",
+            "ollama"
+          ],
+          "enumDescriptions": [
+            "Lollms Server (OpenAI Compatible + Extensions)",
+            "Generic OpenAI Compatible Server",
+            "Ollama Server (Native API)"
+          ]
+        },
+        "lollmsVsCoder.useLollmsExtensions": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable specific Lollms features (like server-side tokenization and context size) if the backend supports them. Defaults to true for Lollms backend."
         },
         "lollmsVsCoder.modelName": {
           "type": "string",
@@ -1039,6 +1069,7 @@
     "@types/vscode": "1.74.0",
     "@vscode/vsce": "^2.26.0",
     "@types/pdf-parse": "^1.1.1",
+    "@types/js-yaml": "^4.0.9",
     "cpx2": "^4.2.0",
     "esbuild": "^0.25.10",
     "rimraf": "^5.0.5",
@@ -1061,7 +1092,8 @@
     "minimatch": "^9.0.5",
     "node-fetch": "2.7.0",
     "pdf-parse": "^1.1.1",
-    "prismjs": "^1.29.0"
+    "prismjs": "^1.29.0",
+    "js-yaml": "^4.1.0"
   },
   "overrides": {
     "tough-cookie": "^4.1.3",

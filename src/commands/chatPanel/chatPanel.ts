@@ -284,8 +284,10 @@ export class ChatPanel {
   }
   
   private _updateContextAndTokens() {
+    this.log("_updateContextAndTokens called");
     try {
         if (!this._contextManager || !this._currentDiscussion || !this._panel.webview) {
+            this.log("_updateContextAndTokens: Missing dependencies (contextManager or discussion)", 'WARN');
             this._panel.webview?.postMessage({ command: 'updateTokenProgress' });
             return;
         }
@@ -295,7 +297,10 @@ export class ChatPanel {
 
         (async () => {
             try {
+                this.log("Fetching context content...");
                 const context = await this._contextManager.getContextContent();
+                this.log(`Context content fetched. Length: ${context.text.length} chars`);
+
                 this._panel.webview.postMessage({ command: 'updateContext', context: context.text });
                 this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
                 
@@ -314,6 +319,7 @@ export class ChatPanel {
                 const modelForTokenization = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
 
                 if (!modelForTokenization) {
+                    this.log("No model selected for tokenization.", 'WARN');
                     this._panel.webview.postMessage({
                         command: 'updateTokenProgress',
                         error: `No model configured`
@@ -323,26 +329,38 @@ export class ChatPanel {
                     return;
                 }
         
+                this.log(`Starting API Tokenization. Model: ${modelForTokenization}, Text Length: ${fullTextToTokenize.length}`);
+                
                 const [tokenizeResponse, contextSizeResponse] = await Promise.all([
                     this._lollmsAPI.tokenize(fullTextToTokenize, modelForTokenization),
                     this._lollmsAPI.getContextSize(modelForTokenization)
                 ]);
                 
+                this.log(`Tokenization complete. Count: ${tokenizeResponse.count}, Context Size: ${contextSizeResponse.context_size}, Estimated: ${tokenizeResponse.isEstimation}`);
+
                 let ctxSize = contextSizeResponse.context_size;
                 if (!ctxSize || ctxSize <= 0) {
                     ctxSize = 0;
                 }
 
+                // If fallback/estimation, show warning in UI via 'isApproximate'
+                const isApproximate = tokenizeResponse.isEstimation || contextSizeResponse.isEstimation;
+
                 this._panel.webview.postMessage({
                     command: 'updateTokenProgress',
                     totalTokens: tokenizeResponse.count,
-                    contextSize: ctxSize
+                    contextSize: ctxSize,
+                    isApproximate: isApproximate
                 });
                 
-                this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready', type: 'info' });
+                if (isApproximate) {
+                    this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (Approximate - API Limit Check Failed)', type: 'warning' });
+                } else {
+                    this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready', type: 'info' });
+                }
         
             } catch (error: any) {
-                this.log(`Failed to update tokens: ${error.message}. Using failsafe fallback.`, 'WARN');
+                this.log(`Failed to update tokens via API: ${error.message}. Using failsafe fallback.`, 'WARN');
                 
                 try {
                     const context = await this._contextManager.getContextContent();
@@ -370,7 +388,8 @@ export class ChatPanel {
                     
                     this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (Approx)', type: 'warning' });
 
-                } catch (fallbackError) {
+                } catch (fallbackError: any) {
+                    this.log(`Fallback token calculation failed: ${fallbackError.message}`, 'ERROR');
                     this._panel.webview.postMessage({
                         command: 'updateTokenProgress',
                         error: `API Error`
@@ -408,8 +427,6 @@ export class ChatPanel {
         const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent);
         const context = await this._contextManager.getContextContent();
         
-        // Combine system prompt and context into a single message to ensure models see it.
-        // Some models or backends may ignore subsequent system messages.
         let combinedSystemContent = systemPrompt;
         if (context.text && context.text.trim().length > 0) {
             combinedSystemContent += `\n\n${context.text}`;
@@ -432,6 +449,36 @@ export class ChatPanel {
 
         messagesToSend = [...messagesToSend, ...this._currentDiscussion.messages];
 
+        // INJECT PEDAGOGICAL INSTRUCTION (HIDDEN) IF ENABLED
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const addPedagogical = config.get<boolean>('addPedagogicalInstruction');
+
+        if (addPedagogical) {
+            const lastMsgIndex = messagesToSend.length - 1;
+            if (lastMsgIndex >= 0) {
+                const lastMsg = messagesToSend[lastMsgIndex];
+                if (lastMsg.role === 'user') {
+                    const pedagogicalSuffix = "\n\n(Important: Please start with a clear pedagogical description of your plan and logic before outputting any code or actions. Teach me!)";
+                    
+                    // Clone to avoid modifying the original message stored in history
+                    const modifiedLastMsg = { ...lastMsg };
+                    
+                    if (typeof modifiedLastMsg.content === 'string') {
+                        if (!modifiedLastMsg.content.includes(pedagogicalSuffix.trim())) {
+                             modifiedLastMsg.content += pedagogicalSuffix;
+                        }
+                    } else if (Array.isArray(modifiedLastMsg.content)) {
+                        // Clone the content array
+                        const newContent = [...modifiedLastMsg.content];
+                        newContent.push({ type: 'text', text: pedagogicalSuffix });
+                        modifiedLastMsg.content = newContent;
+                    }
+                    
+                    messagesToSend[lastMsgIndex] = modifiedLastMsg;
+                }
+            }
+        }
+
         const assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
         
         this._panel.webview.postMessage({
@@ -447,6 +494,7 @@ export class ChatPanel {
 
         let fullResponse = '';
         let tokenCount = 0;
+        let webSearchTriggered = false;
 
         await this._lollmsAPI.sendChat(messagesToSend, (chunk) => {
             fullResponse += chunk;
@@ -456,30 +504,52 @@ export class ChatPanel {
                 id: assistantMessageId,
                 chunk: chunk
             });
+
+            const searchMatch = fullResponse.match(/<web_search>(.*?)<\/web_search>/);
+            if (searchMatch && !webSearchTriggered) {
+                webSearchTriggered = true;
+                controller.abort(); 
+                this.handleAutomatedSearch(searchMatch[1], assistantMessageId);
+            }
         }, controller.signal, this._currentDiscussion.model);
 
-        const cleanResponse = fullResponse;
+        if (!webSearchTriggered) {
+            // Safeguard for empty response
+            if (!fullResponse || fullResponse.trim() === '') {
+                fullResponse = "*[No response received from Lollms. The server might be busy or the model failed to generate text.]*";
+            }
 
-        const assistantMessage: ChatMessage = {
-            id: assistantMessageId,
-            role: 'assistant',
-            content: cleanResponse,
-            model: this._currentDiscussion.model || this._lollmsAPI.getModelName()
-        };
+            const cleanResponse = fullResponse;
+            const assistantMessage: ChatMessage = {
+                id: assistantMessageId,
+                role: 'assistant',
+                content: cleanResponse,
+                model: this._currentDiscussion.model || this._lollmsAPI.getModelName()
+            };
 
-        await this.addMessageToDiscussion(assistantMessage, false);
+            await this.addMessageToDiscussion(assistantMessage, false);
 
-        this._panel.webview.postMessage({
-            command: 'finalizeMessage',
-            id: assistantMessageId,
-            fullContent: cleanResponse,
-            tokenCount: tokenCount
-        });
+            this._panel.webview.postMessage({
+                command: 'finalizeMessage',
+                id: assistantMessageId,
+                fullContent: cleanResponse,
+                tokenCount: tokenCount
+            });
+        }
 
     } catch (error: any) {
         if (error.name !== 'AbortError') {
             this.log(`Error generating response: ${error.message}`, 'ERROR');
-            this._panel.webview.postMessage({ command: 'error', content: error.message });
+            
+            // Add system message to chat as requested by user
+            const errorMsg: ChatMessage = {
+                id: 'error_' + Date.now(),
+                role: 'system',
+                content: `**Error Generating Response:**\n${error.message}\n\n*Check the "Lollms VS Coder" output channel for raw server responses.*`
+            };
+            await this.addMessageToDiscussion(errorMsg);
+            
+            this._panel.webview.postMessage({ command: 'finalizeMessage', id: 'assistant_failed', fullContent: `*Generation Failed: ${error.message}*` });
         } else {
             this.log('Generation aborted by user.');
         }
@@ -487,6 +557,31 @@ export class ChatPanel {
         this.processManager.unregister(processId);
         this.updateGeneratingState();
     }
+  }
+
+  // ... (handleAutomatedSearch, addMessageToDiscussion, etc. remain the same) ...
+  private async handleAutomatedSearch(query: string, messageId: string) {
+      this.log(`Automated search triggered: ${query}`);
+      const searchTool = this.agentManager.getTools().find(t => t.name === 'search_web');
+      if (searchTool) {
+          this._panel.webview.postMessage({ command: 'finalizeMessage', id: messageId, fullContent: `*Thinking... Need more info. Pausing to search the web for: "${query}"...*` });
+
+          try {
+            const result = await searchTool.execute({ query }, { 
+                lollmsApi: this._lollmsAPI, contextManager: this._contextManager, currentPlan: null 
+            }, new AbortController().signal);
+
+            const resultMsg: ChatMessage = { 
+                role: 'system', 
+                content: `**AUTOMATED SEARCH RESULTS:**\n\n${result.output}\n\n*Results injected. Please proceed with the user's objective using this information.*` 
+            };
+            await this.addMessageToDiscussion(resultMsg);
+
+            this.sendMessage({ role: 'system', content: "Continue your response based on the search results provided above." } as any);
+          } catch (e: any) {
+              this.addMessageToDiscussion({ role: 'system', content: `Search failed: ${e.message}` });
+          }
+      }
   }
 
   public async addMessageToDiscussion(message: ChatMessage, updateWebview: boolean = true) {
@@ -833,7 +928,11 @@ export class ChatPanel {
 
   private _setWebviewMessageListener(webview: vscode.Webview) {
     webview.onDidReceiveMessage(async (message) => {
-      console.log("Lollms: Received message from webview:", message.command, message);
+      // LOG EACH MESSAGE FROM WEBVIEW
+      if (message.command !== 'webview-ready' && message.command !== 'webview-bootstrap-ok') {
+          console.log("Lollms: Received message from webview:", message.command);
+      }
+      
       const activeWorkspaceFolder = vscode.workspace.workspaceFolders?.[0];
       switch (message.command) {
         case 'webview-bootstrap-ok':

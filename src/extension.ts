@@ -41,6 +41,7 @@ import { EducativeNotebookModal } from './commands/educativeNotebookModal';
 import { QuickEditManager } from './quickEditManager';
 import { InlineDiffProvider } from './commands/inlineDiffProvider';
 import { MemoryManager } from './memoryManager';
+import { PersonalityBuilderPanel } from './commands/personalityBuilderPanel';
 
 const execAsync = promisify(exec);
 
@@ -108,7 +109,6 @@ async function buildCodeActionPrompt(
 
     let userPrompt = `I am working on the file \`${fileName}\` which is a \`${languageId}\` file.\n\nHere is the code selection:\n\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\nINSTRUCTION: **${userInstruction}**${contextText}`;
 
-    // Agent persona handles the 'who am I' part
     const agentPersonaPrompt = await getProcessedSystemPrompt('agent');
     let systemPrompt = '';
 
@@ -164,6 +164,7 @@ export async function activate(context: vscode.ExtensionContext) {
     Logger.initialize(context);
     Logger.info('Lollms VS Coder is now active!');
 
+    // DECLARE THE VARIABLE HERE
     let activeWorkspaceFolder: vscode.WorkspaceFolder | undefined;
 
     const pythonExt = vscode.extensions.getExtension('ms-python.python');
@@ -182,7 +183,9 @@ export async function activate(context: vscode.ExtensionContext) {
         apiKey: config.get<string>('apiKey')?.trim() || '',
         modelName: config.get<string>('modelName') || 'ollama/mistral',
         disableSslVerification: config.get<boolean>('disableSslVerification') || false,
-        sslCertPath: config.get<string>('sslCertPath') || ''
+        sslCertPath: config.get<string>('sslCertPath') || '',
+        backendType: config.get<'lollms' | 'openai' | 'ollama'>('backendType') || 'lollms',
+        useLollmsExtensions: config.get<boolean>('useLollmsExtensions') ?? true
     }, context.globalState);
 
     const originalContentProvider = new (class implements vscode.TextDocumentContentProvider {
@@ -611,7 +614,9 @@ Please analyze this output (e.g., error log, script output, or configuration tex
             apiUrl: newConfigValues.get<string>('apiUrl') || 'http://localhost:9642',
             modelName: newConfigValues.get<string>('modelName') || 'ollama/mistral',
             disableSslVerification: newConfigValues.get<boolean>('disableSslVerification') || false,
-            sslCertPath: newConfigValues.get<string>('sslCertPath') || ''
+            sslCertPath: newConfigValues.get<string>('sslCertPath') || '',
+            backendType: newConfigValues.get<'lollms' | 'openai' | 'ollama'>('backendType') || 'lollms',
+            useLollmsExtensions: newConfigValues.get<boolean>('useLollmsExtensions') ?? true
         };
         lollmsAPI.updateConfig(newConfig);
         updateModelStatus();
@@ -651,7 +656,9 @@ Please analyze this output (e.g., error log, script output, or configuration tex
             e.affectsConfiguration('lollmsVsCoder.apiUrl') ||
             e.affectsConfiguration('lollmsVsCoder.apiKey') ||
             e.affectsConfiguration('lollmsVsCoder.disableSslVerification') ||
-            e.affectsConfiguration('lollmsVsCoder.sslCertPath')) {
+            e.affectsConfiguration('lollmsVsCoder.sslCertPath') ||
+            e.affectsConfiguration('lollmsVsCoder.backendType') ||
+            e.affectsConfiguration('lollmsVsCoder.useLollmsExtensions')) {
             vscode.commands.executeCommand('lollmsApi.recreateClient');
         }
     }));
@@ -698,9 +705,16 @@ Please analyze this output (e.g., error log, script output, or configuration tex
         };
         discussion.messages.push(userMessage);
 
-        const title = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: vscode.l10n.t("progress.generatingDiscussionTitle"), cancellable: false }, async () => await discussionManager!.generateDiscussionTitle(discussion));
-        if (title) {
-            discussion.title = title;
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const autoTitle = config.get<boolean>('autoGenerateTitle');
+
+        if (autoTitle) {
+            const title = await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: vscode.l10n.t("progress.generatingDiscussionTitle"), cancellable: false }, async () => await discussionManager!.generateDiscussionTitle(discussion));
+            if (title) {
+                discussion.title = title;
+            } else {
+                discussion.title = "From Clipboard";
+            }
         } else {
             discussion.title = "From Clipboard";
         }
@@ -1208,38 +1222,12 @@ ${fileContent}
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.createPersonality', async () => {
-        const name = await vscode.window.showInputBox({ prompt: 'Personality Name' });
-        if (!name) return;
-        const description = await vscode.window.showInputBox({ prompt: 'Description' });
-        if (!description) return;
-        const systemPrompt = await vscode.window.showInputBox({ prompt: 'System Prompt' });
-        if (!systemPrompt) return;
-
-        await personalityManager.addPersonality({
-            id: Date.now().toString(),
-            name,
-            description,
-            systemPrompt
-        });
+        PersonalityBuilderPanel.createOrShow(context.extensionUri, personalityManager, lollmsAPI);
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.editPersonality', async (item: PersonalityItem) => {
         if (!item || !item.personality) return;
-        const p = item.personality;
-        
-        const name = await vscode.window.showInputBox({ prompt: 'Personality Name', value: p.name });
-        if (!name) return;
-        const description = await vscode.window.showInputBox({ prompt: 'Description', value: p.description });
-        if (!description) return;
-        const systemPrompt = await vscode.window.showInputBox({ prompt: 'System Prompt', value: p.systemPrompt });
-        if (!systemPrompt) return;
-
-        await personalityManager.updatePersonality({
-            ...p,
-            name,
-            description,
-            systemPrompt
-        });
+        PersonalityBuilderPanel.createOrShow(context.extensionUri, personalityManager, lollmsAPI, item.personality);
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deletePersonality', async (item: PersonalityItem) => {
@@ -1609,7 +1597,7 @@ ${fileContent}
         }
     }));
     
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showConfigView', () => SettingsPanel.createOrShow(context.extensionUri, lollmsAPI, processManager)));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showConfigView', () => SettingsPanel.createOrShow(context.extensionUri, lollmsAPI, processManager, personalityManager)));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showHelp', () => HelpPanel.createOrShow(context.extensionUri)));
 
         
@@ -2057,67 +2045,62 @@ print("Hello")
             const cleanResponse = stripThinkingTags(response);
             const parts = cleanResponse.split('### CELL_SPLIT ###');
             
-            const cells = [];
+            const edits: vscode.NotebookCellEdit[] = [];
+            const newNotebookData = new vscode.NotebookData([]);
+            
+            // To create a new file, we don't edit existing. We create content.
+            // But NotebookData is what we need to open.
+            
+            const cells: vscode.NotebookCellData[] = [];
+
             for (let part of parts) {
                 part = part.trim();
                 if (!part) continue;
                 
-                let cellType = "markdown";
-                let source = part;
+                let kind = vscode.NotebookCellKind.Markup;
+                let content = part;
 
-                if (part.startsWith("TYPE: CODE")) {
-                    cellType = "code";
-                    source = part.replace("TYPE: CODE", "").trim();
-                    // Remove markdown fences if model added them inside the block
-                    source = source.replace(/^```python\s*/, '').replace(/^```\s*/, '').replace(/```$/, '');
-                } else if (part.startsWith("TYPE: MARKDOWN")) {
-                    cellType = "markdown";
-                    source = part.replace("TYPE: MARKDOWN", "").trim();
+                if (part.startsWith('CODE')) {
+                    kind = vscode.NotebookCellKind.Code;
+                    content = part.substring(4).trim();
+                    // Clean content using our helper logic, but here we know it's a block
+                    const blockMatch = content.match(/```(?:python)?\s*([\s\S]*?)```/i);
+                    if (blockMatch) content = blockMatch[1].trim();
+                } else if (part.startsWith('MARKDOWN')) {
+                    kind = vscode.NotebookCellKind.Markup;
+                    content = part.substring(8).trim();
                 } else {
-                    // Fallback heuristic
-                    if (part.includes("import ") || part.includes("print(")) {
-                        cellType = "code";
+                    if (part.includes('def ') || part.includes('import ') || part.includes('print(')) {
+                        kind = vscode.NotebookCellKind.Code;
+                        content = part.replace(/^```python\n/, '').replace(/^```\n/, '').replace(/```$/, '').trim();
                     }
                 }
-
-                cells.push({
-                    cell_type: cellType,
-                    metadata: {},
-                    source: source.split('\n').map(l => l + '\n')
-                });
+                
+                cells.push(new vscode.NotebookCellData(kind, content, kind === vscode.NotebookCellKind.Code ? 'python' : 'markdown'));
             }
-
-            const notebookJson = {
-                cells: cells,
-                metadata: {
-                    kernelspec: {
-                        display_name: "Python 3",
-                        language: "python",
-                        name: "python3"
-                    },
-                    language_info: {
-                        codemirror_mode: {
-                            name: "ipython",
-                            version: 3
-                        },
-                        file_extension: ".py",
-                        mimetype: "text/x-python",
-                        name: "python",
-                        nbconvert_exporter: "python",
-                        pygments_lexer: "ipython3",
-                        version: "3.8.5"
-                    }
-                },
-                nbformat: 4,
-                nbformat_minor: 4
-            };
-
-            const contentBuffer = Buffer.from(JSON.stringify(notebookJson, null, 2), 'utf8');
-            await vscode.workspace.fs.writeFile(fileUri, contentBuffer);
             
-            // Open it
-            await vscode.window.showNotebookDocument(await vscode.workspace.openNotebookDocument(fileUri));
-            vscode.window.showInformationMessage(`Notebook '${fileName}' generated and opened.`);
+            newNotebookData.cells = cells;
+            const doc = await vscode.workspace.openNotebookDocument('jupyter-notebook', newNotebookData);
+            await doc.save(); // This might fail if it's untitled and we didn't specify path?
+            // Actually, openNotebookDocument creates untitled. We want to save to fileUri.
+            
+            // Alternative: Write raw JSON to file
+            // But converting cell data to ipynb format manually is annoying.
+            // Let's use workspace edit to create file.
+            
+            const workspaceEdit = new vscode.WorkspaceEdit();
+            workspaceEdit.createFile(fileUri, { ignoreIfExists: false, overwrite: true });
+            await vscode.workspace.applyEdit(workspaceEdit);
+            
+            // Now open it and insert cells
+            const document = await vscode.workspace.openNotebookDocument(fileUri);
+            const editor = await vscode.window.showNotebookDocument(document);
+            
+            const cellEdits = [new vscode.NotebookCellEdit(0, 0, cells)];
+            const notebookEdit = new vscode.WorkspaceEdit();
+            notebookEdit.set(document.uri, cellEdits);
+            await vscode.workspace.applyEdit(notebookEdit);
+            await document.save();
         });
     }));
 

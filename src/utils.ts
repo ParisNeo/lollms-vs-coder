@@ -85,6 +85,7 @@ export async function getProcessedSystemPrompt(
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const reasoningLevel = config.get<string>('reasoningLevel') || 'none';
     const thinkingMode = capabilities?.thinkingMode || config.get<string>('thinkingMode') || 'none';
+    const outputFormat = config.get<string>('outputFormat') || 'legacy';
     
     // User Info
     const userName = config.get<string>('userInfo.name') || 'Developer';
@@ -130,69 +131,77 @@ export async function getProcessedSystemPrompt(
         case 'chat': {
             let updateInstructions = '';
 
-            const fullFileInstruction = `**FULL FILE MODE (SACRED FORMAT):**
+            // --- OUTPUT FORMAT INSTRUCTIONS ---
+            if (outputFormat === 'xml') {
+                updateInstructions = `**FILE OUTPUT FORMAT (XML MODE):**
+Use XML tags to output files. 
+<file path="path/to/file.ext">
+// Code content here...
+</file>
+`;
+            } else if (outputFormat === 'aider') {
+                updateInstructions = `**FILE EDIT FORMAT (SEARCH/REPLACE BLOCK):**
+To edit existing code, you MUST use the following format (no markdown code fences around the block markers):
+
+path/to/file.ext
+<<<<<<< SEARCH
+(exact lines to find in the original file)
+=======
+(new lines to replace them with)
+>>>>>>> REPLACE
+
+- The SEARCH block must match the file content exactly (whitespace included).
+- If creating a NEW file, use the Legacy format below or just provide the full file content inside a code block preceded by "File: path/to/file".
+`;
+            } else {
+                // LEGACY MODE
+                updateInstructions = `**FULL FILE MODE (SACRED FORMAT):**
 To create or overwrite a file, use EXACTLY this format:
 File: path/to/the/file.ext
 \`\`\`language
 // Full, complete file content here. NO PLACEHOLDERS.
 \`\`\`
 **IMPORTANT:** The 'File:' line must be plain text. Do NOT wrap it in a code block.
-`;
 
-            const diffInstruction = `**DIFF MODE (SACRED FORMAT):**
-To patch a file, use:
-Diff: path/to/the/file.ext
-\`\`\`diff
-@@ -1,1 +1,1 @@
-- old
-+ new
-\`\`\`
-**IMPORTANT:** The 'Diff:' line must be plain text. Do NOT wrap it in a code block.
 `;
+            }
 
-            const insertInstruction = `**INSERT MODE (SACRED FORMAT):**
+            // Common instructions for all modes (Insert/Replace are always useful as fallback or precise edits)
+            const insertInstruction = `
+**INSERT MODE:**
 Insert: path/to/the/file.ext
-\`\`\`insertion
+\`\`\`language
 <<<<
 context line(s) to locate the point
 ====
-code to insert after context
+code to insert after context (DO NOT REPEAT CONTEXT HERE)
 >>>>
 \`\`\`
-**IMPORTANT:** The 'Insert:' line must be plain text. Do NOT wrap it in a code block.
 `;
 
-            const replaceInstruction = `**REPLACE MODE (SACRED FORMAT):**
+            const replaceInstruction = `
+**REPLACE MODE (to be used for replacig small chunks of code):**
 Replace: path/to/the/file.ext
-\`\`\`replacement
+\`\`\`language
 <<<<
 original code to be replaced
 ====
 new code to replace it with
 >>>>
 \`\`\`
-**IMPORTANT:** The 'Replace:' line must be plain text. Do NOT wrap it in a code block.
 `;
 
-            const deleteInstruction = `**DELETE CODE MODE (SACRED FORMAT):**
+            const deleteInstruction = `
+**DELETE CODE MODE:**
 DeleteCode: path/to/the/file.ext
-\`\`\`deletion
+\`\`\`language
 <<<<
 code to be deleted
 >>>>
 \`\`\`
-**IMPORTANT:** The 'DeleteCode:' line must be plain text. Do NOT wrap it in a code block.
 `;
 
-            const codeGenType = capabilities ? capabilities.codeGenType : 'full';
-            
-            if (codeGenType === 'full') {
-                updateInstructions = fullFileInstruction;
-            } else if (codeGenType === 'diff') {
-                updateInstructions = diffInstruction;
-            }
-            
-            updateInstructions += `\n${insertInstruction}\n${replaceInstruction}\n${deleteInstruction}`;
+            updateInstructions += `${insertInstruction}${replaceInstruction}${deleteInstruction}`;
             
             let otherFileActions = '';
             
@@ -222,7 +231,7 @@ The extension will stop your generation, fetch results, append them to context, 
 **CRITICAL MANDATES:**
 1. **DESCRIPTION FIRST:** Always start your response with a clear, pedagogical description of what you are about to do and why. Teach the developer. Never output code blocks alone.
 2. **FORMATS ARE SACRED:** Use the exact formats provided below for file modifications. Deviation breaks the parser.
-3. **NO CODE BLOCKS FOR PATHS:** Never wrap the "File:", "Insert:", "Replace:", "Diff:", or "DeleteCode:" lines in markdown code blocks. They must be plain text.
+3. **NO CODE BLOCKS FOR PATHS:** Never wrap the "File:", "Insert:", "Replace:", or "DeleteCode:" lines in markdown code blocks. They must be plain text.
 
 ${updateInstructions}
 ${searchInstruction}

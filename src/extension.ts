@@ -72,6 +72,15 @@ const debugErrorManager = {
     }
 };
 
+/**
+ * Helper to normalize search text to match the document's EOL convention.
+ */
+function normalizeToDocument(searchString: string, document: vscode.TextDocument): string {
+    const docEol = document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
+    // First normalize to \n, then to document EOL
+    return searchString.replace(/\r\n/g, '\n').replace(/\n/g, docEol);
+}
+
 async function buildCodeActionPrompt(
     promptTemplate: string, 
     actionType: 'generation' | 'information' | undefined,
@@ -1655,43 +1664,88 @@ ${fileContent}
         }
     }));
 
+    // --- FIX: UPDATED INSERT CODE COMMAND ---
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.insertCode', async (filePath: string, content: string) => {
         if (!activeWorkspaceFolder) {
             vscode.window.showErrorMessage("No active workspace.");
             return;
         }
         
-        const match = content.match(/<<<<([\s\S]*?)====([\s\S]*?)(?:>>>>|$)/);
+        // Revised Regex: Matches <<<< ... ==== ... (optional >>>> or ==== or end of string)
+        const match = content.match(/<<<<([\s\S]*?)====([\s\S]*?)(?:>>>>|====|$)/);
         if (!match) {
              vscode.window.showErrorMessage("Invalid insertion block format.");
              return;
         }
         
         const contextCode = match[1].replace(/^\s*[\r\n]/, '').replace(/[\r\n]\s*$/, ''); 
-        const insertCode = match[2].replace(/^\s*[\r\n]/, '').replace(/[\r\n]\s*$/, '');
+        // Remove trailing "====" if matched loosely by [\s\S]*? at end
+        let insertCode = match[2].replace(/^\s*[\r\n]/, '').replace(/[\r\n]\s*$/, '');
+        insertCode = insertCode.replace(/====$/, '').trimEnd();
         
         if (!contextCode.trim()) {
              vscode.window.showErrorMessage("Insertion context is empty.");
              return;
         }
 
+        // Deduplication: If the AI puts the context INSIDE the insertion block, strip it.
+        // Example: Context="foo", Insert="foo\nbar" -> Insert="bar"
+        if (insertCode.startsWith(contextCode)) {
+            insertCode = insertCode.substring(contextCode.length).trimStart();
+        }
+
         const fileUri = vscode.Uri.joinPath(activeWorkspaceFolder.uri, filePath);
         
+        let document: vscode.TextDocument;
         try {
-            const document = await vscode.workspace.openTextDocument(fileUri);
+            document = await vscode.workspace.openTextDocument(fileUri);
+        } catch (error) {
+             // File not found logic: Create it
+             try {
+                 const parentUri = vscode.Uri.joinPath(fileUri, '..');
+                 await vscode.workspace.fs.createDirectory(parentUri);
+                 
+                 const newContent = contextCode + '\n' + insertCode;
+                 await vscode.workspace.fs.writeFile(fileUri, Buffer.from(newContent, 'utf8'));
+                 vscode.window.showInformationMessage(`File '${filePath}' created (was missing).`);
+                 
+                 document = await vscode.workspace.openTextDocument(fileUri);
+                 await vscode.window.showTextDocument(document);
+                 return;
+             } catch (createError: any) {
+                 vscode.window.showErrorMessage(`Failed to create missing file '${filePath}': ${createError.message}`);
+                 return;
+             }
+        }
+        
+        try {
             const text = document.getText();
             
-            const normalizedText = text.replace(/\r\n/g, '\n');
-            const normalizedContext = contextCode.replace(/\r\n/g, '\n');
+            // Normalize search block to match document EOL
+            const searchBlock = normalizeToDocument(contextCode, document);
             
-            const index = normalizedText.indexOf(normalizedContext);
+            const index = text.indexOf(searchBlock);
             if (index === -1) {
-                vscode.window.showErrorMessage(`Could not locate context code in ${filePath}.`);
+                // Try looser search if strict EOL match fails (fallback)
+                // Normalize document text to LF just for finding index
+                const textLF = text.replace(/\r\n/g, '\n');
+                const contextLF = contextCode.replace(/\r\n/g, '\n');
+                const indexLF = textLF.indexOf(contextLF);
+                
+                if (indexLF === -1) {
+                    vscode.window.showErrorMessage(`Could not locate context code in ${filePath}.`);
+                    return;
+                }
+                
+                // If found via LF, we need to map back to original index. 
+                // This is complex. Better to ask user to check context or rely on strict matching.
+                // For now, fail safe.
+                vscode.window.showErrorMessage(`Could not locate context code (strict EOL match failed).`);
                 return;
             }
             
-            const position = document.positionAt(index + normalizedContext.length);
-            const insertText = '\n' + insertCode;
+            const position = document.positionAt(index + searchBlock.length);
+            const insertText = (document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n') + insertCode;
             
             const fileContentBytes = await vscode.workspace.fs.readFile(fileUri);
             originalContentProvider.set(fileUri, fileContentBytes.toString());
@@ -1715,21 +1769,22 @@ ${fileContent}
         }
     }));
 
-    // --- NEW: REPLACE CODE COMMAND ---
+    // --- FIX: UPDATED REPLACE CODE COMMAND ---
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string) => {
         if (!activeWorkspaceFolder) {
             vscode.window.showErrorMessage("No active workspace.");
             return;
         }
         
-        const match = content.match(/<<<<([\s\S]*?)====([\s\S]*?)(?:>>>>|$)/);
+        const match = content.match(/<<<<([\s\S]*?)====([\s\S]*?)(?:>>>>|====|$)/);
         if (!match) {
              vscode.window.showErrorMessage("Invalid replacement block format.");
              return;
         }
         
         const originalCode = match[1].replace(/^\s*[\r\n]/, '').replace(/[\r\n]\s*$/, ''); 
-        const replacementCode = match[2].replace(/^\s*[\r\n]/, '').replace(/[\r\n]\s*$/, '');
+        let replacementCode = match[2].replace(/^\s*[\r\n]/, '').replace(/[\r\n]\s*$/, '');
+        replacementCode = replacementCode.replace(/====$/, '').trimEnd();
         
         if (!originalCode.trim()) {
              vscode.window.showErrorMessage("Original code context is empty.");
@@ -1742,17 +1797,16 @@ ${fileContent}
             const document = await vscode.workspace.openTextDocument(fileUri);
             const text = document.getText();
             
-            const normalizedText = text.replace(/\r\n/g, '\n');
-            const normalizedOriginal = originalCode.replace(/\r\n/g, '\n');
+            const searchBlock = normalizeToDocument(originalCode, document);
             
-            const index = normalizedText.indexOf(normalizedOriginal);
+            const index = text.indexOf(searchBlock);
             if (index === -1) {
                 vscode.window.showErrorMessage(`Could not locate code to replace in ${filePath}.`);
                 return;
             }
             
             const startPos = document.positionAt(index);
-            const endPos = document.positionAt(index + normalizedOriginal.length);
+            const endPos = document.positionAt(index + searchBlock.length);
             const range = new vscode.Range(startPos, endPos);
             
             const fileContentBytes = await vscode.workspace.fs.readFile(fileUri);
@@ -1777,20 +1831,21 @@ ${fileContent}
         }
     }));
 
-    // --- NEW: DELETE CODE COMMAND ---
+    // --- FIX: UPDATED DELETE CODE COMMAND ---
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deleteCodeBlock', async (filePath: string, content: string) => {
         if (!activeWorkspaceFolder) {
             vscode.window.showErrorMessage("No active workspace.");
             return;
         }
         
-        const match = content.match(/<<<<([\s\S]*?)(?:>>>>|$)/);
+        const match = content.match(/<<<<([\s\S]*?)(?:>>>>|====|$)/);
         if (!match) {
              vscode.window.showErrorMessage("Invalid deletion block format.");
              return;
         }
         
-        const codeToDelete = match[1].replace(/^\s*[\r\n]/, '').replace(/[\r\n]\s*$/, ''); 
+        let codeToDelete = match[1].replace(/^\s*[\r\n]/, '').replace(/[\r\n]\s*$/, ''); 
+        codeToDelete = codeToDelete.replace(/====$/, '').trimEnd();
         
         if (!codeToDelete.trim()) {
              vscode.window.showErrorMessage("Code to delete is empty.");
@@ -1803,17 +1858,16 @@ ${fileContent}
             const document = await vscode.workspace.openTextDocument(fileUri);
             const text = document.getText();
             
-            const normalizedText = text.replace(/\r\n/g, '\n');
-            const normalizedDeletion = codeToDelete.replace(/\r\n/g, '\n');
+            const searchBlock = normalizeToDocument(codeToDelete, document);
             
-            const index = normalizedText.indexOf(normalizedDeletion);
+            const index = text.indexOf(searchBlock);
             if (index === -1) {
                 vscode.window.showErrorMessage(`Could not locate code to delete in ${filePath}.`);
                 return;
             }
             
             const startPos = document.positionAt(index);
-            const endPos = document.positionAt(index + normalizedDeletion.length);
+            const endPos = document.positionAt(index + searchBlock.length);
             const range = new vscode.Range(startPos, endPos);
             
             const fileContentBytes = await vscode.workspace.fs.readFile(fileUri);
@@ -2103,6 +2157,56 @@ print("Hello")
             await document.save();
         });
     }));
+    // Fix with Lollms Commands
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.debugErrorWithAI', async () => {
+        const error = debugErrorManager.lastError;
+        if (!error) return;
+        const prompt = `I encountered a debug error: "${error.message}"\n\nStack Trace:\n${error.stack || 'No stack trace available'}\n\nPlease help me fix it.`;
+        await startDiscussionWithInitialPrompt(prompt);
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.debugErrorSendToDiscussion', async () => {
+        const error = debugErrorManager.lastError;
+        if (!error || !ChatPanel.currentPanel) return;
+        ChatPanel.currentPanel.sendMessage({ role: 'user', content: `Debug Error Context:\nMessage: ${error.message}\nFile: ${error.filePath?.fsPath}\nLine: ${error.line}` });
+    }));
+
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.executeProject', async (discussionId: string) => {
+        const panel = ChatPanel.panels.get(discussionId);
+        if (!panel) return;
+        try {
+            await vscode.commands.executeCommand('workbench.action.debug.start');
+        } catch (e: any) {
+            panel.handleProjectExecutionResult(`Failed to start project: ${e.message}`, false);
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setEntryPoint', async () => {
+        const uris = await vscode.window.showOpenDialog({ canSelectMany: false, openLabel: 'Select Entry Point' });
+        if (uris && uris[0] && activeWorkspaceFolder) {
+            const relPath = vscode.workspace.asRelativePath(uris[0], false);
+            await vscode.commands.executeCommand('lollms-vs-coder.setLaunchEntrypoint', relPath);
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setLaunchEntrypoint', async (filePath: string) => {
+        if (!activeWorkspaceFolder) return;
+        const launchJsonPath = vscode.Uri.joinPath(activeWorkspaceFolder.uri, '.vscode', 'launch.json');
+        let config: any = { version: '0.2.0', configurations: [] };
+        try {
+            const bytes = await vscode.workspace.fs.readFile(launchJsonPath);
+            config = JSON.parse(bytes.toString());
+        } catch (e) {
+            await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(activeWorkspaceFolder.uri, '.vscode'));
+        }
+        if (config.configurations.length === 0) {
+            config.configurations.push({ name: "Launch Project", request: "launch", type: "node", program: "" });
+        }
+        config.configurations[0].program = `\${workspaceFolder}/${filePath}`;
+        await vscode.workspace.fs.writeFile(launchJsonPath, Buffer.from(JSON.stringify(config, null, 4)));
+        vscode.window.showInformationMessage(`Entry point set to: ${filePath}`);
+    }));    
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.fixDiagnostic', async (document: vscode.TextDocument, diagnostic: vscode.Diagnostic) => {
         if (!discussionManager) {

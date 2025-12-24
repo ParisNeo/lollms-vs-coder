@@ -14,6 +14,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(core): bump version to 0.5.51 and update agent, companion panel, extension, notebook tools, quick edit, and code generation utilities
 
+## [Unreleased]
+
+- chore(release): bump version to 0.5.53 and add utility helpers
+
 ## [0.5.4] - 2025-10-22
 
 ### ✨ Features

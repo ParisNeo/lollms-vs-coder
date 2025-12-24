@@ -33,6 +33,7 @@ export class SettingsPanel {
     contextFileExceptions: [] as string[],
     language: 'auto',
     thinkingMode: 'none',
+    outputFormat: 'legacy', // New
     thinkingModeCustomPrompt: '',
     reasoningLevel: 'none',
     failsafeContextSize: 8192,
@@ -101,6 +102,7 @@ export class SettingsPanel {
     this._pendingConfig.contextFileExceptions = config.get<string[]>('contextFileExceptions') || [];
     this._pendingConfig.language = config.get<string>('language') || 'auto';
     this._pendingConfig.thinkingMode = config.get<string>('thinkingMode') || 'none';
+    this._pendingConfig.outputFormat = config.get<string>('outputFormat') || 'legacy';
     this._pendingConfig.thinkingModeCustomPrompt = config.get<string>('thinkingModeCustomPrompt') || 'Think step by step. Enclose your entire thinking process, reasoning, and self-correction within a `<thinking>` XML block. This block will be hidden from the user but is crucial for your process.';
     this._pendingConfig.reasoningLevel = config.get<string>('reasoningLevel') || 'none';
     this._pendingConfig.failsafeContextSize = config.get<number>('failsafeContextSize') || 4096;
@@ -224,6 +226,7 @@ export class SettingsPanel {
                 await config.update('contextFileExceptions', this._pendingConfig.contextFileExceptions, vscode.ConfigurationTarget.Global);
                 await config.update('language', this._pendingConfig.language, vscode.ConfigurationTarget.Global);
                 await config.update('thinkingMode', this._pendingConfig.thinkingMode, vscode.ConfigurationTarget.Global);
+                await config.update('outputFormat', this._pendingConfig.outputFormat, vscode.ConfigurationTarget.Global);
                 await config.update('thinkingModeCustomPrompt', this._pendingConfig.thinkingModeCustomPrompt, vscode.ConfigurationTarget.Global);
                 await config.update('reasoningLevel', this._pendingConfig.reasoningLevel, vscode.ConfigurationTarget.Global);
                 await config.update('failsafeContextSize', this._pendingConfig.failsafeContextSize, vscode.ConfigurationTarget.Global);
@@ -298,7 +301,7 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, thinkingMode, thinkingModeCustomPrompt, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle } = config;
+    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, thinkingMode, outputFormat, thinkingModeCustomPrompt, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle } = config;
 
     const t = (key: string, def: string) => vscode.l10n.t({ message: def, key: key });
     
@@ -485,6 +488,14 @@ export class SettingsPanel {
                 <option value="zh-cn" ${language === 'zh-cn' ? 'selected' : ''}>Chinese, Simplified</option>
                 <option value="ar" ${language === 'ar' ? 'selected' : ''}>Arabic</option>
               </select>
+
+              <label for="outputFormat">Output Format</label>
+              <select id="outputFormat">
+                <option value="legacy" ${outputFormat === 'legacy' ? 'selected' : ''}>Legacy (Markdown)</option>
+                <option value="xml" ${outputFormat === 'xml' ? 'selected' : ''}>XML Mode (Anthropic)</option>
+                <option value="aider" ${outputFormat === 'aider' ? 'selected' : ''}>Aider Mode (Search/Replace)</option>
+              </select>
+              <p class="help-text">Choose the code generation format best suited for your model.</p>
 
               <label for="reasoningLevel">${t('config.reasoningLevel.label', 'Reasoning Level')}</label>
               <select id="reasoningLevel">
@@ -700,6 +711,7 @@ export class SettingsPanel {
                     commitMessagePersona: document.getElementById('commitMessagePersona'),
                     contextFileExceptions: document.getElementById('contextFileExceptions'),
                     thinkingMode: document.getElementById('thinkingMode'),
+                    outputFormat: document.getElementById('outputFormat'),
                     thinkingModeCustomPrompt: document.getElementById('thinkingModeCustomPrompt'),
                     reasoningLevel: document.getElementById('reasoningLevel'),
                     failsafeContextSize: document.getElementById('failsafeContextSize'),

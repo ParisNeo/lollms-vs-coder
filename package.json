@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.52",
+  "version": "0.5.53",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -435,6 +435,21 @@
       "type": "object",
       "title": "%config.title%",
       "properties": {
+        "lollmsVsCoder.outputFormat": {
+          "type": "string",
+          "default": "legacy",
+          "description": "The output format for AI code generation.",
+          "enum": [
+            "legacy",
+            "xml",
+            "aider"
+          ],
+          "enumDescriptions": [
+            "Legacy Mode (Default): Uses markdown headers (File: path/to/file) and code blocks.",
+            "XML Mode: Uses <file path='...'>...</file> tags. Optimized for Claude/Anthropic models.",
+            "Aider Mode (Standard Gold): Uses <<<<<<< SEARCH ... ======= ... >>>>>>> REPLACE blocks. Optimized for GPT-4/DeepSeek."
+          ]
+        },
         "lollmsVsCoder.searchProvider": {
           "type": "string",
           "default": "google_custom_search",

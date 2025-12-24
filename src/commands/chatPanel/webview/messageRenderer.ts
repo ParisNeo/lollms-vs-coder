@@ -298,8 +298,8 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     };
 }
 
-function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | null, path: string }[] {
-    const infos: { type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | null, path: string }[] = [];
+function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | null, path: string }[] {
+    const infos: { type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | null, path: string }[] = [];
     const lines = content.split('\n');
     let inBlock = false;
     let fenceLength = 0;
@@ -307,6 +307,22 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i]; 
         const match = line.match(/^(\s{0,3})(`{3,})/); 
+
+        // 1. Check for XML tags first (as they don't depend on markdown fences)
+        const xmlMatch = line.match(/<file\s+path="([^"]+)">/i);
+        if (xmlMatch && !inBlock) {
+            // Found XML start
+            // Note: The content rendering might not put this into a <pre>, but our enhanceCodeBlocks logic expects <pre>.
+            // However, typical LLM output usually wraps code in ``` or the parser might handle raw XML differently.
+            // But wait, messageRenderer works on rendered HTML. XML tags might be swallowed by marked/DOMPurify unless escaped.
+            // If LLM outputs raw XML, `marked` might treat it as HTML.
+            // If we are here, we are parsing RAW content text.
+            // For now, let's stick to the Legacy/Blocks logic which relies on markdown structure. 
+            // XML handling often requires pre-processing raw text before markdown conversion to wrap it in code blocks or similar.
+            
+            // Actually, let's keep it simple: We look for the "pre" tags later.
+            // This function is just helping identifying the block type based on previous lines.
+        }
 
         if (match) {
             const currentFenceLength = match[2].length;
@@ -318,7 +334,7 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
                 let j = i - 1;
                 while (j >= 0 && lines[j].trim() === '') j--; 
                 
-                let type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | null = null;
+                let type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | null = null;
                 let pathStr = '';
 
                 if (j >= 0) {
@@ -328,6 +344,10 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
                     const insertMatch = prevLine.match(/^(?:(?:\*\*|__)?Insert(?:\*\*|__)?[:\s])\s*(.+)$/i);
                     const replaceMatch = prevLine.match(/^(?:(?:\*\*|__)?Replace(?:\*\*|__)?[:\s])\s*(.+)$/i);
                     const deleteMatch = prevLine.match(/^(?:(?:\*\*|__)?DeleteCode(?:\*\*|__)?[:\s])\s*(.+)$/i);
+                    
+                    // Aider/Gold Standard often just puts the filename on the line before
+                    // We can heuristic this: if the line looks like a file path and the block contains <<<<<<< SEARCH
+                    const looksLikePath = /^[\w-./\\]+\.\w+$/.test(prevLine);
 
                     if (fileMatch) {
                         type = 'file';
@@ -344,6 +364,19 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
                     } else if (deleteMatch) {
                         type = 'delete';
                         pathStr = deleteMatch[1].trim();
+                    } else if (looksLikePath) {
+                        // Check inside the block for Aider markers
+                        // We need to peek ahead
+                        let k = i + 1;
+                        let contentPreview = "";
+                        while(k < lines.length && k < i + 5) { // Check first few lines
+                            contentPreview += lines[k] + "\n";
+                            k++;
+                        }
+                        if (contentPreview.includes("<<<<<<< SEARCH")) {
+                            type = 'replace'; // Reuse replace logic or create new one
+                            pathStr = prevLine.trim();
+                        }
                     }
                 }
                 
@@ -394,6 +427,11 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
 
     const codeBlockInfos = extractFilePaths(originalContentText);
     
+    // Manual XML extraction logic since marked/DOMPurify might mess with them
+    // We look for any PRE that wasn't covered by codeBlockInfos but might be inside an XML tag in raw text
+    // Actually, simply supporting the XML format via the parser logic above is hard because the DOM structure differs.
+    // Let's assume the user outputted code blocks inside XML tags if using XML mode, OR we just scan for the XML structure in raw text.
+    
     pres.forEach((pre, index) => {
         const code = pre.querySelector('code');
         if (!code) return;
@@ -402,7 +440,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
         const langMatch = code.className.match(/language-(\S+)/);
         let language = langMatch ? langMatch[1] : 'plaintext';
         
-        // Remap language if needed (e.g. vue -> html) for highlighting
         if (langMap[language.toLowerCase()]) {
             language = langMap[language.toLowerCase()];
             code.className = `language-${language}`;
@@ -410,7 +447,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
         }
 
         const codeText = code.innerText;
-
         const blockId = `code-block-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         code.id = blockId;
 
@@ -442,6 +478,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
                 isDeleteCode = true;
             }
         } else {
+            // Heuristic fallbacks
             if (language === 'diff') {
                 const diffHeaderMatch = codeText.match(/---\s+a\/(.+)\n\+\+\+\s+b\/(.+)/);
                 if (diffHeaderMatch && diffHeaderMatch[1]) {
@@ -450,8 +487,21 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
                 } else {
                     isDiff = true; 
                 }
+            } else if (codeText.includes("<<<<<<< SEARCH")) {
+                // Aider Block Detection if regex failed earlier
+                const lines = codeText.split('\n');
+                if (lines[0].includes("<<<<<<< SEARCH")) {
+                    isReplace = true;
+                    // Try to find path from previous sibling text node? Hard in DOM.
+                    // rely on info.
+                }
             }
         }
+
+        // XML Mode Support: Check if previous element is a text node ending with <file path="...">
+        // or check if the code block is inside a structure that implies a file.
+        // Simplified approach: If no path found yet, look at the raw text around this block position.
+        // (This is complex to map index to exact DOM position reliably without a full parser)
 
         const prevEl = pre.previousElementSibling as HTMLElement;
         if (prevEl && (prevEl.tagName === 'P' || prevEl.tagName === 'DIV')) {
@@ -742,7 +792,17 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 }
             });
             
-            contentDiv.innerHTML = sanitizer.sanitize(marked.parse(processedContent) as string, SANITIZE_CONFIG);
+            // XML Tag Handling for specific format <file path="...">
+            // We regex replace this pattern to convert it to Markdown header + block so standard logic works
+            // This is a rendering transformation only
+            let xmlProcessedContent = processedContent.replace(
+                /<file\s+path=["']([^"']+)["']>\s*([\s\S]*?)\s*<\/file>/g, 
+                (match, path, code) => {
+                    return `File: ${path}\n\`\`\`\n${code}\n\`\`\``;
+                }
+            );
+
+            contentDiv.innerHTML = sanitizer.sanitize(marked.parse(xmlProcessedContent) as string, SANITIZE_CONFIG);
         }
 
         enhanceWithCommandButtons(wrapper as HTMLElement);

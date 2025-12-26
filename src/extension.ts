@@ -2160,8 +2160,36 @@ print("Hello")
     // Fix with Lollms Commands
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.debugErrorWithAI', async () => {
         const error = debugErrorManager.lastError;
-        if (!error) return;
-        const prompt = `I encountered a debug error: "${error.message}"\n\nStack Trace:\n${error.stack || 'No stack trace available'}\n\nPlease help me fix it.`;
+        if (!error) {
+            vscode.window.showInformationMessage("No debug error captured yet. Run your code and wait for an exception.");
+            return;
+        }
+
+        // Fetch the full project context
+        const contextResult = await contextManager.getContextContent();
+        
+        const prompt = `I encountered an exception while debugging my code. 
+
+**Error Message:** 
+${error.message}
+
+**Location:** 
+File: \`${error.filePath?.fsPath}\`
+Line: ${error.line}
+
+**Stack Trace:**
+\`\`\`
+${error.stack || 'No stack trace available'}
+\`\`\`
+
+**Project Context:**
+${contextResult.text}
+
+Please analyze the error and provide a fix. 
+- You MUST provide the fix using the "File: path/to/file" or "Replace: path/to/file" format.
+- Regenerate the full corrected file or a surgical replacement block as appropriate.
+- Explain what caused the error before providing the code blocks.`;
+
         await startDiscussionWithInitialPrompt(prompt);
     }));
 
@@ -2171,6 +2199,35 @@ print("Hello")
         ChatPanel.currentPanel.sendMessage({ role: 'user', content: `Debug Error Context:\nMessage: ${error.message}\nFile: ${error.filePath?.fsPath}\nLine: ${error.line}` });
     }));
 
+    // Listener for debugger exceptions to populate the error manager and trigger context
+    context.subscriptions.push(vscode.debug.onDidChangeActiveStackItem(async (e) => {
+        if (!e || !e.session) return;
+        
+        const session = e.session;
+        try {
+            // Retrieve exception information from the debug session
+            const exceptionInfo = await session.customRequest('exceptionInfo', { threadId: e.thread.id });
+            if (exceptionInfo && (exceptionInfo.exceptionId || exceptionInfo.description)) {
+                const message = exceptionInfo.description || exceptionInfo.exceptionId;
+                const stack = exceptionInfo.details?.stackTrace;
+                
+                // Retrieve the top frame to identify the file and line
+                const stackTrace = await session.customRequest('stackTrace', { threadId: e.thread.id, levels: 1 });
+                const topFrame = stackTrace.stackFrames[0];
+                const filePath = topFrame?.source?.path ? vscode.Uri.file(topFrame.source.path) : undefined;
+                const line = topFrame?.line;
+
+                debugErrorManager.setError(message, stack, filePath, line);
+            }
+        } catch (err) {
+            // Some debug sessions might not support 'exceptionInfo'
+        }
+    }));
+    
+    // Clear error context when debugging session ends
+    context.subscriptions.push(vscode.debug.onDidTerminateDebugSession(() => {
+        debugErrorManager.clearError();
+    }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.executeProject', async (discussionId: string) => {
         const panel = ChatPanel.panels.get(discussionId);

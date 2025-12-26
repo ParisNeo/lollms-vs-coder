@@ -103,6 +103,14 @@ export function handleExtensionMessage(event: MessageEvent) {
                     if (dom.radioCodeGenDiff && caps.codeGenType === 'diff') dom.radioCodeGenDiff.checked = true;
                     if (dom.radioCodeGenNone && caps.codeGenType === 'none') dom.radioCodeGenNone.checked = true;
 
+                    // Update Formats
+                    if (caps.allowedFormats) {
+                        if (dom.fmtFullFile) dom.fmtFullFile.checked = caps.allowedFormats.fullFile;
+                        if (dom.fmtInsert) dom.fmtInsert.checked = caps.allowedFormats.insert;
+                        if (dom.fmtReplace) dom.fmtReplace.checked = caps.allowedFormats.replace;
+                        if (dom.fmtDelete) dom.fmtDelete.checked = caps.allowedFormats.delete;
+                    }
+
                     if(dom.capFileRename) dom.capFileRename.checked = caps.fileRename;
                     if(dom.capFileDelete) dom.capFileDelete.checked = caps.fileDelete;
                     if(dom.capFileSelect) dom.capFileSelect.checked = caps.fileSelect;

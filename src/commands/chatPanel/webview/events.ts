@@ -143,6 +143,12 @@ export function initEventHandlers() {
             
             const capabilities = {
                 codeGenType: codeGenType ? codeGenType.value : 'full',
+                allowedFormats: {
+                    fullFile: dom.fmtFullFile ? dom.fmtFullFile.checked : true,
+                    insert: dom.fmtInsert ? dom.fmtInsert.checked : false,
+                    replace: dom.fmtReplace ? dom.fmtReplace.checked : false,
+                    delete: dom.fmtDelete ? dom.fmtDelete.checked : false
+                },
                 fileRename: dom.capFileRename ? dom.capFileRename.checked : true,
                 fileDelete: dom.capFileDelete ? dom.capFileDelete.checked : true,
                 fileSelect: dom.capFileSelect ? dom.capFileSelect.checked : true,

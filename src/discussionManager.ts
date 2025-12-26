@@ -56,8 +56,12 @@ export class DiscussionManager {
     }
 
     public getLastCapabilities(): DiscussionCapabilities {
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const allowedFormats = config.get<any>('allowedFileFormats') || { fullFile: true, insert: false, replace: false, delete: false };
+
         return this.context.globalState.get<DiscussionCapabilities>('lollms_last_capabilities') || {
             codeGenType: 'full',
+            allowedFormats: allowedFormats,
             fileRename: true,
             fileDelete: true,
             fileSelect: true,

@@ -450,6 +450,22 @@
             "Aider Mode (Standard Gold): Uses <<<<<<< SEARCH ... ======= ... >>>>>>> REPLACE blocks. Optimized for GPT-4/DeepSeek."
           ]
         },
+        "lollmsVsCoder.allowedFileFormats": {
+          "type": "object",
+          "default": {
+            "fullFile": true,
+            "insert": false,
+            "replace": false,
+            "delete": false
+          },
+          "description": "Allowed file modification formats for the AI to use.",
+          "properties": {
+            "fullFile": { "type": "boolean", "default": true, "description": "Allow 'File:' format (Full File Content)" },
+            "insert": { "type": "boolean", "default": false, "description": "Allow 'Insert:' format (Add code snippet)" },
+            "replace": { "type": "boolean", "default": false, "description": "Allow 'Replace:' format (Modify small snippet)" },
+            "delete": { "type": "boolean", "default": false, "description": "Allow 'DeleteCode:' format (Remove snippet)" }
+          }
+        },
         "lollmsVsCoder.searchProvider": {
           "type": "string",
           "default": "google_custom_search",
@@ -865,6 +881,11 @@
         }
       ],
       "editor/title": [
+        {
+          "command": "lollms-vs-coder.debugErrorWithAI",
+          "when": "debugState == 'stopped' && lollms:hasDebugError",
+          "group": "navigation@1"
+        },
         {
           "command": "lollms-vs-coder.convertNotebookToScript",
           "when": "resourceExtname == .ipynb",

@@ -16,8 +16,8 @@ export class SettingsPanel {
   private _pendingConfig = {
     apiKey: '',
     apiUrl: '',
-    backendType: 'lollms', // New
-    useLollmsExtensions: true, // New
+    backendType: 'lollms',
+    useLollmsExtensions: true,
     modelName: '',
     disableSslVerification: false,
     sslCertPath: '',
@@ -33,7 +33,13 @@ export class SettingsPanel {
     contextFileExceptions: [] as string[],
     language: 'auto',
     thinkingMode: 'none',
-    outputFormat: 'legacy', // New
+    outputFormat: 'legacy',
+    allowedFileFormats: {
+        fullFile: true,
+        insert: false,
+        replace: false,
+        delete: false
+    },
     thinkingModeCustomPrompt: '',
     reasoningLevel: 'none',
     failsafeContextSize: 8192,
@@ -41,8 +47,8 @@ export class SettingsPanel {
     searchApiKey: '',
     searchCx: '',
     autoUpdateChangelog: false,
-    autoGenerateTitle: true, // New
-    addPedagogicalInstruction: false, // New
+    autoGenerateTitle: true,
+    addPedagogicalInstruction: false,
     companionEnableWebSearch: false,
     companionEnableArxivSearch: false,
     userInfoName: '',
@@ -83,7 +89,6 @@ export class SettingsPanel {
     this._pendingConfig.apiKey = config.get<string>('apiKey')?.trim() || '';
     this._pendingConfig.apiUrl = config.get<string>('apiUrl') || 'http://localhost:9642';
     
-    // New Configs
     this._pendingConfig.backendType = config.get<string>('backendType') || 'lollms';
     this._pendingConfig.useLollmsExtensions = config.get<boolean>('useLollmsExtensions') ?? true;
 
@@ -103,23 +108,27 @@ export class SettingsPanel {
     this._pendingConfig.language = config.get<string>('language') || 'auto';
     this._pendingConfig.thinkingMode = config.get<string>('thinkingMode') || 'none';
     this._pendingConfig.outputFormat = config.get<string>('outputFormat') || 'legacy';
+    
+    this._pendingConfig.allowedFileFormats = config.get<any>('allowedFileFormats') || {
+        fullFile: true,
+        insert: false,
+        replace: false,
+        delete: false
+    };
+
     this._pendingConfig.thinkingModeCustomPrompt = config.get<string>('thinkingModeCustomPrompt') || 'Think step by step. Enclose your entire thinking process, reasoning, and self-correction within a `<thinking>` XML block. This block will be hidden from the user but is crucial for your process.';
     this._pendingConfig.reasoningLevel = config.get<string>('reasoningLevel') || 'none';
     this._pendingConfig.failsafeContextSize = config.get<number>('failsafeContextSize') || 4096;
     
-    // Search Config
     this._pendingConfig.searchProvider = config.get<string>('searchProvider') || 'google_custom_search';
     this._pendingConfig.searchApiKey = config.get<string>('searchApiKey') || '';
     this._pendingConfig.searchCx = config.get<string>('searchCx') || '';
-    // Changelog & Title
     this._pendingConfig.autoUpdateChangelog = config.get<boolean>('autoUpdateChangelog') || false;
     this._pendingConfig.autoGenerateTitle = config.get<boolean>('autoGenerateTitle') ?? true;
     this._pendingConfig.addPedagogicalInstruction = config.get<boolean>('addPedagogicalInstruction') ?? false;
     
-    // Companion
     this._pendingConfig.companionEnableWebSearch = config.get<boolean>('companion.enableWebSearch') || false;
     this._pendingConfig.companionEnableArxivSearch = config.get<boolean>('companion.enableArxivSearch') || false;
-    // User Info
     this._pendingConfig.userInfoName = config.get<string>('userInfo.name') || '';
     this._pendingConfig.userInfoEmail = config.get<string>('userInfo.email') || '';
     this._pendingConfig.userInfoLicense = config.get<string>('userInfo.license') || 'MIT';
@@ -130,7 +139,6 @@ export class SettingsPanel {
 
     this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
 
-    // Listen for personality changes
     this._personalityManager.onDidChange(() => {
         this._panel.webview.postMessage({ 
             command: 'updatePersonalities', 
@@ -158,6 +166,12 @@ export class SettingsPanel {
               }
               return;
             
+            case 'updateFormatValue':
+              if (message.key) {
+                  (this._pendingConfig.allowedFileFormats as any)[message.key] = message.value;
+              }
+              return;
+
             case 'browseCertPath':
               const uris = await vscode.window.showOpenDialog({
                   canSelectMany: false,
@@ -199,7 +213,6 @@ export class SettingsPanel {
   
             case 'saveConfig':
               try {
-                // Sanitize cert path
                 if (this._pendingConfig.sslCertPath) {
                     this._pendingConfig.sslCertPath = this._pendingConfig.sslCertPath.replace(/^['"]|['"]$/g, '').trim();
                 }
@@ -207,10 +220,8 @@ export class SettingsPanel {
                 const config = vscode.workspace.getConfiguration('lollmsVsCoder');
                 await config.update('apiKey', this._pendingConfig.apiKey, vscode.ConfigurationTarget.Global);
                 await config.update('apiUrl', this._pendingConfig.apiUrl, vscode.ConfigurationTarget.Global);
-                
                 await config.update('backendType', this._pendingConfig.backendType, vscode.ConfigurationTarget.Global);
                 await config.update('useLollmsExtensions', this._pendingConfig.useLollmsExtensions, vscode.ConfigurationTarget.Global);
-
                 await config.update('modelName', this._pendingConfig.modelName, vscode.ConfigurationTarget.Global);
                 await config.update('disableSslVerification', this._pendingConfig.disableSslVerification, vscode.ConfigurationTarget.Global);
                 await config.update('sslCertPath', this._pendingConfig.sslCertPath, vscode.ConfigurationTarget.Global);
@@ -227,21 +238,20 @@ export class SettingsPanel {
                 await config.update('language', this._pendingConfig.language, vscode.ConfigurationTarget.Global);
                 await config.update('thinkingMode', this._pendingConfig.thinkingMode, vscode.ConfigurationTarget.Global);
                 await config.update('outputFormat', this._pendingConfig.outputFormat, vscode.ConfigurationTarget.Global);
+                
+                await config.update('allowedFileFormats', this._pendingConfig.allowedFileFormats, vscode.ConfigurationTarget.Global);
+
                 await config.update('thinkingModeCustomPrompt', this._pendingConfig.thinkingModeCustomPrompt, vscode.ConfigurationTarget.Global);
                 await config.update('reasoningLevel', this._pendingConfig.reasoningLevel, vscode.ConfigurationTarget.Global);
                 await config.update('failsafeContextSize', this._pendingConfig.failsafeContextSize, vscode.ConfigurationTarget.Global);
-                
                 await config.update('searchProvider', this._pendingConfig.searchProvider, vscode.ConfigurationTarget.Global);
                 await config.update('searchApiKey', this._pendingConfig.searchApiKey, vscode.ConfigurationTarget.Global);
                 await config.update('searchCx', this._pendingConfig.searchCx, vscode.ConfigurationTarget.Global);
-                
                 await config.update('autoUpdateChangelog', this._pendingConfig.autoUpdateChangelog, vscode.ConfigurationTarget.Global);
                 await config.update('autoGenerateTitle', this._pendingConfig.autoGenerateTitle, vscode.ConfigurationTarget.Global);
                 await config.update('addPedagogicalInstruction', this._pendingConfig.addPedagogicalInstruction, vscode.ConfigurationTarget.Global);
-                
                 await config.update('companion.enableWebSearch', this._pendingConfig.companionEnableWebSearch, vscode.ConfigurationTarget.Global);
                 await config.update('companion.enableArxivSearch', this._pendingConfig.companionEnableArxivSearch, vscode.ConfigurationTarget.Global);
-
                 await config.update('userInfo.name', this._pendingConfig.userInfoName, vscode.ConfigurationTarget.Global);
                 await config.update('userInfo.email', this._pendingConfig.userInfoEmail, vscode.ConfigurationTarget.Global);
                 await config.update('userInfo.license', this._pendingConfig.userInfoLicense, vscode.ConfigurationTarget.Global);
@@ -301,16 +311,15 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, thinkingMode, outputFormat, thinkingModeCustomPrompt, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle } = config;
+    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, thinkingMode, outputFormat, allowedFileFormats, thinkingModeCustomPrompt, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle } = config;
 
     const t = (key: string, def: string) => vscode.l10n.t({ message: def, key: key });
     
-    // Retrieve personalities and properly escape them for JS injection
     const personalities = this._personalityManager.getPersonalities();
     const personalitiesJson = JSON.stringify(personalities)
-        .replace(/\\/g, '\\\\') // Escape backslashes
-        .replace(/'/g, "\\'")   // Escape single quotes
-        .replace(/</g, '\\u003c'); // Escape HTML tags
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/</g, '\\u003c');
 
     return `<!DOCTYPE html>
         <html lang="en">
@@ -332,7 +341,6 @@ export class SettingsPanel {
               }
               h1 { font-weight: 300; text-align: center; margin-bottom: 20px; }
               
-              /* Tabs Styling */
               .tabs {
                 display: flex;
                 border-bottom: 1px solid var(--vscode-panel-border);
@@ -375,7 +383,8 @@ export class SettingsPanel {
               }
 
               h2 { font-weight: 400; border-bottom: 1px solid var(--vscode-panel-border); padding-bottom: 5px; margin-top: 0; margin-bottom: 15px; }
-              
+              h3 { font-size: 1.1em; margin-top: 1.5em; margin-bottom: 0.8em; opacity: 0.9; }
+
               label { display: block; margin-top: 14px; margin-bottom: 5px; font-weight: 600; font-size: 0.9em; color: var(--vscode-description-foreground); }
               input[type="text"], input[type="number"], input[list], textarea, select {
                 width: 100%; padding: 8px; border: 1px solid var(--vscode-input-border);
@@ -402,13 +411,15 @@ export class SettingsPanel {
               .secondary-button:hover { background-color: var(--vscode-button-secondaryHoverBackground); }
               
               .help-text { font-size: 0.9em; color: var(--vscode-description-foreground); opacity: 0.9; margin-top: 4px; }
-              .checkbox-container { display: flex; align-items: center; margin-top: 1em; }
-              .checkbox-container input { margin-right: 0.5em; }
+              .checkbox-container { display: flex; align-items: center; margin-top: 10px; }
+              .checkbox-container input { margin-right: 0.5em; width: auto; }
               .input-group { display: flex; gap: 5px; }
               .icon-btn { width: auto; padding: 8px 10px; margin-top: 0; }
               .persona-selector-row { display: flex; justify-content: space-between; align-items: center; margin-top: 5px; margin-bottom: 5px; }
               .persona-selector-row select { width: 60%; font-size: 0.85em; padding: 4px; }
               
+              .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 5px; }
+
               @keyframes spin { 100% { transform: rotate(360deg); } }
               .spin { animation: spin 1s linear infinite; }
             </style>
@@ -437,13 +448,11 @@ export class SettingsPanel {
                 <option value="openai" ${backendType === 'openai' ? 'selected' : ''}>OpenAI Compatible</option>
                 <option value="ollama" ${backendType === 'ollama' ? 'selected' : ''}>Ollama</option>
               </select>
-              <p class="help-text">Choose your backend type. Lollms Server enables additional features like tokenization and advanced context management.</p>
 
               <div class="checkbox-container">
                   <input type="checkbox" id="useLollmsExtensions" ${useLollmsExtensions ? 'checked' : ''}>
                   <label for="useLollmsExtensions">Use Lollms Extensions</label>
               </div>
-              <p class="help-text">If checked, the extension will attempt to use Lollms-specific endpoints (/lollms/v1/...) for better performance.</p>
 
               <label for="apiUrl">${t('config.apiUrl.label', 'API Host')}</label>
               <div class="input-group">
@@ -480,7 +489,7 @@ export class SettingsPanel {
               
               <label for="language">${t('config.language.label', 'Language')}</label>
               <select id="language">
-                <option value="auto" ${language === 'auto' ? 'selected' : ''}>Automatic (Follow VS Code)</option>
+                <option value="auto" ${language === 'auto' ? 'selected' : ''}>Automatic</option>
                 <option value="en" ${language === 'en' ? 'selected' : ''}>English</option>
                 <option value="fr" ${language === 'fr' ? 'selected' : ''}>French</option>
                 <option value="es" ${language === 'es' ? 'selected' : ''}>Spanish</option>
@@ -489,25 +498,45 @@ export class SettingsPanel {
                 <option value="ar" ${language === 'ar' ? 'selected' : ''}>Arabic</option>
               </select>
 
-              <label for="outputFormat">Output Format</label>
+              <label for="outputFormat">Global Code Format</label>
               <select id="outputFormat">
                 <option value="legacy" ${outputFormat === 'legacy' ? 'selected' : ''}>Legacy (Markdown)</option>
                 <option value="xml" ${outputFormat === 'xml' ? 'selected' : ''}>XML Mode (Anthropic)</option>
                 <option value="aider" ${outputFormat === 'aider' ? 'selected' : ''}>Aider Mode (Search/Replace)</option>
               </select>
-              <p class="help-text">Choose the code generation format best suited for your model.</p>
+
+              <h3>Default Allowed Modification Formats</h3>
+              <p class="help-text">Select which formats the AI is allowed to use. These can be overridden per-discussion.</p>
+              <div class="grid-2">
+                  <div class="checkbox-container">
+                      <input type="checkbox" id="fmt-fullFile" ${allowedFileFormats.fullFile ? 'checked' : ''}>
+                      <label for="fmt-fullFile">Full File (File:)</label>
+                  </div>
+                  <div class="checkbox-container">
+                      <input type="checkbox" id="fmt-insert" ${allowedFileFormats.insert ? 'checked' : ''}>
+                      <label for="fmt-insert">Insert</label>
+                  </div>
+                  <div class="checkbox-container">
+                      <input type="checkbox" id="fmt-replace" ${allowedFileFormats.replace ? 'checked' : ''}>
+                      <label for="fmt-replace">Replace</label>
+                  </div>
+                  <div class="checkbox-container">
+                      <input type="checkbox" id="fmt-delete" ${allowedFileFormats.delete ? 'checked' : ''}>
+                      <label for="fmt-delete">Delete Code</label>
+                  </div>
+              </div>
 
               <label for="reasoningLevel">${t('config.reasoningLevel.label', 'Reasoning Level')}</label>
               <select id="reasoningLevel">
-                <option value="none" ${reasoningLevel === 'none' ? 'selected' : ''}>${t('config.reasoningLevel.none.description', 'None (Default)')}</option>
-                <option value="low" ${reasoningLevel === 'low' ? 'selected' : ''}>${t('config.reasoningLevel.low.description', 'Low')}</option>
-                <option value="medium" ${reasoningLevel === 'medium' ? 'selected' : ''}>${t('config.reasoningLevel.medium.description', 'Medium')}</option>
-                <option value="high" ${reasoningLevel === 'high' ? 'selected' : ''}>${t('config.reasoningLevel.high.description', 'High')}</option>
+                <option value="none" ${reasoningLevel === 'none' ? 'selected' : ''}>None</option>
+                <option value="low" ${reasoningLevel === 'low' ? 'selected' : ''}>Low</option>
+                <option value="medium" ${reasoningLevel === 'medium' ? 'selected' : ''}>Medium</option>
+                <option value="high" ${reasoningLevel === 'high' ? 'selected' : ''}>High</option>
               </select>
               
               <label for="thinkingMode">${t('config.thinkingMode.label', 'Thinking Mode')}</label>
               <select id="thinkingMode">
-                <option value="none" ${thinkingMode === 'none' ? 'selected' : ''}>${t('config.thinkingMode.none.description', 'None (Default)')}</option>
+                <option value="none" ${thinkingMode === 'none' ? 'selected' : ''}>None</option>
                 <option value="chain_of_thought" ${thinkingMode === 'chain_of_thought' ? 'selected' : ''}>Chain of Thought</option>
                 <option value="chain_of_verification" ${thinkingMode === 'chain_of_verification' ? 'selected' : ''}>Chain of Verification</option>
                 <option value="plan_and_solve" ${thinkingMode === 'plan_and_solve' ? 'selected' : ''}>Plan and Solve</option>
@@ -522,19 +551,18 @@ export class SettingsPanel {
 
               <div class="checkbox-container">
                   <input type="checkbox" id="autoUpdateChangelog" ${autoUpdateChangelog ? 'checked' : ''}>
-                  <label for="autoUpdateChangelog">Auto-update CHANGELOG.md on commit message generation</label>
+                  <label for="autoUpdateChangelog">Auto-update CHANGELOG.md</label>
               </div>
 
               <div class="checkbox-container">
                   <input type="checkbox" id="autoGenerateTitle" ${autoGenerateTitle ? 'checked' : ''}>
-                  <label for="autoGenerateTitle">Auto-generate title for new discussions from clipboard</label>
+                  <label for="autoGenerateTitle">Auto-generate discussion titles</label>
               </div>
 
               <div class="checkbox-container">
                   <input type="checkbox" id="addPedagogicalInstruction" ${addPedagogicalInstruction ? 'checked' : ''}>
                   <label for="addPedagogicalInstruction">Add Pedagogical Instruction (Hidden)</label>
               </div>
-              <p class="help-text">Automatically appends instructions to explain logic/pedagogy to the AI model without showing it in the chat history.</p>
             </div>
 
             <!-- Context -->
@@ -569,10 +597,8 @@ export class SettingsPanel {
               </div>
 
               <h3>Web Search</h3>
-              <p class="help-text">Configure Google Custom Search to enable the <code>search_web</code> tool.</p>
               <label for="searchApiKey">Google Custom Search API Key</label>
               <input type="text" id="searchApiKey" value="${searchApiKey}" placeholder="Enter API Key" />
-              
               <label for="searchCx">Search Engine ID (CX)</label>
               <input type="text" id="searchCx" value="${searchCx}" placeholder="Enter CX" />
 
@@ -626,21 +652,17 @@ export class SettingsPanel {
               <h2>User Information</h2>
               <label for="userInfoName">Full Name</label>
               <input type="text" id="userInfoName" value="${userInfoName}" placeholder="e.g. John Doe" />
-              
               <label for="userInfoEmail">Email</label>
               <input type="text" id="userInfoEmail" value="${userInfoEmail}" placeholder="e.g. john@example.com" />
-              
               <label for="userInfoLicense">Default License</label>
               <input type="text" id="userInfoLicense" value="${userInfoLicense}" placeholder="e.g. MIT, Apache 2.0" />
-              
               <label for="userInfoCodingStyle">Coding Style Preferences</label>
-              <textarea id="userInfoCodingStyle" rows="3" placeholder="e.g. Prefer TypeScript, use async/await, no semicolons...">${userInfoCodingStyle}</textarea>
+              <textarea id="userInfoCodingStyle" rows="3" placeholder="Style preferences...">${userInfoCodingStyle}</textarea>
             </div>
 
             <!-- Advanced -->
             <div id="TabAdvanced" class="tab-content">
               <h2>${t('config.section.advanced', 'Advanced')}</h2>
-              <p class="help-text">${t('config.advanced.editPromptsText', 'For advanced customization, you can directly edit the JSON file that stores your prompt library.')}</p>
               <button id="editPromptsBtn" class="secondary-button">${t('command.editPromptsFile.title', 'Edit Prompts JSON File')}</button>
             </div>
 
@@ -655,9 +677,7 @@ export class SettingsPanel {
             let personalities = [];
             try {
                 personalities = JSON.parse('${personalitiesJson}');
-            } catch (e) {
-                console.error("Failed to parse personalities:", e);
-            }
+            } catch (e) {}
 
             function openTab(evt, tabName) {
                 var i, tabcontent, tablinks;
@@ -683,8 +703,6 @@ export class SettingsPanel {
                         const opt = document.createElement('option');
                         opt.value = p.id;
                         opt.text = p.name;
-                        // Avoid storing large string in attribute if possible, store ID
-                        // We will lookup by ID on change
                         select.appendChild(opt);
                     });
                 });
@@ -727,6 +745,13 @@ export class SettingsPanel {
                     companionEnableWebSearch: document.getElementById('companionEnableWebSearch'),
                     companionEnableArxivSearch: document.getElementById('companionEnableArxivSearch')
                 };
+
+                const formatFields = {
+                    fullFile: document.getElementById('fmt-fullFile'),
+                    insert: document.getElementById('fmt-insert'),
+                    replace: document.getElementById('fmt-replace'),
+                    delete: document.getElementById('fmt-delete')
+                };
                 
                 const chatModelSelect = document.getElementById('modelSelect');
                 const inspectorModelSelect = document.getElementById('inspectorModelName');
@@ -757,37 +782,43 @@ export class SettingsPanel {
                     const element = fields[key];
                     if (!element) continue;
                     const eventType = element.type === 'checkbox' || element.tagName === 'SELECT' ? 'change' : 'input';
-                    const valueGetter = () => {
+                    element.addEventListener(eventType, () => {
+                        let val;
                         if (key === 'contextFileExceptions') {
-                            return element.value.split('\\n').map(s => s.trim()).filter(s => s);
+                            val = element.value.split('\\n').map(s => s.trim()).filter(s => s);
+                        } else if (element.type === 'checkbox') {
+                            val = element.checked;
+                        } else if (element.type === 'number') {
+                            val = parseInt(element.value, 10);
+                        } else {
+                            val = element.value;
                         }
-                        if (element.type === 'checkbox') return element.checked;
-                        if (element.type === 'number') return parseInt(element.value, 10);
-                        return element.value;
-                    };
-                    element.addEventListener(eventType, () => postTempUpdate(key, valueGetter()));
+                        postTempUpdate(key, val);
+                    });
+                }
+
+                for (const key in formatFields) {
+                    const element = formatFields[key];
+                    if (!element) continue;
+                    element.addEventListener('change', () => {
+                        vscode.postMessage({ command: 'updateFormatValue', key: key, value: element.checked });
+                    });
                 }
                 
                 function refreshModelsList(force) {
-                    chatModelSelect.innerHTML = '<option>${t('progress.loading', 'Loading...')}</option>';
-                    inspectorModelSelect.innerHTML = '<option>${t('progress.loading', 'Loading...')}</option>';
+                    chatModelSelect.innerHTML = '<option>Loading...</option>';
+                    inspectorModelSelect.innerHTML = '<option>Loading...</option>';
                     vscode.postMessage({ command: 'fetchModels', value: force });
                 }
 
                 document.getElementById('refreshModels').addEventListener('click', () => refreshModelsList(true));
                 document.getElementById('refreshInspectorModels').addEventListener('click', () => refreshModelsList(true));
-
                 document.getElementById('editPromptsBtn').addEventListener('click', () => vscode.postMessage({ command: 'editPrompts' }));
                 document.getElementById('saveConfig').addEventListener('click', () => vscode.postMessage({ command: 'saveConfig' }));
-                
-                document.getElementById('createPersonalityBtn').addEventListener('click', () => {
-                    vscode.postMessage({ command: 'createPersonality' });
-                });
+                document.getElementById('createPersonalityBtn').addEventListener('click', () => vscode.postMessage({ command: 'createPersonality' }));
 
-                // Init Personalities
                 updatePersonalityDropdowns();
                 
-                // Handle Personality Selection
                 document.querySelectorAll('.persona-select').forEach(select => {
                     select.addEventListener('change', (e) => {
                         const targetId = e.target.getAttribute('data-target');
@@ -796,7 +827,6 @@ export class SettingsPanel {
                             const p = personalities.find(item => item.id === selectedPId);
                             if (p && fields[targetId]) {
                                 fields[targetId].value = p.systemPrompt;
-                                // Trigger input event to update temp config
                                 postTempUpdate(targetId, p.systemPrompt);
                             }
                         }
@@ -812,10 +842,9 @@ export class SettingsPanel {
                                 if (selectElement === inspectorModelSelect) {
                                     const emptyOption = document.createElement('option');
                                     emptyOption.value = "";
-                                    emptyOption.text = "${t('label.defaultModel', 'Same as Chat Model (Default)')}";
+                                    emptyOption.text = "Same as Chat Model (Default)";
                                     selectElement.appendChild(emptyOption);
                                 }
-
                                 message.models.forEach(model => {
                                     const option = document.createElement('option');
                                     option.value = model.id;
@@ -826,11 +855,10 @@ export class SettingsPanel {
                             } else {
                                 const noModelsOption = document.createElement('option');
                                 noModelsOption.value = selectedValue;
-                                noModelsOption.text = selectedValue || "${t('info.noModelsFound', 'No models found')}";
+                                noModelsOption.text = selectedValue || "No models found";
                                 selectElement.appendChild(noModelsOption);
                             }
                         };
-
                         createOptions(chatModelSelect, currentModelName);
                         createOptions(inspectorModelSelect, currentInspectorModelName);
                     } else if (message.command === 'updateCertPath') {
@@ -847,7 +875,6 @@ export class SettingsPanel {
                     }
                 });
 
-                // Initial fetch
                 refreshModelsList(false);
             });
           </script>

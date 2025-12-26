@@ -105,6 +105,12 @@ export const dom = {
     get radioCodeGenDiff() { return document.querySelector('input[name="codeGenType"][value="diff"]') as HTMLInputElement; },
     get radioCodeGenNone() { return document.querySelector('input[name="codeGenType"][value="none"]') as HTMLInputElement; },
     
+    // FORMATS
+    get fmtFullFile() { return document.getElementById('fmt-fullFile') as HTMLInputElement; },
+    get fmtInsert() { return document.getElementById('fmt-insert') as HTMLInputElement; },
+    get fmtReplace() { return document.getElementById('fmt-replace') as HTMLInputElement; },
+    get fmtDelete() { return document.getElementById('fmt-delete') as HTMLInputElement; },
+
     // File Tools
     get capFileRename() { return document.getElementById('cap-fileRename') as HTMLInputElement; },
     get capFileDelete() { return document.getElementById('cap-fileDelete') as HTMLInputElement; },

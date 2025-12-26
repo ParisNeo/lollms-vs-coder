@@ -1321,6 +1321,7 @@ Task:
                 <input type="text" id="searchInput" placeholder="Search discussion...">
                 <span id="search-results-count"></span>
                 <button id="search-prev" title="Previous match"><i class="codicon codicon-arrow-up"></i></button>
+                <button id="search-prev" title="Previous match"><i class="codicon codicon-arrow-up"></i></button>
                 <button id="search-next" title="Next match"><i class="codicon codicon-arrow-down"></i></button>
                 <button id="search-close" title="Close search"><i class="codicon codicon-close"></i></button>
             </div>
@@ -1400,13 +1401,35 @@ Task:
                     </div>
 
                     <div class="modal-section">
-                        <h3>Code Generation</h3>
+                        <h3>Allowed File Formats</h3>
+                        <div class="checkbox-grid">
+                            <div class="checkbox-container">
+                                <label class="switch"><input type="checkbox" id="fmt-fullFile" checked><span class="slider"></span></label>
+                                <label for="fmt-fullFile">Full File (File:)</label>
+                            </div>
+                            <div class="checkbox-container">
+                                <label class="switch"><input type="checkbox" id="fmt-insert"><span class="slider"></span></label>
+                                <label for="fmt-insert">Insert</label>
+                            </div>
+                            <div class="checkbox-container">
+                                <label class="switch"><input type="checkbox" id="fmt-replace"><span class="slider"></span></label>
+                                <label for="fmt-replace">Replace</label>
+                            </div>
+                            <div class="checkbox-container">
+                                <label class="switch"><input type="checkbox" id="fmt-delete"><span class="slider"></span></label>
+                                <label for="fmt-delete">Delete Code</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="modal-section">
+                        <h3>Code Generation Mode</h3>
                         <div class="radio-group">
                             <label class="radio-option">
-                                <input type="radio" name="codeGenType" value="full" checked> Full File Mode (Recommended)
+                                <input type="radio" name="codeGenType" value="full" checked> Full Content Preferred
                             </label>
                             <label class="radio-option">
-                                <input type="radio" name="codeGenType" value="diff"> Diff Mode
+                                <input type="radio" name="codeGenType" value="diff"> Diffs Preferred
                             </label>
                             <label class="radio-option">
                                 <input type="radio" name="codeGenType" value="none"> None (Chat Only)

@@ -5,6 +5,12 @@ import { MemoryManager } from './memoryManager';
 
 export interface DiscussionCapabilities {
     codeGenType: 'full' | 'diff' | 'none';
+    allowedFormats: {
+        fullFile: boolean;
+        insert: boolean;
+        replace: boolean;
+        delete: boolean;
+    };
     fileRename: boolean;
     fileDelete: boolean;
     fileSelect: boolean;
@@ -131,16 +137,21 @@ export async function getProcessedSystemPrompt(
         case 'chat': {
             let updateInstructions = '';
 
+            const allowed = capabilities?.allowedFormats || config.get<any>('allowedFileFormats') || { fullFile: true, insert: false, replace: false, delete: false };
+
             // --- OUTPUT FORMAT INSTRUCTIONS ---
-            if (outputFormat === 'xml') {
-                updateInstructions = `**FILE OUTPUT FORMAT (XML MODE):**
+            if (outputFormat === 'xml' && allowed.fullFile) {
+                updateInstructions += `**FILE OUTPUT FORMAT (XML MODE):**
 Use XML tags to output files. 
 <file path="path/to/file.ext">
 // Code content here...
+// ⚠️ MANDATORY: WRITE EVERY SINGLE LINE OF THE FILE.
+// ❌ DO NOT USE PLACEHOLDERS OR COMMENTS LIKE "// ... rest as before".
+// THIS CONTENT COMPLETELY REPLACES THE EXISTING FILE OR CREATES A NEW ONE.
 </file>
 `;
-            } else if (outputFormat === 'aider') {
-                updateInstructions = `**FILE EDIT FORMAT (SEARCH/REPLACE BLOCK):**
+            } else if (outputFormat === 'aider' && allowed.fullFile) {
+                updateInstructions += `**FILE EDIT FORMAT (SEARCH/REPLACE BLOCK):**
 To edit existing code, you MUST use the following format (no markdown code fences around the block markers):
 
 path/to/file.ext
@@ -151,23 +162,27 @@ path/to/file.ext
 >>>>>>> REPLACE
 
 - The SEARCH block must match the file content exactly (whitespace included).
-- If creating a NEW file, use the Legacy format below or just provide the full file content inside a code block preceded by "File: path/to/file".
+- If creating a NEW file, use the format below or provide full content in a code block preceded by "File: path/to/file".
 `;
-            } else {
+            } else if (allowed.fullFile) {
                 // LEGACY MODE
-                updateInstructions = `**FULL FILE MODE (SACRED FORMAT):**
+                updateInstructions += `**FULL FILE MODE (SACRED FORMAT):**
 To create or overwrite a file, use EXACTLY this format:
 File: path/to/the/file.ext
 \`\`\`language
-// Full, complete file content here. NO PLACEHOLDERS.
+// COMPLETE, FULL SOURCE CODE HERE.
+// ⚠️ MANDATORY: EVERY SINGLE LINE MUST BE WRITTEN.
+// ❌ DO NOT USE PLACEHOLDERS LIKE "// ... rest of code" OR "# ... (as before)".
+// ❌ DO NOT OMIT UNCHANGED SECTIONS.
+// Failure to provide the absolute full file content will destroy the user's project.
 \`\`\`
 **IMPORTANT:** The 'File:' line must be plain text. Do NOT wrap it in a code block.
 
 `;
             }
 
-            // Common instructions for all modes (Insert/Replace are always useful as fallback or precise edits)
-            const insertInstruction = `
+            if (allowed.insert) {
+                updateInstructions += `
 **INSERT MODE:**
 Insert: path/to/the/file.ext
 \`\`\`language
@@ -178,30 +193,33 @@ code to insert after context (DO NOT REPEAT CONTEXT HERE)
 >>>>
 \`\`\`
 `;
+            }
 
-            const replaceInstruction = `
-**REPLACE MODE (to be used for replacig small chunks of code):**
+            if (allowed.replace) {
+                updateInstructions += `
+**REPLACE MODE:**
 Replace: path/to/the/file.ext
 \`\`\`language
 <<<<
-original code to be replaced
+original code snippet to be replaced (make sure it is EXACTLY the same as the original or this will fail)
 ====
-new code to replace it with
+new code snippet to replace it with
 >>>>
 \`\`\`
 `;
+            }
 
-            const deleteInstruction = `
+            if (allowed.delete) {
+                updateInstructions += `
 **DELETE CODE MODE:**
 DeleteCode: path/to/the/file.ext
 \`\`\`language
 <<<<
-code to be deleted
+code to be deleted (make sure it is EXACTLY the same as the original or this will fail)
 >>>>
 \`\`\`
 `;
-
-            updateInstructions += `${insertInstruction}${replaceInstruction}${deleteInstruction}`;
+            }
             
             let otherFileActions = '';
             
@@ -226,12 +244,18 @@ If you need current information, documentation, or search results to answer accu
 The extension will stop your generation, fetch results, append them to context, and ask you to continue.
 ` : '';
 
+            let fullFileMandate = "";
+            if (allowed.fullFile) {
+                fullFileMandate = "4. **FILE INTEGRITY:** When using \"File:\", you are REPLACING the entire file. You MUST NOT use comments to represent existing code. If you skip even one line, the file becomes broken. Provide the COMPLETE file content from start to finish.\n";
+            }
+
             basePrompt = `You are a Senior VSCode Engineering Assistant. 
 
 **CRITICAL MANDATES:**
 1. **DESCRIPTION FIRST:** Always start your response with a clear, pedagogical description of what you are about to do and why. Teach the developer. Never output code blocks alone.
 2. **FORMATS ARE SACRED:** Use the exact formats provided below for file modifications. Deviation breaks the parser.
 3. **NO CODE BLOCKS FOR PATHS:** Never wrap the "File:", "Insert:", "Replace:", or "DeleteCode:" lines in markdown code blocks. They must be plain text.
+${fullFileMandate}
 
 ${updateInstructions}
 ${searchInstruction}

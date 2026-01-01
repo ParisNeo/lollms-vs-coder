@@ -22,7 +22,7 @@ export class LollmsCodeActionProvider implements vscode.CodeActionProvider {
             action.command = {
                 command: 'lollms-vs-coder.fixDiagnostic',
                 title: 'Fix with Lollms',
-                arguments: [document, diagnostic]
+                arguments: [document.uri, diagnostic]
             };
             action.diagnostics = [diagnostic];
             action.isPreferred = true; // High priority in the hover/quick-fix menu

@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.53",
+  "version": "0.5.54",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -30,6 +30,21 @@
       {
         "command": "lollms-vs-coder.startChat",
         "title": "%command.startChat.title%"
+      },
+      {
+        "command": "lollms-vs-coder.openFlowStudio",
+        "title": "Lollms: Open Flow Studio",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "lollms-vs-coder.createNewWorkflow",
+        "title": "New Workflow",
+        "icon": "$(add)"
+      },
+      {
+        "command": "lollms-vs-coder.deleteWorkflow",
+        "title": "Delete Workflow",
+        "icon": "$(trash)"
       },
       {
         "command": "lollms-vs-coder.quickEdit",

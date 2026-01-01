@@ -31,6 +31,9 @@ export class ChatPanel {
   private _skillsManager: SkillsManager;
   private _personalityManager?: PersonalityManager;
   
+  private _viewReadyPromise: Promise<void>;
+  private _viewReadyResolver!: () => void;
+  
   private _discussionCapabilities: DiscussionCapabilities;
 
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, discussionManager: DiscussionManager, discussionId: string, skillsManager?: SkillsManager): ChatPanel {
@@ -75,6 +78,11 @@ export class ChatPanel {
 
     // Initialize capabilities with last used settings
     this._discussionCapabilities = this._discussionManager.getLastCapabilities();
+
+    // Initialize view ready promise
+    this._viewReadyPromise = new Promise<void>((resolve) => {
+        this._viewReadyResolver = resolve;
+    });
 
     this.log(`ChatPanel initialized for discussion: ${discussionId}`);
 
@@ -406,10 +414,23 @@ export class ChatPanel {
     }
   }
 
+  // Helper to ensure webview is ready
+  private async waitForWebviewReady() {
+      if (this._isWebviewReady) return;
+      return this._viewReadyPromise;
+  }
+
   public async sendMessage(message: ChatMessage) {
     if (!this._currentDiscussion) {
-        vscode.window.showErrorMessage("No active discussion found.");
-        return;
+        // If not loaded, try waiting for readiness which triggers load
+        await this.waitForWebviewReady();
+        if (!this._currentDiscussion) {
+            vscode.window.showErrorMessage("No active discussion found even after waiting for readiness.");
+            return;
+        }
+    } else {
+        // Ensure webview is ready to receive messages
+        await this.waitForWebviewReady();
     }
 
     await this.addMessageToDiscussion(message);
@@ -606,6 +627,9 @@ export class ChatPanel {
   }
 
   public async sendIsolatedMessage(systemPrompt: string, userPrompt: string, model: string) {
+      // Ensure webview is ready for isolated messages too, to see the output
+      await this.waitForWebviewReady();
+
       const { id: processId, controller } = this.processManager.register(this.discussionId, 'Running isolated task...');
       this.updateGeneratingState();
 
@@ -684,6 +708,9 @@ export class ChatPanel {
 
   public async analyzeExecutionResult(code: string | null, language: string | null, output: string, exitCode: number) {
       if (exitCode === 0 && !output.trim()) return;
+
+      // Ensure readiness before analyzing
+      await this.waitForWebviewReady();
 
       const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities);
       let userPrompt = "";
@@ -942,6 +969,7 @@ export class ChatPanel {
         case 'webview-ready':
             console.log("ChatPanel: JS Ready signal received.");
             this._isWebviewReady = true;
+            this._viewReadyResolver(); // Resolve promise for waiting logic
             if (this._isLoadPending) {
                 this.loadDiscussion();
             }

@@ -107,195 +107,276 @@ export async function getProcessedSystemPrompt(
     let thinkingInstructions = '';
 
     if (thinkingMode !== 'none' && thinkingMode !== 'no_think') {
-        let instructionText = '';
-        switch (thinkingMode) {
-            case 'chain_of_thought':
-                instructionText = "Before providing your final answer, you must engage in a deep step-by-step thinking process. Break down the user's request, evaluate implementation strategies, and identify potential conflicts or improvements before writing any code.";
-                break;
-            case 'chain_of_verification':
-                instructionText = "Implement a Chain of Verification: 1. Generate a preliminary response (internal thought). 2. Identify claims or code logic that need verification. 3. Verify these against project context and facts. 4. Generate the final, verified response.";
-                break;
-            case 'plan_and_solve':
-                instructionText = "First, create a high-level plan to solve the user's request. Review the plan for efficiency. Then, execute the plan using the provided code blocks.";
-                break;
-            case 'self_critique':
-                instructionText = "After generating your initial response, stop and critically review it for logic flaws, security vulnerabilities, or bugs. Output the final, refined answer after this critique.";
-                break;
-            case 'custom':
-                instructionText = config.get<string>('thinkingModeCustomPrompt') || '';
-                break;
-        }
-        if (instructionText) {
-            thinkingInstructions = `**ADVANCED REASONING PROTOCOL:**\nYou are required to use the following thinking process: ${instructionText} Enclose your entire thinking process, reasoning, and self-correction within a \`<thinking>\` XML block. This block will be hidden from the user but is crucial for your quality control.\n\n`;
+        const thinkingStrategies: Record<string, string> = {
+            'chain_of_thought': 'Break down the request into logical steps. Analyze implementation strategies, identify potential conflicts, and evaluate trade-offs before writing code.',
+            'chain_of_verification': 'Generate a preliminary solution. Identify claims or logic requiring verification. Verify against project context. Produce the final, verified response.',
+            'plan_and_solve': 'Create a high-level plan. Review for efficiency and correctness. Execute the plan step by step.',
+            'self_critique': 'Generate initial response. Critically review for logic flaws, security vulnerabilities, and bugs. Output the refined, corrected answer.',
+            'custom': config.get<string>('thinkingModeCustomPrompt') || ''
+        };
+
+        const strategy = thinkingStrategies[thinkingMode];
+        if (strategy) {
+            thinkingInstructions = `<reasoning_protocol>\nEnclose all reasoning, analysis, and self-correction in <thinking> tags. This internal process is hidden from the user but critical for quality.\n\nProcess: ${strategy}\n</reasoning_protocol>\n\n`;
         }
     }
 
     let basePrompt = '';
-    let personaKey = '';
 
     switch (promptType) {
         case 'chat': {
-            let updateInstructions = '';
-
             const allowed = capabilities?.allowedFormats || config.get<any>('allowedFileFormats') || { fullFile: true, insert: false, replace: false, delete: false };
 
-            // --- OUTPUT FORMAT INSTRUCTIONS ---
+            // Build format instructions based on output mode
+            let formatInstructions = '';
+            
             if (outputFormat === 'xml' && allowed.fullFile) {
-                updateInstructions += `**FILE OUTPUT FORMAT (XML MODE):**
-Use XML tags to output files. 
-<file path="path/to/file.ext">
-// Code content here...
-// ⚠️ MANDATORY: WRITE EVERY SINGLE LINE OF THE FILE.
-// ❌ DO NOT USE PLACEHOLDERS OR COMMENTS LIKE "// ... rest as before".
-// THIS CONTENT COMPLETELY REPLACES THE EXISTING FILE OR CREATES A NEW ONE.
-</file>
-`;
-            } else if (outputFormat === 'aider' && allowed.fullFile) {
-                updateInstructions += `**FILE EDIT FORMAT (SEARCH/REPLACE BLOCK):**
-To edit existing code, you MUST use the following format (no markdown code fences around the block markers):
+                formatInstructions = `### File Modification Format (XML)
 
-path/to/file.ext
+<file path="relative/path/to/file.ext">
+[Complete file content]
+</file>
+
+**Requirements:**
+- Path must be relative to workspace root
+- Content replaces entire file or creates new file
+- Include EVERY line - no placeholders or "rest as before" comments
+- Do not wrap the <file> tag in code blocks`;
+
+            } else if (outputFormat === 'aider' && allowed.fullFile) {
+                formatInstructions = `### File Modification Format (Search/Replace)
+
+relative/path/to/file.ext
 <<<<<<< SEARCH
-(exact lines to find in the original file)
+[Exact lines from original file]
 =======
-(new lines to replace them with)
+[New lines to replace with]
 >>>>>>> REPLACE
 
-- The SEARCH block must match the file content exactly (whitespace included).
-- If creating a NEW file, use the format below or provide full content in a code block preceded by "File: path/to/file".
-`;
-            } else if (allowed.fullFile) {
-                // LEGACY MODE
-                updateInstructions += `**FULL FILE MODE (SACRED FORMAT):**
-To create or overwrite a file, use EXACTLY this format:
-File: path/to/the/file.ext
-\`\`\`language
-// COMPLETE, FULL SOURCE CODE HERE.
-// ⚠️ MANDATORY: EVERY SINGLE LINE MUST BE WRITTEN.
-// ❌ DO NOT USE PLACEHOLDERS LIKE "// ... rest of code" OR "# ... (as before)".
-// ❌ DO NOT OMIT UNCHANGED SECTIONS.
-// Failure to provide the absolute full file content will destroy the user's project.
-\`\`\`
-**IMPORTANT:** The 'File:' line must be plain text. Do NOT wrap it in a code block.
+**Requirements:**
+- SEARCH block must match file content exactly (including whitespace)
+- For new files, provide full content in code block with "File: path/to/file" header
+- Do not wrap block markers in markdown code fences`;
 
-`;
+            } else if (allowed.fullFile) {
+                formatInstructions = `### File Modification Format (Legacy)
+
+File: relative/path/to/file.ext
+\`\`\`language
+[Complete file content from first to last line]
+\`\`\`
+
+**Critical Requirements:**
+- "File:" line must be plain text (not in code block)
+- Provide COMPLETE file content - every single line
+- Never use placeholders like "// ... rest as before"
+- Missing lines = broken file = broken project`;
             }
 
+            // Add optional modification formats
+            let additionalFormats = '';
             if (allowed.insert) {
-                updateInstructions += `
-**INSERT MODE:**
-Insert: path/to/the/file.ext
+                additionalFormats += `\n### Insert Code
+
+Insert: relative/path/to/file.ext
 \`\`\`language
 <<<<
-context line(s) to locate the point
+[Context lines to locate insertion point]
 ====
-code to insert after context (DO NOT REPEAT CONTEXT HERE)
+[New code to insert after context]
 >>>>
-\`\`\`
-`;
+\`\`\``;
             }
 
             if (allowed.replace) {
-                updateInstructions += `
-**REPLACE MODE:**
-Replace: path/to/the/file.ext
+                additionalFormats += `\n### Replace Code
+
+Replace: relative/path/to/file.ext
 \`\`\`language
 <<<<
-original code snippet to be replaced (make sure it is EXACTLY the same as the original or this will fail)
+[Exact original code to replace]
 ====
-new code snippet to replace it with
+[New code to replace with]
 >>>>
 \`\`\`
-`;
+
+Note: Original code must match exactly or operation fails`;
             }
 
             if (allowed.delete) {
-                updateInstructions += `
-**DELETE CODE MODE:**
-DeleteCode: path/to/the/file.ext
+                additionalFormats += `\n### Delete Code
+
+DeleteCode: relative/path/to/file.ext
 \`\`\`language
 <<<<
-code to be deleted (make sure it is EXACTLY the same as the original or this will fail)
+[Exact code to delete]
 >>>>
 \`\`\`
-`;
+
+Note: Code must match exactly or operation fails`;
             }
-            
-            let otherFileActions = '';
-            
+
+            // File operations
+            let fileOperations = '';
             if (!capabilities || capabilities.fileRename) {
-                otherFileActions += `- **Rename/Move:** \`\`\`rename\nold -> new\n\`\`\`\n`;
+                fileOperations += '- **Rename/Move:** ``````\n';
             }
             if (!capabilities || capabilities.fileDelete) {
-                otherFileActions += `- **Delete File:** \`\`\`delete\npath/to/file\n\`\`\`\n`;
+                fileOperations += '- **Delete File:** ``````\n';
             }
             if (!capabilities || capabilities.fileSelect) {
-                otherFileActions += `- **Select Files (Add to Context):** \`\`\`select\npath/to/file\n\`\`\`\n`;
+                fileOperations += '- **Add to Context:** ``````\n';
             }
 
-            if (otherFileActions) {
-                updateInstructions += `\n**OTHER ACTIONS:**\n${otherFileActions}`;
+            if (fileOperations) {
+                additionalFormats += `\n### File Operations\n${fileOperations}`;
             }
 
-            const searchInstruction = capabilities?.webSearch ? `
-**AUTOMATED WEB SEARCH TAG:**
-If you need current information, documentation, or search results to answer accurately, you can trigger a search by outputting:
-<web_search>your search query</web_search>
-The extension will stop your generation, fetch results, append them to context, and ask you to continue.
-` : '';
+            // Search capability
+            const searchCapability = capabilities?.webSearch ? `\n### Web Search
 
-            let fullFileMandate = "";
-            if (allowed.fullFile) {
-                fullFileMandate = "4. **FILE INTEGRITY:** When using \"File:\", you are REPLACING the entire file. You MUST NOT use comments to represent existing code. If you skip even one line, the file becomes broken. Provide the COMPLETE file content from start to finish.\n";
-            }
+Trigger automated web search when you need current information or documentation:
 
-            basePrompt = `You are a Senior VSCode Engineering Assistant. 
+<web_search>search query</web_search>
 
-**CRITICAL MANDATES:**
-1. **DESCRIPTION FIRST:** Always start your response with a clear, pedagogical description of what you are about to do and why. Teach the developer. Never output code blocks alone.
-2. **FORMATS ARE SACRED:** Use the exact formats provided below for file modifications. Deviation breaks the parser.
-3. **NO CODE BLOCKS FOR PATHS:** Never wrap the "File:", "Insert:", "Replace:", or "DeleteCode:" lines in markdown code blocks. They must be plain text.
-${fullFileMandate}
+The extension fetches results, appends them to context, and asks you to continue.` : '';
 
-${updateInstructions}
-${searchInstruction}
+            // Image generation
+            const imageGenCapability = capabilities?.imageGen ? `\n### Image Generation
 
-**ABSOLUTE RULE:** Be descriptive, helpful, and concise. Help the user understand the architecture, not just the fix.`;
-            personaKey = 'chatPersona';
+Generate images using:
+
+\`\`\`image_prompt
+[Detailed image description]
+\`\`\`` : '';
+
+            basePrompt = `# Role
+
+You are a Senior VSCode Engineering Assistant with expertise in software architecture, design patterns, and pedagogical code explanation.
+
+${thinkingInstructions}# Response Structure
+
+1. **Start with explanation** - Describe what you're doing and why before any code
+2. **Teach concepts** - Help the developer understand architecture and design decisions
+3. **Follow exact formats** - Deviation from specified formats breaks the parser
+4. **Maintain file integrity** - When replacing full files, include every single line
+
+${formatInstructions}${additionalFormats}${searchCapability}${imageGenCapability}
+
+# Core Principles
+
+- Explanation before code - never output code blocks without context
+- Format compliance is mandatory - exact syntax required
+- Full file replacements must be complete - no shortcuts or omissions
+- Clear, concise, pedagogical communication`;
+
             break;
         }
+
         case 'agent':
-            basePrompt = `You are a meticulous, autonomous AI Agent. Observe first. Check tool outputs. Do not assume success if an error message is returned.`;
-            personaKey = 'agentPersona';
+            basePrompt = `# Role
+
+You are an autonomous AI Agent executing tasks systematically.
+
+${thinkingInstructions}# Core Principles
+
+- Observe tool outputs carefully before proceeding
+- Verify success/failure from actual responses
+- Never assume operations succeeded without confirmation
+- Report errors clearly when they occur
+- Complete tasks step-by-step with verification at each stage`;
             break;
+
         case 'inspector':
-            personaKey = `codeInspectorPersona`;
+            basePrompt = `# Role
+
+You are a Code Quality Inspector analyzing code for issues, improvements, and best practices.
+
+${thinkingInstructions}# Analysis Focus
+
+- Code quality and maintainability
+- Security vulnerabilities
+- Performance bottlenecks
+- Best practice violations
+- Potential bugs and edge cases
+- Architecture and design patterns`;
             break;
+
         case 'commit':
-            basePrompt = `You are an expert dev. Write conventional git commit messages. Output ONLY the code block. No chatter.`;
-            personaKey = `commitMessagePersona`;
+            basePrompt = `# Role
+
+Expert developer writing conventional commit messages.
+
+# Output Format
+
+\`\`\`
+type(scope): concise description
+
+- Key change 1
+- Key change 2
+\`\`\`
+
+# Requirements
+
+- Use conventional commit types (feat, fix, docs, refactor, test, chore)
+- Keep description under 50 characters
+- Output ONLY the code block
+- No additional commentary`;
             break;
     }
 
-    let userPersona = customPersonaContent || config.get<string>(personaKey) || '';
-    if (capabilities?.funMode) userPersona += "\n\n**FUN MODE ACTIVATED:** Be quirky, humorous, and use plenty of emojis! 🤪";
+    // Build context sections
+    const contextSections: string[] = [];
 
-    let userInfoBlock = `\n**USER CONTEXT:**\n- Name: ${userName}\n- Email: ${userEmail}\n- Style: ${userStyle}`;
-    let memoryBlock = memoryContent.trim() ? `\n**LONG-TERM MEMORY:**\n\`\`\`\n${memoryContent}\n\`\`\`\nUpdate memory using <memory>...</memory> tags if needed.` : "";
+    // User context
+    const userInfo = [
+        `- Name: ${userName}`,
+        userEmail && `- Email: ${userEmail}`,
+        userStyle && `- Coding Style: ${userStyle}`,
+        userLicense && `- Default License: ${userLicense}`
+    ].filter(Boolean).join('\n');
 
-    let combinedPrompt = `${thinkingInstructions}${basePrompt}\n${userInfoBlock}\n${memoryBlock}\n\n**YOUR PERSONA:**\n${userPersona}`;
-    
+    if (userInfo) {
+        contextSections.push(`### User Context\n${userInfo}`);
+    }
+
+    // Memory
+    if (memoryContent.trim()) {
+        contextSections.push(`### Long-Term Memory\n\`\`\`\n${memoryContent}\n\`\`\`\n\nUpdate memory with <memory>content</memory> tags when learning important preferences or patterns.`);
+    }
+
+    // Persona
+    let personaContent = customPersonaContent || config.get<string>(
+        promptType === 'chat' ? 'chatPersona' :
+        promptType === 'agent' ? 'agentPersona' :
+        promptType === 'inspector' ? 'codeInspectorPersona' :
+        'commitMessagePersona'
+    ) || '';
+
+    if (capabilities?.funMode) {
+        personaContent += "\n\n**FUN MODE** 🎉: Be quirky, humorous, and use emojis liberally!";
+    }
+
+    if (personaContent.trim()) {
+        contextSections.push(`### Your Persona\n${personaContent.trim()}`);
+    }
+
+    // Combine prompt sections
+    const contextBlock = contextSections.length > 0 ? '\n\n# Context\n\n' + contextSections.join('\n\n') : '';
+    let combinedPrompt = `${basePrompt}${contextBlock}`;
+
+    // Variable substitution
     const now = new Date();
     const date = now.toISOString().split('T')[0];
     const platform = os.platform();
     
-    let processedPrompt = combinedPrompt
+    combinedPrompt = combinedPrompt
         .replace(/{{date}}/g, date)
         .replace(/{{os}}/g, platform)
         .replace(/{{developer_name}}/g, userName);
 
-    let finalPrompt = processedPrompt.trim();
-
+    // Add reasoning prefix if needed
+    let finalPrompt = combinedPrompt.trim();
     if (thinkingMode === 'no_think') {
         finalPrompt = `/no_think\n${finalPrompt}`;
     } else if (reasoningLevel !== 'none') {

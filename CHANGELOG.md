@@ -19,6 +19,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.53 and add utility helpers
 
+## [Unreleased]
+
+- chore: bump version to 0.5.54 and refactor extension modules
+
 ## [0.5.4] - 2025-10-22
 
 ### ✨ Features

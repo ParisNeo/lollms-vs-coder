@@ -29,3 +29,9 @@
 
 - 7 - The AI should never use comments like this :# ... (imports and helper functions remain unchanged) It should instead rewrite that code
 - - 8 - upgrade the prompt to push the LLM to always explain before writing the code
+
+
+# TODO asap:
+- Reset context must be split into two types:
+-  1 reset context while keeping all blocked files/folders so that they still never apear in the list
+-  2 full context reset : resets even blocked ones.

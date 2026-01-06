@@ -10,7 +10,10 @@
 - OK add the possibility to activate/deactivate file rewrite/file patch
 - OK .vue files are not loading
 - some files like jupyter and vue files must be loadable
-
+- OK Reset context must be split into two types:
+    1 reset context while keeping all blocked files/folders so that they still never apear in the list
+    2 full context reset : resets even blocked ones.
+ 
 - if there is a .gitignore, apply it to the context selection
 - fuse generate code and rewrite code
 - add firewall with rules for execution
@@ -32,6 +35,9 @@
 
 
 # TODO asap:
-- Reset context must be split into two types:
--  1 reset context while keeping all blocked files/folders so that they still never apear in the list
--  2 full context reset : resets even blocked ones.
+Fix:
+  file state change from the menu
+  auto select context
+
+Add:
+  auto code processing (automatic selection of files followed by the actual processing. after first selection, ask the ai if it needs more files or if it needs to remove files. repeat this until the ai says ok, I have the optimal set of files in my context to solve the problem. Finally answer the user's question. Make it deactivable.

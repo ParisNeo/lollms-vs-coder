@@ -3,6 +3,11 @@ import * as path from 'path';
 import * as os from 'os';
 import { MemoryManager } from './memoryManager';
 
+export interface HerdParticipant {
+    model: string;
+    personality: string;
+}
+
 export interface DiscussionCapabilities {
     codeGenType: 'full' | 'diff' | 'none';
     allowedFormats: {
@@ -21,6 +26,10 @@ export interface DiscussionCapabilities {
     funMode: boolean;
     thinkingMode: 'none' | 'chain_of_thought' | 'chain_of_verification' | 'plan_and_solve' | 'self_critique' | 'no_think';
     gitCommit: boolean;
+    // Herd Mode Settings
+    herdMode: boolean;
+    herdParticipants: HerdParticipant[];
+    herdRounds: number;
 }
 
 export async function applyDiff(diffContent: string) {
@@ -79,7 +88,8 @@ export async function applyDiff(diffContent: string) {
     if (!success) {
         throw new Error('VS Code failed to apply edits.');
     }
-    await document.save();
+    // REMOVED: await document.save(); 
+    // We leave the document dirty so the user can review changes.
 }
 
 export async function getProcessedSystemPrompt(
@@ -117,7 +127,7 @@ export async function getProcessedSystemPrompt(
 
         const strategy = thinkingStrategies[thinkingMode];
         if (strategy) {
-            thinkingInstructions = `<reasoning_protocol>\nEnclose all reasoning, analysis, and self-correction in <thinking> tags. This internal process is hidden from the user but critical for quality.\n\nProcess: ${strategy}\n</reasoning_protocol>\n\n`;
+            thinkingInstructions = `<reasoning_protocol>\nEnclose all reasoning, analysis, and self-correction in <thinking> or <analysis> tags. This internal process is hidden from the user but critical for quality.\n\nProcess: ${strategy}\n</reasoning_protocol>\n\n`;
         }
     }
 
@@ -155,31 +165,52 @@ relative/path/to/file.ext
 
 **Requirements:**
 - SEARCH block must match file content exactly (including whitespace)
-- For new files, provide full content in code block with "File: path/to/file" header
+- For new files, provide full content in code block with \`language:path/to/file\` header
 - Do not wrap block markers in markdown code fences`;
 
             } else if (allowed.fullFile) {
-                formatInstructions = `### File Modification Format (Legacy)
+formatInstructions = `### File Creation/Modification Format
 
-File: relative/path/to/file.ext
-\`\`\`language
-[Complete file content from first to last line]
+When you need to create or modify a file, you MUST output a code block using this structure:
+
+1. Start with three backticks: \`\`\`
+2. Immediately after (no space), write: language:path
+3. Press enter and write the complete file content
+4. End with three backticks: \`\`\`
+
+**Template to follow:**
+\`\`\`language:relative/path/to/file.ext
+[complete file content here]
 \`\`\`
 
-**Critical Requirements:**
-- "File:" line must be plain text (not in code block)
-- Provide COMPLETE file content - every single line
-- Never use placeholders like "// ... rest as before"
-- Missing lines = broken file = broken project`;
-            }
+**Real example:**
+\`\`\`python:src/config.py
+"""Configuration for the app."""
+
+DEBUG = True
+PORT = 8000
+\`\`\`
+
+**RULES:**
+- Always wrap file content in a code block (three backticks)
+- The first line after opening backticks must be: language:path
+- Include ALL file content, no placeholders
+- Do not write "Now I will modify..." - just output the code block
+- Do not explain before the code block - output it first, then explain if needed
+
+**Your response should look like:**
+\`\`\`python:src/myfile.py
+# complete code here
+\`\`\`
+
+That's the file updated! [optional explanation]`;           }
 
             // Add optional modification formats
             let additionalFormats = '';
             if (allowed.insert) {
                 additionalFormats += `\n### Insert Code
 
-Insert: relative/path/to/file.ext
-\`\`\`language
+\`\`\`insert:relative/path/to/file.ext
 <<<<
 [Context lines to locate insertion point]
 ====
@@ -191,8 +222,7 @@ Insert: relative/path/to/file.ext
             if (allowed.replace) {
                 additionalFormats += `\n### Replace Code
 
-Replace: relative/path/to/file.ext
-\`\`\`language
+\`\`\`replace:relative/path/to/file.ext
 <<<<
 [Exact original code to replace]
 ====
@@ -206,8 +236,7 @@ Note: Original code must match exactly or operation fails`;
             if (allowed.delete) {
                 additionalFormats += `\n### Delete Code
 
-DeleteCode: relative/path/to/file.ext
-\`\`\`language
+\`\`\`delete_code:relative/path/to/file.ext
 <<<<
 [Exact code to delete]
 >>>>
@@ -219,17 +248,17 @@ Note: Code must match exactly or operation fails`;
             // File operations
             let fileOperations = '';
             if (!capabilities || capabilities.fileRename) {
-                fileOperations += '- **Rename/Move:** ``````\n';
+                fileOperations += '- **Rename/Move:** `<rename old="old/path.ext" new="new/path.ext" />`\n';
             }
             if (!capabilities || capabilities.fileDelete) {
-                fileOperations += '- **Delete File:** ``````\n';
+                fileOperations += '- **Delete File:** `<delete path="path/to/file.ext" />`\n';
             }
             if (!capabilities || capabilities.fileSelect) {
-                fileOperations += '- **Add to Context:** ``````\n';
+                fileOperations += '- **Add to Context:** `<select path="path/to/file.ext" />`\n';
             }
 
             if (fileOperations) {
-                additionalFormats += `\n### File Operations\n${fileOperations}`;
+                additionalFormats += `\n### File Operations\nUse standard XML style for file management:\n${fileOperations}`;
             }
 
             // Search capability
@@ -256,16 +285,23 @@ You are a Senior VSCode Engineering Assistant with expertise in software archite
 
 ${thinkingInstructions}# Response Structure
 
-1. **Start with explanation** - Describe what you're doing and why before any code
+1. **Start with explanation and analysis** - Use \`<analysis>\` tags to share your findings and logic before any code
 2. **Teach concepts** - Help the developer understand architecture and design decisions
-3. **Follow exact formats** - Deviation from specified formats breaks the parser
+3. **Format Strictness** - Use EXCLUSIVELY the formats defined below.
 4. **Maintain file integrity** - When replacing full files, include every single line
+
+# Strict Format Enforcement (CRITICAL)
+
+You must use **EXCLUSIVELY** one of the supported file modification formats defined above.
+❌ **DO NOT** produce standard git patches (e.g., lines starting with \`--- a/file\` or \`+++ b/file\`).
+❌ **DO NOT** produce unified diffs.
+❌ **DO NOT** use generic code blocks without the \`language:path\` header if the code is meant to be written to a file.
 
 ${formatInstructions}${additionalFormats}${searchCapability}${imageGenCapability}
 
 # Core Principles
 
-- Explanation before code - never output code blocks without context
+- Analysis before action - never output code blocks without context
 - Format compliance is mandatory - exact syntax required
 - Full file replacements must be complete - no shortcuts or omissions
 - Clear, concise, pedagogical communication`;
@@ -284,7 +320,8 @@ ${thinkingInstructions}# Core Principles
 - Verify success/failure from actual responses
 - Never assume operations succeeded without confirmation
 - Report errors clearly when they occur
-- Complete tasks step-by-step with verification at each stage`;
+- Complete tasks step-by-step with verification at each stage
+- **STRICT FORMATTING:** Never use git patches or diffs. Use the provided tools (e.g. \`generate_code\`) or format instructions strictly.`;
             break;
 
         case 'inspector':
@@ -387,7 +424,7 @@ type(scope): concise description
 }
 
 export function stripThinkingTags(responseText: string): string {
-    const thinkRegex = /<(think|thinking)>[\s\S]*?<\/\1>/g;
+    const thinkRegex = /<(think|thinking|analysis)>[\s\S]*?<\/\1>/g;
     return responseText.replace(thinkRegex, '').trim();
 }
 

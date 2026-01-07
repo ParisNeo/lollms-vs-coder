@@ -3,6 +3,7 @@ import { LollmsAPI, LollmsConfig } from '../lollmsAPI';
 import { Logger } from '../logger';
 import { ProcessManager } from '../processManager';
 import { PersonalityManager } from '../personalityManager';
+import { HerdParticipant } from '../utils';
 
 export class SettingsPanel {
   public static currentPanel: SettingsPanel | undefined;
@@ -49,12 +50,16 @@ export class SettingsPanel {
     autoUpdateChangelog: false,
     autoGenerateTitle: true,
     addPedagogicalInstruction: false,
+    clipboardInsertRole: 'user', 
     companionEnableWebSearch: false,
     companionEnableArxivSearch: false,
     userInfoName: '',
     userInfoEmail: '',
     userInfoLicense: '',
-    userInfoCodingStyle: ''
+    userInfoCodingStyle: '',
+    // Herd Mode
+    herdParticipants: [] as HerdParticipant[],
+    herdRounds: 2
   };
 
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, processManager: ProcessManager, personalityManager: PersonalityManager) {
@@ -126,6 +131,7 @@ export class SettingsPanel {
     this._pendingConfig.autoUpdateChangelog = config.get<boolean>('autoUpdateChangelog') || false;
     this._pendingConfig.autoGenerateTitle = config.get<boolean>('autoGenerateTitle') ?? true;
     this._pendingConfig.addPedagogicalInstruction = config.get<boolean>('addPedagogicalInstruction') ?? false;
+    this._pendingConfig.clipboardInsertRole = config.get<string>('clipboardInsertRole') || 'user';
     
     this._pendingConfig.companionEnableWebSearch = config.get<boolean>('companion.enableWebSearch') || false;
     this._pendingConfig.companionEnableArxivSearch = config.get<boolean>('companion.enableArxivSearch') || false;
@@ -133,6 +139,10 @@ export class SettingsPanel {
     this._pendingConfig.userInfoEmail = config.get<string>('userInfo.email') || '';
     this._pendingConfig.userInfoLicense = config.get<string>('userInfo.license') || 'MIT';
     this._pendingConfig.userInfoCodingStyle = config.get<string>('userInfo.codingStyle') || '';
+    
+    // Load Herd Mode settings
+    this._pendingConfig.herdParticipants = config.get<HerdParticipant[]>('herdParticipants') || [];
+    this._pendingConfig.herdRounds = config.get<number>('herdRounds') || 2;
 
     this._panel.webview.html = this._getHtml(this._panel.webview, this._pendingConfig);
     this._setWebviewMessageListener(this._panel.webview);
@@ -250,12 +260,17 @@ export class SettingsPanel {
                 await config.update('autoUpdateChangelog', this._pendingConfig.autoUpdateChangelog, vscode.ConfigurationTarget.Global);
                 await config.update('autoGenerateTitle', this._pendingConfig.autoGenerateTitle, vscode.ConfigurationTarget.Global);
                 await config.update('addPedagogicalInstruction', this._pendingConfig.addPedagogicalInstruction, vscode.ConfigurationTarget.Global);
+                await config.update('clipboardInsertRole', this._pendingConfig.clipboardInsertRole, vscode.ConfigurationTarget.Global);
                 await config.update('companion.enableWebSearch', this._pendingConfig.companionEnableWebSearch, vscode.ConfigurationTarget.Global);
                 await config.update('companion.enableArxivSearch', this._pendingConfig.companionEnableArxivSearch, vscode.ConfigurationTarget.Global);
                 await config.update('userInfo.name', this._pendingConfig.userInfoName, vscode.ConfigurationTarget.Global);
                 await config.update('userInfo.email', this._pendingConfig.userInfoEmail, vscode.ConfigurationTarget.Global);
                 await config.update('userInfo.license', this._pendingConfig.userInfoLicense, vscode.ConfigurationTarget.Global);
                 await config.update('userInfo.codingStyle', this._pendingConfig.userInfoCodingStyle, vscode.ConfigurationTarget.Global);
+                
+                // Save Herd Mode settings
+                await config.update('herdParticipants', this._pendingConfig.herdParticipants, vscode.ConfigurationTarget.Global);
+                await config.update('herdRounds', this._pendingConfig.herdRounds, vscode.ConfigurationTarget.Global);
   
                 vscode.window.showInformationMessage(vscode.l10n.t({ key: 'info.configSaved', message: 'Configuration saved. Recreating LollmsAPI...' }));
                 await vscode.commands.executeCommand('lollmsApi.recreateClient');
@@ -311,12 +326,17 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, thinkingMode, outputFormat, allowedFileFormats, thinkingModeCustomPrompt, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle } = config;
+    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, thinkingMode, outputFormat, allowedFileFormats, thinkingModeCustomPrompt, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, clipboardInsertRole, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle, herdParticipants, herdRounds } = config;
 
     const t = (key: string, def: string) => vscode.l10n.t({ message: def, key: key });
     
     const personalities = this._personalityManager.getPersonalities();
     const personalitiesJson = JSON.stringify(personalities)
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/</g, '\\u003c');
+    
+    const participantsJson = JSON.stringify(herdParticipants)
         .replace(/\\/g, '\\\\')
         .replace(/'/g, "\\'")
         .replace(/</g, '\\u003c');
@@ -420,6 +440,21 @@ export class SettingsPanel {
               
               .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 5px; }
 
+              /* Herd Mode Styles */
+              .participant-row {
+                  display: flex;
+                  gap: 10px;
+                  align-items: center;
+                  margin-bottom: 8px;
+                  background-color: var(--vscode-editorWidget-background);
+                  padding: 8px;
+                  border-radius: 4px;
+                  border: 1px solid var(--vscode-widget-border);
+              }
+              .participant-row select { flex: 1; }
+              .remove-btn { width: auto; background-color: var(--vscode-errorForeground); padding: 6px 10px; color: white; }
+              .remove-btn:hover { opacity: 0.8; background-color: var(--vscode-errorForeground); }
+
               @keyframes spin { 100% { transform: rotate(360deg); } }
               .spin { animation: spin 1s linear infinite; }
             </style>
@@ -433,6 +468,7 @@ export class SettingsPanel {
               <button class="tab-link" onclick="openTab(event, 'TabGeneral')">General</button>
               <button class="tab-link" onclick="openTab(event, 'TabContext')">Context</button>
               <button class="tab-link" onclick="openTab(event, 'TabAgent')">Agent & Tools</button>
+              <button class="tab-link" onclick="openTab(event, 'TabHerd')">Herd Mode</button>
               <button class="tab-link" onclick="openTab(event, 'TabPersonas')">Personas</button>
               <button class="tab-link" onclick="openTab(event, 'TabUser')">User Info</button>
               <button class="tab-link" onclick="openTab(event, 'TabAdvanced')">Advanced</button>
@@ -464,7 +500,7 @@ export class SettingsPanel {
               
               <label for="modelSelect">${t('config.modelName.label', 'Chat Model')}</label>
               <div class="input-group">
-                  <select id="modelSelect"></select>
+                  <select id="modelSelect" class="model-dropdown"></select>
                   <button id="refreshModels" type="button" class="icon-btn" title="${t('command.refresh.title', 'Refresh')}"><i class="codicon codicon-refresh"></i></button>
               </div>
               
@@ -558,11 +594,17 @@ export class SettingsPanel {
                   <input type="checkbox" id="autoGenerateTitle" ${autoGenerateTitle ? 'checked' : ''}>
                   <label for="autoGenerateTitle">Auto-generate discussion titles</label>
               </div>
-
+              
               <div class="checkbox-container">
                   <input type="checkbox" id="addPedagogicalInstruction" ${addPedagogicalInstruction ? 'checked' : ''}>
                   <label for="addPedagogicalInstruction">Add Pedagogical Instruction (Hidden)</label>
               </div>
+
+              <label for="clipboardInsertRole">Clipboard Paste Role</label>
+              <select id="clipboardInsertRole">
+                <option value="user" ${clipboardInsertRole === 'user' ? 'selected' : ''}>User Message</option>
+                <option value="assistant" ${clipboardInsertRole === 'assistant' ? 'selected' : ''}>Assistant Message (Context)</option>
+              </select>
             </div>
 
             <!-- Context -->
@@ -592,7 +634,7 @@ export class SettingsPanel {
               
               <label for="inspectorModelName">${t('config.inspectorModelName.label', 'Inspector Model Name')}</label>
               <div class="input-group">
-                  <select id="inspectorModelName"></select>
+                  <select id="inspectorModelName" class="model-dropdown"></select>
                   <button id="refreshInspectorModels" type="button" class="icon-btn" title="${t('command.refresh.title', 'Refresh')}"><i class="codicon codicon-refresh"></i></button>
               </div>
 
@@ -611,6 +653,23 @@ export class SettingsPanel {
                   <input type="checkbox" id="companionEnableArxivSearch" ${companionEnableArxivSearch ? 'checked' : ''}>
                   <label for="companionEnableArxivSearch">Enable ArXiv Search in Companion</label>
               </div>
+            </div>
+
+            <!-- Herd Mode -->
+            <div id="TabHerd" class="tab-content">
+              <h2>Herd Mode 🐂</h2>
+              <p class="help-text">Configure participants for multi-model brainstorming sessions.</p>
+              
+              <label for="herdRounds">Number of Rounds</label>
+              <input type="number" id="herdRounds" value="${herdRounds}" min="1" max="10" />
+
+              <h3>Participants</h3>
+              <div id="herd-participants-list">
+                  <!-- Rows injected by JS -->
+              </div>
+              <button id="addParticipantBtn" class="secondary-button" style="margin-top:10px;">
+                  <i class="codicon codicon-add"></i> Add Participant
+              </button>
             </div>
 
             <!-- Personas -->
@@ -679,6 +738,14 @@ export class SettingsPanel {
                 personalities = JSON.parse('${personalitiesJson}');
             } catch (e) {}
 
+            let herdParticipants = [];
+            try {
+                herdParticipants = JSON.parse('${participantsJson}');
+            } catch (e) {}
+
+            // Store loaded models to repopulate dynamic lists
+            let loadedModels = [];
+
             function openTab(evt, tabName) {
                 var i, tabcontent, tablinks;
                 tabcontent = document.getElementsByClassName("tab-content");
@@ -705,6 +772,90 @@ export class SettingsPanel {
                         opt.text = p.name;
                         select.appendChild(opt);
                     });
+                });
+                
+                // Also update dynamic herd participant dropdowns
+                const herdSelects = document.querySelectorAll('.herd-persona-select');
+                herdSelects.forEach(select => {
+                    const currentVal = select.value;
+                    select.innerHTML = '';
+                    personalities.forEach(p => {
+                        const opt = document.createElement('option');
+                        opt.value = p.id;
+                        opt.text = p.name;
+                        select.appendChild(opt);
+                    });
+                    select.value = currentVal;
+                });
+            }
+
+            function populateModelDropdown(selectElement, selectedValue) {
+                selectElement.innerHTML = '';
+                if (loadedModels.length > 0) {
+                    if (selectElement.id === 'inspectorModelName') {
+                        const emptyOption = document.createElement('option');
+                        emptyOption.value = "";
+                        emptyOption.text = "Same as Chat Model (Default)";
+                        selectElement.appendChild(emptyOption);
+                    }
+                    loadedModels.forEach(model => {
+                        const option = document.createElement('option');
+                        option.value = model.id;
+                        option.text = model.id;
+                        selectElement.appendChild(option);
+                    });
+                    if (selectedValue) selectElement.value = selectedValue;
+                } else {
+                    const noModelsOption = document.createElement('option');
+                    noModelsOption.value = selectedValue;
+                    noModelsOption.text = selectedValue || "Loading...";
+                    selectElement.appendChild(noModelsOption);
+                }
+            }
+
+            function renderHerdParticipants() {
+                const container = document.getElementById('herd-participants-list');
+                container.innerHTML = '';
+                
+                herdParticipants.forEach((p, index) => {
+                    const row = document.createElement('div');
+                    row.className = 'participant-row';
+                    
+                    const modelSelect = document.createElement('select');
+                    modelSelect.className = 'herd-model-select';
+                    populateModelDropdown(modelSelect, p.model);
+                    modelSelect.onchange = (e) => {
+                        herdParticipants[index].model = e.target.value;
+                        postTempUpdate('herdParticipants', herdParticipants);
+                    };
+
+                    const personaSelect = document.createElement('select');
+                    personaSelect.className = 'herd-persona-select';
+                    personalities.forEach(person => {
+                        const opt = document.createElement('option');
+                        opt.value = person.id;
+                        opt.text = person.name;
+                        personaSelect.appendChild(opt);
+                    });
+                    personaSelect.value = p.personality;
+                    personaSelect.onchange = (e) => {
+                        herdParticipants[index].personality = e.target.value;
+                        postTempUpdate('herdParticipants', herdParticipants);
+                    };
+
+                    const removeBtn = document.createElement('button');
+                    removeBtn.className = 'remove-btn icon-btn';
+                    removeBtn.innerHTML = '<i class="codicon codicon-trash"></i>';
+                    removeBtn.onclick = () => {
+                        herdParticipants.splice(index, 1);
+                        renderHerdParticipants();
+                        postTempUpdate('herdParticipants', herdParticipants);
+                    };
+
+                    row.appendChild(modelSelect);
+                    row.appendChild(personaSelect);
+                    row.appendChild(removeBtn);
+                    container.appendChild(row);
                 });
             }
 
@@ -742,8 +893,10 @@ export class SettingsPanel {
                     autoUpdateChangelog: document.getElementById('autoUpdateChangelog'),
                     autoGenerateTitle: document.getElementById('autoGenerateTitle'),
                     addPedagogicalInstruction: document.getElementById('addPedagogicalInstruction'),
+                    clipboardInsertRole: document.getElementById('clipboardInsertRole'),
                     companionEnableWebSearch: document.getElementById('companionEnableWebSearch'),
-                    companionEnableArxivSearch: document.getElementById('companionEnableArxivSearch')
+                    companionEnableArxivSearch: document.getElementById('companionEnableArxivSearch'),
+                    herdRounds: document.getElementById('herdRounds')
                 };
 
                 const formatFields = {
@@ -772,6 +925,12 @@ export class SettingsPanel {
                     icon.classList.add('codicon-sync', 'spin');
                     btn.disabled = true;
                     vscode.postMessage({ command: 'testConnection' });
+                });
+
+                document.getElementById('addParticipantBtn').addEventListener('click', () => {
+                    herdParticipants.push({ model: currentModelName, personality: 'default_coder' });
+                    renderHerdParticipants();
+                    postTempUpdate('herdParticipants', herdParticipants);
                 });
 
                 function postTempUpdate(key, value) {
@@ -818,6 +977,7 @@ export class SettingsPanel {
                 document.getElementById('createPersonalityBtn').addEventListener('click', () => vscode.postMessage({ command: 'createPersonality' }));
 
                 updatePersonalityDropdowns();
+                renderHerdParticipants();
                 
                 document.querySelectorAll('.persona-select').forEach(select => {
                     select.addEventListener('change', (e) => {
@@ -836,31 +996,21 @@ export class SettingsPanel {
                 window.addEventListener('message', event => {
                     const message = event.data;
                     if (message.command === 'modelsList') {
-                        const createOptions = (selectElement, selectedValue) => {
-                            selectElement.innerHTML = '';
-                            if (Array.isArray(message.models) && message.models.length > 0) {
-                                if (selectElement === inspectorModelSelect) {
-                                    const emptyOption = document.createElement('option');
-                                    emptyOption.value = "";
-                                    emptyOption.text = "Same as Chat Model (Default)";
-                                    selectElement.appendChild(emptyOption);
-                                }
-                                message.models.forEach(model => {
-                                    const option = document.createElement('option');
-                                    option.value = model.id;
-                                    option.text = model.id;
-                                    if (model.id === selectedValue) option.selected = true;
-                                    selectElement.appendChild(option);
-                                });
-                            } else {
-                                const noModelsOption = document.createElement('option');
-                                noModelsOption.value = selectedValue;
-                                noModelsOption.text = selectedValue || "No models found";
-                                selectElement.appendChild(noModelsOption);
-                            }
-                        };
-                        createOptions(chatModelSelect, currentModelName);
-                        createOptions(inspectorModelSelect, currentInspectorModelName);
+                        if (Array.isArray(message.models) && message.models.length > 0) {
+                            loadedModels = message.models;
+                        } else {
+                            loadedModels = [];
+                        }
+                        populateModelDropdown(chatModelSelect, currentModelName);
+                        populateModelDropdown(inspectorModelSelect, currentInspectorModelName);
+                        
+                        // Update herd dropdowns
+                        const herdSelects = document.querySelectorAll('.herd-model-select');
+                        herdSelects.forEach((sel, idx) => {
+                            const currentVal = herdParticipants[idx]?.model;
+                            populateModelDropdown(sel, currentVal);
+                        });
+
                     } else if (message.command === 'updateCertPath') {
                         fields.sslCertPath.value = message.path;
                     } else if (message.command === 'testConnectionResult') {

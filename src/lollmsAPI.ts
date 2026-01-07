@@ -21,6 +21,7 @@ export interface ChatMessage {
   content: string | any[];
   startTime?: number;
   model?: string;
+  skipInPrompt?: boolean;
 }
 
 export interface TokenizeResponse {
@@ -442,18 +443,26 @@ export class LollmsAPI {
     let chatUrl = '';
     let body: any = {};
 
+    // Filter out messages marked skipInPrompt if the caller didn't do it (safety check)
+    // NOTE: Usually caller handles this, but we can double check or rely on caller.
+    // Given the caller (ChatPanel) constructs the array, we assume the array passed here is already filtered or prepared.
+    // However, if we want to be safe, we can filter here. But `messages` might contain history that *should* be sent.
+    // The requirement was "doesn't get sent to the llms when generating".
+    // So any message with skipInPrompt=true should be removed from the payload.
+    const filteredMessages = messages.filter(m => !m.skipInPrompt);
+
     if (this.config.backendType === 'ollama') {
         chatUrl = `${this.baseUrl}/api/chat`;
         body = {
             model: modelToSend,
-            messages: messages.map(m => ({ role: m.role, content: m.content })),
+            messages: filteredMessages.map(m => ({ role: m.role, content: m.content })),
             stream: stream
         };
     } else {
         chatUrl = `${this.baseUrl}/v1/chat/completions`;
         body = {
             model: modelToSend,
-            messages: messages.map(({ id, startTime, model, ...rest }) => rest),
+            messages: filteredMessages.map(({ id, startTime, model, skipInPrompt, ...rest }) => rest),
             stream: stream
         };
     }
@@ -525,12 +534,8 @@ export class LollmsAPI {
                     throw new AbortError('Request was aborted');
                 }
 
-                // --- NEW DEBUG LOGGING ---
                 const chunkText = decoder.decode(chunk as any, { stream: true });
-                Logger.debug(`[Raw Chunk] ${chunkText.length} bytes`); // Log size to avoid clutter
-                // Uncomment below for verbose content logging:
-                // Logger.debug(`[Raw Chunk Content]: ${chunkText}`); 
-                // -------------------------
+                Logger.debug(`[Raw Chunk] ${chunkText.length} bytes`); 
 
                 buffer += chunkText;
                 const lines = buffer.split('\n');

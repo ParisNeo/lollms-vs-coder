@@ -13,6 +13,8 @@ import { ScriptRunner } from './scriptRunner';
 import { QuickEditManager } from './quickEditManager';
 import { InlineDiffProvider } from './commands/inlineDiffProvider';
 import { WorkflowManager } from './workflow/workflowManager';
+import { DiffManager } from './diffManager';
+import { HerdManager } from './herdManager';
 
 export interface LollmsServices {
     extensionUri: vscode.Uri;
@@ -30,6 +32,8 @@ export interface LollmsServices {
     quickEditManager: QuickEditManager;
     workflowManager: WorkflowManager;
     inlineDiffProvider: InlineDiffProvider;
+    diffManager: DiffManager;
+    herdManager: HerdManager;
     
     // Providers needed for refreshing
     treeProviders: {

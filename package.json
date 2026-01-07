@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.54",
+  "version": "0.5.56",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -27,6 +27,16 @@
   ],
   "contributes": {
     "commands": [
+      {
+        "command": "lollms-vs-coder.acceptDiff",
+        "title": "Accept AI Changes",
+        "icon": "$(check)"
+      },
+      {
+        "command": "lollms-vs-coder.rejectDiff",
+        "title": "Reject AI Changes",
+        "icon": "$(close)"
+      },      
       {
         "command": "lollms-vs-coder.startChat",
         "title": "%command.startChat.title%"
@@ -413,6 +423,11 @@
         "icon": "$(clear-all)"
       },
       {
+        "command": "lollms-vs-coder.fullResetContext",
+        "title": "Lollms: Full Context Reset",
+        "icon": "$(trash)"
+      },
+      {
         "command": "lollms-vs-coder.sendSelectionToNewDiscussion",
         "title": "%command.sendSelectionToNewDiscussion.title%",
         "icon": "$(comment-add)"
@@ -508,6 +523,19 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically generate a title using AI when creating a new discussion from clipboard."
+        },
+        "lollmsVsCoder.clipboardInsertRole": {
+          "type": "string",
+          "default": "user",
+          "description": "Role to use when pasting clipboard content into a new discussion.",
+          "enum": [
+            "user",
+            "assistant"
+          ],
+          "enumDescriptions": [
+            "Paste as User Message",
+            "Paste as Assistant Message (Context)"
+          ]
         },
         "lollmsVsCoder.addPedagogicalInstruction": {
           "type": "boolean",
@@ -792,6 +820,11 @@
         {
           "id": "lollmsCodeExplorerView",
           "name": "%view.codeExplorer.name%",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "id": "lollmsWorkflowsView",
+          "name": "Workflows",
           "when": "workspaceFolderCount > 0"
         },
         {

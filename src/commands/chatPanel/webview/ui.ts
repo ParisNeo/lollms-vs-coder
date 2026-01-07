@@ -10,6 +10,11 @@ export function setGeneratingState(isGenerating: boolean) {
 
     if(dom.agentModeCheckbox) dom.agentModeCheckbox.disabled = isGenerating;
     if(dom.agentModeToggle) dom.agentModeToggle.classList.toggle('disabled', isGenerating);
+    
+    // Also toggle Auto Context
+    if(dom.autoContextCheckbox) dom.autoContextCheckbox.disabled = isGenerating;
+    if(dom.autoContextToggle) dom.autoContextToggle.classList.toggle('disabled', isGenerating);
+
     if(dom.modelSelector) dom.modelSelector.disabled = isGenerating;
     if(dom.attachButton) dom.attachButton.disabled = isGenerating;
     if(dom.executeButton) dom.executeButton.disabled = isGenerating;

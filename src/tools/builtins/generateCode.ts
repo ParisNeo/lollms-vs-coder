@@ -13,6 +13,7 @@ async function getCoderSystemPrompt(customPrompt: string, planObjective: string,
 2.  **NO EXTRA TEXT:** Do not add any explanations, comments, or conversational text outside of the code block.
 3.  **COMPLETE FILE:** Your output must be the full and complete code for the file, not just the changed parts.
 4.  **NO PLACEHOLDERS:** Do not use placeholders like "...".
+5.  **NO PATCHES:** You are strictly forbidden from generating git patches, unified diffs, or using formats like \`--- a/file\`. You must output the full file content using the standard markdown block format (\`\`\`language\\ncontent\\n\`\`\`).
 **CUSTOM INSTRUCTIONS FOR THIS TASK:**
 ${customPrompt}
 **CONTEXT FOR YOUR TASK:**
@@ -130,7 +131,8 @@ Example Output:
         // --- STEP 3: GENERATE CODE ---
         const responseText = await env.lollmsApi.sendChat([coderSystemPrompt, coderUserPrompt], null, signal, modelOverride);
 
-        const codeBlockRegex = /```(?:[\w-]*)\n([\s\S]+?)\n```/s;
+        // Updated regex to support `language:path` header syntax
+        const codeBlockRegex = /```(?:[^\n]*)\n([\s\S]+?)\n```/s;
         const match = responseText.match(codeBlockRegex);
         const generatedCode = match ? match[1].trim() : responseText.trim();
 

@@ -42,7 +42,6 @@ export const dom = {
     get personalitySelector() { return document.getElementById('personality-selector') as HTMLSelectElement; },
     get messagesDiv() { return document.getElementById('messages') as HTMLDivElement; },
     get chatMessagesContainer() { return document.getElementById('chat-messages-container') as HTMLDivElement; },
-    get thinkingIndicator() { return document.getElementById('thinking-indicator') as HTMLDivElement; },
     get webSearchIndicator() { return document.getElementById('websearch-indicator') as HTMLDivElement; },
     get messageInput() { return document.getElementById('messageInput') as HTMLTextAreaElement; },
     get sendButton() { return document.getElementById('sendButton') as HTMLButtonElement; },
@@ -57,8 +56,17 @@ export const dom = {
     get debugRestartButton() { return document.getElementById('debugRestartButton') as HTMLButtonElement; },
     get showDebugLogButton() { return document.getElementById('showDebugLogButton') as HTMLButtonElement; },
     get fileInput() { return document.getElementById('fileInput') as HTMLInputElement; },
+    
+    // Updated Selectors for New Menu
     get agentModeCheckbox() { return document.getElementById('agentModeCheckbox') as HTMLInputElement; },
-    get agentModeToggle() { return document.querySelector('.agent-mode-toggle') as HTMLLabelElement; },
+    get autoContextCheckbox() { return document.getElementById('autoContextCheckbox') as HTMLInputElement; },
+    get herdModeCheckbox() { return document.getElementById('herdModeCheckbox') as HTMLInputElement; },
+    get activeBadges() { return document.getElementById('active-badges') as HTMLDivElement; },
+    
+    // Submenu Triggers
+    get subMenuTriggers() { return document.querySelectorAll('.has-submenu'); },
+    get backButtons() { return document.querySelectorAll('.back-btn'); },
+    
     get modelSelector() { return document.getElementById('model-selector') as HTMLSelectElement; },
     get refreshModelsBtn() { return document.getElementById('refresh-models-btn') as HTMLButtonElement; },
     get contextContainer() { return document.getElementById('context-container') as HTMLDivElement; },
@@ -122,12 +130,16 @@ export const dom = {
     get capImageGen() { return document.getElementById('cap-imageGen') as HTMLInputElement; },
     get capWebSearch() { return document.getElementById('cap-webSearch') as HTMLInputElement; },
     get capArxivSearch() { return document.getElementById('cap-arxivSearch') as HTMLInputElement; },
-    // NEW
     get capGitCommit() { return document.getElementById('cap-gitCommit') as HTMLInputElement; },
 
     get modeFunMode() { return document.getElementById('mode-funMode') as HTMLInputElement; },
     get modeHeavyCot() { return document.getElementById('mode-heavyCot') as HTMLInputElement; },
-    // NEW: Thinking Mode Select
     get capThinkingMode() { return document.getElementById('cap-thinkingMode') as HTMLSelectElement; },
-    get inputAreaWrapperDiv() { return document.querySelector('.input-area-wrapper') as HTMLDivElement; }
+    get inputAreaWrapperDiv() { return document.querySelector('.input-area-wrapper') as HTMLDivElement; },
+
+    // Herd Mode Config (In Modal)
+    get capHerdMode() { return document.getElementById('cap-herdMode') as HTMLInputElement; },
+    get capHerdRounds() { return document.getElementById('cap-herdRounds') as HTMLInputElement; },
+    get herdConfigSection() { return document.getElementById('herd-config-section') as HTMLDivElement; },
+    get herdModelsList() { return document.getElementById('herd-models-list') as HTMLDivElement; }
 };

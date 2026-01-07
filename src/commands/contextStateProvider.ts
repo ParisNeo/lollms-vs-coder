@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { minimatch } from 'minimatch';
+import { Logger } from '../logger';
 
 export type ContextState = 'included' | 'tree-only' | 'fully-excluded' | 'collapsed' | 'definitions-only';
 
@@ -42,7 +43,6 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     private stateKey: string;
     
     // Default folders to show as collapsed (content hidden)
-    // Removed __pycache__ as it is now fully excluded
     private defaultCollapsedFolders = new Set([
         'node_modules', 'dist', 'build', 'out', 'bin', 'obj', 'target',
         'venv', '.venv', 'env', '.env', 
@@ -247,16 +247,25 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     }
 
     public async setStateForUris(uris: vscode.Uri[], state: ContextState) {
-        if (uris.length === 0) return;
-    
+        if (uris.length === 0) {
+            Logger.warn("ContextStateProvider: setStateForUris called with empty list.");
+            return;
+        }
+        
+        Logger.info(`ContextStateProvider: Setting state '${state}' for ${uris.length} files.`);
+
         const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
         const allUrisToFire = new Set<string>();
 
         for (const uri of uris) {
             const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
-            if (!workspaceFolder) continue;
+            if (!workspaceFolder) {
+                Logger.warn(`ContextStateProvider: Skipping ${uri.fsPath} (not in workspace)`);
+                continue;
+            }
 
             const relativePath = this.normalize(vscode.workspace.asRelativePath(uri, false));
+            Logger.info(`ContextStateProvider: Updating ${relativePath} -> ${state}`);
             allUrisToFire.add(uri.toString());
 
             const stat = await vscode.workspace.fs.stat(uri);
@@ -353,8 +362,6 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     }
 
     public async getAllVisibleFiles(): Promise<string[]> {
-        // Use the configured workspaceRoot directly instead of finding it in workspaceFolders array by path string equality
-        // This avoids issues with path normalization/case sensitivity
         const rootUri = vscode.Uri.file(this.workspaceRoot);
         const visibleFiles: string[] = [];
     
@@ -392,7 +399,6 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                 if (type === vscode.FileType.Directory) {
                     await processDirectory(entryUri);
                 } else {
-                    // Check if file is explicitly excluded or part of a collapsed/excluded parent
                     const fileState = this.getStateForUri(entryUri);
                     if (fileState !== 'fully-excluded') {
                         visibleFiles.push(entryRelativePath);
@@ -430,8 +436,27 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         this.refresh();
         this._onDidChangeFileDecorations.fire(urisToFire);
     }
-    public async resetState(): Promise<void> {
+
+    public async fullReset(): Promise<void> {
         await this.context.workspaceState.update(this.stateKey, {});
         this.refresh();
+        this._onDidChangeFileDecorations.fire(undefined); 
+    }
+
+    public async softReset(): Promise<void> {
+        const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
+        const newState: { [key: string]: ContextState } = {};
+
+        for (const [key, state] of Object.entries(workspaceState)) {
+            // Keep exclusions and collapsed folders
+            // We strip 'included' and 'definitions-only', reverting them to default (tree-only)
+            if (state === 'fully-excluded' || state === 'collapsed') {
+                newState[key] = state;
+            }
+        }
+
+        await this.context.workspaceState.update(this.stateKey, newState);
+        this.refresh();
+        this._onDidChangeFileDecorations.fire(undefined);
     }
 }

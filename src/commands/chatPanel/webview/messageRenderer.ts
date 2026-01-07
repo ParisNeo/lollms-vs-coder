@@ -298,31 +298,36 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     };
 }
 
-function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | null, path: string }[] {
-    const infos: { type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | null, path: string }[] = [];
+function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | null, path: string, stripFirstLine: boolean }[] {
+    const infos: { type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | null, path: string, stripFirstLine: boolean }[] = [];
     const lines = content.split('\n');
     let inBlock = false;
     let fenceLength = 0;
 
     for (let i = 0; i < lines.length; i++) {
-        const line = lines[i]; 
-        const match = line.match(/^(\s{0,3})(`{3,})/); 
-
-        // 1. Check for XML tags first (as they don't depend on markdown fences)
-        const xmlMatch = line.match(/<file\s+path="([^"]+)">/i);
-        if (xmlMatch && !inBlock) {
-            // Found XML start
-            // Note: The content rendering might not put this into a <pre>, but our enhanceCodeBlocks logic expects <pre>.
-            // However, typical LLM output usually wraps code in ``` or the parser might handle raw XML differently.
-            // But wait, messageRenderer works on rendered HTML. XML tags might be swallowed by marked/DOMPurify unless escaped.
-            // If LLM outputs raw XML, `marked` might treat it as HTML.
-            // If we are here, we are parsing RAW content text.
-            // For now, let's stick to the Legacy/Blocks logic which relies on markdown structure. 
-            // XML handling often requires pre-processing raw text before markdown conversion to wrap it in code blocks or similar.
+        const line = lines[i].trim(); 
+        
+        // XML Tool Check (Individual lines)
+        if (!inBlock) {
+            const xmlRename = line.match(/<rename\s+old=["']([^"']+)["']\s+new=["']([^"']+)["']\s*\/>/i);
+            const xmlDelete = line.match(/<delete\s+path=["']([^"']+)["']\s*\/>/i);
+            const xmlSelect = line.match(/<select\s+path=["']([^"']+)["']\s*\/>/i);
             
-            // Actually, let's keep it simple: We look for the "pre" tags later.
-            // This function is just helping identifying the block type based on previous lines.
+            if (xmlRename) {
+                infos.push({ type: 'rename', path: `${xmlRename[1]} -> ${xmlRename[2]}`, stripFirstLine: false });
+                continue;
+            }
+            if (xmlDelete) {
+                infos.push({ type: 'delete', path: xmlDelete[1], stripFirstLine: false });
+                continue;
+            }
+            if (xmlSelect) {
+                infos.push({ type: 'select', path: xmlSelect[1], stripFirstLine: false });
+                continue;
+            }
         }
+
+        const match = line.match(/^(\s{0,3})(`{3,})/); 
 
         if (match) {
             const currentFenceLength = match[2].length;
@@ -330,52 +335,104 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
             if (!inBlock) {
                 inBlock = true;
                 fenceLength = currentFenceLength;
-
-                let j = i - 1;
-                while (j >= 0 && lines[j].trim() === '') j--; 
                 
-                let type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | null = null;
+                let type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | null = null;
                 let pathStr = '';
+                let stripFirstLine = false;
 
-                if (j >= 0) {
-                    const prevLine = lines[j].trim();
-                    const fileMatch = prevLine.match(/^(?:(?:\*\*|__)?File(?:\*\*|__)?[:\s])\s*(.+)$/i);
-                    const diffMatch = prevLine.match(/^(?:(?:\*\*|__)?Diff(?:\*\*|__)?[:\s])\s*(.+)$/i);
-                    const insertMatch = prevLine.match(/^(?:(?:\*\*|__)?Insert(?:\*\*|__)?[:\s])\s*(.+)$/i);
-                    const replaceMatch = prevLine.match(/^(?:(?:\*\*|__)?Replace(?:\*\*|__)?[:\s])\s*(.+)$/i);
-                    const deleteMatch = prevLine.match(/^(?:(?:\*\*|__)?DeleteCode(?:\*\*|__)?[:\s])\s*(.+)$/i);
+                // Check header for language:path format (New Default)
+                const blockHeader = line.substring(match[0].length).trim();
+                
+                if (blockHeader.includes(':')) {
+                    const parts = blockHeader.split(':');
+                    const prefix = parts[0].toLowerCase();
+                    const p = parts.slice(1).join(':').trim();
+
+                    if (prefix === 'insert') type = 'insert';
+                    else if (prefix === 'replace') type = 'replace';
+                    else if (prefix === 'diff') type = 'diff';
+                    else if (prefix === 'delete_code') type = 'delete';
+                    else if (prefix === 'rename') type = 'rename';
+                    else if (prefix === 'select') type = 'select';
+                    else type = 'file';
                     
-                    // Aider/Gold Standard often just puts the filename on the line before
-                    // We can heuristic this: if the line looks like a file path and the block contains <<<<<<< SEARCH
-                    const looksLikePath = /^[\w-./\\]+\.\w+$/.test(prevLine);
+                    pathStr = p;
+                }
 
-                    if (fileMatch) {
+                // Handling Variants: path on next line (with or without comments)
+                if (!pathStr && i + 1 < lines.length) {
+                    const nextLine = lines[i+1].trim();
+
+                    // Check for language:path format (e.g. python:src/app.py) inside the block
+                    const langPathMatch = nextLine.match(/^([a-zA-Z0-9_+-]+):([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+)$/);
+
+                    if (langPathMatch) {
+                        pathStr = langPathMatch[2];
+                        stripFirstLine = true;
                         type = 'file';
-                        pathStr = fileMatch[1].trim();
-                    } else if (diffMatch) {
-                        type = 'diff';
-                        pathStr = diffMatch[1].trim();
-                    } else if (insertMatch) {
-                        type = 'insert';
-                        pathStr = insertMatch[1].trim();
-                    } else if (replaceMatch) {
-                        type = 'replace';
-                        pathStr = replaceMatch[1].trim();
-                    } else if (deleteMatch) {
-                        type = 'delete';
-                        pathStr = deleteMatch[1].trim();
-                    } else if (looksLikePath) {
-                        // Check inside the block for Aider markers
-                        // We need to peek ahead
-                        let k = i + 1;
-                        let contentPreview = "";
-                        while(k < lines.length && k < i + 5) { // Check first few lines
-                            contentPreview += lines[k] + "\n";
-                            k++;
+                    } else if (!nextLine.startsWith('#!')) {
+                        // Regex checks for common comment prefixes or just plain path text
+                        // Capture groups: 1=CommentPrefix, 2=Path
+                        const pathLineRegex = /^((?:\/\/|#|<!--|;|\/\*|\*)\s*)?([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+)(\s*\S*)?$/;
+                        const matchPath = nextLine.match(pathLineRegex);
+                        
+                        if (matchPath) {
+                            const commentPrefix = matchPath[1];
+                            const potentialPath = matchPath[2];
+                            
+                            // Valid path criteria: must have extension, and if no comment prefix, must look very path-like
+                            // Avoid simple code lines like "console.log" by checking for slashes or explicit comment
+                            if (potentialPath.includes('/') || potentialPath.includes('\\') || (commentPrefix && potentialPath.includes('.'))) {
+                                pathStr = potentialPath;
+                                stripFirstLine = true;
+                                type = 'file'; // Default type if found this way
+                            }
                         }
-                        if (contentPreview.includes("<<<<<<< SEARCH")) {
-                            type = 'replace'; // Reuse replace logic or create new one
-                            pathStr = prevLine.trim();
+                    }
+                }
+
+                // LEGACY: Check previous line for File/Diff/etc labels (Compatibility)
+                if (!pathStr) {
+                    let j = i - 1;
+                    while (j >= 0 && lines[j].trim() === '') j--; 
+
+                    if (j >= 0) {
+                        const prevLine = lines[j].trim();
+                        // Support for File: path/to/file format (Legacy)
+                        const fileMatch = prevLine.match(/^(?:(?:\*\*|__)?File(?:\*\*|__)?[:\s])\s*(.+)$/i);
+                        const diffMatch = prevLine.match(/^(?:(?:\*\*|__)?Diff(?:\*\*|__)?[:\s])\s*(.+)$/i);
+                        const insertMatch = prevLine.match(/^(?:(?:\*\*|__)?Insert(?:\*\*|__)?[:\s])\s*(.+)$/i);
+                        const replaceMatch = prevLine.match(/^(?:(?:\*\*|__)?Replace(?:\*\*|__)?[:\s])\s*(.+)$/i);
+                        const deleteMatch = prevLine.match(/^(?:(?:\*\*|__)?DeleteCode(?:\*\*|__)?[:\s])\s*(.+)$/i);
+                        
+                        const looksLikePath = /^[\w-./\\]+\.\w+$/.test(prevLine);
+
+                        if (fileMatch) {
+                            type = 'file';
+                            pathStr = fileMatch[1].trim();
+                        } else if (diffMatch) {
+                            type = 'diff';
+                            pathStr = diffMatch[1].trim();
+                        } else if (insertMatch) {
+                            type = 'insert';
+                            pathStr = insertMatch[1].trim();
+                        } else if (replaceMatch) {
+                            type = 'replace';
+                            pathStr = replaceMatch[1].trim();
+                        } else if (deleteMatch) {
+                            type = 'delete';
+                            pathStr = deleteMatch[1].trim();
+                        } else if (looksLikePath) {
+                            let k = i + 1;
+                            let contentPreview = "";
+                            while(k < lines.length && k < i + 5) { 
+                                contentPreview += lines[k] + "\n";
+                                k++;
+                            }
+                            if (contentPreview.includes("<<<<<<< SEARCH")) {
+                                type = 'replace'; 
+                                pathStr = prevLine.trim();
+                            }
                         }
                     }
                 }
@@ -387,7 +444,7 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
                     pathStr = pathStr.replace(/[.:]+$/, ''); 
                 }
 
-                infos.push({ type, path: pathStr });
+                infos.push({ type, path: pathStr, stripFirstLine });
             } else {
                 if (currentFenceLength >= fenceLength) {
                     inBlock = false;
@@ -426,11 +483,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
     }
 
     const codeBlockInfos = extractFilePaths(originalContentText);
-    
-    // Manual XML extraction logic since marked/DOMPurify might mess with them
-    // We look for any PRE that wasn't covered by codeBlockInfos but might be inside an XML tag in raw text
-    // Actually, simply supporting the XML format via the parser logic above is hard because the DOM structure differs.
-    // Let's assume the user outputted code blocks inside XML tags if using XML mode, OR we just scan for the XML structure in raw text.
+    let actionableBlockCount = 0;
     
     pres.forEach((pre, index) => {
         const code = pre.querySelector('code');
@@ -440,25 +493,38 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
         const langMatch = code.className.match(/language-(\S+)/);
         let language = langMatch ? langMatch[1] : 'plaintext';
         
-        if (langMap[language.toLowerCase()]) {
-            language = langMap[language.toLowerCase()];
-            code.className = `language-${language}`;
-            pre.className = `language-${language}`;
-        }
-
-        const codeText = code.innerText;
-        const blockId = `code-block-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-        code.id = blockId;
-
-        // Check file info
-        const info = codeBlockInfos[index];
-        let filePath = '';
         let isFileBlock = false;
         let isDiff = false;
         let diffFilePath = '';
         let isInsert = false;
         let isReplace = false;
         let isDeleteCode = false;
+        let filePath = '';
+
+        // Handle language:path format in class name
+        if (language.includes(':')) {
+            const parts = language.split(':');
+            language = parts[0];
+            filePath = parts.slice(1).join(':').trim();
+            isFileBlock = true;
+            
+            // Re-apply correct language class for syntax highlighting
+            code.className = `language-${language}`;
+            pre.className = `language-${language}`;
+        }
+
+        if (langMap[language.toLowerCase()]) {
+            language = langMap[language.toLowerCase()];
+            code.className = `language-${language}`;
+            pre.className = `language-${language}`;
+        }
+
+        let codeText = code.innerText;
+        const blockId = `code-block-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        code.id = blockId;
+
+        // Check metadata from extractFilePaths
+        const info = codeBlockInfos[index];
 
         if (info) {
             if (info.type === 'file') {
@@ -477,6 +543,21 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
                 filePath = info.path;
                 isDeleteCode = true;
             }
+
+            // Count actionable blocks
+            if (info.path && ['file', 'diff', 'insert', 'replace', 'delete'].includes(info.type || '')) {
+                actionableBlockCount++;
+            }
+
+            // Clean up the first line if identified as a path line inside the block
+            if (info.stripFirstLine) {
+                const lines = codeText.split('\n');
+                if (lines.length > 0) {
+                    lines.shift();
+                    codeText = lines.join('\n');
+                    code.textContent = codeText; // Update visual content
+                }
+            }
         } else {
             // Heuristic fallbacks
             if (language === 'diff') {
@@ -488,24 +569,17 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
                     isDiff = true; 
                 }
             } else if (codeText.includes("<<<<<<< SEARCH")) {
-                // Aider Block Detection if regex failed earlier
                 const lines = codeText.split('\n');
                 if (lines[0].includes("<<<<<<< SEARCH")) {
                     isReplace = true;
-                    // Try to find path from previous sibling text node? Hard in DOM.
-                    // rely on info.
                 }
             }
         }
 
-        // XML Mode Support: Check if previous element is a text node ending with <file path="...">
-        // or check if the code block is inside a structure that implies a file.
-        // Simplified approach: If no path found yet, look at the raw text around this block position.
-        // (This is complex to map index to exact DOM position reliably without a full parser)
-
         const prevEl = pre.previousElementSibling as HTMLElement;
         if (prevEl && (prevEl.tagName === 'P' || prevEl.tagName === 'DIV')) {
              const text = prevEl.textContent || "";
+             // Check if previous element contained the file/diff path and hide it to avoid duplication
              if ((isFileBlock && /File/i.test(text)) || 
                  (isDiff && /Diff/i.test(text)) || 
                  (isInsert && /Insert/i.test(text)) ||
@@ -617,7 +691,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             if (actions.firstChild) actions.insertBefore(deleteCodeBtn, actions.firstChild);
             else actions.appendChild(deleteCodeBtn);
 
-        } else if (language === 'rename') {
+        } else if (language === 'rename' || (info && info.type === 'rename')) {
             const renameBtn = createButton('Move/Rename', 'codicon-git-compare', () => {
                 const lines = codeText.trim().split('\n');
                 lines.forEach(line => {
@@ -630,14 +704,14 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             if (actions.firstChild) actions.insertBefore(renameBtn, actions.firstChild);
             else actions.appendChild(renameBtn);
 
-        } else if (language === 'delete') {
+        } else if (language === 'delete' || (info && info.type === 'delete')) {
             const deleteBtn = createButton('Delete Files', 'codicon-trash', () => {
                 vscode.postMessage({ command: 'deleteFile', filePaths: codeText });
             }, 'code-action-btn delete-btn');
             if (actions.firstChild) actions.insertBefore(deleteBtn, actions.firstChild);
             else actions.appendChild(deleteBtn);
 
-        } else if (language === 'select') {
+        } else if (language === 'select' || (info && info.type === 'select')) {
             const selectBtn = createButton('Add to Context', 'codicon-add', () => {
                 selectBtn.innerHTML = `<span class="codicon codicon-sync spin"></span> Adding...`;
                 selectBtn.disabled = true;
@@ -700,6 +774,55 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             Prism.highlightElement(code);
         }
     });
+
+    if (actionableBlockCount > 0) {
+        const contentDiv = container.querySelector('.message-content');
+        if (contentDiv && !contentDiv.querySelector('.apply-all-btn')) {
+            const btn = document.createElement('button');
+            btn.className = 'code-action-btn apply-btn apply-all-btn';
+            btn.innerHTML = '<span class="codicon codicon-check-all"></span> Apply All Changes';
+            btn.style.marginTop = '12px';
+            btn.style.width = '100%';
+            btn.style.justifyContent = 'center';
+            btn.style.padding = '6px';
+            btn.style.fontSize = '12px';
+            btn.style.fontWeight = '600';
+            
+            btn.onclick = () => {
+                const changes: any[] = [];
+                const pres = container.querySelectorAll('pre');
+                pres.forEach((pre, index) => {
+                    const code = pre.querySelector('code');
+                    if (!code) return;
+                    const info = codeBlockInfos[index];
+                    if (info && info.path && ['file', 'diff', 'insert', 'replace', 'delete'].includes(info.type || '')) {
+                        changes.push({
+                            type: info.type,
+                            path: info.path,
+                            content: code.innerText
+                        });
+                    }
+                });
+                
+                if(changes.length > 0) {
+                    vscode.postMessage({ command: 'applyAllChanges', changes });
+                    
+                    const originalContent = btn.innerHTML;
+                    btn.innerHTML = '<span class="codicon codicon-sync spin"></span> Applying...';
+                    btn.disabled = true;
+                    
+                    setTimeout(() => {
+                        btn.innerHTML = '<span class="codicon codicon-check"></span> Applied';
+                        setTimeout(() => {
+                            btn.innerHTML = originalContent;
+                            btn.disabled = false;
+                        }, 3000);
+                    }, 1000);
+                }
+            };
+            contentDiv.appendChild(btn);
+        }
+    }
 }
 
 function enhanceWithCommandButtons(container: HTMLElement) {
@@ -732,12 +855,13 @@ function enhanceWithCommandButtons(container: HTMLElement) {
     content.innerHTML = newHtml;
 }
 
-export function processThinkTags(content: string): { thoughts: string[], processedContent: string } {
-    const thoughts: string[] = [];
+export function processThinkTags(content: string): { thoughts: { tag: string, content: string }[], processedContent: string } {
+    const thoughts: { tag: string, content: string }[] = [];
     if (typeof content !== 'string') return { thoughts, processedContent: '' };
-    const thinkRegex = /<(think|thinking)>([\s\S]*?)<\/\1>/g;
+    
+    const thinkRegex = /<(think|thinking|analysis)>([\s\S]*?)<\/\1>/g;
     const processedContent = content.replace(thinkRegex, (match, tag, thoughtContent) => {
-        thoughts.push(thoughtContent);
+        thoughts.push({ tag, content: thoughtContent });
         return '';
     });
     return { thoughts, processedContent: processedContent.trim() };
@@ -781,26 +905,39 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             thoughts.forEach(thought => {
                 const thinkDiv = document.createElement('div');
                 thinkDiv.className = 'plan-scratchpad'; 
-                const title = "Deep Thinking Process";
+                
+                let title = "AI Reasoning Process";
+                let icon = "codicon-beaker";
+
+                if (thought.tag === 'analysis') {
+                    title = "AI Analysis & Insights";
+                    icon = "codicon-search";
+                }
+
                 thinkDiv.innerHTML = `
                     <details ${isFinal ? '' : 'open'}>
-                        <summary class="scratchpad-header"><span class="codicon codicon-beaker"></span> ${title}</summary>
-                        <div class="scratchpad-content">${sanitizer.sanitize(marked.parse(thought) as string, SANITIZE_CONFIG)}</div>
+                        <summary class="scratchpad-header"><span class="codicon ${icon}"></span> ${title}</summary>
+                        <div class="scratchpad-content">${sanitizer.sanitize(marked.parse(thought.content) as string, SANITIZE_CONFIG)}</div>
                     </details>`;
                 if (contentDiv.parentNode) {
                     contentDiv.parentNode.insertBefore(thinkDiv, contentDiv);
                 }
             });
             
-            // XML Tag Handling for specific format <file path="...">
-            // We regex replace this pattern to convert it to Markdown header + block so standard logic works
-            // This is a rendering transformation only
-            let xmlProcessedContent = processedContent.replace(
-                /<file\s+path=["']([^"']+)["']>\s*([\s\S]*?)\s*<\/file>/g, 
-                (match, path, code) => {
+            // XML Tag Handling for modern formats and tools
+            let xmlProcessedContent = processedContent
+                .replace(/<file\s+path=["']([^"']+)["']>\s*([\s\S]*?)\s*<\/file>/g, (match, path, code) => {
                     return `File: ${path}\n\`\`\`\n${code}\n\`\`\``;
-                }
-            );
+                })
+                .replace(/<rename\s+old=["']([^"']+)["']\s+new=["']([^"']+)["']\s*\/>/g, (match, old, n) => {
+                    return `\`\`\`rename\n${old} -> ${n}\n\`\`\``;
+                })
+                .replace(/<delete\s+path=["']([^"']+)["']\s*\/>/g, (match, path) => {
+                    return `\`\`\`delete\n${path}\n\`\`\``;
+                })
+                .replace(/<select\s+path=["']([^"']+)["']\s*\/>/g, (match, path) => {
+                    return `\`\`\`select\n${path}\n\`\`\``;
+                });
 
             contentDiv.innerHTML = sanitizer.sanitize(marked.parse(xmlProcessedContent) as string, SANITIZE_CONFIG);
         }

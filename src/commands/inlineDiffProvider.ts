@@ -155,8 +155,8 @@ export class InlineDiffProvider implements vscode.CodeLensProvider {
                 const response = await this.lollmsAPI.sendChat(session.history);
                 const cleanResponse = stripThinkingTags(response);
                 
-                // Extract code
-                const codeBlockMatch = cleanResponse.match(/```(?:[\w-]*)\n([\s\S]+?)\n```/);
+                // Extract code using updated regex for language:path support
+                const codeBlockMatch = cleanResponse.match(/```(?:[^\n]*)\n([\s\S]+?)\n```/);
                 if (codeBlockMatch && codeBlockMatch[1]) {
                     const newCode = codeBlockMatch[1];
                     session.history.push({ role: 'assistant', content: cleanResponse });

@@ -19,13 +19,19 @@ export class NotebookManager {
 
     private async insertCell(notebook: vscode.NotebookDocument, index: number, content: string, kind: vscode.NotebookCellKind) {
         const edit = new vscode.WorkspaceEdit();
-        const cell = new vscode.NotebookCellData(kind, content, kind === vscode.NotebookCellKind.Code ? 'python' : 'markdown');
-        edit.insertNotebookCells(notebook.uri, new vscode.NotebookCellEdit(index, 0, [cell]));
+        const cellData = new vscode.NotebookCellData(kind, content, kind === vscode.NotebookCellKind.Code ? 'python' : 'markdown');
+        
+        // Use new vscode.NotebookEdit(range, cells) constructor
+        const range = new vscode.NotebookRange(index, index);
+        const notebookEdit = new vscode.NotebookEdit(range, [cellData]);
+        
+        edit.set(notebook.uri, [notebookEdit]);
         await vscode.workspace.applyEdit(edit);
     }
 
     private async replaceCell(cell: vscode.NotebookCell, content: string) {
         const edit = new vscode.WorkspaceEdit();
+        // Replacing the content of the cell's text document (Standard text edit)
         edit.replace(cell.document.uri, new vscode.Range(0, 0, cell.document.lineCount, 0), content);
         await vscode.workspace.applyEdit(edit);
     }
@@ -34,35 +40,23 @@ export class NotebookManager {
         const clean = stripThinkingTags(response);
         
         if (kind === vscode.NotebookCellKind.Code) {
-            // Regex to find the first code block
-            const codeBlockRegex = /```(?:python|py)?\s*([\s\S]*?)```/i;
+            // Regex to find the first code block, allowing language:path syntax in header
+            const codeBlockRegex = /```(?:[^\n]*)\s*([\s\S]*?)```/i;
             const match = clean.match(codeBlockRegex);
             if (match) {
                 return match[1].trim();
             }
             
-            // If no code block, but content has "Here is the code" or similar lines, we might want to be aggressive.
-            // But for now, if no block is found, we assume the model might have returned raw code (less likely with chat models)
-            // or the user prompt failed to enforce blocks.
-            // Let's try to remove lines that don't look like code if it seems mixed.
-            // Actually, safer to return as is if no block, user can undo.
-            // BUT the user specifically complained about text + ```python.
-            // If text is present, `match` WOULD have found the block if it existed.
-            
-            // Case: User output: "Here is code:\n```python\nprint(1)\n```" -> Match found -> returns "print(1)"
-            // Case: User output: "print(1)" -> Match null -> returns "print(1)"
-            
             return clean.trim();
         } else {
             // Markdown cell: Remove markdown fences if they wrap the whole content inappropriately
-            // e.g. if model returns ```markdown ... ```
             const mdBlockRegex = /```markdown\s*([\s\S]*?)```/i;
             const match = clean.match(mdBlockRegex);
             if (match) return match[1].trim();
             
             // Also generic blocks if wrapping text
             if (clean.startsWith('```') && clean.endsWith('```')) {
-                 const genericMatch = clean.match(/```(?:\w+)?\s*([\s\S]*?)```/);
+                 const genericMatch = clean.match(/```(?:[^\n]*)\s*([\s\S]*?)```/);
                  if (genericMatch) return genericMatch[1].trim();
             }
             return clean.trim();
@@ -120,7 +114,6 @@ export class NotebookManager {
             const content = stripThinkingTags(response);
             
             // Simple heuristic to detect kind
-            // If response is wrapped in ```python, it's code.
             let kind = vscode.NotebookCellKind.Markup;
             let cleanContent = content;
 
@@ -157,20 +150,26 @@ export class NotebookManager {
         
         let outputText = "";
         for (const output of cell.outputs) {
-            const item = output.items.find(i => i.mime === 'text/plain' || i.mime === 'application/json');
+            const item = output.items.find(i => 
+                i.mime === 'text/plain' || 
+                i.mime === 'application/json' ||
+                i.mime === 'application/vnd.code.notebook.stdout' ||
+                i.mime === 'application/vnd.code.notebook.stderr'
+            );
             if (item) {
                 outputText += new TextDecoder().decode(item.data) + "\n";
             }
         }
 
-        if (!outputText) {
-            vscode.window.showWarningMessage("Could not read output data (text/plain or json) to visualize.");
+        if (!outputText || outputText.trim().length === 0) {
+            const availableMimes = cell.outputs.flatMap(o => o.items.map(i => i.mime)).join(', ');
+            vscode.window.showWarningMessage(`Could not read output data to visualize. Found types: [${availableMimes}]`);
             return;
         }
 
         const code = cell.document.getText();
         const systemPrompt = "You are a data visualization expert. Generate Python code using matplotlib or seaborn to visualize the data produced by the previous cell. Return ONLY the code.";
-        const userPrompt = `Previous Code:\n\`\`\`python\n${code}\n\`\`\`\n\nOutput Data Sample:\n\`\`\`\n${outputText.substring(0, 1000)}\n\`\`\`\n\nGenerate a visualization code snippet. Assume variables from the previous cell are available.`;
+        const userPrompt = `Previous Code:\n\`\`\`python\n${code}\n\`\`\`\n\nOutput Data Sample:\n\`\`\`\n${outputText.substring(0, 1500)}\n\`\`\`\n\nGenerate a visualization code snippet. Assume variables from the previous cell are available.`;
 
         await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Lollms: Creating visualization..." }, async () => {
             const response = await this.lollmsAPI.sendChat([{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }]);
@@ -190,22 +189,42 @@ export class NotebookManager {
         ];
 
         const contentParts: any[] = [{ type: "text", text: "Analyze the following cell output:" }];
+        let hasImages = false;
 
         for (const output of cell.outputs) {
             for (const item of output.items) {
                 if (item.mime.startsWith('image/')) {
                     const base64 = Buffer.from(item.data).toString('base64');
                     contentParts.push({ type: "image_url", image_url: { url: `data:${item.mime};base64,${base64}` } });
-                } else if (item.mime === 'text/plain' || item.mime === 'text/markdown') {
+                    hasImages = true;
+                } else if (
+                    item.mime === 'text/plain' || 
+                    item.mime === 'text/markdown' || 
+                    item.mime === 'application/vnd.code.notebook.stdout' || 
+                    item.mime === 'application/vnd.code.notebook.stderr'
+                ) {
                     const text = new TextDecoder().decode(item.data);
-                    contentParts.push({ type: "text", text: `Output:\n${text}` });
+                    contentParts.push({ type: "text", text: `Output (${item.mime}):\n${text}` });
+                } else if (item.mime === 'application/vnd.code.notebook.error') {
+                    try {
+                        const err = JSON.parse(new TextDecoder().decode(item.data));
+                        contentParts.push({ type: "text", text: `Error: ${err.name}: ${err.message}\n${err.stack}` });
+                    } catch(e) {
+                         contentParts.push({ type: "text", text: `Error: (Could not parse error object)` });
+                    }
                 }
             }
         }
 
         contentParts.push({ type: "text", text: `Source Code:\n\`\`\`python\n${cell.document.getText()}\n\`\`\`` });
 
-        messages.push({ role: 'user', content: contentParts });
+        if (hasImages) {
+            messages.push({ role: 'user', content: contentParts });
+        } else {
+            // Flatten to string for better compatibility with text-only models
+            const fullText = contentParts.map(p => p.text).join('\n\n');
+            messages.push({ role: 'user', content: fullText });
+        }
 
         await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Lollms: Analyzing output..." }, async () => {
             const response = await this.lollmsAPI.sendChat(messages);
@@ -221,10 +240,10 @@ export class NotebookManager {
                 const err = JSON.parse(new TextDecoder().decode(item.data));
                 errorOutput += `${err.name}: ${err.message}\n${err.stack}`;
             } else {
-                const textItem = output.items.find(i => i.mime === 'text/plain');
+                const textItem = output.items.find(i => i.mime === 'text/plain' || i.mime === 'application/vnd.code.notebook.stderr');
                 if (textItem) {
                     const text = new TextDecoder().decode(textItem.data);
-                    if (text.toLowerCase().includes('error') || text.toLowerCase().includes('exception')) {
+                    if (text.toLowerCase().includes('error') || text.toLowerCase().includes('exception') || textItem.mime.includes('stderr')) {
                         errorOutput += text;
                     }
                 }
@@ -238,7 +257,7 @@ export class NotebookManager {
 
         const code = cell.document.getText();
         const systemPrompt = "You are a Python debugging expert. Analyze the code and the error trace. Provide the corrected code to fix the error. Return ONLY the corrected code. Do NOT use markdown fences.";
-        const userPrompt = `Code:\n\`\`\`python\n${code}\n\`\`\`\n\nError:\n\`\`\`\n${errorOutput}\n\`\`\``;
+        const userPrompt = `Code:\n\`\`\`python\n${code}\n\`\`\`\n\nError:\n\`\`\`\n${errorOutput}\n\`\`\`\n\nPlease analyze the error and provide a fix.`;
 
         await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Lollms: Fixing error..." }, async () => {
             const response = await this.lollmsAPI.sendChat([{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }]);
@@ -247,7 +266,6 @@ export class NotebookManager {
         });
     }
 
-    // ... generateEducativeNotebook remains same ...
     async generateEducativeNotebook(cell: vscode.NotebookCell) {
         const topic = await vscode.window.showInputBox({ prompt: "Enter the topic for the educative notebook" });
         if (!topic) return;
@@ -269,9 +287,8 @@ print("hello")
             const cleanResponse = stripThinkingTags(response);
             const parts = cleanResponse.split('### CELL_SPLIT ###');
             
-            const edits: vscode.NotebookCellEdit[] = [];
-            let insertIndex = cell.index + 1;
-
+            const newCells: vscode.NotebookCellData[] = [];
+            
             for (let part of parts) {
                 part = part.trim();
                 if (!part) continue;
@@ -282,7 +299,6 @@ print("hello")
                 if (part.startsWith('CODE')) {
                     kind = vscode.NotebookCellKind.Code;
                     content = part.substring(4).trim();
-                    // Clean content using our helper logic, but here we know it's a block
                     const blockMatch = content.match(/```(?:python)?\s*([\s\S]*?)```/i);
                     if (blockMatch) content = blockMatch[1].trim();
                 } else if (part.startsWith('MARKDOWN')) {
@@ -294,13 +310,21 @@ print("hello")
                         content = part.replace(/^```python\n/, '').replace(/^```\n/, '').replace(/```$/, '').trim();
                     }
                 }
-
-                edits.push(new vscode.NotebookCellEdit(insertIndex++, 0, [new vscode.NotebookCellData(kind, content, kind === vscode.NotebookCellKind.Code ? 'python' : 'markdown')]));
+                
+                newCells.push(new vscode.NotebookCellData(kind, content, kind === vscode.NotebookCellKind.Code ? 'python' : 'markdown'));
             }
 
-            const edit = new vscode.WorkspaceEdit();
-            edit.set(cell.notebook.uri, edits);
-            await vscode.workspace.applyEdit(edit);
+            if (newCells.length > 0) {
+                const edit = new vscode.WorkspaceEdit();
+                const insertIndex = cell.index + 1;
+                
+                // Fix: Use correct NotebookEdit class for insertion of multiple cells
+                const range = new vscode.NotebookRange(insertIndex, insertIndex);
+                const notebookEdit = new vscode.NotebookEdit(range, newCells);
+                
+                edit.set(cell.notebook.uri, [notebookEdit]);
+                await vscode.workspace.applyEdit(edit);
+            }
         });
     }
 }
@@ -428,3 +452,4 @@ export class LollmsNotebookCellActionProvider implements vscode.NotebookCellStat
         return items;
     }
 }
+

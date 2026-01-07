@@ -26,6 +26,10 @@ import { setPythonApi, debugErrorManager, disposeTerminal } from './extensionSta
 import { LollmsServices } from './lollmsContext';
 import { ChatPanel } from './commands/chatPanel/chatPanel';
 import { DiscussionItem } from './commands/discussionTreeProvider';
+import { DiffManager } from './diffManager';
+import { DiffCodeLensProvider } from './commands/diffCodeLensProvider';
+import { HerdManager } from './herdManager';
+import { LollmsDebugAdapterTrackerFactory } from './debugAdapterTracker';
 
 export async function activate(context: vscode.ExtensionContext) {
     Logger.initialize(context);
@@ -69,6 +73,11 @@ export async function activate(context: vscode.ExtensionContext) {
     const notebookManager = new NotebookManager(lollmsAPI);
     const inlineDiffProvider = new InlineDiffProvider(lollmsAPI);
     const quickEditManager = new QuickEditManager(lollmsAPI, inlineDiffProvider, contextManager, memoryManager);
+    const diffManager = new DiffManager();
+    const herdManager = new HerdManager(lollmsAPI, contextManager, personalityManager);
+    
+    // SETUP DIFF MANAGER
+    diffManager.setup(context);
     
     // Discussion Manager requires process manager
     const discussionManager = new DiscussionManager(lollmsAPI, processManager, context);
@@ -79,7 +88,7 @@ export async function activate(context: vscode.ExtensionContext) {
         lollmsAPI, contextManager, discussionManager, processManager, promptManager,
         personalityManager, skillsManager, codeGraphManager, notebookManager,
         gitIntegration, scriptRunner, quickEditManager, workflowManager,
-        inlineDiffProvider,
+        inlineDiffProvider, diffManager, herdManager,
         treeProviders: {}
     };
 
@@ -94,6 +103,13 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, inlineDiffProvider));
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'untitled' }, inlineDiffProvider));
     context.subscriptions.push(vscode.notebooks.registerNotebookCellStatusBarItemProvider('jupyter-notebook', new LollmsNotebookCellActionProvider()));
+    
+    // Register DiffCodeLensProvider for specific diff files
+    context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file', pattern: '**/.lollms/diffs/**' }, new DiffCodeLensProvider(diffManager)));
+    context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(DiffManager.SCHEME, diffManager));
+
+    // Register Debug Adapter Tracker
+    context.subscriptions.push(vscode.debug.registerDebugAdapterTrackerFactory('*', new LollmsDebugAdapterTrackerFactory()));
 
     if (config.get<boolean>('enableInlineSuggestions')) {
         context.subscriptions.push(vscode.languages.registerInlineCompletionItemProvider({ pattern: '**' }, new (require('./commands/inlineSuggestions').LollmsInlineCompletionProvider)(lollmsAPI)));
@@ -166,10 +182,6 @@ export async function activate(context: vscode.ExtensionContext) {
         statusBar.updateProcesses(processManager.getAll().length);
         ChatPanel.panels.forEach(panel => panel.updateGeneratingState());
     }));
-
-    // Helper for reveal (needs to be here or passed to commands)
-    // We can expose this logic if needed, but discussionView.reveal is simple enough to be in commandRegistry if we export discussionView or pass it.
-    // For now, simple programmatic reveals logic handled in commandRegistry via services.treeProviders
 }
 
 export function deactivate(): void {

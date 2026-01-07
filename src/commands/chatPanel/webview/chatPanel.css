@@ -438,7 +438,7 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     position: absolute; 
     bottom: 100%; 
     left: 12px; 
-    width: 220px;
+    width: 250px; /* Slightly wider for nested items */
     background-color: var(--vscode-menu-background); 
     border: 1px solid var(--vscode-menu-border);
     box-shadow: 0 4px 12px rgba(0,0,0,0.25); 
@@ -447,10 +447,27 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     flex-direction: column; 
     padding: 4px; 
     margin-bottom: 8px;
+    overflow: hidden;
 }
 
 #more-actions-menu.visible { 
     display: flex !important;
+}
+
+.menu-view {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    animation: slideIn 0.2s ease-out;
+}
+
+.menu-view.hidden {
+    display: none;
+}
+
+@keyframes slideIn {
+    from { opacity: 0; transform: translateX(10px); }
+    to { opacity: 1; transform: translateX(0); }
 }
 
 .menu-item {
@@ -466,11 +483,72 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     font-family: var(--vscode-font-family); 
     font-size: 12px; 
     border-radius: 4px;
+    position: relative;
 }
 
 .menu-item:hover { 
     background-color: var(--vscode-menu-selectionBackground); 
     color: var(--vscode-menu-selectionForeground); 
+}
+
+.menu-item.has-submenu {
+    justify-content: space-between;
+}
+
+.menu-arrow {
+    font-size: 14px;
+    opacity: 0.7;
+}
+
+.menu-separator {
+    height: 1px;
+    background-color: var(--vscode-menu-separatorBackground);
+    margin: 4px 0;
+}
+
+.menu-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--vscode-menu-separatorBackground);
+    margin-bottom: 4px;
+    font-weight: 600;
+    font-size: 12px;
+    color: var(--vscode-descriptionForeground);
+}
+
+.back-btn {
+    background: none;
+    border: none;
+    color: var(--vscode-icon-foreground);
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+}
+.back-btn:hover {
+    background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.menu-item-toggle {
+    padding: 8px 12px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12px;
+}
+
+.menu-select {
+    width: 90%;
+    margin: 4px 12px 12px 12px;
+    background-color: var(--vscode-dropdown-background);
+    color: var(--vscode-dropdown-foreground);
+    border: 1px solid var(--vscode-dropdown-border);
+    padding: 4px;
+    border-radius: 2px;
+    font-size: 11px;
 }
 
 /* --- Modals (Generic) --- */
@@ -627,32 +705,6 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     background-image: repeating-linear-gradient(45deg, transparent, transparent 10px, rgba(255, 255, 255, 0.15) 10px, rgba(255, 255, 255, 0.15) 20px);
 }
 
-.model-selector-container {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex: 1;
-}
-
-.model-selector-container label {
-    white-space: nowrap;
-    color: var(--vscode-descriptionForeground);
-}
-
-#model-selector, #personality-selector {
-    flex: 1;
-    background-color: var(--vscode-dropdown-background);
-    color: var(--vscode-dropdown-foreground);
-    border: 1px solid var(--vscode-dropdown-border);
-    padding: 4px;
-    border-radius: 2px;
-    outline: none;
-}
-
-#model-selector:focus, #personality-selector:focus {
-    border-color: var(--vscode-focusBorder);
-}
-
 .icon-btn {
     background: transparent;
     border: none;
@@ -718,6 +770,33 @@ input:checked + .slider:before {
 }
 
 input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
+
+/* --- Badges --- */
+.active-badges {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin-right: 10px;
+}
+
+.mode-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    background-color: var(--vscode-badge-background);
+    color: var(--vscode-badge-foreground);
+    cursor: default;
+    user-select: none;
+}
+
+.mode-badge.agent { background-color: var(--vscode-charts-orange); color: white; }
+.mode-badge.herd { background-color: var(--vscode-charts-purple); color: white; }
+.mode-badge.autocontext { background-color: var(--vscode-charts-blue); color: white; }
+.mode-badge.model { background-color: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
 
 /* --- Search Bar --- */
 .search-bar {

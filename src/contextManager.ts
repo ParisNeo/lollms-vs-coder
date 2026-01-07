@@ -2,10 +2,10 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { ContextStateProvider } from './commands/contextStateProvider';
 import Jimp = require('jimp');
-import { LollmsAPI } from './lollmsAPI';
+import { LollmsAPI, ChatMessage } from './lollmsAPI';
 import * as mammoth from 'mammoth';
-// Use require for pdf-parse to avoid some bundling issues with esbuild if not using default import
 const pdfParse = require('pdf-parse');
+import { stripThinkingTags } from './utils';
 
 export interface ContextResult {
   text: string;
@@ -18,7 +18,6 @@ export class ContextManager {
   private lollmsAPI: LollmsAPI;
   private imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']);
   private docExtensions = new Set(['.pdf', '.docx', '.xlsx', '.pptx', '.msg']);
-  // Explicitly exclude common binary and ML model formats
   private binaryExtensions = new Set([
       '.pth', '.pt', '.onnx', '.tflite', '.pb', '.h5', '.hdf5', '.pkl', '.bin', 
       '.exe', '.dll', '.so', '.dylib', '.class', '.jar', '.war', '.ear', 
@@ -104,8 +103,8 @@ export class ContextManager {
       return this._lastContext;
   }
 
+  // ... (isBinary, getLanguageId, extractDefinitions, getWorkspaceFilePaths, readSpecificFiles methods remain same)
   private isBinary(buffer: Buffer): boolean {
-      // Check first 1024 bytes for null bytes, which is a strong indicator of binary content
       const chunk = buffer.slice(0, Math.min(buffer.length, 1024));
       return chunk.includes(0);
   }
@@ -117,65 +116,33 @@ export class ContextManager {
 
   private async extractDefinitions(uri: vscode.Uri): Promise<string> {
       try {
-          const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>(
-              'vscode.executeDocumentSymbolProvider', 
-              uri
-          );
-
-          if (!symbols || symbols.length === 0) {
-              return "(No definitions found)";
-          }
+          const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>('vscode.executeDocumentSymbolProvider', uri);
+          if (!symbols || symbols.length === 0) return "(No definitions found)";
 
           const formatSymbol = (symbol: vscode.DocumentSymbol, indent: string = ''): string => {
               const kindMap: { [key: number]: string } = {
-                  [vscode.SymbolKind.Class]: 'class',
-                  [vscode.SymbolKind.Method]: 'method',
-                  [vscode.SymbolKind.Function]: 'function',
-                  [vscode.SymbolKind.Constructor]: 'constructor',
-                  [vscode.SymbolKind.Interface]: 'interface',
-                  [vscode.SymbolKind.Enum]: 'enum',
-                  [vscode.SymbolKind.Variable]: 'variable',
-                  [vscode.SymbolKind.Constant]: 'constant',
-                  [vscode.SymbolKind.Property]: 'property',
+                  [vscode.SymbolKind.Class]: 'class', [vscode.SymbolKind.Method]: 'method', [vscode.SymbolKind.Function]: 'function',
+                  [vscode.SymbolKind.Constructor]: 'constructor', [vscode.SymbolKind.Interface]: 'interface', [vscode.SymbolKind.Enum]: 'enum',
+                  [vscode.SymbolKind.Variable]: 'variable', [vscode.SymbolKind.Constant]: 'constant', [vscode.SymbolKind.Property]: 'property',
                   [vscode.SymbolKind.Struct]: 'struct'
               };
-              
               const kindName = kindMap[symbol.kind] || 'symbol';
-              
-              // Only include significant symbols for context reduction
               const significantKinds = [
-                  vscode.SymbolKind.Class, 
-                  vscode.SymbolKind.Method, 
-                  vscode.SymbolKind.Function, 
-                  vscode.SymbolKind.Interface,
-                  vscode.SymbolKind.Enum,
-                  vscode.SymbolKind.Constructor,
-                  vscode.SymbolKind.Struct
+                  vscode.SymbolKind.Class, vscode.SymbolKind.Method, vscode.SymbolKind.Function, 
+                  vscode.SymbolKind.Interface, vscode.SymbolKind.Enum, vscode.SymbolKind.Constructor, vscode.SymbolKind.Struct
               ];
-
-              if (!significantKinds.includes(symbol.kind)) {
-                  return ''; 
-              }
+              if (!significantKinds.includes(symbol.kind)) return ''; 
 
               let output = `${indent}${kindName} ${symbol.name}`;
-              if (symbol.detail) {
-                  output += `: ${symbol.detail}`;
-              }
+              if (symbol.detail) output += `: ${symbol.detail}`;
               output += '\n';
-
-              for (const child of symbol.children) {
-                  output += formatSymbol(child, indent + '  ');
-              }
+              for (const child of symbol.children) output += formatSymbol(child, indent + '  ');
               return output;
           };
 
           let definitions = '';
-          for (const symbol of symbols) {
-              definitions += formatSymbol(symbol);
-          }
-          
+          for (const symbol of symbols) definitions += formatSymbol(symbol);
           return definitions.trim() || "(No significant definitions found)";
-
       } catch (e) {
           return `(Error extracting definitions: ${e})`;
       }
@@ -212,13 +179,243 @@ export class ContextManager {
               content += '```' + language + '\n';
               content += text;
               content += '\n```\n\n';
-          } catch (error) {
-              // Skip files that can't be read
-          }
+          } catch (error) { }
       }
       return content;
   }
 
+  // --- AUTO CONTEXT AGENT LOOP ---
+  public async runContextAgent(
+      userPrompt: string, 
+      model: string,
+      signal: AbortSignal, 
+      onUpdate: (content: string) => void
+  ): Promise<string> {
+      const MAX_STEPS = 10;
+      const MAX_RETRIES = 3;
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      if (!workspaceFolder || !this.contextStateProvider) {
+          onUpdate("❌ No workspace context available.");
+          return "";
+      }
+
+      const allFiles = await this.contextStateProvider.getAllVisibleFiles();
+      if (allFiles.length === 0) {
+          onUpdate("⚠️ No visible files found in project.");
+          return "";
+      }
+
+      // Initialize with currently included files
+      const currentContextFiles = this.contextStateProvider.getIncludedFiles().map(f => f.path);
+      const selectedFiles = new Set<string>(currentContextFiles);
+      const initialCount = selectedFiles.size;
+
+      const fileTree = await this.generateProjectTree();
+      
+      const systemPrompt = `You are a Senior Context Librarian Agent.
+Your goal is to prepare the perfect context for an LLM to answer the user's request.
+You have access to the project structure and the list of currently selected files.
+
+**AVAILABLE TOOLS:**
+1. \`add_files(files=["path1", "path2"])\`: Add files to the context (read their content).
+2. \`remove_files(files=["path1"])\`: Remove files from the context (if you realize they are irrelevant).
+3. \`read_file(file="path")\`: Peek at a file's content without fully adding it (or to check if it's relevant).
+4. \`done()\`: Finish the context selection process when you have enough information.
+
+**RULES:**
+- Analyze the user request and the current file selection.
+- If the current selection is sufficient, call \`done()\` immediately.
+- If files are missing, add them.
+- If selected files are irrelevant to the new request, remove them.
+- **DO NOT ANSWER THE USER REQUEST.** Your only job is to build the list of selected files.
+- **OUTPUT JSON ONLY**: Reply with a valid JSON object describing the tool call.
+
+**JSON FORMAT:**
+\`\`\`json
+{
+  "tool": "tool_name",
+  "params": { ... }
+}
+\`\`\`
+`;
+
+      const actionLog: string[] = [];
+      let initialUserContent = `**User Request:** "${userPrompt}"\n\n**Project Structure:**\n${fileTree}`;
+      
+      if (selectedFiles.size > 0) {
+          initialUserContent += `\n\n**Currently Selected Files:**\n${JSON.stringify(Array.from(selectedFiles))}\n\nReview the current selection. Add missing files or remove irrelevant ones.`;
+      } else {
+          initialUserContent += `\n\n**Currently Selected Files:** None.\n\nStart by selecting relevant files.`;
+      }
+
+      let chatHistory: ChatMessage[] = [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: initialUserContent }
+      ];
+
+      const renderUpdate = (status: string, finished: boolean = false, step: number = 0) => {
+          const sortedFiles = Array.from(selectedFiles).sort();
+          const filesListItems = sortedFiles.map(f => `<li><span class="codicon codicon-file"></span> ${f}</li>`).join('');
+          
+          // Show files tree always open if finished, or open if we have files
+          const filesTree = selectedFiles.size > 0 
+              ? `<details ${finished ? 'open' : ''}><summary>📂 <strong>Context Files (${selectedFiles.size})</strong></summary><ul class="file-list-tree">${filesListItems}</ul></details>`
+              : `*No files selected.*`;
+          
+          const logHtml = actionLog.map(l => `<div class="agent-log-item">${l}</div>`).join('');
+          const logSection = actionLog.length > 0
+               ? `<details ${finished ? '' : 'open'}><summary>📜 Agent Execution Log</summary><div class="agent-log-container">${logHtml}</div></details>`
+               : '';
+          
+          let spinnerHtml = '';
+          if (!finished) {
+              spinnerHtml = `<div class="status-line"><div class="spinner"></div> <span>Files selection Round ${step + 1}: ${status}</span></div>`;
+          } else {
+              spinnerHtml = `<div class="status-line"><span class="codicon codicon-check"></span> <span>Context Ready</span></div>`;
+          }
+          
+          const fullMessage = `**🧠 Auto-Context Agent**\n\n${spinnerHtml}\n\n${filesTree}\n\n${logSection}`;
+          onUpdate(fullMessage);
+      };
+
+      if (initialCount > 0) {
+          actionLog.push(`ℹ️ Started with ${initialCount} previously selected files.`);
+      }
+      actionLog.push("🔍 Analyzing project structure and request...");
+      renderUpdate("Thinking...", false, 0);
+
+      let retryCount = 0;
+      let stepsTaken = 0;
+
+      for (let step = 0; step < MAX_STEPS; step++) {
+          if (signal.aborted) throw new Error("Context agent aborted.");
+
+          // Inject current state into prompt
+          chatHistory.push({ 
+              role: 'system', 
+              content: `[System Update] Currently selected files: ${JSON.stringify(Array.from(selectedFiles))}. Continue refining or call done().` 
+          });
+
+          // Call LLM
+          let response = "";
+          try {
+              response = await this.lollmsAPI.sendChat(chatHistory, null, signal, model);
+          } catch (e: any) {
+              actionLog.push(`❌ LLM Error: ${e.message}`);
+              renderUpdate("Error", true, step);
+              break;
+          }
+          
+          chatHistory.push({ role: 'assistant', content: response });
+
+          // Parse Tool
+          const cleanResponse = stripThinkingTags(response);
+          let jsonMatch = cleanResponse.match(/```json\s*([\s\S]+?)\s*```/) || cleanResponse.match(/\{[\s\S]*\}/);
+          
+          if (!jsonMatch) {
+              // Heuristic: Rescue implicitly mentioned files if model fails JSON
+              const potentialFiles = allFiles.filter(f => cleanResponse.includes(f));
+              if (potentialFiles.length > 0 && retryCount < MAX_RETRIES) {
+                  const syntheticCall = {
+                      tool: 'add_files',
+                      params: { files: potentialFiles }
+                  };
+                  jsonMatch = [JSON.stringify(syntheticCall)]; 
+                  actionLog.push(`⚠️ Text response detected. Attempting to extract ${potentialFiles.length} file(s).`);
+              } else {
+                  if (retryCount < MAX_RETRIES) {
+                      retryCount++;
+                      chatHistory.push({ 
+                          role: 'system', 
+                          content: "ERROR: You must output ONLY a valid JSON object. Do not write conversational text. Use the `add_files` tool." 
+                      });
+                      continue; 
+                  } else {
+                      logStep(`❌ Agent failed to output JSON.`);
+                      break;
+                  }
+              }
+          }
+
+          try {
+              const toolCall = JSON.parse(jsonMatch[1] || jsonMatch[0]);
+              const toolName = toolCall.tool;
+              const params = toolCall.params || {};
+
+              // Reset retry count on successful parse
+              retryCount = 0;
+
+              if (toolName === 'done') {
+                  if (step === 0 && initialCount === selectedFiles.size) {
+                      actionLog.push(`✅ Initial context sufficient. No changes.`);
+                  } else {
+                      actionLog.push(`✅ Optimization complete.`);
+                  }
+                  renderUpdate("Context Ready", true, step);
+                  break;
+              }
+
+              stepsTaken++;
+
+              if (toolName === 'add_files') {
+                  const files = params.files || params.paths;
+                  if (Array.isArray(files)) {
+                      const validFiles = files.filter(f => allFiles.includes(f));
+                      if (validFiles.length > 0) {
+                          validFiles.forEach(f => selectedFiles.add(f));
+                          // Update UI context provider for visual feedback in sidebar
+                          await this.contextStateProvider.addFilesToContext(validFiles);
+                          actionLog.push(`➕ Added: ${validFiles.join(', ')}`);
+                          renderUpdate("Updating context...", false, step);
+                      } else {
+                          actionLog.push(`⚠️ No valid files found in addition request.`);
+                      }
+                  }
+              } else if (toolName === 'remove_files') {
+                  const files = params.files || params.paths;
+                  if (Array.isArray(files)) {
+                      files.forEach(f => selectedFiles.delete(f));
+                      const uris = files.map((f: string) => vscode.Uri.joinPath(workspaceFolder.uri, f));
+                      await this.contextStateProvider.setStateForUris(uris, 'tree-only'); 
+                      actionLog.push(`➖ Removed: ${files.join(', ')}`);
+                      renderUpdate("Updating context...", false, step);
+                  }
+              } else if (toolName === 'read_file') {
+                  const pathArg = params.path || params.file;
+                  if (pathArg && allFiles.includes(pathArg)) {
+                      const content = await this.readSpecificFiles([pathArg]);
+                      const snippet = content.substring(0, 2000);
+                      chatHistory.push({ role: 'system', content: `Content of ${pathArg}:\n\`\`\`\n${snippet}\n\`\`\`` });
+                      actionLog.push(`📖 Checked content of: ${pathArg}`);
+                      renderUpdate("Reading file...", false, step);
+                  } else {
+                      chatHistory.push({ role: 'system', content: `Error: File ${pathArg} not found.` });
+                  }
+              } else {
+                   actionLog.push(`⚠️ Unknown tool: ${toolName}`);
+              }
+
+          } catch (e: any) {
+              actionLog.push(`❌ Tool Error: ${e.message}`);
+          }
+      }
+
+      // Final consistency check visualization
+      renderUpdate("Context Ready", true, stepsTaken);
+
+      // Return content
+      if (selectedFiles.size > 0) {
+          return await this.readSpecificFiles(Array.from(selectedFiles));
+      }
+      return "";
+  }
+    
+  private logStep(msg: string) {
+      console.log(`[AutoContext] ${msg}`);
+  }
+
+  // ... (rest of methods)
+  // ... (parsePdfLocal, parseDocxLocal, processFile remain unchanged)
   private async parsePdfLocal(buffer: Buffer): Promise<string> {
       try {
           const data = await pdfParse(buffer);
@@ -237,10 +434,6 @@ export class ContextManager {
       }
   }
 
-  /**
-   * Processes a file content buffer/base64 based on its extension.
-   * Handles text extraction for PDFs, DOCX, etc., and checks for binary content.
-   */
   public async processFile(fileName: string, base64Data: string): Promise<string> {
       const ext = path.extname(fileName).toLowerCase();
       const buffer = Buffer.from(base64Data, 'base64');
@@ -253,7 +446,6 @@ export class ContextManager {
           try {
               return await this.lollmsAPI.extractText(base64Data, fileName);
           } catch (apiError: any) {
-              // Fallback mechanism
               if (ext === '.pdf') {
                   return await this.parsePdfLocal(buffer);
               } else if (ext === '.docx') {
@@ -358,10 +550,6 @@ export class ContextManager {
             content += `### \`${filePath}\` (Image Attached)\n\n`;
             continue; 
           } else {
-            // Reuse the processFile logic implicitly or reimplement to keep the flow
-            // Since we already have the buffer, avoiding base64 conversion back and forth unless necessary
-            // For now, let's keep the specific logic here to avoid re-reading
-            
             if (this.docExtensions.has(ext)) {
                 try {
                     fileContent = await this.lollmsAPI.extractText(buffer.toString('base64'), filePath);

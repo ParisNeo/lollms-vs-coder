@@ -3,6 +3,7 @@ import { LollmsAPI, ChatMessage } from '../../lollmsAPI';
 import { ContextManager, ContextResult } from '../../contextManager';
 import { Discussion, DiscussionManager } from '../../discussionManager';
 import { AgentManager } from '../../agentManager';
+import { HerdManager } from '../../herdManager';
 import { getProcessedSystemPrompt, stripThinkingTags, DiscussionCapabilities } from '../../utils';
 import * as path from 'path';
 import { InfoPanel } from '../infoPanel';
@@ -22,6 +23,7 @@ export class ChatPanel {
   private _discussionManager!: DiscussionManager;
   private _currentDiscussion: Discussion | null = null;
   public agentManager!: AgentManager;
+  public herdManager?: HerdManager;
   private _executionLogs: string[] = [];
   private processManager!: ProcessManager;
   private readonly discussionId: string;
@@ -420,16 +422,20 @@ export class ChatPanel {
       return this._viewReadyPromise;
   }
 
-  public async sendMessage(message: ChatMessage) {
+  // Public method to safely set input text after webview is ready
+  public async setInputText(text: string) {
+      await this.waitForWebviewReady();
+      this._panel.webview.postMessage({ command: 'setInputText', text });
+  }
+
+  public async sendMessage(message: ChatMessage, autoContextMode: boolean = false) {
     if (!this._currentDiscussion) {
-        // If not loaded, try waiting for readiness which triggers load
         await this.waitForWebviewReady();
         if (!this._currentDiscussion) {
-            vscode.window.showErrorMessage("No active discussion found even after waiting for readiness.");
+            vscode.window.showErrorMessage("No active discussion found.");
             return;
         }
     } else {
-        // Ensure webview is ready to receive messages
         await this.waitForWebviewReady();
     }
 
@@ -438,7 +444,146 @@ export class ChatPanel {
     const { id: processId, controller } = this.processManager.register(this.discussionId, 'Generating response...');
     this.updateGeneratingState();
 
+    // HERD MODE CHECK
+    if (this._discussionCapabilities.herdMode && this.herdManager) {
+        const participants = this._discussionCapabilities.herdParticipants;
+        if (!participants || participants.length === 0) {
+            this.addMessageToDiscussion({role: 'system', content: "Herd Mode is enabled but no models are selected. Please configure Herd Mode in the Discussion Modes menu."});
+            this.processManager.unregister(processId);
+            this.updateGeneratingState();
+            return;
+        }
+
+        try {
+            const context = await this._contextManager.getContextContent();
+            const leaderModel = this._currentDiscussion.model || this._lollmsAPI.getModelName();
+            const promptText = typeof message.content === 'string' ? message.content : 'User provided rich content.';
+
+            const debateResult = await this.herdManager.run(
+                promptText,
+                participants,
+                this._discussionCapabilities.herdRounds || 2,
+                leaderModel,
+                context.text,
+                (status) => {
+                    this._panel.webview.postMessage({ command: 'updateStatus', status });
+                },
+                async (msg) => {
+                    // Inject debate messages as hidden system logs (skipInPrompt = true)
+                    msg.skipInPrompt = true;
+                    await this.addMessageToDiscussion(msg);
+                },
+                (logMsg) => {
+                    // Send transient logs to webview without saving to discussion
+                    this._panel.webview.postMessage({
+                        command: 'addMessage',
+                        message: {
+                            id: 'log_' + Date.now(),
+                            role: 'system',
+                            content: logMsg
+                        }
+                    });
+                },
+                controller.signal
+            );
+
+            // After herd finishes, leader synthesizes
+            if (!controller.signal.aborted) {
+                // Log Leader Action
+                this._panel.webview.postMessage({
+                    command: 'addMessage',
+                    message: {
+                        id: 'log_leader_' + Date.now(),
+                        role: 'system',
+                        content: `🏁 **Debate Finished.** Leader model (${leaderModel}) is now synthesizing the solution...`
+                    }
+                });
+
+                const synthesisPrompt: ChatMessage = {
+                    role: 'user',
+                    content: `**HERD DEBATE COMPLETE**\n\nBelow is the transcript of the debate between models on the user's problem:\n\n${debateResult}\n\n---\n\n**INSTRUCTION:**\nSynthesize the findings from the debate. Act as the lead engineer.\n1. Summarize the best approach agreed upon (or choose the best one if conflicted).\n2. Provide the final solution code/answer based on this synthesis.\n3. Ensure all code is correct and follows the project context.`
+                };
+                
+                const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities);
+                const systemMessage: ChatMessage = { role: 'system', content: systemPrompt };
+                
+                // Note: We use existing messages BUT filter out the hidden herd messages from the prompt history
+                // because the debate result is already fully contained in synthesisPrompt.
+                const history = this._currentDiscussion.messages.filter(m => !m.skipInPrompt);
+                const messagesToSend = [systemMessage, ...history, synthesisPrompt];
+                
+                const assistantMessageId = 'assistant_' + Date.now().toString();
+                this._panel.webview.postMessage({
+                    command: 'addMessage',
+                    message: { id: assistantMessageId, role: 'assistant', content: '', startTime: Date.now(), model: leaderModel }
+                });
+
+                let fullResponse = '';
+                await this._lollmsAPI.sendChat(messagesToSend, (chunk) => {
+                    fullResponse += chunk;
+                    this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk });
+                }, controller.signal, leaderModel);
+
+                const finalMsg: ChatMessage = {
+                    id: assistantMessageId,
+                    role: 'assistant',
+                    content: fullResponse,
+                    model: leaderModel
+                };
+                await this.addMessageToDiscussion(finalMsg, false);
+                this._panel.webview.postMessage({ command: 'finalizeMessage', id: assistantMessageId, fullContent: fullResponse });
+            }
+
+        } catch (error: any) {
+            if (error.name !== 'AbortError') {
+                this.log(`Herd error: ${error.message}`, 'ERROR');
+                this.addMessageToDiscussion({ role: 'system', content: `Herd Error: ${error.message}` });
+            }
+        } finally {
+            this.processManager.unregister(processId);
+            this.updateGeneratingState();
+            this._updateContextAndTokens();
+        }
+        return; // Exit normal flow
+    }
+
+    // NORMAL FLOW
     try {
+        let autoContextText = "";
+        
+        // AUTO CONTEXT AGENT LOGIC
+        if (autoContextMode) {
+            this.log("Auto-Context mode active. Starting agent loop.");
+            const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
+            const userPromptText = (typeof message.content === 'string') ? message.content : "User request with attachments";
+            
+            const contextAgentMsgId = 'ctx_agent_' + Date.now();
+            await this.addMessageToDiscussion({
+                id: contextAgentMsgId,
+                role: 'system',
+                content: `**🧠 Auto-Context Agent**\n*Analyzing project structure and selecting files...*\n\n`,
+                skipInPrompt: true // Mark as skipped for generation context
+            });
+
+            try {
+                autoContextText = await this._contextManager.runContextAgent(
+                    userPromptText, 
+                    model, 
+                    controller.signal,
+                    (newContent) => {
+                        this._panel.webview.postMessage({ 
+                            command: 'updateMessage', 
+                            messageId: contextAgentMsgId, 
+                            newContent: newContent 
+                        });
+                    }
+                );
+            } catch (e: any) {
+                this.log(`Auto-Context failed: ${e.message}`, 'ERROR');
+                this._panel.webview.postMessage({ command: 'updateStatus', status: 'Auto-Context Failed. Using default.', type: 'error' });
+            }
+        }
+
         let personaContent = '';
         if (this._personalityManager && this._currentDiscussion.personalityId) {
             const p = this._personalityManager.getPersonality(this._currentDiscussion.personalityId);
@@ -446,29 +591,38 @@ export class ChatPanel {
         }
 
         const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent);
-        const context = await this._contextManager.getContextContent();
+        
+        let contextText = "";
+        if (autoContextText) {
+            contextText = autoContextText;
+        } else {
+            const standardContext = await this._contextManager.getContextContent();
+            contextText = standardContext.text;
+        }
         
         let combinedSystemContent = systemPrompt;
-        if (context.text && context.text.trim().length > 0) {
-            combinedSystemContent += `\n\n${context.text}`;
+        if (contextText && contextText.trim().length > 0) {
+            combinedSystemContent += `\n\n${contextText}`;
         }
 
         const systemMessage: ChatMessage = { role: 'system', content: combinedSystemContent };
         
         let messagesToSend: ChatMessage[] = [systemMessage];
         
-        if (context.images.length > 0) {
-            const imageContent = context.images.map(img => ({
+        const standardContextForImages = await this._contextManager.getContextContent();
+        if (standardContextForImages.images.length > 0) {
+            const imageContent = standardContextForImages.images.map(img => ({
                 type: 'image_url',
                 image_url: { url: `data:image/jpeg;base64,${img.data}` }
             }));
             if (imageContent.length > 0) {
-                // Add images as a user message immediately after system/context
                 messagesToSend.push({ role: 'user', content: imageContent as any });
             }
         }
 
-        messagesToSend = [...messagesToSend, ...this._currentDiscussion.messages];
+        // Filter messages marked as skipInPrompt
+        const history = this._currentDiscussion.messages.filter(m => !m.skipInPrompt);
+        messagesToSend = [...messagesToSend, ...history];
 
         // INJECT PEDAGOGICAL INSTRUCTION (HIDDEN) IF ENABLED
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
@@ -535,7 +689,6 @@ export class ChatPanel {
         }, controller.signal, this._currentDiscussion.model);
 
         if (!webSearchTriggered) {
-            // Safeguard for empty response
             if (!fullResponse || fullResponse.trim() === '') {
                 fullResponse = "*[No response received from Lollms. The server might be busy or the model failed to generate text.]*";
             }
@@ -561,15 +714,12 @@ export class ChatPanel {
     } catch (error: any) {
         if (error.name !== 'AbortError') {
             this.log(`Error generating response: ${error.message}`, 'ERROR');
-            
-            // Add system message to chat as requested by user
             const errorMsg: ChatMessage = {
                 id: 'error_' + Date.now(),
                 role: 'system',
                 content: `**Error Generating Response:**\n${error.message}\n\n*Check the "Lollms VS Coder" output channel for raw server responses.*`
             };
             await this.addMessageToDiscussion(errorMsg);
-            
             this._panel.webview.postMessage({ command: 'finalizeMessage', id: 'assistant_failed', fullContent: `*Generation Failed: ${error.message}*` });
         } else {
             this.log('Generation aborted by user.');
@@ -577,6 +727,7 @@ export class ChatPanel {
     } finally {
         this.processManager.unregister(processId);
         this.updateGeneratingState();
+        this._updateContextAndTokens();
     }
   }
 
@@ -666,8 +817,8 @@ export class ChatPanel {
           id: 'system_exec_' + Date.now() + Math.random().toString(36).substring(2),
           role: 'system',
           content: success 
-            ? `✅ **Project Executed Successfully**\n\`\`\`\n${output}\n\`\`\``
-            : `❌ **Project Execution Failed**\n\`\`\`\n${output}\n\`\`\``
+            ? `✅ **Project Executed Successfully**\n\`\`\`\n${output}\n\`\`\`\n`
+            : `❌ **Project Execution Failed**\n\`\`\`\n${output}\n\`\`\`\n`
       };
       this.addMessageToDiscussion(message);
       this.analyzeExecutionResult(null, null, output, success ? 0 : 1);
@@ -940,7 +1091,7 @@ export class ChatPanel {
           const systemMsg: ChatMessage = {
               id: 'system_file_' + Date.now() + Math.random().toString(36).substring(2),
               role: 'system',
-              content: `Attached file: **${name}**\n\`\`\`\n${text}\n\`\`\``
+              content: `Attached file: **${name}**\n\`\`\`\n${text}\n\`\`\`\n`
           };
           this.addMessageToDiscussion(systemMsg);
       }
@@ -978,7 +1129,7 @@ export class ChatPanel {
             vscode.window.showErrorMessage(message.message);
             break;
         case 'sendMessage':
-          await this.sendMessage(message.message);
+          await this.sendMessage(message.message, message.autoContext);
           break;
         case 'addMessage':
           await this.addMessageToDiscussion(message.message);
@@ -987,7 +1138,35 @@ export class ChatPanel {
             await this.copyFullPromptToClipboard(message.draftMessage);
             break;
         case 'applyAllChanges':
-            vscode.commands.executeCommand('lollms-vs-coder.applyAllChanges', message);
+            const changes = message.changes;
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: `Applying ${changes.length} changes...`,
+                cancellable: true
+            }, async (progress, token) => {
+                for (const change of changes) {
+                    if (token.isCancellationRequested) break;
+                    
+                    const progressMsg = `Applying ${change.type}: ${change.path}`;
+                    progress.report({ message: progressMsg });
+                    
+                    try {
+                        if (change.type === 'file') {
+                            await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', change.path, change.content);
+                        } else if (change.type === 'diff') {
+                            await vscode.commands.executeCommand('lollms-vs-coder.applyPatchContent', change.path, change.content);
+                        } else if (change.type === 'insert') {
+                            await vscode.commands.executeCommand('lollms-vs-coder.insertCode', change.path, change.content);
+                        } else if (change.type === 'replace') {
+                            await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', change.path, change.content);
+                        } else if (change.type === 'delete') {
+                            await vscode.commands.executeCommand('lollms-vs-coder.deleteCodeBlock', change.path, change.content);
+                        }
+                    } catch (e: any) {
+                        vscode.window.showErrorMessage(`Failed to apply change to ${change.path}: ${e.message}`);
+                    }
+                }
+            });
             break;
         case 'renameFile':
             vscode.commands.executeCommand('lollms-vs-coder.renameFile', message.originalPath, message.newPath);
@@ -1171,10 +1350,20 @@ Task:
             await this.updateMessage(message.messageId, message.newContent);
             break;
         case 'applyFileContent':
-            vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', message.filePath, message.content);
+            try {
+                await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', message.filePath, message.content);
+            } catch (e: any) {
+                this.log(`Command applyFileContent failed: ${e.message}`, 'ERROR');
+                vscode.window.showErrorMessage(`Failed to apply changes: ${e.message}`);
+            }
             break;
         case 'applyPatchContent':
-            vscode.commands.executeCommand('lollms-vs-coder.applyPatchContent', message.filePath, message.content);
+            try {
+                await vscode.commands.executeCommand('lollms-vs-coder.applyPatchContent', message.filePath, message.content);
+            } catch (e: any) {
+                this.log(`Command applyPatchContent failed: ${e.message}`, 'ERROR');
+                vscode.window.showErrorMessage(`Failed to apply patch: ${e.message}`);
+            }
             break;
         case 'runScript':
             vscode.commands.executeCommand('lollms-vs-coder.runScript', message.code, message.language);
@@ -1255,6 +1444,28 @@ Task:
             
             this.log(`Updated Discussion Capabilities: ${JSON.stringify(this._discussionCapabilities)}`);
             this._panel.webview.postMessage({ command: 'updateThinkingMode', mode: this._discussionCapabilities.thinkingMode });
+            
+            // Push update back to UI to refresh badges
+            this._panel.webview.postMessage({ command: 'updateDiscussionCapabilities', capabilities: this._discussionCapabilities });
+            break;
+        case 'updateDiscussionCapabilitiesPartial':
+            // Merge partial capabilities into current, update, and save
+            if (this._discussionCapabilities) {
+                const partial = message.partial;
+                this._discussionCapabilities = { ...this._discussionCapabilities, ...partial };
+                
+                if (this._currentDiscussion) {
+                    this._currentDiscussion.capabilities = this._discussionCapabilities;
+                    if (!this._currentDiscussion.id.startsWith('temp-')) {
+                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                    }
+                }
+                
+                // Save settings as new default for future discussions
+                await this._discussionManager.saveLastCapabilities(this._discussionCapabilities);
+                
+                this._panel.webview.postMessage({ command: 'updateDiscussionCapabilities', capabilities: this._discussionCapabilities });
+            }
             break;
         case 'updateDiscussionPersonality':
             if (this._currentDiscussion) {
@@ -1414,6 +1625,18 @@ Task:
                 </div>
                 <div class="modal-body">
                     <div class="modal-section">
+                        <h3>Herd Mode 🐂</h3>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-herdMode"><span class="slider"></span></label>
+                            <label for="cap-herdMode">Enable Herd Mode</label>
+                        </div>
+                        <div id="herd-config-section" style="display:none; margin-top:10px; padding-left:15px; border-left:2px solid var(--vscode-textLink-foreground);">
+                            <label>Rounds: <input type="number" id="cap-herdRounds" min="1" max="10" style="width:50px;"></label>
+                            <p style="font-size:0.85em; opacity:0.8;">Use settings to configure participants.</p>
+                        </div>
+                    </div>
+
+                    <div class="modal-section">
                         <h3>Thinking Process</h3>
                         <div class="form-group">
                             <label for="cap-thinkingMode" style="display:block; margin-bottom:5px; font-weight:600; color:var(--vscode-descriptionForeground);">Reasoning Strategy</label>
@@ -1525,16 +1748,66 @@ Task:
 
         <div class="input-area-wrapper">
             <div id="more-actions-menu">
-                <button class="menu-item" id="discussionToolsButton"><i class="codicon codicon-settings"></i><span>Discussion Tools</span></button>
-                <button class="menu-item" id="agentToolsButton"><i class="codicon codicon-tools"></i><span>Agent Tools</span></button>
-                <div style="border-top: 1px solid var(--vscode-menu-separatorBackground); margin: 4px 0;"></div>
-                <button class="menu-item" id="attachButton"><i class="codicon codicon-add"></i><span>Attach Files</span></button>
-                <button class="menu-item" id="importSkillsButton"><i class="codicon codicon-lightbulb"></i><span>Import Skill</span></button>
-                <button class="menu-item" id="copyFullPromptButton"><i class="codicon codicon-copy"></i><span>Copy Context & Prompt</span></button>
-                <button class="menu-item" id="setEntryPointButton"><i class="codicon codicon-target"></i><span>Set Project Entry Point</span></button>
-                <button class="menu-item" id="executeButton"><i class="codicon codicon-play"></i><span>Execute Project</span></button>
-                <button class="menu-item" id="debugRestartButton"><i class="codicon codicon-debug-restart"></i><span>Re-run Last Debug</span></button>
-                <button class="menu-item" id="showDebugLogButton"><i class="codicon codicon-output"></i><span>Show Debug Log</span></button>
+                <div class="menu-view" id="menu-main">
+                    <div class="menu-item has-submenu" data-target="menu-modes">
+                        <i class="codicon codicon-settings-gear"></i>
+                        <span>Discussion Modes</span>
+                        <span class="menu-arrow">›</span>
+                    </div>
+                    <div class="menu-item has-submenu" data-target="menu-ai">
+                        <i class="codicon codicon-hubot"></i>
+                        <span>AI Configuration</span>
+                        <span class="menu-arrow">›</span>
+                    </div>
+                    <div class="menu-separator"></div>
+                    <button class="menu-item" id="discussionToolsButton"><i class="codicon codicon-tools"></i><span>Advanced Tools</span></button>
+                    <button class="menu-item" id="agentToolsButton"><i class="codicon codicon-briefcase"></i><span>Agent Tools List</span></button>
+                    <div class="menu-separator"></div>
+                    <button class="menu-item" id="attachButton"><i class="codicon codicon-add"></i><span>Attach Files</span></button>
+                    <button class="menu-item" id="importSkillsButton"><i class="codicon codicon-lightbulb"></i><span>Import Skill</span></button>
+                    <button class="menu-item" id="copyFullPromptButton"><i class="codicon codicon-copy"></i><span>Copy Context & Prompt</span></button>
+                    <button class="menu-item" id="setEntryPointButton"><i class="codicon codicon-target"></i><span>Set Project Entry Point</span></button>
+                    <button class="menu-item" id="executeButton"><i class="codicon codicon-play"></i><span>Execute Project</span></button>
+                    <button class="menu-item" id="debugRestartButton"><i class="codicon codicon-debug-restart"></i><span>Re-run Last Debug</span></button>
+                    <button class="menu-item" id="showDebugLogButton"><i class="codicon codicon-output"></i><span>Show Debug Log</span></button>
+                </div>
+
+                <!-- Modes View -->
+                <div class="menu-view hidden" id="menu-modes">
+                    <div class="menu-header">
+                        <button class="back-btn"><i class="codicon codicon-arrow-left"></i></button>
+                        <span>Discussion Modes</span>
+                    </div>
+                    <div class="menu-item-toggle">
+                        <span>🤖 Agent Mode</span>
+                        <label class="switch"><input type="checkbox" id="agentModeCheckbox"><span class="slider"></span></label>
+                    </div>
+                    <div class="menu-item-toggle">
+                        <span>🧠 Auto Context</span>
+                        <label class="switch"><input type="checkbox" id="autoContextCheckbox"><span class="slider"></span></label>
+                    </div>
+                    <div class="menu-item-toggle">
+                        <span>🐂 Herd Mode</span>
+                        <label class="switch"><input type="checkbox" id="herdModeCheckbox"><span class="slider"></span></label>
+                    </div>
+                </div>
+
+                <!-- AI Config View -->
+                <div class="menu-view hidden" id="menu-ai">
+                     <div class="menu-header">
+                        <button class="back-btn"><i class="codicon codicon-arrow-left"></i></button>
+                        <span>AI Configuration</span>
+                    </div>
+                     <label style="margin-left:12px; margin-top:8px; display:block; font-size:11px; font-weight:600;">Model</label>
+                     <select id="model-selector" class="menu-select"></select>
+                     
+                     <label style="margin-left:12px; margin-top:8px; display:block; font-size:11px; font-weight:600;">Persona</label>
+                     <select id="personality-selector" class="menu-select"></select>
+                     
+                     <div style="padding: 0 12px 12px 12px;">
+                        <button id="refresh-models-btn" class="code-action-btn" style="width:100%; justify-content:center;"><i class="codicon codicon-refresh"></i> Refresh Models</button>
+                     </div>
+                </div>
             </div>
 
             <div class="top-controls">
@@ -1542,50 +1815,37 @@ Task:
                     <div id="status-spinner" class="spinner"></div>
                     <span id="status-text">Ready</span>
                 </div>
-                <!-- Deep Thinking Indicator -->
-                <div id="thinking-indicator" class="thinking-indicator" title="Deep Thinking Mode Active" style="display: none;">
-                    <i class="codicon codicon-beaker"></i>
-                    <span>Deep Thinking</span>
+                
+                <div class="active-badges" id="active-badges">
+                    <!-- Badges injected via JS -->
                 </div>
+
                 <!-- Web Search Indicator -->
                 <div id="websearch-indicator" class="websearch-indicator" title="Web Search Active" style="display: none;">
                     <i class="codicon codicon-globe"></i>
-                    <span>Web Search</span>
+                    <span>Web</span>
                 </div>
+                
                 <div id="active-tools-indicator" class="active-tools-indicator"></div>
+                
                 <div class="token-progress">
                     <div class="token-progress-container">
                         <div class="token-progress-bar" id="token-progress-bar"></div>
                     </div>
                     <div id="context-status-container" style="display: flex; align-items: center; gap: 8px;">
-                        <span id="token-count-label">Tokens: 0 / 0</span>
+                        <span id="token-count-label"></span>
                         <button id="refresh-context-btn" class="icon-btn" title="Refresh Context"><i class="codicon codicon-refresh"></i></button>
                     </div>
-                    <div id="context-loading-spinner" style="display: none; align-items: center; gap: 8px; font-size: 0.9em; color: var(--vscode-descriptionForeground);">
-                        <div class="spinner"></div>
-                        <span id="loading-files-text"></span>
-                    </div>
                 </div>
-                <div class="model-selector-container">
-                    <label for="model-selector">Model:</label>
-                    <select id="model-selector"></select>
-                    <button id="refresh-models-btn" title="Refresh Models" class="icon-btn"><i class="codicon codicon-refresh"></i></button>
-                </div>
-                <div class="model-selector-container">
-                    <label for="personality-selector">Persona:</label>
-                    <select id="personality-selector"></select>
-                </div>
-                <div class="agent-mode-toggle">
-                    <span>🤖 Agent Mode</span>
-                    <label class="switch">
-                        <input type="checkbox" id="agentModeCheckbox">
-                        <span class="slider"></span>
-                    </label>
+                
+                <div id="context-loading-spinner" style="display: none; align-items: center; gap: 8px; font-size: 0.9em; color: var(--vscode-descriptionForeground);">
+                    <div class="spinner"></div>
+                    <span id="loading-files-text"></span>
                 </div>
             </div>
             <div class="input-area">
                 <div class="control-buttons">
-                    <button id="moreActionsButton" title="More Actions"><i class="codicon codicon-ellipsis"></i></button>
+                    <button id="moreActionsButton" title="Menu"><i class="codicon codicon-menu"></i></button>
                 </div>
                 
                 <textarea id="messageInput" placeholder="Enter your message (Shift+Enter for new line)..."></textarea>

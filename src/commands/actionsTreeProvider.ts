@@ -44,7 +44,10 @@ export class ActionsTreeProvider implements vscode.TreeDataProvider<ActionItem> 
             new ActionItem('Export Context', 'lollms-vs-coder.exportContextContent', 'clippy', 'Copy the full project context to the clipboard'),
             new ActionItem('Save Context Selection', 'lollms-vs-coder.saveContextSelection', 'save', 'Save the current file selection to a .lollms-ctx file'),
             new ActionItem('Load Context Selection', 'lollms-vs-coder.loadContextSelection', 'folder-opened', 'Load a file selection from a .lollms-ctx file'),
-            new ActionItem('Reset Context', 'lollms-vs-coder.resetContextSelection', 'clear-all', 'Reset all file context states to default'),
+            // Updated item for Soft Reset
+            new ActionItem('Reset Included Files', 'lollms-vs-coder.resetContextSelection', 'clear-all', 'Deselect all included files (keeps exclusions)'),
+            // New item for Full Reset
+            new ActionItem('Full Context Reset', 'lollms-vs-coder.fullResetContext', 'trash', 'Reset entire context state to defaults'),
         ];
 
         return Promise.resolve(actions);

@@ -70,8 +70,8 @@ export class GitIntegration {
     const stripped = stripThinkingTags(rawResponse).trim();
 
     // 1. Try to extract from code block (Preferred)
-    // Relaxed regex: matches ``` ... ``` with any leading/trailing whitespace inside
-    const codeBlockMatch = stripped.match(/```(?:[\w\s]*)\s+([\s\S]+?)\s*```/);
+    // Relaxed regex: matches ``` ... ``` with any leading/trailing whitespace inside, allows language:path syntax
+    const codeBlockMatch = stripped.match(/```(?:[^\n]*)\s+([\s\S]+?)\s*```/);
     if (codeBlockMatch && codeBlockMatch[1]) {
         return codeBlockMatch[1].trim();
     }
@@ -246,21 +246,26 @@ export class GitIntegration {
               const pos = document.positionAt(match.index + match.length);
               edit.insert(changelogPath, pos, `\n${newEntry}`);
           } else {
+              // Fallback to Date/Time if Unreleased not found
+              const now = new Date();
+              const dateTimeStr = now.toISOString().replace('T', ' ').substring(0, 16); // YYYY-MM-DD HH:mm
+              const headerTitle = `## [${dateTimeStr}]`;
+
               // Try to find the first heading level 2 (e.g. ## [1.0.0])
               const firstVersionHeader = /^##\s+/m.exec(text);
               if (firstVersionHeader) {
-                  // Insert [Unreleased] section before it
+                  // Insert before the first version header
                   const pos = document.positionAt(firstVersionHeader.index);
-                  edit.insert(changelogPath, pos, `## [Unreleased]\n\n${newEntry}\n\n`);
+                  edit.insert(changelogPath, pos, `${headerTitle}\n\n${newEntry}\n\n`);
               } else {
                   // No structure found, just append to top after title if exists, or very top
                   const titleMatch = /^#\s+/m.exec(text);
                   if (titleMatch) {
                       const pos = document.positionAt(titleMatch.index + titleMatch.length + text.split('\n')[document.positionAt(titleMatch.index).line].length);
-                      edit.insert(changelogPath, pos, `\n\n## [Unreleased]\n\n${newEntry}`);
+                      edit.insert(changelogPath, pos, `\n\n${headerTitle}\n\n${newEntry}`);
                   } else {
                       // Insert at the very beginning
-                      edit.insert(changelogPath, new vscode.Position(0, 0), `# Changelog\n\n## [Unreleased]\n\n${newEntry}\n\n`);
+                      edit.insert(changelogPath, new vscode.Position(0, 0), `# Changelog\n\n${headerTitle}\n\n${newEntry}\n\n`);
                   }
               }
           }

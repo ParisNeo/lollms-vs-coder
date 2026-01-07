@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
-import { getProcessedSystemPrompt, stripThinkingTags, DiscussionCapabilities } from './utils';
+import { getProcessedSystemPrompt, stripThinkingTags, DiscussionCapabilities, HerdParticipant } from './utils';
 import { ProcessManager } from './processManager';
 import { Plan } from './tools/tool';
 
@@ -14,7 +14,7 @@ export interface Discussion {
     plan?: Plan | null; 
     model?: string;
     capabilities?: DiscussionCapabilities; 
-    personalityId?: string; // NEW
+    personalityId?: string; 
 }
 
 export interface DiscussionGroup {
@@ -58,8 +58,11 @@ export class DiscussionManager {
     public getLastCapabilities(): DiscussionCapabilities {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const allowedFormats = config.get<any>('allowedFileFormats') || { fullFile: true, insert: false, replace: false, delete: false };
+        const herdParticipants = config.get<HerdParticipant[]>('herdParticipants') || [];
+        const herdRounds = config.get<number>('herdRounds') || 2;
 
-        return this.context.globalState.get<DiscussionCapabilities>('lollms_last_capabilities') || {
+        // Default Capabilities
+        const defaults: DiscussionCapabilities = {
             codeGenType: 'full',
             allowedFormats: allowedFormats,
             fileRename: true,
@@ -71,8 +74,25 @@ export class DiscussionManager {
             arxivSearch: false,
             funMode: false,
             thinkingMode: 'none',
-            gitCommit: true
+            gitCommit: true,
+            herdMode: false,
+            herdParticipants: herdParticipants,
+            herdRounds: herdRounds
         };
+
+        const saved = this.context.globalState.get<DiscussionCapabilities>('lollms_last_capabilities');
+        
+        if (saved) {
+            // Merge saved with defaults to ensure new fields/structure are present
+            // We overwrite the saved herdParticipants with global defaults if the saved one is undefined or empty
+            // This ensures new config structure propagates
+            const merged = { ...defaults, ...saved };
+            if (!merged.herdParticipants) merged.herdParticipants = defaults.herdParticipants;
+            if (!merged.herdRounds) merged.herdRounds = defaults.herdRounds;
+            
+            return merged;
+        }
+        return defaults;
     }
 
     createNewDiscussion(groupId: string | null = null): Discussion {
@@ -86,7 +106,7 @@ export class DiscussionManager {
             groupId,
             plan: null,
             capabilities: caps,
-            personalityId: 'default_coder' // Default personality
+            personalityId: 'default_coder' 
         };
     }
 
@@ -178,10 +198,8 @@ export class DiscussionManager {
     }
 
     async generateDiscussionTitle(discussion: Discussion): Promise<string | null> {
-        // ... (existing implementation)
         if (discussion.messages.length === 0) return null;
-        // ...
-        // Reusing existing logic...
+        
         const systemPrompt: ChatMessage = {
             role: 'system',
             content: `You are a title generation AI. Your sole purpose is to create a concise, descriptive title (5 words or less) for a conversation based on the user's initial input.

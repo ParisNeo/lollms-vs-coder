@@ -52,6 +52,18 @@ export function handleExtensionMessage(event: MessageEvent) {
                     renderMessageContent(message.id, message.fullContent, true);
                 }
                 break;
+            case 'updateMessage':
+                {
+                    const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
+                    if (wrapper) {
+                        const msgDiv = wrapper.querySelector('.message') as HTMLElement;
+                        if (msgDiv) {
+                            msgDiv.dataset.originalContent = JSON.stringify(message.newContent);
+                        }
+                    }
+                    renderMessageContent(message.messageId, message.newContent, true);
+                }
+                break;
             case 'setGeneratingState':
                 setGeneratingState(message.isGenerating);
                 break;
@@ -120,15 +132,35 @@ export function handleExtensionMessage(event: MessageEvent) {
                     if(dom.capWebSearch) dom.capWebSearch.checked = caps.webSearch;
                     if(dom.capArxivSearch) dom.capArxivSearch.checked = caps.arxivSearch;
                     
-                    // NEW: Git Commit
+                    // Git Commit
                     if(dom.capGitCommit) dom.capGitCommit.checked = caps.gitCommit;
                     
                     if(dom.modeFunMode) dom.modeFunMode.checked = caps.funMode;
-                    if(dom.modeHeavyCot) dom.modeHeavyCot.checked = caps.heavyCot;
                     
-                    // NEW: Update Thinking Mode selector
+                    // Update Thinking Mode selector
                     if (dom.capThinkingMode && caps.thinkingMode) {
                         dom.capThinkingMode.value = caps.thinkingMode;
+                    }
+
+                    // Update Herd Mode Inputs (Modal & Menu)
+                    if (dom.capHerdMode) dom.capHerdMode.checked = caps.herdMode || false;
+                    if (dom.herdModeCheckbox) dom.herdModeCheckbox.checked = caps.herdMode || false;
+                    if (dom.capHerdRounds) dom.capHerdRounds.value = caps.herdRounds || 2;
+                    
+                    if (dom.herdConfigSection) {
+                        dom.herdConfigSection.style.display = caps.herdMode ? 'block' : 'none';
+                    }
+
+                    // Update Herd Models Checkboxes in Modal (if list exists there)
+                    if (dom.herdModelsList) {
+                        const checkboxes = dom.herdModelsList.querySelectorAll('input[type="checkbox"]');
+                        checkboxes.forEach((cb: any) => {
+                            if (caps.herdModels && caps.herdModels.includes(cb.value)) {
+                                cb.checked = true;
+                            } else {
+                                cb.checked = false;
+                            }
+                        });
                     }
 
                     // Update Visual Indicators
@@ -143,6 +175,23 @@ export function handleExtensionMessage(event: MessageEvent) {
                     if (dom.webSearchIndicator) {
                         dom.webSearchIndicator.style.display = caps.webSearch ? 'flex' : 'none';
                     }
+                    
+                    // Update Badges
+                    if (dom.activeBadges) {
+                        dom.activeBadges.innerHTML = '';
+                        if (dom.modelSelector && dom.modelSelector.value) {
+                            dom.activeBadges.innerHTML += `<span class="mode-badge model" title="Current Model">${dom.modelSelector.value}</span>`;
+                        }
+                        if (dom.agentModeCheckbox && dom.agentModeCheckbox.checked) {
+                            dom.activeBadges.innerHTML += `<span class="mode-badge agent" title="Agent Mode Active">🤖 Agent</span>`;
+                        }
+                        if (dom.autoContextCheckbox && dom.autoContextCheckbox.checked) {
+                            dom.activeBadges.innerHTML += `<span class="mode-badge autocontext" title="Auto Context Active">🧠 AutoCtx</span>`;
+                        }
+                        if (caps.herdMode) {
+                            dom.activeBadges.innerHTML += `<span class="mode-badge herd" title="Herd Mode Active">🐂 Herd</span>`;
+                        }
+                    }
                 }
                 break;
             
@@ -151,7 +200,6 @@ export function handleExtensionMessage(event: MessageEvent) {
                     const mode = message.mode;
                     if (mode && mode !== 'none' && mode !== 'no_think') {
                         dom.thinkingIndicator.style.display = 'flex';
-                        // Format label based on mode enum (e.g. chain_of_thought -> Chain of Thought)
                         let label = mode.replace(/_/g, ' ').replace(/\b\w/g, (l:string) => l.toUpperCase());
                         dom.thinkingIndicator.querySelector('span')!.textContent = label;
                     } else {
@@ -167,15 +215,21 @@ export function handleExtensionMessage(event: MessageEvent) {
                 }
                 if(dom.modelSelector) {
                     dom.modelSelector.innerHTML = '<option value="">Default Model</option>';
-                    if (Array.isArray(message.models)) {
-                        message.models.forEach((model: {id: string}) => {
-                            const option = document.createElement('option');
-                            option.value = model.id;
-                            option.textContent = model.id;
-                            dom.modelSelector.appendChild(option);
-                        });
-                    }
+                    const models = message.models || [];
+                    models.forEach((model: {id: string}) => {
+                        const option = document.createElement('option');
+                        option.value = model.id;
+                        option.textContent = model.id;
+                        dom.modelSelector.appendChild(option);
+                    });
                     dom.modelSelector.value = message.currentModel || '';
+                    
+                    // Update Badge immediately
+                    if (dom.activeBadges) {
+                        const existingBadge = dom.activeBadges.querySelector('.mode-badge.model');
+                        if(existingBadge) existingBadge.textContent = dom.modelSelector.value || "Default";
+                        else dom.activeBadges.innerHTML = `<span class="mode-badge model" title="Current Model">${dom.modelSelector.value || "Default"}</span>` + dom.activeBadges.innerHTML;
+                    }
                 }
                 break;
             case 'updatePersonalities':
@@ -245,6 +299,15 @@ export function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'updateAgentMode':
                 if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = message.isActive;
+                // Sync badge
+                if (dom.activeBadges) {
+                    const existing = dom.activeBadges.querySelector('.mode-badge.agent');
+                    if (message.isActive && !existing) {
+                        dom.activeBadges.innerHTML += `<span class="mode-badge agent" title="Agent Mode Active">🤖 Agent</span>`;
+                    } else if (!message.isActive && existing) {
+                        existing.remove();
+                    }
+                }
                 if (!message.isActive) setGeneratingState(false);
                 break;
             case 'error':
@@ -254,6 +317,8 @@ export function handleExtensionMessage(event: MessageEvent) {
             case 'setInputText':
                 if (dom.messageInput) {
                     dom.messageInput.value = message.text;
+                    // Trigger input event to resize textarea
+                    dom.messageInput.dispatchEvent(new Event('input'));
                     dom.messageInput.focus();
                 }
                 break;

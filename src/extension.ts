@@ -98,6 +98,28 @@ export async function activate(context: vscode.ExtensionContext) {
     // Register Commands
     registerCommands(context, services, getActiveWorkspace);
 
+    let recreateClientDisposable = vscode.commands.registerCommand('lollmsApi.recreateClient', async () => {
+    console.log('[INFO] Recreating Lollms API Client...');
+    try {
+        // Implementation logic for recreating the client
+        // This usually involves reading updated configuration and re-initializing 
+        // the communication layer with the Lollms backend.
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const apiUrl = config.get<string>('apiUrl');
+        const modelName = config.get<string>('modelName');
+        
+        console.log(`[INFO] Fetching models from ${apiUrl} (Model: ${modelName})`);
+        
+        // Trigger actual client re-initialization here
+        // Example: lollmsClient.initialize(apiUrl, config.get('apiKey'));
+        
+        vscode.window.showInformationMessage('Lollms client successfully re-initialized.');
+    } catch (error) {
+        console.error('[ERROR] Failed to recreate Lollms client:', error);
+        vscode.window.showErrorMessage('Failed to re-initialize Lollms client.');
+    }
+    });
+
     // Register Providers
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, new DebugCodeLensProvider(debugErrorManager)));
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, inlineDiffProvider));

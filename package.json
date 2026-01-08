@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.56",
+  "version": "0.5.57",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -788,6 +788,16 @@
           "type": "string",
           "default": "",
           "description": "Brief description of your preferred coding style (e.g., 'Functional', 'PEP8', 'Concise')."
+        },
+        "lollmsVsCoder.herdParticipants": {
+          "type": "array",
+          "default": [],
+          "description": "List of models and personalities participating in Herd Mode sessions."
+        },
+        "lollmsVsCoder.herdRounds": {
+          "type": "number",
+          "default": 2,
+          "description": "Default number of rounds for Herd Mode brainstorming."
         }
       }
     },

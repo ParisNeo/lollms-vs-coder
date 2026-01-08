@@ -535,7 +535,6 @@ export class LollmsAPI {
                 }
 
                 const chunkText = decoder.decode(chunk as any, { stream: true });
-                Logger.debug(`[Raw Chunk] ${chunkText.length} bytes`); 
 
                 buffer += chunkText;
                 const lines = buffer.split('\n');

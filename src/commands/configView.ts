@@ -57,7 +57,6 @@ export class SettingsPanel {
     userInfoEmail: '',
     userInfoLicense: '',
     userInfoCodingStyle: '',
-    // Herd Mode
     herdParticipants: [] as HerdParticipant[],
     herdRounds: 2
   };
@@ -140,7 +139,6 @@ export class SettingsPanel {
     this._pendingConfig.userInfoLicense = config.get<string>('userInfo.license') || 'MIT';
     this._pendingConfig.userInfoCodingStyle = config.get<string>('userInfo.codingStyle') || '';
     
-    // Load Herd Mode settings
     this._pendingConfig.herdParticipants = config.get<HerdParticipant[]>('herdParticipants') || [];
     this._pendingConfig.herdRounds = config.get<number>('herdRounds') || 2;
 
@@ -214,7 +212,7 @@ export class SettingsPanel {
                 } else {
                     vscode.window.showErrorMessage(result.message, { modal: true, detail: result.details }).then(selection => {
                         if (selection === 'Show Details') {
-                            Logger.error(result.message + '\n' + result.details);
+                            Logger.error('Connection test failed: ' + result.message + '\n' + result.details);
                             Logger.show();
                         }
                     });
@@ -223,61 +221,97 @@ export class SettingsPanel {
   
             case 'saveConfig':
               try {
+                Logger.info('=== START SAVE CONFIGURATION ===');
+                
                 if (this._pendingConfig.sslCertPath) {
-                    this._pendingConfig.sslCertPath = this._pendingConfig.sslCertPath.replace(/^['"]|['"]$/g, '').trim();
+                  this._pendingConfig.sslCertPath = this._pendingConfig.sslCertPath
+                    .replace(/^['"]|['"]$/g, '')
+                    .trim();
                 }
 
                 const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-                await config.update('apiKey', this._pendingConfig.apiKey, vscode.ConfigurationTarget.Global);
-                await config.update('apiUrl', this._pendingConfig.apiUrl, vscode.ConfigurationTarget.Global);
-                await config.update('backendType', this._pendingConfig.backendType, vscode.ConfigurationTarget.Global);
-                await config.update('useLollmsExtensions', this._pendingConfig.useLollmsExtensions, vscode.ConfigurationTarget.Global);
-                await config.update('modelName', this._pendingConfig.modelName, vscode.ConfigurationTarget.Global);
-                await config.update('disableSslVerification', this._pendingConfig.disableSslVerification, vscode.ConfigurationTarget.Global);
-                await config.update('sslCertPath', this._pendingConfig.sslCertPath, vscode.ConfigurationTarget.Global);
-                await config.update('requestTimeout', this._pendingConfig.requestTimeout, vscode.ConfigurationTarget.Global);
-                await config.update('agentMaxRetries', this._pendingConfig.agentMaxRetries, vscode.ConfigurationTarget.Global);
-                await config.update('maxImageSize', this._pendingConfig.maxImageSize, vscode.ConfigurationTarget.Global);
-                await config.update('enableCodeInspector', this._pendingConfig.enableCodeInspector, vscode.ConfigurationTarget.Global);
-                await config.update('inspectorModelName', this._pendingConfig.inspectorModelName, vscode.ConfigurationTarget.Global);
-                await config.update('codeInspectorPersona', this._pendingConfig.codeInspectorPersona, vscode.ConfigurationTarget.Global);
-                await config.update('chatPersona', this._pendingConfig.chatPersona, vscode.ConfigurationTarget.Global);
-                await config.update('agentPersona', this._pendingConfig.agentPersona, vscode.ConfigurationTarget.Global);
-                await config.update('commitMessagePersona', this._pendingConfig.commitMessagePersona, vscode.ConfigurationTarget.Global);
-                await config.update('contextFileExceptions', this._pendingConfig.contextFileExceptions, vscode.ConfigurationTarget.Global);
-                await config.update('language', this._pendingConfig.language, vscode.ConfigurationTarget.Global);
-                await config.update('thinkingMode', this._pendingConfig.thinkingMode, vscode.ConfigurationTarget.Global);
-                await config.update('outputFormat', this._pendingConfig.outputFormat, vscode.ConfigurationTarget.Global);
-                
-                await config.update('allowedFileFormats', this._pendingConfig.allowedFileFormats, vscode.ConfigurationTarget.Global);
+                const target = vscode.workspace.workspaceFolders?.length
+                  ? vscode.ConfigurationTarget.Workspace
+                  : vscode.ConfigurationTarget.Global;
 
-                await config.update('thinkingModeCustomPrompt', this._pendingConfig.thinkingModeCustomPrompt, vscode.ConfigurationTarget.Global);
-                await config.update('reasoningLevel', this._pendingConfig.reasoningLevel, vscode.ConfigurationTarget.Global);
-                await config.update('failsafeContextSize', this._pendingConfig.failsafeContextSize, vscode.ConfigurationTarget.Global);
-                await config.update('searchProvider', this._pendingConfig.searchProvider, vscode.ConfigurationTarget.Global);
-                await config.update('searchApiKey', this._pendingConfig.searchApiKey, vscode.ConfigurationTarget.Global);
-                await config.update('searchCx', this._pendingConfig.searchCx, vscode.ConfigurationTarget.Global);
-                await config.update('autoUpdateChangelog', this._pendingConfig.autoUpdateChangelog, vscode.ConfigurationTarget.Global);
-                await config.update('autoGenerateTitle', this._pendingConfig.autoGenerateTitle, vscode.ConfigurationTarget.Global);
-                await config.update('addPedagogicalInstruction', this._pendingConfig.addPedagogicalInstruction, vscode.ConfigurationTarget.Global);
-                await config.update('clipboardInsertRole', this._pendingConfig.clipboardInsertRole, vscode.ConfigurationTarget.Global);
-                await config.update('companion.enableWebSearch', this._pendingConfig.companionEnableWebSearch, vscode.ConfigurationTarget.Global);
-                await config.update('companion.enableArxivSearch', this._pendingConfig.companionEnableArxivSearch, vscode.ConfigurationTarget.Global);
-                await config.update('userInfo.name', this._pendingConfig.userInfoName, vscode.ConfigurationTarget.Global);
-                await config.update('userInfo.email', this._pendingConfig.userInfoEmail, vscode.ConfigurationTarget.Global);
-                await config.update('userInfo.license', this._pendingConfig.userInfoLicense, vscode.ConfigurationTarget.Global);
-                await config.update('userInfo.codingStyle', this._pendingConfig.userInfoCodingStyle, vscode.ConfigurationTarget.Global);
-                
-                // Save Herd Mode settings
-                await config.update('herdParticipants', this._pendingConfig.herdParticipants, vscode.ConfigurationTarget.Global);
-                await config.update('herdRounds', this._pendingConfig.herdRounds, vscode.ConfigurationTarget.Global);
-  
-                vscode.window.showInformationMessage(vscode.l10n.t({ key: 'info.configSaved', message: 'Configuration saved. Recreating LollmsAPI...' }));
-                await vscode.commands.executeCommand('lollmsApi.recreateClient');
-                SettingsPanel.currentPanel?.dispose();
+                const failures: { key: string; error: string }[] = [];
+
+                const safeUpdate = async (key: string, value: any) => {
+                  try {
+                    Logger.debug(`Updating config key '${key}'`, value);
+                    await config.update(key, value, target);
+                    Logger.debug(`Successfully updated '${key}'`);
+                  } catch (e) {
+                    const errorMsg = e instanceof Error ? e.message : String(e);
+                    Logger.error(`Failed to update config key '${key}': ${errorMsg}`, e);
+                    failures.push({ key, error: errorMsg });
+                  }
+                };
+
+                const updates: [string, any][] = [
+                  ['apiKey', this._pendingConfig.apiKey],
+                  ['apiUrl', this._pendingConfig.apiUrl],
+                  ['backendType', this._pendingConfig.backendType],
+                  ['useLollmsExtensions', this._pendingConfig.useLollmsExtensions],
+                  ['modelName', this._pendingConfig.modelName],
+                  ['disableSslVerification', this._pendingConfig.disableSslVerification],
+                  ['sslCertPath', this._pendingConfig.sslCertPath],
+                  ['requestTimeout', this._pendingConfig.requestTimeout],
+                  ['agentMaxRetries', this._pendingConfig.agentMaxRetries],
+                  ['maxImageSize', this._pendingConfig.maxImageSize],
+                  ['enableCodeInspector', this._pendingConfig.enableCodeInspector],
+                  ['inspectorModelName', this._pendingConfig.inspectorModelName],
+                  ['codeInspectorPersona', this._pendingConfig.codeInspectorPersona],
+                  ['chatPersona', this._pendingConfig.chatPersona],
+                  ['agentPersona', this._pendingConfig.agentPersona],
+                  ['commitMessagePersona', this._pendingConfig.commitMessagePersona],
+                  ['contextFileExceptions', this._pendingConfig.contextFileExceptions],
+                  ['language', this._pendingConfig.language],
+                  ['thinkingMode', this._pendingConfig.thinkingMode],
+                  ['outputFormat', this._pendingConfig.outputFormat],
+                  ['allowedFileFormats', this._pendingConfig.allowedFileFormats],
+                  ['thinkingModeCustomPrompt', this._pendingConfig.thinkingModeCustomPrompt],
+                  ['reasoningLevel', this._pendingConfig.reasoningLevel],
+                  ['failsafeContextSize', this._pendingConfig.failsafeContextSize],
+                  ['searchProvider', this._pendingConfig.searchProvider],
+                  ['searchApiKey', this._pendingConfig.searchApiKey],
+                  ['searchCx', this._pendingConfig.searchCx],
+                  ['autoUpdateChangelog', this._pendingConfig.autoUpdateChangelog],
+                  ['autoGenerateTitle', this._pendingConfig.autoGenerateTitle],
+                  ['addPedagogicalInstruction', this._pendingConfig.addPedagogicalInstruction],
+                  ['clipboardInsertRole', this._pendingConfig.clipboardInsertRole],
+                  ['companion.enableWebSearch', this._pendingConfig.companionEnableWebSearch],
+                  ['companion.enableArxivSearch', this._pendingConfig.companionEnableArxivSearch],
+                  ['userInfo.name', this._pendingConfig.userInfoName],
+                  ['userInfo.email', this._pendingConfig.userInfoEmail],
+                  ['userInfo.license', this._pendingConfig.userInfoLicense],
+                  ['userInfo.codingStyle', this._pendingConfig.userInfoCodingStyle],
+                  ['herdParticipants', this._pendingConfig.herdParticipants],
+                  ['herdRounds', this._pendingConfig.herdRounds],
+                ];
+
+                for (const [key, value] of updates) {
+                  await safeUpdate(key, value);
+                }
+
+                if (failures.length === 0) {
+                  vscode.window.showInformationMessage(
+                    vscode.l10n.t({ key: 'info.configSaved', message: 'Configuration saved. Recreating LollmsAPI...' })
+                  );
+                  Logger.info('Configuration saved successfully. Recreating LollmsAPI...');
+                  await vscode.commands.executeCommand('lollmsApi.recreateClient');
+                  SettingsPanel.currentPanel?.dispose();
+                } else {
+                  const errorDetails = failures.map(f => `  • ${f.key}: ${f.error}`).join('\n');
+                  const failMsg = `Configuration saved with ${failures.length} error(s):\n\n${errorDetails}\n\nCheck the Log tab for full details.`;
+                  vscode.window.showErrorMessage(failMsg, { modal: true });
+                  Logger.error('Configuration saved with failures', { failures });
+                }
+
+                Logger.info('=== END SAVE CONFIGURATION ===');
               } catch (err) {
-                vscode.window.showErrorMessage('Failed to save configuration.');
-                Logger.error('Failed to save configuration', err);
+                vscode.window.showErrorMessage('Failed to save configuration (unexpected error).');
+                Logger.error('Unexpected error during configuration save', err);
               }
               return;
   
@@ -318,6 +352,14 @@ export class SettingsPanel {
             case 'createPersonality':
                 await vscode.commands.executeCommand('lollms-vs-coder.createPersonality');
                 return;
+
+            case 'requestLog':
+                const logContent = Logger.getLogContent();
+                this._panel.webview.postMessage({ 
+                    command: 'logData', 
+                    content: logContent 
+                });
+                return;
           }
         },
         undefined,
@@ -349,129 +391,514 @@ export class SettingsPanel {
             <title>${t('config.title', 'Lollms VS Coder Configuration')}</title>
             <link href="${webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'codicon.css'))}" rel="stylesheet" />
             <style>
+              :root {
+                --primary-accent: #007acc;
+                --primary-accent-hover: #005a9e;
+                --success-color: #4ec9b0;
+                --warning-color: #ce9178;
+                --error-color: #f48771;
+                --border-radius: 8px;
+                --border-radius-sm: 4px;
+                --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.15);
+                --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.2);
+                --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+              }
+
               body, html {
-                height: 100%; margin: 0; padding: 0;
-                font-family: var(--vscode-font-family);
-                background-color: var(--vscode-editor-background);
+                height: 100%; width:100%; margin: 0; padding: 0;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+                background: linear-gradient(135deg, var(--vscode-editor-background) 0%, color-mix(in srgb, var(--vscode-editor-background) 95%, var(--primary-accent)) 100%);
                 color: var(--vscode-editor-foreground);
+                font-size: 14px;
+                line-height: 1.6;
               }
-              .container {
-                padding: 20px; height: 100%; box-sizing: border-box;
-                display: flex; flex-direction: column; max-width: 850px; margin: 0 auto;
-              }
-              h1 { font-weight: 300; text-align: center; margin-bottom: 20px; }
               
+              .container {
+                padding: 32px 24px; 
+                height: 100%; 
+                box-sizing: border-box;
+                display: flex; 
+                flex-direction: column; 
+                max-width: 1000px; 
+                margin: 0 auto;
+              }
+              
+              h1 { 
+                font-weight: 600; 
+                text-align: center; 
+                margin-bottom: 32px;
+                font-size: 28px;
+                background: linear-gradient(135deg, var(--primary-accent), var(--success-color));
+                -webkit-background-clip: text;
+                -webkit-text-fill-color: transparent;
+                background-clip: text;
+                letter-spacing: -0.5px;
+              }
+              
+              /* Enhanced Tabs */
               .tabs {
                 display: flex;
-                border-bottom: 1px solid var(--vscode-panel-border);
-                margin-bottom: 20px;
+                background: var(--vscode-editorWidget-background);
+                border-radius: var(--border-radius);
+                padding: 6px;
+                margin-bottom: 24px;
                 flex-wrap: wrap;
+                gap: 4px;
+                box-shadow: var(--shadow-sm);
+                border: 1px solid var(--vscode-panel-border);
               }
+              
               .tab-link {
-                background-color: transparent;
+                background: transparent;
                 border: none;
-                border-bottom: 2px solid transparent;
                 outline: none;
                 cursor: pointer;
-                padding: 10px 16px;
-                transition: 0.3s;
+                padding: 10px 18px;
+                transition: var(--transition);
                 color: var(--vscode-foreground);
-                font-size: 14px;
+                font-size: 13px;
+                font-weight: 500;
                 opacity: 0.7;
-                width: auto;
-                margin-top: 0;
+                border-radius: var(--border-radius-sm);
+                position: relative;
+                overflow: hidden;
               }
-              .tab-link:hover { opacity: 1; }
+              
+              .tab-link::before {
+                content: '';
+                position: absolute;
+                top: 0;
+                left: 0;
+                right: 0;
+                bottom: 0;
+                background: linear-gradient(135deg, var(--primary-accent), var(--success-color));
+                opacity: 0;
+                transition: var(--transition);
+                z-index: -1;
+              }
+              
+              .tab-link:hover { 
+                opacity: 1;
+                transform: translateY(-1px);
+              }
+              
               .tab-link.active {
                 opacity: 1;
-                border-bottom: 2px solid var(--vscode-button-background);
-                color: var(--vscode-button-background);
+                color: white;
                 font-weight: 600;
+                box-shadow: var(--shadow-sm);
               }
+              
+              .tab-link.active::before {
+                opacity: 1;
+              }
+              
+              /* Tab Content */
               .tab-content {
                 display: none;
                 flex-grow: 1;
                 overflow-y: auto;
-                padding-right: 15px;
-                animation: fadeEffect 0.2s;
+                padding: 24px;
+                background: var(--vscode-editor-background);
+                border-radius: var(--border-radius);
+                box-shadow: var(--shadow-sm);
+                border: 1px solid var(--vscode-panel-border);
+                animation: slideIn 0.3s ease-out;
               }
-              .tab-content.active { display: block; }
               
-              @keyframes fadeEffect {
-                from {opacity: 0;}
-                to {opacity: 1;}
+              .tab-content.active { 
+                display: block; 
+              }
+              
+              @keyframes slideIn {
+                from {
+                  opacity: 0;
+                  transform: translateY(10px);
+                }
+                to {
+                  opacity: 1;
+                  transform: translateY(0);
+                }
               }
 
-              h2 { font-weight: 400; border-bottom: 1px solid var(--vscode-panel-border); padding-bottom: 5px; margin-top: 0; margin-bottom: 15px; }
-              h3 { font-size: 1.1em; margin-top: 1.5em; margin-bottom: 0.8em; opacity: 0.9; }
-
-              label { display: block; margin-top: 14px; margin-bottom: 5px; font-weight: 600; font-size: 0.9em; color: var(--vscode-description-foreground); }
-              input[type="text"], input[type="number"], input[list], textarea, select {
-                width: 100%; padding: 8px; border: 1px solid var(--vscode-input-border);
-                border-radius: 4px; background: var(--vscode-input-background);
-                color: var(--vscode-input-foreground); font-size: 0.9em; box-sizing: border-box;
-                font-family: var(--vscode-font-family);
+              /* Section Headers */
+              h2 { 
+                font-weight: 600; 
+                font-size: 20px;
+                border-bottom: 2px solid var(--primary-accent);
+                padding-bottom: 12px; 
+                margin-top: 0; 
+                margin-bottom: 24px;
+                color: var(--primary-accent);
               }
-              textarea { resize: vertical; }
+              
+              h3 { 
+                font-size: 16px; 
+                margin-top: 28px; 
+                margin-bottom: 16px; 
+                font-weight: 600;
+                color: var(--success-color);
+                display: flex;
+                align-items: center;
+                gap: 8px;
+              }
+              
+              h3::before {
+                content: '';
+                width: 4px;
+                height: 20px;
+                background: var(--success-color);
+                border-radius: 2px;
+              }
+
+              /* Form Elements */
+              label { 
+                display: block; 
+                margin-top: 18px; 
+                margin-bottom: 8px; 
+                font-weight: 600; 
+                font-size: 13px; 
+                color: var(--vscode-input-foreground);
+                letter-spacing: 0.2px;
+              }
+              
+              input[type="text"], 
+              input[type="number"], 
+              input[list], 
+              textarea, 
+              select {
+                width: 100%; 
+                padding: 10px 14px; 
+                border: 2px solid var(--vscode-input-border);
+                border-radius: var(--border-radius-sm); 
+                background: var(--vscode-input-background);
+                color: var(--vscode-input-foreground); 
+                font-size: 13px; 
+                box-sizing: border-box;
+                font-family: inherit;
+                transition: var(--transition);
+              }
+              
+              input:focus, 
+              textarea:focus, 
+              select:focus {
+                outline: none;
+                border-color: var(--primary-accent);
+                box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-accent) 20%, transparent);
+              }
+              
+              textarea { 
+                resize: vertical; 
+                min-height: 100px;
+                font-family: 'Consolas', 'Courier New', monospace;
+              }
+              
+              /* Buttons */
               button {
-                width: 100%; background-color: var(--vscode-button-background);
-                color: var(--vscode-button-foreground); border: none; padding: 10px;
-                font-size: 1em; font-weight: 600; border-radius: 4px; cursor: pointer;
-                transition: background-color 0.2s ease;
+                background: linear-gradient(135deg, var(--primary-accent), color-mix(in srgb, var(--primary-accent) 85%, var(--success-color)));
+                color: white;
+                border: none; 
+                padding: 12px 24px;
+                font-size: 14px; 
+                font-weight: 600; 
+                border-radius: var(--border-radius-sm); 
+                cursor: pointer;
+                transition: var(--transition);
+                box-shadow: var(--shadow-sm);
+                position: relative;
+                overflow: hidden;
               }
-              button.save-btn { margin-top: 20px; }
-              button:hover { background-color: var(--vscode-button-hoverBackground); }
-              button:disabled { opacity: 0.6; cursor: not-allowed; }
+              
+              button::before {
+                content: '';
+                position: absolute;
+                top: 50%;
+                left: 50%;
+                width: 0;
+                height: 0;
+                border-radius: 50%;
+                background: rgba(255, 255, 255, 0.3);
+                transform: translate(-50%, -50%);
+                transition: width 0.6s, height 0.6s;
+              }
+              
+              button:hover::before {
+                width: 300px;
+                height: 300px;
+              }
+              
+              button.save-btn { 
+                margin-top: 32px;
+                width: 100%;
+                padding: 14px;
+                font-size: 15px;
+              }
+              
+              button:hover { 
+                transform: translateY(-2px);
+                box-shadow: var(--shadow-md);
+              }
+              
+              button:active {
+                transform: translateY(0);
+              }
+              
+              button:disabled { 
+                opacity: 0.5; 
+                cursor: not-allowed;
+                transform: none;
+              }
               
               .secondary-button {
-                margin-top: 8px; padding: 6px 12px; font-size: 0.85em; width: auto;
-                background-color: var(--vscode-button-secondaryBackground);
-                color: var(--vscode-button-secondaryForeground); border: 1px solid transparent;
+                margin-top: 12px; 
+                padding: 8px 16px; 
+                font-size: 13px; 
+                width: auto;
+                background: var(--vscode-button-secondaryBackground);
+                color: var(--vscode-button-secondaryForeground);
               }
-              .secondary-button:hover { background-color: var(--vscode-button-secondaryHoverBackground); }
               
-              .help-text { font-size: 0.9em; color: var(--vscode-description-foreground); opacity: 0.9; margin-top: 4px; }
-              .checkbox-container { display: flex; align-items: center; margin-top: 10px; }
-              .checkbox-container input { margin-right: 0.5em; width: auto; }
-              .input-group { display: flex; gap: 5px; }
-              .icon-btn { width: auto; padding: 8px 10px; margin-top: 0; }
-              .persona-selector-row { display: flex; justify-content: space-between; align-items: center; margin-top: 5px; margin-bottom: 5px; }
-              .persona-selector-row select { width: 60%; font-size: 0.85em; padding: 4px; }
+              .icon-btn { 
+                width: auto; 
+                padding: 10px 14px; 
+                margin-top: 0;
+                min-width: 44px;
+              }
               
-              .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 5px; }
+              /* Helper Text */
+              .help-text { 
+                font-size: 12px; 
+                color: var(--vscode-descriptionForeground); 
+                margin-top: 6px;
+                font-style: italic;
+              }
+              
+              /* Checkbox */
+              .checkbox-container { 
+                display: flex; 
+                align-items: center; 
+                margin-top: 14px;
+                padding: 12px;
+                background: var(--vscode-editorWidget-background);
+                border-radius: var(--border-radius-sm);
+                border: 1px solid transparent;
+                transition: var(--transition);
+              }
+              
+              .checkbox-container:hover {
+                border-color: var(--primary-accent);
+              }
+              
+              .checkbox-container input { 
+                margin-right: 10px; 
+                width: 18px;
+                height: 18px;
+                cursor: pointer;
+                accent-color: var(--primary-accent);
+              }
+              
+              .checkbox-container label {
+                margin: 0;
+                cursor: pointer;
+              }
+              
+              /* Input Groups */
+              .input-group { 
+                display: flex; 
+                gap: 8px;
+              }
+              
+              .input-group input,
+              .input-group select {
+                flex: 1;
+              }
+              
+              /* Persona Selector */
+              .persona-selector-row { 
+                display: flex; 
+                justify-content: space-between; 
+                align-items: center; 
+                margin-top: 8px; 
+                margin-bottom: 8px;
+                padding: 8px 12px;
+                background: var(--vscode-editorWidget-background);
+                border-radius: var(--border-radius-sm);
+              }
+              
+              .persona-selector-row select { 
+                width: 60%; 
+                font-size: 12px; 
+                padding: 6px 10px;
+              }
+              
+              /* Grid Layout */
+              .grid-2 { 
+                display: grid; 
+                grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); 
+                gap: 12px; 
+                margin-top: 12px;
+              }
 
-              /* Herd Mode Styles */
+              /* Participant Row */
               .participant-row {
-                  display: flex;
-                  gap: 10px;
-                  align-items: center;
-                  margin-bottom: 8px;
-                  background-color: var(--vscode-editorWidget-background);
-                  padding: 8px;
-                  border-radius: 4px;
-                  border: 1px solid var(--vscode-widget-border);
+                display: flex;
+                gap: 12px;
+                align-items: center;
+                margin-bottom: 12px;
+                background: var(--vscode-editorWidget-background);
+                padding: 14px;
+                border-radius: var(--border-radius-sm);
+                border: 2px solid var(--vscode-widget-border);
+                transition: var(--transition);
               }
-              .participant-row select { flex: 1; }
-              .remove-btn { width: auto; background-color: var(--vscode-errorForeground); padding: 6px 10px; color: white; }
-              .remove-btn:hover { opacity: 0.8; background-color: var(--vscode-errorForeground); }
+              
+              .participant-row:hover {
+                border-color: var(--primary-accent);
+                box-shadow: var(--shadow-sm);
+              }
+              
+              .participant-row select { 
+                flex: 1;
+              }
+              
+              .remove-btn { 
+                width: auto; 
+                background: var(--error-color);
+                padding: 8px 14px;
+              }
+              
+              .remove-btn:hover { 
+                background: color-mix(in srgb, var(--error-color) 85%, black);
+              }
 
-              @keyframes spin { 100% { transform: rotate(360deg); } }
-              .spin { animation: spin 1s linear infinite; }
+              /* Log Container */
+              .log-container {
+                background: var(--vscode-editorWidget-background);
+                padding: 16px;
+                border-radius: var(--border-radius-sm);
+                border: 2px solid var(--vscode-widget-border);
+                height: 450px;
+                overflow: auto;
+                position: relative;
+                font-family: 'Consolas', 'Courier New', monospace;
+                font-size: 12px;
+              }
+              
+              .log-container pre {
+                margin: 0;
+                white-space: pre-wrap;
+                word-break: break-word;
+                color: var(--vscode-editor-foreground);
+              }
+              
+              .copy-log-btn {
+                position: absolute;
+                top: 12px;
+                right: 12px;
+                padding: 8px 16px;
+                font-size: 12px;
+                z-index: 10;
+              }
+
+              /* Scrollbar Styling */
+              .tab-content::-webkit-scrollbar,
+              .log-container::-webkit-scrollbar {
+                width: 10px;
+              }
+              
+              .tab-content::-webkit-scrollbar-track,
+              .log-container::-webkit-scrollbar-track {
+                background: var(--vscode-scrollbarSlider-background);
+                border-radius: 5px;
+              }
+              
+              .tab-content::-webkit-scrollbar-thumb,
+              .log-container::-webkit-scrollbar-thumb {
+                background: var(--vscode-scrollbarSlider-hoverBackground);
+                border-radius: 5px;
+              }
+              
+              .tab-content::-webkit-scrollbar-thumb:hover,
+              .log-container::-webkit-scrollbar-thumb:hover {
+                background: var(--vscode-scrollbarSlider-activeBackground);
+              }
+
+              /* Animations */
+              @keyframes spin { 
+                100% { transform: rotate(360deg); } 
+              }
+              
+              .spin { 
+                animation: spin 1s linear infinite; 
+              }
+              
+              /* Status Indicator */
+              .status-indicator {
+                display: inline-block;
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                margin-right: 6px;
+                animation: pulse 2s ease-in-out infinite;
+              }
+              
+              @keyframes pulse {
+                0%, 100% { opacity: 1; }
+                50% { opacity: 0.5; }
+              }
+              
+              .status-indicator.connected {
+                background: var(--success-color);
+              }
+              
+              .status-indicator.disconnected {
+                background: var(--error-color);
+              }
+
+              /* Responsive Design */
+              @media (max-width: 768px) {
+                .container {
+                  padding: 20px 16px;
+                }
+                
+                h1 {
+                  font-size: 24px;
+                  margin-bottom: 24px;
+                }
+                
+                .tabs {
+                  padding: 4px;
+                }
+                
+                .tab-link {
+                  padding: 8px 12px;
+                  font-size: 12px;
+                }
+                
+                .tab-content {
+                  padding: 16px;
+                }
+                
+                .grid-2 {
+                  grid-template-columns: 1fr;
+                }
+              }
             </style>
         </head>
         <body>
           <div class="container">
-            <h1>${t('config.title', 'Lollms VS Coder Configuration')}</h1>
-            
+            <h1>⚙️ ${t('config.title', 'Lollms VS Coder Configuration')}</h1>
+          
             <div class="tabs">
-              <button class="tab-link active" onclick="openTab(event, 'TabApi')">API & Model</button>
-              <button class="tab-link" onclick="openTab(event, 'TabGeneral')">General</button>
-              <button class="tab-link" onclick="openTab(event, 'TabContext')">Context</button>
-              <button class="tab-link" onclick="openTab(event, 'TabAgent')">Agent & Tools</button>
-              <button class="tab-link" onclick="openTab(event, 'TabHerd')">Herd Mode</button>
-              <button class="tab-link" onclick="openTab(event, 'TabPersonas')">Personas</button>
-              <button class="tab-link" onclick="openTab(event, 'TabUser')">User Info</button>
-              <button class="tab-link" onclick="openTab(event, 'TabAdvanced')">Advanced</button>
+              <button class="tab-link active" onclick="openTab(event, 'TabApi')">🔌 API & Model</button>
+              <button class="tab-link" onclick="openTab(event, 'TabGeneral')">⚡ General</button>
+              <button class="tab-link" onclick="openTab(event, 'TabContext')">📦 Context</button>
+              <button class="tab-link" onclick="openTab(event, 'TabAgent')">🤖 Agent & Tools</button>
+              <button class="tab-link" onclick="openTab(event, 'TabHerd')">🐂 Herd Mode</button>
+              <button class="tab-link" onclick="openTab(event, 'TabPersonas')">🎭 Personas</button>
+              <button class="tab-link" onclick="openTab(event, 'TabUser')">👤 User Info</button>
+              <button class="tab-link" onclick="openTab(event, 'TabAdvanced')">🔧 Advanced</button>
+              <button class="tab-link" onclick="openTab(event, 'TabLog')">📋 Log</button>
             </div>
 
             <!-- API & Model -->
@@ -665,7 +1092,6 @@ export class SettingsPanel {
 
               <h3>Participants</h3>
               <div id="herd-participants-list">
-                  <!-- Rows injected by JS -->
               </div>
               <button id="addParticipantBtn" class="secondary-button" style="margin-top:10px;">
                   <i class="codicon codicon-add"></i> Add Participant
@@ -725,6 +1151,16 @@ export class SettingsPanel {
               <button id="editPromptsBtn" class="secondary-button">${t('command.editPromptsFile.title', 'Edit Prompts JSON File')}</button>
             </div>
 
+            <!-- Log Tab -->
+            <div id="TabLog" class="tab-content">
+              <h2>Extension Log</h2>
+              <p class="help-text">View recent extension activity and troubleshoot issues.</p>
+              <div class="log-container">
+                <button class="copy-log-btn" id="copyLogBtn">Copy</button>
+                <pre id="logContent">Loading log...</pre>
+              </div>
+            </div>
+
             <button id="saveConfig" class="save-btn">${t('config.saveAndClose', 'Save & Close')}</button>
           </div>
         
@@ -743,7 +1179,6 @@ export class SettingsPanel {
                 herdParticipants = JSON.parse('${participantsJson}');
             } catch (e) {}
 
-            // Store loaded models to repopulate dynamic lists
             let loadedModels = [];
 
             function openTab(evt, tabName) {
@@ -760,6 +1195,10 @@ export class SettingsPanel {
                 document.getElementById(tabName).style.display = "block";
                 document.getElementById(tabName).classList.add("active");
                 evt.currentTarget.className += " active";
+                
+                if (tabName === 'TabLog') {
+                    vscode.postMessage({ command: 'requestLog' });
+                }
             }
 
             function updatePersonalityDropdowns() {
@@ -774,7 +1213,6 @@ export class SettingsPanel {
                     });
                 });
                 
-                // Also update dynamic herd participant dropdowns
                 const herdSelects = document.querySelectorAll('.herd-persona-select');
                 herdSelects.forEach(select => {
                     const currentVal = select.value;
@@ -933,6 +1371,17 @@ export class SettingsPanel {
                     postTempUpdate('herdParticipants', herdParticipants);
                 });
 
+                document.getElementById('copyLogBtn').addEventListener('click', () => {
+                    const logText = document.getElementById('logContent').textContent;
+                    navigator.clipboard.writeText(logText).then(() => {
+                        const btn = document.getElementById('copyLogBtn');
+                        btn.textContent = 'Copied!';
+                        setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+                    }).catch(err => {
+                        console.error('Failed to copy log:', err);
+                    });
+                });
+
                 function postTempUpdate(key, value) {
                   vscode.postMessage({ command: 'updateTempValue', key, value });
                 }
@@ -1004,7 +1453,6 @@ export class SettingsPanel {
                         populateModelDropdown(chatModelSelect, currentModelName);
                         populateModelDropdown(inspectorModelSelect, currentInspectorModelName);
                         
-                        // Update herd dropdowns
                         const herdSelects = document.querySelectorAll('.herd-model-select');
                         herdSelects.forEach((sel, idx) => {
                             const currentVal = herdParticipants[idx]?.model;
@@ -1022,6 +1470,11 @@ export class SettingsPanel {
                     } else if (message.command === 'updatePersonalities') {
                         personalities = message.personalities;
                         updatePersonalityDropdowns();
+                    } else if (message.command === 'logData') {
+                        const logEl = document.getElementById('logContent');
+                        if (logEl) {
+                            logEl.textContent = message.content || 'No log entries.';
+                        }
                     }
                 });
 

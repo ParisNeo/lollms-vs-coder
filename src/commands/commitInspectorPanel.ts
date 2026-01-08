@@ -124,7 +124,7 @@ export class CommitInspectorPanel {
             const diff = await this._gitIntegration.getCommitDiff(folder, hash);
             
             // Construct the prompt for analysis
-            const systemPrompt = await getProcessedSystemPrompt('codeInspectorPersona' as any) || "You are a senior security auditor and code reviewer.";
+            const systemPrompt = await getProcessedSystemPrompt('inspector') || "You are a senior security auditor and code reviewer.";
             
             const userPrompt = `Please analyze the following Git Commit Diff.
             

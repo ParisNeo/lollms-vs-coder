@@ -3,6 +3,7 @@ import { LollmsServices } from '../lollmsContext';
 import { SettingsPanel } from '../commands/configView';
 import { HelpPanel } from '../commands/helpPanel';
 import { Logger } from '../logger';
+import { registerSelectModelCommand } from '../commands/selectModel';
 
 export function registerUICommands(context: vscode.ExtensionContext, services: LollmsServices) {
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showConfigView', () => 
@@ -13,4 +14,7 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
     
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showLog', () => 
         Logger.show()));
+
+    // Register the missing "selectModel" command
+    registerSelectModelCommand(context, services);
 }

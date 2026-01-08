@@ -35,9 +35,5 @@
 
 
 # TODO asap:
-Fix:
-  file state change from the menu
-  auto select context
+- in the context, user input is duplicated. Fix that
 
-Add:
-  auto code processing (automatic selection of files followed by the actual processing. after first selection, ask the ai if it needs more files or if it needs to remove files. repeat this until the ai says ok, I have the optimal set of files in my context to solve the problem. Finally answer the user's question. Make it deactivable.

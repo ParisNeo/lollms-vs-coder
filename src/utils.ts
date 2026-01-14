@@ -6,6 +6,13 @@ import { MemoryManager } from './memoryManager';
 export interface HerdParticipant {
     model: string;
     personality: string;
+    name?: string;
+    systemPrompt?: string;
+}
+
+export interface DynamicModelEntry {
+    model: string;
+    description: string;
 }
 
 export interface DiscussionCapabilities {
@@ -28,8 +35,14 @@ export interface DiscussionCapabilities {
     gitCommit: boolean;
     // Herd Mode Settings
     herdMode: boolean;
+    herdDynamicMode: boolean;
     herdParticipants: HerdParticipant[];
+    herdPreCodeParticipants: HerdParticipant[];
+    herdPostCodeParticipants: HerdParticipant[];
     herdRounds: number;
+    // Persistent Modes
+    agentMode: boolean;
+    autoContextMode: boolean;
 }
 
 export async function applyDiff(diffContent: string) {
@@ -88,8 +101,6 @@ export async function applyDiff(diffContent: string) {
     if (!success) {
         throw new Error('VS Code failed to apply edits.');
     }
-    // REMOVED: await document.save(); 
-    // We leave the document dirty so the user can review changes.
 }
 
 export async function getProcessedSystemPrompt(
@@ -137,7 +148,6 @@ export async function getProcessedSystemPrompt(
         case 'chat': {
             const allowed = capabilities?.allowedFormats || config.get<any>('allowedFileFormats') || { fullFile: true, insert: false, replace: false, delete: false };
 
-            // Build format instructions based on output mode
             let formatInstructions = '';
             
             if (outputFormat === 'xml' && allowed.fullFile) {
@@ -183,27 +193,13 @@ When you need to create or modify a file, you MUST output a code block using thi
 [complete file content here]
 \`\`\`
 
-**Real example:**
-\`\`\`python:src/config.py
-"""Configuration for the app."""
-
-DEBUG = True
-PORT = 8000
-\`\`\`
-
 **RULES:**
 - Always wrap file content in a code block (three backticks)
 - The first line after opening backticks must be: language:path
 - Include ALL file content, no placeholders
 - Do not write "Now I will modify..." - just output the code block
-- Do not explain before the code block - output it first, then explain if needed
-
-**Your response should look like:**
-\`\`\`python:src/myfile.py
-# complete code here
-\`\`\`
-
-That's the file updated! [optional explanation]`;           }
+- Do not explain before the code block - output it first, then explain if needed`;
+            }
 
             // Add optional modification formats
             let additionalFormats = '';
@@ -245,7 +241,6 @@ Note: Original code must match exactly or operation fails`;
 Note: Code must match exactly or operation fails`;
             }
 
-            // File operations
             let fileOperations = '';
             if (!capabilities || capabilities.fileRename) {
                 fileOperations += '- **Rename/Move:** `<rename old="old/path.ext" new="new/path.ext" />`\n';
@@ -261,7 +256,6 @@ Note: Code must match exactly or operation fails`;
                 additionalFormats += `\n### File Operations\nUse standard XML style for file management:\n${fileOperations}`;
             }
 
-            // Search capability
             const searchCapability = capabilities?.webSearch ? `\n### Web Search
 
 Trigger automated web search when you need current information or documentation:
@@ -270,7 +264,6 @@ Trigger automated web search when you need current information or documentation:
 
 The extension fetches results, appends them to context, and asks you to continue.` : '';
 
-            // Image generation
             const imageGenCapability = capabilities?.imageGen ? `\n### Image Generation
 
 Generate images using:
@@ -281,30 +274,28 @@ Generate images using:
 
             basePrompt = `# Role
 
-You are a Senior VSCode Engineering Assistant with expertise in software architecture, design patterns, and pedagogical code explanation.
+You are a Senior VSCode Engineering Assistant.
 
 ${thinkingInstructions}# Response Structure
 
-1. **Start with explanation and analysis** - Use \`<analysis>\` tags to share your findings and logic before any code
-2. **Teach concepts** - Help the developer understand architecture and design decisions
+1. **Start with explanation and analysis**
+2. **Teach concepts**
 3. **Format Strictness** - Use EXCLUSIVELY the formats defined below.
-4. **Maintain file integrity** - When replacing full files, include every single line
 
 # Strict Format Enforcement (CRITICAL)
 
-You must use **EXCLUSIVELY** one of the supported file modification formats defined above.
-❌ **DO NOT** produce standard git patches (e.g., lines starting with \`--- a/file\` or \`+++ b/file\`).
+You must use **EXCLUSIVELY** one of the supported file modification formats.
+❌ **DO NOT** produce standard git patches.
 ❌ **DO NOT** produce unified diffs.
-❌ **DO NOT** use generic code blocks without the \`language:path\` header if the code is meant to be written to a file.
+❌ **DO NOT** use generic code blocks without the \`language:path\` header for file creation.
 
 ${formatInstructions}${additionalFormats}${searchCapability}${imageGenCapability}
 
 # Core Principles
 
-- Analysis before action - never output code blocks without context
-- Format compliance is mandatory - exact syntax required
-- Full file replacements must be complete - no shortcuts or omissions
-- Clear, concise, pedagogical communication`;
+- Analysis before action
+- Format compliance is mandatory
+- Full file replacements must be complete`;
 
             break;
         }
@@ -318,25 +309,22 @@ ${thinkingInstructions}# Core Principles
 
 - Observe tool outputs carefully before proceeding
 - Verify success/failure from actual responses
-- Never assume operations succeeded without confirmation
 - Report errors clearly when they occur
-- Complete tasks step-by-step with verification at each stage
-- **STRICT FORMATTING:** Never use git patches or diffs. Use the provided tools (e.g. \`generate_code\`) or format instructions strictly.`;
+- Complete tasks step-by-step
+- **STRICT FORMATTING:** Never use git patches or diffs.`;
             break;
 
         case 'inspector':
             basePrompt = `# Role
 
-You are a Code Quality Inspector analyzing code for issues, improvements, and best practices.
+You are a Code Quality Inspector.
 
 ${thinkingInstructions}# Analysis Focus
 
 - Code quality and maintainability
 - Security vulnerabilities
 - Performance bottlenecks
-- Best practice violations
-- Potential bugs and edge cases
-- Architecture and design patterns`;
+- Best practice violations`;
             break;
 
         case 'commit':
@@ -355,17 +343,14 @@ type(scope): concise description
 
 # Requirements
 
-- Use conventional commit types (feat, fix, docs, refactor, test, chore)
+- Use conventional commit types
 - Keep description under 50 characters
-- Output ONLY the code block
-- No additional commentary`;
+- Output ONLY the code block`;
             break;
     }
 
-    // Build context sections
     const contextSections: string[] = [];
 
-    // User context
     const userInfo = [
         `- Name: ${userName}`,
         userEmail && `- Email: ${userEmail}`,
@@ -377,12 +362,10 @@ type(scope): concise description
         contextSections.push(`### User Context\n${userInfo}`);
     }
 
-    // Memory
     if (memoryContent.trim()) {
-        contextSections.push(`### Long-Term Memory\n\`\`\`\n${memoryContent}\n\`\`\`\n\nUpdate memory with <memory>content</memory> tags when learning important preferences or patterns.`);
+        contextSections.push(`### Long-Term Memory\n\`\`\`\n${memoryContent}\n\`\`\`\n\nUpdate memory with <memory>content</memory> tags.`);
     }
 
-    // Persona
     let personaContent = customPersonaContent || config.get<string>(
         promptType === 'chat' ? 'chatPersona' :
         promptType === 'agent' ? 'agentPersona' :
@@ -398,11 +381,9 @@ type(scope): concise description
         contextSections.push(`### Your Persona\n${personaContent.trim()}`);
     }
 
-    // Combine prompt sections
     const contextBlock = contextSections.length > 0 ? '\n\n# Context\n\n' + contextSections.join('\n\n') : '';
     let combinedPrompt = `${basePrompt}${contextBlock}`;
 
-    // Variable substitution
     const now = new Date();
     const date = now.toISOString().split('T')[0];
     const platform = os.platform();
@@ -412,7 +393,6 @@ type(scope): concise description
         .replace(/{{os}}/g, platform)
         .replace(/{{developer_name}}/g, userName);
 
-    // Add reasoning prefix if needed
     let finalPrompt = combinedPrompt.trim();
     if (thinkingMode === 'no_think') {
         finalPrompt = `/no_think\n${finalPrompt}`;

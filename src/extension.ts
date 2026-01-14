@@ -99,26 +99,25 @@ export async function activate(context: vscode.ExtensionContext) {
     registerCommands(context, services, getActiveWorkspace);
 
     let recreateClientDisposable = vscode.commands.registerCommand('lollmsApi.recreateClient', async () => {
-    console.log('[INFO] Recreating Lollms API Client...');
-    try {
-        // Implementation logic for recreating the client
-        // This usually involves reading updated configuration and re-initializing 
-        // the communication layer with the Lollms backend.
-        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-        const apiUrl = config.get<string>('apiUrl');
-        const modelName = config.get<string>('modelName');
-        
-        console.log(`[INFO] Fetching models from ${apiUrl} (Model: ${modelName})`);
-        
-        // Trigger actual client re-initialization here
-        // Example: lollmsClient.initialize(apiUrl, config.get('apiKey'));
-        
-        vscode.window.showInformationMessage('Lollms client successfully re-initialized.');
-    } catch (error) {
-        console.error('[ERROR] Failed to recreate Lollms client:', error);
-        vscode.window.showErrorMessage('Failed to re-initialize Lollms client.');
-    }
+        console.log('[INFO] Recreating Lollms API Client...');
+        try {
+            const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+            lollmsAPI.updateConfig({
+                apiUrl: config.get<string>('apiUrl') || 'http://localhost:9642',
+                apiKey: config.get<string>('apiKey')?.trim() || '',
+                modelName: config.get<string>('modelName') || 'ollama/mistral',
+                disableSslVerification: config.get<boolean>('disableSslVerification') || false,
+                sslCertPath: config.get<string>('sslCertPath') || '',
+                backendType: config.get<'lollms' | 'openai' | 'ollama'>('backendType') || 'lollms',
+                useLollmsExtensions: config.get<boolean>('useLollmsExtensions') ?? true
+            });
+            vscode.window.showInformationMessage('Lollms client successfully re-initialized.');
+        } catch (error) {
+            console.error('[ERROR] Failed to recreate Lollms client:', error);
+            vscode.window.showErrorMessage('Failed to re-initialize Lollms client.');
+        }
     });
+    context.subscriptions.push(recreateClientDisposable);
 
     // Register Providers
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, new DebugCodeLensProvider(debugErrorManager)));
@@ -139,6 +138,27 @@ export async function activate(context: vscode.ExtensionContext) {
 
     // Status Bar
     const statusBar = new LollmsStatusBar(context, lollmsAPI);
+
+    // Configuration Listener
+    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+        if (e.affectsConfiguration('lollmsVsCoder')) {
+            const newConfig = vscode.workspace.getConfiguration('lollmsVsCoder');
+            lollmsAPI.updateConfig({
+                apiUrl: newConfig.get<string>('apiUrl') || 'http://localhost:9642',
+                apiKey: newConfig.get<string>('apiKey')?.trim() || '',
+                modelName: newConfig.get<string>('modelName') || 'ollama/mistral',
+                disableSslVerification: newConfig.get<boolean>('disableSslVerification') || false,
+                sslCertPath: newConfig.get<string>('sslCertPath') || '',
+                backendType: newConfig.get<'lollms' | 'openai' | 'ollama'>('backendType') || 'lollms',
+                useLollmsExtensions: newConfig.get<boolean>('useLollmsExtensions') ?? true
+            });
+            
+            // Re-check connection if connectivity settings changed
+            if (e.affectsConfiguration('lollmsVsCoder.apiUrl') || e.affectsConfiguration('lollmsVsCoder.apiKey')) {
+                statusBar.checkConnection();
+            }
+        }
+    }));
 
     // Context & Decorators
     let contextStateProvider: ContextStateProvider | undefined;

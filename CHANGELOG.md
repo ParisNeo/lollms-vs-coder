@@ -24,7 +24,8 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore: bump version to 0.5.54 and refactor extension modules
 
-## [Unreleased]
+#
+- feat(chatPanel): enhance chat panel functionality and styling# [Unreleased]
 
 - chore(release): bump version to 0.5.56 and update changelog
 

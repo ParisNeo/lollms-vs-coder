@@ -8,6 +8,7 @@ export class LollmsStatusBar implements vscode.Disposable {
     private connectionItem: vscode.StatusBarItem;
     private modelItem: vscode.StatusBarItem;
     private processesItem: vscode.StatusBarItem;
+    private disposables: vscode.Disposable[] = [];
 
     constructor(private context: vscode.ExtensionContext, private lollmsAPI: LollmsAPI) {
         // Active Workspace
@@ -53,6 +54,13 @@ export class LollmsStatusBar implements vscode.Disposable {
 
         // Initial Check
         this.checkConnection();
+
+        // Listen for configuration changes to update the model name in status bar
+        this.disposables.push(vscode.workspace.onDidChangeConfiguration(e => {
+            if (e.affectsConfiguration('lollmsVsCoder.modelName')) {
+                this.updateModel();
+            }
+        }));
     }
 
     public updateModel() {
@@ -96,6 +104,6 @@ export class LollmsStatusBar implements vscode.Disposable {
     }
 
     public dispose() {
-        // Disposed by context subscriptions
+        this.disposables.forEach(d => d.dispose());
     }
 }

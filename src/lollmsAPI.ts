@@ -180,9 +180,13 @@ export class LollmsAPI {
 
     const isHttps = modelsUrl.startsWith('https');
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10000); // 10s timeout for models check
+
     const options: RequestInit = {
         method: 'GET',
         headers: { 'Authorization': `Bearer ${this.config.apiKey}` },
+        signal: controller.signal
     };
 
     if (isHttps) {
@@ -226,15 +230,16 @@ export class LollmsAPI {
             }
         }
         throw error;
+    } finally {
+        clearTimeout(timeout);
     }
   }
 
   public async tokenize(text: string, model?: string): Promise<TokenizeResponse> {
     const useExtensions = this.config.useLollmsExtensions;
-    console.log(`[LollmsAPI] Tokenize called. Extensions: ${useExtensions}, Backend: ${this.config.backendType}`);
+    Logger.debug(`Tokenize called. Extensions: ${useExtensions}`);
     
     if (!useExtensions) {
-        console.log("[LollmsAPI] Lollms extensions disabled. Returning estimated token count.");
         return { count: Math.ceil(text.length / 4), tokens: [], isEstimation: true };
     }
 
@@ -247,6 +252,10 @@ export class LollmsAPI {
         body.model = modelToSend;
     }
 
+    // Short timeout for tokenization to avoid freezing UI
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout
+
     const options: RequestInit = {
         method: 'POST',
         headers: {
@@ -254,6 +263,7 @@ export class LollmsAPI {
             'Authorization': `Bearer ${this.config.apiKey}`
         },
         body: JSON.stringify(body),
+        signal: controller.signal
     };
 
     if (isHttps) {
@@ -261,30 +271,25 @@ export class LollmsAPI {
     }
 
     try {
-        console.log(`[LollmsAPI] POST ${tokenizeUrl} with model ${modelToSend}`);
         const response = await fetch(tokenizeUrl, options);
         if (!response.ok) {
-            const errorText = await response.text();
-            console.error(`[LollmsAPI] Tokenize failed: ${response.status} ${response.statusText} - ${errorText}`);
-            throw new Error(`Status ${response.status}: ${errorText}`);
+            throw new Error(`Status ${response.status}`);
         }
         const data = await response.json() as TokenizeResponse;
-        console.log(`[LollmsAPI] Tokenize success: ${data.count} tokens.`);
         return { ...data, isEstimation: false };
     } catch (e: any) {
-        console.warn("[LollmsAPI] Tokenize endpoint failed, falling back to estimation.", e);
-        Logger.warn("Tokenize endpoint failed, falling back to estimation.", e);
+        Logger.warn(`Tokenize endpoint failed (${e.message}), falling back to estimation.`);
         return { count: Math.ceil(text.length / 4), tokens: [], isEstimation: true };
+    } finally {
+        clearTimeout(timeout);
     }
   }
 
   public async getContextSize(model?: string): Promise<ContextSizeResponse> {
     const useExtensions = this.config.useLollmsExtensions;
-    console.log(`[LollmsAPI] getContextSize called. Extensions: ${useExtensions}`);
     const defaultSize = 4096;
 
     if (!useExtensions) {
-        console.log("[LollmsAPI] Lollms extensions disabled. Returning default context size.");
         return { context_size: defaultSize, isEstimation: true };
     }
 
@@ -297,6 +302,10 @@ export class LollmsAPI {
         body.model = modelToSend;
     }
 
+    // Short timeout for context size
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout
+
     const options: RequestInit = {
         method: 'POST',
         headers: {
@@ -304,6 +313,7 @@ export class LollmsAPI {
             'Authorization': `Bearer ${this.config.apiKey}`
         },
         body: JSON.stringify(body),
+        signal: controller.signal
     };
 
     if (isHttps) {
@@ -311,20 +321,17 @@ export class LollmsAPI {
     }
 
     try {
-        console.log(`[LollmsAPI] POST ${contextSizeUrl}`);
         const response = await fetch(contextSizeUrl, options);
         if (!response.ok) {
-            const errorText = await response.text();
-            console.error(`[LollmsAPI] Context size failed: ${response.status} ${response.statusText} - ${errorText}`);
-            throw new Error(`Status ${response.status}: ${errorText}`);
+            throw new Error(`Status ${response.status}`);
         }
         const data = await response.json() as ContextSizeResponse;
-        console.log(`[LollmsAPI] Context Size success: ${data.context_size}`);
         return { ...data, isEstimation: false };
     } catch (e: any) {
-        console.warn("[LollmsAPI] Context Size endpoint failed, falling back to default.", e);
-        Logger.warn("Context Size endpoint failed, falling back to default.", e);
+        Logger.warn(`Context Size endpoint failed (${e.message}), falling back to default.`);
         return { context_size: defaultSize, isEstimation: true };
+    } finally {
+        clearTimeout(timeout);
     }
   }
 
@@ -443,12 +450,6 @@ export class LollmsAPI {
     let chatUrl = '';
     let body: any = {};
 
-    // Filter out messages marked skipInPrompt if the caller didn't do it (safety check)
-    // NOTE: Usually caller handles this, but we can double check or rely on caller.
-    // Given the caller (ChatPanel) constructs the array, we assume the array passed here is already filtered or prepared.
-    // However, if we want to be safe, we can filter here. But `messages` might contain history that *should* be sent.
-    // The requirement was "doesn't get sent to the llms when generating".
-    // So any message with skipInPrompt=true should be removed from the payload.
     const filteredMessages = messages.filter(m => !m.skipInPrompt);
 
     if (this.config.backendType === 'ollama') {

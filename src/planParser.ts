@@ -23,7 +23,7 @@ export class PlanParser {
         signal?: AbortSignal,
         modelOverride?: string,
         chatHistory: ChatMessage[] = [],
-        allowedTools?: ToolDefinition[] // NEW parameter
+        allowedTools?: ToolDefinition[]
     ): Promise<{ plan: Plan | null, rawResponse: string, error?: string }> {
         
         // Default to all enabled tools if not specified
@@ -54,8 +54,18 @@ Your task is to generate a NEW set of tasks to recover from this failure and com
                     } else {
                         const projectContext = await this.contextManager.getContextContent();
                         
-                        if (chatHistory && chatHistory.length > 0) {
-                            messages.push(...chatHistory);
+                        // FILTER: Prepare history by removing the last message if it is the exact same objective.
+                        // This prevents the LLM from seeing the user prompt twice (once in history, once in our augmented prompt).
+                        let historyToSend = [...chatHistory];
+                        if (historyToSend.length > 0) {
+                            const last = historyToSend[historyToSend.length - 1];
+                            if (last.role === 'user' && typeof last.content === 'string' && last.content.trim() === objective.trim()) {
+                                historyToSend.pop();
+                            }
+                        }
+
+                        if (historyToSend.length > 0) {
+                            messages.push(...historyToSend);
                         }
 
                         userPromptContent = `My objective is: **${objective}**\n\nHere is the project context:\n${projectContext.text}`;

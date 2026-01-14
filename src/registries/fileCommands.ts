@@ -1,10 +1,78 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { LollmsServices } from '../lollmsContext';
 import { applyDiff } from '../utils';
 import { normalizeToDocument } from '../utils/promptUtils';
 import { Logger } from '../logger';
 
 export function registerFileCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
+
+    // Helper to open a diff view comparing a snapshot (Original) vs the Active File (Proposed Changes)
+    // This allows the user to see the diff, edit the right side (Active File), and Save to disk,
+    // while keeping the Left side as the reference snapshot.
+    async function applyContentWithDiff(fileUri: vscode.Uri, newContent: string) {
+        // 1. Capture current state (Snapshot)
+        let originalContent = '';
+        try {
+            // Try to read from open document first to capture potentially unsaved changes
+            const doc = await vscode.workspace.openTextDocument(fileUri);
+            originalContent = doc.getText();
+        } catch {
+            // Fallback to disk if not open/readable as text doc
+            try {
+                const fileBytes = await vscode.workspace.fs.readFile(fileUri);
+                originalContent = Buffer.from(fileBytes).toString('utf8');
+            } catch (e) {
+                // File might not exist
+            }
+        }
+
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(fileUri);
+        if (!workspaceFolder) {
+             throw new Error("File is not in a workspace folder.");
+        }
+        
+        const snapshotsDir = vscode.Uri.joinPath(workspaceFolder.uri, '.lollms', 'snapshots');
+        try {
+            await vscode.workspace.fs.createDirectory(snapshotsDir);
+        } catch {} // Ignore if exists
+        
+        const fileName = path.basename(fileUri.fsPath);
+        // Use .orig extension for snapshot
+        const snapshotUri = vscode.Uri.joinPath(snapshotsDir, `${fileName}.orig`);
+        
+        await vscode.workspace.fs.writeFile(snapshotUri, Buffer.from(originalContent, 'utf8'));
+
+        // 2. Close existing editor if open (to prevent "both file and diff opened")
+        // We attempt to find if the document is visible and close it.
+        const visibleEditor = vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === fileUri.toString());
+        if (visibleEditor) {
+            await vscode.window.showTextDocument(visibleEditor.document, {
+                viewColumn: visibleEditor.viewColumn,
+                preserveFocus: false
+            });
+            await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+        }
+
+        // 3. Open Diff Editor (Left: Snapshot, Right: Real File)
+        const title = `${fileName} (Original) ↔ ${fileName} (Proposed)`;
+        await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title, { preview: false });
+
+        // 4. Apply Edit to Real File (Right side)
+        // Since the file is open in the diff view, applyEdit will update the buffer, making it Dirty.
+        const document = await vscode.workspace.openTextDocument(fileUri);
+        const fullRange = new vscode.Range(0, 0, document.lineCount, 0);
+        const edit = new vscode.WorkspaceEdit();
+        edit.replace(fileUri, fullRange, newContent);
+        
+        const applied = await vscode.workspace.applyEdit(edit);
+        
+        if (applied) {
+            vscode.window.showInformationMessage(`Review changes. Press Ctrl+S to save.`);
+        } else {
+            throw new Error("Failed to apply edit to document.");
+        }
+    }
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string) => {
         const activeWorkspace = getActiveWorkspace();
@@ -19,34 +87,23 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             try {
                 await vscode.workspace.fs.stat(fileUri);
             } catch {
-                // File does not exist: Create it
+                // File does not exist: Create it directly (no diff needed for new file)
                 const parentDir = vscode.Uri.joinPath(fileUri, '..');
                 await vscode.workspace.fs.createDirectory(parentDir);
+                
                 const edit = new vscode.WorkspaceEdit();
                 edit.createFile(fileUri, { ignoreIfExists: true });
                 edit.insert(fileUri, new vscode.Position(0, 0), content);
+                
                 await vscode.workspace.applyEdit(edit);
                 const doc = await vscode.workspace.openTextDocument(fileUri);
                 await vscode.window.showTextDocument(doc);
-                vscode.window.showInformationMessage(`Created ${filePath}`);
+                vscode.window.showInformationMessage(`Created new file: ${filePath}`);
                 return;
             }
 
-            // File exists: Open, Apply changes in-memory (Dirty), and Show Diff with Saved
-            const document = await vscode.workspace.openTextDocument(fileUri);
-            await vscode.window.showTextDocument(document);
-            
-            const fullRange = new vscode.Range(0, 0, document.lineCount, 0);
-            const edit = new vscode.WorkspaceEdit();
-            edit.replace(fileUri, fullRange, content);
-            
-            const applied = await vscode.workspace.applyEdit(edit);
-            if (applied) {
-                await vscode.commands.executeCommand('workbench.files.action.compareWithSaved');
-                vscode.window.showInformationMessage(`Changes applied to ${filePath}. Save to confirm.`);
-            } else {
-                vscode.window.showErrorMessage(`Failed to apply changes to ${filePath}.`);
-            }
+            // File exists: Open Snapshot Diff
+            await applyContentWithDiff(fileUri, content);
 
         } catch (e: any) {
             Logger.error(`Error applying file content: ${e.message}`, e);
@@ -54,78 +111,69 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         }
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.acceptDiff', async (uri?: vscode.Uri) => {
-        let generatedUri = uri;
-        
+    // Updated acceptDiff to handle both DiffManager (legacy/files) and InlineDiff (CodeLens)
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.acceptDiff', async (arg?: vscode.Uri | string) => {
+        if (typeof arg === 'string') {
+            await services.inlineDiffProvider.accept(arg);
+            return;
+        }
+
+        let generatedUri = arg;
         if (!generatedUri) {
             const activeEditor = vscode.window.activeTextEditor;
-            if (activeEditor) {
-                if (services.diffManager.isLollmsDiff(activeEditor.document.uri)) {
-                    generatedUri = activeEditor.document.uri;
-                } else {
-                    const linkedGenerated = services.diffManager.getGeneratedFileFor(activeEditor.document.uri);
-                    if (linkedGenerated) generatedUri = linkedGenerated;
-                }
+            if (activeEditor && services.diffManager.isLollmsDiff(activeEditor.document.uri)) {
+                generatedUri = activeEditor.document.uri;
             }
         }
 
-        if (!generatedUri) {
-            const visibleEditors = vscode.window.visibleTextEditors;
-            const diffEditor = visibleEditors.find(e => services.diffManager.isLollmsDiff(e.document.uri));
-            if (diffEditor) generatedUri = diffEditor.document.uri;
+        if (generatedUri && services.diffManager.isLollmsDiff(generatedUri)) {
+            const originalUri = services.diffManager.getOriginalUri(generatedUri);
+            if (originalUri) {
+                const doc = await vscode.workspace.openTextDocument(generatedUri);
+                const newContent = doc.getText();
+                
+                const originalDoc = await vscode.workspace.openTextDocument(originalUri);
+                const edit = new vscode.WorkspaceEdit();
+                edit.replace(originalUri, new vscode.Range(0, 0, originalDoc.lineCount, 0), newContent);
+                
+                await vscode.workspace.applyEdit(edit);
+                await originalDoc.save();
+                
+                services.diffManager.cleanup(generatedUri);
+                
+                if (vscode.window.activeTextEditor?.document.uri.toString() === generatedUri.toString()) {
+                     await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+                }
+                
+                await vscode.window.showTextDocument(originalDoc);
+                vscode.window.showInformationMessage("Changes accepted.");
+            }
         }
-
-        if (!generatedUri) {
-            vscode.window.showInformationMessage("No active Lollms diff found to accept. Please open the diff first.");
-            return;
-        }
-
-        const originalUri = services.diffManager.getOriginalUri(generatedUri);
-        if (!originalUri) {
-            vscode.window.showErrorMessage("Could not find original file for this diff.");
-            return;
-        }
-
-        const doc = await vscode.workspace.openTextDocument(generatedUri);
-        const newContent = doc.getText();
-        
-        const originalDoc = await vscode.workspace.openTextDocument(originalUri);
-        const edit = new vscode.WorkspaceEdit();
-        edit.replace(originalUri, new vscode.Range(0, 0, originalDoc.lineCount, 0), newContent);
-        
-        await vscode.workspace.applyEdit(edit);
-        await originalDoc.save();
-        
-        services.diffManager.cleanup(generatedUri);
-        
-        if (vscode.window.activeTextEditor && (vscode.window.activeTextEditor.document.uri.toString() === generatedUri.toString() || vscode.window.activeTextEditor.document.uri.toString() === originalUri.toString())) {
-             await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
-        }
-        
-        await vscode.window.showTextDocument(originalDoc);
-        vscode.window.showInformationMessage("Changes accepted.");
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.rejectDiff', async (uri?: vscode.Uri) => {
-        let generatedUri = uri;
-        
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.rejectDiff', async (arg?: vscode.Uri | string) => {
+        if (typeof arg === 'string') {
+            await services.inlineDiffProvider.reject(arg);
+            return;
+        }
+
+        let generatedUri = arg;
         if (!generatedUri) {
             const activeEditor = vscode.window.activeTextEditor;
-            if (activeEditor) {
-                if (services.diffManager.isLollmsDiff(activeEditor.document.uri)) {
-                    generatedUri = activeEditor.document.uri;
-                } else {
-                    const linkedGenerated = services.diffManager.getGeneratedFileFor(activeEditor.document.uri);
-                    if (linkedGenerated) generatedUri = linkedGenerated;
-                }
+            if (activeEditor && services.diffManager.isLollmsDiff(activeEditor.document.uri)) {
+                generatedUri = activeEditor.document.uri;
             }
         }
         
-        if (generatedUri) {
+        if (generatedUri && services.diffManager.isLollmsDiff(generatedUri)) {
             services.diffManager.cleanup(generatedUri);
             await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
             vscode.window.showInformationMessage("Changes rejected.");
         }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refineDiff', async (sessionId: string) => {
+        await services.inlineDiffProvider.refine(sessionId);
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string) => {
@@ -157,7 +205,8 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             const after = text.substring(index + normalizedSearch.length);
             const newFullContent = before + replaceCode + after;
 
-            await services.diffManager.openDiff(fileUri, newFullContent);
+            // Use the improved snapshot diff approach
+            await applyContentWithDiff(fileUri, newFullContent);
 
         } catch(e: any) {
             vscode.window.showErrorMessage(`Error accessing file ${filePath}: ${e.message}`);
@@ -201,7 +250,8 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             const eol = document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
             const newFullContent = before + eol + insertCode + after;
 
-            await services.diffManager.openDiff(fileUri, newFullContent);
+            // Use the improved snapshot diff approach
+            await applyContentWithDiff(fileUri, newFullContent);
 
         } catch(e: any) {
             vscode.window.showErrorMessage(`Error accessing file: ${e.message}`);
@@ -231,7 +281,8 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             const after = text.substring(index + normalizedSearch.length);
             const newFullContent = before + after;
 
-            await services.diffManager.openDiff(fileUri, newFullContent);
+            // Use the improved snapshot diff approach
+            await applyContentWithDiff(fileUri, newFullContent);
 
         } catch(e: any) {
             vscode.window.showErrorMessage(`Error accessing file ${filePath}: ${e.message}`);
@@ -272,9 +323,35 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyPatchContent', async (filePath: string, patchContent: string) => {
          try {
-             await applyDiff(patchContent);
-             await vscode.commands.executeCommand('workbench.files.action.compareWithSaved');
-             vscode.window.showInformationMessage(`Patch applied. Save to confirm.`);
+             const activeWorkspace = getActiveWorkspace();
+             if(!activeWorkspace) return;
+             
+             const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
+             
+             // 1. Snapshot
+             let originalContent = '';
+             try {
+                 const doc = await vscode.workspace.openTextDocument(fileUri);
+                 originalContent = doc.getText();
+             } catch {
+                 const bytes = await vscode.workspace.fs.readFile(fileUri);
+                 originalContent = Buffer.from(bytes).toString('utf8');
+             }
+             
+             const snapshotsDir = vscode.Uri.joinPath(activeWorkspace.uri, '.lollms', 'snapshots');
+             try { await vscode.workspace.fs.createDirectory(snapshotsDir); } catch {}
+             const fileName = path.basename(filePath);
+             const snapshotUri = vscode.Uri.joinPath(snapshotsDir, `${fileName}.orig`);
+             await vscode.workspace.fs.writeFile(snapshotUri, Buffer.from(originalContent, 'utf8'));
+             
+             // 2. Open Diff (Snapshot vs Real)
+             const title = `${fileName} (Original) ↔ ${fileName} (Patched)`;
+             await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title, { preview: false });
+             
+             // 3. Apply Patch
+             await applyDiff(patchContent); 
+             
+             vscode.window.showInformationMessage(`Patch applied. Review changes and Save.`);
          } catch (e: any) {
              vscode.window.showErrorMessage(`Failed to apply patch: ${e.message}`);
          }

@@ -27,6 +27,7 @@ export async function startDiscussionWithInitialPrompt(
     panel.agentManager.setProcessManager(services.processManager);
     panel.setContextManager(services.contextManager);
     panel.setPersonalityManager(services.personalityManager);
+    panel.setHerdManager(services.herdManager); // Added injection
 
     await panel.loadDiscussion();
 

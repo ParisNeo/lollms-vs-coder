@@ -32,6 +32,7 @@ export class ChatPanel {
   private _inputResolver: ((value: string) => void) | null = null;
   private _skillsManager: SkillsManager;
   private _personalityManager?: PersonalityManager;
+  private _isDisposed = false;
   
   private _viewReadyPromise: Promise<void>;
   private _viewReadyResolver!: () => void;
@@ -103,6 +104,10 @@ export class ChatPanel {
       this._personalityManager = manager;
   }
 
+  public setHerdManager(manager: HerdManager) {
+      this.herdManager = manager;
+  }
+
   private log(message: string, level: 'INFO' | 'WARN' | 'ERROR' = 'INFO') {
       const timestamp = new Date().toLocaleTimeString();
       const logEntry = `[${timestamp}] [${level}] ${message}`;
@@ -127,6 +132,7 @@ export class ChatPanel {
   }
   
   public updateGeneratingState() {
+    if (this._isDisposed) return;
     if (this._panel.webview) {
         const process = this._currentDiscussion ? this.processManager.getForDiscussion(this._currentDiscussion.id) : undefined;
         const isGenerating = !!process && !this._inputResolver;
@@ -135,12 +141,14 @@ export class ChatPanel {
   }
 
   public updateAgentMode(isActive: boolean) {
+    if (this._isDisposed) return;
     if (this._panel.webview) {
         this._panel.webview.postMessage({ command: 'updateAgentMode', isActive });
     }
   }
 
   public displayPlan(plan: any | null): void {
+      if (this._isDisposed) return;
       if (this._panel.webview) {
         this._panel.webview.postMessage({ command: 'displayPlan', plan: plan });
       }
@@ -157,7 +165,22 @@ export class ChatPanel {
       InfoPanel.createOrShow(this._extensionUri, "Discussion Log", `\`\`\`log\n${content}\n\`\`\``);
   }
   
+  public async updateMessageContent(messageId: string, newContent: string) {
+      if (!this._currentDiscussion) return;
+      const msg = this._currentDiscussion.messages.find(m => m.id === messageId);
+      if (msg) {
+          msg.content = newContent;
+          if (!this._currentDiscussion.id.startsWith('temp-')) {
+              await this._discussionManager.saveDiscussion(this._currentDiscussion);
+          }
+      }
+      if (this._panel.webview && !this._isDisposed) {
+          this._panel.webview.postMessage({ command: 'updateMessage', messageId, newContent });
+      }
+  }
+  
   public async loadDiscussion(): Promise<void> {
+    if (this._isDisposed) return;
     this.log(`Loading discussion ${this.discussionId}`);
 
     if (!this._currentDiscussion || this._currentDiscussion.id !== this.discussionId) {
@@ -214,6 +237,14 @@ export class ChatPanel {
 
             this._currentDiscussion = discussion;
             this._panel.title = this._currentDiscussion.title;
+            
+            // Sync Agent Mode state from capability
+            if (this._discussionCapabilities.agentMode && !this.agentManager.getIsActive()) {
+                this.agentManager.toggleAgentMode();
+            } else if (!this._discussionCapabilities.agentMode && this.agentManager.getIsActive()) {
+                this.agentManager.toggleAgentMode();
+            }
+
         } else {
             this.log(`Discussion ${this.discussionId} not found.`, 'ERROR');
             this._panel.webview.postMessage({ command: 'updateTokenProgress' });
@@ -272,6 +303,7 @@ export class ChatPanel {
   }
 
   private async _fetchAndSetModels(forceRefresh: boolean = false) {
+    if (this._isDisposed) return;
     try {
         if (!this._panel.webview) return;
         let models: Array<{ id: string }> = [];
@@ -293,8 +325,13 @@ export class ChatPanel {
     }
   }
   
-  private _updateContextAndTokens() {
+  private async _updateContextAndTokens() {
     this.log("_updateContextAndTokens called");
+    if (this._isDisposed) {
+        this.log("_updateContextAndTokens aborted (disposed)", 'WARN');
+        return;
+    }
+
     try {
         if (!this._contextManager || !this._currentDiscussion || !this._panel.webview) {
             this.log("_updateContextAndTokens: Missing dependencies (contextManager or discussion)", 'WARN');
@@ -302,21 +339,86 @@ export class ChatPanel {
             return;
         }
         
-        this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: 'Building file tree...' });
-        this._panel.webview.postMessage({ command: 'updateStatus', status: 'Scanning project files...', type: 'info' });
+        // Use a safe postMessage check
+        if (!this._isDisposed) {
+            this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: 'Building file tree...' });
+            this._panel.webview.postMessage({ command: 'updateStatus', status: 'Scanning project files...', type: 'info' });
+        }
 
-        (async () => {
+        // Run calculation safely
+        try {
+            this.log("Fetching context content...");
+            const context = await this._contextManager.getContextContent();
+            this.log(`Context content fetched. Length: ${context.text.length} chars`);
+
+            if (this._isDisposed) return;
+
+            this._panel.webview.postMessage({ command: 'updateContext', context: context.text });
+            this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
+            
+            this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: 'Counting tokens...' });
+            this._panel.webview.postMessage({ command: 'updateStatus', status: 'Computing tokens length...', type: 'info' });
+    
+            const discussionContent = this._currentDiscussion!.messages.map(msg => {
+                if (typeof msg.content === 'string') return msg.content;
+                if (Array.isArray(msg.content)) {
+                    return msg.content.filter(item => item.type === 'text').map(item => item.text).join('\n');
+                }
+                return '';
+            }).join('\n');
+            
+            const fullTextToTokenize = context.text + '\n' + discussionContent;
+            const modelForTokenization = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+
+            if (!modelForTokenization) {
+                this.log("No model selected for tokenization.", 'WARN');
+                if (!this._isDisposed) {
+                    this._panel.webview.postMessage({
+                        command: 'updateTokenProgress',
+                        error: `No model configured`
+                    });
+                    this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (No model)', type: 'info' });
+                }
+                return;
+            }
+    
+            this.log(`Starting API Tokenization. Model: ${modelForTokenization}, Text Length: ${fullTextToTokenize.length}`);
+            
+            const [tokenizeResponse, contextSizeResponse] = await Promise.all([
+                this._lollmsAPI.tokenize(fullTextToTokenize, modelForTokenization),
+                this._lollmsAPI.getContextSize(modelForTokenization)
+            ]);
+            
+            if (this._isDisposed) return;
+
+            this.log(`Tokenization complete. Count: ${tokenizeResponse.count}, Context Size: ${contextSizeResponse.context_size}, Estimated: ${tokenizeResponse.isEstimation}`);
+
+            let ctxSize = contextSizeResponse.context_size;
+            if (!ctxSize || ctxSize <= 0) {
+                ctxSize = 0;
+            }
+
+            const isApproximate = tokenizeResponse.isEstimation || contextSizeResponse.isEstimation;
+
+            this._panel.webview.postMessage({
+                command: 'updateTokenProgress',
+                totalTokens: tokenizeResponse.count,
+                contextSize: ctxSize,
+                isApproximate: isApproximate
+            });
+            
+            if (isApproximate) {
+                this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (Approximate - API Check Failed)', type: 'warning' });
+            } else {
+                this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready', type: 'info' });
+            }
+    
+        } catch (error: any) {
+            this.log(`Failed to update tokens via API: ${error.message}. Using failsafe fallback.`, 'WARN');
+            if (this._isDisposed) return;
+            
             try {
-                this.log("Fetching context content...");
                 const context = await this._contextManager.getContextContent();
-                this.log(`Context content fetched. Length: ${context.text.length} chars`);
-
-                this._panel.webview.postMessage({ command: 'updateContext', context: context.text });
-                this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
-                
-                this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: 'Counting tokens...' });
-                this._panel.webview.postMessage({ command: 'updateStatus', status: 'Computing tokens length...', type: 'info' });
-        
                 const discussionContent = this._currentDiscussion!.messages.map(msg => {
                     if (typeof msg.content === 'string') return msg.content;
                     if (Array.isArray(msg.content)) {
@@ -324,95 +426,43 @@ export class ChatPanel {
                     }
                     return '';
                 }).join('\n');
+                const fullText = context.text + '\n' + discussionContent;
                 
-                const fullTextToTokenize = context.text + '\n' + discussionContent;
-                const modelForTokenization = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
-
-                if (!modelForTokenization) {
-                    this.log("No model selected for tokenization.", 'WARN');
-                    this._panel.webview.postMessage({
-                        command: 'updateTokenProgress',
-                        error: `No model configured`
-                    });
-                    this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (No model)', type: 'info' });
-                    this._panel.webview.postMessage({ command: 'tokenCalculationFinished' }); 
-                    return;
-                }
-        
-                this.log(`Starting API Tokenization. Model: ${modelForTokenization}, Text Length: ${fullTextToTokenize.length}`);
+                const wordCount = fullText.trim().split(/\s+/).length;
+                const estimatedTokens = Math.ceil(wordCount * 1.33);
                 
-                const [tokenizeResponse, contextSizeResponse] = await Promise.all([
-                    this._lollmsAPI.tokenize(fullTextToTokenize, modelForTokenization),
-                    this._lollmsAPI.getContextSize(modelForTokenization)
-                ]);
-                
-                this.log(`Tokenization complete. Count: ${tokenizeResponse.count}, Context Size: ${contextSizeResponse.context_size}, Estimated: ${tokenizeResponse.isEstimation}`);
-
-                let ctxSize = contextSizeResponse.context_size;
-                if (!ctxSize || ctxSize <= 0) {
-                    ctxSize = 0;
-                }
-
-                // If fallback/estimation, show warning in UI via 'isApproximate'
-                const isApproximate = tokenizeResponse.isEstimation || contextSizeResponse.isEstimation;
+                const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+                const failsafeSize = config.get<number>('failsafeContextSize') || 4096;
 
                 this._panel.webview.postMessage({
                     command: 'updateTokenProgress',
-                    totalTokens: tokenizeResponse.count,
-                    contextSize: ctxSize,
-                    isApproximate: isApproximate
+                    totalTokens: estimatedTokens,
+                    contextSize: failsafeSize,
+                    isApproximate: true
                 });
                 
-                if (isApproximate) {
-                    this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (Approximate - API Limit Check Failed)', type: 'warning' });
-                } else {
-                    this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready', type: 'info' });
-                }
-        
-            } catch (error: any) {
-                this.log(`Failed to update tokens via API: ${error.message}. Using failsafe fallback.`, 'WARN');
-                
-                try {
-                    const context = await this._contextManager.getContextContent();
-                    const discussionContent = this._currentDiscussion!.messages.map(msg => {
-                        if (typeof msg.content === 'string') return msg.content;
-                        if (Array.isArray(msg.content)) {
-                            return msg.content.filter(item => item.type === 'text').map(item => item.text).join('\n');
-                        }
-                        return '';
-                    }).join('\n');
-                    const fullText = context.text + '\n' + discussionContent;
-                    
-                    const wordCount = fullText.trim().split(/\s+/).length;
-                    const estimatedTokens = Math.ceil(wordCount * 1.33);
-                    
-                    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-                    const failsafeSize = config.get<number>('failsafeContextSize') || 4096;
+                this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (Approx)', type: 'warning' });
 
-                    this._panel.webview.postMessage({
-                        command: 'updateTokenProgress',
-                        totalTokens: estimatedTokens,
-                        contextSize: failsafeSize,
-                        isApproximate: true
-                    });
-                    
-                    this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (Approx)', type: 'warning' });
-
-                } catch (fallbackError: any) {
-                    this.log(`Fallback token calculation failed: ${fallbackError.message}`, 'ERROR');
+            } catch (fallbackError: any) {
+                this.log(`Fallback token calculation failed: ${fallbackError.message}`, 'ERROR');
+                if (!this._isDisposed) {
                     this._panel.webview.postMessage({
                         command: 'updateTokenProgress',
                         error: `API Error`
                     });
                     this._panel.webview.postMessage({ command: 'updateStatus', status: 'Error scanning context', type: 'error' });
                 }
-            } finally {
+            }
+        } finally {
+            if (!this._isDisposed) {
                 this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
             }
-        })();
+        }
     } catch (e: any) {
         this.log(`Unexpected error in _updateContextAndTokens: ${e.message}`, 'ERROR');
-        if (this._panel.webview) this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
+        if (!this._isDisposed && this._panel.webview) {
+            this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
+        }
     }
   }
 
@@ -424,11 +474,89 @@ export class ChatPanel {
 
   // Public method to safely set input text after webview is ready
   public async setInputText(text: string) {
+      if (this._isDisposed) return;
       await this.waitForWebviewReady();
-      this._panel.webview.postMessage({ command: 'setInputText', text });
+      if (!this._isDisposed) {
+          this._panel.webview.postMessage({ command: 'setInputText', text });
+      }
+  }
+
+  private async saveCapabilities() {
+      if (this._currentDiscussion && !this._currentDiscussion.id.startsWith('temp-')) {
+          this._currentDiscussion.capabilities = this._discussionCapabilities;
+          await this._discussionManager.saveDiscussion(this._currentDiscussion);
+      }
+      await this._discussionManager.saveLastCapabilities(this._discussionCapabilities);
+  }
+
+  public async handleManualAutoContext(userPrompt: string) {
+      if (this._isDisposed) return;
+      
+      const { id: processId, controller } = this.processManager.register(this.discussionId, 'Running Auto-Context...');
+      this.updateGeneratingState();
+
+      try {
+          const model = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+          
+          let objective = userPrompt.trim();
+          
+          // If no prompt in input, try to infer objective from history
+          if (!objective && this._currentDiscussion && this._currentDiscussion.messages.length > 0) {
+              // Find the last user message
+              for (let i = this._currentDiscussion.messages.length - 1; i >= 0; i--) {
+                  const m = this._currentDiscussion.messages[i];
+                  if (m.role === 'user') {
+                      if (typeof m.content === 'string') {
+                          objective = m.content;
+                      } else if (Array.isArray(m.content)) {
+                          objective = m.content.map(c => c.type === 'text' ? c.text : '').join(' ');
+                      }
+                      break;
+                  }
+              }
+          }
+          
+          if (!objective) {
+              objective = "Analyze current project context relevance.";
+          }
+
+          const contextAgentMsgId = 'ctx_agent_manual_' + Date.now();
+          await this.addMessageToDiscussion({
+              id: contextAgentMsgId,
+              role: 'system',
+              content: `**🧠 Auto-Context Agent (Manual)**\n*Objective: "${objective.substring(0, 100)}${objective.length>100?'...':''}"*\n\n`
+          });
+
+          await this._contextManager.runContextAgent(
+                objective, 
+                model, 
+                controller.signal,
+                (newContent) => {
+                    if (!this._isDisposed) {
+                        this._panel.webview.postMessage({ 
+                            command: 'updateMessage', 
+                            messageId: contextAgentMsgId, 
+                            newContent: newContent 
+                        });
+                    }
+                }
+            );
+            
+            this._updateContextAndTokens();
+
+      } catch (e: any) {
+          if (e.name !== 'AbortError') {
+            this.log(`Manual Auto-Context failed: ${e.message}`, 'ERROR');
+            this.addMessageToDiscussion({ role: 'system', content: `❌ Auto-Context Failed: ${e.message}` });
+          }
+      } finally {
+          this.processManager.unregister(processId);
+          this.updateGeneratingState();
+      }
   }
 
   public async sendMessage(message: ChatMessage, autoContextMode: boolean = false) {
+    if (this._isDisposed) return;
     if (!this._currentDiscussion) {
         await this.waitForWebviewReady();
         if (!this._currentDiscussion) {
@@ -444,72 +572,142 @@ export class ChatPanel {
     const { id: processId, controller } = this.processManager.register(this.discussionId, 'Generating response...');
     this.updateGeneratingState();
 
-    // HERD MODE CHECK
+    let autoContextText = "";
+
+    // 1. AUTO CONTEXT AGENT LOGIC
+    // Use capability as source of truth, but respect the override passed if valid (legacy fallback)
+    const isAutoContext = this._discussionCapabilities.autoContextMode || autoContextMode;
+
+    if (isAutoContext) {
+        this.log("Auto-Context mode active. Starting agent loop.");
+        const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
+        const userPromptText = (typeof message.content === 'string') ? message.content : "User request with attachments";
+        
+        const contextAgentMsgId = 'ctx_agent_' + Date.now();
+        await this.addMessageToDiscussion({
+            id: contextAgentMsgId,
+            role: 'system',
+            content: `**🧠 Auto-Context Agent**\n*Analyzing project structure and selecting files...*\n\n`,
+            skipInPrompt: true 
+        });
+
+        try {
+            autoContextText = await this._contextManager.runContextAgent(
+                userPromptText, 
+                model, 
+                controller.signal,
+                (newContent) => {
+                    if (!this._isDisposed) {
+                        this._panel.webview.postMessage({ 
+                            command: 'updateMessage', 
+                            messageId: contextAgentMsgId, 
+                            newContent: newContent 
+                        });
+                    }
+                }
+            );
+        } catch (e: any) {
+            this.log(`Auto-Context failed: ${e.message}`, 'ERROR');
+            if (!this._isDisposed) this._panel.webview.postMessage({ command: 'updateStatus', status: 'Auto-Context Failed. Using default.', type: 'error' });
+        }
+    }
+
+    // Determine finalized context text
+    let contextText = autoContextText;
+    if (!contextText) {
+        // Fallback to standard context if auto-context didn't run or yielded nothing
+        const standardContext = await this._contextManager.getContextContent();
+        contextText = standardContext.text;
+    }
+
+    // 2. HERD MODE CHECK
     if (this._discussionCapabilities.herdMode && this.herdManager) {
-        const participants = this._discussionCapabilities.herdParticipants;
-        if (!participants || participants.length === 0) {
-            this.addMessageToDiscussion({role: 'system', content: "Herd Mode is enabled but no models are selected. Please configure Herd Mode in the Discussion Modes menu."});
+        let preParticipants = this._discussionCapabilities.herdPreCodeParticipants;
+        let postParticipants = this._discussionCapabilities.herdPostCodeParticipants;
+        const leaderModel = this._currentDiscussion.model || this._lollmsAPI.getModelName();
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const dynamicMode = config.get<boolean>('herdDynamicMode') || false;
+        
+        // --- DYNAMIC HERD PLANNING ---
+        if (dynamicMode) {
+             const modelPool = config.get<any[]>('herdDynamicModelPool') || [];
+             if (modelPool.length > 0) {
+                 const herdMessageId = 'herd_plan_' + Date.now();
+                 await this.addMessageToDiscussion({
+                    id: herdMessageId,
+                    role: 'system',
+                    content: `### 🏗️ Dynamic Herd: Recruiting Agents...\n\n`,
+                    skipInPrompt: true
+                 });
+
+                 const plan = await this.herdManager.planDynamicHerd(
+                     typeof message.content === 'string' ? message.content : "Complex task",
+                     modelPool,
+                     leaderModel,
+                     controller.signal
+                 );
+
+                 if (plan) {
+                     preParticipants = plan.pre;
+                     postParticipants = plan.post;
+                     await this.updateMessageContent(herdMessageId, `### 🏗️ Dynamic Herd Assembled\n\n**Pre-Code Team:** ${plan.pre.map(p => p.name).join(', ')}\n**Post-Code Team:** ${plan.post.map(p => p.name).join(', ')}`);
+                 } else {
+                     await this.updateMessageContent(herdMessageId, `⚠️ Dynamic planning failed. Falling back to static configuration.`);
+                 }
+             } else {
+                 await this.addMessageToDiscussion({ role: 'system', content: "⚠️ Dynamic Herd Mode enabled but Model Pool is empty. Using static configuration.", skipInPrompt: true });
+             }
+        }
+
+        if ((!preParticipants || preParticipants.length === 0) && (!postParticipants || postParticipants.length === 0)) {
+            this.addMessageToDiscussion({role: 'system', content: "Herd Mode enabled but no Pre-Code or Post-Code participants configured. Please check Settings."});
             this.processManager.unregister(processId);
             this.updateGeneratingState();
             return;
         }
 
         try {
-            const context = await this._contextManager.getContextContent();
-            const leaderModel = this._currentDiscussion.model || this._lollmsAPI.getModelName();
             const promptText = typeof message.content === 'string' ? message.content : 'User provided rich content.';
 
-            const debateResult = await this.herdManager.run(
+            const herdMessageId = 'herd_log_' + Date.now();
+            await this.addMessageToDiscussion({
+                id: herdMessageId,
+                role: 'system',
+                content: `### 🐂 Herd Mode Initializing...\n\n`,
+                skipInPrompt: true 
+            });
+
+            // Pass the already resolved 'contextText' to herdManager
+            const synthesisResult = await this.herdManager.run(
                 promptText,
-                participants,
+                preParticipants,
+                postParticipants,
                 this._discussionCapabilities.herdRounds || 2,
                 leaderModel,
-                context.text,
+                contextText, // <--- Using the resolved context (auto or standard)
                 (status) => {
                     this._panel.webview.postMessage({ command: 'updateStatus', status });
                 },
-                async (msg) => {
-                    // Inject debate messages as hidden system logs (skipInPrompt = true)
-                    msg.skipInPrompt = true;
-                    await this.addMessageToDiscussion(msg);
+                async (newContent) => {
+                    await this.updateMessageContent(herdMessageId, newContent);
                 },
-                (logMsg) => {
-                    // Send transient logs to webview without saving to discussion
-                    this._panel.webview.postMessage({
-                        command: 'addMessage',
-                        message: {
-                            id: 'log_' + Date.now(),
-                            role: 'system',
-                            content: logMsg
-                        }
-                    });
-                },
-                controller.signal
+                controller.signal,
+                this._currentDiscussion.messages 
             );
 
-            // After herd finishes, leader synthesizes
-            if (!controller.signal.aborted) {
-                // Log Leader Action
-                this._panel.webview.postMessage({
-                    command: 'addMessage',
-                    message: {
-                        id: 'log_leader_' + Date.now(),
-                        role: 'system',
-                        content: `🏁 **Debate Finished.** Leader model (${leaderModel}) is now synthesizing the solution...`
-                    }
-                });
-
+            // After herd finishes, leader synthesizes final output if not aborted
+            if (!controller.signal.aborted && synthesisResult) {
                 const synthesisPrompt: ChatMessage = {
                     role: 'user',
-                    content: `**HERD DEBATE COMPLETE**\n\nBelow is the transcript of the debate between models on the user's problem:\n\n${debateResult}\n\n---\n\n**INSTRUCTION:**\nSynthesize the findings from the debate. Act as the lead engineer.\n1. Summarize the best approach agreed upon (or choose the best one if conflicted).\n2. Provide the final solution code/answer based on this synthesis.\n3. Ensure all code is correct and follows the project context.`
+                    content: synthesisResult 
                 };
                 
                 const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities);
                 const systemMessage: ChatMessage = { role: 'system', content: systemPrompt };
                 
-                // Note: We use existing messages BUT filter out the hidden herd messages from the prompt history
-                // because the debate result is already fully contained in synthesisPrompt.
                 const history = this._currentDiscussion.messages.filter(m => !m.skipInPrompt);
+                
+                // Construct final prompt: System + History + Herd Synthesis
                 const messagesToSend = [systemMessage, ...history, synthesisPrompt];
                 
                 const assistantMessageId = 'assistant_' + Date.now().toString();
@@ -547,43 +745,8 @@ export class ChatPanel {
         return; // Exit normal flow
     }
 
-    // NORMAL FLOW
+    // 3. NORMAL FLOW
     try {
-        let autoContextText = "";
-        
-        // AUTO CONTEXT AGENT LOGIC
-        if (autoContextMode) {
-            this.log("Auto-Context mode active. Starting agent loop.");
-            const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
-            const userPromptText = (typeof message.content === 'string') ? message.content : "User request with attachments";
-            
-            const contextAgentMsgId = 'ctx_agent_' + Date.now();
-            await this.addMessageToDiscussion({
-                id: contextAgentMsgId,
-                role: 'system',
-                content: `**🧠 Auto-Context Agent**\n*Analyzing project structure and selecting files...*\n\n`,
-                skipInPrompt: true // Mark as skipped for generation context
-            });
-
-            try {
-                autoContextText = await this._contextManager.runContextAgent(
-                    userPromptText, 
-                    model, 
-                    controller.signal,
-                    (newContent) => {
-                        this._panel.webview.postMessage({ 
-                            command: 'updateMessage', 
-                            messageId: contextAgentMsgId, 
-                            newContent: newContent 
-                        });
-                    }
-                );
-            } catch (e: any) {
-                this.log(`Auto-Context failed: ${e.message}`, 'ERROR');
-                this._panel.webview.postMessage({ command: 'updateStatus', status: 'Auto-Context Failed. Using default.', type: 'error' });
-            }
-        }
-
         let personaContent = '';
         if (this._personalityManager && this._currentDiscussion.personalityId) {
             const p = this._personalityManager.getPersonality(this._currentDiscussion.personalityId);
@@ -591,14 +754,6 @@ export class ChatPanel {
         }
 
         const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent);
-        
-        let contextText = "";
-        if (autoContextText) {
-            contextText = autoContextText;
-        } else {
-            const standardContext = await this._contextManager.getContextContent();
-            contextText = standardContext.text;
-        }
         
         let combinedSystemContent = systemPrompt;
         if (contextText && contextText.trim().length > 0) {
@@ -609,6 +764,7 @@ export class ChatPanel {
         
         let messagesToSend: ChatMessage[] = [systemMessage];
         
+        // Add images if any (images are fetched via standard context even if auto-context ran for text)
         const standardContextForImages = await this._contextManager.getContextContent();
         if (standardContextForImages.images.length > 0) {
             const imageContent = standardContextForImages.images.map(img => ({
@@ -624,7 +780,7 @@ export class ChatPanel {
         const history = this._currentDiscussion.messages.filter(m => !m.skipInPrompt);
         messagesToSend = [...messagesToSend, ...history];
 
-        // INJECT PEDAGOGICAL INSTRUCTION (HIDDEN) IF ENABLED
+        // INJECT PEDAGOGICAL INSTRUCTION
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const addPedagogical = config.get<boolean>('addPedagogicalInstruction');
 
@@ -635,7 +791,6 @@ export class ChatPanel {
                 if (lastMsg.role === 'user') {
                     const pedagogicalSuffix = "\n\n(Important: Please start with a clear pedagogical description of your plan and logic before outputting any code or actions. Teach me!)";
                     
-                    // Clone to avoid modifying the original message stored in history
                     const modifiedLastMsg = { ...lastMsg };
                     
                     if (typeof modifiedLastMsg.content === 'string') {
@@ -643,7 +798,6 @@ export class ChatPanel {
                              modifiedLastMsg.content += pedagogicalSuffix;
                         }
                     } else if (Array.isArray(modifiedLastMsg.content)) {
-                        // Clone the content array
                         const newContent = [...modifiedLastMsg.content];
                         newContent.push({ type: 'text', text: pedagogicalSuffix });
                         modifiedLastMsg.content = newContent;
@@ -656,22 +810,28 @@ export class ChatPanel {
 
         const assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
         
-        this._panel.webview.postMessage({
-            command: 'addMessage',
-            message: {
-                id: assistantMessageId,
-                role: 'assistant',
-                content: '',
-                startTime: Date.now(),
-                model: this._currentDiscussion.model || this._lollmsAPI.getModelName()
-            }
-        });
+        if (!this._isDisposed) {
+            this._panel.webview.postMessage({
+                command: 'addMessage',
+                message: {
+                    id: assistantMessageId,
+                    role: 'assistant',
+                    content: '',
+                    startTime: Date.now(),
+                    model: this._currentDiscussion.model || this._lollmsAPI.getModelName()
+                }
+            });
+        }
 
         let fullResponse = '';
         let tokenCount = 0;
         let webSearchTriggered = false;
 
         await this._lollmsAPI.sendChat(messagesToSend, (chunk) => {
+            if (this._isDisposed) {
+                controller.abort();
+                return;
+            }
             fullResponse += chunk;
             tokenCount++; 
             this._panel.webview.postMessage({
@@ -703,12 +863,14 @@ export class ChatPanel {
 
             await this.addMessageToDiscussion(assistantMessage, false);
 
-            this._panel.webview.postMessage({
-                command: 'finalizeMessage',
-                id: assistantMessageId,
-                fullContent: cleanResponse,
-                tokenCount: tokenCount
-            });
+            if (!this._isDisposed) {
+                this._panel.webview.postMessage({
+                    command: 'finalizeMessage',
+                    id: assistantMessageId,
+                    fullContent: cleanResponse,
+                    tokenCount: tokenCount
+                });
+            }
         }
 
     } catch (error: any) {
@@ -720,7 +882,9 @@ export class ChatPanel {
                 content: `**Error Generating Response:**\n${error.message}\n\n*Check the "Lollms VS Coder" output channel for raw server responses.*`
             };
             await this.addMessageToDiscussion(errorMsg);
-            this._panel.webview.postMessage({ command: 'finalizeMessage', id: 'assistant_failed', fullContent: `*Generation Failed: ${error.message}*` });
+            if (!this._isDisposed) {
+                this._panel.webview.postMessage({ command: 'finalizeMessage', id: 'assistant_failed', fullContent: `*Generation Failed: ${error.message}*` });
+            }
         } else {
             this.log('Generation aborted by user.');
         }
@@ -735,7 +899,7 @@ export class ChatPanel {
   private async handleAutomatedSearch(query: string, messageId: string) {
       this.log(`Automated search triggered: ${query}`);
       const searchTool = this.agentManager.getTools().find(t => t.name === 'search_web');
-      if (searchTool) {
+      if (searchTool && !this._isDisposed) {
           this._panel.webview.postMessage({ command: 'finalizeMessage', id: messageId, fullContent: `*Thinking... Need more info. Pausing to search the web for: "${query}"...*` });
 
           try {
@@ -758,12 +922,18 @@ export class ChatPanel {
 
   public async addMessageToDiscussion(message: ChatMessage, updateWebview: boolean = true) {
       if (this._currentDiscussion) {
+          // Check for duplicates
+          if (message.id && this._currentDiscussion.messages.some(m => m.id === message.id)) {
+              this.log(`Duplicate message ignored: ${message.id}`, 'WARN');
+              return;
+          }
+
           this._currentDiscussion.messages.push(message);
           if (!this._currentDiscussion.id.startsWith('temp-')) {
               await this._discussionManager.saveDiscussion(this._currentDiscussion);
           }
       }
-      if (updateWebview && this._panel.webview) {
+      if (updateWebview && this._panel.webview && !this._isDisposed) {
           this._panel.webview.postMessage({ command: 'addMessage', message: message });
       }
   }
@@ -778,8 +948,8 @@ export class ChatPanel {
   }
 
   public async sendIsolatedMessage(systemPrompt: string, userPrompt: string, model: string) {
-      // Ensure webview is ready for isolated messages too, to see the output
       await this.waitForWebviewReady();
+      if (this._isDisposed) return;
 
       const { id: processId, controller } = this.processManager.register(this.discussionId, 'Running isolated task...');
       this.updateGeneratingState();
@@ -799,13 +969,13 @@ export class ChatPanel {
           let fullResponse = '';
           await this._lollmsAPI.sendChat(messages, (chunk) => {
               fullResponse += chunk;
-              this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk: chunk });
+              if (!this._isDisposed) this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk: chunk });
           }, controller.signal, model);
 
-          this._panel.webview.postMessage({ command: 'finalizeMessage', id: assistantMessageId, fullContent: fullResponse });
+          if (!this._isDisposed) this._panel.webview.postMessage({ command: 'finalizeMessage', id: assistantMessageId, fullContent: fullResponse });
           
       } catch (error: any) {
-          this._panel.webview.postMessage({ command: 'error', content: error.message });
+          if (!this._isDisposed) this._panel.webview.postMessage({ command: 'error', content: error.message });
       } finally {
           this.processManager.unregister(processId);
           this.updateGeneratingState();
@@ -860,8 +1030,8 @@ export class ChatPanel {
   public async analyzeExecutionResult(code: string | null, language: string | null, output: string, exitCode: number) {
       if (exitCode === 0 && !output.trim()) return;
 
-      // Ensure readiness before analyzing
       await this.waitForWebviewReady();
+      if (this._isDisposed) return;
 
       const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities);
       let userPrompt = "";
@@ -904,15 +1074,17 @@ export class ChatPanel {
           ];
 
           const assistantMessageId = 'assistant_' + Date.now();
-          this._panel.webview.postMessage({
-              command: 'addMessage',
-              message: { id: assistantMessageId, role: 'assistant', content: '', startTime: Date.now(), model: this._currentDiscussion?.model }
-          });
+          if (!this._isDisposed) {
+              this._panel.webview.postMessage({
+                  command: 'addMessage',
+                  message: { id: assistantMessageId, role: 'assistant', content: '', startTime: Date.now(), model: this._currentDiscussion?.model }
+              });
+          }
 
           let fullResponse = '';
           await this._lollmsAPI.sendChat(messages, (chunk) => {
               fullResponse += chunk;
-              this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk: chunk });
+              if (!this._isDisposed) this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk: chunk });
           }, controller.signal, this._currentDiscussion?.model);
 
           const responseMsg: ChatMessage = {
@@ -922,10 +1094,10 @@ export class ChatPanel {
               model: this._currentDiscussion?.model
           };
           await this.addMessageToDiscussion(responseMsg, false);
-          this._panel.webview.postMessage({ command: 'finalizeMessage', id: assistantMessageId, fullContent: fullResponse });
+          if (!this._isDisposed) this._panel.webview.postMessage({ command: 'finalizeMessage', id: assistantMessageId, fullContent: fullResponse });
 
       } catch (error: any) {
-          this._panel.webview.postMessage({ command: 'error', content: error.message });
+          if (!this._isDisposed) this._panel.webview.postMessage({ command: 'error', content: error.message });
       } finally {
           this.processManager.unregister(processId);
           this.updateGeneratingState();
@@ -1098,6 +1270,7 @@ export class ChatPanel {
   }
 
   public dispose() {
+    this._isDisposed = true;
     ChatPanel.currentPanel = undefined;
     ChatPanel.panels.delete(this.discussionId);
     this._panel.dispose();
@@ -1131,6 +1304,9 @@ export class ChatPanel {
         case 'sendMessage':
           await this.sendMessage(message.message, message.autoContext);
           break;
+        case 'runAutoContext':
+            await this.handleManualAutoContext(message.prompt);
+            break;
         case 'addMessage':
           await this.addMessageToDiscussion(message.message);
           break;
@@ -1291,6 +1467,13 @@ Task:
             break;
         case 'toggleAgentMode':
           this.agentManager.toggleAgentMode();
+          // Update capability
+          this._discussionCapabilities.agentMode = this.agentManager.getIsActive();
+          this.saveCapabilities();
+          break;
+        case 'toggleAutoContext': 
+          this._discussionCapabilities.autoContextMode = message.enabled;
+          this.saveCapabilities();
           break;
         case 'runAgent':
           if (!this._currentDiscussion) {
@@ -1310,6 +1493,12 @@ Task:
               }
             })();
           }
+          
+          // ADDED: Explicitly add the user message to history because we removed the frontend addMessage call
+          if (message.message) {
+              await this.addMessageToDiscussion(message.message);
+          }
+
           if (activeWorkspaceFolder) {
             this.agentManager.run(message.objective, this._currentDiscussion, activeWorkspaceFolder, this._currentDiscussion.model);
           } else {

@@ -20,6 +20,7 @@ import { searchArxivTool } from './searchArxiv';
 import { scrapeWebsiteTool } from './scrapeWebsite';
 import { searchFilesTool } from './searchFiles';
 import { buildSkillTool } from './buildSkill';
+import { runFileTool } from './runFile';
 
 export const allTools: ToolDefinition[] = [
     autoSelectContextFilesTool,
@@ -42,5 +43,6 @@ export const allTools: ToolDefinition[] = [
     searchArxivTool,
     scrapeWebsiteTool,
     searchFilesTool,
-    buildSkillTool
+    buildSkillTool,
+    runFileTool
 ];

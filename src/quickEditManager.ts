@@ -129,11 +129,6 @@ export class QuickEditManager {
             let systemPromptContent = await getProcessedSystemPrompt('chat', undefined, undefined, this.memoryManager);
 
             if (isNotebook) {
-                // Remove general chat instructions if they conflict, or append specific notebook overrides.
-                // The user requested: "only import notbook specific system prompt if we are editing a ntebook"
-                // This might imply REPLACING the system prompt or appending to a clean one.
-                // However, preserving persona is usually good.
-                // I will add a strong instruction header for Notebook Mode.
                 systemPromptContent += `\n\n**NOTEBOOK MODE ACTIVATED**
 You are an expert Jupyter Notebook assistant.
 - You are editing a specific cell (or selection) within a notebook.
@@ -142,6 +137,12 @@ You are an expert Jupyter Notebook assistant.
 - Do NOT rewrite the entire notebook unless explicitly asked.
 - Do NOT include conversational filler if the user asks for a direct replacement.
 `;
+            }
+
+            // --- ADD GLOBAL CONTEXT (Project Tree + Selected Files) ---
+            const globalContext = await this.contextManager.getContextContent();
+            if (globalContext.text && !globalContext.text.includes("**No workspace folder is currently open.**")) {
+                systemPromptContent += `\n\n# GLOBAL PROJECT CONTEXT\n${globalContext.text}`;
             }
 
             let systemPrompt = systemPromptContent + 
@@ -159,6 +160,16 @@ You are an expert Jupyter Notebook assistant.
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: prompt }
             ];
+
+            // Add any image context if present in global context
+            if (globalContext.images && globalContext.images.length > 0) {
+                const imageContent = globalContext.images.map(img => ({
+                    type: 'image_url',
+                    image_url: { url: `data:image/jpeg;base64,${img.data}` }
+                }));
+                // Insert images as a user message part
+                messages.splice(1, 0, { role: 'user', content: imageContent as any });
+            }
 
             let finalResponse = "";
             let toolCallLimit = 5;

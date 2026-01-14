@@ -1,6 +1,6 @@
 import { dom, vscode, state } from './dom.js';
 import { addMessage, renderMessageContent, updateContext, displayPlan, scheduleRender } from './messageRenderer.js';
-import { setGeneratingState } from './ui.js';
+import { setGeneratingState, updateBadges } from './ui.js';
 
 export function handleExtensionMessage(event: MessageEvent) {
     try {
@@ -144,9 +144,14 @@ export function handleExtensionMessage(event: MessageEvent) {
 
                     // Update Herd Mode Inputs (Modal & Menu)
                     if (dom.capHerdMode) dom.capHerdMode.checked = caps.herdMode || false;
-                    if (dom.herdModeCheckbox) dom.herdModeCheckbox.checked = caps.herdMode || false;
                     if (dom.capHerdRounds) dom.capHerdRounds.value = caps.herdRounds || 2;
-                    
+
+                    // Update Persistent Mode Checkboxes in Menu
+                    if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = caps.agentMode || false;
+                    if (dom.autoContextCheckbox) dom.autoContextCheckbox.checked = caps.autoContextMode || false;
+                    if (dom.herdModeCheckbox) dom.herdModeCheckbox.checked = caps.herdMode || false;
+
+
                     if (dom.herdConfigSection) {
                         dom.herdConfigSection.style.display = caps.herdMode ? 'block' : 'none';
                     }
@@ -176,21 +181,12 @@ export function handleExtensionMessage(event: MessageEvent) {
                         dom.webSearchIndicator.style.display = caps.webSearch ? 'flex' : 'none';
                     }
                     
-                    // Update Badges
-                    if (dom.activeBadges) {
-                        dom.activeBadges.innerHTML = '';
-                        if (dom.modelSelector && dom.modelSelector.value) {
-                            dom.activeBadges.innerHTML += `<span class="mode-badge model" title="Current Model">${dom.modelSelector.value}</span>`;
-                        }
-                        if (dom.agentModeCheckbox && dom.agentModeCheckbox.checked) {
-                            dom.activeBadges.innerHTML += `<span class="mode-badge agent" title="Agent Mode Active">🤖 Agent</span>`;
-                        }
-                        if (dom.autoContextCheckbox && dom.autoContextCheckbox.checked) {
-                            dom.activeBadges.innerHTML += `<span class="mode-badge autocontext" title="Auto Context Active">🧠 AutoCtx</span>`;
-                        }
-                        if (caps.herdMode) {
-                            dom.activeBadges.innerHTML += `<span class="mode-badge herd" title="Herd Mode Active">🐂 Herd</span>`;
-                        }
+                    // Update Badges via ui.ts helper
+                    updateBadges();
+                    
+                    // Logic to disable auto-context if agent is active
+                    if(dom.autoContextCheckbox && dom.agentModeCheckbox) {
+                        dom.autoContextCheckbox.disabled = dom.agentModeCheckbox.checked;
                     }
                 }
                 break;
@@ -224,12 +220,8 @@ export function handleExtensionMessage(event: MessageEvent) {
                     });
                     dom.modelSelector.value = message.currentModel || '';
                     
-                    // Update Badge immediately
-                    if (dom.activeBadges) {
-                        const existingBadge = dom.activeBadges.querySelector('.mode-badge.model');
-                        if(existingBadge) existingBadge.textContent = dom.modelSelector.value || "Default";
-                        else dom.activeBadges.innerHTML = `<span class="mode-badge model" title="Current Model">${dom.modelSelector.value || "Default"}</span>` + dom.activeBadges.innerHTML;
-                    }
+                    // Update Badges via ui.ts helper
+                    updateBadges();
                 }
                 break;
             case 'updatePersonalities':
@@ -299,15 +291,9 @@ export function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'updateAgentMode':
                 if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = message.isActive;
-                // Sync badge
-                if (dom.activeBadges) {
-                    const existing = dom.activeBadges.querySelector('.mode-badge.agent');
-                    if (message.isActive && !existing) {
-                        dom.activeBadges.innerHTML += `<span class="mode-badge agent" title="Agent Mode Active">🤖 Agent</span>`;
-                    } else if (!message.isActive && existing) {
-                        existing.remove();
-                    }
-                }
+                // Sync badge using shared helper
+                updateBadges();
+                
                 if (!message.isActive) setGeneratingState(false);
                 break;
             case 'error':

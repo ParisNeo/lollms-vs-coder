@@ -793,6 +793,18 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
     user-select: none;
 }
 
+.mode-badge.clickable {
+    cursor: pointer;
+    transition: transform 0.1s, opacity 0.2s;
+}
+.mode-badge.clickable:hover {
+    opacity: 0.8;
+    transform: scale(1.05);
+}
+.mode-badge.clickable:active {
+    transform: scale(0.95);
+}
+
 .mode-badge.agent { background-color: var(--vscode-charts-orange); color: white; }
 .mode-badge.herd { background-color: var(--vscode-charts-purple); color: white; }
 .mode-badge.autocontext { background-color: var(--vscode-charts-blue); color: white; }

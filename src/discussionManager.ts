@@ -58,8 +58,13 @@ export class DiscussionManager {
     public getLastCapabilities(): DiscussionCapabilities {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const allowedFormats = config.get<any>('allowedFileFormats') || { fullFile: true, insert: false, replace: false, delete: false };
+        
+        // Read Herd Mode configuration
         const herdParticipants = config.get<HerdParticipant[]>('herdParticipants') || [];
+        const herdPreCodeParticipants = config.get<HerdParticipant[]>('herdPreCodeParticipants') || [];
+        const herdPostCodeParticipants = config.get<HerdParticipant[]>('herdPostCodeParticipants') || [];
         const herdRounds = config.get<number>('herdRounds') || 2;
+        const herdDynamicMode = config.get<boolean>('herdDynamicMode') || false;
 
         // Default Capabilities
         const defaults: DiscussionCapabilities = {
@@ -75,19 +80,31 @@ export class DiscussionManager {
             funMode: false,
             thinkingMode: 'none',
             gitCommit: true,
+            // Herd Mode
             herdMode: false,
-            herdParticipants: herdParticipants,
-            herdRounds: herdRounds
+            herdDynamicMode: herdDynamicMode,
+            herdParticipants: herdParticipants, // Legacy
+            herdPreCodeParticipants: herdPreCodeParticipants,
+            herdPostCodeParticipants: herdPostCodeParticipants,
+            herdRounds: herdRounds,
+            // Persistent Modes
+            agentMode: false,
+            autoContextMode: false
         };
 
         const saved = this.context.globalState.get<DiscussionCapabilities>('lollms_last_capabilities');
         
         if (saved) {
             // Merge saved with defaults to ensure new fields/structure are present
-            // We overwrite the saved herdParticipants with global defaults if the saved one is undefined or empty
-            // This ensures new config structure propagates
             const merged = { ...defaults, ...saved };
-            if (!merged.herdParticipants) merged.herdParticipants = defaults.herdParticipants;
+            
+            // Ensure array fields are populated if missing in saved state
+            if (!merged.herdPreCodeParticipants || merged.herdPreCodeParticipants.length === 0) {
+                merged.herdPreCodeParticipants = defaults.herdPreCodeParticipants;
+            }
+            if (!merged.herdPostCodeParticipants || merged.herdPostCodeParticipants.length === 0) {
+                merged.herdPostCodeParticipants = defaults.herdPostCodeParticipants;
+            }
             if (!merged.herdRounds) merged.herdRounds = defaults.herdRounds;
             
             return merged;

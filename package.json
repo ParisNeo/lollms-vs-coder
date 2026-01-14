@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.58",
+  "version": "0.5.61",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -792,12 +792,32 @@
         "lollmsVsCoder.herdParticipants": {
           "type": "array",
           "default": [],
-          "description": "List of models and personalities participating in Herd Mode sessions."
+          "description": "Deprecated: Use Pre-Code and Post-Code participants lists instead."
+        },
+        "lollmsVsCoder.herdPreCodeParticipants": {
+          "type": "array",
+          "default": [],
+          "description": "List of models and personalities for Pre-Code Brainstorming (Phase 1)."
+        },
+        "lollmsVsCoder.herdPostCodeParticipants": {
+          "type": "array",
+          "default": [],
+          "description": "List of models and personalities for Post-Code Brainstorming (Phase 3)."
         },
         "lollmsVsCoder.herdRounds": {
           "type": "number",
           "default": 2,
           "description": "Default number of rounds for Herd Mode brainstorming."
+        },
+        "lollmsVsCoder.herdDynamicMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable Dynamic Herd Mode: The AI generates participants automatically based on the prompt."
+        },
+        "lollmsVsCoder.herdDynamicModelPool": {
+          "type": "array",
+          "default": [],
+          "description": "Pool of available models for Dynamic Herd assignment. Each entry is { model: string, description: string }."
         }
       }
     },

@@ -20,7 +20,7 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
         await services.discussionManager.saveDiscussion(discussion);
         const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussion.id, services.skillsManager);
         
-        // Inject dependencies into panel (duplicated from discussionUtils for direct newDiscussion usage)
+        // Inject dependencies into panel
         panel.agentManager = new (require('../agentManager').AgentManager)(
             panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
             services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager
@@ -29,6 +29,7 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
         panel.agentManager.setProcessManager(services.processManager);
         panel.setContextManager(services.contextManager);
         panel.setPersonalityManager(services.personalityManager);
+        panel.setHerdManager(services.herdManager); // Added injection
         
         await panel.loadDiscussion();
         services.treeProviders.discussion?.refresh();
@@ -64,6 +65,7 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
         panel.agentManager.setProcessManager(services.processManager);
         panel.setContextManager(services.contextManager);
         panel.setPersonalityManager(services.personalityManager);
+        panel.setHerdManager(services.herdManager); // Added injection
         await panel.loadDiscussion();
     }));
 

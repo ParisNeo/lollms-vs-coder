@@ -1,10 +1,9 @@
 import { dom, vscode, state } from './dom.js';
 import { performSearch, navigateSearch, clearSearch } from './search.js';
 import { insertNewMessageEditor } from './messageRenderer.js';
-import { setGeneratingState } from './ui.js';
+import { setGeneratingState, updateBadges } from './ui.js';
 import { isScrolledToBottom } from './utils.js';
 
-// ... (previous helper functions like sendMessage, closeMenu etc.) ...
 export function sendMessage() {
     const messageInput = dom.messageInput;
     if (!messageInput) return;
@@ -16,13 +15,11 @@ export function sendMessage() {
     const messageId = 'user_' + Date.now().toString() + Math.random().toString(36).substring(2);
     const userMessage = { id: messageId, role: 'user', content: messageText };
 
-    vscode.postMessage({ command: 'addMessage', message: userMessage });
-
-    // Note: Agent checkbox logic updated to read from menu structure or state
+    // Agent mode is now persistent, so checkbox state reflects active state
     if (dom.agentModeCheckbox.checked) {
         vscode.postMessage({ command: 'runAgent', objective: messageText, message: userMessage });
     } else {
-        // Send Auto-Context state
+        // Send Auto-Context state from checkbox (which reflects capability)
         const autoContext = dom.autoContextCheckbox ? dom.autoContextCheckbox.checked : false;
         vscode.postMessage({ command: 'sendMessage', message: userMessage, autoContext: autoContext });
     }
@@ -34,42 +31,13 @@ export function sendMessage() {
 function closeMenu() {
     if(dom.moreActionsMenu) {
         dom.moreActionsMenu.classList.remove('visible');
-        // Reset to main view
         dom.moreActionsMenu.querySelectorAll('.menu-view').forEach(v => v.classList.add('hidden'));
         const main = document.getElementById('menu-main');
         if(main) main.classList.remove('hidden');
     }
 }
 
-function updateBadges() {
-    const container = dom.activeBadges;
-    if (!container) return;
-    container.innerHTML = '';
-
-    // Model Badge (Always show)
-    if (dom.modelSelector && dom.modelSelector.value) {
-        const model = dom.modelSelector.value;
-        container.innerHTML += `<span class="mode-badge model" title="Current Model">${model}</span>`;
-    }
-
-    // Agent Mode
-    if (dom.agentModeCheckbox && dom.agentModeCheckbox.checked) {
-        container.innerHTML += `<span class="mode-badge agent" title="Agent Mode Active">🤖 Agent</span>`;
-    }
-
-    // Auto Context
-    if (dom.autoContextCheckbox && dom.autoContextCheckbox.checked) {
-        container.innerHTML += `<span class="mode-badge autocontext" title="Auto Context Active">🧠 AutoCtx</span>`;
-    }
-
-    // Herd Mode
-    if (dom.herdModeCheckbox && dom.herdModeCheckbox.checked) {
-        container.innerHTML += `<span class="mode-badge herd" title="Herd Mode Active">🐂 Herd</span>`;
-    }
-}
-
 export function initEventHandlers() {
-    // ... (keep existing handlers) ...
     if (dom.sendButton) dom.sendButton.addEventListener('click', sendMessage);
     if (dom.messageInput) {
         dom.messageInput.addEventListener('keydown', (e: KeyboardEvent) => {
@@ -114,35 +82,22 @@ export function initEventHandlers() {
     if (dom.executeButton) dom.executeButton.addEventListener('click', () => { closeMenu(); vscode.postMessage({ command: 'executeProject' }); });
     if (dom.setEntryPointButton) dom.setEntryPointButton.addEventListener('click', () => { closeMenu(); vscode.postMessage({ command: 'setEntryPoint' }); });
     if (dom.debugRestartButton) dom.debugRestartButton.addEventListener('click', () => { closeMenu(); vscode.postMessage({ command: 'debugRestart' }); });
-    
+  
     // --- MODE TOGGLES (Menu Version) ---
     if (dom.agentModeCheckbox) dom.agentModeCheckbox.addEventListener('change', () => {
+        // Toggle and save persistence
         vscode.postMessage({ command: 'toggleAgentMode' });
-        // Disable auto-context if agent mode is on
         if(dom.autoContextCheckbox) dom.autoContextCheckbox.disabled = dom.agentModeCheckbox.checked;
         updateBadges();
     });
 
     if (dom.autoContextCheckbox) dom.autoContextCheckbox.addEventListener('change', () => {
+        // Toggle and save persistence
+        vscode.postMessage({ command: 'toggleAutoContext', enabled: dom.autoContextCheckbox.checked });
         updateBadges();
     });
 
-    // Handle Herd Mode Checkbox in Menu
     if (dom.herdModeCheckbox) dom.herdModeCheckbox.addEventListener('change', () => {
-        // We need to sync this with capabilities update
-        // We trigger an update capabilities message with current UI state
-        // Since we don't have all modal fields here, we might need a specific command or just rely on the modal logic.
-        // However, user requested it in the menu.
-        // The modal logic reads ALL fields. This simple toggle just needs to flip 'herdMode'.
-        // But we need to preserve other capability fields.
-        // A simpler way: just flip the UI state and badges, the actual execution checks capability.
-        // But we need to PERSIST it.
-        // Let's create a 'toggleHerdMode' command or generic 'updateCapability'
-        
-        // For simplicity, let's just trigger updateBadges() and assume the user configures details in Settings if needed.
-        // But wait, it needs to actually TURN ON.
-        // Let's reuse the modal saving logic but only for this field? No, that's complex.
-        // Let's send a specific partial update message.
         vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { herdMode: dom.herdModeCheckbox.checked } });
         updateBadges();
     });

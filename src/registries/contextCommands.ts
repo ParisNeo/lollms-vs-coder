@@ -3,6 +3,8 @@ import { LollmsServices } from '../lollmsContext';
 import { ContextState } from '../commands/contextStateProvider';
 import { Logger } from '../logger';
 import * as path from 'path';
+import { ChatPanel } from '../commands/chatPanel/chatPanel';
+import { AgentManager } from '../agentManager';
 
 export function registerContextCommands(context: vscode.ExtensionContext, services: LollmsServices) {
     
@@ -25,6 +27,39 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.addFilesToContext', async (files: string[]) => {
         if (services.contextManager.getContextStateProvider()) {
             await services.contextManager.getContextStateProvider()!.addFilesToContext(files);
+        }
+    }));
+
+    // Auto Select Context Files Command
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.autoSelectContextFiles', async () => {
+        const objective = await vscode.window.showInputBox({
+            prompt: vscode.l10n.t("prompt.enterObjectiveForSelection"),
+            placeHolder: "e.g., Refactor the authentication logic"
+        });
+
+        if (objective) {
+             const discussion = services.discussionManager.createNewDiscussion();
+             discussion.title = `Auto-Context: ${objective}`;
+             await services.discussionManager.saveDiscussion(discussion);
+             
+             const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussion.id, services.skillsManager);
+             
+             // Setup Panel Dependencies (same as in newDiscussion)
+             panel.agentManager = new AgentManager(
+                panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
+                services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager
+            );
+            panel.setProcessManager(services.processManager);
+            panel.agentManager.setProcessManager(services.processManager);
+            panel.setContextManager(services.contextManager);
+            panel.setPersonalityManager(services.personalityManager);
+            panel.setHerdManager(services.herdManager);
+
+            await panel.loadDiscussion();
+            services.treeProviders.discussion?.refresh();
+
+            // Run the Auto-Context Tool
+            panel.handleManualAutoContext(objective);
         }
     }));
 

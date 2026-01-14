@@ -29,6 +29,14 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-01-14 16:17]
+
+- chore(release): bump version to 0.5.62 and update changelog
+
+## [2026-01-14 09:35]
+
+- refactor(contextManager): replace logStep with actionLog
+
 ## [0.5.4] - 2025-10-22
 
 ### ✨ Features

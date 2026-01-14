@@ -331,7 +331,7 @@ You have access to the project structure and the list of currently selected file
                       });
                       continue; 
                   } else {
-                      logStep(`❌ Agent failed to output JSON.`);
+                      actionLog.push(`❌ Agent failed to output JSON.`);
                       break;
                   }
               }
@@ -408,10 +408,6 @@ You have access to the project structure and the list of currently selected file
           return await this.readSpecificFiles(Array.from(selectedFiles));
       }
       return "";
-  }
-    
-  private logStep(msg: string) {
-      console.log(`[AutoContext] ${msg}`);
   }
 
   // ... (rest of methods)

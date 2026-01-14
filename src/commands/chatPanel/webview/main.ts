@@ -1,5 +1,3 @@
-// src/commands/chatPanel/webview/main.ts
-// Import dom first.
 import { dom, vscode, state } from './dom.js';
 
 // Type definitions for globals
@@ -23,7 +21,7 @@ import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
 import Prism from 'prismjs';
 
-// --- PrismJS Dependencies (Order Matters) ---
+// --- PrismJS Dependencies ---
 import 'prismjs/components/prism-clike';
 import 'prismjs/components/prism-markup';
 import 'prismjs/components/prism-markup-templating';
@@ -71,6 +69,20 @@ const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) :
 (window as any).mermaid = mermaid;
 (window as any).Prism = Prism;
 
+// --- CRITICAL FIX: Initialize Mermaid IMMEDIATELY with Dark Theme ---
+// This ensures the configuration is ready before any render calls occur.
+try {
+    mermaid.initialize({ 
+        startOnLoad: false,
+        theme: 'dark', // Explicitly use dark theme to match Code Graph
+        securityLevel: 'loose',
+        fontFamily: 'var(--vscode-font-family)'
+    });
+    console.log("DEBUG: Mermaid initialized (dark theme).");
+} catch(e) { 
+    console.warn("Mermaid init error:", e); 
+}
+
 // Logic Imports
 import { initEventHandlers } from './events.js'; 
 import { handleExtensionMessage } from './extensionMessageHandler.js';
@@ -78,19 +90,16 @@ import { handleExtensionMessage } from './extensionMessageHandler.js';
 // --- Initialization ---
 (function() {
     try {
-        // Use 'window.vscode' which is guaranteed to exist by our bootstrap script
         if (!(window as any).vscode) {
             throw new Error("VS Code API missing on window object.");
         }
 
-        // Delegate message handling to the specialized handler
         window.addEventListener('message', handleExtensionMessage);
         
         document.addEventListener('DOMContentLoaded', () => {
             console.log("DEBUG: DOMContentLoaded.");
             
             if (typeof l10n !== 'undefined' && dom.welcomeMessage) {
-                // ... l10n logic ...
                 const title = dom.welcomeMessage.querySelector('#welcome-title');
                 if(title) title.innerHTML = l10n.welcomeTitle || "Welcome";
                 
@@ -118,31 +127,10 @@ import { handleExtensionMessage } from './extensionMessageHandler.js';
                 marked.setOptions({ breaks: true, gfm: true });
             } catch (e) { console.warn("Marked init:", e); }
 
-            try {
-                 mermaid.initialize({ 
-                     startOnLoad: false,
-                     theme: 'base',
-                     themeVariables: {
-                         darkMode: true,
-                         background: 'var(--vscode-editor-background)',
-                         primaryColor: 'var(--vscode-button-background)',
-                         primaryTextColor: 'var(--vscode-editor-foreground)',
-                         primaryBorderColor: 'var(--vscode-widget-border)',
-                         lineColor: 'var(--vscode-editor-foreground)',
-                         secondaryColor: 'var(--vscode-editorWidget-background)',
-                         tertiaryColor: 'var(--vscode-sideBar-background)',
-                         noteBkgColor: 'var(--vscode-editorWidget-background)',
-                         noteTextColor: 'var(--vscode-editor-foreground)'
-                     },
-                     fontFamily: 'var(--vscode-font-family)',
-                     securityLevel: 'loose'
-                 });
-            } catch(e) { console.warn("Mermaid init:", e); }
-
-            // Call the imported initEventHandlers
+            // Initialize Event Handlers
             initEventHandlers();
 
-            // Notify extension that we are ready
+            // Notify extension that webview is ready
             vscode.postMessage({ command: 'webview-ready' });
             console.log("DEBUG: Sent 'webview-ready'");
         });

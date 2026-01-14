@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.61",
+  "version": "0.5.62",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -1160,8 +1160,8 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run esbuild-package",
-    "build-webview": "esbuild ./src/commands/chatPanel/webview/main.ts --bundle --outfile=out/webview/chatPanel.bundle.js --format=iife --platform=browser --target=es2020 --sourcemap",
-    "minify-webview": "esbuild ./src/commands/chatPanel/webview/main.ts --bundle --outfile=out/webview/chatPanel.bundle.js --format=iife --platform=browser --target=es2020 --minify",
+    "build-webview": "esbuild ./src/commands/chatPanel/webview/main.ts --bundle --outfile=out/webview/chatPanel.bundle.js --format=iife --platform=browser --target=es2020 --sourcemap && esbuild ./src/webview/codeGraph.ts --bundle --outfile=out/webview/codeGraph.bundle.js --format=iife --platform=browser --target=es2020 --sourcemap",
+    "minify-webview": "esbuild ./src/commands/chatPanel/webview/main.ts --bundle --outfile=out/webview/chatPanel.bundle.js --format=iife --platform=browser --target=es2020 --minify && esbuild ./src/webview/codeGraph.ts --bundle --outfile=out/webview/codeGraph.bundle.js --format=iife --platform=browser --target=es2020 --minify",
     "compile": "npm run clean && npm run copy-assets && npm run build-webview && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap",
     "watch": "npm run clean && npm run copy-assets && npm run build-webview && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap --watch",
     "esbuild-package": "npm run clean && npm run copy-assets && npm run minify-webview && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --minify",
@@ -1207,7 +1207,13 @@
     "node-fetch": "2.7.0",
     "pdf-parse": "^1.1.1",
     "prismjs": "^1.29.0",
-    "js-yaml": "^4.1.0"
+    "js-yaml": "^4.1.0",
+    "cytoscape": "^3.28.1",
+    "dagre": "^0.8.5",
+    "cytoscape-dagre": "^2.5.0",
+    "cytoscape-cose-bilkent": "^4.1.0",
+    "layout-base": "^1.0.2",
+    "cose-base": "^1.0.3"
   },
   "overrides": {
     "tough-cookie": "^4.1.3",

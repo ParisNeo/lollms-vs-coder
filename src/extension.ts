@@ -30,6 +30,7 @@ import { DiffManager } from './diffManager';
 import { DiffCodeLensProvider } from './commands/diffCodeLensProvider';
 import { HerdManager } from './herdManager';
 import { LollmsDebugAdapterTrackerFactory } from './debugAdapterTracker';
+import { CodeExplorerPanel } from './commands/codeExplorerView';
 
 export async function activate(context: vscode.ExtensionContext) {
     Logger.initialize(context);
@@ -119,6 +120,16 @@ export async function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(recreateClientDisposable);
 
+    // Add this command registration in the activate function, after other command registrations
+    const showCodeGraphPanelCommand = vscode.commands.registerCommand('lollms-vs-coder.showCodeGraphPanel', () => {
+        if (services.codeGraphManager) {
+            CodeExplorerPanel.createOrShow(context.extensionUri, services.codeGraphManager);
+        } else {
+            vscode.window.showErrorMessage('Code Graph Manager not initialized.');
+        }
+    });
+    context.subscriptions.push(showCodeGraphPanelCommand);    
+
     // Register Providers
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, new DebugCodeLensProvider(debugErrorManager)));
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, inlineDiffProvider));
@@ -184,7 +195,12 @@ export async function activate(context: vscode.ExtensionContext) {
         } else {
             contextStateProvider = new ContextStateProvider(folder.uri.fsPath, context);
             contextManager.setContextStateProvider(contextStateProvider);
-            codeGraphManager.setContextStateProvider(contextStateProvider);
+            
+            // Set the context setter callback for CodeGraphManager
+            codeGraphManager.setContextSetter((key, value) => {
+                vscode.commands.executeCommand('setContext', `lollms:${key}`, value);
+            });
+            
             fileDecorationProvider.updateStateProvider(contextStateProvider);
         }
 

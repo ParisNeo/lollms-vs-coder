@@ -56,8 +56,6 @@ try {
 }
 
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
-
-// Define SANITIZE_CONFIG
 const SANITIZE_CONFIG = {
     ADD_TAGS: ['iframe', 'script', 'style'],
     ADD_ATTR: ['target', 'allow', 'allowfullscreen', 'frameborder', 'scrolling']
@@ -142,7 +140,7 @@ function createSearchBlock(type: string, query: string): HTMLElement {
             params: { query: query }
         });
         
-    }, 'code-action-btn apply-btn');
+        }, 'code-action-btn apply-btn');
     searchBtn.id = buttonId;
 
     actions.appendChild(searchBtn);
@@ -157,9 +155,86 @@ function createSearchBlock(type: string, query: string): HTMLElement {
     return block;
 }
 
+function enablePanZoom(container: HTMLElement) {
+    let zoomScale = 1;
+    let panX = 0;
+    let panY = 0;
+    let isDragging = false;
+    let startX = 0;
+    let startY = 0;
+
+    const svg = container.querySelector('svg') as HTMLElement;
+    if (!svg) return;
+
+    // Make container clip overflow but show grab cursor
+    container.style.overflow = 'hidden';
+    container.style.cursor = 'grab';
+    container.style.border = '1px solid var(--vscode-widget-border)';
+    container.style.borderRadius = '4px';
+    container.style.background = 'var(--vscode-editor-background)';
+    container.style.minHeight = '400px'; 
+    container.style.position = 'relative';
+
+    svg.style.transformOrigin = '0 0';
+    svg.style.transition = 'transform 0.1s ease-out';
+    svg.style.width = '100%'; 
+    svg.style.height = '100%';
+    
+    // Ensure SVG is block level to avoid extra spacing
+    svg.style.display = 'block';
+
+    const updateTransform = () => {
+        svg.style.transform = `translate(${panX}px, ${panY}px) scale(${zoomScale})`;
+    };
+
+    container.addEventListener('wheel', (e) => {
+        // Only zoom if over the diagram
+        e.preventDefault();
+        e.stopPropagation();
+        const delta = e.deltaY > 0 ? 0.9 : 1.1;
+        zoomScale *= delta;
+        updateTransform();
+    });
+
+    container.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        startX = e.clientX - panX;
+        startY = e.clientY - panY;
+        container.style.cursor = 'grabbing';
+        svg.style.transition = 'none'; // Disable transition for dragging
+    });
+
+    // Listen on window to catch drags outside container
+    window.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        e.preventDefault();
+        panX = e.clientX - startX;
+        panY = e.clientY - startY;
+        updateTransform();
+    });
+
+    const stopDrag = () => {
+        if(isDragging) {
+            isDragging = false;
+            container.style.cursor = 'grab';
+            svg.style.transition = 'transform 0.1s ease-out';
+        }
+    };
+
+    window.addEventListener('mouseup', stopDrag);
+}
+
 function renderDiagram(codeElement: HTMLElement, language: string, container: HTMLElement) {
     const diagramContainer = document.createElement('div');
     diagramContainer.className = 'diagram-container';
+    
+    const helpNote = document.createElement('div');
+    helpNote.style.fontSize = '10px';
+    helpNote.style.color = 'var(--vscode-descriptionForeground)';
+    helpNote.style.marginBottom = '5px';
+    helpNote.style.textAlign = 'right';
+    helpNote.innerText = 'Scroll to Zoom & Drag to Pan';
+    container.appendChild(helpNote);
 
     if (language === 'mermaid') {
         const id = `mermaid-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
@@ -168,8 +243,12 @@ function renderDiagram(codeElement: HTMLElement, language: string, container: HT
         try {
             mermaid.render(id, text).then((result: any) => {
                 const svg = typeof result === 'string' ? result : result.svg;
-                diagramContainer.innerHTML = sanitizer.sanitize(svg, { USE_PROFILES: { svg: true } });
+                // Bypassing sanitizer for Mermaid to preserve styles, defs, and ids
+                diagramContainer.innerHTML = svg;
                 container.appendChild(diagramContainer);
+                
+                enablePanZoom(diagramContainer);
+
                 if(codeElement.parentElement) codeElement.parentElement.style.display = 'none';
             }).catch((e: any) => {
                 console.error("Mermaid render error:", e);
@@ -186,8 +265,12 @@ function renderDiagram(codeElement: HTMLElement, language: string, container: HT
              container.appendChild(diagramContainer);
         }
     } else if (language === 'svg') {
+        // SVG from text is still sanitized
         diagramContainer.innerHTML = sanitizer.sanitize(codeElement.textContent || '', { USE_PROFILES: { svg: true } });
         container.appendChild(diagramContainer);
+        
+        enablePanZoom(diagramContainer);
+
         if(codeElement.parentElement) codeElement.parentElement.style.display = 'none';
     }
 }
@@ -307,7 +390,6 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i].trim(); 
         
-        // XML Tool Check (Individual lines)
         if (!inBlock) {
             const xmlRename = line.match(/<rename\s+old=["']([^"']+)["']\s+new=["']([^"']+)["']\s*\/>/i);
             const xmlDelete = line.match(/<delete\s+path=["']([^"']+)["']\s*\/>/i);
@@ -340,7 +422,6 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
                 let pathStr = '';
                 let stripFirstLine = false;
 
-                // Check header for language:path format (New Default)
                 const blockHeader = line.substring(match[0].length).trim();
                 
                 if (blockHeader.includes(':')) {
@@ -359,11 +440,9 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
                     pathStr = p;
                 }
 
-                // Handling Variants: path on next line (with or without comments)
                 if (!pathStr && i + 1 < lines.length) {
                     const nextLine = lines[i+1].trim();
 
-                    // Check for language:path format (e.g. python:src/app.py) inside the block
                     const langPathMatch = nextLine.match(/^([a-zA-Z0-9_+-]+):([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+)$/);
 
                     if (langPathMatch) {
@@ -371,8 +450,6 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
                         stripFirstLine = true;
                         type = 'file';
                     } else if (!nextLine.startsWith('#!')) {
-                        // Regex checks for common comment prefixes or just plain path text
-                        // Capture groups: 1=CommentPrefix, 2=Path
                         const pathLineRegex = /^((?:\/\/|#|<!--|;|\/\*|\*)\s*)?([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+)(\s*\S*)?$/;
                         const matchPath = nextLine.match(pathLineRegex);
                         
@@ -380,25 +457,21 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
                             const commentPrefix = matchPath[1];
                             const potentialPath = matchPath[2];
                             
-                            // Valid path criteria: must have extension, and if no comment prefix, must look very path-like
-                            // Avoid simple code lines like "console.log" by checking for slashes or explicit comment
                             if (potentialPath.includes('/') || potentialPath.includes('\\') || (commentPrefix && potentialPath.includes('.'))) {
                                 pathStr = potentialPath;
                                 stripFirstLine = true;
-                                type = 'file'; // Default type if found this way
+                                type = 'file';
                             }
                         }
                     }
                 }
 
-                // LEGACY: Check previous line for File/Diff/etc labels (Compatibility)
                 if (!pathStr) {
                     let j = i - 1;
                     while (j >= 0 && lines[j].trim() === '') j--; 
 
                     if (j >= 0) {
                         const prevLine = lines[j].trim();
-                        // Support for File: path/to/file format (Legacy)
                         const fileMatch = prevLine.match(/^(?:(?:\*\*|__)?File(?:\*\*|__)?[:\s])\s*(.+)$/i);
                         const diffMatch = prevLine.match(/^(?:(?:\*\*|__)?Diff(?:\*\*|__)?[:\s])\s*(.+)$/i);
                         const insertMatch = prevLine.match(/^(?:(?:\*\*|__)?Insert(?:\*\*|__)?[:\s])\s*(.+)$/i);
@@ -501,14 +574,11 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
         let isDeleteCode = false;
         let filePath = '';
 
-        // Handle language:path format in class name
         if (language.includes(':')) {
             const parts = language.split(':');
             language = parts[0];
             filePath = parts.slice(1).join(':').trim();
             isFileBlock = true;
-            
-            // Re-apply correct language class for syntax highlighting
             code.className = `language-${language}`;
             pre.className = `language-${language}`;
         }
@@ -523,7 +593,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
         const blockId = `code-block-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         code.id = blockId;
 
-        // Check metadata from extractFilePaths
         const info = codeBlockInfos[index];
 
         if (info) {
@@ -544,22 +613,19 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
                 isDeleteCode = true;
             }
 
-            // Count actionable blocks
             if (info.path && ['file', 'diff', 'insert', 'replace', 'delete'].includes(info.type || '')) {
                 actionableBlockCount++;
             }
 
-            // Clean up the first line if identified as a path line inside the block
             if (info.stripFirstLine) {
                 const lines = codeText.split('\n');
                 if (lines.length > 0) {
                     lines.shift();
                     codeText = lines.join('\n');
-                    code.textContent = codeText; // Update visual content
+                    code.textContent = codeText; 
                 }
             }
         } else {
-            // Heuristic fallbacks
             if (language === 'diff') {
                 const diffHeaderMatch = codeText.match(/---\s+a\/(.+)\n\+\+\+\s+b\/(.+)/);
                 if (diffHeaderMatch && diffHeaderMatch[1]) {
@@ -579,7 +645,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
         const prevEl = pre.previousElementSibling as HTMLElement;
         if (prevEl && (prevEl.tagName === 'P' || prevEl.tagName === 'DIV')) {
              const text = prevEl.textContent || "";
-             // Check if previous element contained the file/diff path and hide it to avoid duplication
              if ((isFileBlock && /File/i.test(text)) || 
                  (isDiff && /Diff/i.test(text)) || 
                  (isInsert && /Insert/i.test(text)) ||
@@ -924,7 +989,6 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 }
             });
             
-            // XML Tag Handling for modern formats and tools
             let xmlProcessedContent = processedContent
                 .replace(/<file\s+path=["']([^"']+)["']>\s*([\s\S]*?)\s*<\/file>/g, (match, path, code) => {
                     return `File: ${path}\n\`\`\`\n${code}\n\`\`\``;
@@ -1287,3 +1351,4 @@ export function insertNewMessageEditor(role: 'user' | 'assistant') {
         (cancelBtn as HTMLElement).addEventListener('click', () => editorWrapper.remove());
     }
 }
+

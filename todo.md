@@ -9,3 +9,5 @@
 - add optional execute while thinking that allows the participants to execute code to verify hypothesis. Suppress potential threats.
 - Fix agent mode
 - add math rendering to messages
+- Fix personalities
+- Add support for lollms personalities: listing/using

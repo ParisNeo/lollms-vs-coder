@@ -8,3 +8,4 @@
 - rename Code by answer to allow non code related herd mode applications
 - add optional execute while thinking that allows the participants to execute code to verify hypothesis. Suppress potential threats.
 - Fix agent mode
+- add math rendering to messages

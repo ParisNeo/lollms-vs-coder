@@ -4,4 +4,7 @@
 - Add agressive context information about the file update structure (NO DIFFS)
 - Add the possibility to suppress a module (herd mode, auto extract) for the next generation
 - the input must have a max height to prevent it from growing too much. add a scrollbar if necessary
-- - the menu must readapt and avoid being cropped by adding an ioptional scrollbar
+- the menu must readapt and avoid being cropped by adding an ioptional scrollbar
+- rename Code by answer to allow non code related herd mode applications
+- add optional execute while thinking that allows the participants to execute code to verify hypothesis. Suppress potential threats.
+- Fix agent mode

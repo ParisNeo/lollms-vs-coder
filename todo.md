@@ -1,4 +1,5 @@
 - Fix the problem with some instances not seeing the content
 - When generating wityh git enabled, ask the AI if this answer needs to go inside a new git branch, if true, add the branch creation and the fuse buttons
 - generate the git branch automatically using the AI
-- Add agressive context information about the file update structure (NO DIFFS)  
+- Add agressive context information about the file update structure (NO DIFFS)
+- Add the possibility to suppress a module (herd mode, auto extract) for the next generation

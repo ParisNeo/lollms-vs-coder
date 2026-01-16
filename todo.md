@@ -3,3 +3,5 @@
 - generate the git branch automatically using the AI
 - Add agressive context information about the file update structure (NO DIFFS)
 - Add the possibility to suppress a module (herd mode, auto extract) for the next generation
+- the input must have a max height to prevent it from growing too much. add a scrollbar if necessary
+- - the menu must readapt and avoid being cropped by adding an ioptional scrollbar

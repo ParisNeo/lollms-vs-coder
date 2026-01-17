@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-01-17 19:16]
+
+- fix(chatPanel): replace broken emojis with proper icons
+
 ## [2026-01-17 08:46]
 
 - chore(release): bump to 0.5.63 and update chat panel

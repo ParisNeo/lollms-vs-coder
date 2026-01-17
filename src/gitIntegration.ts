@@ -15,6 +15,15 @@ export interface GitCommit {
     date: string;
 }
 
+export interface GitSearchOptions {
+    message?: string;
+    author?: string;
+    file?: string;
+    diffFilter?: string; // A, D, M, etc.
+    content?: string;    // -S (pickaxe)
+    count?: number;
+}
+
 export class GitIntegration {
   private lollmsAPI: LollmsAPI;
 
@@ -393,6 +402,46 @@ export class GitIntegration {
         });
     } catch (error) {
         console.error("Failed to fetch commit history:", error);
+        return [];
+    }
+  }
+
+  public async searchCommits(folder: vscode.WorkspaceFolder, options: GitSearchOptions): Promise<GitCommit[]> {
+    if (!folder) return [];
+
+    let cmd = `git log --pretty=format:"%H|%s|%an|%ad" --date=short`;
+    
+    if (options.count) cmd += ` -n ${options.count}`;
+    else cmd += ` -n 50`;
+    
+    if (options.message) cmd += ` --grep="${options.message.replace(/"/g, '\\"')}"`;
+    if (options.author) cmd += ` --author="${options.author.replace(/"/g, '\\"')}"`;
+    if (options.diffFilter) cmd += ` --diff-filter=${options.diffFilter}`;
+    if (options.content) cmd += ` -S"${options.content.replace(/"/g, '\\"')}"`;
+    
+    // Use --full-history when filtering by path to see deletions/creation properly
+    if (options.file || options.diffFilter) {
+         cmd += ` --full-history`; 
+    }
+
+    if (options.file) {
+        cmd += ` -- "${options.file.replace(/"/g, '\\"')}"`;
+    }
+
+    try {
+        const { stdout } = await execAsync(cmd, { cwd: folder.uri.fsPath });
+        
+        return stdout.split('\n').filter(line => line.trim()).map(line => {
+            const parts = line.split('|');
+            return {
+                hash: parts[0],
+                message: parts[1] || '',
+                author: parts[2] || '',
+                date: parts[3] || ''
+            };
+        });
+    } catch (error) {
+        console.error("Git Search Failed:", error);
         return [];
     }
   }

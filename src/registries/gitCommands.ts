@@ -1,10 +1,16 @@
 import * as vscode from 'vscode';
 import { LollmsServices } from '../lollmsContext';
 import { CommitInspectorPanel } from '../commands/commitInspectorPanel';
+import { GitManagerPanel } from '../commands/gitManagerPanel'; // Import new panel
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
 
 export function registerGitCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
     
+    // Command: Git Manager (New)
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.gitManager', () => {
+        GitManagerPanel.createOrShow(services.extensionUri, services.gitIntegration, services.lollmsAPI);
+    }));
+
     // Command: Generate Commit Message (from SCM Title or Command Palette)
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateCommitMessage', async (arg?: any) => {
         let folder: vscode.WorkspaceFolder | undefined;
@@ -185,7 +191,7 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
             vscode.window.showInformationMessage(`Successfully merged ${state.tempBranch} into ${state.originalBranch}.`);
             discussionPanel.addMessageToDiscussion({
                 role: 'system',
-                content: `âœ… **Git Workflow:** Merged \`${state.tempBranch}\` into \`${state.originalBranch}\`.\n\nOutput:\n\`\`\`\n${mergeOutput}\n\`\`\``
+                content: `✅ **Git Workflow:** Merged \`${state.tempBranch}\` into \`${state.originalBranch}\`.\n\nOutput:\n\`\`\`\n${mergeOutput}\n\`\`\``
             });
 
             // 3. Handle Deletion based on Config
@@ -208,7 +214,7 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
                 await services.gitIntegration.deleteBranch(folder, state.tempBranch);
                 discussionPanel.addMessageToDiscussion({
                     role: 'system',
-                    content: `ðŸ—‘ï¸  Deleted branch \`${state.tempBranch}\`.`
+                    content: `🗑️ Deleted branch \`${state.tempBranch}\`.`
                 });
             }
 
@@ -220,7 +226,7 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
             vscode.window.showErrorMessage(`Merge failed: ${e.message}. You are on ${state.originalBranch}. Please resolve manually.`);
             discussionPanel.addMessageToDiscussion({
                 role: 'system',
-                content: `â Œ **Merge Failed:** ${e.message}\n\nPlease resolve conflicts manually in Source Control view.`
+                content: `❌ **Merge Failed:** ${e.message}\n\nPlease resolve conflicts manually in Source Control view.`
             });
         }
     }));

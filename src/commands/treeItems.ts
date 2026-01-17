@@ -40,7 +40,7 @@ export class PromptGroupItem extends vscode.TreeItem {
     constructor(
         public readonly group: PromptGroup
     ) {
-        super(group.title, vscode.TreeItemCollapsibleState.Collapsed);
+        super(group.title, vscode.TreeItemCollapsibleState.Expanded);
         this.id = group.id;
         this.contextValue = 'promptGroup';
         this.iconPath = vscode.ThemeIcon.Folder;
@@ -83,10 +83,11 @@ export class PersonalityItem extends vscode.TreeItem {
             this.iconPath = new vscode.ThemeIcon('account');
         }
         
+        // FIX: Pass this.personality instead of this (TreeItem) to avoid circular JSON error
         this.command = {
             command: 'lollms-vs-coder.editPersonality',
             title: 'Edit Personality',
-            arguments: [this]
+            arguments: [this.personality]
         };
     }
 }

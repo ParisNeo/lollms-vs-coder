@@ -10,6 +10,7 @@ import { registerWorkflowCommands } from './workflowCommands';
 import { registerNotebookCommands } from './notebookCommands';
 import { registerTitleAllDiscussions } from '../commands/titleAllDiscussions';
 import { registerGitCommands } from './gitCommands';
+import { registerPersonalityCommands } from './personalityCommands';
 
 export function registerCommands(
     context: vscode.ExtensionContext,
@@ -26,4 +27,5 @@ export function registerCommands(
     registerNotebookCommands(context, services);
     registerGitCommands(context, services, getActiveWorkspace);
     registerTitleAllDiscussions(context, services.discussionManager);
+    registerPersonalityCommands(context, services);
 }

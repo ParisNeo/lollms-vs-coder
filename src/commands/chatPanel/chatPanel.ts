@@ -656,7 +656,7 @@ export class ChatPanel {
                  await this.addMessageToDiscussion({
                     id: herdMessageId,
                     role: 'system',
-                    content: `### ðŸ —ï¸  Dynamic Herd: Recruiting Agents...\n\n`,
+                    content: `### 🐂  Dynamic Herd: Recruiting Agents...\n\n`,
                     skipInPrompt: true
                  });
 
@@ -670,12 +670,12 @@ export class ChatPanel {
                  if (plan) {
                      preParticipants = plan.pre;
                      postParticipants = plan.post;
-                     await this.updateMessageContent(herdMessageId, `### ðŸ —ï¸  Dynamic Herd Assembled\n\n**Pre-Code Team:** ${plan.pre.map(p => p.name).join(', ')}\n**Post-Code Team:** ${plan.post.map(p => p.name).join(', ')}`);
+                     await this.updateMessageContent(herdMessageId, `### ✨  Dynamic Herd Assembled\n\n**Pre-Code Team:** ${plan.pre.map(p => p.name).join(', ')}\n**Post-Code Team:** ${plan.post.map(p => p.name).join(', ')}`);
                  } else {
-                     await this.updateMessageContent(herdMessageId, `âš ï¸  Dynamic planning failed. Falling back to static configuration.`);
+                     await this.updateMessageContent(herdMessageId, `📉  Dynamic planning failed. Falling back to static configuration.`);
                  }
              } else {
-                 await this.addMessageToDiscussion({ role: 'system', content: "âš ï¸  Dynamic Herd Mode enabled but Model Pool is empty. Using static configuration.", skipInPrompt: true });
+                 await this.addMessageToDiscussion({ role: 'system', content: "🦬 Dynamic Herd Mode enabled but Model Pool is empty. Using static configuration.", skipInPrompt: true });
              }
         }
 

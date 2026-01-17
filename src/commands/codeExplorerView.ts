@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { CodeGraphManager } from '../codeGraphManager';
 import { ChatPanel } from './chatPanel/chatPanel';
 
@@ -47,11 +48,14 @@ export class CodeExplorerPanel {
     private listen() {
         this.panel.webview.onDidReceiveMessage(async msg => {
             if (msg.command === 'ready') {
-                // If graph is empty, try building it automatically
+                // Only build if the graph is empty AND we aren't already building
                 if (this.graphManager.getGraphData().nodes.length === 0 && this.graphManager.getBuildState() === 'idle') {
-                    await this.graphManager.buildGraph();
+                    // Start build asynchronously
+                    this.graphManager.buildGraph().then(() => this.update());
+                    this.update(); // Push updated state (building)
+                } else {
+                    this.update();
                 }
-                this.update();
             }
 
             if (msg.command === 'open') {
@@ -69,7 +73,13 @@ export class CodeExplorerPanel {
             }
 
             if (msg.command === 'rebuild') {
-                await this.graphManager.buildGraph();
+                this.update(); 
+                this.graphManager.buildGraph().then(() => this.update());
+                this.update();
+            }
+
+            if (msg.command === 'stop') {
+                this.graphManager.cancel();
                 this.update();
             }
 
@@ -80,9 +90,66 @@ export class CodeExplorerPanel {
                         role: 'user',
                         content: `Here is the code structure:\n\`\`\`mermaid\n${mermaid}\n\`\`\``
                     });
+                    
+                    // Reveal the chat panel so the user sees the added graph immediately
+                    ChatPanel.currentPanel._panel.reveal();
+                    
                     vscode.window.showInformationMessage("Graph added to chat.");
                 } else {
                     vscode.window.showErrorMessage("No active chat to add graph to.");
+                }
+            }
+
+            if (msg.command === 'requestExport') {
+                const format = await vscode.window.showQuickPick(['PNG Image', 'SVG Image', 'Mermaid Text'], {
+                    placeHolder: 'Select export format'
+                });
+                if (!format) return;
+            
+                if (format === 'Mermaid Text') {
+                    const mermaid = this.graphManager.generateMermaid(msg.view);
+                    const uri = await vscode.window.showSaveDialog({
+                        filters: { 'Mermaid': ['mmd', 'mermaid'] },
+                        saveLabel: 'Export Mermaid',
+                        defaultUri: vscode.Uri.file(`${msg.view}.mmd`)
+                    });
+                    if (uri) {
+                        await vscode.workspace.fs.writeFile(uri, Buffer.from(mermaid, 'utf8'));
+                        vscode.window.showInformationMessage('Mermaid diagram exported.');
+                    }
+                } else {
+                    // Delegate visual exports to webview
+                    this.panel.webview.postMessage({ 
+                        command: 'triggerExport', 
+                        format: format === 'PNG Image' ? 'png' : 'svg',
+                        view: msg.view
+                    });
+                }
+            }
+            
+            if (msg.command === 'saveContent') {
+                const { name, content, format } = msg; 
+                const filters: {[key:string]: string[]} = {};
+                if (format === 'png') filters['Images'] = ['png'];
+                else if (format === 'svg') filters['SVG'] = ['svg'];
+                
+                const uri = await vscode.window.showSaveDialog({
+                    filters,
+                    defaultUri: vscode.Uri.file(name),
+                    saveLabel: 'Export Graph'
+                });
+                
+                if (uri) {
+                    let buffer: Buffer;
+                    if (format === 'png') {
+                        // Remove header "data:image/png;base64,"
+                        const base64Data = content.replace(/^data:image\/png;base64,/, "");
+                        buffer = Buffer.from(base64Data, 'base64');
+                    } else {
+                        buffer = Buffer.from(content, 'utf8');
+                    }
+                    await vscode.workspace.fs.writeFile(uri, buffer);
+                    vscode.window.showInformationMessage(`Graph exported to ${path.basename(uri.fsPath)}`);
                 }
             }
         });
@@ -93,7 +160,8 @@ export class CodeExplorerPanel {
             command: 'graph',
             graph: this.graphManager.getGraphData(),
             state: this.graphManager.getBuildState(),
-            lastError: this.graphManager.getLastError()
+            lastError: this.graphManager.getLastError(),
+            classDiagram: this.graphManager.generateMermaid('class_diagram')
         });
     }
 
@@ -137,6 +205,7 @@ export class CodeExplorerPanel {
         width: 100%;
         height: 100%;
         background-color: var(--vscode-editor-background);
+        display: none; /* Hidden by default until render */
     }
     #mermaid-container {
         width: 100%;
@@ -173,12 +242,28 @@ export class CodeExplorerPanel {
         top: 0; left: 0; right: 0; bottom: 0;
         background: rgba(0,0,0,0.5);
         color: white;
-        display: flex;
+        display: none; /* Hidden by default */
         justify-content: center;
         align-items: center;
         z-index: 100;
+        flex-direction: column;
+        gap: 10px;
+    }
+    .spinner {
+        width: 20px; height: 20px;
+        border: 2px solid white;
+        border-top-color: transparent;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+    }
+    @keyframes spin { 100% { transform: rotate(360deg); } }
+    
+    #stop {
+        background-color: var(--vscode-charts-red);
+        color: white;
         display: none;
     }
+    #stop:hover { opacity: 0.8; }
 </style>
 </head>
 <body>
@@ -188,15 +273,20 @@ export class CodeExplorerPanel {
             <option value="import_graph">Import Graph</option>
             <option value="class_diagram">Class Diagram</option>
         </select>
-        <button id="rebuild">Refresh/Rebuild</button>
+        <button id="rebuild">Refresh</button>
+        <button id="stop">Stop</button>
         <button id="add">Add to Chat</button>
-        <span id="status">Ready</span>
+        <button id="export">Export</button>
+        <span id="status">Idle</span>
     </div>
     
     <div id="content-area">
         <div id="cy"></div>
         <div id="mermaid-container"></div>
-        <div id="loading" class="loading-overlay">Building Graph...</div>
+        <div id="loading" class="loading-overlay">
+            <div class="spinner"></div>
+            <span>Building Graph...</span>
+        </div>
     </div>
 
 <script src="${scriptUri}"></script>

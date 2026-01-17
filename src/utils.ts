@@ -43,6 +43,8 @@ export interface DiscussionCapabilities {
     // Persistent Modes
     agentMode: boolean;
     autoContextMode: boolean;
+    // Git Workflow
+    gitWorkflow: boolean;
 }
 
 export async function applyDiff(diffContent: string) {

@@ -236,11 +236,11 @@ export function initEventHandlers() {
                 funMode: dom.modeFunMode ? dom.modeFunMode.checked : false,
                 thinkingMode: dom.capThinkingMode ? dom.capThinkingMode.value : 'none',
                 gitCommit: dom.capGitCommit ? dom.capGitCommit.checked : false,
+                gitWorkflow: dom.capGitWorkflow ? dom.capGitWorkflow.checked : false,
                 
                 // Herd Mode
                 herdMode: dom.capHerdMode ? dom.capHerdMode.checked : false,
                 herdRounds: dom.capHerdRounds ? parseInt(dom.capHerdRounds.value) : 2,
-                // herdModels handled in configView mostly, but if we need per-discussion override, add here
             };
             vscode.postMessage({ command: 'updateDiscussionCapabilities', capabilities });
             if (dom.discussionToolsModal) dom.discussionToolsModal.classList.remove('visible');

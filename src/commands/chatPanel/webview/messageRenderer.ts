@@ -893,7 +893,10 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
 function enhanceWithCommandButtons(container: HTMLElement) {
     const content = container.querySelector('.message-content');
     if (!content) return;
-    const commandRegex = /\[command:(\w+)\|label:([^|]+)\|params:({[^}]+})\]/g;
+    
+    // Updated regex to allow alphanumeric, dots, hyphens, and underscores in command ID
+    // Also updated to handle parameters as a non-greedy match allowing empty objects or any chars until '}'
+    const commandRegex = /\[command:([\w.-]+)\|label:([^|]+)\|params:(\{.*?\})\]/g;
     
     let newHtml = content.innerHTML;
     newHtml = newHtml.replace(commandRegex, (match, commandId, label, paramsStr) => {
@@ -1351,4 +1354,3 @@ export function insertNewMessageEditor(role: 'user' | 'assistant') {
         (cancelBtn as HTMLElement).addEventListener('click', () => editorWrapper.remove());
     }
 }
-

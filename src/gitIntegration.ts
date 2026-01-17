@@ -32,6 +32,79 @@ export class GitIntegration {
     }
   }
 
+  public async getCurrentBranch(folder: vscode.WorkspaceFolder): Promise<string> {
+      try {
+          const { stdout } = await execAsync('git branch --show-current', { cwd: folder.uri.fsPath });
+          return stdout.trim();
+      } catch (e) {
+          return '';
+      }
+  }
+  
+  public async hasUnstagedChanges(folder: vscode.WorkspaceFolder): Promise<boolean> {
+      try {
+          const { stdout } = await execAsync('git status --porcelain', { cwd: folder.uri.fsPath });
+          return stdout.trim().length > 0;
+      } catch (e) {
+          return false;
+      }
+  }
+
+  public async stash(folder: vscode.WorkspaceFolder, message?: string): Promise<void> {
+      const msgArg = message ? ` push -m "${message}"` : '';
+      await execAsync(`git stash${msgArg}`, { cwd: folder.uri.fsPath });
+  }
+
+  public async stashPop(folder: vscode.WorkspaceFolder): Promise<void> {
+      await execAsync(`git stash pop`, { cwd: folder.uri.fsPath });
+  }
+
+  public async createAndCheckoutBranch(folder: vscode.WorkspaceFolder, branchName: string): Promise<void> {
+      try {
+          // Check if branch exists
+          try {
+              await execAsync(`git rev-parse --verify ${branchName}`, { cwd: folder.uri.fsPath });
+              // If exists, just checkout
+              await execAsync(`git checkout ${branchName}`, { cwd: folder.uri.fsPath });
+          } catch {
+              // If not, create and checkout
+              await execAsync(`git checkout -b ${branchName}`, { cwd: folder.uri.fsPath });
+          }
+      } catch (e: any) {
+          throw new Error(`Failed to create/checkout branch: ${e.message}`);
+      }
+  }
+
+  public async checkout(folder: vscode.WorkspaceFolder, branchName: string): Promise<void> {
+      try {
+          await execAsync(`git checkout ${branchName}`, { cwd: folder.uri.fsPath });
+      } catch (e: any) {
+          throw new Error(`Failed to checkout ${branchName}: ${e.message}`);
+      }
+  }
+
+  public async mergeBranch(folder: vscode.WorkspaceFolder, sourceBranch: string): Promise<string> {
+      try {
+          const { stdout } = await execAsync(`git merge ${sourceBranch}`, { cwd: folder.uri.fsPath });
+          return stdout;
+      } catch (e: any) {
+          throw new Error(`Merge failed (Conflict likely): ${e.message}`);
+      }
+  }
+
+  public async deleteBranch(folder: vscode.WorkspaceFolder, branchName: string): Promise<void> {
+      try {
+          await execAsync(`git branch -d ${branchName}`, { cwd: folder.uri.fsPath });
+      } catch (e: any) {
+          // Try force delete if unmerged warning (though we just merged it)
+          try {
+            await execAsync(`git branch -D ${branchName}`, { cwd: folder.uri.fsPath });
+          } catch (e2) {
+            console.error("Failed to delete temp branch", e2);
+          }
+      }
+  }
+
   private async _getDiff(args: string, folder: vscode.WorkspaceFolder): Promise<string> {
     if (!folder) return '';
     try {

@@ -20,6 +20,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string | any[];
   startTime?: number;
+  timestamp?: number;
   model?: string;
   skipInPrompt?: boolean;
 }
@@ -27,12 +28,12 @@ export interface ChatMessage {
 export interface TokenizeResponse {
     tokens: number[];
     count: number;
-    isEstimation?: boolean; // Added
+    isEstimation?: boolean;
 }
 
 export interface ContextSizeResponse {
     context_size: number;
-    isEstimation?: boolean; // Added
+    isEstimation?: boolean;
 }
 
 export interface ImageGenerationRequest {
@@ -137,13 +138,13 @@ export class LollmsAPI {
           const models = await this.getModels(true);
           return { 
               success: true, 
-              message: `✅ Connection Successful! Found ${models.length} models.`,
+              message: `âœ… Connection Successful! Found ${models.length} models.`,
               details: `URL: ${this.baseUrl}\nBackend: ${this.config.backendType}`
           };
       } catch (error: any) {
           return { 
               success: false, 
-              message: `❌ Connection Failed: ${error.message}`,
+              message: `â Œ Connection Failed: ${error.message}`,
               details: error.stack
           };
       }
@@ -452,18 +453,26 @@ export class LollmsAPI {
 
     const filteredMessages = messages.filter(m => !m.skipInPrompt);
 
+    // Strictly sanitize messages to include ONLY role and content.
+    // This prevents sending internal properties like 'id', 'startTime', 'timestamp' etc.
+    // which cause strict OpenAI-compatible endpoints to reject the request or fail.
+    const sanitizedMessages = filteredMessages.map(m => ({
+        role: m.role,
+        content: m.content
+    }));
+
     if (this.config.backendType === 'ollama') {
         chatUrl = `${this.baseUrl}/api/chat`;
         body = {
             model: modelToSend,
-            messages: filteredMessages.map(m => ({ role: m.role, content: m.content })),
+            messages: sanitizedMessages,
             stream: stream
         };
     } else {
         chatUrl = `${this.baseUrl}/v1/chat/completions`;
         body = {
             model: modelToSend,
-            messages: filteredMessages.map(({ id, startTime, model, skipInPrompt, ...rest }) => rest),
+            messages: sanitizedMessages,
             stream: stream
         };
     }

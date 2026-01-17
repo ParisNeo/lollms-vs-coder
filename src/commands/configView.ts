@@ -20,6 +20,7 @@ export class SettingsPanel {
     backendType: 'lollms',
     useLollmsExtensions: true,
     modelName: '',
+    architectModelName: '',
     disableSslVerification: false,
     sslCertPath: '',
     requestTimeout: 600000,
@@ -34,6 +35,7 @@ export class SettingsPanel {
     contextFileExceptions: [] as string[],
     language: 'auto',
     thinkingMode: 'none',
+    noThinkMode: false,
     outputFormat: 'legacy',
     allowedFileFormats: {
         fullFile: true,
@@ -57,12 +59,18 @@ export class SettingsPanel {
     userInfoEmail: '',
     userInfoLicense: '',
     userInfoCodingStyle: '',
+    enableCodeActions: true,
+    enableInlineSuggestions: false,
+    mcpServers: '{}',
     herdParticipants: [] as HerdParticipant[],
     herdPreCodeParticipants: [] as HerdParticipant[],
     herdPostCodeParticipants: [] as HerdParticipant[],
     herdRounds: 2,
     herdDynamicMode: false,
-    herdDynamicModelPool: [] as DynamicModelEntry[]
+    herdDynamicModelPool: [] as DynamicModelEntry[],
+    // Git Config
+    deleteBranchAfterMerge: true,
+    unstagedChangesBehavior: 'stash'
   };
 
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, processManager: ProcessManager, personalityManager: PersonalityManager) {
@@ -101,6 +109,7 @@ export class SettingsPanel {
     this._pendingConfig.useLollmsExtensions = config.get<boolean>('useLollmsExtensions') ?? true;
 
     this._pendingConfig.modelName = config.get<string>('modelName') || '';
+    this._pendingConfig.architectModelName = config.get<string>('architectModelName') || '';
     this._pendingConfig.disableSslVerification = config.get<boolean>('disableSslVerification') || false;
     this._pendingConfig.sslCertPath = config.get<string>('sslCertPath') || '';
     this._pendingConfig.requestTimeout = config.get<number>('requestTimeout') || 600000;
@@ -115,6 +124,7 @@ export class SettingsPanel {
     this._pendingConfig.contextFileExceptions = config.get<string[]>('contextFileExceptions') || [];
     this._pendingConfig.language = config.get<string>('language') || 'auto';
     this._pendingConfig.thinkingMode = config.get<string>('thinkingMode') || 'none';
+    this._pendingConfig.noThinkMode = config.get<boolean>('noThinkMode') || false;
     this._pendingConfig.outputFormat = config.get<string>('outputFormat') || 'legacy';
     
     this._pendingConfig.allowedFileFormats = config.get<any>('allowedFileFormats') || {
@@ -143,12 +153,22 @@ export class SettingsPanel {
     this._pendingConfig.userInfoLicense = config.get<string>('userInfo.license') || 'MIT';
     this._pendingConfig.userInfoCodingStyle = config.get<string>('userInfo.codingStyle') || '';
     
+    this._pendingConfig.enableCodeActions = config.get<boolean>('enableCodeActions') ?? true;
+    this._pendingConfig.enableInlineSuggestions = config.get<boolean>('enableInlineSuggestions') ?? false;
+    
+    const mcpObj = config.get<object>('mcpServers') || {};
+    this._pendingConfig.mcpServers = JSON.stringify(mcpObj, null, 2);
+
     this._pendingConfig.herdParticipants = config.get<HerdParticipant[]>('herdParticipants') || [];
     this._pendingConfig.herdPreCodeParticipants = config.get<HerdParticipant[]>('herdPreCodeParticipants') || [];
     this._pendingConfig.herdPostCodeParticipants = config.get<HerdParticipant[]>('herdPostCodeParticipants') || [];
     this._pendingConfig.herdRounds = config.get<number>('herdRounds') || 2;
     this._pendingConfig.herdDynamicMode = config.get<boolean>('herdDynamicMode') || false;
     this._pendingConfig.herdDynamicModelPool = config.get<DynamicModelEntry[]>('herdDynamicModelPool') || [];
+
+    // Git
+    this._pendingConfig.deleteBranchAfterMerge = config.get<boolean>('git.deleteBranchAfterMerge') ?? true;
+    this._pendingConfig.unstagedChangesBehavior = config.get<string>('git.unstagedChangesBehavior') || 'stash';
 
     this._panel.webview.html = this._getHtml(this._panel.webview, this._pendingConfig);
     this._setWebviewMessageListener(this._panel.webview);
@@ -256,12 +276,20 @@ export class SettingsPanel {
                   }
                 };
 
+                let parsedMcpServers = {};
+                try {
+                    parsedMcpServers = JSON.parse(this._pendingConfig.mcpServers || '{}');
+                } catch (e) {
+                    failures.push({ key: 'mcpServers', error: 'Invalid JSON for MCP Servers' });
+                }
+
                 const updates: [string, any][] = [
                   ['apiKey', this._pendingConfig.apiKey],
                   ['apiUrl', this._pendingConfig.apiUrl],
                   ['backendType', this._pendingConfig.backendType],
                   ['useLollmsExtensions', this._pendingConfig.useLollmsExtensions],
                   ['modelName', this._pendingConfig.modelName],
+                  ['architectModelName', this._pendingConfig.architectModelName],
                   ['disableSslVerification', this._pendingConfig.disableSslVerification],
                   ['sslCertPath', this._pendingConfig.sslCertPath],
                   ['requestTimeout', this._pendingConfig.requestTimeout],
@@ -276,6 +304,7 @@ export class SettingsPanel {
                   ['contextFileExceptions', this._pendingConfig.contextFileExceptions],
                   ['language', this._pendingConfig.language],
                   ['thinkingMode', this._pendingConfig.thinkingMode],
+                  ['noThinkMode', this._pendingConfig.noThinkMode],
                   ['outputFormat', this._pendingConfig.outputFormat],
                   ['allowedFileFormats', this._pendingConfig.allowedFileFormats],
                   ['thinkingModeCustomPrompt', this._pendingConfig.thinkingModeCustomPrompt],
@@ -294,12 +323,18 @@ export class SettingsPanel {
                   ['userInfo.email', this._pendingConfig.userInfoEmail],
                   ['userInfo.license', this._pendingConfig.userInfoLicense],
                   ['userInfo.codingStyle', this._pendingConfig.userInfoCodingStyle],
+                  ['enableCodeActions', this._pendingConfig.enableCodeActions],
+                  ['enableInlineSuggestions', this._pendingConfig.enableInlineSuggestions],
+                  ['mcpServers', parsedMcpServers],
                   ['herdParticipants', this._pendingConfig.herdParticipants],
                   ['herdPreCodeParticipants', this._pendingConfig.herdPreCodeParticipants],
                   ['herdPostCodeParticipants', this._pendingConfig.herdPostCodeParticipants],
                   ['herdRounds', this._pendingConfig.herdRounds],
                   ['herdDynamicMode', this._pendingConfig.herdDynamicMode],
                   ['herdDynamicModelPool', this._pendingConfig.herdDynamicModelPool],
+                  // New Git settings
+                  ['git.deleteBranchAfterMerge', this._pendingConfig.deleteBranchAfterMerge],
+                  ['git.unstagedChangesBehavior', this._pendingConfig.unstagedChangesBehavior]
                 ];
 
                 for (const [key, value] of updates) {
@@ -326,6 +361,51 @@ export class SettingsPanel {
                 Logger.error('Unexpected error during configuration save', err);
               }
               return;
+
+            case 'resetConfig':
+                const selection = await vscode.window.showWarningMessage(
+                    "Are you sure you want to reset all Lollms configurations to factory defaults? This cannot be undone.",
+                    { modal: true },
+                    "Reset"
+                );
+                
+                if (selection === "Reset") {
+                    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+                    // List of all configuration keys defined in package.json
+                    const keys = [
+                        'apiKey', 'apiUrl', 'backendType', 'useLollmsExtensions', 'modelName', 
+                        'architectModelName', 'disableSslVerification', 'sslCertPath', 
+                        'requestTimeout', 'agentMaxRetries', 'maxImageSize', 'enableCodeInspector',
+                        'inspectorModelName', 'codeInspectorPersona', 'chatPersona', 'agentPersona',
+                        'commitMessagePersona', 'contextFileExceptions', 'language', 'thinkingMode',
+                        'noThinkMode', 'outputFormat', 'allowedFileFormats', 'thinkingModeCustomPrompt',
+                        'reasoningLevel', 'failsafeContextSize', 'searchProvider', 'searchApiKey',
+                        'searchCx', 'autoUpdateChangelog', 'autoGenerateTitle', 
+                        'addPedagogicalInstruction', 'clipboardInsertRole', 'companion.enableWebSearch',
+                        'companion.enableArxivSearch', 'userInfo.name', 'userInfo.email', 
+                        'userInfo.license', 'userInfo.codingStyle', 'enableCodeActions', 
+                        'enableInlineSuggestions', 'mcpServers', 'herdParticipants', 
+                        'herdPreCodeParticipants', 'herdPostCodeParticipants', 'herdRounds', 
+                        'herdDynamicMode', 'herdDynamicModelPool', 'git.deleteBranchAfterMerge',
+                        'git.unstagedChangesBehavior'
+                    ];
+                    
+                    try {
+                        for (const key of keys) {
+                            // Resetting to undefined removes the setting from settings.json, reverting to package.json default
+                            await config.update(key, undefined, vscode.ConfigurationTarget.Global);
+                            await config.update(key, undefined, vscode.ConfigurationTarget.Workspace);
+                            await config.update(key, undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+                        }
+                        
+                        vscode.window.showInformationMessage("Configuration reset to defaults. Please reopen settings.");
+                        await vscode.commands.executeCommand('lollmsApi.recreateClient');
+                        SettingsPanel.currentPanel?.dispose();
+                    } catch (e: any) {
+                        vscode.window.showErrorMessage(`Failed to reset configuration: ${e.message}`);
+                    }
+                }
+                return;
   
             case 'fetchModels':
               if (this._panel) {
@@ -380,7 +460,7 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, thinkingMode, outputFormat, allowedFileFormats, thinkingModeCustomPrompt, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, clipboardInsertRole, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle, herdParticipants, herdPreCodeParticipants, herdPostCodeParticipants, herdRounds, herdDynamicMode, herdDynamicModelPool } = config;
+    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, architectModelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, thinkingMode, noThinkMode, outputFormat, allowedFileFormats, thinkingModeCustomPrompt, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, clipboardInsertRole, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle, enableCodeActions, enableInlineSuggestions, mcpServers, herdParticipants, herdPreCodeParticipants, herdPostCodeParticipants, herdRounds, herdDynamicMode, herdDynamicModelPool, deleteBranchAfterMerge, unstagedChangesBehavior } = config;
 
     const t = (key: string, def: string) => vscode.l10n.t({ message: def, key: key });
     
@@ -481,6 +561,12 @@ export class SettingsPanel {
               button.save-btn { margin-top: 32px; width: 100%; padding: 14px; font-size: 15px; }
               button:hover { transform: translateY(-2px); }
               
+              button.reset-btn {
+                background: var(--error-color); 
+                margin-top: 16px; width: 100%; padding: 10px; font-size: 13px; opacity: 0.9;
+              }
+              button.reset-btn:hover { background: color-mix(in srgb, var(--error-color) 85%, black); opacity: 1; }
+
               .secondary-button { margin-top: 12px; padding: 8px 16px; font-size: 13px; width: auto; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
               .icon-btn { width: auto; padding: 10px 14px; margin-top: 0; min-width: 44px; }
               
@@ -503,17 +589,17 @@ export class SettingsPanel {
         </head>
         <body>
           <div class="container">
-            <h1>⚙️ ${t('config.title', 'Lollms VS Coder Configuration')}</h1>
+            <h1>⚙️  ${t('config.title', 'Lollms VS Coder Configuration')}</h1>
           
             <div class="tabs">
               <button class="tab-link active" onclick="openTab(event, 'TabApi')">🔌 API & Model</button>
               <button class="tab-link" onclick="openTab(event, 'TabGeneral')">⚡ General</button>
               <button class="tab-link" onclick="openTab(event, 'TabContext')">📦 Context</button>
               <button class="tab-link" onclick="openTab(event, 'TabAgent')">🤖 Agent & Tools</button>
+              <button class="tab-link" onclick="openTab(event, 'TabGit')">🐙 Git</button>
               <button class="tab-link" onclick="openTab(event, 'TabHerd')">🐂 Herd Mode</button>
-              <button class="tab-link" onclick="openTab(event, 'TabPersonas')">🎭 Personas</button>
+              <button class="tab-link" onclick="openTab(event, 'TabPersonas')">🎭­ Personas</button>
               <button class="tab-link" onclick="openTab(event, 'TabUser')">👤 User Info</button>
-              <button class="tab-link" onclick="openTab(event, 'TabAdvanced')">🔧 Advanced</button>
               <button class="tab-link" onclick="openTab(event, 'TabLog')">📋 Log</button>
             </div>
 
@@ -546,6 +632,12 @@ export class SettingsPanel {
                   <select id="modelSelect" class="model-dropdown"></select>
                   <button id="refreshModels" type="button" class="icon-btn" title="${t('command.refresh.title', 'Refresh')}"><i class="codicon codicon-refresh"></i></button>
               </div>
+
+              <label for="architectModelSelect">Architect/Planner Model (Agent Mode)</label>
+              <div class="input-group">
+                  <select id="architectModelSelect" class="model-dropdown"></select>
+              </div>
+              <span class="help-text">Used for planning complex tasks. Defaults to Chat Model if empty.</span>
               
               <label for="requestTimeout">${t('config.requestTimeout.label', 'Request Timeout (ms)')}</label>
               <input type="number" id="requestTimeout" value="${requestTimeout}" min="1000" step="1000" />
@@ -592,6 +684,10 @@ export class SettingsPanel {
                   <div class="checkbox-container"><input type="checkbox" id="fmt-delete" ${allowedFileFormats.delete ? 'checked' : ''}><label for="fmt-delete">Delete</label></div>
               </div>
 
+              <h3>Editor Integration</h3>
+              <div class="checkbox-container"><input type="checkbox" id="enableCodeActions" ${enableCodeActions ? 'checked' : ''}><label for="enableCodeActions">Enable Lollms Code Actions (CodeLens)</label></div>
+              <div class="checkbox-container"><input type="checkbox" id="enableInlineSuggestions" ${enableInlineSuggestions ? 'checked' : ''}><label for="enableInlineSuggestions">Enable Inline Ghost Text Suggestions</label></div>
+
               <label for="reasoningLevel">${t('config.reasoningLevel.label', 'Reasoning Level')}</label>
               <select id="reasoningLevel">
                 <option value="none" ${reasoningLevel === 'none' ? 'selected' : ''}>None</option>
@@ -615,7 +711,7 @@ export class SettingsPanel {
                 <textarea id="thinkingModeCustomPrompt" rows="4">${thinkingModeCustomPrompt}</textarea>
               </div>
 
-              <div class="checkbox-container"><input type="checkbox" id="autoUpdateChangelog" ${autoUpdateChangelog ? 'checked' : ''}><label for="autoUpdateChangelog">Auto-update CHANGELOG.md</label></div>
+              <div class="checkbox-container"><input type="checkbox" id="noThinkMode" ${noThinkMode ? 'checked' : ''}><label for="noThinkMode">Enable /no_think Mode (Global Override)</label></div>
               <div class="checkbox-container"><input type="checkbox" id="autoGenerateTitle" ${autoGenerateTitle ? 'checked' : ''}><label for="autoGenerateTitle">Auto-generate discussion titles</label></div>
               <div class="checkbox-container"><input type="checkbox" id="addPedagogicalInstruction" ${addPedagogicalInstruction ? 'checked' : ''}><label for="addPedagogicalInstruction">Add Pedagogical Instruction (Hidden)</label></div>
             </div>
@@ -642,19 +738,45 @@ export class SettingsPanel {
                   <select id="inspectorModelName" class="model-dropdown"></select>
                   <button id="refreshInspectorModels" type="button" class="icon-btn" title="${t('command.refresh.title', 'Refresh')}"><i class="codicon codicon-refresh"></i></button>
               </div>
+              
               <h3>Web Search</h3>
               <label for="searchApiKey">Google Custom Search API Key</label>
               <input type="text" id="searchApiKey" value="${searchApiKey}" placeholder="Enter API Key" />
               <label for="searchCx">Search Engine ID (CX)</label>
               <input type="text" id="searchCx" value="${searchCx}" placeholder="Enter CX" />
+              
               <h3>Companion</h3>
               <div class="checkbox-container"><input type="checkbox" id="companionEnableWebSearch" ${companionEnableWebSearch ? 'checked' : ''}><label for="companionEnableWebSearch">Enable Web Search in Companion</label></div>
               <div class="checkbox-container"><input type="checkbox" id="companionEnableArxivSearch" ${companionEnableArxivSearch ? 'checked' : ''}><label for="companionEnableArxivSearch">Enable ArXiv Search in Companion</label></div>
+
+              <h3>MCP Servers Configuration</h3>
+              <label for="mcpServers">MCP Servers (JSON)</label>
+              <textarea id="mcpServers" rows="6" placeholder='{"server-name": "command arg1 arg2"}' style="font-family: monospace;">${mcpServers}</textarea>
+              <span class="help-text">Format: {"serverName": "command args"}</span>
+            </div>
+
+            <!-- TabGit -->
+            <div id="TabGit" class="tab-content">
+              <h2>Git Integration</h2>
+              <div class="checkbox-container"><input type="checkbox" id="autoUpdateChangelog" ${autoUpdateChangelog ? 'checked' : ''}><label for="autoUpdateChangelog">Auto-update CHANGELOG.md</label></div>
+              <div class="checkbox-container"><input type="checkbox" id="deleteBranchAfterMerge" ${deleteBranchAfterMerge ? 'checked' : ''}><label for="deleteBranchAfterMerge">Auto-delete temporary branch after merge</label></div>
+              
+              <label for="unstagedChangesBehavior">Action for unstaged changes before new AI branch:</label>
+              <select id="unstagedChangesBehavior">
+                  <option value="stash" ${unstagedChangesBehavior === 'stash' ? 'selected' : ''}>Stash Changes</option>
+                  <option value="keep" ${unstagedChangesBehavior === 'keep' ? 'selected' : ''}>Keep (Carry Over)</option>
+                  <option value="error" ${unstagedChangesBehavior === 'error' ? 'selected' : ''}>Show Error (Stop)</option>
+              </select>
+
+              <label for="commitMessagePersona">${t('config.commitMessagePersona.label', 'Git Commit Persona')}</label>
+              <div class="persona-selector-row"><span class="help-text">Preset:</span><select class="persona-select" data-target="commitMessagePersona"></select></div>
+              <textarea id="commitMessagePersona" rows="4">${commitMessagePersona}</textarea>
             </div>
 
             <!-- TabHerd -->
             <div id="TabHerd" class="tab-content">
               <h2>Herd Mode 🐂</h2>
+
               <p class="help-text">Configure multi-model brainstorming sessions.</p>
 
               <div class="checkbox-container">
@@ -696,9 +818,10 @@ export class SettingsPanel {
               <label for="codeInspectorPersona">${t('config.codeInspectorPersona.label', 'Code Inspector Persona')}</label>
               <div class="persona-selector-row"><span class="help-text">Preset:</span><select class="persona-select" data-target="codeInspectorPersona"></select></div>
               <textarea id="codeInspectorPersona" rows="4">${codeInspectorPersona}</textarea>
-              <label for="commitMessagePersona">${t('config.commitMessagePersona.label', 'Git Commit Persona')}</label>
-              <div class="persona-selector-row"><span class="help-text">Preset:</span><select class="persona-select" data-target="commitMessagePersona"></select></div>
-              <textarea id="commitMessagePersona" rows="4">${commitMessagePersona}</textarea>
+              
+              <div style="margin-top: 24px; border-top: 1px solid var(--primary-accent); padding-top: 12px;">
+                  <button id="editPromptsBtn" class="secondary-button">${t('command.editPromptsFile.title', 'Edit Prompts JSON File')}</button>
+              </div>
             </div>
 
             <!-- TabUser -->
@@ -714,12 +837,6 @@ export class SettingsPanel {
               <textarea id="userInfoCodingStyle" rows="3">${userInfoCodingStyle}</textarea>
             </div>
 
-            <!-- TabAdvanced -->
-            <div id="TabAdvanced" class="tab-content">
-              <h2>${t('config.section.advanced', 'Advanced')}</h2>
-              <button id="editPromptsBtn" class="secondary-button">${t('command.editPromptsFile.title', 'Edit Prompts JSON File')}</button>
-            </div>
-
             <!-- TabLog -->
             <div id="TabLog" class="tab-content">
               <h2>Log</h2>
@@ -727,11 +844,13 @@ export class SettingsPanel {
             </div>
 
             <button id="saveConfig" class="save-btn">${t('config.saveAndClose', 'Save & Close')}</button>
+            <button id="resetConfig" class="reset-btn">Reset to Factory Defaults</button>
           </div>
         
           <script>
             const vscode = acquireVsCodeApi();
             const currentModelName = "${modelName}";
+            const currentArchitectModelName = "${architectModelName}";
             const currentInspectorModelName = "${inspectorModelName}";
             
             let personalities = [];
@@ -763,7 +882,9 @@ export class SettingsPanel {
             function populateModelDropdown(selectElement, selectedValue) {
                 selectElement.innerHTML = '';
                 if (loadedModels.length > 0) {
-                    if (selectElement.id === 'inspectorModelName') selectElement.appendChild(new Option("Same as Chat Model (Default)", ""));
+                    if (selectElement.id === 'inspectorModelName' || selectElement.id === 'architectModelSelect') {
+                        selectElement.appendChild(new Option("Same as Chat Model (Default)", ""));
+                    }
                     loadedModels.forEach(model => selectElement.appendChild(new Option(model.id, model.id)));
                     if (selectedValue) selectElement.value = selectedValue;
                 } else {
@@ -864,14 +985,19 @@ export class SettingsPanel {
                     });
                 };
                 
-                ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','inspectorModelName','codeInspectorPersona','chatPersona','agentPersona','commitMessagePersona','language','thinkingMode','outputFormat','thinkingModeCustomPrompt','reasoningLevel','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','clipboardInsertRole','herdRounds'].forEach(k => bind(k, k));
-                ['disableSsl','enableCodeInspector','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','companionEnableWebSearch','companionEnableArxivSearch','herdDynamicMode'].forEach(id => {
-                    const map = { 'disableSsl': 'disableSslVerification' };
+                ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','inspectorModelName','codeInspectorPersona','chatPersona','agentPersona','commitMessagePersona','language','thinkingMode','outputFormat','thinkingModeCustomPrompt','reasoningLevel','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','clipboardInsertRole','herdRounds','mcpServers','unstagedChangesBehavior'].forEach(k => bind(k, k));
+                ['disableSsl','enableCodeInspector','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','companionEnableWebSearch','companionEnableArxivSearch','herdDynamicMode','enableCodeActions','enableInlineSuggestions','noThinkMode','deleteBranchAfterMerge'].forEach(id => {
+                    const map = { 'disableSsl': 'disableSslVerification', 'deleteBranchAfterMerge': 'git.deleteBranchAfterMerge' };
                     const key = map[id] || id; 
                     if(id==='companionEnableWebSearch') bind(id, 'companion.enableWebSearch');
                     else if(id==='companionEnableArxivSearch') bind(id, 'companion.enableArxivSearch');
                     else if(id==='disableSsl') bind(id, 'disableSslVerification');
+                    else if(id==='deleteBranchAfterMerge') bind(id, 'git.deleteBranchAfterMerge');
                     else bind(id, id);
+                });
+                // Special mapping for unstagedChangesBehavior which has a '.'
+                document.getElementById('unstagedChangesBehavior').addEventListener('change', (e) => {
+                    postTempUpdate('git.unstagedChangesBehavior', e.target.value);
                 });
 
                 ['fullFile','insert','replace','delete'].forEach(k => {
@@ -882,9 +1008,11 @@ export class SettingsPanel {
 
                 const chatModelSelect = document.getElementById('modelSelect');
                 const inspectorModelSelect = document.getElementById('inspectorModelName');
+                const architectModelSelect = document.getElementById('architectModelSelect');
                 
                 chatModelSelect.addEventListener('change', () => postTempUpdate('modelName', chatModelSelect.value));
                 inspectorModelSelect.addEventListener('change', () => postTempUpdate('inspectorModelName', inspectorModelSelect.value));
+                architectModelSelect.addEventListener('change', () => postTempUpdate('architectModelName', architectModelSelect.value));
 
                 // Herd Dynamic Toggle UI logic
                 const herdDynamicCheckbox = document.getElementById('herdDynamicMode');
@@ -917,6 +1045,7 @@ export class SettingsPanel {
                 document.getElementById('refreshModels').addEventListener('click', () => refreshModelsList(true));
                 document.getElementById('refreshInspectorModels').addEventListener('click', () => refreshModelsList(true));
                 document.getElementById('saveConfig').addEventListener('click', () => vscode.postMessage({ command: 'saveConfig' }));
+                document.getElementById('resetConfig').addEventListener('click', () => vscode.postMessage({ command: 'resetConfig' }));
                 document.getElementById('testConnection').addEventListener('click', () => vscode.postMessage({ command: 'testConnection' }));
                 document.getElementById('browseCertPath').addEventListener('click', () => vscode.postMessage({ command: 'browseCertPath' }));
                 document.getElementById('createPersonalityBtn').addEventListener('click', () => vscode.postMessage({ command: 'createPersonality' }));
@@ -927,6 +1056,7 @@ export class SettingsPanel {
                 function refreshModelsList(force) {
                     chatModelSelect.innerHTML = '<option>Loading...</option>';
                     inspectorModelSelect.innerHTML = '<option>Loading...</option>';
+                    architectModelSelect.innerHTML = '<option>Loading...</option>';
                     vscode.postMessage({ command: 'fetchModels', value: force });
                 }
 
@@ -941,6 +1071,7 @@ export class SettingsPanel {
                         loadedModels = message.models || [];
                         populateModelDropdown(chatModelSelect, currentModelName);
                         populateModelDropdown(inspectorModelSelect, currentInspectorModelName);
+                        populateModelDropdown(architectModelSelect, currentArchitectModelName);
                         
                         // Refresh all dropdowns
                         renderParticipantsList('herd-pre-list', herdPre, 'herdPreCodeParticipants');

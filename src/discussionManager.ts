@@ -14,7 +14,8 @@ export interface Discussion {
     plan?: Plan | null; 
     model?: string;
     capabilities?: DiscussionCapabilities; 
-    personalityId?: string; 
+    personalityId?: string;
+    gitState?: { originalBranch: string, tempBranch: string }; // For Git Workflow
 }
 
 export interface DiscussionGroup {
@@ -89,7 +90,9 @@ export class DiscussionManager {
             herdRounds: herdRounds,
             // Persistent Modes
             agentMode: false,
-            autoContextMode: false
+            autoContextMode: false,
+            // Git Workflow
+            gitWorkflow: false
         };
 
         const saved = this.context.globalState.get<DiscussionCapabilities>('lollms_last_capabilities');
@@ -123,7 +126,8 @@ export class DiscussionManager {
             groupId,
             plan: null,
             capabilities: caps,
-            personalityId: 'default_coder' 
+            personalityId: 'default_coder',
+            gitState: undefined
         };
     }
 

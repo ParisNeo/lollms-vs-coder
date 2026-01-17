@@ -42,7 +42,7 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
              discussion.title = `Auto-Context: ${objective}`;
              await services.discussionManager.saveDiscussion(discussion);
              
-             const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussion.id, services.skillsManager);
+             const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussion.id, services.gitIntegration, services.skillsManager);
              
              // Setup Panel Dependencies (same as in newDiscussion)
              panel.agentManager = new AgentManager(
@@ -125,6 +125,16 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
             } catch (e: any) {
                 vscode.window.showErrorMessage(`Failed to load context: ${e.message}`);
             }
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.exportContextContent', async () => {
+        try {
+            const contextResult = await services.contextManager.getContextContent();
+            await vscode.env.clipboard.writeText(contextResult.text);
+            vscode.window.showInformationMessage(vscode.l10n.t("info.contextCopied"));
+        } catch (error: any) {
+            vscode.window.showErrorMessage(vscode.l10n.t("error.failedToExportContext", error.message));
         }
     }));
 }

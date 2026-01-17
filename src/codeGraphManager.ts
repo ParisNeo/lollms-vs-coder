@@ -35,6 +35,7 @@ export class CodeGraphManager {
     private buildState: BuildState = 'idle';
     private lastError?: string;
     private contextSetter?: ContextSetter;
+    private abortController?: AbortController;
 
     constructor(workspaceRoot?: vscode.Uri) {
         if (workspaceRoot) {
@@ -59,7 +60,19 @@ export class CodeGraphManager {
        BUILD PIPELINE
        ========================= */
 
+    cancel() {
+        if (this.buildState === 'building' && this.abortController) {
+            this.abortController.abort();
+            this.buildState = 'idle';
+            this.contextSetter?.('codeGraph.building', false);
+            this.contextSetter?.('codeGraph.ready', false);
+        }
+    }
+
     async buildGraph() {
+        // Cancel any existing operation
+        this.cancel();
+
         if (!this.workspaceRoot) {
             this.fail('Workspace root not defined');
             return;
@@ -67,14 +80,30 @@ export class CodeGraphManager {
 
         this.buildState = 'building';
         this.lastError = undefined;
+        this.abortController = new AbortController();
+        const signal = this.abortController.signal;
+
         this.contextSetter?.('codeGraph.building', true);
         this.contextSetter?.('codeGraph.ready', false);
         this.contextSetter?.('codeGraph.error', false);
 
         try {
+            if (signal.aborted) return;
+
+            // Aggressive exclusion pattern to improve performance on large repos
+            // Excludes standard build/dependency folders
+            const excludePattern = '**/{node_modules,venv,.venv,.git,dist,build,out,bin,obj,.vscode,.idea,.lollms,__pycache__,target,*.egg-info,vendor}/**';
+
+            // Find code files only
             const files = await vscode.workspace.findFiles(
-                new vscode.RelativePattern(this.workspaceRoot, '**/*.{ts,js,jsx,tsx,py,cpp,h,hpp,c,java,cs}')
+                new vscode.RelativePattern(this.workspaceRoot, '**/*.{ts,js,jsx,tsx,py,cpp,h,hpp,c,java,cs,go,rs,php,rb}'),
+                excludePattern,
+                undefined, // maxResults
+                // Note: VS Code findFiles accepts a CancellationToken which we could use, 
+                // but we also need manual checks in the loop below.
             );
+
+            if (signal.aborted) return;
 
             const nodes: GraphNode[] = [];
             const edges: GraphEdge[] = [];
@@ -87,6 +116,8 @@ export class CodeGraphManager {
 
             // --- PASS 1: Create Nodes for Files ---
             for (const file of files) {
+                if (signal.aborted) return;
+
                 const relativePath = vscode.workspace.asRelativePath(file);
                 const normalizedPath = relativePath.replace(/\\/g, '/');
 
@@ -103,145 +134,176 @@ export class CodeGraphManager {
             }
 
             // --- PASS 2: Parse Content ---
-            for (const file of files) {
+            // Process files in chunks to avoid blocking the event loop for too long
+            for (let i = 0; i < files.length; i++) {
+                if (signal.aborted) return;
+
+                // Yield every 20 files to keep UI responsive
+                if (i % 20 === 0) {
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+
+                const file = files[i];
                 const relativePath = vscode.workspace.asRelativePath(file);
                 const normalizedPath = relativePath.replace(/\\/g, '/');
                 const fileNodeId = fileNodeMap.get(normalizedPath);
                 
                 if (!fileNodeId) continue;
 
-                const doc = await vscode.workspace.openTextDocument(file);
-                const text = doc.getText();
-                const cleanText = this.stripCommentsAndStrings(text); 
-                const lines = cleanText.split('\n');
-                const ext = path.extname(file.fsPath).toLowerCase().replace('.', '');
+                try {
+                    const doc = await vscode.workspace.openTextDocument(file);
+                    const text = doc.getText();
+                    
+                    // Skip very large files (> 500KB) to prevent freezes during parsing
+                    if (text.length > 500000) continue;
 
-                let currentClass: GraphNode | null = null;
-                let currentClassIndent = 0;
+                    const cleanText = this.stripCommentsAndStrings(text); 
+                    const lines = cleanText.split('\n');
+                    const ext = path.extname(file.fsPath).toLowerCase().replace('.', '');
 
-                lines.forEach((line, index) => {
-                    const trimmed = line.trim();
-                    if (!trimmed) return;
-                    const indent = line.search(/\S/);
+                    let currentClass: GraphNode | null = null;
+                    let currentClassIndent = 0;
 
-                    const fnMatch = line.match(/function\s+([a-zA-Z0-9_]+)/);
-                    if (fnMatch && !currentClass) {
-                        const fnNodeId = `fn_${nodeId++}`;
-                        nodes.push({
-                            id: fnNodeId,
-                            label: fnMatch[1],
-                            type: 'function',
-                            filePath: relativePath,
-                            startLine: index
-                        });
-                        edges.push({ id: `edge_${edgeId++}`, source: fileNodeId, target: fnNodeId, label: 'contains' });
-                    }
+                    lines.forEach((line, index) => {
+                        const trimmed = line.trim();
+                        if (!trimmed) return;
+                        const indent = line.search(/\S/);
 
-                    const classMatch = line.match(/class\s+([a-zA-Z0-9_]+)/);
-                    if (classMatch) {
-                        const className = classMatch[1];
-                        const classNodeId = `class_${nodeId++}`;
-                        
-                        currentClass = {
-                            id: classNodeId,
-                            label: className,
-                            type: 'class',
-                            filePath: relativePath,
-                            startLine: index,
-                            methods: [],
-                            attributes: []
-                        };
-                        currentClassIndent = indent;
-                        
-                        nodes.push(currentClass);
-                        classNodeMap.set(className, classNodeId);
-                        edges.push({ id: `edge_${edgeId++}`, source: fileNodeId, target: classNodeId, label: 'contains' });
-                        return;
-                    }
+                        const fnMatch = line.match(/function\s+([a-zA-Z0-9_]+)/);
+                        if (fnMatch && !currentClass) {
+                            const fnNodeId = `fn_${nodeId++}`;
+                            nodes.push({
+                                id: fnNodeId,
+                                label: fnMatch[1],
+                                type: 'function',
+                                filePath: relativePath,
+                                startLine: index
+                            });
+                            edges.push({ id: `edge_${edgeId++}`, source: fileNodeId, target: fnNodeId, label: 'contains' });
+                        }
 
-                    if (currentClass) {
-                        if (ext === 'py') {
-                            if (indent <= currentClassIndent && !trimmed.startsWith('def') && !trimmed.startsWith('class') && !trimmed.startsWith('@')) {
-                                if (!trimmed.startsWith('#') && trimmed.length > 0) {
-                                    currentClass = null; 
-                                }
-                            }
-                        } else {
-                            if (line.match(/^}/) && indent === currentClassIndent) {
-                                currentClass = null;
-                            }
+                        const classMatch = line.match(/class\s+([a-zA-Z0-9_]+)/);
+                        if (classMatch) {
+                            const className = classMatch[1];
+                            const classNodeId = `class_${nodeId++}`;
+                            
+                            currentClass = {
+                                id: classNodeId,
+                                label: className,
+                                type: 'class',
+                                filePath: relativePath,
+                                startLine: index,
+                                methods: [],
+                                attributes: []
+                            };
+                            currentClassIndent = indent;
+                            
+                            nodes.push(currentClass);
+                            classNodeMap.set(className, classNodeId);
+                            edges.push({ id: `edge_${edgeId++}`, source: fileNodeId, target: classNodeId, label: 'contains' });
+                            return;
                         }
 
                         if (currentClass) {
-                            let methodMatch;
                             if (ext === 'py') {
-                                methodMatch = line.match(/^\s+def\s+([a-zA-Z0-9_]+)/);
+                                if (indent <= currentClassIndent && !trimmed.startsWith('def') && !trimmed.startsWith('class') && !trimmed.startsWith('@')) {
+                                    if (!trimmed.startsWith('#') && trimmed.length > 0) {
+                                        currentClass = null; 
+                                    }
+                                }
                             } else {
-                                methodMatch = line.match(/(?:public|private|protected|static|\s)*\s+([a-zA-Z0-9_]+)\s*\(/);
-                                if (methodMatch && ['if', 'for', 'while', 'switch', 'catch', 'constructor'].includes(methodMatch[1])) {
-                                    methodMatch = null;
+                                if (line.match(/^}/) && indent === currentClassIndent) {
+                                    currentClass = null;
                                 }
                             }
 
-                            if (methodMatch) {
-                                const methodName = methodMatch[1];
-                                if (!methodName.startsWith('__')) {
-                                    currentClass.methods?.push(methodName);
+                            if (currentClass) {
+                                let methodMatch;
+                                if (ext === 'py') {
+                                    methodMatch = line.match(/^\s+def\s+([a-zA-Z0-9_]+)/);
+                                } else {
+                                    methodMatch = line.match(/(?:public|private|protected|static|\s)*\s+([a-zA-Z0-9_]+)\s*\(/);
+                                    if (methodMatch && ['if', 'for', 'while', 'switch', 'catch', 'constructor'].includes(methodMatch[1])) {
+                                        methodMatch = null;
+                                    }
+                                }
+
+                                if (methodMatch) {
+                                    const methodName = methodMatch[1];
+                                    if (!methodName.startsWith('__')) {
+                                        currentClass.methods?.push(methodName);
+                                    }
+                                }
+
+                                let attrMatch;
+                                if (ext === 'py') {
+                                    attrMatch = line.match(/self\.([a-zA-Z0-9_]+)\s*=/);
+                                } else {
+                                    attrMatch = line.match(/(?:public|private|protected|\s)*\s*([a-zA-Z0-9_]+)\s*(?::\s*[a-zA-Z0-9_<>\[\]]+)?\s*=/);
+                                }
+
+                                if (attrMatch) {
+                                    currentClass.attributes?.push(attrMatch[1]);
                                 }
                             }
+                        }
+                    });
 
-                            let attrMatch;
-                            if (ext === 'py') {
-                                attrMatch = line.match(/self\.([a-zA-Z0-9_]+)\s*=/);
-                            } else {
-                                attrMatch = line.match(/(?:public|private|protected|\s)*\s*([a-zA-Z0-9_]+)\s*(?::\s*[a-zA-Z0-9_<>\[\]]+)?\s*=/);
-                            }
-
-                            if (attrMatch) {
-                                currentClass.attributes?.push(attrMatch[1]);
+                    const rawImports = this.extractImports(cleanText, ext);
+                    for (const importStr of rawImports) {
+                        const targetPath = this.resolveImport(importStr, normalizedPath, fileNodeMap);
+                        if (targetPath) {
+                            const targetId = fileNodeMap.get(targetPath);
+                            if (targetId && targetId !== fileNodeId) {
+                                edges.push({
+                                    id: `edge_${edgeId++}`,
+                                    source: fileNodeId,
+                                    target: targetId,
+                                    label: 'imports'
+                                });
                             }
                         }
                     }
-                });
-
-                const rawImports = this.extractImports(cleanText, ext);
-                for (const importStr of rawImports) {
-                    const targetPath = this.resolveImport(importStr, normalizedPath, fileNodeMap);
-                    if (targetPath) {
-                        const targetId = fileNodeMap.get(targetPath);
-                        if (targetId && targetId !== fileNodeId) {
-                            edges.push({
-                                id: `edge_${edgeId++}`,
-                                source: fileNodeId,
-                                target: targetId,
-                                label: 'imports'
-                            });
-                        }
-                    }
+                } catch (readError) {
+                    console.warn(`Error processing file ${file.fsPath}:`, readError);
                 }
             }
 
+            // --- PASS 3: Inheritance (Optional, lighter check) ---
             const inheritancePattern = /class\s+([a-zA-Z0-9_]+)(?:\s*(?:extends|\()\s*([a-zA-Z0-9_.]+))?/g;
-            for (const file of files) {
-                const doc = await vscode.workspace.openTextDocument(file);
-                const text = this.stripCommentsAndStrings(doc.getText());
-                let match;
-                while ((match = inheritancePattern.exec(text)) !== null) {
-                    const className = match[1];
-                    const parentName = match[2];
-                    if (parentName) {
-                        const childId = classNodeMap.get(className);
-                        const parentId = classNodeMap.get(parentName);
-                        if (childId && parentId) {
-                            edges.push({
-                                id: `edge_${edgeId++}`,
-                                source: childId,
-                                target: parentId,
-                                label: 'inherits'
-                            });
+            for (let i = 0; i < files.length; i++) {
+                if (signal.aborted) return;
+
+                // Yield again
+                if (i % 50 === 0) {
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+                
+                try {
+                    const file = files[i];
+                    const doc = await vscode.workspace.openTextDocument(file);
+                    
+                    if (doc.getText().length > 500000) continue;
+
+                    const text = this.stripCommentsAndStrings(doc.getText());
+                    let match;
+                    while ((match = inheritancePattern.exec(text)) !== null) {
+                        const className = match[1];
+                        const parentName = match[2];
+                        if (parentName) {
+                            const childId = classNodeMap.get(className);
+                            const parentId = classNodeMap.get(parentName);
+                            if (childId && parentId) {
+                                edges.push({
+                                    id: `edge_${edgeId++}`,
+                                    source: childId,
+                                    target: parentId,
+                                    label: 'inherits'
+                                });
+                            }
                         }
                     }
-                }
+                } catch {}
             }
 
             this.graph = { nodes, edges };
@@ -249,8 +311,16 @@ export class CodeGraphManager {
             this.contextSetter?.('codeGraph.ready', true);
 
         } catch (err: any) {
-            this.fail(err?.message ?? String(err));
+            if (signal.aborted) {
+                console.log('Graph generation cancelled.');
+                this.buildState = 'idle';
+            } else {
+                this.fail(err?.message ?? String(err));
+            }
         } finally {
+            if (signal.aborted) {
+                this.buildState = 'idle';
+            }
             this.contextSetter?.('codeGraph.building', false);
         }
     }

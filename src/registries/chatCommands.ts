@@ -18,7 +18,7 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
         const groupId = item instanceof DiscussionGroupItem ? item.group.id : null;
         const discussion = services.discussionManager.createNewDiscussion(groupId);
         await services.discussionManager.saveDiscussion(discussion);
-        const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussion.id, services.skillsManager);
+        const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussion.id, services.gitIntegration, services.skillsManager);
         
         // Inject dependencies into panel
         panel.agentManager = new (require('../agentManager').AgentManager)(
@@ -56,7 +56,7 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
     }));
     
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.switchDiscussion', async (discussionId: string) => {
-        const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussionId, services.skillsManager);
+        const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussionId, services.gitIntegration, services.skillsManager);
         panel.agentManager = new (require('../agentManager').AgentManager)(
             panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
             services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager

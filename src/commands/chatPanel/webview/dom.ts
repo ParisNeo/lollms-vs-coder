@@ -131,6 +131,8 @@ export const dom = {
     get capWebSearch() { return document.getElementById('cap-webSearch') as HTMLInputElement; },
     get capArxivSearch() { return document.getElementById('cap-arxivSearch') as HTMLInputElement; },
     get capGitCommit() { return document.getElementById('cap-gitCommit') as HTMLInputElement; },
+    get capGitWorkflow() { return document.getElementById('cap-gitWorkflow') as HTMLInputElement; },
+    get capGitWorkflowContainer() { return document.getElementById('cap-gitWorkflowContainer') as HTMLDivElement; },
 
     get modeFunMode() { return document.getElementById('mode-funMode') as HTMLInputElement; },
     get modeHeavyCot() { return document.getElementById('mode-heavyCot') as HTMLInputElement; },

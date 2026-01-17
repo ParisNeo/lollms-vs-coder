@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.62",
+  "version": "0.5.63",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -818,6 +818,22 @@
           "type": "array",
           "default": [],
           "description": "Pool of available models for Dynamic Herd assignment. Each entry is { model: string, description: string }."
+        },
+        "lollmsVsCoder.git.deleteBranchAfterMerge": {
+            "type": "boolean",
+            "default": true,
+            "description": "Automatically delete the temporary feature branch after merging it into the original branch."
+        },
+        "lollmsVsCoder.git.unstagedChangesBehavior": {
+            "type": "string",
+            "default": "stash",
+            "enum": ["stash", "error", "keep"],
+            "description": "Action to take if unstaged changes exist when creating a new AI branch.",
+            "enumDescriptions": [
+                "Stash changes and pop them after switching (if possible) or keep stashed.",
+                "Abort the operation.",
+                "Keep changes and carry them over to the new branch."
+            ]
         }
       }
     },

@@ -134,6 +134,8 @@ export function handleExtensionMessage(event: MessageEvent) {
                     
                     // Git Commit
                     if(dom.capGitCommit) dom.capGitCommit.checked = caps.gitCommit;
+                    // Git Workflow
+                    if(dom.capGitWorkflow) dom.capGitWorkflow.checked = caps.gitWorkflow;
                     
                     if(dom.modeFunMode) dom.modeFunMode.checked = caps.funMode;
                     
@@ -190,7 +192,19 @@ export function handleExtensionMessage(event: MessageEvent) {
                     }
                 }
                 break;
-            
+            case 'updateGitRepoStatus':
+                const isRepo = message.isRepo;
+                if (dom.capGitWorkflow) {
+                    dom.capGitWorkflow.disabled = !isRepo;
+                    if (!isRepo && dom.capGitWorkflowContainer) {
+                        dom.capGitWorkflowContainer.style.opacity = "0.5";
+                        dom.capGitWorkflowContainer.title = "No Git repository detected";
+                    } else if (dom.capGitWorkflowContainer) {
+                        dom.capGitWorkflowContainer.style.opacity = "1";
+                        dom.capGitWorkflowContainer.title = "Git Workflow (Auto-Branching)";
+                    }
+                }
+                break;
             case 'updateThinkingMode':
                 if (dom.thinkingIndicator) {
                     const mode = message.mode;
@@ -298,7 +312,7 @@ export function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'error':
                 setGeneratingState(false);
-                addMessage({ id: 'error_' + Date.now(), role: 'system', content: '❌ Error: ' + message.content }, true);
+                addMessage({ id: 'error_' + Date.now(), role: 'system', content: 'â Œ Error: ' + message.content }, true);
                 break;
             case 'setInputText':
                 if (dom.messageInput) {

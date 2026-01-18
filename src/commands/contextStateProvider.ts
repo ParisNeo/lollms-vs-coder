@@ -361,11 +361,16 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         return descendants;
     }
 
-    public async getAllVisibleFiles(): Promise<string[]> {
+    public async getAllVisibleFiles(signal?: AbortSignal): Promise<string[]> {
         const rootUri = vscode.Uri.file(this.workspaceRoot);
         const visibleFiles: string[] = [];
+        
+        // Debugging: Track where we are
+        let lastProcessed = "";
     
         const processDirectory = async (dirUri: vscode.Uri) => {
+            if (signal?.aborted) return;
+
             const relativePath = this.normalize(vscode.workspace.asRelativePath(dirUri, false));
             
             // Check state with inheritance
@@ -386,10 +391,17 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             } catch (error) {
                 return; 
             }
+
+            // Yield to event loop to prevent UI freeze during large scans
+            await new Promise(resolve => setTimeout(resolve, 0));
     
             for (const [name, type] of entries) {
+                if (signal?.aborted) return;
+
                 const entryUri = vscode.Uri.joinPath(dirUri, name);
                 const entryRelativePath = this.normalize(vscode.workspace.asRelativePath(entryUri, false));
+                
+                lastProcessed = entryRelativePath;
     
                 // Re-check child exclusion
                 if (this.isExcluded(entryUri)) {
@@ -407,7 +419,13 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             }
         };
     
-        await processDirectory(rootUri);
+        try {
+            await processDirectory(rootUri);
+        } finally {
+            if (signal?.aborted) {
+                Logger.info(`Context scan aborted. Last processed item: ${lastProcessed}`);
+            }
+        }
         return visibleFiles;
     }
     

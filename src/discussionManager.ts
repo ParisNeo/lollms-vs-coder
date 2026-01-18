@@ -92,7 +92,13 @@ export class DiscussionManager {
             agentMode: false,
             autoContextMode: false,
             // Git Workflow
-            gitWorkflow: false
+            gitWorkflow: false,
+            // GUI State Defaults (Show Badges)
+            guiState: {
+                agentBadge: true,
+                autoContextBadge: true,
+                herdBadge: true
+            }
         };
 
         const saved = this.context.globalState.get<DiscussionCapabilities>('lollms_last_capabilities');
@@ -110,6 +116,9 @@ export class DiscussionManager {
             }
             if (!merged.herdRounds) merged.herdRounds = defaults.herdRounds;
             
+            // Ensure guiState exists
+            if (!merged.guiState) merged.guiState = defaults.guiState;
+
             return merged;
         }
         return defaults;

@@ -32,7 +32,8 @@ export interface DiscussionCapabilities {
     arxivSearch: boolean;
     funMode: boolean;
     thinkingMode: 'none' | 'chain_of_thought' | 'chain_of_verification' | 'plan_and_solve' | 'self_critique' | 'no_think';
-    gitCommit: boolean;
+    // gitCommit removed
+    gitWorkflow: boolean;
     // Herd Mode Settings
     herdMode: boolean;
     herdDynamicMode: boolean;
@@ -43,8 +44,13 @@ export interface DiscussionCapabilities {
     // Persistent Modes
     agentMode: boolean;
     autoContextMode: boolean;
-    // Git Workflow
-    gitWorkflow: boolean;
+    
+    // GUI State (Badge Visibility)
+    guiState?: {
+        agentBadge: boolean;
+        autoContextBadge: boolean;
+        herdBadge: boolean;
+    };
 }
 
 export async function applyDiff(diffContent: string) {
@@ -142,6 +148,23 @@ export async function getProcessedSystemPrompt(
         if (strategy) {
             thinkingInstructions = `<reasoning_protocol>\nEnclose all reasoning, analysis, and self-correction in <thinking> or <analysis> tags. This internal process is hidden from the user but critical for quality.\n\nProcess: ${strategy}\n</reasoning_protocol>\n\n`;
         }
+    }
+
+    // Determine the primary Persona Content
+    let personaContent = customPersonaContent || config.get<string>(
+        promptType === 'chat' ? 'chatPersona' :
+        promptType === 'agent' ? 'agentPersona' :
+        promptType === 'inspector' ? 'codeInspectorPersona' :
+        'commitMessagePersona'
+    ) || '';
+
+    if (capabilities?.funMode) {
+        personaContent += "\n\n**FUN MODE** 🎉: Be quirky, humorous, and use emojis liberally!";
+    }
+
+    // Default Role Fallback if persona is empty
+    if (!personaContent.trim()) {
+        personaContent = "You are a Senior VSCode Engineering Assistant.";
     }
 
     let basePrompt = '';
@@ -276,7 +299,7 @@ Generate images using:
 
             basePrompt = `# Role
 
-You are a Senior VSCode Engineering Assistant.
+${personaContent}
 
 ${thinkingInstructions}# Response Structure
 
@@ -284,7 +307,7 @@ ${thinkingInstructions}# Response Structure
 2. **Teach concepts**
 3. **Format Strictness** - Use EXCLUSIVELY the formats defined below.
 
-# Strict Format Enforcement (CRITICAL)
+# Operational Rules (CRITICAL)
 
 You must use **EXCLUSIVELY** one of the supported file modification formats.
 ❌ **DO NOT** produce standard git patches.
@@ -305,7 +328,7 @@ ${formatInstructions}${additionalFormats}${searchCapability}${imageGenCapability
         case 'agent':
             basePrompt = `# Role
 
-You are an autonomous AI Agent executing tasks systematically.
+${personaContent}
 
 ${thinkingInstructions}# Core Principles
 
@@ -319,7 +342,7 @@ ${thinkingInstructions}# Core Principles
         case 'inspector':
             basePrompt = `# Role
 
-You are a Code Quality Inspector.
+${personaContent}
 
 ${thinkingInstructions}# Analysis Focus
 
@@ -332,7 +355,7 @@ ${thinkingInstructions}# Analysis Focus
         case 'commit':
             basePrompt = `# Role
 
-Expert developer writing conventional commit messages.
+${personaContent}
 
 # Output Format
 
@@ -366,21 +389,6 @@ type(scope): concise description
 
     if (memoryContent.trim()) {
         contextSections.push(`### Long-Term Memory\n\`\`\`\n${memoryContent}\n\`\`\`\n\nUpdate memory with <memory>content</memory> tags.`);
-    }
-
-    let personaContent = customPersonaContent || config.get<string>(
-        promptType === 'chat' ? 'chatPersona' :
-        promptType === 'agent' ? 'agentPersona' :
-        promptType === 'inspector' ? 'codeInspectorPersona' :
-        'commitMessagePersona'
-    ) || '';
-
-    if (capabilities?.funMode) {
-        personaContent += "\n\n**FUN MODE** 🎉: Be quirky, humorous, and use emojis liberally!";
-    }
-
-    if (personaContent.trim()) {
-        contextSections.push(`### Your Persona\n${personaContent.trim()}`);
     }
 
     const contextBlock = contextSections.length > 0 ? '\n\n# Context\n\n' + contextSections.join('\n\n') : '';

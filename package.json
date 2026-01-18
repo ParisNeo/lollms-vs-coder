@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.64",
+  "version": "0.5.66",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -102,6 +102,11 @@
         "command": "lollms-vs-coder.inspectCommit",
         "title": "Lollms: Inspect Commit History",
         "icon": "$(telescope)"
+      },
+      {
+        "command": "lollms-vs-coder.gitManager",
+        "title": "Lollms: Git Manager",
+        "icon": "$(history)"
       },
       {
         "command": "lollmsApi.recreateClient",
@@ -960,6 +965,12 @@
           "when": "scmProvider == 'git'",
           "group": "navigation",
           "icon": "$(telescope)"
+        },
+        {
+          "command": "lollms-vs-coder.gitManager",
+          "when": "scmProvider == 'git'",
+          "group": "navigation",
+          "icon": "$(history)"
         }
       ],
       "debug/toolbar": [

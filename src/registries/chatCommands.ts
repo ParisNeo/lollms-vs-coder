@@ -72,4 +72,19 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.quickEdit', () => {
         services.quickEditManager.triggerQuickEdit();
     }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.cleanEmptyDiscussions', async () => {
+        const yes = vscode.l10n.t('label.yes') || "Yes";
+        const no = vscode.l10n.t('label.no') || "No";
+        const prompt = vscode.l10n.t('prompt.confirmCleanEmptyDiscussions') || "Are you sure you want to delete all empty discussions?";
+        
+        const selection = await vscode.window.showWarningMessage(prompt, { modal: true }, yes);
+        
+        if (selection === yes) {
+            const count = await services.discussionManager.cleanEmptyDiscussions();
+            const message = vscode.l10n.t('info.cleanedEmptyDiscussions', count) || `Cleaned ${count} empty discussions.`;
+            vscode.window.showInformationMessage(message);
+            services.treeProviders.discussion?.refresh();
+        }
+    }));
 }

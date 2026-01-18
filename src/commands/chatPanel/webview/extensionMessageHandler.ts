@@ -110,6 +110,8 @@ export function handleExtensionMessage(event: MessageEvent) {
             case 'updateDiscussionCapabilities':
                 const caps = message.capabilities;
                 if (caps) {
+                    state.capabilities = caps;
+
                     // Update Modal State
                     if (dom.radioCodeGenFull && caps.codeGenType === 'full') dom.radioCodeGenFull.checked = true;
                     if (dom.radioCodeGenDiff && caps.codeGenType === 'diff') dom.radioCodeGenDiff.checked = true;
@@ -132,8 +134,6 @@ export function handleExtensionMessage(event: MessageEvent) {
                     if(dom.capWebSearch) dom.capWebSearch.checked = caps.webSearch;
                     if(dom.capArxivSearch) dom.capArxivSearch.checked = caps.arxivSearch;
                     
-                    // Git Commit
-                    if(dom.capGitCommit) dom.capGitCommit.checked = caps.gitCommit;
                     // Git Workflow
                     if(dom.capGitWorkflow) dom.capGitWorkflow.checked = caps.gitWorkflow;
                     
@@ -148,26 +148,15 @@ export function handleExtensionMessage(event: MessageEvent) {
                     if (dom.capHerdMode) dom.capHerdMode.checked = caps.herdMode || false;
                     if (dom.capHerdRounds) dom.capHerdRounds.value = caps.herdRounds || 2;
 
-                    // Update Persistent Mode Checkboxes in Menu
-                    if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = caps.agentMode || false;
-                    if (dom.autoContextCheckbox) dom.autoContextCheckbox.checked = caps.autoContextMode || false;
-                    if (dom.herdModeCheckbox) dom.herdModeCheckbox.checked = caps.herdMode || false;
-
+                    // Update Menu Checkboxes -> These now reflect Visibility (GUI State)
+                    const guiState = caps.guiState || { agentBadge: true, autoContextBadge: true, herdBadge: true };
+                    
+                    if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = guiState.agentBadge;
+                    if (dom.autoContextCheckbox) dom.autoContextCheckbox.checked = guiState.autoContextBadge;
+                    if (dom.herdModeCheckbox) dom.herdModeCheckbox.checked = guiState.herdBadge;
 
                     if (dom.herdConfigSection) {
                         dom.herdConfigSection.style.display = caps.herdMode ? 'block' : 'none';
-                    }
-
-                    // Update Herd Models Checkboxes in Modal (if list exists there)
-                    if (dom.herdModelsList) {
-                        const checkboxes = dom.herdModelsList.querySelectorAll('input[type="checkbox"]');
-                        checkboxes.forEach((cb: any) => {
-                            if (caps.herdModels && caps.herdModels.includes(cb.value)) {
-                                cb.checked = true;
-                            } else {
-                                cb.checked = false;
-                            }
-                        });
                     }
 
                     // Update Visual Indicators
@@ -185,11 +174,6 @@ export function handleExtensionMessage(event: MessageEvent) {
                     
                     // Update Badges via ui.ts helper
                     updateBadges();
-                    
-                    // Logic to disable auto-context if agent is active
-                    if(dom.autoContextCheckbox && dom.agentModeCheckbox) {
-                        dom.autoContextCheckbox.disabled = dom.agentModeCheckbox.checked;
-                    }
                 }
                 break;
             case 'updateGitRepoStatus':
@@ -257,10 +241,12 @@ export function handleExtensionMessage(event: MessageEvent) {
                         dom.tokenCountingText.textContent = message.text;
                     }
                 }
+                if (dom.cancelTokensBtn) dom.cancelTokensBtn.style.display = 'inline-flex';
                 if (dom.inputAreaWrapper) dom.inputAreaWrapper.style.display = 'none';
                 break;
             case 'tokenCalculationFinished':
                 if (dom.tokenCountingOverlay) dom.tokenCountingOverlay.style.display = 'none';
+                if (dom.cancelTokensBtn) dom.cancelTokensBtn.style.display = 'none';
                 if (dom.inputAreaWrapper && !state.isGenerating) {
                     dom.inputAreaWrapper.style.display = 'block';
                 }
@@ -304,7 +290,9 @@ export function handleExtensionMessage(event: MessageEvent) {
                 }
                 break;
             case 'updateAgentMode':
-                if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = message.isActive;
+                if (state.capabilities) {
+                    state.capabilities.agentMode = message.isActive;
+                }
                 // Sync badge using shared helper
                 updateBadges();
                 
@@ -312,7 +300,7 @@ export function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'error':
                 setGeneratingState(false);
-                addMessage({ id: 'error_' + Date.now(), role: 'system', content: 'â Œ Error: ' + message.content }, true);
+                addMessage({ id: 'error_' + Date.now(), role: 'system', content: '❌ Error: ' + message.content }, true);
                 break;
             case 'setInputText':
                 if (dom.messageInput) {
@@ -428,6 +416,37 @@ export function handleExtensionMessage(event: MessageEvent) {
                     codeBlock.classList.remove('language-select');
                     codeBlock.innerHTML = newHtml;
                 }
+                break;
+            }
+            case 'updateGitState': {
+                state.currentBranch = message.branch;
+                updateBadges();
+                break;
+            }
+            case 'setCommitMessage': {
+                if (dom.commitMessageInput) {
+                    dom.commitMessageInput.value = message.message;
+                }
+                if (dom.commitModal) {
+                    dom.commitModal.classList.add('visible');
+                }
+                break;
+            }
+            case 'showGitHistory': {
+                if (dom.historyList) {
+                    dom.historyList.innerHTML = '';
+                    message.commits.forEach((c: any) => {
+                        const div = document.createElement('div');
+                        div.className = 'history-item';
+                        div.innerHTML = `<div style="font-weight:bold;">${c.message}</div><div style="font-size:0.85em; opacity:0.8;">${c.hash.substring(0,7)} - ${c.date}</div>`;
+                        div.onclick = () => {
+                            vscode.postMessage({ command: 'performRevert', hash: c.hash });
+                            if (dom.historyModal) dom.historyModal.classList.remove('visible');
+                        };
+                        dom.historyList.appendChild(div);
+                    });
+                }
+                if (dom.historyModal) dom.historyModal.classList.add('visible');
                 break;
             }
         }

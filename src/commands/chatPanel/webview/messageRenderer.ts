@@ -381,8 +381,8 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     };
 }
 
-function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | null, path: string, stripFirstLine: boolean }[] {
-    const infos: { type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | null, path: string, stripFirstLine: boolean }[] = [];
+function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | 'file_delete' | null, path: string, stripFirstLine: boolean }[] {
+    const infos: { type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | 'file_delete' | null, path: string, stripFirstLine: boolean }[] = [];
     const lines = content.split('\n');
     let inBlock = false;
     let fenceLength = 0;
@@ -393,14 +393,20 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
         if (!inBlock) {
             const xmlRename = line.match(/<rename\s+old=["']([^"']+)["']\s+new=["']([^"']+)["']\s*\/>/i);
             const xmlDelete = line.match(/<delete\s+path=["']([^"']+)["']\s*\/>/i);
+            const xmlRemove = line.match(/<remove\s+path=["']([^"']+)["']\s*\/>/i);
             const xmlSelect = line.match(/<select\s+path=["']([^"']+)["']\s*\/>/i);
             
             if (xmlRename) {
                 infos.push({ type: 'rename', path: `${xmlRename[1]} -> ${xmlRename[2]}`, stripFirstLine: false });
                 continue;
             }
+            // Fix: Map XML delete/remove tags to 'file_delete' to distinguish from code block deletion
             if (xmlDelete) {
-                infos.push({ type: 'delete', path: xmlDelete[1], stripFirstLine: false });
+                infos.push({ type: 'file_delete', path: xmlDelete[1], stripFirstLine: false });
+                continue;
+            }
+            if (xmlRemove) {
+                infos.push({ type: 'file_delete', path: xmlRemove[1], stripFirstLine: false });
                 continue;
             }
             if (xmlSelect) {
@@ -418,7 +424,7 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
                 inBlock = true;
                 fenceLength = currentFenceLength;
                 
-                let type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | null = null;
+                let type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | 'file_delete' | null = null;
                 let pathStr = '';
                 let stripFirstLine = false;
 
@@ -572,6 +578,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
         let isInsert = false;
         let isReplace = false;
         let isDeleteCode = false;
+        let isFileDelete = false; // New flag for file deletion
         let filePath = '';
 
         if (language.includes(':')) {
@@ -611,9 +618,16 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             } else if (info.type === 'delete') {
                 filePath = info.path;
                 isDeleteCode = true;
+            } else if (info.type === 'file_delete') {
+                // Ensure we don't set isDeleteCode (block delete)
+                // We just let it fall through to language=='delete' check or handle it explicitly
+                isFileDelete = true;
+                // filePath usually undefined for XML tags in info, but content has path
+                // Actually info.path has the path from XML tag
+                // codeText also has the path because renderMessageContent replaced it
             }
 
-            if (info.path && ['file', 'diff', 'insert', 'replace', 'delete'].includes(info.type || '')) {
+            if (info.path && ['file', 'diff', 'insert', 'replace', 'delete', 'file_delete'].includes(info.type || '')) {
                 actionableBlockCount++;
             }
 
@@ -769,7 +783,8 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             if (actions.firstChild) actions.insertBefore(renameBtn, actions.firstChild);
             else actions.appendChild(renameBtn);
 
-        } else if (language === 'delete' || (info && info.type === 'delete')) {
+        } else if (language === 'delete' || (info && info.type === 'delete') || isFileDelete) {
+            // Updated condition to include isFileDelete (mapped from XML tags)
             const deleteBtn = createButton('Delete Files', 'codicon-trash', () => {
                 vscode.postMessage({ command: 'deleteFile', filePaths: codeText });
             }, 'code-action-btn delete-btn');
@@ -860,9 +875,23 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
                     const code = pre.querySelector('code');
                     if (!code) return;
                     const info = codeBlockInfos[index];
-                    if (info && info.path && ['file', 'diff', 'insert', 'replace', 'delete'].includes(info.type || '')) {
+                    if (info && info.path && ['file', 'diff', 'insert', 'replace', 'delete', 'file_delete'].includes(info.type || '')) {
+                        // Map file_delete to 'delete' type for the extension command lollms-vs-coder.deleteFile
+                        // Wait, check handler in events.ts
+                        // 'deleteFile' command takes filePaths. 'deleteCodeBlock' takes content/filePath.
+                        // The event handler:
+                        // case 'applyAllChanges':
+                        // ... if (change.type === 'delete') ... deleteCodeBlock ...
+                        // We need a new case in events.ts 'applyAllChanges' loop to handle file_delete properly
+                        // OR map it here.
+                        
+                        let typeToPush = info.type;
+                        if (typeToPush === 'file_delete') {
+                            typeToPush = 'file_delete'; // Pass explicit type
+                        }
+
                         changes.push({
-                            type: info.type,
+                            type: typeToPush,
                             path: info.path,
                             content: code.innerText
                         });
@@ -992,7 +1021,11 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 }
             });
             
-            let xmlProcessedContent = processedContent
+            // --- FIX: Unwrap XML tags that are stuck inside markdown code blocks ---
+            // Use broader unwrap: If block content looks like our XML, strip the fences.
+            let cleanXml = processedContent.replace(/```(?:xml(?::\w+)?)?\s*((?:<(?!!--)(?:file|rename|delete|select|remove|insert|replace)\b[\s\S]*?>[\s\S]*?)+)\s*```/gi, '$1');
+
+            let xmlProcessedContent = cleanXml
                 .replace(/<file\s+path=["']([^"']+)["']>\s*([\s\S]*?)\s*<\/file>/g, (match, path, code) => {
                     return `File: ${path}\n\`\`\`\n${code}\n\`\`\``;
                 })
@@ -1000,6 +1033,9 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     return `\`\`\`rename\n${old} -> ${n}\n\`\`\``;
                 })
                 .replace(/<delete\s+path=["']([^"']+)["']\s*\/>/g, (match, path) => {
+                    return `\`\`\`delete\n${path}\n\`\`\``;
+                })
+                .replace(/<remove\s+path=["']([^"']+)["']\s*\/>/g, (match, path) => { // Handle remove alias
                     return `\`\`\`delete\n${path}\n\`\`\``;
                 })
                 .replace(/<select\s+path=["']([^"']+)["']\s*\/>/g, (match, path) => {
@@ -1354,3 +1390,4 @@ export function insertNewMessageEditor(role: 'user' | 'assistant') {
         (cancelBtn as HTMLElement).addEventListener('click', () => editorWrapper.remove());
     }
 }
+

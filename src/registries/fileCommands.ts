@@ -7,18 +7,79 @@ import { Logger } from '../logger';
 
 export function registerFileCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
 
+    // Helper to find a block of code in a document with flexible whitespace matching
+    function findBlockRange(document: vscode.TextDocument, searchBlock: string): { start: number, end: number } | null {
+        const text = document.getText();
+        
+        // 1. Try Exact Match first (fastest)
+        const normalizedSearch = normalizeToDocument(searchBlock, document);
+        const index = text.indexOf(normalizedSearch);
+        if (index !== -1) {
+            return { start: index, end: index + normalizedSearch.length };
+        }
+
+        // 2. Try Line-by-Line Match (Robust against indentation/whitespace changes)
+        const docLines = text.split(/\r?\n/);
+        const searchLines = searchBlock.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+
+        if (searchLines.length === 0) return null;
+
+        for (let i = 0; i < docLines.length; i++) {
+            // Quick check: does the current doc line match the first search line?
+            if (docLines[i].trim() !== searchLines[0]) continue;
+
+            let match = true;
+            let docOffset = 0;
+            let lastMatchedLineIndex = i;
+
+            // Verify subsequent lines
+            for (let j = 0; j < searchLines.length; j++) {
+                // Skip empty lines in document to be lenient (e.g. AI skipped a blank line)
+                while (i + docOffset < docLines.length && docLines[i + docOffset].trim().length === 0) {
+                    docOffset++;
+                }
+
+                if (i + docOffset >= docLines.length) {
+                    match = false;
+                    break;
+                }
+
+                if (docLines[i + docOffset].trim() !== searchLines[j]) {
+                    match = false;
+                    break;
+                }
+                
+                lastMatchedLineIndex = i + docOffset;
+                docOffset++;
+            }
+
+            if (match) {
+                // We found a match!
+                // Start index is the start of line 'i'
+                const startPos = document.lineAt(i).range.start;
+                
+                // End index: We want to include the full content of the last matched line
+                const endPos = document.lineAt(lastMatchedLineIndex).range.end;
+                
+                // Usually we want to consume the newline after the block if deleting
+                return { 
+                    start: document.offsetAt(startPos), 
+                    end: document.offsetAt(endPos) 
+                };
+            }
+        }
+
+        return null;
+    }
+
     // Helper to open a diff view comparing a snapshot (Original) vs the Active File (Proposed Changes)
-    // This allows the user to see the diff, edit the right side (Active File), and Save to disk,
-    // while keeping the Left side as the reference snapshot.
     async function applyContentWithDiff(fileUri: vscode.Uri, newContent: string) {
         // 1. Capture current state (Snapshot)
         let originalContent = '';
         try {
-            // Try to read from open document first to capture potentially unsaved changes
             const doc = await vscode.workspace.openTextDocument(fileUri);
             originalContent = doc.getText();
         } catch {
-            // Fallback to disk if not open/readable as text doc
             try {
                 const fileBytes = await vscode.workspace.fs.readFile(fileUri);
                 originalContent = Buffer.from(fileBytes).toString('utf8');
@@ -35,16 +96,14 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         const snapshotsDir = vscode.Uri.joinPath(workspaceFolder.uri, '.lollms', 'snapshots');
         try {
             await vscode.workspace.fs.createDirectory(snapshotsDir);
-        } catch {} // Ignore if exists
+        } catch {} 
         
         const fileName = path.basename(fileUri.fsPath);
-        // Use .orig extension for snapshot
         const snapshotUri = vscode.Uri.joinPath(snapshotsDir, `${fileName}.orig`);
         
         await vscode.workspace.fs.writeFile(snapshotUri, Buffer.from(originalContent, 'utf8'));
 
-        // 2. Close existing editor if open (to prevent "both file and diff opened")
-        // We attempt to find if the document is visible and close it.
+        // 2. Close existing editor if open
         const visibleEditor = vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === fileUri.toString());
         if (visibleEditor) {
             await vscode.window.showTextDocument(visibleEditor.document, {
@@ -54,12 +113,11 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
         }
 
-        // 3. Open Diff Editor (Left: Snapshot, Right: Real File)
+        // 3. Open Diff Editor
         const title = `${fileName} (Original) ↔ ${fileName} (Proposed)`;
         await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title, { preview: false });
 
-        // 4. Apply Edit to Real File (Right side)
-        // Since the file is open in the diff view, applyEdit will update the buffer, making it Dirty.
+        // 4. Apply Edit
         const document = await vscode.workspace.openTextDocument(fileUri);
         const fullRange = new vscode.Range(0, 0, document.lineCount, 0);
         const edit = new vscode.WorkspaceEdit();
@@ -87,7 +145,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             try {
                 await vscode.workspace.fs.stat(fileUri);
             } catch {
-                // File does not exist: Create it directly (no diff needed for new file)
+                // File does not exist: Create it directly
                 const parentDir = vscode.Uri.joinPath(fileUri, '..');
                 await vscode.workspace.fs.createDirectory(parentDir);
                 
@@ -111,7 +169,6 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         }
     }));
 
-    // Updated acceptDiff to handle both DiffManager (legacy/files) and InlineDiff (CodeLens)
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.acceptDiff', async (arg?: vscode.Uri | string) => {
         if (typeof arg === 'string') {
             await services.inlineDiffProvider.accept(arg);
@@ -191,21 +248,29 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
         
         try {
-            let document = await vscode.workspace.openTextDocument(fileUri);
+            let document;
+            try {
+                document = await vscode.workspace.openTextDocument(fileUri);
+            } catch(e: any) {
+                if (e.message && e.message.includes('binary')) {
+                    vscode.window.showErrorMessage(`Cannot modify binary file '${filePath}' with text operations.`);
+                    return;
+                }
+                throw e;
+            }
+
             const text = document.getText();
-            const normalizedSearch = normalizeToDocument(searchCode, document);
+            const range = findBlockRange(document, searchCode);
             
-            const index = text.indexOf(normalizedSearch);
-            if (index === -1) {
+            if (!range) {
                 vscode.window.showErrorMessage(`Could not locate search block in ${filePath}. Exact match required.`);
                 return;
             }
             
-            const before = text.substring(0, index);
-            const after = text.substring(index + normalizedSearch.length);
+            const before = text.substring(0, range.start);
+            const after = text.substring(range.end);
             const newFullContent = before + replaceCode + after;
 
-            // Use the improved snapshot diff approach
             await applyContentWithDiff(fileUri, newFullContent);
 
         } catch(e: any) {
@@ -234,23 +299,31 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
         
         try {
-            let document = await vscode.workspace.openTextDocument(fileUri);
+            let document;
+            try {
+                document = await vscode.workspace.openTextDocument(fileUri);
+            } catch(e: any) {
+                if (e.message && e.message.includes('binary')) {
+                    vscode.window.showErrorMessage(`Cannot modify binary file '${filePath}' with text operations.`);
+                    return;
+                }
+                throw e;
+            }
+
             const text = document.getText();
-            const searchBlock = normalizeToDocument(contextCode, document);
+            const range = findBlockRange(document, contextCode);
             
-            const index = text.indexOf(searchBlock);
-            if (index === -1) {
+            if (!range) {
                 vscode.window.showErrorMessage(`Could not locate context code in ${filePath}.`);
                 return;
             }
             
-            const insertPosIndex = index + searchBlock.length;
+            const insertPosIndex = range.end;
             const before = text.substring(0, insertPosIndex);
             const after = text.substring(insertPosIndex);
             const eol = document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
             const newFullContent = before + eol + insertCode + after;
 
-            // Use the improved snapshot diff approach
             await applyContentWithDiff(fileUri, newFullContent);
 
         } catch(e: any) {
@@ -267,21 +340,45 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
         
         try {
-            let document = await vscode.workspace.openTextDocument(fileUri);
+            let document;
+            try {
+                document = await vscode.workspace.openTextDocument(fileUri);
+            } catch(e: any) {
+                // Handle binary file error gracefully
+                if (e.message && e.message.includes('binary')) {
+                     const deleteFile = await vscode.window.showWarningMessage(
+                        `'${filePath}' appears to be a binary file. "Delete Code" cannot remove lines from binaries. Do you want to delete the whole file instead?`,
+                        'Yes, Delete File', 'Cancel'
+                    );
+                    
+                    if (deleteFile === 'Yes, Delete File') {
+                        await vscode.commands.executeCommand('lollms-vs-coder.deleteFile', filePath);
+                    }
+                    return;
+                }
+                throw e;
+            }
+
             const text = document.getText();
-            const normalizedSearch = normalizeToDocument(codeToDelete, document);
-            const index = text.indexOf(normalizedSearch);
+            const range = findBlockRange(document, codeToDelete);
             
-            if (index === -1) {
+            if (!range) {
                 vscode.window.showErrorMessage(`Could not locate code to delete in ${filePath}.`);
                 return;
             }
             
-            const before = text.substring(0, index);
-            const after = text.substring(index + normalizedSearch.length);
+            const before = text.substring(0, range.start);
+            let after = text.substring(range.end);
+            
+            // Try to consume the following newline to avoid leaving a blank line
+            if (after.startsWith('\r\n')) {
+                after = after.substring(2);
+            } else if (after.startsWith('\n')) {
+                after = after.substring(1);
+            }
+
             const newFullContent = before + after;
 
-            // Use the improved snapshot diff approach
             await applyContentWithDiff(fileUri, newFullContent);
 
         } catch(e: any) {

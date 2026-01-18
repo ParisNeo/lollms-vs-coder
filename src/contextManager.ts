@@ -103,7 +103,6 @@ export class ContextManager {
       return this._lastContext;
   }
 
-  // ... (isBinary, getLanguageId, extractDefinitions, getWorkspaceFilePaths, readSpecificFiles methods remain same)
   private isBinary(buffer: Buffer): boolean {
       const chunk = buffer.slice(0, Math.min(buffer.length, 1024));
       return chunk.includes(0);
@@ -199,7 +198,7 @@ export class ContextManager {
           return "";
       }
 
-      const allFiles = await this.contextStateProvider.getAllVisibleFiles();
+      const allFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
       if (allFiles.length === 0) {
           onUpdate("⚠️ No visible files found in project.");
           return "";
@@ -210,7 +209,7 @@ export class ContextManager {
       const selectedFiles = new Set<string>(currentContextFiles);
       const initialCount = selectedFiles.size;
 
-      const fileTree = await this.generateProjectTree();
+      const fileTree = await this.generateProjectTree(signal);
       
       const systemPrompt = `You are a Senior Context Librarian Agent.
 Your goal is to prepare the perfect context for an LLM to answer the user's request.
@@ -385,7 +384,7 @@ You have access to the project structure and the list of currently selected file
                   if (pathArg && allFiles.includes(pathArg)) {
                       const content = await this.readSpecificFiles([pathArg]);
                       const snippet = content.substring(0, 2000);
-                      chatHistory.push({ role: 'system', content: `Content of ${pathArg}:\n\`\`\`\n${snippet}\n\`\`\`` });
+                      chatHistory.push({ role: 'system', content: `Content of ${pathArg}:\n\`\`\`\n${snippet}\n\`\`\`\n(Truncated)` });
                       actionLog.push(`📖 Checked content of: ${pathArg}`);
                       renderUpdate("Reading file...", false, step);
                   } else {
@@ -410,8 +409,6 @@ You have access to the project structure and the list of currently selected file
       return "";
   }
 
-  // ... (rest of methods)
-  // ... (parsePdfLocal, parseDocxLocal, processFile remain unchanged)
   private async parsePdfLocal(buffer: Buffer): Promise<string> {
       try {
           const data = await pdfParse(buffer);
@@ -475,11 +472,12 @@ You have access to the project structure and the list of currently selected file
       }
   }
 
-  async getContextContent(options?: { includeTree?: boolean }): Promise<ContextResult> {
+  async getContextContent(options?: { includeTree?: boolean, signal?: AbortSignal }): Promise<ContextResult> {
     const result: ContextResult = { text: '', images: [] };
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const maxImageSize = config.get<number>('maxImageSize') || 1024;
     const includeTree = options?.includeTree !== false; // Default true
+    const signal = options?.signal;
 
     if (!this.contextStateProvider) {
       result.text = this.getNoWorkspaceMessage();
@@ -497,7 +495,8 @@ You have access to the project structure and the list of currently selected file
     let content = `# Project Context\n\n**Workspace:** ${path.basename(workspaceFolder.uri.fsPath)}\n\n`;
     
     if (includeTree) {
-        content += await this.generateProjectTree();
+        if (signal?.aborted) throw new Error("Operation cancelled");
+        content += await this.generateProjectTree(signal);
         content += '\n';
     }
 
@@ -508,6 +507,8 @@ You have access to the project structure and the list of currently selected file
       content += `Warning: Only some files' contents are shown here. If you need more file contents, don't hesitate to ask the user to select more files that you need to see.\n\n`;
       
       for (const fileEntry of includedFiles) {
+        if (signal?.aborted) throw new Error("Operation cancelled");
+
         const filePath = fileEntry.path;
         const contextState = fileEntry.state;
 
@@ -674,13 +675,15 @@ Based on the objective and the file tree, which files are the most relevant? Ret
     return null;
   }
 
-  private async generateProjectTree(): Promise<string> {
+  private async generateProjectTree(signal?: AbortSignal): Promise<string> {
     
     if (!this.contextStateProvider) {
       return '## Project Structure\n\n*No project structure available - no workspace folder found.*\n';
     }
 
-    const allVisibleFiles = await this.contextStateProvider.getAllVisibleFiles();
+    const allVisibleFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
+    if (signal?.aborted) throw new Error("Operation cancelled");
+
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder) {
       return '## Project Structure\n\n*No workspace folder found.*\n';

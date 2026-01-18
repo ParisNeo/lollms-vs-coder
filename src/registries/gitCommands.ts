@@ -1,21 +1,20 @@
 import * as vscode from 'vscode';
 import { LollmsServices } from '../lollmsContext';
 import { CommitInspectorPanel } from '../commands/commitInspectorPanel';
-import { GitManagerPanel } from '../commands/gitManagerPanel'; // Import new panel
+import { GitManagerPanel } from '../commands/gitManagerPanel';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
 
 export function registerGitCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
     
-    // Command: Git Manager (New)
+    // Command: Git Manager
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.gitManager', () => {
         GitManagerPanel.createOrShow(services.extensionUri, services.gitIntegration, services.lollmsAPI);
     }));
 
-    // Command: Generate Commit Message (from SCM Title or Command Palette)
+    // Command: Generate Commit Message
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateCommitMessage', async (arg?: any) => {
         let folder: vscode.WorkspaceFolder | undefined;
         
-        // Handle calling from SCM view where arg might be a SourceControl object or ResourceState
         if (arg && arg.rootUri) {
             folder = vscode.workspace.getWorkspaceFolder(arg.rootUri);
         } else if (arg instanceof vscode.Uri) {
@@ -46,7 +45,7 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
         }
     }));
 
-    // Command: Commit with AI Message (Staged changes)
+    // Command: Commit with AI Message
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.commitWithAIMessage', async () => {
         const folder = getActiveWorkspace() || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0] : undefined);
         if (!folder) {
@@ -72,7 +71,7 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
         }
     }));
 
-    // Command: Internal Commit command (called from Chat Code Blocks)
+    // Command: Internal Commit
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.gitCommit', async (message: string) => {
         const folder = getActiveWorkspace() || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0] : undefined);
         if (!folder) {
@@ -82,9 +81,9 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
         await services.gitIntegration.commitWithMessage(message, folder);
     }));
 
-    // Command: Inspect Commit History
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.inspectCommit', () => {
-        CommitInspectorPanel.createOrShow(services.extensionUri, services.gitIntegration, services.lollmsAPI);
+    // Command: Inspect Commit History (Supports deep linking)
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.inspectCommit', (hash?: string) => {
+        CommitInspectorPanel.createOrShow(services.extensionUri, services.gitIntegration, services.lollmsAPI, hash);
     }));
 
     // --- GIT WORKFLOW COMMANDS ---
@@ -97,7 +96,6 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
             return;
         }
 
-        // --- NEW: Unstaged Changes Handling ---
         const unstaged = await services.gitIntegration.hasUnstagedChanges(folder);
         if (unstaged) {
             const config = vscode.workspace.getConfiguration('lollmsVsCoder');
@@ -111,7 +109,6 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
                 await services.gitIntegration.stash(folder, `Auto-stash before AI branch: ${params?.branch}`);
                 vscode.window.showInformationMessage("Unstaged changes were stashed.");
             }
-            // 'keep' behavior does nothing, allowing changes to carry over
         }
 
         const discussionPanel = ChatPanel.currentPanel;
@@ -129,7 +126,6 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
         if (!branchName) return;
 
         try {
-            // Save current branch name before switching
             const currentBranch = await services.gitIntegration.getCurrentBranch(folder);
             if (currentBranch) {
                 const discussion = discussionPanel.getCurrentDiscussion()!;
@@ -143,8 +139,9 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
             await services.gitIntegration.createAndCheckoutBranch(folder, branchName);
             vscode.window.showInformationMessage(`Switched to new branch: ${branchName}`);
             
-            // Removed chat message injection as requested
-
+            // Explicitly update the UI
+            discussionPanel.sendGitBranchState(folder);
+            
         } catch (e: any) {
             vscode.window.showErrorMessage(`Failed to create branch: ${e.message}`);
         }
@@ -172,7 +169,6 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
             return;
         }
 
-        // Verify we are merging the correct branch
         if (params && params.branch && params.branch !== state.tempBranch) {
              const proceed = await vscode.window.showWarningMessage(
                  `The button says to merge '${params.branch}', but the discussion started with '${state.tempBranch}'. Merge '${state.tempBranch}'?`, 
@@ -182,10 +178,11 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
         }
 
         try {
-            // 1. Checkout original
             await services.gitIntegration.checkout(folder, state.originalBranch);
             
-            // 2. Merge temp
+            // Explicitly update the UI immediately after checkout
+            discussionPanel.sendGitBranchState(folder);
+            
             const mergeOutput = await services.gitIntegration.mergeBranch(folder, state.tempBranch);
             
             vscode.window.showInformationMessage(`Successfully merged ${state.tempBranch} into ${state.originalBranch}.`);
@@ -194,12 +191,10 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
                 content: `✅ **Git Workflow:** Merged \`${state.tempBranch}\` into \`${state.originalBranch}\`.\n\nOutput:\n\`\`\`\n${mergeOutput}\n\`\`\``
             });
 
-            // 3. Handle Deletion based on Config
             const config = vscode.workspace.getConfiguration('lollmsVsCoder');
             const autoDelete = config.get<boolean>('git.deleteBranchAfterMerge');
 
             let shouldDelete = false;
-
             if (autoDelete) {
                 shouldDelete = true;
             } else {
@@ -218,7 +213,6 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
                 });
             }
 
-            // Clear state
             discussion.gitState = undefined;
             await services.discussionManager.saveDiscussion(discussion);
 

@@ -72,12 +72,12 @@ export class GitManagerPanel {
                     await this.askAI(message.query);
                     break;
                 case 'viewCommit':
-                    // Open the existing Commit Inspector for details
-                    vscode.commands.executeCommand('lollms-vs-coder.inspectCommit');
-                    // We could also show details in this panel, but reusing inspector is nice.
-                    // Actually, let's show details here for a smoother experience or a modal.
-                    // For now, let's just show a quick diff in the panel or simple info.
+                    vscode.commands.executeCommand('lollms-vs-coder.inspectCommit', message.hash);
                     await this.showCommitDetails(message.hash);
+                    break;
+                case 'copyHash':
+                    await vscode.env.clipboard.writeText(message.hash);
+                    vscode.window.showInformationMessage(`Copied commit hash: ${message.hash.substring(0, 7)}`);
                     break;
             }
         }, null, this._disposables);
@@ -139,11 +139,9 @@ export class GitManagerPanel {
                 { role: 'user', content: query }
             ]);
 
-            // Clean response
             const jsonStr = response.replace(/```json/g, '').replace(/```/g, '').trim();
             const options = JSON.parse(jsonStr);
 
-            // Send back to UI to populate form and trigger search
             this._panel.webview.postMessage({ command: 'aiSearchReady', options, explanation: `Interpreted: ${JSON.stringify(options)}` });
             await this.performSearch(options);
 
@@ -190,8 +188,20 @@ export class GitManagerPanel {
         .results-list { max-height: 400px; overflow-y: auto; border: 1px solid var(--vscode-panel-border); }
         .commit-item { padding: 10px; border-bottom: 1px solid var(--vscode-panel-border); cursor: pointer; }
         .commit-item:hover { background: var(--vscode-list-hoverBackground); }
-        .commit-header { display: flex; justify-content: space-between; font-weight: bold; }
-        .commit-meta { font-size: 0.85em; opacity: 0.8; }
+        
+        .commit-header { display: flex; justify-content: space-between; align-items: center; }
+        .commit-msg { font-weight: bold; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; flex: 1; margin-right: 10px; }
+        
+        .commit-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; font-size: 0.9em; }
+        
+        .icon-btn { 
+            background: none; border: none; color: var(--vscode-icon-foreground); 
+            cursor: pointer; padding: 2px; display: flex; align-items: center; 
+            opacity: 0.7;
+        }
+        .icon-btn:hover { opacity: 1; background-color: var(--vscode-toolbar-hoverBackground); border-radius: 3px; }
+
+        .commit-meta { font-size: 0.85em; opacity: 0.8; margin-top: 4px; }
         
         #details-view { display: none; margin-top: 20px; border-top: 2px solid var(--vscode-panel-border); padding-top: 20px; }
         pre { background: var(--vscode-textCodeBlock-background); padding: 10px; overflow-x: auto; }
@@ -336,14 +346,31 @@ export class GitManagerPanel {
                 div.className = 'commit-item';
                 div.innerHTML = \`
                     <div class="commit-header">
-                        <span>\${escapeHtml(c.message)}</span>
-                        <span>\${c.date}</span>
+                        <span class="commit-msg" title="\${escapeHtml(c.message)}">\${escapeHtml(c.message)}</span>
+                        <div class="commit-right">
+                            <button class="icon-btn copy-btn" title="Copy Hash" data-hash="\${c.hash}">
+                                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                                    <path d="M4 4l1-1h5.414L14 6.586V14l-1 1H5l-1-1V4zm9 3l-3-3H5v10h8V7z"/>
+                                    <path d="M3 1L2 2v10l1 1V2h6.414l-1-1H3z"/>
+                                </svg>
+                            </button>
+                            <span>\${c.date}</span>
+                        </div>
                     </div>
                     <div class="commit-meta">\${c.author} | \${c.hash.substring(0,7)}</div>
                 \`;
+                
+                // Row click -> View details
                 div.addEventListener('click', () => {
                     vscode.postMessage({ command: 'viewCommit', hash: c.hash });
                 });
+                
+                // Button click -> Copy hash
+                div.querySelector('.copy-btn').addEventListener('click', (e) => {
+                    e.stopPropagation(); // Don't trigger viewCommit
+                    vscode.postMessage({ command: 'copyHash', hash: c.hash });
+                });
+                
                 resultsList.appendChild(div);
             });
         }

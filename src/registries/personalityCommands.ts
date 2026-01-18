@@ -14,11 +14,12 @@ export function registerPersonalityCommands(context: vscode.ExtensionContext, se
         // Handle input from TreeView click (Personality object) or Context Menu (PersonalityItem)
         let personality: Personality;
         
-        if (item instanceof PersonalityItem) {
-            personality = item.personality;
+        // Robust check: If 'item' has a property 'personality', it's likely the TreeItem
+        if (item && typeof item === 'object' && 'personality' in item) {
+            personality = (item as PersonalityItem).personality;
         } else {
-            // It's likely the raw Personality object from the tree item command arguments
-            personality = item;
+            // Otherwise, treat it as the raw Personality object passed from the tree item command arguments
+            personality = item as Personality;
         }
 
         if (personality) {

@@ -22,19 +22,57 @@ export const vscode = new Proxy({} as VsCodeApi, {
     }
 });
 
+export interface DiscussionCapabilities {
+    codeGenType: 'full' | 'diff' | 'none';
+    allowedFormats: {
+        fullFile: boolean;
+        insert: boolean;
+        replace: boolean;
+        delete: boolean;
+    };
+    fileRename: boolean;
+    fileDelete: boolean;
+    fileSelect: boolean;
+    fileReset: boolean;
+    imageGen: boolean;
+    webSearch: boolean;
+    arxivSearch: boolean;
+    funMode: boolean;
+    thinkingMode: string;
+    // gitCommit removed
+    gitWorkflow: boolean;
+    herdMode: boolean;
+    herdDynamicMode: boolean;
+    herdParticipants: any[];
+    herdPreCodeParticipants: any[];
+    herdPostCodeParticipants: any[];
+    herdRounds: number;
+    agentMode: boolean;
+    autoContextMode: boolean;
+    guiState?: {
+        agentBadge: boolean;
+        autoContextBadge: boolean;
+        herdBadge: boolean;
+    };
+}
+
 // ... state object ...
 export const state: {
     searchMatches: HTMLElement[],
     currentMatchIndex: number,
     isInspectorEnabled: boolean,
     streamingMessages: { [key: string]: { buffer: string, timer: any } },
-    isGenerating: boolean
+    isGenerating: boolean,
+    capabilities: DiscussionCapabilities | null,
+    currentBranch: string
 } = {
     searchMatches: [],
     currentMatchIndex: -1,
     isInspectorEnabled: false,
     streamingMessages: {},
-    isGenerating: false
+    isGenerating: false,
+    capabilities: null,
+    currentBranch: ''
 };
 
 // ... dom object ...
@@ -77,6 +115,7 @@ export const dom = {
     get tokenProgressContainer() { return document.querySelector('.token-progress-container') as HTMLDivElement; },
     get tokenCountLabel() { return document.getElementById('token-count-label') as HTMLSpanElement; },
     get refreshContextBtn() { return document.getElementById('refresh-context-btn') as HTMLButtonElement; },
+    get cancelTokensBtn() { return document.getElementById('cancel-tokens-btn') as HTMLButtonElement; },
     get contextStatusContainer() { return document.getElementById('context-status-container') as HTMLDivElement; },
     get contextLoadingSpinner() { return document.getElementById('context-loading-spinner') as HTMLDivElement; },
     get searchBar() { return document.getElementById('search-bar') as HTMLDivElement; },
@@ -130,7 +169,6 @@ export const dom = {
     get capImageGen() { return document.getElementById('cap-imageGen') as HTMLInputElement; },
     get capWebSearch() { return document.getElementById('cap-webSearch') as HTMLInputElement; },
     get capArxivSearch() { return document.getElementById('cap-arxivSearch') as HTMLInputElement; },
-    get capGitCommit() { return document.getElementById('cap-gitCommit') as HTMLInputElement; },
     get capGitWorkflow() { return document.getElementById('cap-gitWorkflow') as HTMLInputElement; },
     get capGitWorkflowContainer() { return document.getElementById('cap-gitWorkflowContainer') as HTMLDivElement; },
 
@@ -143,5 +181,24 @@ export const dom = {
     get capHerdMode() { return document.getElementById('cap-herdMode') as HTMLInputElement; },
     get capHerdRounds() { return document.getElementById('cap-herdRounds') as HTMLInputElement; },
     get herdConfigSection() { return document.getElementById('herd-config-section') as HTMLDivElement; },
-    get herdModelsList() { return document.getElementById('herd-models-list') as HTMLDivElement; }
+    get herdModelsList() { return document.getElementById('herd-models-list') as HTMLDivElement; },
+
+    // Git Menu
+    get gitBadgeWrapper() { return document.getElementById('git-badge-wrapper') as HTMLDivElement; },
+    get gitMenu() { return document.getElementById('git-menu') as HTMLDivElement; },
+    get gitMenuCommit() { return document.getElementById('git-menu-commit') as HTMLDivElement; },
+    get gitMenuBranch() { return document.getElementById('git-menu-branch') as HTMLDivElement; },
+    get gitMenuMerge() { return document.getElementById('git-menu-merge') as HTMLDivElement; },
+    get gitMenuRevert() { return document.getElementById('git-menu-revert') as HTMLDivElement; },
+
+    // Commit Modal
+    get commitModal() { return document.getElementById('commit-modal') as HTMLDivElement; },
+    get commitMessageInput() { return document.getElementById('commit-message-input') as HTMLTextAreaElement; },
+    get commitConfirmBtn() { return document.getElementById('commit-confirm-btn') as HTMLButtonElement; },
+    get commitCancelBtn() { return document.getElementById('commit-cancel-btn') as HTMLButtonElement; },
+
+    // History Modal
+    get historyModal() { return document.getElementById('history-modal') as HTMLDivElement; },
+    get historyList() { return document.getElementById('history-list') as HTMLDivElement; },
+    get historyCloseBtn() { return document.getElementById('history-close-btn') as HTMLButtonElement; }
 };

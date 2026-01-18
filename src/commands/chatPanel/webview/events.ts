@@ -15,12 +15,12 @@ export function sendMessage() {
     const messageId = 'user_' + Date.now().toString() + Math.random().toString(36).substring(2);
     const userMessage = { id: messageId, role: 'user', content: messageText };
 
-    // Agent mode is now persistent, so checkbox state reflects active state
-    if (dom.agentModeCheckbox.checked) {
+    // Agent mode check
+    if (state.capabilities?.agentMode) {
         vscode.postMessage({ command: 'runAgent', objective: messageText, message: userMessage });
     } else {
-        // Send Auto-Context state from checkbox (which reflects capability)
-        const autoContext = dom.autoContextCheckbox ? dom.autoContextCheckbox.checked : false;
+        // Auto Context Mode
+        const autoContext = state.capabilities?.autoContextMode || false;
         vscode.postMessage({ command: 'sendMessage', message: userMessage, autoContext: autoContext });
     }
     
@@ -35,6 +35,9 @@ function closeMenu() {
         const main = document.getElementById('menu-main');
         if(main) main.classList.remove('hidden');
     }
+    // Close Git Menu if open
+    const gitMenu = document.getElementById('git-menu');
+    if (gitMenu) gitMenu.classList.remove('visible');
 }
 
 export function initEventHandlers() {
@@ -83,23 +86,41 @@ export function initEventHandlers() {
     if (dom.setEntryPointButton) dom.setEntryPointButton.addEventListener('click', () => { closeMenu(); vscode.postMessage({ command: 'setEntryPoint' }); });
     if (dom.debugRestartButton) dom.debugRestartButton.addEventListener('click', () => { closeMenu(); vscode.postMessage({ command: 'debugRestart' }); });
   
-    // --- MODE TOGGLES (Menu Version) ---
+    // --- MODE TOGGLES (Menu Version) - Controls VISIBILITY AND ACTIVATION ---
     if (dom.agentModeCheckbox) dom.agentModeCheckbox.addEventListener('change', () => {
-        // Toggle and save persistence
-        vscode.postMessage({ command: 'toggleAgentMode' });
-        if(dom.autoContextCheckbox) dom.autoContextCheckbox.disabled = dom.agentModeCheckbox.checked;
-        updateBadges();
+        const isChecked = dom.agentModeCheckbox.checked;
+        const currentGui = state.capabilities?.guiState || { agentBadge: true, autoContextBadge: true, herdBadge: true };
+        vscode.postMessage({ 
+            command: 'updateDiscussionCapabilitiesPartial', 
+            partial: { 
+                agentMode: isChecked, // Sync activation with visibility change
+                guiState: { ...currentGui, agentBadge: isChecked } 
+            } 
+        });
     });
 
     if (dom.autoContextCheckbox) dom.autoContextCheckbox.addEventListener('change', () => {
-        // Toggle and save persistence
-        vscode.postMessage({ command: 'toggleAutoContext', enabled: dom.autoContextCheckbox.checked });
-        updateBadges();
+        const isChecked = dom.autoContextCheckbox.checked;
+        const currentGui = state.capabilities?.guiState || { agentBadge: true, autoContextBadge: true, herdBadge: true };
+        vscode.postMessage({ 
+            command: 'updateDiscussionCapabilitiesPartial', 
+            partial: { 
+                autoContextMode: isChecked, // Sync activation with visibility change
+                guiState: { ...currentGui, autoContextBadge: isChecked } 
+            } 
+        });
     });
 
     if (dom.herdModeCheckbox) dom.herdModeCheckbox.addEventListener('change', () => {
-        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { herdMode: dom.herdModeCheckbox.checked } });
-        updateBadges();
+        const isChecked = dom.herdModeCheckbox.checked;
+        const currentGui = state.capabilities?.guiState || { agentBadge: true, autoContextBadge: true, herdBadge: true };
+        vscode.postMessage({ 
+            command: 'updateDiscussionCapabilitiesPartial', 
+            partial: { 
+                herdMode: isChecked, // Sync activation with visibility change
+                guiState: { ...currentGui, herdBadge: isChecked } 
+            } 
+        });
     });
     
     if (dom.modelSelector) dom.modelSelector.addEventListener('change', (event) => {
@@ -115,6 +136,8 @@ export function initEventHandlers() {
     }
     
     if (dom.refreshContextBtn) dom.refreshContextBtn.addEventListener('click', () => vscode.postMessage({ command: 'calculateTokens' }));
+    if (dom.cancelTokensBtn) dom.cancelTokensBtn.addEventListener('click', () => vscode.postMessage({ command: 'stopTokenCalculation' })); 
+
     if (dom.fileInput) {
         dom.fileInput.addEventListener('change', () => {
             if (!dom.fileInput.files) return;
@@ -180,13 +203,25 @@ export function initEventHandlers() {
 
     window.addEventListener('click', (event: MouseEvent) => {
         const target = event.target as Node;
+        
+        // Handle Git Menu
+        const gitBadge = document.getElementById('git-badge');
+        const gitMenu = document.getElementById('git-menu');
+        
+        // Check if click is inside the git badge wrapper. If not, close menu.
+        if (gitMenu && gitMenu.classList.contains('visible') && gitBadge && !gitBadge.contains(target) && !gitMenu.contains(target)) {
+            gitMenu.classList.remove('visible');
+        }
+
         const isInsideMenu = dom.moreActionsMenu && dom.moreActionsMenu.contains(target);
         const isInsideButton = dom.moreActionsButton && dom.moreActionsButton.contains(target);
         if (!isInsideMenu && !isInsideButton) { 
-            closeMenu();
+            if(dom.moreActionsMenu) dom.moreActionsMenu.classList.remove('visible');
         }
         if (dom.toolsModal && event.target === dom.toolsModal) dom.toolsModal.classList.remove('visible');
         if (dom.discussionToolsModal && event.target === dom.discussionToolsModal) dom.discussionToolsModal.classList.remove('visible');
+        if (dom.commitModal && event.target === dom.commitModal) dom.commitModal.classList.remove('visible');
+        if (dom.historyModal && event.target === dom.historyModal) dom.historyModal.classList.remove('visible');
     });
     
     if (dom.agentToolsButton) dom.agentToolsButton.addEventListener('click', () => { closeMenu(); vscode.postMessage({ command: 'requestAvailableTools' }); });
@@ -213,10 +248,9 @@ export function initEventHandlers() {
         dom.saveDiscussionToolsBtn.addEventListener('click', () => {
             const codeGenType = document.querySelector('input[name="codeGenType"]:checked') as HTMLInputElement;
             
-            // Collect Herd Models logic handled in modal (if applicable)
-            // But we need to ensure the menu checkbox matches the modal checkbox if opened
-            if (dom.herdModeCheckbox) dom.herdModeCheckbox.checked = dom.capHerdMode ? dom.capHerdMode.checked : false;
-            updateBadges();
+            // Note: The modal config for herd mode toggles activation, not visibility.
+            
+            const currentGui = state.capabilities?.guiState || { agentBadge: true, autoContextBadge: true, herdBadge: true };
 
             const capabilities = {
                 codeGenType: codeGenType ? codeGenType.value : 'full',
@@ -235,12 +269,15 @@ export function initEventHandlers() {
                 arxivSearch: dom.capArxivSearch ? dom.capArxivSearch.checked : false,
                 funMode: dom.modeFunMode ? dom.modeFunMode.checked : false,
                 thinkingMode: dom.capThinkingMode ? dom.capThinkingMode.value : 'none',
-                gitCommit: dom.capGitCommit ? dom.capGitCommit.checked : false,
+                // Removed gitCommit - it's in the menu now
                 gitWorkflow: dom.capGitWorkflow ? dom.capGitWorkflow.checked : false,
                 
                 // Herd Mode
                 herdMode: dom.capHerdMode ? dom.capHerdMode.checked : false,
                 herdRounds: dom.capHerdRounds ? parseInt(dom.capHerdRounds.value) : 2,
+                
+                // Preserve GUI State
+                guiState: currentGui
             };
             vscode.postMessage({ command: 'updateDiscussionCapabilities', capabilities });
             if (dom.discussionToolsModal) dom.discussionToolsModal.classList.remove('visible');
@@ -250,4 +287,50 @@ export function initEventHandlers() {
     const handleScroll = () => { if (!isScrolledToBottom(dom.messagesDiv)) { dom.scrollToBottomBtn.style.display = 'flex'; } else { dom.scrollToBottomBtn.style.display = 'none'; } };
     if (dom.messagesDiv) dom.messagesDiv.addEventListener('scroll', handleScroll);
     if (dom.scrollToBottomBtn) dom.scrollToBottomBtn.addEventListener('click', () => { dom.messagesDiv.scrollTo({ top: dom.messagesDiv.scrollHeight, behavior: 'smooth' }); });
+
+    // Git Menu Handlers - Use Event Delegation on the menu container to ensure elements exist
+    document.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement;
+        if (!target) return;
+        
+        // Find closest menu item
+        const menuItem = target.closest('.custom-menu-item');
+        if (menuItem) {
+            const id = menuItem.id;
+            closeMenu();
+
+            if (id === 'git-menu-branch') {
+                vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.createGitBranch', params: {} } });
+            } else if (id === 'git-menu-commit') {
+                vscode.postMessage({ command: 'requestCommitMessage' });
+            } else if (id === 'git-menu-merge') {
+                vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.mergeGitBranch', params: {} } });
+            } else if (id === 'git-menu-revert') {
+                vscode.postMessage({ command: 'requestGitHistory' });
+            }
+        }
+    });
+
+    // Commit Modal Handlers
+    if (dom.commitConfirmBtn) {
+        dom.commitConfirmBtn.addEventListener('click', () => {
+            const msg = dom.commitMessageInput.value;
+            if (msg.trim()) {
+                vscode.postMessage({ command: 'performCommit', message: msg });
+                if (dom.commitModal) dom.commitModal.classList.remove('visible');
+            }
+        });
+    }
+    if (dom.commitCancelBtn) {
+        dom.commitCancelBtn.addEventListener('click', () => {
+            if (dom.commitModal) dom.commitModal.classList.remove('visible');
+        });
+    }
+
+    // History Modal Handlers
+    if (dom.historyCloseBtn) {
+        dom.historyCloseBtn.addEventListener('click', () => {
+             if (dom.historyModal) dom.historyModal.classList.remove('visible');
+        });
+    }
 }

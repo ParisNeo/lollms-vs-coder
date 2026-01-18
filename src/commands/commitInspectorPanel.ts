@@ -11,11 +11,14 @@ export class CommitInspectorPanel {
     private readonly _lollmsAPI: LollmsAPI;
     private _disposables: vscode.Disposable[] = [];
 
-    public static createOrShow(extensionUri: vscode.Uri, gitIntegration: GitIntegration, lollmsAPI: LollmsAPI) {
+    public static createOrShow(extensionUri: vscode.Uri, gitIntegration: GitIntegration, lollmsAPI: LollmsAPI, initialHash?: string) {
         const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
 
         if (CommitInspectorPanel.currentPanel) {
             CommitInspectorPanel.currentPanel._panel.reveal(column);
+            if (initialHash) {
+                CommitInspectorPanel.currentPanel.selectCommit(initialHash);
+            }
             return;
         }
 
@@ -29,10 +32,10 @@ export class CommitInspectorPanel {
             }
         );
 
-        CommitInspectorPanel.currentPanel = new CommitInspectorPanel(panel, extensionUri, gitIntegration, lollmsAPI);
+        CommitInspectorPanel.currentPanel = new CommitInspectorPanel(panel, extensionUri, gitIntegration, lollmsAPI, initialHash);
     }
 
-    private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, gitIntegration: GitIntegration, lollmsAPI: LollmsAPI) {
+    private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, gitIntegration: GitIntegration, lollmsAPI: LollmsAPI, initialHash?: string) {
         this._panel = panel;
         this._extensionUri = extensionUri;
         this._gitIntegration = gitIntegration;
@@ -44,7 +47,27 @@ export class CommitInspectorPanel {
         this._setWebviewMessageListener(this._panel.webview);
 
         // Initial load
-        this.loadCommits();
+        this.loadCommits().then(() => {
+            if (initialHash) {
+                this.selectCommit(initialHash);
+            }
+        });
+    }
+
+    public async selectCommit(hash: string) {
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (folder) {
+            // Highlight in UI
+            this._panel.webview.postMessage({ command: 'highlightCommit', hash });
+            
+            // Load Analysis
+            const existing = await this.loadAnalysis(folder, hash);
+            if (existing) {
+                this._panel.webview.postMessage({ command: 'showAnalysis', report: existing, hash: hash });
+            } else {
+                this._panel.webview.postMessage({ command: 'showStartAnalysis', hash: hash });
+            }
+        }
     }
 
     private async loadCommits() {
@@ -100,17 +123,18 @@ export class CommitInspectorPanel {
                     break;
                 case 'selectCommit':
                     if (message.hash) {
-                        const existing = await this.loadAnalysis(folder, message.hash);
-                        if (existing) {
-                            this._panel.webview.postMessage({ command: 'showAnalysis', report: existing, hash: message.hash });
-                        } else {
-                            this._panel.webview.postMessage({ command: 'showStartAnalysis', hash: message.hash });
-                        }
+                        await this.selectCommit(message.hash);
                     }
                     break;
                 case 'analyzeCommit':
                     if (message.hash) {
                         await this.analyzeCommit(folder, message.hash);
+                    }
+                    break;
+                case 'copyHash':
+                    if (message.hash) {
+                        await vscode.env.clipboard.writeText(message.hash);
+                        vscode.window.showInformationMessage(`Copied commit hash: ${message.hash.substring(0, 7)}`);
                     }
                     break;
             }
@@ -123,7 +147,6 @@ export class CommitInspectorPanel {
         try {
             const diff = await this._gitIntegration.getCommitDiff(folder, hash);
             
-            // Construct the prompt for analysis
             const systemPrompt = await getProcessedSystemPrompt('inspector') || "You are a senior security auditor and code reviewer.";
             
             const userPrompt = `Please analyze the following Git Commit Diff.
@@ -131,8 +154,8 @@ export class CommitInspectorPanel {
 **Task:**
 1.  **Summarize** the changes briefly.
 2.  **Security Analysis:** Look for hardcoded secrets, injection vulnerabilities (SQLi, XSS), unsafe API usage, or logic flaws.
-3.  **Malicious Code Detection:** Identify any suspicious obfuscation, backdoors, or code that seems to act like a "bad actor" (e.g., unauthorized network calls, file system tampering).
-4.  **Quality:** Mention any major code quality issues or bugs introduced.
+3.  **Malicious Code Detection:** Identify any suspicious obfuscation, backdoors, or code that seems to act like a "bad actor".
+4.  **Quality:** Mention any major code quality issues.
 
 **Commit Hash:** ${hash}
 
@@ -140,7 +163,6 @@ export class CommitInspectorPanel {
 \`\`\`diff
 ${diff.substring(0, 15000)} 
 \`\`\`
-(Note: Diff may be truncated if too large)
 `;
 
             const response = await this._lollmsAPI.sendChat([
@@ -175,10 +197,6 @@ ${diff.substring(0, 15000)}
     <link href="${prismCssUri}" rel="stylesheet" />
     <script src="${prismJsUri}"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-diff.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-javascript.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-typescript.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-bash.min.js"></script>
     <style>
         body {
             font-family: var(--vscode-font-family);
@@ -215,7 +233,7 @@ ${diff.substring(0, 15000)}
         }
         .commit-item:hover { background-color: var(--vscode-list-hoverBackground); }
         .commit-item.selected { background-color: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
-        .commit-msg { font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .commit-msg { font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
         .commit-meta { font-size: 0.85em; opacity: 0.8; margin-top: 4px; display: flex; justify-content: space-between; }
         
         button {
@@ -237,9 +255,7 @@ ${diff.substring(0, 15000)}
         #loading { display: none; margin-top: 20px; font-style: italic; display: flex; align-items: center; gap: 10px; }
         #placeholder { color: var(--vscode-descriptionForeground); margin-top: 20px; }
         
-        /* Start Analysis UI */
         #start-analysis-container { display: none; text-align: center; margin-top: 50px; }
-        #start-analysis-container p { margin-bottom: 20px; color: var(--vscode-descriptionForeground); }
         
         pre { border-radius: 4px; padding: 1em; overflow-x: auto; background-color: var(--vscode-textCodeBlock-background); }
         code { font-family: var(--vscode-editor-font-family); }
@@ -254,6 +270,14 @@ ${diff.substring(0, 15000)}
             display: inline-block;
         }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        .icon-btn { 
+            background: none; border: none; color: var(--vscode-icon-foreground); 
+            cursor: pointer; padding: 2px; display: flex; align-items: center; 
+            opacity: 0.7; flex-shrink: 0; margin-right: 6px;
+        }
+        .icon-btn:hover { opacity: 1; background-color: var(--vscode-toolbar-hoverBackground); border-radius: 3px; }
+        .commit-top { display: flex; align-items: center; }
     </style>
 </head>
 <body>
@@ -262,9 +286,7 @@ ${diff.substring(0, 15000)}
             <span>Recent Commits</span>
             <button id="refresh-btn">↻</button>
         </div>
-        <div class="commit-list" id="commit-list">
-            <!-- Commits will be injected here -->
-        </div>
+        <div class="commit-list" id="commit-list"></div>
     </div>
     <div class="main-content">
         <h1>Commit Analysis</h1>
@@ -331,9 +353,17 @@ ${diff.substring(0, 15000)}
                         loadingDiv.style.display = 'none';
                     }
                     break;
+                case 'highlightCommit':
+                    document.querySelectorAll('.commit-item').forEach(i => i.classList.remove('selected'));
+                    const item = document.querySelector(\`.commit-item[data-hash="\${message.hash}"]\`);
+                    if(item) {
+                        item.classList.add('selected');
+                        item.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }
+                    currentHash = message.hash;
+                    break;
                 case 'showAnalysis':
                     currentHash = message.hash;
-                    // Render Markdown
                     const html = DOMPurify.sanitize(marked.parse(message.report));
                     reportContainer.innerHTML = html;
                     Prism.highlightAllUnder(reportContainer);
@@ -341,6 +371,7 @@ ${diff.substring(0, 15000)}
                     analysisView.style.display = 'block';
                     startAnalysisContainer.style.display = 'none';
                     placeholder.style.display = 'none';
+                    loadingDiv.style.display = 'none';
                     break;
                 case 'showStartAnalysis':
                     currentHash = message.hash;
@@ -362,21 +393,34 @@ ${diff.substring(0, 15000)}
             commits.forEach(commit => {
                 const el = document.createElement('div');
                 el.className = 'commit-item';
+                el.setAttribute('data-hash', commit.hash);
+                if (currentHash === commit.hash) el.classList.add('selected');
                 el.innerHTML = \`
-                    <div class="commit-msg">\${commit.message}</div>
+                    <div class="commit-top">
+                        <button class="icon-btn copy-btn" title="Copy Hash" data-hash="\${commit.hash}">
+                            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                                <path d="M4 4l1-1h5.414L14 6.586V14l-1 1H5l-1-1V4zm9 3l-3-3H5v10h8V7z"/>
+                                <path d="M3 1L2 2v10l1 1V2h6.414l-1-1H3z"/>
+                            </svg>
+                        </button>
+                        <div class="commit-msg">\${commit.message}</div>
+                    </div>
                     <div class="commit-meta">
                         <span>\${commit.author}</span>
                         <span>\${commit.date}</span>
                     </div>
                 \`;
-                el.addEventListener('click', () => {
-                    // Highlight logic
-                    document.querySelectorAll('.commit-item').forEach(i => i.classList.remove('selected'));
-                    el.classList.add('selected');
-                    
-                    // Instead of analyzing immediately, we select it
+                el.addEventListener('click', (e) => {
+                    // Prevent select if copy button clicked
+                    if (e.target.closest('.copy-btn')) return;
                     vscode.postMessage({ command: 'selectCommit', hash: commit.hash });
                 });
+
+                el.querySelector('.copy-btn').addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    vscode.postMessage({ command: 'copyHash', hash: commit.hash });
+                });
+
                 listContainer.appendChild(el);
             });
         }

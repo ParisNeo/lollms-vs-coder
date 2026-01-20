@@ -16,3 +16,4 @@
 - add keyword search to the auto context window routine, this allows the llm to see where some operations or function exist so it can do a better selection. also add that to the agent too.
 - fix command 'lollms-vs-coder.showRunningProcesses' not found
 - It is important that the lollms key is set for all projects (it must be saved to vscode, not the project .lollms folder)
+- add the possibility to draw the key from LOLLMS_KEY variable environment

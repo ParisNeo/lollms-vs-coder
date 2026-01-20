@@ -15,3 +15,4 @@
 - Add a reset context button in top of the project context message, and show the list of selected files in a new collapsible.
 - add keyword search to the auto context window routine, this allows the llm to see where some operations or function exist so it can do a better selection. also add that to the agent too.
 - fix command 'lollms-vs-coder.showRunningProcesses' not found
+- It is important that the lollms key is set for all projects (it must be saved to vscode, not the project .lollms folder)

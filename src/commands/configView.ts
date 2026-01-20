@@ -788,13 +788,13 @@ export class SettingsPanel {
               <input type="number" id="herdRounds" value="${herdRounds}" min="1" max="10" />
 
               <div id="static-herd-config" style="display: ${herdDynamicMode ? 'none' : 'block'};">
-                  <h3>Phase 1: Pre-Code Brainstorming Agents</h3>
+                  <h3>Phase 1: Brainstorming Agents</h3>
                   <div id="herd-pre-list"></div>
-                  <button id="addPreParticipantBtn" class="secondary-button"><i class="codicon codicon-add"></i> Add Pre-Code Agent</button>
+                  <button id="addPreParticipantBtn" class="secondary-button"><i class="codicon codicon-add"></i> Add Agent</button>
 
-                  <h3>Phase 3: Post-Code Review Agents</h3>
+                  <h3>Phase 3: Critique & Review Agents</h3>
                   <div id="herd-post-list"></div>
-                  <button id="addPostParticipantBtn" class="secondary-button"><i class="codicon codicon-add"></i> Add Post-Code Agent</button>
+                  <button id="addPostParticipantBtn" class="secondary-button"><i class="codicon codicon-add"></i> Add Agent</button>
               </div>
 
               <div id="dynamic-herd-config" style="display: ${herdDynamicMode ? 'block' : 'none'};">

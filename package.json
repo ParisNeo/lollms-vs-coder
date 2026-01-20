@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.66",
+  "version": "0.5.67",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -456,6 +456,21 @@
         "command": "lollms-vs-coder.editMemory",
         "title": "Lollms: Edit AI Memory",
         "icon": "$(book)"
+      },
+      {
+        "command": "lollms-vs-coder.gitUpdateSubmodules",
+        "title": "Lollms: Update Git Submodules",
+        "icon": "$(repo-pull)"
+      },
+      {
+        "command": "lollms-vs-coder.gitRevert",
+        "title": "Lollms: Revert Commit",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "lollms-vs-coder.gitMerge",
+        "title": "Lollms: Merge Branch",
+        "icon": "$(git-merge)"
       }
     ],
     "keybindings": [

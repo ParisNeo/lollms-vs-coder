@@ -449,6 +449,44 @@ export function handleExtensionMessage(event: MessageEvent) {
                 if (dom.historyModal) dom.historyModal.classList.add('visible');
                 break;
             }
+            case 'showStagingModal': {
+                const { staged, unstaged, untracked } = message.status;
+                if (dom.stagingList) {
+                    dom.stagingList.innerHTML = '';
+                    
+                    const createSection = (title: string, files: string[], checked: boolean) => {
+                        if (files.length === 0) return;
+                        const header = document.createElement('h3');
+                        header.textContent = title;
+                        header.style.marginTop = '10px';
+                        header.style.marginBottom = '5px';
+                        header.style.fontSize = '12px';
+                        header.style.color = 'var(--vscode-descriptionForeground)';
+                        dom.stagingList.appendChild(header);
+                        
+                        files.forEach(f => {
+                            const div = document.createElement('div');
+                            div.className = 'checkbox-container';
+                            div.style.marginTop = '4px';
+                            div.innerHTML = `
+                                <label class="switch" style="width:24px; height:14px; margin-right:8px;">
+                                    <input type="checkbox" value="${f}" ${checked ? 'checked' : ''}>
+                                    <span class="slider" style="border-radius:14px;"></span>
+                                </label>
+                                <span style="font-size:12px;">${f}</span>
+                            `;
+                            dom.stagingList.appendChild(div);
+                        });
+                    };
+
+                    const defaults = (staged.length > 0);
+                    createSection('Staged Changes', staged, true);
+                    createSection('Modified Changes', unstaged, !defaults);
+                    createSection('Untracked Files', untracked, !defaults);
+                }
+                if (dom.stagingModal) dom.stagingModal.classList.add('visible');
+                break;
+            }
         }
     } catch(e: any) {
         console.error("Lollms Webview Error: Failed to process message from extension.", e);

@@ -40,7 +40,14 @@ export function setGeneratingState(isGenerating: boolean) {
     }
 }
 
-function createToggleBadge(text: string, activeClass: string, isVisible: boolean, isActive: boolean, onToggle: () => void): HTMLElement | null {
+function createToggleBadge(
+    text: string, 
+    activeClass: string, 
+    isVisible: boolean, 
+    isActive: boolean, 
+    onToggle: () => void,
+    onExecute?: () => void
+): HTMLElement | null {
     if (!isVisible) return null;
 
     const span = document.createElement('span');
@@ -49,7 +56,13 @@ function createToggleBadge(text: string, activeClass: string, isVisible: boolean
     // isVisible = Mode is allowed/visible in GUI
     
     span.className = `mode-badge ${activeClass} ${isActive ? 'active' : 'inactive'} clickable`;
-    span.title = isActive ? `${text} Mode Active (Click to disable)` : `${text} Mode Inactive (Click to enable)`;
+    
+    // Custom Tooltip for Split Behavior
+    if (isActive && onExecute) {
+        span.title = `${text}: Click checkmark to Deactivate.\nClick badge to Execute with current input.`;
+    } else {
+        span.title = isActive ? `${text} Mode Active (Click to disable)` : `${text} Mode Inactive (Click to enable)`;
+    }
     
     const toggle = document.createElement('span');
     toggle.className = `badge-toggle-btn codicon ${isActive ? 'codicon-pass-filled' : 'codicon-circle-large-outline'}`;
@@ -58,10 +71,20 @@ function createToggleBadge(text: string, activeClass: string, isVisible: boolean
     label.className = 'badge-label';
     label.textContent = text;
     
-    // Click handles activation toggle
-    span.onclick = (e) => {
+    // Toggle Icon Click: Always toggles state
+    toggle.onclick = (e) => {
         e.stopPropagation();
         onToggle();
+    };
+
+    // Badge Body Click: Executes if active and supported, otherwise toggles
+    span.onclick = (e) => {
+        e.stopPropagation();
+        if (isActive && onExecute) {
+            onExecute();
+        } else {
+            onToggle();
+        }
     };
 
     span.appendChild(toggle);
@@ -100,10 +123,21 @@ export function updateBadges() {
     if (agentBadge) container.appendChild(agentBadge);
 
     // Auto Context Badge
-    const ctxBadge = createToggleBadge('🧠 AutoCtx', 'autocontext', guiState.autoContextBadge, caps.autoContextMode, () => {
-        // Toggle ACTIVATION
-        vscode.postMessage({ command: 'toggleAutoContext', enabled: !caps.autoContextMode });
-    });
+    const ctxBadge = createToggleBadge(
+        '🧠 AutoCtx', 
+        'autocontext', 
+        guiState.autoContextBadge, 
+        caps.autoContextMode, 
+        () => {
+            // Toggle ACTIVATION
+            vscode.postMessage({ command: 'toggleAutoContext', enabled: !caps.autoContextMode });
+        },
+        () => {
+            // EXECUTE (When active)
+            const prompt = dom.messageInput ? dom.messageInput.value : "";
+            vscode.postMessage({ command: 'runAutoContext', prompt: prompt });
+        }
+    );
     if (ctxBadge) container.appendChild(ctxBadge);
 
     // Herd Mode Badge

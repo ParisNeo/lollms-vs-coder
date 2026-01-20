@@ -191,6 +191,12 @@ export const dom = {
     get gitMenuMerge() { return document.getElementById('git-menu-merge') as HTMLDivElement; },
     get gitMenuRevert() { return document.getElementById('git-menu-revert') as HTMLDivElement; },
 
+    // Staging Modal (NEW)
+    get stagingModal() { return document.getElementById('staging-modal') as HTMLDivElement; },
+    get stagingList() { return document.getElementById('staging-list') as HTMLDivElement; },
+    get stagingNextBtn() { return document.getElementById('staging-next-btn') as HTMLButtonElement; },
+    get stagingCloseBtn() { return document.getElementById('staging-close-btn') as HTMLSpanElement; },
+
     // Commit Modal
     get commitModal() { return document.getElementById('commit-modal') as HTMLDivElement; },
     get commitMessageInput() { return document.getElementById('commit-message-input') as HTMLTextAreaElement; },

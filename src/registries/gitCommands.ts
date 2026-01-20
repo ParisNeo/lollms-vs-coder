@@ -86,6 +86,74 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
         CommitInspectorPanel.createOrShow(services.extensionUri, services.gitIntegration, services.lollmsAPI, hash);
     }));
 
+    // Command: Update Submodules
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.gitUpdateSubmodules', async () => {
+        const folder = getActiveWorkspace() || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0] : undefined);
+        if (!folder) {
+            vscode.window.showErrorMessage("No workspace folder found.");
+            return;
+        }
+        await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: "Updating submodules..." }, async () => {
+            try {
+                await services.gitIntegration.updateSubmodules(folder);
+                vscode.window.showInformationMessage("Submodules updated successfully.");
+            } catch (e: any) {
+                vscode.window.showErrorMessage(e.message);
+            }
+        });
+    }));
+
+    // Command: Revert Commit
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.gitRevert', async (hash?: string) => {
+        const folder = getActiveWorkspace() || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0] : undefined);
+        if (!folder) {
+            vscode.window.showErrorMessage("No workspace folder found.");
+            return;
+        }
+
+        let commitHash = hash;
+        if (!commitHash) {
+            commitHash = await vscode.window.showInputBox({ prompt: "Enter commit hash to revert" });
+        }
+
+        if (commitHash) {
+            try {
+                await services.gitIntegration.revertCommit(folder, commitHash);
+                vscode.window.showInformationMessage(`Reverted commit ${commitHash}.`);
+            } catch (e: any) {
+                vscode.window.showErrorMessage(e.message);
+            }
+        }
+    }));
+
+    // Command: Merge Branch
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.gitMerge', async () => {
+        const folder = getActiveWorkspace() || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0] : undefined);
+        if (!folder) {
+            vscode.window.showErrorMessage("No workspace folder found.");
+            return;
+        }
+
+        const branches = await services.gitIntegration.getBranches(folder);
+        const current = await services.gitIntegration.getCurrentBranch(folder);
+        const others = branches.filter(b => b !== current);
+
+        if (others.length === 0) {
+            vscode.window.showInformationMessage("No other branches to merge.");
+            return;
+        }
+
+        const selected = await vscode.window.showQuickPick(others, { placeHolder: `Select branch to merge into ${current}` });
+        if (selected) {
+            try {
+                await services.gitIntegration.mergeBranch(folder, selected);
+                vscode.window.showInformationMessage(`Merged ${selected} into ${current}.`);
+            } catch (e: any) {
+                vscode.window.showErrorMessage(e.message);
+            }
+        }
+    }));
+
     // --- GIT WORKFLOW COMMANDS ---
 
     // Create a new feature branch and switch to it
@@ -118,12 +186,20 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
         }
 
         const proposedName = params?.branch || `feature-ai-${Date.now()}`;
-        const branchName = await vscode.window.showInputBox({
+        const branchNameInput = await vscode.window.showInputBox({
             prompt: "Enter name for new feature branch",
             value: proposedName
         });
 
-        if (!branchName) return;
+        if (!branchNameInput) return;
+
+        // Sanitize: replace spaces with hyphens, remove invalid chars
+        const branchName = branchNameInput.trim().replace(/\s+/g, '-').replace(/[^a-zA-Z0-9_\-\/\.]/g, '');
+
+        if (!branchName) {
+             vscode.window.showErrorMessage("Invalid branch name.");
+             return;
+        }
 
         try {
             const currentBranch = await services.gitIntegration.getCurrentBranch(folder);

@@ -41,6 +41,7 @@ export class ChatPanel {
   
   private _discussionCapabilities: DiscussionCapabilities;
   
+  // Abort controller for token/context operations
   private _tokenAbortController: AbortController | null = null;
 
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, discussionManager: DiscussionManager, discussionId: string, gitIntegration: GitIntegration, skillsManager?: SkillsManager): ChatPanel {
@@ -84,8 +85,10 @@ export class ChatPanel {
     this._gitIntegration = gitIntegration;
     this._skillsManager = skillsManager || new SkillsManager();
 
+    // Initialize capabilities with last used settings
     this._discussionCapabilities = this._discussionManager.getLastCapabilities();
 
+    // Initialize view ready promise
     this._viewReadyPromise = new Promise<void>((resolve) => {
         this._viewReadyResolver = resolve;
     });
@@ -293,7 +296,7 @@ export class ChatPanel {
         isGitRepo = await this._gitIntegration.isGitRepo(workspaceFolder);
     }
     this._panel.webview.postMessage({ command: 'updateGitRepoStatus', isRepo: isGitRepo });
-    
+
     if (this._discussionCapabilities.gitWorkflow && workspaceFolder) {
         this.sendGitBranchState(workspaceFolder);
     }
@@ -363,6 +366,7 @@ export class ChatPanel {
         return;
     }
 
+    // Stop existing calculation if running
     if (this._tokenAbortController) {
         this._tokenAbortController.abort();
         this._tokenAbortController = null;
@@ -372,16 +376,18 @@ export class ChatPanel {
 
     try {
         if (!this._contextManager || !this._currentDiscussion || !this._panel.webview) {
-            this.log("_updateContextAndTokens: Missing dependencies", 'WARN');
+            this.log("_updateContextAndTokens: Missing dependencies (contextManager or discussion)", 'WARN');
             this._panel.webview?.postMessage({ command: 'updateTokenProgress' });
             return;
         }
         
+        // Use a safe postMessage check
         if (!this._isDisposed) {
             this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: 'Building file tree...' });
             this._panel.webview.postMessage({ command: 'updateStatus', status: 'Scanning project files...', type: 'info' });
         }
 
+        // Run calculation safely
         try {
             this.log("Fetching context content...");
             const context = await this._contextManager.getContextContent({ signal });
@@ -413,6 +419,7 @@ export class ChatPanel {
             const modelForTokenization = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
 
             if (!modelForTokenization) {
+                this.log("No model selected for tokenization.", 'WARN');
                 if (!this._isDisposed) {
                     this._panel.webview.postMessage({
                         command: 'updateTokenProgress',
@@ -423,6 +430,8 @@ export class ChatPanel {
                 return;
             }
     
+            this.log(`Starting API Tokenization. Model: ${modelForTokenization}, Text Length: ${fullTextToTokenize.length}`);
+            
             // Check signal before API call
             if (signal.aborted) return;
 
@@ -433,8 +442,13 @@ export class ChatPanel {
             
             if (this._isDisposed || signal.aborted) return;
 
+            this.log(`Tokenization complete. Count: ${tokenizeResponse.count}, Context Size: ${contextSizeResponse.context_size}, Estimated: ${tokenizeResponse.isEstimation}`);
+
             let ctxSize = contextSizeResponse.context_size;
-            if (!ctxSize || ctxSize <= 0) ctxSize = 0;
+            if (!ctxSize || ctxSize <= 0) {
+                ctxSize = 0;
+            }
+
             const isApproximate = tokenizeResponse.isEstimation || contextSizeResponse.isEstimation;
 
             this._panel.webview.postMessage({
@@ -452,14 +466,17 @@ export class ChatPanel {
     
         } catch (error: any) {
             if (error.message === "Operation cancelled" || signal.aborted) {
+                this.log("Context update cancelled.", 'INFO');
                 if (!this._isDisposed) this._panel.webview.postMessage({ command: 'updateStatus', status: 'Context scan stopped', type: 'warning' });
                 return;
             }
 
+            this.log(`Failed to update tokens via API: ${error.message}. Using failsafe fallback.`, 'WARN');
             if (this._isDisposed) return;
             
             try {
-                const context = await this._contextManager.getContextContent({ signal });
+                // Fallback estimation (crude)
+                const context = await this._contextManager.getContextContent({ signal }); // Re-fetch with signal
                 if (signal.aborted) return;
 
                 const discussionContent = this._currentDiscussion!.messages.map(msg => {
@@ -488,6 +505,7 @@ export class ChatPanel {
 
             } catch (fallbackError: any) {
                 if (signal.aborted || fallbackError.message === "Operation cancelled") return;
+                this.log(`Fallback token calculation failed: ${fallbackError.message}`, 'ERROR');
                 if (!this._isDisposed) {
                     this._panel.webview.postMessage({
                         command: 'updateTokenProgress',
@@ -532,9 +550,6 @@ export class ChatPanel {
       }
       await this._discussionManager.saveLastCapabilities(this._discussionCapabilities);
   }
-
-  // ... (handleManualAutoContext, sendMessage, handleAutomatedSearch, handleInspectCode, sendIsolatedMessage, handleProjectExecutionResult, analyzeExecutionResult, addMessageToDiscussion, etc. kept as is)
-  // Re-pasting handleManualAutoContext and others to ensure completeness
 
   public async handleManualAutoContext(userPrompt: string) {
       if (this._isDisposed) return;
@@ -611,15 +626,21 @@ export class ChatPanel {
     } else {
         await this.waitForWebviewReady();
     }
+
     await this.addMessageToDiscussion(message);
+
     const { id: processId, controller } = this.processManager.register(this.discussionId, 'Generating response...');
     this.updateGeneratingState();
+
     let autoContextText = "";
+
     const isAutoContext = this._discussionCapabilities.autoContextMode || autoContextMode;
+
     if (isAutoContext) {
         this.log("Auto-Context mode active. Starting agent loop.");
         const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
         const userPromptText = (typeof message.content === 'string') ? message.content : "User request with attachments";
+        
         const contextAgentMsgId = 'ctx_agent_' + Date.now();
         await this.addMessageToDiscussion({
             id: contextAgentMsgId,
@@ -627,6 +648,7 @@ export class ChatPanel {
             content: `**🧠 Auto-Context Agent**\n*Analyzing project structure and selecting files...*\n\n`,
             skipInPrompt: true 
         });
+
         try {
             autoContextText = await this._contextManager.runContextAgent(
                 userPromptText, 
@@ -647,6 +669,7 @@ export class ChatPanel {
             if (!this._isDisposed) this._panel.webview.postMessage({ command: 'updateStatus', status: 'Auto-Context Failed. Using default.', type: 'error' });
         }
     }
+
     let contextText = autoContextText;
     if (!contextText) {
         const standardContext = await this._contextManager.getContextContent();
@@ -654,11 +677,13 @@ export class ChatPanel {
     }
 
     if (this._discussionCapabilities.herdMode && this.herdManager) {
+        // ... (Herd mode logic remains same)
         let preParticipants = this._discussionCapabilities.herdPreCodeParticipants;
         let postParticipants = this._discussionCapabilities.herdPostCodeParticipants;
         const leaderModel = this._currentDiscussion.model || this._lollmsAPI.getModelName();
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const dynamicMode = config.get<boolean>('herdDynamicMode') || false;
+        
         if (dynamicMode) {
              const modelPool = config.get<any[]>('herdDynamicModelPool') || [];
              if (modelPool.length > 0) {
@@ -669,12 +694,14 @@ export class ChatPanel {
                     content: `### 🐂  Dynamic Herd: Recruiting Agents...\n\n`,
                     skipInPrompt: true
                  });
+
                  const plan = await this.herdManager.planDynamicHerd(
                      typeof message.content === 'string' ? message.content : "Complex task",
                      modelPool,
                      leaderModel,
                      controller.signal
                  );
+
                  if (plan) {
                      preParticipants = plan.pre;
                      postParticipants = plan.post;
@@ -686,14 +713,17 @@ export class ChatPanel {
                  await this.addMessageToDiscussion({ role: 'system', content: "🦬 Dynamic Herd Mode enabled but Model Pool is empty. Using static configuration.", skipInPrompt: true });
              }
         }
+
         if ((!preParticipants || preParticipants.length === 0) && (!postParticipants || postParticipants.length === 0)) {
             this.addMessageToDiscussion({role: 'system', content: "Herd Mode enabled but no Pre-Code or Post-Code participants configured. Please check Settings."});
             this.processManager.unregister(processId);
             this.updateGeneratingState();
             return;
         }
+
         try {
             const promptText = typeof message.content === 'string' ? message.content : 'User provided rich content.';
+
             const herdMessageId = 'herd_log_' + Date.now();
             await this.addMessageToDiscussion({
                 id: herdMessageId,
@@ -701,6 +731,7 @@ export class ChatPanel {
                 content: `### 🐂 Herd Mode Initializing...\n\n`,
                 skipInPrompt: true 
             });
+
             const synthesisResult = await this.herdManager.run(
                 promptText,
                 preParticipants,
@@ -717,25 +748,32 @@ export class ChatPanel {
                 controller.signal,
                 this._currentDiscussion.messages 
             );
+
             if (!controller.signal.aborted && synthesisResult) {
                 const synthesisPrompt: ChatMessage = {
                     role: 'user',
                     content: synthesisResult 
                 };
+                
                 const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities);
                 const systemMessage: ChatMessage = { role: 'system', content: systemPrompt };
+                
                 const history = this._currentDiscussion.messages.filter(m => !m.skipInPrompt);
+                
                 const messagesToSend = [systemMessage, ...history, synthesisPrompt];
+                
                 const assistantMessageId = 'assistant_' + Date.now().toString();
                 this._panel.webview.postMessage({
                     command: 'addMessage',
                     message: { id: assistantMessageId, role: 'assistant', content: '', startTime: Date.now(), model: leaderModel }
                 });
+
                 let fullResponse = '';
                 await this._lollmsAPI.sendChat(messagesToSend, (chunk) => {
                     fullResponse += chunk;
                     this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk });
                 }, controller.signal, leaderModel);
+
                 const finalMsg: ChatMessage = {
                     id: assistantMessageId,
                     role: 'assistant',
@@ -745,6 +783,7 @@ export class ChatPanel {
                 await this.addMessageToDiscussion(finalMsg, false);
                 this._panel.webview.postMessage({ command: 'finalizeMessage', id: assistantMessageId, fullContent: fullResponse });
             }
+
         } catch (error: any) {
             if (error.name !== 'AbortError') {
                 this.log(`Herd error: ${error.message}`, 'ERROR');
@@ -759,14 +798,19 @@ export class ChatPanel {
     }
 
     try {
+        // USE HELPER FOR CONSISTENT PERSONALITY
         const personaContent = this.getCurrentPersonaSystemPrompt();
         const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent);
+        
         let combinedSystemContent = systemPrompt;
         if (contextText && contextText.trim().length > 0) {
             combinedSystemContent += `\n\n${contextText}`;
         }
+
         const systemMessage: ChatMessage = { role: 'system', content: combinedSystemContent };
+        
         let messagesToSend: ChatMessage[] = [systemMessage];
+        
         const standardContextForImages = await this._contextManager.getContextContent();
         if (standardContextForImages.images.length > 0) {
             const imageContent = standardContextForImages.images.map(img => ({
@@ -777,17 +821,22 @@ export class ChatPanel {
                 messagesToSend.push({ role: 'user', content: imageContent as any });
             }
         }
+
         const history = this._currentDiscussion.messages.filter(m => !m.skipInPrompt);
         messagesToSend = [...messagesToSend, ...history];
+
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const addPedagogical = config.get<boolean>('addPedagogicalInstruction');
+
         if (addPedagogical) {
             const lastMsgIndex = messagesToSend.length - 1;
             if (lastMsgIndex >= 0) {
                 const lastMsg = messagesToSend[lastMsgIndex];
                 if (lastMsg.role === 'user') {
                     const pedagogicalSuffix = "\n\n(Important: Please start with a clear pedagogical description of your plan and logic before outputting any code or actions. Teach me!)";
+                    
                     const modifiedLastMsg = { ...lastMsg };
+                    
                     if (typeof modifiedLastMsg.content === 'string') {
                         if (!modifiedLastMsg.content.includes(pedagogicalSuffix.trim())) {
                              modifiedLastMsg.content += pedagogicalSuffix;
@@ -797,11 +846,27 @@ export class ChatPanel {
                         newContent.push({ type: 'text', text: pedagogicalSuffix });
                         modifiedLastMsg.content = newContent;
                     }
+                    
                     messagesToSend[lastMsgIndex] = modifiedLastMsg;
                 }
             }
         }
+
+        // GIT WORKFLOW
+        let tempBranchName = '';
+        if (this._discussionCapabilities.gitWorkflow) {
+            tempBranchName = `ai-feat-${Date.now()}`;
+            const startBranchMessage: ChatMessage = {
+                id: 'sys_branch_start_' + Date.now(),
+                role: 'system',
+                content: `**Git Workflow Active**\n\n Step 1: Create Branch & Switch`,
+                skipInPrompt: true 
+            };
+            await this.addMessageToDiscussion(startBranchMessage);
+        }
+
         const assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
+        
         if (!this._isDisposed) {
             this._panel.webview.postMessage({
                 command: 'addMessage',
@@ -814,9 +879,11 @@ export class ChatPanel {
                 }
             });
         }
+
         let fullResponse = '';
         let tokenCount = 0;
         let webSearchTriggered = false;
+
         await this._lollmsAPI.sendChat(messagesToSend, (chunk) => {
             if (this._isDisposed) {
                 controller.abort();
@@ -829,6 +896,7 @@ export class ChatPanel {
                 id: assistantMessageId,
                 chunk: chunk
             });
+
             const searchMatch = fullResponse.match(/<web_search>(.*?)<\/web_search>/);
             if (searchMatch && !webSearchTriggered) {
                 webSearchTriggered = true;
@@ -836,10 +904,12 @@ export class ChatPanel {
                 this.handleAutomatedSearch(searchMatch[1], assistantMessageId);
             }
         }, controller.signal, this._currentDiscussion.model);
+
         if (!webSearchTriggered) {
             if (!fullResponse || fullResponse.trim() === '') {
                 fullResponse = "*[No response received from Lollms. The server might be busy or the model failed to generate text.]*";
             }
+
             const cleanResponse = fullResponse;
             const assistantMessage: ChatMessage = {
                 id: assistantMessageId,
@@ -847,7 +917,9 @@ export class ChatPanel {
                 content: cleanResponse,
                 model: this._currentDiscussion.model || this._lollmsAPI.getModelName()
             };
+
             await this.addMessageToDiscussion(assistantMessage, false);
+
             if (!this._isDisposed) {
                 this._panel.webview.postMessage({
                     command: 'finalizeMessage',
@@ -856,7 +928,19 @@ export class ChatPanel {
                     tokenCount: tokenCount
                 });
             }
+
+            // GIT WORKFLOW
+            if (this._discussionCapabilities.gitWorkflow && tempBranchName) {
+                const endBranchMessage: ChatMessage = {
+                    id: 'sys_branch_end_' + Date.now(),
+                    role: 'system',
+                    content: ` Step 2: Fuse (Merge) Changes`,
+                    skipInPrompt: true
+                };
+                await this.addMessageToDiscussion(endBranchMessage);
+            }
         }
+
     } catch (error: any) {
         if (error.name !== 'AbortError') {
             this.log(`Error generating response: ${error.message}`, 'ERROR');
@@ -879,7 +963,7 @@ export class ChatPanel {
     }
   }
 
-  public async handleAutomatedSearch(query: string, messageId: string) {
+  private async handleAutomatedSearch(query: string, messageId: string) {
       this.log(`Automated search triggered: ${query}`);
       const searchTool = this.agentManager.getTools().find(t => t.name === 'search_web');
       if (searchTool && !this._isDisposed) {
@@ -1209,7 +1293,6 @@ export class ChatPanel {
         }
         
         switch (message.command) {
-            // ... existing cases ...
             case 'webview-bootstrap-ok':
             case 'webview-html-loaded':
                 console.log("ChatPanel: HTML Loaded signal received.");
@@ -1217,7 +1300,7 @@ export class ChatPanel {
             case 'webview-ready':
                 console.log("ChatPanel: JS Ready signal received.");
                 this._isWebviewReady = true;
-                this._viewReadyResolver();
+                this._viewReadyResolver(); // Resolve promise for waiting logic
                 if (this._isLoadPending) {
                     this.loadDiscussion();
                 }
@@ -1344,6 +1427,7 @@ export class ChatPanel {
                 if (this._tokenAbortController) {
                     this._tokenAbortController.abort();
                     this._tokenAbortController = null;
+                    // Note: Abort will trigger logic in _updateContextAndTokens catch block
                 }
                 break;
             case 'copyToClipboard':
@@ -1362,12 +1446,19 @@ export class ChatPanel {
                 } else if (command === 'lollms-vs-coder.mergeGitBranch') {
                     vscode.commands.executeCommand('lollms-vs-coder.mergeGitBranch', params);
                 } else if (command === 'synthesizeSearchResults') {
-                    // ... (existing)
                     if (!this.agentManager.getIsActive()) {
                         this.agentManager.toggleAgentMode();
                     }
                     const query = params.query;
-                    const objective = `Research the following query: "${query}"...`; // (abbreviated for brevity)
+                    const objective = `Research the following query: "${query}"
+                    
+Look at the previous message which contains search results and links.
+
+Task:
+1. Use the \`scrape_website\` tool to read the content of the relevant links found in the previous search results (limit to top 3).
+2. Synthesize the information gathered from these pages.
+3. Provide a comprehensive answer to the query based on the scraped content.`;
+
                     if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
                         this.agentManager.run(objective, this._currentDiscussion!, vscode.workspace.workspaceFolders[0], this._currentDiscussion?.model);
                     } else {
@@ -1403,7 +1494,6 @@ export class ChatPanel {
                     this.updateGeneratingState();
                     return;
                 }
-                // ... (existing) ...
                 if (message.message) await this.addMessageToDiscussion(message.message);
                 if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
                     this.agentManager.run(message.objective, this._currentDiscussion, vscode.workspace.workspaceFolders[0], this._currentDiscussion.model);
@@ -1535,6 +1625,8 @@ export class ChatPanel {
                     }
                 }
                 await this._discussionManager.saveLastCapabilities(this._discussionCapabilities);
+                
+                this.log(`Updated Discussion Capabilities: ${JSON.stringify(this._discussionCapabilities)}`);
                 this._panel.webview.postMessage({ command: 'updateThinkingMode', mode: this._discussionCapabilities.thinkingMode });
                 this._panel.webview.postMessage({ command: 'updateDiscussionCapabilities', capabilities: this._discussionCapabilities });
                 break;
@@ -1570,12 +1662,12 @@ export class ChatPanel {
                 }
                 break;
             case 'runTool':
-                const toolName1 = message.tool;
-                const toolParams1 = message.params;
+                const toolName = message.tool;
+                const toolParams = message.params;
                 if (this.agentManager) {
-                    const toolDef = this.agentManager.getTools().find(t => t.name === toolName1);
+                    const toolDef = this.agentManager.getTools().find(t => t.name === toolName);
                     if (toolDef) {
-                        const { id: processId, controller } = this.processManager.register(this.discussionId, `Running tool: ${toolName1}...`);
+                        const { id: processId, controller } = this.processManager.register(this.discussionId, `Running tool: ${toolName}...`);
                         this.updateGeneratingState();
                         try {
                             const env = {
@@ -1585,10 +1677,10 @@ export class ChatPanel {
                                 agentManager: this.agentManager,
                                 currentPlan: null
                             };
-                            const result = await toolDef.execute(toolParams1, env as any, controller.signal);
+                            const result = await toolDef.execute(toolParams, env as any, controller.signal);
                             const resultMessage: ChatMessage = {
                                 role: 'system',
-                                content: `**Tool Output (${toolName1}):**\n\n${result.output}`
+                                content: `**Tool Output (${toolName}):**\n\n${result.output}`
                             };
                             this.addMessageToDiscussion(resultMessage);
                         } catch (e: any) {
@@ -1598,7 +1690,7 @@ export class ChatPanel {
                             this.updateGeneratingState();
                         }
                     } else {
-                        vscode.window.showErrorMessage(`Tool '${toolName1}' not found.`);
+                        vscode.window.showErrorMessage(`Tool '${toolName}' not found.`);
                     }
                 }
                 break;
@@ -1628,8 +1720,39 @@ export class ChatPanel {
                 });
                 break;
 
-            // --- MISSING HANDLERS ADDED HERE ---
+            case 'requestGitStatus':
+                if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+                    const status = await this._gitIntegration.getGitStatus(vscode.workspace.workspaceFolders[0]);
+                    this._panel.webview.postMessage({ command: 'updateGitStatus', status });
+                } else {
+                    vscode.window.showErrorMessage("No workspace open.");
+                }
+                break;
+
+            case 'stageAndGenerateMessage':
+                if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+                    const files = message.files;
+                    const folder = vscode.workspace.workspaceFolders[0];
+                    
+                    try {
+                        await this._gitIntegration.stageFiles(folder, files);
+                        
+                        await vscode.window.withProgress({
+                            location: vscode.ProgressLocation.Notification,
+                            title: "Generating commit message..."
+                        }, async () => {
+                            const msg = await this._gitIntegration.generateCommitMessage(folder);
+                            this._panel.webview.postMessage({ command: 'setCommitMessage', message: msg });
+                        });
+
+                    } catch (e: any) {
+                        vscode.window.showErrorMessage("Error processing commit preparation: " + e.message);
+                    }
+                }
+                break;
+
             case 'requestCommitMessage':
+                // Legacy handler, kept for backward compat but UI now uses requestCommitStaging
                 if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
                     this.log('Generating commit message...');
                     try {
@@ -1640,6 +1763,23 @@ export class ChatPanel {
                     }
                 } else {
                     vscode.window.showErrorMessage("No workspace open.");
+                }
+                break;
+            case 'requestCommitStaging':
+                if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+                    try {
+                        const status = await this._gitIntegration.getGitStatus(vscode.workspace.workspaceFolders[0]);
+                        // Check if total empty
+                        if (status.staged.length === 0 && status.unstaged.length === 0 && status.untracked.length === 0) {
+                            vscode.window.showInformationMessage("No changes found in git repository.");
+                            return;
+                        }
+                        this._panel.webview.postMessage({ command: 'showStagingModal', status });
+                    } catch (e: any) {
+                        vscode.window.showErrorMessage("Failed to get git status: " + e.message);
+                    }
+                } else {
+                    vscode.window.showErrorMessage("No active workspace.");
                 }
                 break;
             case 'performCommit':
@@ -1777,6 +1917,22 @@ export class ChatPanel {
                 <div class="modal-body" id="tools-list"></div>
                 <div class="modal-footer">
                     <button id="save-tools-btn">OK</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- STAGING MODAL (NEW) -->
+        <div id="staging-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Stage Files for Commit</h2>
+                    <span class="close-btn" id="staging-close-btn">&times;</span>
+                </div>
+                <div class="modal-body" id="staging-list">
+                    <!-- Checkboxes injected here -->
+                </div>
+                <div class="modal-footer">
+                    <button id="staging-next-btn">Next (Generate Message)</button>
                 </div>
             </div>
         </div>

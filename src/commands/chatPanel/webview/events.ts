@@ -222,6 +222,7 @@ export function initEventHandlers() {
         if (dom.discussionToolsModal && event.target === dom.discussionToolsModal) dom.discussionToolsModal.classList.remove('visible');
         if (dom.commitModal && event.target === dom.commitModal) dom.commitModal.classList.remove('visible');
         if (dom.historyModal && event.target === dom.historyModal) dom.historyModal.classList.remove('visible');
+        if (dom.stagingModal && event.target === dom.stagingModal) dom.stagingModal.classList.remove('visible');
     });
     
     if (dom.agentToolsButton) dom.agentToolsButton.addEventListener('click', () => { closeMenu(); vscode.postMessage({ command: 'requestAvailableTools' }); });
@@ -302,7 +303,7 @@ export function initEventHandlers() {
             if (id === 'git-menu-branch') {
                 vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.createGitBranch', params: {} } });
             } else if (id === 'git-menu-commit') {
-                vscode.postMessage({ command: 'requestCommitMessage' });
+                vscode.postMessage({ command: 'requestCommitStaging' });
             } else if (id === 'git-menu-merge') {
                 vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.mergeGitBranch', params: {} } });
             } else if (id === 'git-menu-revert') {
@@ -310,6 +311,26 @@ export function initEventHandlers() {
             }
         }
     });
+
+    // Staging Modal Handlers
+    if (dom.stagingCloseBtn) {
+        dom.stagingCloseBtn.addEventListener('click', () => {
+            if (dom.stagingModal) dom.stagingModal.classList.remove('visible');
+        });
+    }
+    if (dom.stagingNextBtn) {
+        dom.stagingNextBtn.addEventListener('click', () => {
+            if (dom.stagingList) {
+                const checked = Array.from(dom.stagingList.querySelectorAll('input:checked')).map(cb => (cb as HTMLInputElement).value);
+                if (checked.length === 0) {
+                    vscode.postMessage({ command: 'showWarning', message: 'Please select at least one file to stage.' });
+                    return;
+                }
+                vscode.postMessage({ command: 'stageAndGenerateMessage', files: checked });
+                if (dom.stagingModal) dom.stagingModal.classList.remove('visible');
+            }
+        });
+    }
 
     // Commit Modal Handlers
     if (dom.commitConfirmBtn) {

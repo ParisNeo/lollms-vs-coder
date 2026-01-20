@@ -11,3 +11,7 @@
 - add math rendering to messages
 - Fix personalities
 - Add support for lollms personalities: listing/using
+- show chich personality is being used in project context message
+- Add a reset context button in top of the project context message, and show the list of selected files in a new collapsible.
+- add keyword search to the auto context window routine, this allows the llm to see where some operations or function exist so it can do a better selection. also add that to the agent too.
+- fix command 'lollms-vs-coder.showRunningProcesses' not found

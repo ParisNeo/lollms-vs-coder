@@ -30,9 +30,9 @@ export class HerdManager {
 ${poolDesc}
 
 **INSTRUCTIONS:**
-1. Analyze the problem. Determine what kind of experts are needed (e.g. "Security Specialist", "Algorithm Expert", "UI Designer").
-2. Create 2-3 personas for the **Pre-Code Brainstorming** phase (architecting, ideation).
-3. Create 2-3 personas for the **Post-Code Review** phase (debugging, security, performance).
+1. Analyze the problem. Determine what kind of experts are needed (e.g. "Security Specialist", "Algorithm Expert", "UI Designer", "Strategist").
+2. Create 2-3 personas for the **Phase 1: Research & Brainstorming** phase (ideation, architecture, planning).
+3. Create 2-3 personas for the **Phase 3: Review & Refinement** phase (critique, quality control, optimization).
 4. Assign each persona to the most suitable model from the available list.
 5. Write a specialized system prompt for each persona.
 
@@ -80,8 +80,8 @@ Return ONLY a valid JSON object with this structure:
 
     public async run(
         userPrompt: string,
-        preCodeParticipants: HerdParticipant[],
-        postCodeParticipants: HerdParticipant[],
+        brainstormingParticipants: HerdParticipant[],
+        refinementParticipants: HerdParticipant[],
         rounds: number,
         leaderModel: string,
         contextText: string,
@@ -99,9 +99,9 @@ Return ONLY a valid JSON object with this structure:
             await onUpdateMessage(uiOutput);
         };
 
-        // --- PHASE 1: PRE-CODE BRAINSTORMING ---
+        // --- PHASE 1: RESEARCH & BRAINSTORMING ---
         debateHistory += `## User Problem\n${userPrompt}\n\n`;
-        await appendToUI(`#### Phase 1: Pre-Code Brainstorming\n\n`);
+        await appendToUI(`#### Phase 1: Brainstorming\n\n`);
 
         for (let round = 1; round <= rounds; round++) {
             if (signal.aborted) break;
@@ -109,7 +109,7 @@ Return ONLY a valid JSON object with this structure:
             let allReady = true;
             let roundLogHtml = ""; 
 
-            for (const participant of preCodeParticipants) {
+            for (const participant of brainstormingParticipants) {
                 if (signal.aborted) break;
                 
                 const { model, personality: personalityId } = participant;
@@ -128,14 +128,14 @@ Return ONLY a valid JSON object with this structure:
 
                 const systemPrompt = `${personaPrompt}
 
-You are a participating expert in a Pre-Code Brainstorming session.
+You are a participating expert in a Brainstorming session.
 The user wants to achieve: "${userPrompt}".
 
 **YOUR TASK:**
 1. Analyze the user request, the project context, and the ideas from other agents (Debate History).
 2. Challenge weak points, suggest improvements, or confirm the approach.
 3. Bring your specific expertise (${personaName}) to the table.
-4. Do NOT write the final full code implementation yet. Just snippets or architectural ideas.
+4. **Do NOT produce the final deliverable yet.** Focus on analysis, strategy, and architecture.
 5. If you believe the current plan/discussion is solid and you have nothing to add, verify everything is correct and output \`<ready/>\`.
 
 **DEBATE HISTORY:**
@@ -190,7 +190,7 @@ ${roundLogHtml}
             }
         }
 
-        // --- PHASE 2: ANSWER CRAFTING (LEADER) ---
+        // --- PHASE 2: DRAFTING (LEADER) ---
         if (signal.aborted) return debateHistory;
         
         onStatusUpdate("Phase 2: Leader drafting solution...");
@@ -199,7 +199,7 @@ ${roundLogHtml}
         let draftSolution = "";
         
         const leaderSystemPrompt = `You are the Leader Agent.
-Your team has finished brainstorming. Your job is to synthesize their ideas and create a concrete Solution Draft.
+Your team has finished brainstorming. Your job is to synthesize their ideas and create a concrete Draft Response.
 
 **USER OBJECTIVE:** ${userPrompt}
 
@@ -207,9 +207,10 @@ Your team has finished brainstorming. Your job is to synthesize their ideas and 
 ${debateHistory}
 
 **TASK:**
-1. Define the final architecture/plan based on the debate.
-2. Draft the implementation (file structures, key functions, logic).
-3. Do not worry about minor bugs yet; the team will review your draft in the next phase.
+1. Define the final plan based on the debate.
+2. If the user asked for code, draft the implementation.
+3. If the user asked for a plan or explanation, draft that content.
+4. Do not worry about minor issues yet; the team will review your draft in the next phase.
 
 **PROJECT CONTEXT:**
 ${contextText}
@@ -234,10 +235,10 @@ ${draftSolution}
             return debateHistory; // Abort
         }
 
-        // --- PHASE 3: POST-CODE BRAINSTORMING (REVIEW) ---
+        // --- PHASE 3: REFINEMENT (REVIEW) ---
         if (signal.aborted) return debateHistory;
         
-        await appendToUI(`\n#### Phase 3: Code Review\n`);
+        await appendToUI(`\n#### Phase 3: Critique & Refinement\n`);
 
         let reviewHistory = "";
 
@@ -247,7 +248,7 @@ ${draftSolution}
             let allReady = true;
             let roundLogHtml = "";
 
-            for (const participant of postCodeParticipants) {
+            for (const participant of refinementParticipants) {
                 if (signal.aborted) break;
                 
                 const { model, personality: personalityId } = participant;
@@ -265,7 +266,7 @@ ${draftSolution}
 
                 const systemPrompt = `${personaPrompt}
 
-You are a Reviewer in a Post-Code Brainstorming session.
+You are a Reviewer in a Refinement session.
 The Leader has produced a Draft Solution.
 
 **DRAFT SOLUTION:**
@@ -275,8 +276,8 @@ ${draftSolution}
 ${reviewHistory || "(None)"}
 
 **YOUR TASK:**
-1. Critique the draft for bugs, security flaws, style issues, or logical errors based on your expertise (${personaName}).
-2. Suggest concrete fixes.
+1. Critique the draft for accuracy, quality, logic, and completeness based on your expertise (${personaName}).
+2. Suggest concrete improvements or fixes.
 3. If the draft looks perfect, output \`<ready/>\`.
 `;
 
@@ -322,7 +323,7 @@ ${roundLogHtml}
             }
         }
 
-        // --- PHASE 4: FINAL CODE ANSWER (LEADER) ---
+        // --- PHASE 4: FINAL ANSWER (LEADER) ---
         if (signal.aborted) return debateHistory;
 
         onStatusUpdate("Phase 4: Leader finalizing...");
@@ -340,7 +341,17 @@ ${draftSolution}
 ${reviewHistory}
 
 **FINAL INSTRUCTION FOR LEADER:**
-Synthesize everything above. Produce the final, corrected, production-ready code based on the approved draft and addressing all critiques from the reviews. Output the full final code.`;
+Synthesize everything above. Produce the **Final Answer** based on the approved draft and addressing all critiques from the reviews.
+
+### File Creation/Modification Format
+If the user's request involves writing code, creating files, or modifying the project, you **MUST** use the following syntax strictly:
+
+\`\`\`language:relative/path/to/file.ext
+[complete file content here]
+\`\`\`
+
+Do not use patches or diffs. Provide full file content if code is required.
+If the request was for a plan, explanation, or text, provide the final text clearly.`;
     }
 
     private formatChatHistory(history: ChatMessage[]): string {

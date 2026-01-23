@@ -42,12 +42,22 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
 
     // Auto Select Context Files Command
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.autoSelectContextFiles', async () => {
-        const objective = await vscode.window.showInputBox({
+        const userInput = await vscode.window.showInputBox({
             prompt: vscode.l10n.t("prompt.enterObjectiveForSelection"),
-            placeHolder: "e.g., Refactor the authentication logic"
+            placeHolder: "e.g., Refactor the auth logic # auth, session, jwt"
         });
 
-        if (objective) {
+        if (userInput) {
+            let objective = userInput;
+            let keywords: string[] = [];
+
+            // Parse optional keywords after a hash
+            if (userInput.includes('#')) {
+                const parts = userInput.split('#');
+                objective = parts[0].trim();
+                keywords = parts[1].split(',').map(k => k.trim()).filter(k => k.length > 0);
+            }
+
              const discussion = services.discussionManager.createNewDiscussion();
              discussion.title = `Auto-Context: ${objective}`;
              await services.discussionManager.saveDiscussion(discussion);
@@ -68,8 +78,36 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
             await panel.loadDiscussion();
             services.treeProviders.discussion?.refresh();
 
-            // Run the Auto-Context Tool
-            panel.handleManualAutoContext(objective);
+            // Run the Auto-Context Tool Agent
+            const model = discussion.model || services.lollmsAPI.getModelName();
+            const { id: processId, controller } = services.processManager.register(discussion.id, 'Running Auto-Context...');
+            
+            try {
+                const contextAgentMsgId = 'ctx_agent_manual_' + Date.now();
+                await panel.addMessageToDiscussion({
+                    id: contextAgentMsgId,
+                    role: 'system',
+                    content: `**🧠 Auto-Context Agent**\n*Objective: "${objective}"*\n\n`
+                });
+
+                await services.contextManager.runContextAgent(
+                    objective, 
+                    model, 
+                    controller.signal,
+                    (newContent) => {
+                        panel._panel.webview.postMessage({ 
+                            command: 'updateMessage', 
+                            messageId: contextAgentMsgId, 
+                            newContent: newContent 
+                        });
+                    },
+                    keywords
+                );
+                panel.updateContextAndTokens();
+            } finally {
+                services.processManager.unregister(processId);
+                panel.updateGeneratingState();
+            }
         }
     }));
 

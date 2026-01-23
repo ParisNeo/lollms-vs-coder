@@ -3,12 +3,14 @@ import { LollmsAPI, ChatMessage } from './lollmsAPI';
 import { ContextManager } from './contextManager';
 import { PersonalityManager } from './personalityManager';
 import { HerdParticipant, DynamicModelEntry } from './utils';
+import { AgentManager } from './agentManager';
 
 export class HerdManager {
     constructor(
         private lollmsAPI: LollmsAPI,
         private contextManager: ContextManager,
-        private personalityManager: PersonalityManager
+        private personalityManager: PersonalityManager,
+        private agentManager?: AgentManager
     ) {}
 
     public async planDynamicHerd(
@@ -30,9 +32,9 @@ export class HerdManager {
 ${poolDesc}
 
 **INSTRUCTIONS:**
-1. Analyze the problem. Determine what kind of experts are needed (e.g. "Security Specialist", "Algorithm Expert", "UI Designer", "Strategist").
-2. Create 2-3 personas for the **Phase 1: Research & Brainstorming** phase (ideation, architecture, planning).
-3. Create 2-3 personas for the **Phase 3: Review & Refinement** phase (critique, quality control, optimization).
+1. Analyze the problem. Determine what kind of experts are needed.
+2. Create 2-3 personas for the **Phase 1: Research & Brainstorming** (Pre-Answer).
+3. Create 2-3 personas for the **Phase 3: Review & Refinement** (Post-Answer).
 4. Assign each persona to the most suitable model from the available list.
 5. Write a specialized system prompt for each persona.
 
@@ -40,11 +42,11 @@ ${poolDesc}
 Return ONLY a valid JSON object with this structure:
 \`\`\`json
 {
-  "preCode": [
-    { "name": "Role Name", "model": "ModelID", "systemPrompt": "You are..." }
+  "preAnswer": [
+    { "name": "Role Name", "model": "ModelID", "systemPrompt": "You are...", "allowExecution": true/false }
   ],
-  "postCode": [
-    { "name": "Role Name", "model": "ModelID", "systemPrompt": "You are..." }
+  "postAnswer": [
+    { "name": "Role Name", "model": "ModelID", "systemPrompt": "You are...", "allowExecution": true/false }
   ]
 }
 \`\`\`
@@ -62,14 +64,15 @@ Return ONLY a valid JSON object with this structure:
             
             const mapToParticipant = (p: any): HerdParticipant => ({
                 model: p.model,
-                personality: 'dynamic_persona', // Placeholder ID
+                personality: 'dynamic_persona',
                 name: p.name,
-                systemPrompt: p.systemPrompt
+                systemPrompt: p.systemPrompt,
+                allowExecution: p.allowExecution || false
             });
 
             return {
-                pre: plan.preCode.map(mapToParticipant),
-                post: plan.postCode.map(mapToParticipant)
+                pre: (plan.preAnswer || plan.preCode).map(mapToParticipant),
+                post: (plan.postAnswer || plan.postCode).map(mapToParticipant)
             };
 
         } catch (error) {
@@ -100,8 +103,8 @@ Return ONLY a valid JSON object with this structure:
         };
 
         // --- PHASE 1: RESEARCH & BRAINSTORMING ---
-        debateHistory += `## User Problem\n${userPrompt}\n\n`;
-        await appendToUI(`#### Phase 1: Brainstorming\n\n`);
+        debateHistory += `## User Request\n${userPrompt}\n\n`;
+        await appendToUI(`#### Phase 1: Brainstorming (Pre-Answer)\n\n`);
 
         for (let round = 1; round <= rounds; round++) {
             if (signal.aborted) break;
@@ -114,7 +117,6 @@ Return ONLY a valid JSON object with this structure:
                 
                 const { model, personality: personalityId } = participant;
                 
-                // Logic to resolve system prompt: dynamic override OR static lookup
                 let personaName = participant.name || personalityId;
                 let personaPrompt = participant.systemPrompt;
 
@@ -126,34 +128,55 @@ Return ONLY a valid JSON object with this structure:
 
                 onStatusUpdate(`Phase 1 (Round ${round}): ${personaName} thinking...`);
 
-                const systemPrompt = `${personaPrompt}
+                let executionContext = "";
+                if (participant.allowExecution) {
+                    executionContext = `\n\n**OPTIONAL EXECUTION:**\nYou can verify hypotheses by executing code in the environment. 
+To execute a command, output it within \`<execute>command</execute>\` tags. 
+The system will run the command and provide you with the output, then you can refine your response.
+Suppress potential threats; do not run commands that could damage the environment.`;
+                }
+
+                const buildPrompt = (extra?: string) => `${personaPrompt}${executionContext}${extra ? '\n\n' + extra : ''}
 
 You are a participating expert in a Brainstorming session.
 The user wants to achieve: "${userPrompt}".
 
 **YOUR TASK:**
-1. Analyze the user request, the project context, and the ideas from other agents (Debate History).
-2. Challenge weak points, suggest improvements, or confirm the approach.
+1. Analyze the request, context, and ideas from other agents (Debate History).
+2. Challenge weak points or suggest improvements.
 3. Bring your specific expertise (${personaName}) to the table.
-4. **Do NOT produce the final deliverable yet.** Focus on analysis, strategy, and architecture.
-5. If you believe the current plan/discussion is solid and you have nothing to add, verify everything is correct and output \`<ready/>\`.
+4. If you believe the current direction is solid and you have nothing to add, output \`<ready/>\`.
 
 **DEBATE HISTORY:**
 ${debateHistory || "(No history yet)"}
 
 **PROJECT CONTEXT:**
 ${contextText}
-
-**CHAT HISTORY:**
-${this.formatChatHistory(chatHistory)}
 `;
 
                 try {
-                    const response = await this.lollmsAPI.sendChat([
-                        { role: 'system', content: systemPrompt }
+                    let response = await this.lollmsAPI.sendChat([
+                        { role: 'system', content: buildPrompt() }
                     ], null, signal, model);
 
                     if (signal.aborted) break;
+
+                    // --- EXECUTION LOOP ---
+                    if (participant.allowExecution && response.includes('<execute>')) {
+                        const execMatch = response.match(/<execute>([\s\S]*?)<\/execute>/);
+                        if (execMatch && this.agentManager) {
+                            const command = execMatch[1].trim();
+                            onStatusUpdate(`${personaName} executing: ${command}...`);
+                            
+                            const result = await this.agentManager.runCommand(command, signal);
+                            const resultText = `\n\n[EXECUTION RESULT]\nCommand: ${command}\nOutput:\n${result.output}`;
+                            
+                            // Re-prompt with result
+                            response = await this.lollmsAPI.sendChat([
+                                { role: 'system', content: buildPrompt(`You executed a command and got this result: ${resultText}. Now provide your final contribution for this round based on this verification.`) }
+                            ], null, signal, model);
+                        }
+                    }
 
                     const isReady = response.includes('<ready/>');
                     if (!isReady) allReady = false;
@@ -162,7 +185,6 @@ ${this.formatChatHistory(chatHistory)}
                     if (cleanResponse) {
                         const entry = `#### [${personaName}] (Round ${round})\n${cleanResponse}\n\n`;
                         debateHistory += entry;
-                        
                         roundLogHtml += `\n\n---\n\n##### 🧠 ${personaName} (${model})\n\n${cleanResponse}`;
                     } else if (isReady) {
                         roundLogHtml += `\n\n---\n\n✅ **${personaName}** is ready.`;
@@ -199,18 +221,12 @@ ${roundLogHtml}
         let draftSolution = "";
         
         const leaderSystemPrompt = `You are the Leader Agent.
-Your team has finished brainstorming. Your job is to synthesize their ideas and create a concrete Draft Response.
+Your team has finished brainstorming. Synthesize their ideas and create a concrete Draft Response.
 
 **USER OBJECTIVE:** ${userPrompt}
 
 **BRAINSTORMING TRANSCRIPT:**
 ${debateHistory}
-
-**TASK:**
-1. Define the final plan based on the debate.
-2. If the user asked for code, draft the implementation.
-3. If the user asked for a plan or explanation, draft that content.
-4. Do not worry about minor issues yet; the team will review your draft in the next phase.
 
 **PROJECT CONTEXT:**
 ${contextText}
@@ -232,13 +248,13 @@ ${draftSolution}
 
         } catch (error: any) {
             await appendToUI(`\n❌ Leader failed to draft: ${error.message}`);
-            return debateHistory; // Abort
+            return debateHistory;
         }
 
-        // --- PHASE 3: REFINEMENT (REVIEW) ---
+        // --- PHASE 3: REFINEMENT (POST-ANSWER) ---
         if (signal.aborted) return debateHistory;
         
-        await appendToUI(`\n#### Phase 3: Critique & Refinement\n`);
+        await appendToUI(`\n#### Phase 3: Critique & Refinement (Post-Answer)\n`);
 
         let reviewHistory = "";
 
@@ -272,13 +288,12 @@ The Leader has produced a Draft Solution.
 **DRAFT SOLUTION:**
 ${draftSolution}
 
-**REVIEW HISTORY (Previous critiques):**
+**REVIEW HISTORY:**
 ${reviewHistory || "(None)"}
 
 **YOUR TASK:**
-1. Critique the draft for accuracy, quality, logic, and completeness based on your expertise (${personaName}).
-2. Suggest concrete improvements or fixes.
-3. If the draft looks perfect, output \`<ready/>\`.
+1. Critique the draft for accuracy, quality, and completeness.
+2. If the draft looks perfect, output \`<ready/>\`.
 `;
 
                 try {
@@ -323,12 +338,7 @@ ${roundLogHtml}
             }
         }
 
-        // --- PHASE 4: FINAL ANSWER (LEADER) ---
-        if (signal.aborted) return debateHistory;
-
-        onStatusUpdate("Phase 4: Leader finalizing...");
-        await appendToUI(`\n#### Phase 4: Finalizing\n*Leader is synthesizing the final answer...*`);
-
+        // --- PHASE 4: FINAL ANSWER ---
         return `**HERD PROCESS COMPLETE**
 
 **Phase 1 (Brainstorming Ideas):**
@@ -341,17 +351,8 @@ ${draftSolution}
 ${reviewHistory}
 
 **FINAL INSTRUCTION FOR LEADER:**
-Synthesize everything above. Produce the **Final Answer** based on the approved draft and addressing all critiques from the reviews.
-
-### File Creation/Modification Format
-If the user's request involves writing code, creating files, or modifying the project, you **MUST** use the following syntax strictly:
-
-\`\`\`language:relative/path/to/file.ext
-[complete file content here]
-\`\`\`
-
-Do not use patches or diffs. Provide full file content if code is required.
-If the request was for a plan, explanation, or text, provide the final text clearly.`;
+Synthesize everything above. Produce the **Final Answer** addressing all critiques.
+Use the standard file creation formats if code is required.`;
     }
 
     private formatChatHistory(history: ChatMessage[]): string {

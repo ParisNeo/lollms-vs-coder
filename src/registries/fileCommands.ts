@@ -61,7 +61,6 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 // End index: We want to include the full content of the last matched line
                 const endPos = document.lineAt(lastMatchedLineIndex).range.end;
                 
-                // Usually we want to consume the newline after the block if deleting
                 return { 
                     start: document.offsetAt(startPos), 
                     end: document.offsetAt(endPos) 
@@ -166,6 +165,50 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         } catch (e: any) {
             Logger.error(`Error applying file content: ${e.message}`, e);
             vscode.window.showErrorMessage(`Error applying file content: ${e.message}`);
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.saveCodeToFile', async (content: string, language: string) => {
+        const activeWorkspace = getActiveWorkspace();
+        
+        // Map language IDs to likely extensions for the save dialog
+        const langMap: { [key: string]: string } = {
+            'python': 'py', 'javascript': 'js', 'typescript': 'ts', 'html': 'html', 'css': 'css',
+            'c': 'c', 'cpp': 'cpp', 'csharp': 'cs', 'java': 'java', 'rust': 'rs', 'go': 'go'
+        };
+        const ext = langMap[language.toLowerCase()] || 'txt';
+
+        const uri = await vscode.window.showSaveDialog({
+            defaultUri: activeWorkspace ? vscode.Uri.joinPath(activeWorkspace.uri, `generated_code.${ext}`) : undefined,
+            filters: { 'Source Code': [ext], 'All Files': ['*'] },
+            saveLabel: 'Save AI Generated Code'
+        });
+
+        if (uri) {
+            try {
+                await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf8'));
+                vscode.window.showInformationMessage(`Successfully saved to ${path.basename(uri.fsPath)}`);
+            } catch (e: any) {
+                vscode.window.showErrorMessage(`Failed to save file: ${e.message}`);
+            }
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.saveInfoToFile', async (content: string) => {
+        const activeWorkspace = getActiveWorkspace();
+        const uri = await vscode.window.showSaveDialog({
+            defaultUri: activeWorkspace ? vscode.Uri.joinPath(activeWorkspace.uri, 'information.md') : undefined,
+            filters: { 'Markdown': ['md'], 'Text': ['txt'] },
+            saveLabel: 'Save Information'
+        });
+
+        if (uri) {
+            try {
+                await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf8'));
+                vscode.window.showInformationMessage(`Information saved to ${path.basename(uri.fsPath)}`);
+            } catch (e: any) {
+                vscode.window.showErrorMessage(`Failed to save info: ${e.message}`);
+            }
         }
     }));
 
@@ -344,7 +387,6 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             try {
                 document = await vscode.workspace.openTextDocument(fileUri);
             } catch(e: any) {
-                // Handle binary file error gracefully
                 if (e.message && e.message.includes('binary')) {
                      const deleteFile = await vscode.window.showWarningMessage(
                         `'${filePath}' appears to be a binary file. "Delete Code" cannot remove lines from binaries. Do you want to delete the whole file instead?`,
@@ -370,7 +412,6 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             const before = text.substring(0, range.start);
             let after = text.substring(range.end);
             
-            // Try to consume the following newline to avoid leaving a blank line
             if (after.startsWith('\r\n')) {
                 after = after.substring(2);
             } else if (after.startsWith('\n')) {
@@ -425,7 +466,6 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
              
              const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
              
-             // 1. Snapshot
              let originalContent = '';
              try {
                  const doc = await vscode.workspace.openTextDocument(fileUri);
@@ -441,16 +481,111 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
              const snapshotUri = vscode.Uri.joinPath(snapshotsDir, `${fileName}.orig`);
              await vscode.workspace.fs.writeFile(snapshotUri, Buffer.from(originalContent, 'utf8'));
              
-             // 2. Open Diff (Snapshot vs Real)
              const title = `${fileName} (Original) ↔ ${fileName} (Patched)`;
              await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title, { preview: false });
              
-             // 3. Apply Patch
              await applyDiff(patchContent); 
              
              vscode.window.showInformationMessage(`Patch applied. Review changes and Save.`);
          } catch (e: any) {
              vscode.window.showErrorMessage(`Failed to apply patch: ${e.message}`);
          }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setEntryPoint', async (targetPath?: string) => {
+        const activeWorkspace = getActiveWorkspace();
+        if (!activeWorkspace) {
+            vscode.window.showErrorMessage("No active workspace found.");
+            return;
+        }
+
+        let entryPath = targetPath;
+        if (!entryPath) {
+            const uris = await vscode.window.showOpenDialog({
+                canSelectMany: false,
+                openLabel: 'Select Main Entry Point',
+                title: 'Set Project Launch File',
+                filters: { 'Scripts': ['py', 'js', 'ts', 'sh', 'bat', 'ps1', 'exe'] }
+            });
+            if (uris && uris[0]) {
+                entryPath = vscode.workspace.asRelativePath(uris[0]);
+            }
+        }
+
+        if (!entryPath) return;
+
+        try {
+            const launchJsonPath = vscode.Uri.joinPath(activeWorkspace.uri, '.vscode', 'launch.json');
+            let launchConfig: any = { version: '0.2.0', configurations: [] };
+
+            try {
+                const content = await vscode.workspace.fs.readFile(launchJsonPath);
+                launchConfig = JSON.parse(content.toString());
+            } catch (e) {
+                await vscode.workspace.fs.createDirectory(vscode.Uri.joinPath(activeWorkspace.uri, '.vscode'));
+            }
+
+            if (!launchConfig.configurations || !Array.isArray(launchConfig.configurations)) {
+                launchConfig.configurations = [];
+            }
+
+            const ext = path.extname(entryPath).toLowerCase();
+            let type = 'node';
+            if (ext === '.py') type = 'python';
+            else if (ext === '.sh' || ext === '.bat' || ext === '.ps1') type = 'bashdb';
+
+            const newConfig = {
+                name: `Lollms: Run ${path.basename(entryPath)}`,
+                request: 'launch',
+                type: type,
+                program: `\${workspaceFolder}/${entryPath}`,
+                console: 'integratedTerminal'
+            };
+
+            const existingIndex = launchConfig.configurations.findIndex((c: any) => c.program && c.program.includes(entryPath!));
+            if (existingIndex !== -1) {
+                launchConfig.configurations[existingIndex] = newConfig;
+            } else {
+                launchConfig.configurations.unshift(newConfig);
+            }
+
+            await vscode.workspace.fs.writeFile(launchJsonPath, Buffer.from(JSON.stringify(launchConfig, null, 4), 'utf8'));
+            vscode.window.showInformationMessage(`Main entry point set to: ${entryPath}`);
+            return entryPath;
+        } catch (e: any) {
+            vscode.window.showErrorMessage(`Failed to set entry point: ${e.message}`);
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.executeProject', async () => {
+        const activeWorkspace = getActiveWorkspace();
+        if (!activeWorkspace) return;
+
+        const launchConfig = vscode.workspace.getConfiguration('launch', activeWorkspace.uri);
+        const configs = launchConfig.get<any[]>('configurations');
+
+        if (!configs || configs.length === 0) {
+            const setup = await vscode.window.showInformationMessage(
+                "No launch configurations found. Would you like to select a main file to run?",
+                "Select Main File", "Cancel"
+            );
+
+            if (setup === "Select Main File") {
+                const result = await vscode.commands.executeCommand<string>('lollms-vs-coder.setEntryPoint');
+                if (!result) return;
+            } else {
+                return;
+            }
+        }
+
+        const updatedConfigs = vscode.workspace.getConfiguration('launch', activeWorkspace.uri).get<any[]>('configurations');
+        if (updatedConfigs && updatedConfigs.length > 0) {
+            const configToRun = updatedConfigs[0];
+            try {
+                await vscode.debug.startDebugging(activeWorkspace, configToRun.name);
+            } catch (e: any) {
+                vscode.window.showErrorMessage(`Execution failed: ${e.message}`);
+            }
+        }
     }));
 }

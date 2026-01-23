@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.67",
+  "version": "0.5.70",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -485,6 +485,22 @@
       "type": "object",
       "title": "%config.title%",
       "properties": {
+        "lollmsVsCoder.agent.permissions": {
+          "type": "object",
+          "default": {
+            "shellExecution": true,
+            "filesystemWrite": true,
+            "filesystemRead": true,
+            "internetAccess": true
+          },
+          "description": "Global permissions for the AI Agent tools.",
+          "properties": {
+            "shellExecution": { "type": "boolean", "default": true, "description": "Allow executing terminal commands and scripts." },
+            "filesystemWrite": { "type": "boolean", "default": true, "description": "Allow creating or updating files in the workspace." },
+            "filesystemRead": { "type": "boolean", "default": true, "description": "Allow reading file contents and listing directories." },
+            "internetAccess": { "type": "boolean", "default": true, "description": "Allow web search and website scraping." }
+          }
+        },
         "lollmsVsCoder.outputFormat": {
           "type": "string",
           "default": "legacy",
@@ -495,7 +511,7 @@
             "aider"
           ],
           "enumDescriptions": [
-            "Legacy Mode (Default): Uses markdown headers (File: path/to/file) and code blocks.",
+            "Legacy Mode (Default): Uses markdown headers and code blocks.",
             "XML Mode: Uses <file path='...'>...</file> tags. Optimized for Claude/Anthropic models.",
             "Aider Mode (Standard Gold): Uses <<<<<<< SEARCH ... ======= ... >>>>>>> REPLACE blocks. Optimized for GPT-4/DeepSeek."
           ]
@@ -721,7 +737,7 @@
             "**/venv/**",
             "**/.venv/**",
             "**/build/**",
-            "**/dist/**",
+            "** /dist/**",
             "**/out/**",
             "**/*.pyc",
             "**/*.egg-info/**",
@@ -812,17 +828,17 @@
         "lollmsVsCoder.herdParticipants": {
           "type": "array",
           "default": [],
-          "description": "Deprecated: Use Pre-Code and Post-Code participants lists instead."
+          "description": "Deprecated: Use Pre-Answer and Post-Answer participants lists instead."
         },
-        "lollmsVsCoder.herdPreCodeParticipants": {
+        "lollmsVsCoder.herdPreAnswerParticipants": {
           "type": "array",
           "default": [],
-          "description": "List of models and personalities for Pre-Code Brainstorming (Phase 1)."
+          "description": "List of models and personalities for Pre-Answer Brainstorming (Phase 1)."
         },
-        "lollmsVsCoder.herdPostCodeParticipants": {
+        "lollmsVsCoder.herdPostAnswerParticipants": {
           "type": "array",
           "default": [],
-          "description": "List of models and personalities for Post-Code Brainstorming (Phase 3)."
+          "description": "List of models and personalities for Post-Answer Brainstorming (Phase 3)."
         },
         "lollmsVsCoder.herdRounds": {
           "type": "number",
@@ -854,6 +870,31 @@
                 "Abort the operation.",
                 "Keep changes and carry them over to the new branch."
             ]
+        },
+        "lollmsVsCoder.noThinkMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Prefixes all system prompts with the /no_think command to disable the AI's thinking process (for models that support it)."
+        },
+        "lollmsVsCoder.systemEnv.showOs": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically share your Operating System name with the AI in the system prompt."
+        },
+        "lollmsVsCoder.systemEnv.showIp": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically share your local IP addresses with the AI (Useful for network-related tasks)."
+        },
+        "lollmsVsCoder.systemEnv.showShells": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically detect and share available shells (powershell, bash, etc.) with the AI."
+        },
+        "lollmsVsCoder.systemEnv.customInfo": {
+          "type": "string",
+          "default": "",
+          "description": "Provide additional environment context for the AI (e.g. 'I am using Git Bash on Windows', 'My Python version is 3.12')."
         }
       }
     },
@@ -876,6 +917,11 @@
         {
           "id": "lollmsDiscussionsView",
           "name": "%view.discussions.name%",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "id": "lollmsProcessesView",
+          "name": "%view.processes.name%",
           "when": "workspaceFolderCount > 0"
         },
         {
@@ -1101,9 +1147,19 @@
       ],
       "view/item/context": [
         {
+          "command": "lollms-vs-coder.renameDiscussion",
+          "when": "view == lollmsDiscussionsView && viewItem == 'discussion'",
+          "group": "inline@1"
+        },
+        {
+          "command": "lollms-vs-coder.generateDiscussionTitle",
+          "when": "view == lollmsDiscussionsView && viewItem == 'discussion'",
+          "group": "inline@2"
+        },
+        {
           "command": "lollms-vs-coder.deleteDiscussion",
           "when": "view == lollmsDiscussionsView && viewItem == 'discussion'",
-          "group": "inline"
+          "group": "inline@3"
         },
         {
           "command": "lollms-vs-coder.renameDiscussion",

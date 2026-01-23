@@ -64,7 +64,9 @@ export const state: {
     streamingMessages: { [key: string]: { buffer: string, timer: any } },
     isGenerating: boolean,
     capabilities: DiscussionCapabilities | null,
-    currentBranch: string
+    currentBranch: string,
+    currentPersonalityId: string,
+    personalities: any[]
 } = {
     searchMatches: [],
     currentMatchIndex: -1,
@@ -72,7 +74,9 @@ export const state: {
     streamingMessages: {},
     isGenerating: false,
     capabilities: null,
-    currentBranch: ''
+    currentBranch: '',
+    currentPersonalityId: 'default_coder',
+    personalities: []
 };
 
 // ... dom object ...

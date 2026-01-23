@@ -38,6 +38,10 @@ function closeMenu() {
     // Close Git Menu if open
     const gitMenu = document.getElementById('git-menu');
     if (gitMenu) gitMenu.classList.remove('visible');
+
+    // Close Personality Menu if open
+    const pMenu = document.getElementById('personality-menu');
+    if (pMenu) pMenu.classList.remove('visible');
 }
 
 export function initEventHandlers() {
@@ -207,10 +211,15 @@ export function initEventHandlers() {
         // Handle Git Menu
         const gitBadge = document.getElementById('git-badge');
         const gitMenu = document.getElementById('git-menu');
-        
-        // Check if click is inside the git badge wrapper. If not, close menu.
         if (gitMenu && gitMenu.classList.contains('visible') && gitBadge && !gitBadge.contains(target) && !gitMenu.contains(target)) {
             gitMenu.classList.remove('visible');
+        }
+
+        // Handle Personality Menu
+        const pBadge = document.getElementById('personality-badge');
+        const pMenu = document.getElementById('personality-menu');
+        if (pMenu && pMenu.classList.contains('visible') && pBadge && !pBadge.contains(target) && !pMenu.contains(target)) {
+            pMenu.classList.remove('visible');
         }
 
         const isInsideMenu = dom.moreActionsMenu && dom.moreActionsMenu.contains(target);
@@ -244,13 +253,42 @@ export function initEventHandlers() {
         });
     }
 
-    // UPDATED: Save Discussion Tools Button Handler
+    // Delegated click handler for custom-menu-items (Git and Personality)
+    document.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement;
+        if (!target) return;
+        
+        const menuItem = target.closest('.custom-menu-item');
+        if (menuItem) {
+            const id = menuItem.id;
+            
+            // Check if it's a personality selection
+            if (menuItem.classList.contains('p-menu-item')) {
+                const pid = menuItem.dataset.pid;
+                if (pid) {
+                    vscode.postMessage({ command: 'updateDiscussionPersonality', personalityId: pid });
+                    closeMenu();
+                }
+                return;
+            }
+
+            // Standard Git menu items
+            closeMenu();
+            if (id === 'git-menu-branch') {
+                vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.createGitBranch', params: {} } });
+            } else if (id === 'git-menu-commit') {
+                vscode.postMessage({ command: 'requestCommitStaging' });
+            } else if (id === 'git-menu-merge') {
+                vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.mergeGitBranch', params: {} } });
+            } else if (id === 'git-menu-revert') {
+                vscode.postMessage({ command: 'requestGitHistory' });
+            }
+        }
+    });
+
     if (dom.saveDiscussionToolsBtn) {
         dom.saveDiscussionToolsBtn.addEventListener('click', () => {
             const codeGenType = document.querySelector('input[name="codeGenType"]:checked') as HTMLInputElement;
-            
-            // Note: The modal config for herd mode toggles activation, not visibility.
-            
             const currentGui = state.capabilities?.guiState || { agentBadge: true, autoContextBadge: true, herdBadge: true };
 
             const capabilities = {
@@ -270,14 +308,9 @@ export function initEventHandlers() {
                 arxivSearch: dom.capArxivSearch ? dom.capArxivSearch.checked : false,
                 funMode: dom.modeFunMode ? dom.modeFunMode.checked : false,
                 thinkingMode: dom.capThinkingMode ? dom.capThinkingMode.value : 'none',
-                // Removed gitCommit - it's in the menu now
                 gitWorkflow: dom.capGitWorkflow ? dom.capGitWorkflow.checked : false,
-                
-                // Herd Mode
                 herdMode: dom.capHerdMode ? dom.capHerdMode.checked : false,
                 herdRounds: dom.capHerdRounds ? parseInt(dom.capHerdRounds.value) : 2,
-                
-                // Preserve GUI State
                 guiState: currentGui
             };
             vscode.postMessage({ command: 'updateDiscussionCapabilities', capabilities });
@@ -288,29 +321,6 @@ export function initEventHandlers() {
     const handleScroll = () => { if (!isScrolledToBottom(dom.messagesDiv)) { dom.scrollToBottomBtn.style.display = 'flex'; } else { dom.scrollToBottomBtn.style.display = 'none'; } };
     if (dom.messagesDiv) dom.messagesDiv.addEventListener('scroll', handleScroll);
     if (dom.scrollToBottomBtn) dom.scrollToBottomBtn.addEventListener('click', () => { dom.messagesDiv.scrollTo({ top: dom.messagesDiv.scrollHeight, behavior: 'smooth' }); });
-
-    // Git Menu Handlers - Use Event Delegation on the menu container to ensure elements exist
-    document.addEventListener('click', (e) => {
-        const target = e.target as HTMLElement;
-        if (!target) return;
-        
-        // Find closest menu item
-        const menuItem = target.closest('.custom-menu-item');
-        if (menuItem) {
-            const id = menuItem.id;
-            closeMenu();
-
-            if (id === 'git-menu-branch') {
-                vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.createGitBranch', params: {} } });
-            } else if (id === 'git-menu-commit') {
-                vscode.postMessage({ command: 'requestCommitStaging' });
-            } else if (id === 'git-menu-merge') {
-                vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.mergeGitBranch', params: {} } });
-            } else if (id === 'git-menu-revert') {
-                vscode.postMessage({ command: 'requestGitHistory' });
-            }
-        }
-    });
 
     // Staging Modal Handlers
     if (dom.stagingCloseBtn) {

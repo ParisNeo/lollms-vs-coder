@@ -70,6 +70,11 @@ export class LollmsAPI {
     this.globalState = globalState;
     this.httpsAgent = this.createHttpsAgent();
     
+    // Prioritize environment variable LOLLMS_KEY
+    if (!this.config.apiKey) {
+        this.config.apiKey = process.env.LOLLMS_KEY || '';
+    }
+
     try {
         const url = new URL(this.config.apiUrl);
         this.baseUrl = `${url.protocol}//${url.host}`;
@@ -111,6 +116,12 @@ export class LollmsAPI {
   public updateConfig(newConfig: LollmsConfig) {
     const oldUrl = this.config.apiUrl;
     this.config = newConfig;
+
+    // Prioritize environment variable LOLLMS_KEY
+    if (!this.config.apiKey) {
+        this.config.apiKey = process.env.LOLLMS_KEY || '';
+    }
+
     this.httpsAgent = this.createHttpsAgent();
     
     try {
@@ -138,13 +149,13 @@ export class LollmsAPI {
           const models = await this.getModels(true);
           return { 
               success: true, 
-              message: `âœ… Connection Successful! Found ${models.length} models.`,
+              message: `✅ Connection Successful! Found ${models.length} models.`,
               details: `URL: ${this.baseUrl}\nBackend: ${this.config.backendType}`
           };
       } catch (error: any) {
           return { 
               success: false, 
-              message: `â Œ Connection Failed: ${error.message}`,
+              message: `❌ Connection Failed: ${error.message}`,
               details: error.stack
           };
       }

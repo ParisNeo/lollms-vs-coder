@@ -15,6 +15,12 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showLog', () => 
         Logger.show()));
 
+    // FIX: Register missing command 'lollms-vs-coder.showRunningProcesses'
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showRunningProcesses', () => {
+        // Reveal the processes view in the sidebar
+        vscode.commands.executeCommand('lollmsProcessesView.focus');
+    }));
+
     // Register the missing "selectModel" command
     registerSelectModelCommand(context, services);
 }

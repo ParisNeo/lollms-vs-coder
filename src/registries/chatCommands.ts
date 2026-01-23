@@ -29,7 +29,7 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
         panel.agentManager.setProcessManager(services.processManager);
         panel.setContextManager(services.contextManager);
         panel.setPersonalityManager(services.personalityManager);
-        panel.setHerdManager(services.herdManager); // Added injection
+        panel.setHerdManager(services.herdManager); 
         
         await panel.loadDiscussion();
         services.treeProviders.discussion?.refresh();
@@ -54,6 +54,54 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
             services.treeProviders.discussion?.refresh();
         }
     }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.renameDiscussion', async (item: DiscussionItem) => {
+        const newTitle = await vscode.window.showInputBox({
+            prompt: vscode.l10n.t('prompt.enterNewDiscussionTitle'),
+            value: item.discussion.title
+        });
+
+        if (newTitle !== undefined && newTitle.trim()) {
+            item.discussion.title = newTitle.trim();
+            await services.discussionManager.saveDiscussion(item.discussion);
+            
+            // Update open panel title if it exists
+            const panel = ChatPanel.panels.get(item.discussion.id);
+            if (panel) {
+                panel._panel.title = item.discussion.title;
+            }
+            
+            services.treeProviders.discussion?.refresh();
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateDiscussionTitle', async (item: DiscussionItem) => {
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: vscode.l10n.t('progress.generatingDiscussionTitle'),
+            cancellable: false
+        }, async () => {
+            try {
+                const newTitle = await services.discussionManager.generateDiscussionTitle(item.discussion);
+                if (newTitle) {
+                    item.discussion.title = newTitle;
+                    await services.discussionManager.saveDiscussion(item.discussion);
+                    
+                    const panel = ChatPanel.panels.get(item.discussion.id);
+                    if (panel) {
+                        panel._panel.title = item.discussion.title;
+                    }
+                    
+                    services.treeProviders.discussion?.refresh();
+                } else {
+                    vscode.window.showErrorMessage("Failed to generate a title: The AI returned an empty response.");
+                }
+            } catch (error: any) {
+                // Show actual API error to user (e.g. Connection refused, model not found)
+                vscode.window.showErrorMessage(`Title Generation Error: ${error.message}`);
+            }
+        });
+    }));
     
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.switchDiscussion', async (discussionId: string) => {
         const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussionId, services.gitIntegration, services.skillsManager);
@@ -65,7 +113,7 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
         panel.agentManager.setProcessManager(services.processManager);
         panel.setContextManager(services.contextManager);
         panel.setPersonalityManager(services.personalityManager);
-        panel.setHerdManager(services.herdManager); // Added injection
+        panel.setHerdManager(services.herdManager); 
         await panel.loadDiscussion();
     }));
 
@@ -85,6 +133,27 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
             const message = vscode.l10n.t('info.cleanedEmptyDiscussions', count) || `Cleaned ${count} empty discussions.`;
             vscode.window.showInformationMessage(message);
             services.treeProviders.discussion?.refresh();
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.runScript', async (code: string, language: string) => {
+        const panel = ChatPanel.currentPanel;
+        const workspaceFolder = getActiveWorkspace();
+
+        if (!panel) {
+            vscode.window.showErrorMessage("No active Lollms chat panel found to display execution output.");
+            return;
+        }
+
+        if (!workspaceFolder) {
+            vscode.window.showErrorMessage("No active workspace folder. Please open a folder to execute scripts.");
+            return;
+        }
+
+        try {
+            await services.scriptRunner.runScript(code, language, panel, workspaceFolder);
+        } catch (error: any) {
+            vscode.window.showErrorMessage(`Failed to run script: ${error.message}`);
         }
     }));
 }

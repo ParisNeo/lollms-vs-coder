@@ -224,5 +224,6 @@
     "view.codeGraph.importGraph": "Import Graph",
     "view.codeGraph.classDiagram": "Class Diagram",
     "tooltip.node.type": "Type:",
-    "view.codeGraph.emptyState": "No code structure found or graph has not been built yet. Click the diagram icon in the 'Discussions' view sidebar to build the graph."
+    "view.codeGraph.emptyState": "No code structure found or graph has not been built yet. Click the diagram icon in the 'Discussions' view sidebar to build the graph.",
+    "config.addPedagogicalInstruction.description": "Automatically append a pedagogical instruction to the last user message when sending to the AI (hidden from chat view)."
 }

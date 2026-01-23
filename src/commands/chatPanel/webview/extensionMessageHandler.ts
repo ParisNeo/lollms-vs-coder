@@ -68,7 +68,7 @@ export function handleExtensionMessage(event: MessageEvent) {
                 setGeneratingState(message.isGenerating);
                 break;
             case 'updateContext':
-                updateContext(message.context);
+                updateContext(message.context, message.files);
                 break;
             case 'displayPlan':
                 displayPlan(message.plan);
@@ -168,8 +168,8 @@ export function handleExtensionMessage(event: MessageEvent) {
                     }
 
                     // Toggle Web Search Indicator
-                    if (dom.webSearchIndicator) {
-                        dom.webSearchIndicator.style.display = caps.webSearch ? 'flex' : 'none';
+                    if (dom.websearchIndicator) {
+                        dom.websearchIndicator.style.display = caps.webSearch ? 'flex' : 'none';
                     }
                     
                     // Update Badges via ui.ts helper
@@ -223,16 +223,19 @@ export function handleExtensionMessage(event: MessageEvent) {
                 }
                 break;
             case 'updatePersonalities':
+                state.personalities = message.personalities || [];
+                state.currentPersonalityId = message.currentPersonalityId || 'default_coder';
                 if (dom.personalitySelector) {
                     dom.personalitySelector.innerHTML = '';
-                    message.personalities.forEach((p: any) => {
+                    state.personalities.forEach((p: any) => {
                         const option = document.createElement('option');
                         option.value = p.id;
                         option.textContent = p.name;
                         dom.personalitySelector.appendChild(option);
                     });
-                    dom.personalitySelector.value = message.currentPersonalityId || 'default_coder';
+                    dom.personalitySelector.value = state.currentPersonalityId;
                 }
+                updateBadges();
                 break;
             case 'tokenCalculationStarted':
                 if (dom.tokenCountingOverlay) {
@@ -487,6 +490,13 @@ export function handleExtensionMessage(event: MessageEvent) {
                 if (dom.stagingModal) dom.stagingModal.classList.add('visible');
                 break;
             }
+            case 'updateDiscussionPersonality':
+                state.currentPersonalityId = message.personalityId;
+                if (dom.personalitySelector) {
+                    dom.personalitySelector.value = message.personalityId;
+                }
+                updateBadges();
+                break;
         }
     } catch(e: any) {
         console.error("Lollms Webview Error: Failed to process message from extension.", e);

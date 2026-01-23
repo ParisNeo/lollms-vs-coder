@@ -400,7 +400,6 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
                 infos.push({ type: 'rename', path: `${xmlRename[1]} -> ${xmlRename[2]}`, stripFirstLine: false });
                 continue;
             }
-            // Fix: Map XML delete/remove tags to 'file_delete' to distinguish from code block deletion
             if (xmlDelete) {
                 infos.push({ type: 'file_delete', path: xmlDelete[1], stripFirstLine: false });
                 continue;
@@ -535,6 +534,26 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
     return infos;
 }
 
+function looksLikeDiff(text: string): boolean {
+    const lines = text.split('\n');
+    let headerLines = 0;
+    let chunkMarkers = 0;
+    
+    // Check first 20 lines for unified diff indicators
+    for (let i = 0; i < Math.min(lines.length, 20); i++) {
+        const line = lines[i].trim();
+        if (line.startsWith('--- ') || line.startsWith('+++ ')) {
+            headerLines++;
+        }
+        if (line.startsWith('@@')) {
+            chunkMarkers++;
+        }
+    }
+    
+    // Most unified diffs have at least 2 headers (---/+++) OR a chunk marker
+    return headerLines >= 2 || chunkMarkers >= 1;
+}
+
 function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
     const pres = container.querySelectorAll('pre');
     if (pres.length === 0) return;
@@ -578,7 +597,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
         let isInsert = false;
         let isReplace = false;
         let isDeleteCode = false;
-        let isFileDelete = false; // New flag for file deletion
+        let isFileDelete = false; 
         let filePath = '';
 
         if (language.includes(':')) {
@@ -619,16 +638,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
                 filePath = info.path;
                 isDeleteCode = true;
             } else if (info.type === 'file_delete') {
-                // Ensure we don't set isDeleteCode (block delete)
-                // We just let it fall through to language=='delete' check or handle it explicitly
                 isFileDelete = true;
-                // filePath usually undefined for XML tags in info, but content has path
-                // Actually info.path has the path from XML tag
-                // codeText also has the path because renderMessageContent replaced it
-            }
-
-            if (info.path && ['file', 'diff', 'insert', 'replace', 'delete', 'file_delete'].includes(info.type || '')) {
-                actionableBlockCount++;
             }
 
             if (info.stripFirstLine) {
@@ -639,21 +649,38 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
                     code.textContent = codeText; 
                 }
             }
-        } else {
-            if (language === 'diff') {
-                const diffHeaderMatch = codeText.match(/---\s+a\/(.+)\n\+\+\+\s+b\/(.+)/);
-                if (diffHeaderMatch && diffHeaderMatch[1]) {
-                    diffFilePath = diffHeaderMatch[1].trim();
-                    isDiff = true;
-                } else {
-                    isDiff = true; 
-                }
-            } else if (codeText.includes("<<<<<<< SEARCH")) {
-                const lines = codeText.split('\n');
-                if (lines[0].includes("<<<<<<< SEARCH")) {
-                    isReplace = true;
-                }
+        } 
+        
+        // --- SECONDARY AUTO-DETECTION ---
+        // If not explicitly tagged by parser, check contents
+        if (!isDiff && (language === 'diff' || looksLikeDiff(codeText))) {
+            isDiff = true;
+            // Robust path extraction from header
+            const headerMatch = codeText.match(/(?:---|\+\+\+)\s+(?:[ab]\/)?([^\s\n\r]+)/);
+            if (headerMatch && headerMatch[1]) {
+                diffFilePath = headerMatch[1].trim();
             }
+        } else if (!isReplace && codeText.includes("<<<<<<< SEARCH")) {
+            const lines = codeText.split('\n');
+            if (lines[0].includes("<<<<<<< SEARCH")) {
+                isReplace = true;
+            }
+        }
+
+        // Special Autodetection: If it's supposed to be a file but looks like a diff
+        if (isFileBlock && !isDiff && looksLikeDiff(codeText)) {
+            const warningDiv = document.createElement('div');
+            warningDiv.style.backgroundColor = 'var(--vscode-inputValidation-warningBackground)';
+            warningDiv.style.border = '1px solid var(--vscode-inputValidation-warningBorder)';
+            warningDiv.style.padding = '4px 8px';
+            warningDiv.style.fontSize = '11px';
+            warningDiv.style.marginBottom = '4px';
+            warningDiv.innerHTML = `<span class="codicon codicon-warning"></span> This block looks like a diff. Apply as patch instead?`;
+            pre.parentNode?.insertBefore(warningDiv, pre);
+            
+            isDiff = true;
+            diffFilePath = filePath;
+            isFileBlock = false;
         }
 
         const prevEl = pre.previousElementSibling as HTMLElement;
@@ -723,6 +750,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
         }
 
         if (isFileBlock && filePath) {
+            actionableBlockCount++;
             langLabel.textContent = `${language} : ${filePath}`;
             
             const applyBtn = createButton('Apply to File', 'codicon-tools', () => {
@@ -733,17 +761,19 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             else actions.appendChild(applyBtn);
 
         } else if (isDiff) {
-            const path = diffFilePath || 'patch';
+            actionableBlockCount++;
+            const path = diffFilePath || filePath || 'patch';
             langLabel.textContent = `${language} : Diff: ${path}`;
             
             const applyPatchBtn = createButton('Apply Patch', 'codicon-tools', () => {
-                vscode.postMessage({ command: 'applyPatchContent', filePath: diffFilePath, content: codeText });
+                vscode.postMessage({ command: 'applyPatchContent', filePath: path, content: codeText });
             }, 'code-action-btn apply-btn');
             
             if (actions.firstChild) actions.insertBefore(applyPatchBtn, actions.firstChild);
             else actions.appendChild(applyPatchBtn);
 
         } else if (isInsert) {
+            actionableBlockCount++;
             langLabel.textContent = `Insert into ${filePath}`;
             const insertBtn = createButton('Insert Code', 'codicon-arrow-right', () => {
                 vscode.postMessage({ command: 'insertCode', filePath: filePath, content: codeText });
@@ -753,6 +783,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             else actions.appendChild(insertBtn);
 
         } else if (isReplace) {
+            actionableBlockCount++;
             langLabel.textContent = `Replace in ${filePath}`;
             const replaceBtn = createButton('Replace Code', 'codicon-arrow-swap', () => {
                 vscode.postMessage({ command: 'replaceCode', filePath: filePath, content: codeText });
@@ -762,6 +793,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             else actions.appendChild(replaceBtn);
 
         } else if (isDeleteCode) {
+            actionableBlockCount++;
             langLabel.textContent = `Delete from ${filePath}`;
             const deleteCodeBtn = createButton('Delete Code', 'codicon-trash', () => {
                 vscode.postMessage({ command: 'deleteCodeBlock', filePath: filePath, content: codeText });
@@ -784,7 +816,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             else actions.appendChild(renameBtn);
 
         } else if (language === 'delete' || (info && info.type === 'delete') || isFileDelete) {
-            // Updated condition to include isFileDelete (mapped from XML tags)
             const deleteBtn = createButton('Delete Files', 'codicon-trash', () => {
                 vscode.postMessage({ command: 'deleteFile', filePaths: codeText });
             }, 'code-action-btn delete-btn');
@@ -876,20 +907,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
                     if (!code) return;
                     const info = codeBlockInfos[index];
                     if (info && info.path && ['file', 'diff', 'insert', 'replace', 'delete', 'file_delete'].includes(info.type || '')) {
-                        // Map file_delete to 'delete' type for the extension command lollms-vs-coder.deleteFile
-                        // Wait, check handler in events.ts
-                        // 'deleteFile' command takes filePaths. 'deleteCodeBlock' takes content/filePath.
-                        // The event handler:
-                        // case 'applyAllChanges':
-                        // ... if (change.type === 'delete') ... deleteCodeBlock ...
-                        // We need a new case in events.ts 'applyAllChanges' loop to handle file_delete properly
-                        // OR map it here.
-                        
                         let typeToPush = info.type;
-                        if (typeToPush === 'file_delete') {
-                            typeToPush = 'file_delete'; // Pass explicit type
-                        }
-
                         changes.push({
                             type: typeToPush,
                             path: info.path,
@@ -923,8 +941,6 @@ function enhanceWithCommandButtons(container: HTMLElement) {
     const content = container.querySelector('.message-content');
     if (!content) return;
     
-    // Updated regex to allow alphanumeric, dots, hyphens, and underscores in command ID
-    // Also updated to handle parameters as a non-greedy match allowing empty objects or any chars until '}'
     const commandRegex = /\[command:([\w.-]+)\|label:([^|]+)\|params:(\{.*?\})\]/g;
     
     let newHtml = content.innerHTML;
@@ -1021,9 +1037,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 }
             });
             
-            // --- FIX: Unwrap XML tags that are stuck inside markdown code blocks ---
-            // Use broader unwrap: If block content looks like our XML, strip the fences.
-            let cleanXml = processedContent.replace(/```(?:xml(?::\w+)?)?\s*((?:<(?!!--)(?:file|rename|delete|select|remove|insert|replace)\b[\s\S]*?>[\s\S]*?)+)\s*```/gi, '$1');
+            let cleanXml = processedContent.replace(/```(?:xml(?!!--)(?::\w+)?)?\s*((?:<(?!!--)(?:file|rename|delete|select|remove|insert|replace)\b[\s\S]*?>[\s\S]*?)+)\s*```/gi, '$1');
 
             let xmlProcessedContent = cleanXml
                 .replace(/<file\s+path=["']([^"']+)["']>\s*([\s\S]*?)\s*<\/file>/g, (match, path, code) => {
@@ -1035,7 +1049,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 .replace(/<delete\s+path=["']([^"']+)["']\s*\/>/g, (match, path) => {
                     return `\`\`\`delete\n${path}\n\`\`\``;
                 })
-                .replace(/<remove\s+path=["']([^"']+)["']\s*\/>/g, (match, path) => { // Handle remove alias
+                .replace(/<remove\s+path=["']([^"']+)["']\s*\/>/g, (match, path) => { 
                     return `\`\`\`delete\n${path}\n\`\`\``;
                 })
                 .replace(/<select\s+path=["']([^"']+)["']\s*\/>/g, (match, path) => {
@@ -1141,7 +1155,7 @@ function addChatMessage(message: any, isFinal: boolean = true) {
     if (role === 'user') {
         avatarDiv.innerHTML = '<span class="codicon codicon-account"></span>';
     } else if (role === 'assistant') {
-        // Icon handled by CSS but class needed
+        // Handled by CSS
     } else {
         avatarDiv.innerHTML = '<span class="codicon codicon-gear"></span>';
     }
@@ -1219,21 +1233,41 @@ function addChatMessage(message: any, isFinal: boolean = true) {
     }
 }
 
-export function updateContext(contextText: string) {
+export function updateContext(contextText: string, files: string[] = []) {
     if(!dom.contextContainer) return;
     
+    const filesList = files && files.length > 0 
+        ? `<ul style="margin: 0; padding: 8px 12px; list-style-type: none; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px;">
+            ${files.map(f => `<li style="display: flex; align-items: center; gap: 6px; margin-bottom: 2px;"><span class="codicon codicon-file"></span> <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${f}</span></li>`).join('')}
+           </ul>`
+        : '<div style="padding: 8px; opacity: 0.7;">No files selected.</div>';
+
+    // Parse project context as markdown for rich display
+    const renderedMarkdown = sanitizer.sanitize(marked.parse(contextText) as string, SANITIZE_CONFIG);
+
     const innerHTML = `
     <div class="message special-zone-message context-message">
         <div class="message-avatar">
             <span class="codicon codicon-library"></span>
         </div>
         <div class="message-body">
-            <div class="message-header"><span class="role-name">Project Context</span></div>
+            <div class="message-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 10px;">
+                <span class="role-name">Project Context</span>
+                <button id="reset-context-bubble-btn" class="code-action-btn delete-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;">
+                    <span class="codicon codicon-clear-all"></span> Reset
+                </button>
+            </div>
             <div class="message-content">
+                <details class="info-collapsible" style="margin-bottom: 6px;">
+                    <summary>Selected Files (${files.length})</summary>
+                    <div class="collapsible-content" style="padding-top: 8px;">
+                        ${filesList}
+                    </div>
+                </details>
                 <details class="info-collapsible">
-                    <summary>View Loaded Files</summary>
-                    <div class="collapsible-content">
-                        <pre>${sanitizer.sanitize(contextText)}</pre>
+                    <summary>View Loaded Content & Tree</summary>
+                    <div class="collapsible-content markdown-context-view" style="max-height: 400px; overflow-y: auto; padding: 10px; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px; font-size: 0.95em;">
+                        ${renderedMarkdown}
                     </div>
                 </details>
             </div>
@@ -1241,6 +1275,23 @@ export function updateContext(contextText: string) {
     </div>`;
     
     dom.contextContainer.innerHTML = contextText ? innerHTML : '';
+
+    // Enhance code blocks and tree in the context bubble
+    const markdownView = dom.contextContainer.querySelector('.markdown-context-view');
+    if (markdownView) {
+        enhanceCodeBlocks(markdownView as HTMLElement, contextText);
+    }
+
+    // Attach listener programmatically to bypass CSP restrictions on inline onclick
+    const resetBtn = document.getElementById('reset-context-bubble-btn');
+    if (resetBtn) {
+        resetBtn.addEventListener('click', () => {
+            vscode.postMessage({ 
+                command: 'executeLollmsCommand', 
+                details: { command: 'resetContext', params: {} } 
+            });
+        });
+    }
 }
 
 export function displayPlan(plan: any) {
@@ -1323,7 +1374,7 @@ export function displayPlan(plan: any) {
 
     planWrapper.querySelectorAll('.retry-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
-            e.stopPropagation(); // Prevent toggling details
+            e.stopPropagation(); 
             vscode.postMessage({ command: 'retryAgentTask', taskId: (btn as HTMLElement).dataset.taskId });
         });
     });
@@ -1390,4 +1441,3 @@ export function insertNewMessageEditor(role: 'user' | 'assistant') {
         (cancelBtn as HTMLElement).addEventListener('click', () => editorWrapper.remove());
     }
 }
-

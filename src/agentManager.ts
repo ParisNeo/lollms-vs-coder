@@ -3,19 +3,18 @@ import { ChatPanel } from './commands/chatPanel/chatPanel';
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
 import { ContextManager } from './contextManager';
 import { GitIntegration } from './gitIntegration';
-import * as os from 'os';
-import * as path from 'path';
-import { exec } from 'child_process';
 import { InfoPanel } from './commands/infoPanel';
 import { PlanParser } from './planParser';
-import { getProcessedSystemPrompt } from './utils';
+import { stripThinkingTags } from './utils';
 import { ProcessManager } from './processManager';
 import { DiscussionManager, Discussion } from './discussionManager';
 import * as fs from 'fs/promises';
+import * as path from 'path';
 import { ToolManager } from './tools/toolManager';
-import { ToolExecutionEnv, ToolDefinition, Plan } from './tools/tool';
+import { ToolExecutionEnv, ToolDefinition, Plan, ToolPermissionGroup } from './tools/tool';
 import { CodeGraphManager } from './codeGraphManager';
 import { SkillsManager } from './skillsManager';
+import { runCommandInTerminal } from './extensionState';
 
 interface Task {
     id: number;
@@ -41,7 +40,7 @@ export class AgentManager {
     private toolManager: ToolManager;
     private codeGraphManager: CodeGraphManager;
     private skillsManager: SkillsManager;
-    private globalFailureLog: string[] = []; // Stores failures to prevent loops
+    private globalFailureLog: string[] = []; 
 
     constructor(
         private chatPanel: ChatPanel,
@@ -86,7 +85,7 @@ export class AgentManager {
     public toggleAgentMode() {
         this.isActive = !this.isActive;
         if (this.isActive) {
-            this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🤖 **Agent Mode Activated.** Using model: \`${this.lollmsApi.getModelName()}\`. Please provide your goal.` });
+            this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🤖 **Agent Mode Activated.** Architect is ready.` });
         } else {
             this.chatPanel.addMessageToDiscussion({ role: 'system', content: '🤖 **Agent Mode Deactivated.**' });
             this.displayAndSavePlan(null);
@@ -102,45 +101,26 @@ export class AgentManager {
         this.chatPanel.displayPlan(plan);
     }
 
-    private getContextAwareTools(discussion: Discussion): ToolDefinition[] {
-        const baseTools = this.toolManager.getEnabledTools();
-        const caps = discussion.capabilities;
-        
-        if (!caps) return baseTools;
-
-        return baseTools.filter(tool => {
-            if (tool.name === 'search_web' && !caps.webSearch) return false;
-            if (tool.name === 'search_arxiv' && !caps.arxivSearch) return false;
-            if (tool.name === 'generate_image' && !caps.imageGen) return false;
-            return true;
-        });
-    }
-
     public async run(initialObjective: string, discussion: Discussion, workspaceFolder: vscode.WorkspaceFolder, modelOverride?: string) {
         if (!this.isActive || !this.processManager) return;
         
-        const { id: processId, controller } = this.processManager.register(discussion.id, `Agent: ${initialObjective.substring(0, 40)}...`);
+        const { id: processId, controller } = this.processManager.register(discussion.id, `Agent Planning...`);
         
         try {
             this.currentWorkspaceFolder = workspaceFolder;
             this.currentDiscussion = discussion;
             this.chatHistory = [...discussion.messages];
-            this.globalFailureLog = []; // Reset logs for new objective
+            this.globalFailureLog = []; 
             
-            const allowedTools = this.getContextAwareTools(discussion);
-
             const initialPlanState: Plan = { 
                 objective: initialObjective,
-                scratchpad: "🧠 Thinking... Generating the initial execution plan.",
+                scratchpad: "🧠 Architect is gathering project intelligence...",
                 tasks: []
             };
             this.displayAndSavePlan(initialPlanState);
     
-            // --- Multi-Agent Simulation: Architect ---
-            // If an "Architect" model is configured, use it for planning.
             const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-            const architectModel = config.get<string>('architectModelName');
-            const plannerModel = architectModel ? architectModel : modelOverride;
+            const architectModel = config.get<string>('architectModelName') || modelOverride;
 
             const planResult = await this.planParser.generateAndParsePlan(
                 initialObjective, 
@@ -148,13 +128,12 @@ export class AgentManager {
                 undefined, 
                 undefined, 
                 controller.signal, 
-                plannerModel, // Use Architect
+                architectModel,
                 this.chatHistory,
-                allowedTools
+                this.toolManager.getEnabledTools()
             );
             
             if (controller.signal.aborted) {
-                this.chatPanel.addMessageToDiscussion({ role: 'system', content: '🛑 **Execution Halted:** User cancelled during planning.' });
                 this.deactivateAgent();
                 return;
             }
@@ -162,7 +141,7 @@ export class AgentManager {
             if (!planResult.plan) {
                  const failedPlanState: Plan = {
                     objective: initialObjective,
-                    scratchpad: `❌ **Plan Generation Failed:** ${planResult.error}\n\nRaw:\n\`\`\`\n${planResult.rawResponse}\n\`\`\``,
+                    scratchpad: `❌ **Planning Failed:** ${planResult.error}`,
                     tasks: []
                 };
                 this.displayAndSavePlan(failedPlanState);
@@ -171,7 +150,6 @@ export class AgentManager {
             }
             
             this.displayAndSavePlan(planResult.plan);
-            // Execute with default/worker model (or override if provided)
             await this.executePlan(0, controller.signal, modelOverride);
 
         } catch (error: any) {
@@ -179,7 +157,6 @@ export class AgentManager {
                 this.chatPanel.addMessageToDiscussion({ role: 'system', content: `❌ **Critical Error:** ${error.message}` });
             }
             this.deactivateAgent();
-            return;
         } finally {
             this.processManager.unregister(processId);
         }
@@ -188,6 +165,8 @@ export class AgentManager {
     private async performGitBackup(reason: string) {
         if (!this.currentWorkspaceFolder) return;
         try {
+            const isRepo = await this.gitIntegration.isGitRepo(this.currentWorkspaceFolder);
+            if (!isRepo) return;
             this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🔒 **Creating safety backup:** ${reason}...` });
             await this.gitIntegration.stageAllAndCommit(`Auto-backup: ${reason}`, this.currentWorkspaceFolder);
         } catch (e) {
@@ -205,14 +184,11 @@ export class AgentManager {
             if (failedTaskIndex === -1) return;
             
             const failedTask = this.currentPlan.tasks[failedTaskIndex];
-            if (failedTask.status !== 'failed' || !failedTask.can_retry) return;
-    
             failedTask.status = 'in_progress';
             failedTask.retries++;
             failedTask.can_retry = false;
             this.displayAndSavePlan(this.currentPlan);
             
-            // Re-planning uses Architect model if available
             const config = vscode.workspace.getConfiguration('lollmsVsCoder');
             const architectModel = config.get<string>('architectModelName') || this.currentDiscussion.model;
 
@@ -220,13 +196,10 @@ export class AgentManager {
             if (revisionSucceeded) {
                 await this.executePlan(failedTaskIndex, controller.signal, this.currentDiscussion.model);
             } else {
-                this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🛑 **Execution Halted:** Failed to generate a revised plan.` });
+                this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🛑 Failed to generate a revised plan.` });
                 this.deactivateAgent();
             }
         } catch (error: any) {
-             if (error.name !== 'AbortError') {
-                this.chatPanel.addMessageToDiscussion({ role: 'system', content: `❌ **Critical Error during retry:** ${error.message}` });
-            }
             this.deactivateAgent();
         } finally {
             this.processManager.unregister(processId);
@@ -239,14 +212,12 @@ export class AgentManager {
         this.currentTaskIndex = startIndex;
         while (this.currentTaskIndex < this.currentPlan.tasks.length) {
             if (signal.aborted) {
-                this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🛑 **Execution Halted:** User cancelled.` });
                 this.deactivateAgent();
                 return;
             }
             const task = this.currentPlan.tasks[this.currentTaskIndex];
     
             if (task.status === 'pending') {
-                // Auto-Backup before critical actions
                 if (task.action === 'generate_code' || task.action === 'execute_command') {
                     await this.performGitBackup(`Before task ${task.id} (${task.action})`);
                 }
@@ -264,13 +235,10 @@ export class AgentManager {
     
                 task.result = result.output;
                 task.status = result.success ? 'completed' : 'failed';
-    
-                this.currentPlan.scratchpad += `\n\nTask ${task.id} (${task.action}) ${task.status}. Result:\n${result.output}`;
                 this.displayAndSavePlan(this.currentPlan);
     
                 if (!result.success) {
-                    // Record failure globally to prevent loops
-                    this.globalFailureLog.push(`Task ${task.id} (${task.action}) failed with: ${result.output.substring(0, 200)}...`);
+                    this.globalFailureLog.push(`Task ${task.id} (${task.action}) failed: ${result.output.substring(0, 200)}`);
 
                     const maxRetries = vscode.workspace.getConfiguration('lollmsVsCoder').get<number>('agentMaxRetries') || 1;
                     if (task.retries < maxRetries) {
@@ -278,55 +246,68 @@ export class AgentManager {
                         const architectModel = config.get<string>('architectModelName') || modelOverride;
                         
                         const revisionSucceeded = await this.revisePlanForFailure(task, signal, architectModel);
-                        if (revisionSucceeded) {
-                            continue;
-                        } else {
-                            task.can_retry = true;
-                            this.displayAndSavePlan(this.currentPlan);
-                            return; 
-                        }
-                    } else {
-                        task.can_retry = true;
-                        this.displayAndSavePlan(this.currentPlan);
-    
-                        let userChoice: string | undefined = '';
-                        while (userChoice !== 'Stop' && userChoice !== 'Continue Anyway') {
-                            userChoice = await vscode.window.showErrorMessage(
-                                `Agent task "${task.description}" failed. What should I do?`,
-                                { modal: true },
-                                'Stop', 'Continue Anyway', 'View Log'
-                            );
-    
-                            if (userChoice === 'View Log') {
-                                InfoPanel.createOrShow(this.extensionUri, `Log for Task: ${task.id}`, `## Failure Log\n\`\`\`\n${task.result}\n\`\`\``);
-                            } else if (userChoice === undefined) {
-                                userChoice = 'Stop';
-                            }
-                        }
-    
-                        if (userChoice === 'Stop') {
-                            this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🛑 **Execution Halted:** User chose to stop.` });
-                            this.deactivateAgent();
-                            return;
-                        }
+                        if (revisionSucceeded) continue;
+                    }
+                    
+                    task.can_retry = true;
+                    this.displayAndSavePlan(this.currentPlan);
+
+                    const userChoice = await vscode.window.showErrorMessage(
+                        `Task "${task.description}" failed.`,
+                        { modal: true },
+                        'Stop', 'Continue Anyway', 'View Log'
+                    );
+
+                    if (userChoice === 'View Log') {
+                        InfoPanel.createOrShow(this.extensionUri, `Task ${task.id} Log`, `## Result\n${task.result}`);
+                    }
+                    if (userChoice === 'Stop' || userChoice === undefined) {
+                        this.deactivateAgent();
+                        return;
                     }
                 }
             }
             this.currentTaskIndex++;
         }
     
-        this.chatPanel.addMessageToDiscussion({ role: 'system', content: '✅ **Plan Complete:** All tasks have been executed.' });
         this.deactivateAgent();
+    }
+
+    /**
+     * Verifies if the agent has global permission to run a specific tool.
+     */
+    private checkGlobalPermission(tool: ToolDefinition): { allowed: boolean, message?: string } {
+        if (!tool.permissionGroup) return { allowed: true };
+
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const permissions = config.get<any>('agent.permissions') || {};
+
+        const map: Record<ToolPermissionGroup, string> = {
+            'shell_execution': 'shellExecution',
+            'filesystem_write': 'filesystemWrite',
+            'filesystem_read': 'filesystemRead',
+            'internet_access': 'internetAccess'
+        };
+
+        const key = map[tool.permissionGroup];
+        if (key && permissions[key] === false) {
+            return { 
+                allowed: false, 
+                message: `🛑 **Global Permission Denied:** The action '${tool.name}' requires '${tool.permissionGroup}' access, which is currently disabled in your global Lollms settings. Please enable it in Settings -> Agent & Tools -> Permissions if you want the agent to perform this task.`
+            };
+        }
+
+        return { allowed: true };
     }
 
     private async executeTask(action: string, params: any, signal: AbortSignal): Promise<{ success: boolean, output: string }> {
         const tool = this.toolManager.getTool(action);
-        if (!tool) {
-            return { success: false, output: `Unknown action: ${action}` };
-        }
+        if (!tool) return { success: false, output: `Unknown action: ${action}` };
 
-        if (this.currentDiscussion && this.currentDiscussion.capabilities) {
-            if (action === 'search_web' && !this.currentDiscussion.capabilities.webSearch) return { success: false, output: "Web Search disabled."};
+        // --- GLOBAL PERMISSION CHECK ---
+        const perm = this.checkGlobalPermission(tool);
+        if (!perm.allowed) {
+            return { success: false, output: perm.message || "Permission denied by user configuration." };
         }
 
         const env: ToolExecutionEnv = {
@@ -339,20 +320,29 @@ export class AgentManager {
             agentManager: this
         };
         
-        return tool.execute(params, env, signal);
+        try {
+            return await tool.execute(params, env, signal);
+        } catch (error: any) {
+            // Handle OS-level permission denied errors (EACCES / EPERM)
+            if (error.message && (error.message.includes('EACCES') || error.message.includes('permission denied'))) {
+                return { 
+                    success: false, 
+                    output: `❌ **OS Permission Error:** The operating system denied access to perform this action. This often happens if the project folder is read-only, or if the agent tried to access a system-protected file.\n\nRaw Error: ${error.message}` 
+                };
+            }
+            throw error;
+        }
+    }
+
+    public async submitFinalMessage(message: ChatMessage) {
+        await this.chatPanel.addMessageToDiscussion(message);
     }
     
     private async revisePlanForFailure(failedTask: Task, signal: AbortSignal, modelOverride?: string): Promise<boolean> {
         if (!this.currentPlan || !this.currentDiscussion) return false;
         
-        const allowedTools = this.getContextAwareTools(this.currentDiscussion);
-
         failedTask.retries++;
-        
-        // Inject failure log into scratchpad to warn the model
-        const failureHistory = this.globalFailureLog.join('\n');
-        this.currentPlan.scratchpad += `\n\n---\n⚠️ **Task ${failedTask.id} Failed.**\n**GLOBAL FAILURE LOG (DO NOT REPEAT THESE MISTAKES):**\n${failureHistory}\n\nAttempting to self-correct...\n---`;
-        
+        this.currentPlan.scratchpad += `\n\n⚠️ **Task ${failedTask.id} Failed.** Attempting self-correction...`;
         this.displayAndSavePlan(this.currentPlan);
 
         const planResult = await this.planParser.generateAndParsePlan(
@@ -363,24 +353,16 @@ export class AgentManager {
             signal,
             modelOverride,
             this.chatHistory,
-            allowedTools
+            this.toolManager.getEnabledTools()
         );
 
-        if (signal.aborted) { return false; }
+        if (signal.aborted || !planResult.plan) return false;
 
-        if (!planResult.plan) {
-            this.currentPlan.scratchpad += `\n\n❌ **Self-Correction Failed:** Invalid response.\n${planResult.rawResponse}`;
-            this.displayAndSavePlan(this.currentPlan);
-            return false;
-        }
-
-        const revisedPlanFragment = planResult.plan;
         const failedTaskIndex = this.currentPlan.tasks.findIndex(t => t.id === failedTask.id);
-        
         this.currentPlan.tasks.splice(failedTaskIndex);
 
         let nextId = this.currentPlan.tasks.length > 0 ? Math.max(...this.currentPlan.tasks.map(t => t.id)) + 1 : 1;
-        for (const newTask of revisedPlanFragment.tasks) {
+        for (const newTask of planResult.plan.tasks) {
             newTask.id = nextId++;
             this.currentPlan.tasks.push(newTask);
         }
@@ -390,63 +372,8 @@ export class AgentManager {
         return true;
     }
 
-    public async replan(instruction: string, signal: AbortSignal, modelOverride?: string): Promise<{ success: boolean; output: string; }> {
-        if (!this.currentPlan) return { success: false, output: "No active plan." };
-
-        const completedTasks = this.currentPlan.tasks.filter(t => t.status === 'completed');
-        const tasksSummary = completedTasks.map(t => `- Task ${t.id} (${t.action}): Completed`).join('\n');
-        
-        const allowedTools = this.currentDiscussion ? this.getContextAwareTools(this.currentDiscussion) : this.toolManager.getEnabledTools();
-        const systemPrompt = this.planParser.getPlannerSystemPrompt(true, allowedTools);
-        
-        // Include Global Failure Log in prompt for better context awareness
-        const failureHistory = this.globalFailureLog.length > 0 ? `\n\n**PAST FAILURES:**\n${this.globalFailureLog.join('\n')}` : '';
-
-        const promptContent = `
-The original objective was: "${this.currentPlan.objective}"
-Completed tasks:
-${tasksSummary}
-${failureHistory}
-
-New Instruction: "${instruction}"
-
-Generate a NEW set of tasks to replace the pending ones.
-Start ID from: ${completedTasks.length > 0 ? completedTasks[completedTasks.length-1].id + 1 : 1}.
-`;
-
-        // Use Architect model for replanning if available
-        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-        const plannerModel = config.get<string>('architectModelName') || modelOverride;
-
-        try {
-            const rawResponse = await this.lollmsApi.sendChat([systemPrompt, { role: 'user', content: promptContent }], null, signal, plannerModel);
-            const jsonString = this.planParser.extractJson(stripThinkingTags(rawResponse));
-            
-            if (!jsonString) return { success: false, output: "Failed to parse new plan." };
-
-            const newPlanFragment = JSON.parse(jsonString) as Plan;
-            const splitIndex = this.currentTaskIndex + 1;
-            this.currentPlan.tasks.splice(splitIndex);
-
-            let nextId = this.currentPlan.tasks.length > 0 ? Math.max(...this.currentPlan.tasks.map(t => t.id)) + 1 : 1;
-            for (const newTask of newPlanFragment.tasks) {
-                newTask.id = nextId++;
-                newTask.status = 'pending';
-                this.currentPlan.tasks.push(newTask);
-            }
-
-            this.currentPlan.scratchpad += `\n\n--- PLAN MODIFIED: "${instruction}" ---`;
-            this.displayAndSavePlan(this.currentPlan);
-            return { success: true, output: "Plan successfully modified." };
-
-        } catch (error: any) {
-            return { success: false, output: `Error rewriting plan: ${error.message}` };
-        }
-    }
-    
-    // ... resolveParameters, generateFileTree, runCommand, requestUserInput ...
     private resolveParameters(task: Task): { [key: string]: any } {
-        if (!this.currentPlan) throw new Error("No current plan.");
+        if (!this.currentPlan) throw new Error("No active plan.");
         const resolvedParams: { [key: string]: any } = {};
         const regex = /\{\{tasks\[(\d+)\]\.result\}\}/g;
 
@@ -458,10 +385,10 @@ Start ID from: ${completedTasks.length > 0 ? completedTasks[completedTasks.lengt
                 while ((match = regex.exec(value)) !== null) {
                     const taskId = parseInt(match[1], 10);
                     const sourceTask = this.currentPlan.tasks.find(t => t.id === taskId);
-                    if (sourceTask && sourceTask.status === 'completed' && sourceTask.result !== null) {
+                    if (sourceTask && sourceTask.result !== null) {
                         resolvedValue = resolvedValue.replace(match[0], sourceTask.result);
                     } else {
-                        throw new Error(`Dependant task ${taskId} not completed.`);
+                        throw new Error(`Dependency error: Task ${taskId} not executed yet.`);
                     }
                 }
                 resolvedParams[key] = resolvedValue;
@@ -472,63 +399,70 @@ Start ID from: ${completedTasks.length > 0 ? completedTasks[completedTasks.lengt
         return resolvedParams;
     }
 
+    public async replan(instruction: string, signal: AbortSignal, modelOverride?: string): Promise<{ success: boolean; output: string; }> {
+        if (!this.currentPlan) return { success: false, output: "No active plan." };
+        this.currentPlan.scratchpad += `\n\n🔄 **Replanning requested:** ${instruction}`;
+        
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const plannerModel = config.get<string>('architectModelName') || modelOverride;
+
+        try {
+            const planResult = await this.planParser.generateAndParsePlan(
+                `${this.currentPlan.objective} (Update: ${instruction})`,
+                this.currentPlan,
+                undefined,
+                undefined,
+                signal,
+                plannerModel,
+                this.chatHistory,
+                this.toolManager.getEnabledTools()
+            );
+
+            if (!planResult.plan) return { success: false, output: "Failed to generate new plan." };
+
+            const splitIndex = this.currentTaskIndex + 1;
+            this.currentPlan.tasks.splice(splitIndex);
+
+            let nextId = this.currentPlan.tasks.length > 0 ? Math.max(...this.currentPlan.tasks.map(t => t.id)) + 1 : 1;
+            for (const newTask of planResult.plan.tasks) {
+                newTask.id = nextId++;
+                newTask.status = 'pending';
+                this.currentPlan.tasks.push(newTask);
+            }
+
+            this.displayAndSavePlan(this.currentPlan);
+            return { success: true, output: "Plan modified successfully." };
+
+        } catch (error: any) {
+            return { success: false, output: `Error: ${error.message}` };
+        }
+    }
+
     public async generateFileTree(startPath: string, prefix: string = ''): Promise<string> {
         let result = '';
         let entries;
         try {
             entries = await fs.readdir(startPath, { withFileTypes: true });
         } catch (e) {
-            return ` (could not read directory)\n`;
+            return ` (error reading directory)\n`;
         }
     
-        const sortedEntries = entries.sort((a, b) => {
-            if (a.isDirectory() && !b.isDirectory()) return -1;
-            if (!a.isDirectory() && b.isDirectory()) return 1;
-            return a.name.localeCompare(b.name);
-        });
-    
-        for (let i = 0; i < sortedEntries.length; i++) {
-            const entry = sortedEntries[i];
-            const isLast = i === sortedEntries.length - 1;
-            const connector = isLast ? '└── ' : '├── ';
-    
-            if (['.git', 'node_modules', '__pycache__', '.vscode', '.lollms', 'venv', '.venv'].includes(entry.name)) {
-                continue;
-            }
-    
-            result += prefix + connector + entry.name + '\n';
+        for (let i = 0; i < entries.length; i++) {
+            const entry = entries[i];
+            if (['node_modules', '.git', '.lollms', 'venv'].includes(entry.name)) continue;
             
+            const isLast = i === entries.length - 1;
+            result += prefix + (isLast ? '└── ' : '├── ') + entry.name + '\n';
             if (entry.isDirectory()) {
-                const newPrefix = prefix + (isLast ? '    ' : '│   ');
-                result += await this.generateFileTree(path.join(startPath, entry.name), newPrefix);
+                result += await this.generateFileTree(path.join(startPath, entry.name), prefix + (isLast ? '    ' : '│   '));
             }
         }
         return result;
     }
 
     public async runCommand(command: string, signal: AbortSignal): Promise<{ success: boolean, output: string }> {
-        return new Promise(resolve => {
-            if (!this.currentWorkspaceFolder) {
-                resolve({ success: false, output: "Error: No active workspace." });
-                return;
-            }
-            const child = exec(command, { cwd: this.currentWorkspaceFolder.uri.fsPath }, (error, stdout, stderr) => {
-                let output = '';
-                if (stdout.trim()) output += `STDOUT:\n${stdout.trim()}\n\n`;
-                if (stderr.trim()) output += `STDERR:\n${stderr.trim()}`;
-    
-                if (error) {
-                    resolve({ success: false, output: `Error:\n${output.trim()}\n\nCode: ${error.code}` });
-                    return;
-                }
-                resolve({ success: true, output: `Success.\n${output.trim() || '(No output)'}` });
-            });
-            
-            signal.addEventListener('abort', () => {
-                child.kill();
-                resolve({ success: false, output: 'Command cancelled.' });
-            });
-        });
+        if (!this.currentWorkspaceFolder) return { success: false, output: "No workspace." };
+        return runCommandInTerminal(command, this.currentWorkspaceFolder.uri.fsPath, `Agent Task`, signal);
     }
 
     public async requestUserInput(question: string, signal: AbortSignal): Promise<string> {
@@ -542,8 +476,6 @@ Start ID from: ${completedTasks.length > 0 ? completedTasks[completedTasks.lengt
             this.discussionManager.saveDiscussion(this.currentDiscussion);
         }
         this.currentPlan = null;
-        this.currentWorkspaceFolder = undefined;
-        this.currentDiscussion = undefined;
         this.chatPanel.updateAgentMode(false);
     }
 }

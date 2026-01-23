@@ -8,6 +8,7 @@ import { SkillsTreeProvider } from '../commands/skillsTreeProvider';
 import { PersonalitiesTreeProvider } from '../commands/personalitiesTreeProvider';
 import { WorkflowsTreeProvider } from '../commands/workflowsTreeProvider';
 import { DiscussionTreeProvider } from '../commands/discussionTreeProvider';
+import { ProcessTreeProvider } from '../commands/processTreeProvider';
 
 export function registerViews(context: vscode.ExtensionContext, services: LollmsServices) {
     // Actions
@@ -42,6 +43,10 @@ export function registerViews(context: vscode.ExtensionContext, services: Lollms
     const workflowsTreeProvider = new WorkflowsTreeProvider(services.workflowManager);
     services.treeProviders.workflows = workflowsTreeProvider;
     context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsWorkflowsView', workflowsTreeProvider));
+
+    // Processes
+    const processTreeProvider = new ProcessTreeProvider(services.processManager);
+    context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsProcessesView', processTreeProvider));
 
     // Discussions
     const discussionTreeProvider = new DiscussionTreeProvider(services.discussionManager, services.extensionUri);

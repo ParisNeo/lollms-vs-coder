@@ -1,13 +1,17 @@
+
+
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
 import { MemoryManager } from './memoryManager';
+import { execSync } from 'child_process';
 
 export interface HerdParticipant {
     model: string;
     personality: string;
     name?: string;
     systemPrompt?: string;
+    allowExecution?: boolean;
 }
 
 export interface DynamicModelEntry {
@@ -32,20 +36,16 @@ export interface DiscussionCapabilities {
     arxivSearch: boolean;
     funMode: boolean;
     thinkingMode: 'none' | 'chain_of_thought' | 'chain_of_verification' | 'plan_and_solve' | 'self_critique' | 'no_think';
-    // gitCommit removed
     gitWorkflow: boolean;
-    // Herd Mode Settings
+    gitCommit?: boolean;
     herdMode: boolean;
     herdDynamicMode: boolean;
     herdParticipants: HerdParticipant[];
-    herdPreCodeParticipants: HerdParticipant[];
-    herdPostCodeParticipants: HerdParticipant[];
+    herdPreAnswerParticipants: HerdParticipant[];
+    herdPostAnswerParticipants: HerdParticipant[];
     herdRounds: number;
-    // Persistent Modes
     agentMode: boolean;
     autoContextMode: boolean;
-    
-    // GUI State (Badge Visibility)
     guiState?: {
         agentBadge: boolean;
         autoContextBadge: boolean;
@@ -53,62 +53,130 @@ export interface DiscussionCapabilities {
     };
 }
 
+/**
+ * Parses and applies a unified diff patch to a file using context matching.
+ * Robust against LLMs providing incorrect line numbers or malformed hunk headers.
+ */
 export async function applyDiff(diffContent: string) {
     const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders) {
-        throw new Error('No workspace folder open.');
-    }
+    if (!workspaceFolders) throw new Error('No workspace folder open.');
     const workspaceRoot = workspaceFolders[0].uri;
 
-    const fileMatch = diffContent.match(/^(?:--- a\/|\+\+\+ b\/)(.*)$/m);
-    if (!fileMatch) {
-        throw new Error('Could not determine file path from diff.');
-    }
+    // 1. Extract file path from header (--- a/path or +++ b/path)
+    const fileMatch = diffContent.match(/^(?:--- a\/|\+\+\+ b\/|---\s|\+\+\+\s)(.*)$/m);
+    if (!fileMatch) throw new Error('Invalid diff header. Could not find file path.');
     const relativePath = fileMatch[1].trim();
     const fileUri = vscode.Uri.joinPath(workspaceRoot, relativePath);
 
-    let document;
-    try {
-        document = await vscode.workspace.openTextDocument(fileUri);
-    } catch (error) {
-        throw new Error(`File not found: ${relativePath}`);
+    const document = await vscode.workspace.openTextDocument(fileUri);
+    const docLines = document.getText().split(/\r?\n/);
+    
+    // 2. Parse diff into hunks
+    const diffLines = diffContent.split(/\r?\n/);
+    interface Hunk {
+        searchLines: string[];
+        replaceLines: string[];
     }
-
-    const originalLines = document.getText().split('\n');
-    const diffLines = diffContent.split('\n');
-    const edit = new vscode.WorkspaceEdit();
-
-    let originalLineIndex = -1;
+    const hunks: Hunk[] = [];
+    let currentHunk: Hunk | null = null;
 
     for (const line of diffLines) {
         if (line.startsWith('@@')) {
-            const hunkMatch = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-            if (hunkMatch) {
-                originalLineIndex = parseInt(hunkMatch[1], 10) - 1;
-            }
-        } else if (line.startsWith('-')) {
-            if (originalLineIndex >= 0) {
-                const range = new vscode.Range(new vscode.Position(originalLineIndex, 0), new vscode.Position(originalLineIndex + 1, 0));
-                if (originalLines[originalLineIndex].trimEnd() === line.substring(1).trimEnd()) {
-                    edit.delete(fileUri, range);
-                    originalLineIndex++;
-                }
-            }
-        } else if (line.startsWith('+')) {
-            if (originalLineIndex >= 0) {
-                edit.insert(fileUri, new vscode.Position(originalLineIndex, 0), line.substring(1) + '\n');
-            }
-        } else if (line.startsWith(' ')) {
-            if(originalLineIndex >= 0) {
-                originalLineIndex++;
+            if (currentHunk) hunks.push(currentHunk);
+            currentHunk = { searchLines: [], replaceLines: [] };
+        } else if (currentHunk) {
+            if (line.startsWith('-')) {
+                currentHunk.searchLines.push(line.substring(1));
+            } else if (line.startsWith('+')) {
+                currentHunk.replaceLines.push(line.substring(1));
+            } else if (line.startsWith(' ')) {
+                const content = line.substring(1);
+                currentHunk.searchLines.push(content);
+                currentHunk.replaceLines.push(content);
             }
         }
     }
+    if (currentHunk) hunks.push(currentHunk);
 
-    const success = await vscode.workspace.applyEdit(edit);
-    if (!success) {
-        throw new Error('VS Code failed to apply edits.');
+    if (hunks.length === 0) throw new Error('No valid diff hunks found.');
+
+    // 3. Apply hunks to file content in memory
+    let finalLines = [...docLines];
+    
+    for (const hunk of hunks) {
+        if (hunk.searchLines.length === 0) {
+            // Addition-only hunk at the end/start? 
+            // If the LLM didn't provide context for a '+', we can't safely know where to put it.
+            continue; 
+        }
+
+        const matchIndex = findHunkMatch(finalLines, hunk.searchLines);
+        if (matchIndex === -1) {
+            throw new Error(`Could not locate the code block to patch in '${relativePath}'.\nTarget block starting with: "${hunk.searchLines[0].substring(0, 40)}..."`);
+        }
+
+        // Perform the replacement
+        finalLines.splice(matchIndex, hunk.searchLines.length, ...hunk.replaceLines);
     }
+
+    // 4. Update the document
+    const edit = new vscode.WorkspaceEdit();
+    const fullRange = new vscode.Range(
+        new vscode.Position(0, 0),
+        document.lineAt(document.lineCount - 1).range.end
+    );
+    edit.replace(fileUri, fullRange, finalLines.join(document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n'));
+    
+    const success = await vscode.workspace.applyEdit(edit);
+    if (!success) throw new Error('Failed to apply edits to the VS Code editor.');
+}
+
+/**
+ * Searches for a block of lines in the document lines.
+ * Uses trimmed matching to be resilient to indentation changes made by the LLM.
+ */
+function findHunkMatch(docLines: string[], searchLines: string[]): number {
+    if (searchLines.length === 0) return -1;
+
+    for (let i = 0; i <= docLines.length - searchLines.length; i++) {
+        let match = true;
+        for (let j = 0; j < searchLines.length; j++) {
+            // Trim both to ignore indentation drift, which is common in LLM diffs
+            if (docLines[i + j].trim() !== searchLines[j].trim()) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return i;
+    }
+    return -1;
+}
+
+function getIpAddresses(): string {
+    const interfaces = os.networkInterfaces();
+    const addresses: string[] = [];
+    for (const k in interfaces) {
+        for (const k2 in interfaces[k]!) {
+            const address = interfaces[k]![k2];
+            if (address.family === 'IPv4' && !address.internal) {
+                addresses.push(`${k}: ${address.address}`);
+            }
+        }
+    }
+    return addresses.join(', ') || 'None found';
+}
+
+function getAvailableShells(): string {
+    const shells: string[] = [];
+    const isWin = process.platform === 'win32';
+    if (isWin) {
+        shells.push('powershell', 'cmd');
+        try { execSync('where bash', { stdio: 'ignore' }); shells.push('bash'); } catch {}
+    } else {
+        const common = ['/bin/bash', '/bin/zsh', '/bin/sh'];
+        common.forEach(s => { if (require('fs').existsSync(s)) shells.push(s); });
+    }
+    return shells.join(', ') || 'Unknown';
 }
 
 export async function getProcessedSystemPrompt(
@@ -118,316 +186,74 @@ export async function getProcessedSystemPrompt(
     memoryManager?: MemoryManager
 ): Promise<string> {
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-    const reasoningLevel = config.get<string>('reasoningLevel') || 'none';
     const thinkingMode = capabilities?.thinkingMode || config.get<string>('thinkingMode') || 'none';
     const outputFormat = config.get<string>('outputFormat') || 'legacy';
     
-    // User Info
     const userName = config.get<string>('userInfo.name') || 'Developer';
     const userEmail = config.get<string>('userInfo.email') || '';
     const userLicense = config.get<string>('userInfo.license') || 'MIT';
     const userStyle = config.get<string>('userInfo.codingStyle') || '';
 
-    let memoryContent = "";
-    if (memoryManager) {
-        memoryContent = await memoryManager.getMemory();
-    }
-
+    let memoryContent = memoryManager ? await memoryManager.getMemory() : "";
     let thinkingInstructions = '';
 
     if (thinkingMode !== 'none' && thinkingMode !== 'no_think') {
         const thinkingStrategies: Record<string, string> = {
-            'chain_of_thought': 'Break down the request into logical steps. Analyze implementation strategies, identify potential conflicts, and evaluate trade-offs before writing code.',
-            'chain_of_verification': 'Generate a preliminary solution. Identify claims or logic requiring verification. Verify against project context. Produce the final, verified response.',
-            'plan_and_solve': 'Create a high-level plan. Review for efficiency and correctness. Execute the plan step by step.',
-            'self_critique': 'Generate initial response. Critically review for logic flaws, security vulnerabilities, and bugs. Output the refined, corrected answer.',
+            'chain_of_thought': 'Break down requirements into logical steps.',
+            'chain_of_verification': 'Verify assumptions against provided file content.',
+            'plan_and_solve': 'Construct a plan, then execute it.',
+            'self_critique': 'Critique your logic for security and efficiency before responding.',
             'custom': config.get<string>('thinkingModeCustomPrompt') || ''
         };
-
-        const strategy = thinkingStrategies[thinkingMode];
-        if (strategy) {
-            thinkingInstructions = `<reasoning_protocol>\nEnclose all reasoning, analysis, and self-correction in <thinking> or <analysis> tags. This internal process is hidden from the user but critical for quality.\n\nProcess: ${strategy}\n</reasoning_protocol>\n\n`;
-        }
+        thinkingInstructions = `<reasoning_protocol>\nUse <thinking> tags for reasoning. Strategy: ${thinkingStrategies[thinkingMode]}\n</reasoning_protocol>\n\n`;
     }
 
-    // Determine the primary Persona Content
     let personaContent = customPersonaContent || config.get<string>(
         promptType === 'chat' ? 'chatPersona' :
         promptType === 'agent' ? 'agentPersona' :
         promptType === 'inspector' ? 'codeInspectorPersona' :
         'commitMessagePersona'
-    ) || '';
+    ) || "You are a Senior VSCode Engineering Assistant.";
 
-    if (capabilities?.funMode) {
-        personaContent += "\n\n**FUN MODE** 🎉: Be quirky, humorous, and use emojis liberally!";
-    }
+    if (capabilities?.funMode) personaContent += "\n\n**FUN MODE**: Be quirky and use emojis!";
 
-    // Default Role Fallback if persona is empty
-    if (!personaContent.trim()) {
-        personaContent = "You are a Senior VSCode Engineering Assistant.";
-    }
-
-    let basePrompt = '';
-
-    switch (promptType) {
-        case 'chat': {
-            const allowed = capabilities?.allowedFormats || config.get<any>('allowedFileFormats') || { fullFile: true, insert: false, replace: false, delete: false };
-
-            let formatInstructions = '';
-            
-            if (outputFormat === 'xml' && allowed.fullFile) {
-                formatInstructions = `### File Modification Format (XML)
-
-<file path="relative/path/to/file.ext">
-[Complete file content]
-</file>
-
-**Requirements:**
-- Path must be relative to workspace root
-- Content replaces entire file or creates new file
-- Include EVERY line - no placeholders or "rest as before" comments
-- Do not wrap the <file> tag in code blocks`;
-
-            } else if (outputFormat === 'aider' && allowed.fullFile) {
-                formatInstructions = `### File Modification Format (Search/Replace)
-
-relative/path/to/file.ext
-<<<<<<< SEARCH
-[Exact lines from original file]
-=======
-[New lines to replace with]
->>>>>>> REPLACE
-
-**Requirements:**
-- SEARCH block must match file content exactly (including whitespace)
-- For new files, provide full content in code block with \`language:path/to/file\` header
-- Do not wrap block markers in markdown code fences`;
-
-            } else if (allowed.fullFile) {
-formatInstructions = `### File Creation/Modification Format
-
-When you need to create or modify a file, you MUST output a code block using this structure:
-
-1. Start with three backticks: \`\`\`
-2. Immediately after (no space), write: language:path
-3. Press enter and write the complete file content
-4. End with three backticks: \`\`\`
-
-**Template to follow:**
-\`\`\`language:relative/path/to/file.ext
-[complete file content here]
-\`\`\`
-
-**RULES:**
-- Always wrap file content in a code block (three backticks)
-- The first line after opening backticks must be: language:path
-- Include ALL file content, no placeholders
-- Do not write "Now I will modify..." - just output the code block
-- Do not explain before the code block - output it first, then explain if needed`;
-            }
-
-            // Add optional modification formats
-            let additionalFormats = '';
-            if (allowed.insert) {
-                additionalFormats += `\n### Insert Code
-
-\`\`\`insert:relative/path/to/file.ext
-<<<<
-[Context lines to locate insertion point]
-====
-[New code to insert after context]
->>>>
-\`\`\``;
-            }
-
-            if (allowed.replace) {
-                additionalFormats += `\n### Replace Code
-
-\`\`\`replace:relative/path/to/file.ext
-<<<<
-[Exact original code to replace]
-====
-[New code to replace with]
->>>>
-\`\`\`
-
-Note: Original code must match exactly or operation fails`;
-            }
-
-            if (allowed.delete) {
-                additionalFormats += `\n### Delete Code
-
-\`\`\`delete_code:relative/path/to/file.ext
-<<<<
-[Exact code to delete]
->>>>
-\`\`\`
-
-Note: Code must match exactly or operation fails`;
-            }
-
-            let fileOperations = '';
-            if (!capabilities || capabilities.fileRename) {
-                fileOperations += '- **Rename/Move:** `<rename old="old/path.ext" new="new/path.ext" />`\n';
-            }
-            if (!capabilities || capabilities.fileDelete) {
-                fileOperations += '- **Delete File:** `<delete path="path/to/file.ext" />`\n';
-            }
-            if (!capabilities || capabilities.fileSelect) {
-                fileOperations += '- **Add to Context:** `<select path="path/to/file.ext" />`\n';
-            }
-
-            if (fileOperations) {
-                additionalFormats += `\n### File Operations\nUse standard XML style for file management:\n${fileOperations}`;
-            }
-
-            const searchCapability = capabilities?.webSearch ? `\n### Web Search
-
-Trigger automated web search when you need current information or documentation:
-
-<web_search>search query</web_search>
-
-The extension fetches results, appends them to context, and asks you to continue.` : '';
-
-            const imageGenCapability = capabilities?.imageGen ? `\n### Image Generation
-
-Generate images using:
-
-\`\`\`image_prompt
-[Detailed image description]
-\`\`\`` : '';
-
-            basePrompt = `# Role
-
-${personaContent}
-
-${thinkingInstructions}# Response Structure
-
-1. **Start with explanation and analysis**
-2. **Teach concepts**
-3. **Format Strictness** - Use EXCLUSIVELY the formats defined below.
-
-# Operational Rules (CRITICAL)
-
-You must use **EXCLUSIVELY** one of the supported file modification formats.
-❌ **DO NOT** produce standard git patches.
-❌ **DO NOT** produce unified diffs.
-❌ **DO NOT** use generic code blocks without the \`language:path\` header for file creation.
-
-${formatInstructions}${additionalFormats}${searchCapability}${imageGenCapability}
-
-# Core Principles
-
-- Analysis before action
-- Format compliance is mandatory
-- Full file replacements must be complete`;
-
-            break;
+    let formatInstructions = '';
+    if (promptType === 'chat' || promptType === 'agent') {
+        const allowed = capabilities?.allowedFormats || config.get<any>('allowedFileFormats') || { fullFile: true };
+        if (outputFormat === 'xml') {
+            formatInstructions = `Use <file path="path">content</file> for file updates.`;
+        } else if (outputFormat === 'aider') {
+            formatInstructions = `Use SEARCH/REPLACE blocks for partial updates.`;
+        } else {
+            formatInstructions = `Use \`\`\`language:path/to/file\`\`\` for full file content.`;
         }
-
-        case 'agent':
-            basePrompt = `# Role
-
-${personaContent}
-
-${thinkingInstructions}# Core Principles
-
-- Observe tool outputs carefully before proceeding
-- Verify success/failure from actual responses
-- Report errors clearly when they occur
-- Complete tasks step-by-step
-- **STRICT FORMATTING:** Never use git patches or diffs.`;
-            break;
-
-        case 'inspector':
-            basePrompt = `# Role
-
-${personaContent}
-
-${thinkingInstructions}# Analysis Focus
-
-- Code quality and maintainability
-- Security vulnerabilities
-- Performance bottlenecks
-- Best practice violations`;
-            break;
-
-        case 'commit':
-            basePrompt = `# Role
-
-${personaContent}
-
-# Output Format
-
-\`\`\`
-type(scope): concise description
-
-- Key change 1
-- Key change 2
-\`\`\`
-
-# Requirements
-
-- Use conventional commit types
-- Keep description under 50 characters
-- Output ONLY the code block`;
-            break;
     }
 
-    const contextSections: string[] = [];
+    const basePrompt = `# Role\n${personaContent}\n\n${thinkingInstructions}# Formatting Rules\n${formatInstructions}`;
 
-    const userInfo = [
-        `- Name: ${userName}`,
-        userEmail && `- Email: ${userEmail}`,
-        userStyle && `- Coding Style: ${userStyle}`,
-        userLicense && `- Default License: ${userLicense}`
-    ].filter(Boolean).join('\n');
+    const contextSections: string[] = [
+        `### User Context\n- Name: ${userName}\n- Email: ${userEmail}\n- Coding Style: ${userStyle}\n- License: ${userLicense}`,
+        `### Environment Info\n- OS: ${os.type()} ${os.release()} (${os.platform()})\n- Arch: ${os.arch()}\n- Available Shells: ${getAvailableShells()}\n- IP: ${getIpAddresses()}\n- Additional: ${config.get('systemEnv.customInfo', '')}`,
+        memoryContent.trim() ? `### Long-Term Memory\n${memoryContent}` : ''
+    ].filter(Boolean);
 
-    if (userInfo) {
-        contextSections.push(`### User Context\n${userInfo}`);
-    }
-
-    if (memoryContent.trim()) {
-        contextSections.push(`### Long-Term Memory\n\`\`\`\n${memoryContent}\n\`\`\`\n\nUpdate memory with <memory>content</memory> tags.`);
-    }
-
-    const contextBlock = contextSections.length > 0 ? '\n\n# Context\n\n' + contextSections.join('\n\n') : '';
-    let combinedPrompt = `${basePrompt}${contextBlock}`;
-
-    const now = new Date();
-    const date = now.toISOString().split('T')[0];
-    const platform = os.platform();
+    const contextBlock = '\n\n# System Context\n\n' + contextSections.join('\n\n');
+    let finalPrompt = `${basePrompt}${contextBlock}`.trim();
     
-    combinedPrompt = combinedPrompt
-        .replace(/{{date}}/g, date)
-        .replace(/{{os}}/g, platform)
+    finalPrompt = finalPrompt
+        .replace(/{{date}}/g, new Date().toISOString().split('T')[0])
+        .replace(/{{os}}/g, os.platform())
         .replace(/{{developer_name}}/g, userName);
 
-    let finalPrompt = combinedPrompt.trim();
-    if (thinkingMode === 'no_think') {
-        finalPrompt = `/no_think\n${finalPrompt}`;
-    } else if (reasoningLevel !== 'none') {
-        finalPrompt = `/reasoning_${reasoningLevel}\n${finalPrompt}`;
-    }
-
-    return finalPrompt ? `${finalPrompt}\n\n` : '';
+    if (thinkingMode === 'no_think') finalPrompt = `/no_think\n${finalPrompt}`;
+    return finalPrompt + '\n\n';
 }
 
 export function stripThinkingTags(responseText: string): string {
-    const thinkRegex = /<(think|thinking|analysis)>[\s\S]*?<\/\1>/g;
-    return responseText.replace(thinkRegex, '').trim();
+    return responseText.replace(/<(think|thinking|analysis)>[\s\S]*?<\/\1>/g, '').trim();
 }
 
 export function extractAndStripMemory(responseText: string): { content: string, memory: string | null } {
-    const memoryRegex = /<memory>([\s\S]*?)<\/memory>/;
-    const match = responseText.match(memoryRegex);
-    let memory = null;
-    let content = responseText;
-
-    if (match) {
-        memory = match[1].trim();
-        content = responseText.replace(memoryRegex, '').trim();
-    }
-
-    return { content, memory };
+    const match = responseText.match(/<memory>([\s\S]*?)<\/memory>/);
+    return match ? { content: responseText.replace(match[0], '').trim(), memory: match[1].trim() } : { content: responseText, memory: null };
 }

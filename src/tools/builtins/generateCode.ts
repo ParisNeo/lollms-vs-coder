@@ -32,6 +32,7 @@ export const generateCodeTool: ToolDefinition = {
     description: "Generates code and writes it to a file. Can be used to create new files or overwrite existing ones.",
     isAgentic: true,
     isDefault: true,
+    permissionGroup: 'filesystem_write',
     parameters: [
         { name: "file_path", type: "string", description: "The relative path of the file to create or overwrite.", required: true },
         { name: "user_prompt", type: "string", description: "The detailed instructions for what code to generate.", required: true },
@@ -49,15 +50,12 @@ export const generateCodeTool: ToolDefinition = {
         let projectContextText = "";
 
         // --- STEP 1: DYNAMIC CONTEXT RETRIEVAL (Anti-Hallucination) ---
-        // Before generating code, ask the AI which OTHER files in the workspace are relevant.
         if (env.workspaceRoot) {
             try {
-                // 1. Get the list of all available files
                 const allFiles = await env.contextManager.getWorkspaceFilePaths();
                 const fileListString = allFiles.join('\n');
 
                 if (allFiles.length > 0) {
-                    // 2. Ask the AI to pick relevant files (Pre-check to prevent hallucinations)
                     const selectionSystemPrompt: ChatMessage = {
                         role: 'system',
                         content: `You are a dependency analyzer. You are about to write code for the file: "${params.file_path}".
@@ -79,13 +77,11 @@ Example Output:
                         content: `**Target File to Write:** ${params.file_path}\n\n**User Instruction:** ${params.user_prompt}\n\n**Project File List:**\n${fileListString}`
                     };
 
-                    // Use the architect model if available for better reasoning on dependencies
                     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
                     const architectModel = config.get<string>('architectModelName') || modelOverride;
 
                     const selectionResponse = await env.lollmsApi.sendChat([selectionSystemPrompt, selectionUserPrompt], null, signal, architectModel);
                     
-                    // 3. Parse JSON response
                     const jsonMatch = selectionResponse.match(/\[.*\]/s);
                     let selectedFiles: string[] = [];
                     if (jsonMatch) {
@@ -94,7 +90,6 @@ Example Output:
                         } catch (e) { console.error("Error parsing dependency selection JSON", e); }
                     }
 
-                    // 4. Read content of selected files
                     if (selectedFiles.length > 0) {
                         const dependencyContext = await env.contextManager.readSpecificFiles(selectedFiles);
                         if (dependencyContext) {
@@ -104,7 +99,6 @@ Example Output:
                 }
             } catch (e) {
                 console.error("Dynamic context retrieval failed:", e);
-                // Continue without dynamic context if this fails
             }
         }
 
@@ -120,9 +114,7 @@ Example Output:
                 const fileContentBytes = await vscode.workspace.fs.readFile(fileUri);
                 const existingContent = Buffer.from(fileContentBytes).toString('utf8');
                 userPromptContent = `I am working on the file \`${params.file_path}\`. Here is its current content:\n\n\`\`\`\n${existingContent}\n\`\`\`\n\nMy instruction is: ${userPromptContent}`;
-            } catch (error) {
-                // File doesn't exist, which is fine for creation.
-            }
+            } catch (error) { }
         }
 
         const coderSystemPrompt = await getCoderSystemPrompt(params.system_prompt || '', env.currentPlan.objective, projectContextText);
@@ -131,7 +123,6 @@ Example Output:
         // --- STEP 3: GENERATE CODE ---
         const responseText = await env.lollmsApi.sendChat([coderSystemPrompt, coderUserPrompt], null, signal, modelOverride);
 
-        // Updated regex to support `language:path` header syntax
         const codeBlockRegex = /```(?:[^\n]*)\n([\s\S]+?)\n```/s;
         const match = responseText.match(codeBlockRegex);
         const generatedCode = match ? match[1].trim() : responseText.trim();

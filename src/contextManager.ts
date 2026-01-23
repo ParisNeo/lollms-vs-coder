@@ -6,6 +6,11 @@ import { LollmsAPI, ChatMessage } from './lollmsAPI';
 import * as mammoth from 'mammoth';
 const pdfParse = require('pdf-parse');
 import { stripThinkingTags } from './utils';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import * as os from 'os';
+
+const execAsync = promisify(exec);
 
 export interface ContextResult {
   text: string;
@@ -183,12 +188,48 @@ export class ContextManager {
       return content;
   }
 
+  private async searchWorkspaceKeywords(keywords: string[], cwd: string): Promise<string> {
+    if (keywords.length === 0) return "No keywords provided.";
+    
+    let combinedResults = `Keyword Search Results:\n`;
+    
+    for (const keyword of keywords) {
+        const pattern = keyword.replace(/"/g, '\\"');
+        try {
+            // Try git grep first as it is fast and accurate
+            try {
+                const { stdout } = await execAsync(`git grep -n -I -c "${pattern}"`, { cwd });
+                if (stdout.trim()) {
+                    combinedResults += `\nMatches for "${keyword}" (count per file):\n${stdout.trim()}\n`;
+                    continue;
+                }
+            } catch (e) {}
+
+            // Fallback to platform specific tools
+            let command = os.platform() === 'win32' 
+              ? `findstr /S /N /I /P "${pattern}" *` 
+              : `grep -r -n -I -l "${pattern}" .`;
+            
+            const { stdout } = await execAsync(command, { cwd });
+            if (stdout.trim()) {
+                combinedResults += `\nMatches for "${keyword}":\n${stdout.trim().substring(0, 2000)}\n`;
+            } else {
+                combinedResults += `\nMatches for "${keyword}": No matches found.\n`;
+            }
+        } catch (e) {
+            combinedResults += `\nMatches for "${keyword}": Search operation failed.\n`;
+        }
+    }
+    return combinedResults;
+}
+
   // --- AUTO CONTEXT AGENT LOOP ---
   public async runContextAgent(
       userPrompt: string, 
       model: string,
       signal: AbortSignal, 
-      onUpdate: (content: string) => void
+      onUpdate: (content: string) => void,
+      initialKeywords?: string[]
   ): Promise<string> {
       const MAX_STEPS = 10;
       const MAX_RETRIES = 3;
@@ -217,16 +258,15 @@ You have access to the project structure and the list of currently selected file
 
 **AVAILABLE TOOLS:**
 1. \`add_files(files=["path1", "path2"])\`: Add files to the context (read their content).
-2. \`remove_files(files=["path1"])\`: Remove files from the context (if you realize they are irrelevant).
-3. \`read_file(file="path")\`: Peek at a file's content without fully adding it (or to check if it's relevant).
-4. \`done()\`: Finish the context selection process when you have enough information.
+2. \`remove_files(files=["path1"])\`: Remove files from the context.
+3. \`read_file(file="path")\`: Peek at a file's content without fully adding it.
+4. \`search_keywords(keywords=["funcName", "className"])\`: Search the entire codebase for specific strings. Use this to find where logic exists before adding files.
+5. \`done()\`: Finish the context selection process.
 
 **RULES:**
-- Analyze the user request and the current file selection.
-- If the current selection is sufficient, call \`done()\` immediately.
-- If files are missing, add them.
-- If selected files are irrelevant to the new request, remove them.
-- **DO NOT ANSWER THE USER REQUEST.** Your only job is to build the list of selected files.
+- Analyze the user request and the current selection.
+- If you aren't sure where logic is, use \`search_keywords\` first.
+- Only add files that are strictly relevant to save tokens.
 - **OUTPUT JSON ONLY**: Reply with a valid JSON object describing the tool call.
 
 **JSON FORMAT:**
@@ -241,10 +281,15 @@ You have access to the project structure and the list of currently selected file
       const actionLog: string[] = [];
       let initialUserContent = `**User Request:** "${userPrompt}"\n\n**Project Structure:**\n${fileTree}`;
       
+      // Ground the agent with keywords if provided
+      if (initialKeywords && initialKeywords.length > 0) {
+          actionLog.push(`🔍 Grounding search for keywords: ${initialKeywords.join(', ')}...`);
+          const searchResults = await this.searchWorkspaceKeywords(initialKeywords, workspaceFolder.uri.fsPath);
+          initialUserContent += `\n\n**Initial Search Results:**\n${searchResults}`;
+      }
+
       if (selectedFiles.size > 0) {
-          initialUserContent += `\n\n**Currently Selected Files:**\n${JSON.stringify(Array.from(selectedFiles))}\n\nReview the current selection. Add missing files or remove irrelevant ones.`;
-      } else {
-          initialUserContent += `\n\n**Currently Selected Files:** None.\n\nStart by selecting relevant files.`;
+          initialUserContent += `\n\n**Currently Selected Files:**\n${JSON.stringify(Array.from(selectedFiles))}`;
       }
 
       let chatHistory: ChatMessage[] = [
@@ -312,27 +357,16 @@ You have access to the project structure and the list of currently selected file
           let jsonMatch = cleanResponse.match(/```json\s*([\s\S]+?)\s*```/) || cleanResponse.match(/\{[\s\S]*\}/);
           
           if (!jsonMatch) {
-              // Heuristic: Rescue implicitly mentioned files if model fails JSON
-              const potentialFiles = allFiles.filter(f => cleanResponse.includes(f));
-              if (potentialFiles.length > 0 && retryCount < MAX_RETRIES) {
-                  const syntheticCall = {
-                      tool: 'add_files',
-                      params: { files: potentialFiles }
-                  };
-                  jsonMatch = [JSON.stringify(syntheticCall)]; 
-                  actionLog.push(`⚠️ Text response detected. Attempting to extract ${potentialFiles.length} file(s).`);
+              if (retryCount < MAX_RETRIES) {
+                  retryCount++;
+                  chatHistory.push({ 
+                      role: 'system', 
+                      content: "ERROR: You must output ONLY a valid JSON object. Use one of the provided tools." 
+                  });
+                  continue; 
               } else {
-                  if (retryCount < MAX_RETRIES) {
-                      retryCount++;
-                      chatHistory.push({ 
-                          role: 'system', 
-                          content: "ERROR: You must output ONLY a valid JSON object. Do not write conversational text. Use the `add_files` tool." 
-                      });
-                      continue; 
-                  } else {
-                      actionLog.push(`❌ Agent failed to output JSON.`);
-                      break;
-                  }
+                  actionLog.push(`❌ Agent failed to output JSON.`);
+                  break;
               }
           }
 
@@ -345,11 +379,7 @@ You have access to the project structure and the list of currently selected file
               retryCount = 0;
 
               if (toolName === 'done') {
-                  if (step === 0 && initialCount === selectedFiles.size) {
-                      actionLog.push(`✅ Initial context sufficient. No changes.`);
-                  } else {
-                      actionLog.push(`✅ Optimization complete.`);
-                  }
+                  actionLog.push(`✅ Optimization complete.`);
                   renderUpdate("Context Ready", true, step);
                   break;
               }
@@ -362,12 +392,9 @@ You have access to the project structure and the list of currently selected file
                       const validFiles = files.filter(f => allFiles.includes(f));
                       if (validFiles.length > 0) {
                           validFiles.forEach(f => selectedFiles.add(f));
-                          // Update UI context provider for visual feedback in sidebar
                           await this.contextStateProvider.addFilesToContext(validFiles);
-                          actionLog.push(`➕ Added: ${validFiles.join(', ')}`);
+                          actionLog.push(`➕ Added: ${validFiles.length} file(s).`);
                           renderUpdate("Updating context...", false, step);
-                      } else {
-                          actionLog.push(`⚠️ No valid files found in addition request.`);
                       }
                   }
               } else if (toolName === 'remove_files') {
@@ -376,20 +403,26 @@ You have access to the project structure and the list of currently selected file
                       files.forEach(f => selectedFiles.delete(f));
                       const uris = files.map((f: string) => vscode.Uri.joinPath(workspaceFolder.uri, f));
                       await this.contextStateProvider.setStateForUris(uris, 'tree-only'); 
-                      actionLog.push(`➖ Removed: ${files.join(', ')}`);
+                      actionLog.push(`➖ Removed: ${files.length} file(s).`);
                       renderUpdate("Updating context...", false, step);
                   }
               } else if (toolName === 'read_file') {
                   const pathArg = params.path || params.file;
                   if (pathArg && allFiles.includes(pathArg)) {
                       const content = await this.readSpecificFiles([pathArg]);
-                      const snippet = content.substring(0, 2000);
-                      chatHistory.push({ role: 'system', content: `Content of ${pathArg}:\n\`\`\`\n${snippet}\n\`\`\`\n(Truncated)` });
-                      actionLog.push(`📖 Checked content of: ${pathArg}`);
+                      const snippet = content.substring(0, 4000);
+                      chatHistory.push({ role: 'system', content: `Content of ${pathArg}:\n\`\`\`\n${snippet}\n\`\`\`` });
+                      actionLog.push(`📖 Peeked: ${pathArg}`);
                       renderUpdate("Reading file...", false, step);
-                  } else {
-                      chatHistory.push({ role: 'system', content: `Error: File ${pathArg} not found.` });
                   }
+              } else if (toolName === 'search_keywords') {
+                const keywords = params.keywords || params.query;
+                if (Array.isArray(keywords)) {
+                    const results = await this.searchWorkspaceKeywords(keywords, workspaceFolder.uri.fsPath);
+                    chatHistory.push({ role: 'system', content: results });
+                    actionLog.push(`🔍 Searched for: ${keywords.join(', ')}`);
+                    renderUpdate("Searching codebase...", false, step);
+                }
               } else {
                    actionLog.push(`⚠️ Unknown tool: ${toolName}`);
               }

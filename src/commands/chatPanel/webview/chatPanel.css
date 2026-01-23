@@ -73,9 +73,9 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 .code-collapsible > pre { margin: 0; padding: 0; overflow-x: auto; max-height: 450px; overflow-y: auto; width: 100%; }
 .code-collapsible > pre > code { display: block; padding: 12px; font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); white-space: pre; background-color: transparent; }
 .select-line-valid { color: var(--vscode-charts-green); font-weight: bold; display: block; padding: 2px 0; white-space: pre; }
-.select-line-valid::before { content: 'âœ“ '; font-family: "codicon"; margin-right: 6px; font-weight: normal; }
+.select-line-valid::before { content: '✓ '; font-family: "codicon"; margin-right: 6px; font-weight: normal; }
 .select-line-invalid { color: var(--vscode-errorForeground); text-decoration: line-through; opacity: 0.8; display: block; padding: 2px 0; white-space: pre; }
-.select-line-invalid::before { content: 'âœ• '; font-family: "codicon"; margin-right: 6px; font-weight: normal; }
+.select-line-invalid::before { content: '✕ '; font-family: "codicon"; margin-right: 6px; font-weight: normal; }
 #scrollToBottomBtn { display: none; position: absolute; bottom: 120px; right: 30px; width: 36px; height: 36px; border-radius: 50%; background-color: var(--vscode-button-background); color: var(--vscode-button-foreground); border: 1px solid var(--vscode-widget-border); box-shadow: 0 4px 8px rgba(0,0,0,0.3); cursor: pointer; z-index: 100; align-items: center; justify-content: center; transition: transform 0.1s, opacity 0.2s; }
 #scrollToBottomBtn:hover { background-color: var(--vscode-button-hoverBackground); transform: translateY(-2px); }
 #scrollToBottomBtn:active { transform: translateY(0); }
@@ -111,7 +111,8 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     flex-direction: column; 
     padding: 4px; 
     margin-bottom: 8px;
-    overflow: hidden;
+    max-height: 70vh;
+    overflow-y: auto;
 }
 
 #more-actions-menu.visible { 
@@ -267,7 +268,7 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 #messageInput {
     flex: 1;
     min-height: 24px;
-    max-height: 300px;
+    max-height: 150px;
     background-color: transparent;
     color: var(--vscode-input-foreground);
     border: none;
@@ -462,6 +463,7 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
 .mode-badge.active.herd { background-color: var(--vscode-charts-purple); color: white; }
 .mode-badge.active.autocontext { background-color: var(--vscode-charts-blue); color: white; }
 .mode-badge.model { background-color: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); padding-left: 8px; }
+.mode-badge.personality { background-color: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border-color: var(--vscode-button-secondaryBackground); border-style: dashed; padding-left: 6px; }
 
 /* Inactive State (Grayed out) */
 .mode-badge.inactive {
@@ -521,6 +523,8 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
     min-width: 180px;
     padding: 4px 0;
     flex-direction: column;
+    max-height: 300px;
+    overflow-y: auto;
 }
 
 .custom-menu.visible {
@@ -547,6 +551,7 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
     text-align: center;
 }
 
+/* ... (Existing rest of CSS) ... */
 /* --- Commit Modal --- */
 .commit-textarea {
     width: 100%;
@@ -560,7 +565,6 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
     resize: vertical;
 }
 
-/* ... (Keep rest of file) ... */
 /* --- Search Bar --- */
 .search-bar {
     display: none; background: var(--vscode-editorWidget-background);

@@ -6,6 +6,7 @@ export const readFileTool: ToolDefinition = {
     description: "Reads the content of a file from the workspace.",
     isAgentic: false,
     isDefault: true,
+    permissionGroup: 'filesystem_read',
     parameters: [
         { name: "path", type: "string", description: "The relative path to the file to be read.", required: true }
     ],

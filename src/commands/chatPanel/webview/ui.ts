@@ -110,6 +110,56 @@ export function updateBadges() {
         container.appendChild(span);
     }
 
+    // Interactive Personality Badge
+    if (state.personalities && state.personalities.length > 0) {
+        const currentP = state.personalities.find(p => p.id === state.currentPersonalityId);
+        if (currentP) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'badge-wrapper';
+            wrapper.style.position = 'relative';
+
+            const pBadge = document.createElement('span');
+            pBadge.id = 'personality-badge';
+            pBadge.className = 'mode-badge personality clickable';
+            pBadge.title = `Active Personality: ${currentP.name}. Click to switch.`;
+            pBadge.innerHTML = `<span class="codicon codicon-account"></span> <span class="badge-label">${currentP.name}</span>`;
+            
+            // Create Menu
+            const menu = document.createElement('div');
+            menu.id = 'personality-menu';
+            menu.className = 'custom-menu hidden';
+            
+            state.personalities.forEach((p: any) => {
+                const item = document.createElement('div');
+                item.className = 'custom-menu-item p-menu-item';
+                item.dataset.pid = p.id;
+                
+                const icon = (p.id === state.currentPersonalityId) ? 'codicon-check' : 'codicon-account';
+                item.innerHTML = `<span class="codicon ${icon}"></span> ${p.name}`;
+                
+                if (p.id === state.currentPersonalityId) {
+                    item.style.fontWeight = 'bold';
+                    item.style.color = 'var(--vscode-textLink-foreground)';
+                }
+                
+                menu.appendChild(item);
+            });
+
+            pBadge.onclick = (e) => {
+                e.stopPropagation();
+                // Close other menus
+                document.querySelectorAll('.custom-menu').forEach(m => {
+                    if (m.id !== 'personality-menu') m.classList.remove('visible');
+                });
+                menu.classList.toggle('visible');
+            };
+
+            wrapper.appendChild(pBadge);
+            wrapper.appendChild(menu);
+            container.appendChild(wrapper);
+        }
+    }
+
     if (!state.capabilities) return;
     
     const caps = state.capabilities;
@@ -201,9 +251,11 @@ export function updateBadges() {
         // Toggle logic
         badge.onclick = (e) => {
             e.stopPropagation();
+            // Close other menus
+            document.querySelectorAll('.custom-menu').forEach(m => {
+                if (m.id !== 'git-menu') m.classList.remove('visible');
+            });
             menu.classList.toggle('visible');
         };
-
-        // Close menu on outside click logic is handled in events.ts
     }
 }

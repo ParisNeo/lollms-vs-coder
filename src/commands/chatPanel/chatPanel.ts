@@ -272,7 +272,12 @@ export class ChatPanel {
     if (this._contextManager) {
         const cachedContext = this._contextManager.getLastContext();
         if (cachedContext) {
-            this._panel.webview.postMessage({ command: 'updateContext', context: cachedContext.text });
+            const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || [];
+            this._panel.webview.postMessage({ 
+                command: 'updateContext', 
+                context: cachedContext.text,
+                files: includedFiles 
+            });
             this._panel.webview.postMessage({ command: 'updateImageContext', images: cachedContext.images });
         }
     }
@@ -314,7 +319,7 @@ export class ChatPanel {
     this.displayPlan(this._currentDiscussion.plan);
     this.updateGeneratingState();
 
-    this._updateContextAndTokens();
+    this.updateContextAndTokens();
     await this._fetchAndSetModels(false);
   }
 
@@ -359,10 +364,14 @@ export class ChatPanel {
     }
   }
   
-  private async _updateContextAndTokens() {
-    this.log("_updateContextAndTokens called");
+  /**
+   * Recalculates context and tokens and sends updates to the webview.
+   * Public so it can be triggered by context-changing commands.
+   */
+  public async updateContextAndTokens() {
+    this.log("updateContextAndTokens called");
     if (this._isDisposed) {
-        this.log("_updateContextAndTokens aborted (disposed)", 'WARN');
+        this.log("updateContextAndTokens aborted (disposed)", 'WARN');
         return;
     }
 
@@ -376,7 +385,7 @@ export class ChatPanel {
 
     try {
         if (!this._contextManager || !this._currentDiscussion || !this._panel.webview) {
-            this.log("_updateContextAndTokens: Missing dependencies (contextManager or discussion)", 'WARN');
+            this.log("updateContextAndTokens: Missing dependencies (contextManager or discussion)", 'WARN');
             this._panel.webview?.postMessage({ command: 'updateTokenProgress' });
             return;
         }
@@ -401,7 +410,12 @@ export class ChatPanel {
 
             if (this._isDisposed) return;
 
-            this._panel.webview.postMessage({ command: 'updateContext', context: context.text });
+            const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || [];
+            this._panel.webview.postMessage({ 
+                command: 'updateContext', 
+                context: context.text,
+                files: includedFiles 
+            });
             this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
             
             this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: 'Counting tokens...' });
@@ -523,7 +537,7 @@ export class ChatPanel {
             }
         }
     } catch (e: any) {
-        this.log(`Unexpected error in _updateContextAndTokens: ${e.message}`, 'ERROR');
+        this.log(`Unexpected error in updateContextAndTokens: ${e.message}`, 'ERROR');
         if (!this._isDisposed && this._panel.webview) {
             this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
         }
@@ -561,6 +575,13 @@ export class ChatPanel {
           const model = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
           
           let objective = userPrompt.trim();
+          let keywords: string[] = [];
+
+          if (objective.includes('#')) {
+              const parts = objective.split('#');
+              objective = parts[0].trim();
+              keywords = parts[1].split(',').map(k => k.trim()).filter(k => k);
+          }
           
           if (!objective && this._currentDiscussion && this._currentDiscussion.messages.length > 0) {
               for (let i = this._currentDiscussion.messages.length - 1; i >= 0; i--) {
@@ -599,10 +620,11 @@ export class ChatPanel {
                             newContent: newContent 
                         });
                     }
-                }
+                },
+                keywords
             );
             
-            this._updateContextAndTokens();
+            this.updateContextAndTokens();
 
       } catch (e: any) {
           if (e.name !== 'AbortError') {
@@ -792,7 +814,7 @@ export class ChatPanel {
         } finally {
             this.processManager.unregister(processId);
             this.updateGeneratingState();
-            this._updateContextAndTokens();
+            this.updateContextAndTokens();
         }
         return; 
     }
@@ -850,19 +872,6 @@ export class ChatPanel {
                     messagesToSend[lastMsgIndex] = modifiedLastMsg;
                 }
             }
-        }
-
-        // GIT WORKFLOW
-        let tempBranchName = '';
-        if (this._discussionCapabilities.gitWorkflow) {
-            tempBranchName = `ai-feat-${Date.now()}`;
-            const startBranchMessage: ChatMessage = {
-                id: 'sys_branch_start_' + Date.now(),
-                role: 'system',
-                content: `**Git Workflow Active**\n\n Step 1: Create Branch & Switch`,
-                skipInPrompt: true 
-            };
-            await this.addMessageToDiscussion(startBranchMessage);
         }
 
         const assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
@@ -928,17 +937,6 @@ export class ChatPanel {
                     tokenCount: tokenCount
                 });
             }
-
-            // GIT WORKFLOW
-            if (this._discussionCapabilities.gitWorkflow && tempBranchName) {
-                const endBranchMessage: ChatMessage = {
-                    id: 'sys_branch_end_' + Date.now(),
-                    role: 'system',
-                    content: ` Step 2: Fuse (Merge) Changes`,
-                    skipInPrompt: true
-                };
-                await this.addMessageToDiscussion(endBranchMessage);
-            }
         }
 
     } catch (error: any) {
@@ -959,7 +957,7 @@ export class ChatPanel {
     } finally {
         this.processManager.unregister(processId);
         this.updateGeneratingState();
-        this._updateContextAndTokens();
+        this.updateContextAndTokens();
     }
   }
 
@@ -1394,7 +1392,7 @@ export class ChatPanel {
                     if (validFiles.length > 0) {
                         await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', validFiles);
                     }
-                    this._updateContextAndTokens();
+                    this.updateContextAndTokens();
                 } catch (err: any) {
                     this.log("Error adding files to context: " + err.message, 'ERROR');
                     vscode.window.showErrorMessage("Error adding files: " + err.message);
@@ -1421,13 +1419,13 @@ export class ChatPanel {
                 await this._fetchAndSetModels(true);
                 break;
             case 'calculateTokens':
-                this._updateContextAndTokens();
+                this.updateContextAndTokens();
                 break;
             case 'stopTokenCalculation':
                 if (this._tokenAbortController) {
                     this._tokenAbortController.abort();
                     this._tokenAbortController = null;
-                    // Note: Abort will trigger logic in _updateContextAndTokens catch block
+                    // Note: Abort will trigger logic in updateContextAndTokens catch block
                 }
                 break;
             case 'copyToClipboard':

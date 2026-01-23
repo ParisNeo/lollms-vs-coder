@@ -21,13 +21,22 @@ export interface ToolExecutionEnv {
     agentManager?: AgentManager; // Made optional for Companion use
 }
 
+/**
+ * Permission groups used for global security settings.
+ */
+export type ToolPermissionGroup = 'shell_execution' | 'filesystem_write' | 'filesystem_read' | 'internet_access';
+
 export interface ToolDefinition {
     name: string;
     description: string;
     longDescription?: string;
     isAgentic: boolean;
     isDefault: boolean;
-    hasSettings?: boolean; 
+    hasSettings?: boolean;
+    /**
+     * Categorizes the tool for global permission management.
+     */
+    permissionGroup?: ToolPermissionGroup;
     parameters: {
         name: string;
         type: string;

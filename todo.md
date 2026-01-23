@@ -1,19 +1,2 @@
-- Fix the problem with some instances not seeing the content
-- When generating wityh git enabled, ask the AI if this answer needs to go inside a new git branch, if true, add the branch creation and the fuse buttons
-- generate the git branch automatically using the AI
-- Add agressive context information about the file update structure (NO DIFFS)
-- Add the possibility to suppress a module (herd mode, auto extract) for the next generation
-- the input must have a max height to prevent it from growing too much. add a scrollbar if necessary
-- the menu must readapt and avoid being cropped by adding an ioptional scrollbar
-- rename Code by answer to allow non code related herd mode applications
-- add optional execute while thinking that allows the participants to execute code to verify hypothesis. Suppress potential threats.
-- Fix agent mode
-- add math rendering to messages
-- Fix personalities
-- Add support for lollms personalities: listing/using
-- show chich personality is being used in project context message
-- Add a reset context button in top of the project context message, and show the list of selected files in a new collapsible.
-- add keyword search to the auto context window routine, this allows the llm to see where some operations or function exist so it can do a better selection. also add that to the agent too.
-- fix command 'lollms-vs-coder.showRunningProcesses' not found
-- It is important that the lollms key is set for all projects (it must be saved to vscode, not the project .lollms folder)
-- add the possibility to draw the key from LOLLMS_KEY variable environment
+save as is not working
+command 'lollms-vs-coder.debugErrorSendToDiscussion' not found

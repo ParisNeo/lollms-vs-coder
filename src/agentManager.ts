@@ -101,65 +101,80 @@ export class AgentManager {
         this.chatPanel.displayPlan(plan);
     }
 
-    public async run(initialObjective: string, discussion: Discussion, workspaceFolder: vscode.WorkspaceFolder, modelOverride?: string) {
+    public async handleUserMessage(content: string, discussion: Discussion, workspaceFolder: vscode.WorkspaceFolder) {
         if (!this.isActive || !this.processManager) return;
-        
-        const { id: processId, controller } = this.processManager.register(discussion.id, `Agent Planning...`);
-        
+
+        this.currentWorkspaceFolder = workspaceFolder;
+        this.currentDiscussion = discussion;
+        this.chatHistory = [...discussion.messages]; // Sync latest
+
+        const { id: processId, controller } = this.processManager.register(discussion.id, `Agent Thinking...`);
+        this.chatPanel.updateGeneratingState();
+
         try {
-            this.currentWorkspaceFolder = workspaceFolder;
-            this.currentDiscussion = discussion;
-            this.chatHistory = [...discussion.messages];
-            this.globalFailureLog = []; 
-            
-            const initialPlanState: Plan = { 
-                objective: initialObjective,
-                scratchpad: "🧠 Architect is gathering project intelligence...",
-                tasks: []
-            };
-            this.displayAndSavePlan(initialPlanState);
-    
-            const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-            const architectModel = config.get<string>('architectModelName') || modelOverride;
+            const hasActivePlan = this.currentPlan && this.currentPlan.tasks.some(t => t.status === 'pending' || t.status === 'in_progress');
 
-            const planResult = await this.planParser.generateAndParsePlan(
-                initialObjective, 
-                undefined, 
-                undefined, 
-                undefined, 
-                controller.signal, 
-                architectModel,
-                this.chatHistory,
-                this.toolManager.getEnabledTools()
-            );
-            
-            if (controller.signal.aborted) {
-                this.deactivateAgent();
-                return;
-            }
-
-            if (!planResult.plan) {
-                 const failedPlanState: Plan = {
-                    objective: initialObjective,
-                    scratchpad: `❌ **Planning Failed:** ${planResult.error}`,
+            if (hasActivePlan) {
+                // Modify existing plan
+                this.chatPanel.addMessageToDiscussion({ role: 'system', content: '🔄 **Updating Plan based on user feedback...**' });
+                const result = await this.replan(content, controller.signal);
+                if (result.success) {
+                    await this.executePlan(this.currentTaskIndex, controller.signal, this.currentDiscussion.model);
+                } else {
+                    this.chatPanel.addMessageToDiscussion({ role: 'system', content: `❌ Plan update failed: ${result.output}` });
+                }
+            } else {
+                // New Objective
+                const objective = content;
+                const initialPlanState: Plan = { 
+                    objective: objective,
+                    scratchpad: "🧠 Architect is analyzing request...",
                     tasks: []
                 };
-                this.displayAndSavePlan(failedPlanState);
-                this.deactivateAgent();
-                return;
+                this.displayAndSavePlan(initialPlanState);
+        
+                const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+                const architectModel = config.get<string>('architectModelName') || this.currentDiscussion.model;
+
+                const planResult = await this.planParser.generateAndParsePlan(
+                    objective, 
+                    undefined, 
+                    undefined, 
+                    undefined, 
+                    controller.signal, 
+                    architectModel,
+                    this.chatHistory,
+                    this.toolManager.getEnabledTools()
+                );
+                
+                if (controller.signal.aborted) return;
+
+                if (!planResult.plan) {
+                     const failedPlanState: Plan = {
+                        objective: objective,
+                        scratchpad: `❌ **Planning Failed:** ${planResult.error}`,
+                        tasks: []
+                    };
+                    this.displayAndSavePlan(failedPlanState);
+                    return;
+                }
+                
+                this.displayAndSavePlan(planResult.plan);
+                await this.executePlan(0, controller.signal, this.currentDiscussion.model);
             }
-            
-            this.displayAndSavePlan(planResult.plan);
-            await this.executePlan(0, controller.signal, modelOverride);
 
         } catch (error: any) {
             if (error.name !== 'AbortError') {
                 this.chatPanel.addMessageToDiscussion({ role: 'system', content: `❌ **Critical Error:** ${error.message}` });
             }
-            this.deactivateAgent();
         } finally {
             this.processManager.unregister(processId);
+            this.chatPanel.updateGeneratingState();
         }
+    }
+
+    public async run(initialObjective: string, discussion: Discussion, workspaceFolder: vscode.WorkspaceFolder, modelOverride?: string) {
+        await this.handleUserMessage(initialObjective, discussion, workspaceFolder);
     }
 
     private async performGitBackup(reason: string) {
@@ -178,6 +193,7 @@ export class AgentManager {
         if (!this.currentPlan || !this.processManager || !this.currentDiscussion) return;
 
         const { id: processId, controller } = this.processManager.register(this.currentDiscussion.id, `Agent: Retrying task ${taskId}...`);
+        this.chatPanel.updateGeneratingState();
 
         try {
             const failedTaskIndex = this.currentPlan.tasks.findIndex(t => t.id === taskId);
@@ -197,12 +213,12 @@ export class AgentManager {
                 await this.executePlan(failedTaskIndex, controller.signal, this.currentDiscussion.model);
             } else {
                 this.chatPanel.addMessageToDiscussion({ role: 'system', content: `🛑 Failed to generate a revised plan.` });
-                this.deactivateAgent();
             }
         } catch (error: any) {
-            this.deactivateAgent();
+            // Error handling
         } finally {
             this.processManager.unregister(processId);
+            this.chatPanel.updateGeneratingState();
         }
     }
 
@@ -210,12 +226,13 @@ export class AgentManager {
         if (!this.currentPlan) return;
     
         this.currentTaskIndex = startIndex;
+        
         while (this.currentTaskIndex < this.currentPlan.tasks.length) {
-            if (signal.aborted) {
-                this.deactivateAgent();
-                return;
-            }
+            if (signal.aborted) return;
+            
             const task = this.currentPlan.tasks[this.currentTaskIndex];
+            const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+            const architectModel = config.get<string>('architectModelName') || modelOverride;
     
             if (task.status === 'pending') {
                 if (task.action === 'generate_code' || task.action === 'execute_command') {
@@ -238,13 +255,11 @@ export class AgentManager {
                 this.displayAndSavePlan(this.currentPlan);
     
                 if (!result.success) {
+                    // --- FAILURE HANDLING ---
                     this.globalFailureLog.push(`Task ${task.id} (${task.action}) failed: ${result.output.substring(0, 200)}`);
+                    const maxRetries = config.get<number>('agentMaxRetries') || 1;
 
-                    const maxRetries = vscode.workspace.getConfiguration('lollmsVsCoder').get<number>('agentMaxRetries') || 1;
                     if (task.retries < maxRetries) {
-                        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-                        const architectModel = config.get<string>('architectModelName') || modelOverride;
-                        
                         const revisionSucceeded = await this.revisePlanForFailure(task, signal, architectModel);
                         if (revisionSucceeded) continue;
                     }
@@ -262,20 +277,92 @@ export class AgentManager {
                         InfoPanel.createOrShow(this.extensionUri, `Task ${task.id} Log`, `## Result\n${task.result}`);
                     }
                     if (userChoice === 'Stop' || userChoice === undefined) {
-                        this.deactivateAgent();
-                        return;
+                        return; 
+                    }
+                } else {
+                    // --- SUCCESS: OBSERVE & REFINE ---
+                    // Only analyze for significant tools
+                    if (['execute_command', 'read_file', 'search_web', 'run_file', 'scrape_website', 'search_files'].includes(task.action)) {
+                         
+                         const observation = await this.analyzeStepResult(task, result.output, architectModel, signal);
+                         
+                         if (observation.decision === 'replan') {
+                             this.chatPanel.addMessageToDiscussion({ 
+                                 role: 'system', 
+                                 content: `🧠 **Observation:** ${observation.reasoning}\n\n🔄 **Adapting Plan...**` 
+                             });
+                             
+                             const replanResult = await this.replan(observation.new_instruction || "Adapt plan based on output.", signal, architectModel);
+                             
+                             if (replanResult.success) {
+                                 // Plan updated. 
+                             }
+                         }
                     }
                 }
             }
             this.currentTaskIndex++;
         }
-    
-        this.deactivateAgent();
     }
 
     /**
-     * Verifies if the agent has global permission to run a specific tool.
+     * Analyzes the output of a task to determine if the plan needs adjustment.
+     * Crucially, checks if the answer was found.
      */
+    private async analyzeStepResult(
+        task: Task, 
+        output: string, 
+        model: string | undefined, 
+        signal: AbortSignal
+    ): Promise<{ decision: 'continue' | 'replan', reasoning: string, new_instruction?: string }> {
+        
+        if (!this.currentPlan) return { decision: 'continue', reasoning: "No plan." };
+
+        const truncatedOutput = output.length > 3000 ? output.substring(0, 3000) + "... [truncated]" : output;
+
+        const analysisPrompt = `You are the Agent Supervisor.
+An agent just executed a task. You must analyze the result to see if the current plan is still valid or needs changing.
+
+**OBJECTIVE:** "${this.currentPlan.objective}"
+
+**TASK EXECUTED:**
+Action: ${task.action}
+Description: ${task.description}
+
+**RESULT / OUTPUT:**
+${truncatedOutput}
+
+**DECISION TIME:**
+1. **CONTINUE**: If the result is just a step and we need to proceed.
+2. **REPLAN**: 
+    - If the result CHANGES what we need to do next.
+    - If the result contains the FINAL ANSWER (e.g. found the IP address, found the file content). In this case, you MUST Extract the answer.
+
+**OUTPUT JSON ONLY:**
+\`\`\`json
+{
+  "decision": "continue" | "replan",
+  "reasoning": "Brief explanation",
+  "new_instruction": "If replan, provide the new instruction. IF YOU FOUND THE ANSWER, the instruction MUST be: 'Submit the answer: [INSERT THE EXTRACTED ANSWER HERE]'."
+}
+\`\`\`
+`;
+        try {
+            const response = await this.lollmsApi.sendChat([
+                { role: 'system', content: analysisPrompt }
+            ], null, signal, model);
+
+            const jsonMatch = response.match(/```json\s*(\{[\s\S]*?\})\s*```/) || response.match(/\{[\s\S]*\}/);
+            if (jsonMatch) {
+                return JSON.parse(jsonMatch[1] || jsonMatch[0]);
+            }
+        } catch (e) {
+            console.error("Analysis failed", e);
+        }
+        
+        return { decision: 'continue', reasoning: "Analysis failed, defaulting to continue." };
+    }
+
     private checkGlobalPermission(tool: ToolDefinition): { allowed: boolean, message?: string } {
         if (!tool.permissionGroup) return { allowed: true };
 
@@ -293,7 +380,7 @@ export class AgentManager {
         if (key && permissions[key] === false) {
             return { 
                 allowed: false, 
-                message: `🛑 **Global Permission Denied:** The action '${tool.name}' requires '${tool.permissionGroup}' access, which is currently disabled in your global Lollms settings. Please enable it in Settings -> Agent & Tools -> Permissions if you want the agent to perform this task.`
+                message: `🛑 **Global Permission Denied:** The action '${tool.name}' requires '${tool.permissionGroup}' access, which is currently disabled in your global Lollms settings.`
             };
         }
 
@@ -304,7 +391,6 @@ export class AgentManager {
         const tool = this.toolManager.getTool(action);
         if (!tool) return { success: false, output: `Unknown action: ${action}` };
 
-        // --- GLOBAL PERMISSION CHECK ---
         const perm = this.checkGlobalPermission(tool);
         if (!perm.allowed) {
             return { success: false, output: perm.message || "Permission denied by user configuration." };
@@ -323,11 +409,10 @@ export class AgentManager {
         try {
             return await tool.execute(params, env, signal);
         } catch (error: any) {
-            // Handle OS-level permission denied errors (EACCES / EPERM)
             if (error.message && (error.message.includes('EACCES') || error.message.includes('permission denied'))) {
                 return { 
                     success: false, 
-                    output: `❌ **OS Permission Error:** The operating system denied access to perform this action. This often happens if the project folder is read-only, or if the agent tried to access a system-protected file.\n\nRaw Error: ${error.message}` 
+                    output: `❌ **OS Permission Error:** The operating system denied access.\nRaw Error: ${error.message}` 
                 };
             }
             throw error;
@@ -375,22 +460,41 @@ export class AgentManager {
     private resolveParameters(task: Task): { [key: string]: any } {
         if (!this.currentPlan) throw new Error("No active plan.");
         const resolvedParams: { [key: string]: any } = {};
-        const regex = /\{\{tasks\[(\d+)\]\.result\}\}/g;
+
+        // Robust Regex: Matches {{ tasks[1].result }} and variations like {{ (tasks[1].result...) }}
+        // Captures: 1=TaskID, 2=Extras
+        const tagRegex = /\{\{(?:[\s(]*)(tasks\[(\d+)\]\.result(?:.*?))(?:\s*[\)|]*)\}\}/g;
 
         for (const key in task.parameters) {
             let value = task.parameters[key];
             if (typeof value === 'string') {
-                let resolvedValue = value;
-                let match;
-                while ((match = regex.exec(value)) !== null) {
-                    const taskId = parseInt(match[1], 10);
-                    const sourceTask = this.currentPlan.tasks.find(t => t.id === taskId);
-                    if (sourceTask && sourceTask.result !== null) {
-                        resolvedValue = resolvedValue.replace(match[0], sourceTask.result);
-                    } else {
-                        throw new Error(`Dependency error: Task ${taskId} not executed yet.`);
+                let resolvedValue = value.replace(tagRegex, (match, fullMatch, idStr) => {
+                    const id = parseInt(idStr, 10);
+                    const sourceTask = this.currentPlan?.tasks.find(t => t.id === id);
+                    
+                    if (!sourceTask || sourceTask.result === null) {
+                         return match; // Dependency missing
                     }
-                }
+                    
+                    let result = sourceTask.result || "";
+
+                    // Attempt regex search fallback if template is complex
+                    // But primary fix is preventing the agent from using this
+                    if (match.includes('regex_search')) {
+                        const regexMatch = match.match(/regex_search\s*\(\s*(['"])(.*?)\1\s*(?:,\s*(\d+))?\s*\)/);
+                        if (regexMatch) {
+                            try {
+                                const pattern = regexMatch[2];
+                                const group = regexMatch[3] ? parseInt(regexMatch[3], 10) : 0;
+                                const re = new RegExp(pattern, 'm');
+                                const found = result.match(re);
+                                if (found && found[group]) return found[group];
+                            } catch (e) { }
+                        }
+                    }
+                    
+                    return result;
+                });
                 resolvedParams[key] = resolvedValue;
             } else {
                  resolvedParams[key] = value;
@@ -402,6 +506,7 @@ export class AgentManager {
     public async replan(instruction: string, signal: AbortSignal, modelOverride?: string): Promise<{ success: boolean; output: string; }> {
         if (!this.currentPlan) return { success: false, output: "No active plan." };
         this.currentPlan.scratchpad += `\n\n🔄 **Replanning requested:** ${instruction}`;
+        this.displayAndSavePlan(this.currentPlan);
         
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const plannerModel = config.get<string>('architectModelName') || modelOverride;

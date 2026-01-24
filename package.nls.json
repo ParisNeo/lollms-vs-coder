@@ -259,5 +259,6 @@
     "view.codeGraph.classDiagram": "Class Diagram",
     "tooltip.node.type": "Type:",
     "view.codeGraph.emptyState": "No code structure found or graph has not been built yet. Click the diagram icon in the 'Discussions' view sidebar to build the graph.",
-    "config.addPedagogicalInstruction.description": "Automatically append a pedagogical instruction to the last user message when sending to the AI (hidden from chat view)."
+    "config.addPedagogicalInstruction.description": "Automatically append a pedagogical instruction to the last user message when sending to the AI (hidden from chat view).",
+    "config.forceFullCodePath.description": "Append an instruction to user prompts encouraging the LLM to use the ```language:path``` format for full code blocks."
 }

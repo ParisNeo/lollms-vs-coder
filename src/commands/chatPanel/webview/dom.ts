@@ -84,6 +84,7 @@ export const dom = {
     get personalitySelector() { return document.getElementById('personality-selector') as HTMLSelectElement; },
     get messagesDiv() { return document.getElementById('messages') as HTMLDivElement; },
     get chatMessagesContainer() { return document.getElementById('chat-messages-container') as HTMLDivElement; },
+    get agentPlanZone() { return document.getElementById('agent-plan-zone') as HTMLDivElement; }, // NEW
     get webSearchIndicator() { return document.getElementById('websearch-indicator') as HTMLDivElement; },
     get messageInput() { return document.getElementById('messageInput') as HTMLTextAreaElement; },
     get sendButton() { return document.getElementById('sendButton') as HTMLButtonElement; },

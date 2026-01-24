@@ -1,8 +1,9 @@
+
 {
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.70",
+  "version": "0.5.73",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -36,7 +37,7 @@
         "command": "lollms-vs-coder.rejectDiff",
         "title": "Reject AI Changes",
         "icon": "$(close)"
-      },      
+      },
       {
         "command": "lollms-vs-coder.startChat",
         "title": "%command.startChat.title%"
@@ -471,6 +472,11 @@
         "command": "lollms-vs-coder.gitMerge",
         "title": "Lollms: Merge Branch",
         "icon": "$(git-merge)"
+      },
+      {
+        "command": "lollms-vs-coder.switchGitBranch",
+        "title": "Lollms: Switch Branch",
+        "icon": "$(arrow-swap)"
       }
     ],
     "keybindings": [
@@ -577,6 +583,11 @@
           "type": "boolean",
           "default": false,
           "description": "%config.addPedagogicalInstruction.description%"
+        },
+        "lollmsVsCoder.forceFullCodePath": {
+          "type": "boolean",
+          "default": false,
+          "description": "%config.forceFullCodePath.description%"
         },
         "lollmsVsCoder.reasoningLevel": {
           "type": "string",

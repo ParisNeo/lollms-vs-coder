@@ -35,6 +35,34 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
         services.treeProviders.discussion?.refresh();
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newTempDiscussion', async () => {
+        // Generate a temporary ID. The ChatPanel and DiscussionManager logic 
+        // uses the 'temp-' prefix to avoid auto-saving to disk.
+        const tempId = 'temp-' + Date.now().toString() + Math.random().toString(36).substring(2);
+        
+        const panel = ChatPanel.createOrShow(
+            services.extensionUri, 
+            services.lollmsAPI, 
+            services.discussionManager, 
+            tempId, 
+            services.gitIntegration, 
+            services.skillsManager
+        );
+        
+        panel.agentManager = new (require('../agentManager').AgentManager)(
+            panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
+            services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager
+        );
+        panel.setProcessManager(services.processManager);
+        panel.agentManager.setProcessManager(services.processManager);
+        panel.setContextManager(services.contextManager);
+        panel.setPersonalityManager(services.personalityManager);
+        panel.setHerdManager(services.herdManager); 
+        
+        await panel.loadDiscussion();
+        // Note: We don't refresh the tree because temp discussions don't appear in the sidebar
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussionFromClipboard', async () => {
         const clipboardText = await vscode.env.clipboard.readText();
         if (!clipboardText) {
@@ -123,7 +151,6 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.cleanEmptyDiscussions', async () => {
         const yes = vscode.l10n.t('label.yes') || "Yes";
-        const no = vscode.l10n.t('label.no') || "No";
         const prompt = vscode.l10n.t('prompt.confirmCleanEmptyDiscussions') || "Are you sure you want to delete all empty discussions?";
         
         const selection = await vscode.window.showWarningMessage(prompt, { modal: true }, yes);

@@ -65,6 +65,32 @@ export function registerDebugCommands(context: vscode.ExtensionContext, services
         }
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.debugErrorSendToDiscussion', async () => {
+        const error = debugErrorManager.lastError;
+        if (!error) {
+            vscode.window.showWarningMessage("No debug error captured to send.");
+            return;
+        }
+
+        const panel = ChatPanel.currentPanel;
+        if (!panel) {
+            vscode.window.showErrorMessage("No active Lollms chat discussion found. Please open a chat first.");
+            return;
+        }
+
+        const errorFileRelative = error.filePath ? vscode.workspace.asRelativePath(error.filePath) : 'Unknown file';
+        const errorText = `I encountered an exception while debugging.\n\n**Error:** ${error.message}\n**Location:** \`${errorFileRelative}\` at line ${error.line}\n\n**Stack Trace:**\n\`\`\`\n${error.stack || 'No stack trace available'}\n\`\`\`\n\nPlease analyze this error and suggest a fix.`;
+
+        await panel.addMessageToDiscussion({
+            id: 'user_debug_err_' + Date.now(),
+            role: 'user',
+            content: errorText
+        });
+
+        // Focus the panel so the user sees the injected message
+        panel._panel.reveal();
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.inspectCode', async (args?: { code: string, language: string }) => {
         if (!ChatPanel.currentPanel) {
             vscode.window.showErrorMessage("Please open a Lollms chat panel to show inspection results.");

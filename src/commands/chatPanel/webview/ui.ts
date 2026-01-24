@@ -240,7 +240,9 @@ export function updateBadges() {
             return item;
         };
 
+        // Added "Switch Branch"
         menu.appendChild(createMenuItem('git-menu-branch', 'codicon-git-branch', 'New Branch'));
+        menu.appendChild(createMenuItem('git-menu-switch', 'codicon-arrow-swap', 'Switch Branch')); // NEW
         menu.appendChild(createMenuItem('git-menu-commit', 'codicon-check', 'Commit'));
         menu.appendChild(createMenuItem('git-menu-merge', 'codicon-git-merge', 'Fuse Branch'));
         menu.appendChild(createMenuItem('git-menu-revert', 'codicon-history', 'Revert / Motion'));

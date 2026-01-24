@@ -276,6 +276,8 @@ export function initEventHandlers() {
             closeMenu();
             if (id === 'git-menu-branch') {
                 vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.createGitBranch', params: {} } });
+            } else if (id === 'git-menu-switch') { // NEW
+                vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.switchGitBranch', params: {} } });
             } else if (id === 'git-menu-commit') {
                 vscode.postMessage({ command: 'requestCommitStaging' });
             } else if (id === 'git-menu-merge') {

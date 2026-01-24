@@ -47,17 +47,19 @@ The user needs you to interpret this result or fix the error. Generate a NEW pla
                     } else {
                         const projectContext = await this.contextManager.getContextContent({ includeTree: true });
                         
-                        // Grounding instructions for the Architect
                         const groundingBlock = `
 # PROJECT WORLD STATE
 Current environment and files:
 ${projectContext.text}
 
 # ARCHITECT PROTOCOL:
-1. DO NOT talk to the user in this step. Output ONLY the JSON plan.
+1. Output ONLY the JSON plan.
 2. Every plan MUST end with \`submit_response\`.
-3. In \`submit_response\`, do not just repeat raw output. EXTRACT the specific information the user asked for (e.g., if they asked for an IP, find the IP in the previous task's result and present it clearly).
-4. Order of operations: Gather data -> Process/Extract -> Submit Response.
+3. **DO NOT USE TEMPLATES**: Do NOT use syntax like \`{{ ... | regex_search ... }}\`. You CANNOT perform parsing in the final response.
+4. **PROTOCOL**: 
+   - Execute tool.
+   - Observe output.
+   - If output contains the answer, create a NEW task to \`submit_response\` with the HARDCODED answer.
 `;
                         if (chatHistory.length > 0) messages.push(...chatHistory);
 
@@ -70,7 +72,6 @@ ${projectContext.text}
                      lastResponse = await this.lollmsApi.sendChat([...messages, {role: 'assistant', content: lastResponse}, correctionPrompt], null, signal, modelOverride);
                 }
                 
-                // We strip all conversational text from the model's response to ensure only the plan is processed
                 const cleanResponse = stripThinkingTags(lastResponse);
                 const jsonString = this.extractJson(cleanResponse);
 
@@ -120,22 +121,25 @@ ${projectContext.text}
 You are the **Plan Architect**. 
 
 ### MANDATORY CONSTRAINTS:
-1. **NO CONVERSATION**: Do not say "Sure", "I can help", or "Here is the plan". Output ONLY the JSON object.
-2. **USER-FRIENDLY FINISH**: Your last task MUST be \`submit_response\`.
-3. **DATA EXTRACTION**: If a previous task produced long output, use \`submit_response\` to EXTRACT and highlight only the relevant answers for the user.
-4. **CHRONOLOGY**: Plan steps are executed in order. Do not skip logic.
+1. **NO CONVERSATION**: Output ONLY the JSON object.
+2. **DATA EXTRACTION RULES**: 
+   - **NEVER** use \`{{ ... | regex_search ... }}\` or Jinja templates.
+   - **NEVER** assume you can parse output in the \`submit_response\`.
+   - You MUST instruct the agent to run a command, and then the Supervisor will observe the output.
+3. **CHRONOLOGY**: Plan steps are executed in order.
 
 ### Tools Available:
 ${toolDescriptions}
 
 ### Variable Use:
-Reference result of task ID 1 like this: \`{{tasks[1].result}}\`.
+Reference result of task ID 1 like this: \`{{tasks[1].result}}\`. 
+**WARNING**: This only pastes the RAW string output. It does NOT extract data.
 
 ### Format:
 \`\`\`json
 {
   "objective": "...",
-  "scratchpad": "My reasoning for this specific OS...",
+  "scratchpad": "...",
   "tasks": [
     { "id": 1, "task_type": "simple_action", "action": "...", "description": "...", "parameters": {} }
   ]

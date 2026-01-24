@@ -71,22 +71,11 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         return null;
     }
 
-    // Helper to open a diff view comparing a snapshot (Original) vs the Active File (Proposed Changes)
-    async function applyContentWithDiff(fileUri: vscode.Uri, newContent: string) {
-        // 1. Capture current state (Snapshot)
-        let originalContent = '';
-        try {
-            const doc = await vscode.workspace.openTextDocument(fileUri);
-            originalContent = doc.getText();
-        } catch {
-            try {
-                const fileBytes = await vscode.workspace.fs.readFile(fileUri);
-                originalContent = Buffer.from(fileBytes).toString('utf8');
-            } catch (e) {
-                // File might not exist
-            }
-        }
-
+    /**
+     * Common logic to show a diff view comparing the state BEFORE the AI change 
+     * vs the state AFTER the AI change.
+     */
+    async function openDiffView(fileUri: vscode.Uri, originalContent: string) {
         const workspaceFolder = vscode.workspace.getWorkspaceFolder(fileUri);
         if (!workspaceFolder) {
              throw new Error("File is not in a workspace folder.");
@@ -100,35 +89,15 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         const fileName = path.basename(fileUri.fsPath);
         const snapshotUri = vscode.Uri.joinPath(snapshotsDir, `${fileName}.orig`);
         
+        // Save the "Before" state to a temp file
         await vscode.workspace.fs.writeFile(snapshotUri, Buffer.from(originalContent, 'utf8'));
 
-        // 2. Close existing editor if open
-        const visibleEditor = vscode.window.visibleTextEditors.find(e => e.document.uri.toString() === fileUri.toString());
-        if (visibleEditor) {
-            await vscode.window.showTextDocument(visibleEditor.document, {
-                viewColumn: visibleEditor.viewColumn,
-                preserveFocus: false
-            });
-            await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
-        }
-
-        // 3. Open Diff Editor
+        // Open the Diff Editor
         const title = `${fileName} (Original) ↔ ${fileName} (Proposed)`;
-        await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title, { preview: false });
-
-        // 4. Apply Edit
-        const document = await vscode.workspace.openTextDocument(fileUri);
-        const fullRange = new vscode.Range(0, 0, document.lineCount, 0);
-        const edit = new vscode.WorkspaceEdit();
-        edit.replace(fileUri, fullRange, newContent);
-        
-        const applied = await vscode.workspace.applyEdit(edit);
-        
-        if (applied) {
-            vscode.window.showInformationMessage(`Review changes. Press Ctrl+S to save.`);
-        } else {
-            throw new Error("Failed to apply edit to document.");
-        }
+        await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title, { 
+            preview: false,
+            preserveFocus: false // We want focus to shift to the new diff
+        });
     }
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string) => {
@@ -140,9 +109,13 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         
         try {
             const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
-            
+            let originalContent = '';
+
             try {
                 await vscode.workspace.fs.stat(fileUri);
+                // File exists: capture original content for diff
+                const doc = await vscode.workspace.openTextDocument(fileUri);
+                originalContent = doc.getText();
             } catch {
                 // File does not exist: Create it directly
                 const parentDir = vscode.Uri.joinPath(fileUri, '..');
@@ -159,8 +132,15 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 return;
             }
 
-            // File exists: Open Snapshot Diff
-            await applyContentWithDiff(fileUri, content);
+            // Apply full content replacement
+            const document = await vscode.workspace.openTextDocument(fileUri);
+            const fullRange = new vscode.Range(new vscode.Position(0, 0), document.lineAt(document.lineCount - 1).range.end);
+            const edit = new vscode.WorkspaceEdit();
+            edit.replace(fileUri, fullRange, content);
+            await vscode.workspace.applyEdit(edit);
+
+            // Open Snapshot Diff
+            await openDiffView(fileUri, originalContent);
 
         } catch (e: any) {
             Logger.error(`Error applying file content: ${e.message}`, e);
@@ -170,8 +150,6 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.saveCodeToFile', async (content: string, language: string) => {
         const activeWorkspace = getActiveWorkspace();
-        
-        // Map language IDs to likely extensions for the save dialog
         const langMap: { [key: string]: string } = {
             'python': 'py', 'javascript': 'js', 'typescript': 'ts', 'html': 'html', 'css': 'css',
             'c': 'c', 'cpp': 'cpp', 'csharp': 'cs', 'java': 'java', 'rust': 'rs', 'go': 'go'
@@ -291,18 +269,8 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
         
         try {
-            let document;
-            try {
-                document = await vscode.workspace.openTextDocument(fileUri);
-            } catch(e: any) {
-                if (e.message && e.message.includes('binary')) {
-                    vscode.window.showErrorMessage(`Cannot modify binary file '${filePath}' with text operations.`);
-                    return;
-                }
-                throw e;
-            }
-
-            const text = document.getText();
+            let document = await vscode.workspace.openTextDocument(fileUri);
+            const originalContent = document.getText();
             const range = findBlockRange(document, searchCode);
             
             if (!range) {
@@ -310,11 +278,15 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 return;
             }
             
-            const before = text.substring(0, range.start);
-            const after = text.substring(range.end);
+            const before = originalContent.substring(0, range.start);
+            const after = originalContent.substring(range.end);
             const newFullContent = before + replaceCode + after;
 
-            await applyContentWithDiff(fileUri, newFullContent);
+            const edit = new vscode.WorkspaceEdit();
+            edit.replace(fileUri, new vscode.Range(new vscode.Position(0, 0), document.lineAt(document.lineCount - 1).range.end), newFullContent);
+            await vscode.workspace.applyEdit(edit);
+
+            await openDiffView(fileUri, originalContent);
 
         } catch(e: any) {
             vscode.window.showErrorMessage(`Error accessing file ${filePath}: ${e.message}`);
@@ -342,18 +314,8 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
         
         try {
-            let document;
-            try {
-                document = await vscode.workspace.openTextDocument(fileUri);
-            } catch(e: any) {
-                if (e.message && e.message.includes('binary')) {
-                    vscode.window.showErrorMessage(`Cannot modify binary file '${filePath}' with text operations.`);
-                    return;
-                }
-                throw e;
-            }
-
-            const text = document.getText();
+            let document = await vscode.workspace.openTextDocument(fileUri);
+            const originalContent = document.getText();
             const range = findBlockRange(document, contextCode);
             
             if (!range) {
@@ -362,12 +324,16 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             }
             
             const insertPosIndex = range.end;
-            const before = text.substring(0, insertPosIndex);
-            const after = text.substring(insertPosIndex);
+            const before = originalContent.substring(0, insertPosIndex);
+            const after = originalContent.substring(insertPosIndex);
             const eol = document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
             const newFullContent = before + eol + insertCode + after;
 
-            await applyContentWithDiff(fileUri, newFullContent);
+            const edit = new vscode.WorkspaceEdit();
+            edit.replace(fileUri, new vscode.Range(new vscode.Position(0, 0), document.lineAt(document.lineCount - 1).range.end), newFullContent);
+            await vscode.workspace.applyEdit(edit);
+
+            await openDiffView(fileUri, originalContent);
 
         } catch(e: any) {
             vscode.window.showErrorMessage(`Error accessing file: ${e.message}`);
@@ -383,25 +349,8 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
         
         try {
-            let document;
-            try {
-                document = await vscode.workspace.openTextDocument(fileUri);
-            } catch(e: any) {
-                if (e.message && e.message.includes('binary')) {
-                     const deleteFile = await vscode.window.showWarningMessage(
-                        `'${filePath}' appears to be a binary file. "Delete Code" cannot remove lines from binaries. Do you want to delete the whole file instead?`,
-                        'Yes, Delete File', 'Cancel'
-                    );
-                    
-                    if (deleteFile === 'Yes, Delete File') {
-                        await vscode.commands.executeCommand('lollms-vs-coder.deleteFile', filePath);
-                    }
-                    return;
-                }
-                throw e;
-            }
-
-            const text = document.getText();
+            let document = await vscode.workspace.openTextDocument(fileUri);
+            const originalContent = document.getText();
             const range = findBlockRange(document, codeToDelete);
             
             if (!range) {
@@ -409,8 +358,8 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 return;
             }
             
-            const before = text.substring(0, range.start);
-            let after = text.substring(range.end);
+            const before = originalContent.substring(0, range.start);
+            let after = originalContent.substring(range.end);
             
             if (after.startsWith('\r\n')) {
                 after = after.substring(2);
@@ -420,7 +369,11 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
 
             const newFullContent = before + after;
 
-            await applyContentWithDiff(fileUri, newFullContent);
+            const edit = new vscode.WorkspaceEdit();
+            edit.replace(fileUri, new vscode.Range(new vscode.Position(0, 0), document.lineAt(document.lineCount - 1).range.end), newFullContent);
+            await vscode.workspace.applyEdit(edit);
+
+            await openDiffView(fileUri, originalContent);
 
         } catch(e: any) {
             vscode.window.showErrorMessage(`Error accessing file ${filePath}: ${e.message}`);
@@ -465,28 +418,16 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
              if(!activeWorkspace) return;
              
              const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
+             const doc = await vscode.workspace.openTextDocument(fileUri);
+             const originalContent = doc.getText();
+
+             // Apply the context-aware diff logic
+             await applyDiff(patchContent, filePath); 
              
-             let originalContent = '';
-             try {
-                 const doc = await vscode.workspace.openTextDocument(fileUri);
-                 originalContent = doc.getText();
-             } catch {
-                 const bytes = await vscode.workspace.fs.readFile(fileUri);
-                 originalContent = Buffer.from(bytes).toString('utf8');
-             }
+             // Open the diff editor to show what happened
+             await openDiffView(fileUri, originalContent);
              
-             const snapshotsDir = vscode.Uri.joinPath(activeWorkspace.uri, '.lollms', 'snapshots');
-             try { await vscode.workspace.fs.createDirectory(snapshotsDir); } catch {}
-             const fileName = path.basename(filePath);
-             const snapshotUri = vscode.Uri.joinPath(snapshotsDir, `${fileName}.orig`);
-             await vscode.workspace.fs.writeFile(snapshotUri, Buffer.from(originalContent, 'utf8'));
-             
-             const title = `${fileName} (Original) ↔ ${fileName} (Patched)`;
-             await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title, { preview: false });
-             
-             await applyDiff(patchContent); 
-             
-             vscode.window.showInformationMessage(`Patch applied. Review changes and Save.`);
+             vscode.window.showInformationMessage(`Patch applied successfully to ${filePath}. Review changes.`);
          } catch (e: any) {
              vscode.window.showErrorMessage(`Failed to apply patch: ${e.message}`);
          }

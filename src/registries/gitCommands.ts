@@ -223,6 +223,56 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
         }
     }));
 
+    // Switch Git Branch (New)
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.switchGitBranch', async () => {
+        const folder = getActiveWorkspace() || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0] : undefined);
+        if (!folder) {
+            vscode.window.showErrorMessage("No workspace folder found.");
+            return;
+        }
+
+        try {
+            const branches = await services.gitIntegration.getBranches(folder);
+            const current = await services.gitIntegration.getCurrentBranch(folder);
+            
+            if (branches.length <= 1) {
+                vscode.window.showInformationMessage(`Only one branch found (${current}).`);
+                return;
+            }
+
+            const items = branches.map(b => ({ 
+                label: b, 
+                description: b === current ? '(Current)' : '',
+                picked: b === current
+            }));
+
+            // Move current to top or sort logic? Sorting by name usually fine, but highlighting current is good.
+            items.sort((a, b) => {
+                if (a.label === current) return -1;
+                if (b.label === current) return 1;
+                return a.label.localeCompare(b.label);
+            });
+
+            const selected = await vscode.window.showQuickPick(items, { 
+                placeHolder: `Select branch to switch to (Current: ${current})` 
+            });
+
+            if (selected) {
+                if (selected.label === current) return; // No op
+
+                await services.gitIntegration.checkout(folder, selected.label);
+                vscode.window.showInformationMessage(`Switched to branch ${selected.label}`);
+                
+                // Update UI if panel is open
+                if (ChatPanel.currentPanel) {
+                    ChatPanel.currentPanel.sendGitBranchState(folder);
+                }
+            }
+        } catch (e: any) {
+            vscode.window.showErrorMessage(`Failed to switch branch: ${e.message}`);
+        }
+    }));
+
     // Merge the temp branch back into the original
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.mergeGitBranch', async (params: { branch: string }) => {
         const folder = getActiveWorkspace() || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0] : undefined);
@@ -232,72 +282,107 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
         }
 
         const discussionPanel = ChatPanel.currentPanel;
-        if (!discussionPanel || !discussionPanel.getCurrentDiscussion()) {
-            vscode.window.showErrorMessage("No active discussion context.");
-            return;
-        }
+        const discussion = discussionPanel?.getCurrentDiscussion();
+        const state = discussion?.gitState;
 
-        const discussion = discussionPanel.getCurrentDiscussion()!;
-        const state = discussion.gitState;
+        // If automatic state exists, use it. Otherwise, prompt user.
+        let sourceBranch = params?.branch || state?.tempBranch;
+        let targetBranch = state?.originalBranch;
 
-        if (!state || !state.originalBranch || !state.tempBranch) {
-            vscode.window.showErrorMessage("No Git Workflow state found in this discussion. Cannot auto-merge.");
-            return;
-        }
+        if (!sourceBranch || !targetBranch) {
+            // Fallback Mode: Manual selection
+            const current = await services.gitIntegration.getCurrentBranch(folder);
+            sourceBranch = current;
 
-        if (params && params.branch && params.branch !== state.tempBranch) {
-             const proceed = await vscode.window.showWarningMessage(
-                 `The button says to merge '${params.branch}', but the discussion started with '${state.tempBranch}'. Merge '${state.tempBranch}'?`, 
-                 "Yes", "Cancel"
-             );
-             if (proceed !== "Yes") return;
+            // Get possible targets
+            const branches = await services.gitIntegration.getBranches(folder);
+            const targets = branches.filter(b => b !== current);
+            
+            if (targets.length === 0) {
+                 vscode.window.showErrorMessage("No other branches available to merge into.");
+                 return;
+            }
+
+            // Heuristic: Prefer 'main' or 'master' or 'develop' if checking out from feature branch
+            const preferred = targets.find(b => ['main', 'master', 'develop'].includes(b));
+            
+            // Allow user to select target
+            const selectedTarget = await vscode.window.showQuickPick(targets, { 
+                placeHolder: `Merge '${current}' into...`,
+            });
+
+            if (!selectedTarget) return; // Cancelled
+            targetBranch = selectedTarget;
+        } else {
+            // Validation if state exists
+            if (params && params.branch && params.branch !== state.tempBranch) {
+                 const proceed = await vscode.window.showWarningMessage(
+                     `The UI request merges '${params.branch}', but discussion state recorded '${state.tempBranch}'. Merge '${state.tempBranch}' instead?`, 
+                     "Yes", "Cancel"
+                 );
+                 if (proceed !== "Yes") return;
+            }
         }
 
         try {
-            await services.gitIntegration.checkout(folder, state.originalBranch);
+            // 1. Checkout Target
+            await services.gitIntegration.checkout(folder, targetBranch);
             
-            // Explicitly update the UI immediately after checkout
-            discussionPanel.sendGitBranchState(folder);
+            if (discussionPanel) discussionPanel.sendGitBranchState(folder);
             
-            const mergeOutput = await services.gitIntegration.mergeBranch(folder, state.tempBranch);
+            // 2. Merge Source
+            const mergeOutput = await services.gitIntegration.mergeBranch(folder, sourceBranch);
             
-            vscode.window.showInformationMessage(`Successfully merged ${state.tempBranch} into ${state.originalBranch}.`);
-            discussionPanel.addMessageToDiscussion({
-                role: 'system',
-                content: `✅ **Git Workflow:** Merged \`${state.tempBranch}\` into \`${state.originalBranch}\`.\n\nOutput:\n\`\`\`\n${mergeOutput}\n\`\`\``
-            });
+            vscode.window.showInformationMessage(`Successfully merged ${sourceBranch} into ${targetBranch}.`);
+            
+            if (discussionPanel) {
+                discussionPanel.addMessageToDiscussion({
+                    role: 'system',
+                    content: `✅ **Git Workflow:** Merged \`${sourceBranch}\` into \`${targetBranch}\`.\n\nOutput:\n\`\`\`\n${mergeOutput}\n\`\`\``
+                });
+            }
 
+            // 3. Cleanup (Optional)
             const config = vscode.workspace.getConfiguration('lollmsVsCoder');
             const autoDelete = config.get<boolean>('git.deleteBranchAfterMerge');
 
             let shouldDelete = false;
-            if (autoDelete) {
+            // Only suggest deletion if it was a tracked temp branch or user explicitly asks
+            if (autoDelete && state?.tempBranch === sourceBranch) {
                 shouldDelete = true;
-            } else {
+            } else if (state?.tempBranch === sourceBranch) {
+                // If it was a tracked session branch, ask user
                 const deleteChoice = await vscode.window.showInformationMessage(
-                    `Delete temporary branch '${state.tempBranch}'?`,
+                    `Delete temporary branch '${sourceBranch}'?`,
                     "Yes, Delete", "Keep"
                 );
                 if (deleteChoice === "Yes, Delete") shouldDelete = true;
             }
 
             if (shouldDelete) {
-                await services.gitIntegration.deleteBranch(folder, state.tempBranch);
-                discussionPanel.addMessageToDiscussion({
-                    role: 'system',
-                    content: `🗑️ Deleted branch \`${state.tempBranch}\`.`
-                });
+                await services.gitIntegration.deleteBranch(folder, sourceBranch);
+                if (discussionPanel) {
+                    discussionPanel.addMessageToDiscussion({
+                        role: 'system',
+                        content: `🗑️ Deleted branch \`${sourceBranch}\`.`
+                    });
+                }
             }
 
-            discussion.gitState = undefined;
-            await services.discussionManager.saveDiscussion(discussion);
+            // Clear state if we completed the tracked workflow
+            if (discussion && discussion.gitState) {
+                discussion.gitState = undefined;
+                await services.discussionManager.saveDiscussion(discussion);
+            }
 
         } catch (e: any) {
-            vscode.window.showErrorMessage(`Merge failed: ${e.message}. You are on ${state.originalBranch}. Please resolve manually.`);
-            discussionPanel.addMessageToDiscussion({
-                role: 'system',
-                content: `❌ **Merge Failed:** ${e.message}\n\nPlease resolve conflicts manually in Source Control view.`
-            });
+            vscode.window.showErrorMessage(`Merge failed: ${e.message}. You are now on ${targetBranch}. Please resolve manually.`);
+            if (discussionPanel) {
+                discussionPanel.addMessageToDiscussion({
+                    role: 'system',
+                    content: `❌ **Merge Failed:** ${e.message}\n\nManual conflict resolution required.`
+                });
+            }
         }
     }));
 }

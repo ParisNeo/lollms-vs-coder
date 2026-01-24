@@ -80,6 +80,7 @@ function createButton(text: string, icon: string, onClick: () => void, className
     return btn;
 }
 
+// ... (createGenerationBlock, createSearchBlock, enablePanZoom, renderDiagram unchanged) ...
 function createGenerationBlock(type: string, filePath: string, prompt: string): HTMLElement {
     const block = document.createElement('div');
     block.className = 'generation-block';
@@ -275,6 +276,7 @@ function renderDiagram(codeElement: HTMLElement, language: string, container: HT
     }
 }
 
+// ... (startEdit, extractFilePaths, looksLikeDiff, enhanceCodeBlocks, enhanceWithCommandButtons, processThinkTags unchanged) ...
 function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     let originalContent: any;
     try {
@@ -447,13 +449,18 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
 
                 if (!pathStr && i + 1 < lines.length) {
                     const nextLine = lines[i+1].trim();
-
                     const langPathMatch = nextLine.match(/^([a-zA-Z0-9_+-]+):([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+)$/);
 
                     if (langPathMatch) {
                         pathStr = langPathMatch[2];
                         stripFirstLine = true;
-                        type = 'file';
+                        // Determine type based on prefix provided in line
+                        const prefix = langPathMatch[1].toLowerCase();
+                        if (prefix === 'diff') type = 'diff';
+                        else if (prefix === 'insert') type = 'insert';
+                        else if (prefix === 'replace') type = 'replace';
+                        else if (prefix === 'delete_code') type = 'delete';
+                        else type = 'file';
                     } else if (!nextLine.startsWith('#!')) {
                         const pathLineRegex = /^((?:\/\/|#|<!--|;|\/\*|\*)\s*)?([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+)(\s*\S*)?$/;
                         const matchPath = nextLine.match(pathLineRegex);
@@ -550,7 +557,6 @@ function looksLikeDiff(text: string): boolean {
         }
     }
     
-    // Most unified diffs have at least 2 headers (---/+++) OR a chunk marker
     return headerLines >= 2 || chunkMarkers >= 1;
 }
 
@@ -604,7 +610,12 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             const parts = language.split(':');
             language = parts[0];
             filePath = parts.slice(1).join(':').trim();
-            isFileBlock = true;
+            if (language.toLowerCase() === 'diff') {
+                isDiff = true;
+                diffFilePath = filePath;
+            } else {
+                isFileBlock = true;
+            }
             code.className = `language-${language}`;
             pre.className = `language-${language}`;
         }
@@ -652,10 +663,8 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
         } 
         
         // --- SECONDARY AUTO-DETECTION ---
-        // If not explicitly tagged by parser, check contents
         if (!isDiff && (language === 'diff' || looksLikeDiff(codeText))) {
             isDiff = true;
-            // Robust path extraction from header
             const headerMatch = codeText.match(/(?:---|\+\+\+)\s+(?:[ab]\/)?([^\s\n\r]+)/);
             if (headerMatch && headerMatch[1]) {
                 diffFilePath = headerMatch[1].trim();
@@ -1295,13 +1304,19 @@ export function updateContext(contextText: string, files: string[] = []) {
 }
 
 export function displayPlan(plan: any) {
-    if(!dom.chatMessagesContainer) return;
-    const existingPlan = dom.chatMessagesContainer.querySelector('.plan-wrapper');
-    if (existingPlan) existingPlan.remove();
-    if (!plan) return;
+    if(!dom.agentPlanZone) return; // Must have plan zone
+    
+    if (!plan) {
+        dom.agentPlanZone.innerHTML = '';
+        dom.agentPlanZone.classList.remove('visible');
+        return;
+    }
+
+    dom.agentPlanZone.innerHTML = '';
+    dom.agentPlanZone.classList.add('visible');
 
     let scratchpadHtml = plan.scratchpad ? `
-        <div class="plan-scratchpad">
+        <div class="plan-scratchpad" style="margin-top:10px;">
             <details open>
                 <summary class="scratchpad-header"><span class="codicon codicon-lightbulb"></span> Thought Process</summary>
                 <div class="scratchpad-content">${sanitizer.sanitize(marked.parse(plan.scratchpad) as string, SANITIZE_CONFIG)}</div>
@@ -1379,8 +1394,7 @@ export function displayPlan(plan: any) {
         });
     });
 
-    dom.chatMessagesContainer.appendChild(planWrapper);
-    if(dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+    dom.agentPlanZone.appendChild(planWrapper);
 }
 
 export function insertNewMessageEditor(role: 'user' | 'assistant') {

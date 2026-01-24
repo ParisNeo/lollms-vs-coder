@@ -40,8 +40,6 @@ export class ChatPanel {
   private _viewReadyResolver!: () => void;
   
   private _discussionCapabilities: DiscussionCapabilities;
-  
-  // Abort controller for token/context operations
   private _tokenAbortController: AbortController | null = null;
 
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, discussionManager: DiscussionManager, discussionId: string, gitIntegration: GitIntegration, skillsManager?: SkillsManager): ChatPanel {
@@ -85,10 +83,8 @@ export class ChatPanel {
     this._gitIntegration = gitIntegration;
     this._skillsManager = skillsManager || new SkillsManager();
 
-    // Initialize capabilities with last used settings
     this._discussionCapabilities = this._discussionManager.getLastCapabilities();
 
-    // Initialize view ready promise
     this._viewReadyPromise = new Promise<void>((resolve) => {
         this._viewReadyResolver = resolve;
     });
@@ -106,18 +102,9 @@ export class ChatPanel {
     this._setWebviewMessageListener(this._panel.webview);
   }
   
-  public setPersonalityManager(manager: PersonalityManager) {
-      this._personalityManager = manager;
-  }
-
-  public setHerdManager(manager: HerdManager) {
-      this.herdManager = manager;
-  }
-
-  public getCurrentDiscussion(): Discussion | null {
-      return this._currentDiscussion;
-  }
-
+  public setPersonalityManager(manager: PersonalityManager) { this._personalityManager = manager; }
+  public setHerdManager(manager: HerdManager) { this.herdManager = manager; }
+  public getCurrentDiscussion(): Discussion | null { return this._currentDiscussion; }
   private log(message: string, level: 'INFO' | 'WARN' | 'ERROR' = 'INFO') {
       const timestamp = new Date().toLocaleTimeString();
       const logEntry = `[${timestamp}] [${level}] ${message}`;
@@ -128,18 +115,9 @@ export class ChatPanel {
       this._executionLogs.push(logEntry);
       if (this._executionLogs.length > 2000) this._executionLogs.shift();
   }
-  
-  private async _updateHtmlForWebview() {
-    this._panel.webview.html = await this._getHtmlForWebview(this._panel.webview);
-  }
-
-  public setContextManager(contextManager: ContextManager) {
-    this._contextManager = contextManager;
-  }
-  
-  public setProcessManager(processManager: ProcessManager) {
-    this.processManager = processManager;
-  }
+  private async _updateHtmlForWebview() { this._panel.webview.html = await this._getHtmlForWebview(this._panel.webview); }
+  public setContextManager(contextManager: ContextManager) { this._contextManager = contextManager; }
+  public setProcessManager(processManager: ProcessManager) { this.processManager = processManager; }
   
   public updateGeneratingState() {
     if (this._isDisposed) return;
@@ -149,32 +127,26 @@ export class ChatPanel {
         this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating });
     }
   }
-
+  
   public updateAgentMode(isActive: boolean) {
     if (this._isDisposed) return;
     if (this._panel.webview) {
         this._panel.webview.postMessage({ command: 'updateAgentMode', isActive });
     }
   }
-
+  
   public displayPlan(plan: any | null): void {
       if (this._isDisposed) return;
       if (this._panel.webview) {
         this._panel.webview.postMessage({ command: 'displayPlan', plan: plan });
       }
   }
-
-  public showDebugLog() {
-      this.showInternalLog();
-  }
-
+  
+  public showDebugLog() { this.showInternalLog(); }
   public showInternalLog() {
-      const content = this._executionLogs.length > 0 
-          ? this._executionLogs.join('\n') 
-          : 'No logs available for this session.';
+      const content = this._executionLogs.length > 0 ? this._executionLogs.join('\n') : 'No logs available for this session.';
       InfoPanel.createOrShow(this._extensionUri, "Discussion Log", `\`\`\`log\n${content}\n\`\`\``);
   }
-  
   public async updateMessageContent(messageId: string, newContent: string) {
       if (!this._currentDiscussion) return;
       const msg = this._currentDiscussion.messages.find(m => m.id === messageId);
@@ -188,139 +160,138 @@ export class ChatPanel {
           this._panel.webview.postMessage({ command: 'updateMessage', messageId, newContent });
       }
   }
-  
+
   public async loadDiscussion(): Promise<void> {
-    if (this._isDisposed) return;
-    this.log(`Loading discussion ${this.discussionId}`);
+      if (this._isDisposed) return;
+      this.log(`Loading discussion ${this.discussionId}`);
 
-    if (!this._currentDiscussion || this._currentDiscussion.id !== this.discussionId) {
-        let discussion: Discussion | null;
-        if (this.discussionId.startsWith('temp-')) {
-            discussion = {
-                id: this.discussionId,
-                title: 'Temporary Discussion',
-                messages: [],
-                timestamp: Date.now(),
-                groupId: null,
-                plan: null,
-                capabilities: this._discussionCapabilities, 
-                personalityId: 'default_coder'
-            };
-        } else {
-            discussion = await this._discussionManager.getDiscussion(this.discussionId);
-        }
+      if (!this._currentDiscussion || this._currentDiscussion.id !== this.discussionId) {
+          let discussion: Discussion | null;
+          if (this.discussionId.startsWith('temp-')) {
+              discussion = {
+                  id: this.discussionId,
+                  title: 'Temporary Discussion',
+                  messages: [],
+                  timestamp: Date.now(),
+                  groupId: null,
+                  plan: null,
+                  capabilities: this._discussionCapabilities, 
+                  personalityId: 'default_coder'
+              };
+          } else {
+              discussion = await this._discussionManager.getDiscussion(this.discussionId);
+          }
 
-        if (discussion) {
-            let needsSave = false;
-            if (!discussion.messages || !Array.isArray(discussion.messages)) {
-                discussion.messages = [];
-                needsSave = true;
-            }
-            discussion.messages.forEach(msg => {
-                if (!msg.id) {
-                    msg.id = Date.now().toString() + Math.random().toString(36).substring(2);
-                    needsSave = true;
-                }
-            });
-            if (!('plan' in discussion)) {
-                discussion.plan = null;
-                needsSave = true;
-            }
-            if (discussion.capabilities) {
-                this._discussionCapabilities = discussion.capabilities;
-            } else {
-                discussion.capabilities = this._discussionCapabilities;
-                needsSave = true;
-            }
-            if (!discussion.personalityId) {
-                discussion.personalityId = 'default_coder';
-                needsSave = true;
-            }
+          if (discussion) {
+              let needsSave = false;
+              if (!discussion.messages || !Array.isArray(discussion.messages)) {
+                  discussion.messages = [];
+                  needsSave = true;
+              }
+              discussion.messages.forEach(msg => {
+                  if (!msg.id) {
+                      msg.id = Date.now().toString() + Math.random().toString(36).substring(2);
+                      needsSave = true;
+                  }
+              });
+              if (!('plan' in discussion)) {
+                  discussion.plan = null;
+                  needsSave = true;
+              }
+              if (discussion.capabilities) {
+                  this._discussionCapabilities = discussion.capabilities;
+              } else {
+                  discussion.capabilities = this._discussionCapabilities;
+                  needsSave = true;
+              }
+              if (!discussion.personalityId) {
+                  discussion.personalityId = 'default_coder';
+                  needsSave = true;
+              }
 
-            if (needsSave && !discussion.id.startsWith('temp-')) {
-                await this._discussionManager.saveDiscussion(discussion);
-            }
+              if (needsSave && !discussion.id.startsWith('temp-')) {
+                  await this._discussionManager.saveDiscussion(discussion);
+              }
 
-            this._currentDiscussion = discussion;
-            this._panel.title = this._currentDiscussion.title;
-            
-            if (this._discussionCapabilities.agentMode && !this.agentManager.getIsActive()) {
-                this.agentManager.toggleAgentMode();
-            } else if (!this._discussionCapabilities.agentMode && this.agentManager.getIsActive()) {
-                this.agentManager.toggleAgentMode();
-            }
+              this._currentDiscussion = discussion;
+              this._panel.title = this._currentDiscussion.title;
+              
+              if (this._discussionCapabilities.agentMode && !this.agentManager.getIsActive()) {
+                  this.agentManager.toggleAgentMode();
+              } else if (!this._discussionCapabilities.agentMode && this.agentManager.getIsActive()) {
+                  this.agentManager.toggleAgentMode();
+              }
+          } else {
+              this.log(`Discussion ${this.discussionId} not found.`, 'ERROR');
+              this._panel.webview.postMessage({ command: 'updateTokenProgress' });
+              vscode.window.showErrorMessage(`Lollms: Could not load discussion ${this.discussionId}. It may have been deleted.`);
+              this.dispose();
+              return;
+          }
+      }
 
-        } else {
-            this.log(`Discussion ${this.discussionId} not found.`, 'ERROR');
-            this._panel.webview.postMessage({ command: 'updateTokenProgress' });
-            vscode.window.showErrorMessage(`Lollms: Could not load discussion ${this.discussionId}. It may have been deleted.`);
-            this.dispose();
-            return;
-        }
-    }
+      if (!this._isWebviewReady) {
+          this.log("Webview not ready, queuing load.");
+          this._isLoadPending = true;
+          return;
+      }
+      this._isLoadPending = false;
 
-    if (!this._isWebviewReady) {
-        this.log("Webview not ready, queuing load.");
-        this._isLoadPending = true;
-        return;
-    }
-    this._isLoadPending = false;
+      const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+      const isInspectorEnabled = config.get<boolean>('enableCodeInspector', true);
 
-    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-    const isInspectorEnabled = config.get<boolean>('enableCodeInspector', true);
+      if (this._contextManager) {
+          const cachedContext = this._contextManager.getLastContext();
+          if (cachedContext) {
+              const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || [];
+              this._panel.webview.postMessage({ 
+                  command: 'updateContext', 
+                  context: cachedContext.text,
+                  files: includedFiles 
+              });
+              this._panel.webview.postMessage({ command: 'updateImageContext', images: cachedContext.images });
+          }
+      }
 
-    if (this._contextManager) {
-        const cachedContext = this._contextManager.getLastContext();
-        if (cachedContext) {
-            const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || [];
-            this._panel.webview.postMessage({ 
-                command: 'updateContext', 
-                context: cachedContext.text,
-                files: includedFiles 
-            });
-            this._panel.webview.postMessage({ command: 'updateImageContext', images: cachedContext.images });
-        }
-    }
+      this.log(`Sending ${this._currentDiscussion.messages.length} messages to webview`);
+      
+      await this._panel.webview.postMessage({ 
+          command: 'loadDiscussion', 
+          messages: this._currentDiscussion.messages,
+          isInspectorEnabled: isInspectorEnabled
+      });
+      
+      this._panel.webview.postMessage({ 
+          command: 'updateDiscussionCapabilities', 
+          capabilities: this._discussionCapabilities 
+      });
+      
+      let isRepo = false;
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      if (workspaceFolder && this._gitIntegration) {
+          isRepo = await this._gitIntegration.isGitRepo(workspaceFolder);
+      }
+      this._panel.webview.postMessage({ command: 'updateGitRepoStatus', isRepo: isRepo });
 
-    this.log(`Sending ${this._currentDiscussion.messages.length} messages to webview`);
-    
-    await this._panel.webview.postMessage({ 
-        command: 'loadDiscussion', 
-        messages: this._currentDiscussion.messages,
-        isInspectorEnabled: isInspectorEnabled
-    });
-    
-    this._panel.webview.postMessage({ 
-        command: 'updateDiscussionCapabilities', 
-        capabilities: this._discussionCapabilities 
-    });
-    
-    let isGitRepo = false;
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (workspaceFolder && this._gitIntegration) {
-        isGitRepo = await this._gitIntegration.isGitRepo(workspaceFolder);
-    }
-    this._panel.webview.postMessage({ command: 'updateGitRepoStatus', isRepo: isGitRepo });
+      if (this._discussionCapabilities.gitWorkflow && workspaceFolder) {
+          this.sendGitBranchState(workspaceFolder);
+      }
 
-    if (this._discussionCapabilities.gitWorkflow && workspaceFolder) {
-        this.sendGitBranchState(workspaceFolder);
-    }
+      this._panel.webview.postMessage({ command: 'updateThinkingMode', mode: this._discussionCapabilities.thinkingMode });
 
-    this._panel.webview.postMessage({ command: 'updateThinkingMode', mode: this._discussionCapabilities.thinkingMode });
+      if (this._personalityManager) {
+          this._panel.webview.postMessage({
+              command: 'updatePersonalities',
+              personalities: this._personalityManager.getPersonalities(),
+              currentPersonalityId: this._currentDiscussion.personalityId
+          });
+      }
 
-    if (this._personalityManager) {
-        this._panel.webview.postMessage({
-            command: 'updatePersonalities',
-            personalities: this._personalityManager.getPersonalities(),
-            currentPersonalityId: this._currentDiscussion.personalityId
-        });
-    }
+      this.displayPlan(this._currentDiscussion.plan);
+      this.updateGeneratingState();
 
-    this.displayPlan(this._currentDiscussion.plan);
-    this.updateGeneratingState();
-
-    this.updateContextAndTokens();
-    await this._fetchAndSetModels(false);
+      this.updateContextAndTokens();
+      await this._fetchAndSetModels(false);
   }
 
   public async sendGitBranchState(folder: vscode.WorkspaceFolder) {
@@ -363,11 +334,7 @@ export class ChatPanel {
         this.log(`Unexpected error in _fetchAndSetModels: ${e.message}`, 'ERROR');
     }
   }
-  
-  /**
-   * Recalculates context and tokens and sends updates to the webview.
-   * Public so it can be triggered by context-changing commands.
-   */
+
   public async updateContextAndTokens() {
     this.log("updateContextAndTokens called");
     if (this._isDisposed) {
@@ -375,7 +342,6 @@ export class ChatPanel {
         return;
     }
 
-    // Stop existing calculation if running
     if (this._tokenAbortController) {
         this._tokenAbortController.abort();
         this._tokenAbortController = null;
@@ -390,13 +356,11 @@ export class ChatPanel {
             return;
         }
         
-        // Use a safe postMessage check
         if (!this._isDisposed) {
             this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: 'Building file tree...' });
             this._panel.webview.postMessage({ command: 'updateStatus', status: 'Scanning project files...', type: 'info' });
         }
 
-        // Run calculation safely
         try {
             this.log("Fetching context content...");
             const context = await this._contextManager.getContextContent({ signal });
@@ -446,7 +410,6 @@ export class ChatPanel {
     
             this.log(`Starting API Tokenization. Model: ${modelForTokenization}, Text Length: ${fullTextToTokenize.length}`);
             
-            // Check signal before API call
             if (signal.aborted) return;
 
             const [tokenizeResponse, contextSizeResponse] = await Promise.all([
@@ -489,8 +452,7 @@ export class ChatPanel {
             if (this._isDisposed) return;
             
             try {
-                // Fallback estimation (crude)
-                const context = await this._contextManager.getContextContent({ signal }); // Re-fetch with signal
+                const context = await this._contextManager.getContextContent({ signal }); 
                 if (signal.aborted) return;
 
                 const discussionContent = this._currentDiscussion!.messages.map(msg => {
@@ -544,11 +506,8 @@ export class ChatPanel {
     }
   }
 
-  private async waitForWebviewReady() {
-      if (this._isWebviewReady) return;
-      return this._viewReadyPromise;
-  }
-
+  private async waitForWebviewReady() { if (this._isWebviewReady) return; return this._viewReadyPromise; }
+  
   public async setInputText(text: string) {
       if (this._isDisposed) return;
       await this.waitForWebviewReady();
@@ -567,22 +526,17 @@ export class ChatPanel {
 
   public async handleManualAutoContext(userPrompt: string) {
       if (this._isDisposed) return;
-      
       const { id: processId, controller } = this.processManager.register(this.discussionId, 'Running Auto-Context...');
       this.updateGeneratingState();
-
       try {
           const model = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
-          
           let objective = userPrompt.trim();
           let keywords: string[] = [];
-
           if (objective.includes('#')) {
               const parts = objective.split('#');
               objective = parts[0].trim();
               keywords = parts[1].split(',').map(k => k.trim()).filter(k => k);
           }
-          
           if (!objective && this._currentDiscussion && this._currentDiscussion.messages.length > 0) {
               for (let i = this._currentDiscussion.messages.length - 1; i >= 0; i--) {
                   const m = this._currentDiscussion.messages[i];
@@ -596,18 +550,15 @@ export class ChatPanel {
                   }
               }
           }
-          
           if (!objective) {
               objective = "Analyze current project context relevance.";
           }
-
           const contextAgentMsgId = 'ctx_agent_manual_' + Date.now();
           await this.addMessageToDiscussion({
               id: contextAgentMsgId,
               role: 'system',
               content: `**🧠 Auto-Context Agent (Manual)**\n*Objective: "${objective.substring(0, 100)}${objective.length>100?'...':''}"*\n\n`
           });
-
           await this._contextManager.runContextAgent(
                 objective, 
                 model, 
@@ -623,9 +574,7 @@ export class ChatPanel {
                 },
                 keywords
             );
-            
             this.updateContextAndTokens();
-
       } catch (e: any) {
           if (e.name !== 'AbortError') {
             this.log(`Manual Auto-Context failed: ${e.message}`, 'ERROR');
@@ -635,6 +584,28 @@ export class ChatPanel {
           this.processManager.unregister(processId);
           this.updateGeneratingState();
       }
+  }
+
+  public async requestUserInput(question: string, signal: AbortSignal): Promise<string> {
+      return new Promise((resolve, reject) => {
+          this._inputResolver = resolve;
+          
+          this.addMessageToDiscussion({
+              id: 'agent_request_' + Date.now(),
+              role: 'system',
+              content: `**❓ Agent Question:** ${question}\n\n*Please type your answer below.*`
+          });
+          
+          // Make input enabled for user response
+          this.updateGeneratingState();
+
+          const disposable = signal.addEventListener('abort', () => {
+              if (this._inputResolver === resolve) {
+                  this._inputResolver = null;
+                  reject(new Error("Input request aborted."));
+              }
+          });
+      });
   }
 
   public async sendMessage(message: ChatMessage, autoContextMode: boolean = false) {
@@ -649,13 +620,39 @@ export class ChatPanel {
         await this.waitForWebviewReady();
     }
 
+    // --- AGENT MODE / INPUT INTERCEPTION ---
+    if (this._inputResolver) {
+        const text = (typeof message.content === 'string') ? message.content : "User provided input.";
+        const resolver = this._inputResolver;
+        this._inputResolver = null;
+        
+        await this.addMessageToDiscussion(message);
+        resolver(text);
+        return;
+    }
+
+    if (this.agentManager && this.agentManager.getIsActive()) {
+        await this.addMessageToDiscussion(message); 
+        
+        if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+             await this.agentManager.handleUserMessage(
+                 typeof message.content === 'string' ? message.content : "User Input", 
+                 this._currentDiscussion, 
+                 vscode.workspace.workspaceFolders[0]
+             );
+        } else {
+             this.addMessageToDiscussion({ role: 'system', content: "Agent requires an active workspace folder." });
+        }
+        return;
+    }
+
+    // --- STANDARD CHAT ---
     await this.addMessageToDiscussion(message);
 
     const { id: processId, controller } = this.processManager.register(this.discussionId, 'Generating response...');
     this.updateGeneratingState();
 
     let autoContextText = "";
-
     const isAutoContext = this._discussionCapabilities.autoContextMode || autoContextMode;
 
     if (isAutoContext) {
@@ -699,9 +696,8 @@ export class ChatPanel {
     }
 
     if (this._discussionCapabilities.herdMode && this.herdManager) {
-        // ... (Herd mode logic remains same)
-        let preParticipants = this._discussionCapabilities.herdPreCodeParticipants;
-        let postParticipants = this._discussionCapabilities.herdPostCodeParticipants;
+        let preParticipants = this._discussionCapabilities.herdPreAnswerParticipants;
+        let postParticipants = this._discussionCapabilities.herdPostAnswerParticipants;
         const leaderModel = this._currentDiscussion.model || this._lollmsAPI.getModelName();
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const dynamicMode = config.get<boolean>('herdDynamicMode') || false;
@@ -820,9 +816,11 @@ export class ChatPanel {
     }
 
     try {
-        // USE HELPER FOR CONSISTENT PERSONALITY
         const personaContent = this.getCurrentPersonaSystemPrompt();
-        const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent);
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const forceFullCode = config.get<boolean>('forceFullCodePath') || false;
+        
+        const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, forceFullCode);
         
         let combinedSystemContent = systemPrompt;
         if (contextText && contextText.trim().length > 0) {
@@ -847,28 +845,38 @@ export class ChatPanel {
         const history = this._currentDiscussion.messages.filter(m => !m.skipInPrompt);
         messagesToSend = [...messagesToSend, ...history];
 
-        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const addPedagogical = config.get<boolean>('addPedagogicalInstruction');
 
-        if (addPedagogical) {
-            const lastMsgIndex = messagesToSend.length - 1;
-            if (lastMsgIndex >= 0) {
-                const lastMsg = messagesToSend[lastMsgIndex];
-                if (lastMsg.role === 'user') {
+        // Modify the LAST user message only (the current prompt)
+        const lastMsgIndex = messagesToSend.length - 1;
+        if (lastMsgIndex >= 0) {
+            const lastMsg = messagesToSend[lastMsgIndex];
+            if (lastMsg.role === 'user') {
+                let suffix = "";
+                
+                if (addPedagogical) {
                     const pedagogicalSuffix = "\n\n(Important: Please start with a clear pedagogical description of your plan and logic before outputting any code or actions. Teach me!)";
-                    
+                    if (typeof lastMsg.content === 'string' && !lastMsg.content.includes(pedagogicalSuffix.trim())) {
+                        suffix += pedagogicalSuffix;
+                    }
+                }
+
+                if (forceFullCode) {
+                    const fullCodeSuffix = "\n\nCRITICAL INSTRUCTION: You must return the FULL CONTENT of the file(s). Do not use diffs, patches, or snippets. Use the format:\n```language:path/to/file\n[FULL CODE]\n```";
+                    if (typeof lastMsg.content === 'string' && !lastMsg.content.includes("CRITICAL INSTRUCTION")) {
+                        suffix += fullCodeSuffix;
+                    }
+                }
+
+                if (suffix) {
                     const modifiedLastMsg = { ...lastMsg };
-                    
                     if (typeof modifiedLastMsg.content === 'string') {
-                        if (!modifiedLastMsg.content.includes(pedagogicalSuffix.trim())) {
-                             modifiedLastMsg.content += pedagogicalSuffix;
-                        }
+                         modifiedLastMsg.content += suffix;
                     } else if (Array.isArray(modifiedLastMsg.content)) {
                         const newContent = [...modifiedLastMsg.content];
-                        newContent.push({ type: 'text', text: pedagogicalSuffix });
+                        newContent.push({ type: 'text', text: suffix });
                         modifiedLastMsg.content = newContent;
                     }
-                    
                     messagesToSend[lastMsgIndex] = modifiedLastMsg;
                 }
             }
@@ -997,30 +1005,24 @@ export class ChatPanel {
   public async sendIsolatedMessage(systemPrompt: string, userPrompt: string, model: string) {
       await this.waitForWebviewReady();
       if (this._isDisposed) return;
-
       const { id: processId, controller } = this.processManager.register(this.discussionId, 'Running isolated task...');
       this.updateGeneratingState();
-
       const assistantMessageId = 'assistant_' + Date.now() + Math.random().toString(36).substring(2);
       this._panel.webview.postMessage({
           command: 'addMessage',
           message: { id: assistantMessageId, role: 'assistant', content: '', startTime: Date.now(), model: model }
       });
-
       try {
           const messages: ChatMessage[] = [
               { role: 'system', content: systemPrompt },
               { role: 'user', content: userPrompt }
           ];
-
           let fullResponse = '';
           await this._lollmsAPI.sendChat(messages, (chunk) => {
               fullResponse += chunk;
               if (!this._isDisposed) this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk: chunk });
           }, controller.signal, model);
-
           if (!this._isDisposed) this._panel.webview.postMessage({ command: 'finalizeMessage', id: assistantMessageId, fullContent: fullResponse });
-          
       } catch (error: any) {
           if (!this._isDisposed) this._panel.webview.postMessage({ command: 'error', content: error.message });
       } finally {
@@ -1047,7 +1049,6 @@ export class ChatPanel {
       await this.waitForWebviewReady();
       if (this._isDisposed) return;
 
-      // USE HELPER FOR CONSISTENT PERSONALITY
       const personaContent = this.getCurrentPersonaSystemPrompt();
       const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent);
       let userPrompt = "";
@@ -1145,6 +1146,7 @@ export class ChatPanel {
       vscode.window.showInformationMessage(`Skill '${name}' saved successfully!`);
       vscode.commands.executeCommand('lollms-vs-coder.refreshSkills'); 
   }
+  
   private async handleImportSkills() {
       if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
           vscode.window.showWarningMessage("Please open a workspace to import skills.");
@@ -1184,8 +1186,8 @@ export class ChatPanel {
           vscode.window.showErrorMessage(`Failed to import skills: ${e.message}`);
       }
   }
+  
   private async copyFullPromptToClipboard(draftMessage: string) {
-      // USE HELPER FOR CONSISTENT PERSONALITY
       const personaContent = this.getCurrentPersonaSystemPrompt();
       const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent);
       const context = await this._contextManager.getContextContent();
@@ -1204,6 +1206,7 @@ export class ChatPanel {
       await vscode.env.clipboard.writeText(fullText);
       vscode.window.showInformationMessage("Full prompt context copied to clipboard.");
   }
+  
   private async deleteMessage(messageId: string) {
       if (this._currentDiscussion) {
           this._currentDiscussion.messages = this._currentDiscussion.messages.filter(m => m.id !== messageId);
@@ -1213,6 +1216,7 @@ export class ChatPanel {
           await this.loadDiscussion(); 
       }
   }
+  
   private async regenerateFromMessage(messageId: string) {
       if (!this._currentDiscussion) return;
       const index = this._currentDiscussion.messages.findIndex(m => m.id === messageId);
@@ -1222,6 +1226,7 @@ export class ChatPanel {
       this._currentDiscussion.messages = this._currentDiscussion.messages.slice(0, index); 
       await this.sendMessage(messageToResend);
   }
+  
   private async insertMessage(afterMessageId: string | null, role: 'user' | 'assistant', content: string) {
       if (!this._currentDiscussion) return;
       const newMessage: ChatMessage = {
@@ -1245,6 +1250,7 @@ export class ChatPanel {
       }
       await this.loadDiscussion();
   }
+  
   private async updateMessage(messageId: string, newContent: string) {
       if (!this._currentDiscussion) return;
       const msg = this._currentDiscussion.messages.find(m => m.id === messageId);
@@ -1255,6 +1261,7 @@ export class ChatPanel {
           }
       }
   }
+  
   private async _handleFileAttachment(name: string, content: string, isImage: boolean) {
       if (isImage) {
           const msg: ChatMessage = {
@@ -1277,6 +1284,7 @@ export class ChatPanel {
           this.addMessageToDiscussion(systemMsg);
       }
   }
+  
   public dispose() {
     this._isDisposed = true;
     ChatPanel.currentPanel = undefined;
@@ -1284,6 +1292,7 @@ export class ChatPanel {
     this._panel.dispose();
     while (this._executionLogs.length) { this._executionLogs.pop(); }
   }
+  
   private _setWebviewMessageListener(webview: vscode.Webview) {
     webview.onDidReceiveMessage(async (message) => {
         if (message.command !== 'webview-ready' && message.command !== 'webview-bootstrap-ok') {
@@ -1443,6 +1452,8 @@ export class ChatPanel {
                     vscode.commands.executeCommand('lollms-vs-coder.createGitBranch', params);
                 } else if (command === 'lollms-vs-coder.mergeGitBranch') {
                     vscode.commands.executeCommand('lollms-vs-coder.mergeGitBranch', params);
+                } else if (command === 'lollms-vs-coder.switchGitBranch') {
+                    vscode.commands.executeCommand('lollms-vs-coder.switchGitBranch', params);
                 } else if (command === 'synthesizeSearchResults') {
                     if (!this.agentManager.getIsActive()) {
                         this.agentManager.toggleAgentMode();
@@ -1494,7 +1505,11 @@ Task:
                 }
                 if (message.message) await this.addMessageToDiscussion(message.message);
                 if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
-                    this.agentManager.run(message.objective, this._currentDiscussion, vscode.workspace.workspaceFolders[0], this._currentDiscussion.model);
+                    await this.agentManager.handleUserMessage(
+                        message.objective, 
+                        this._currentDiscussion, 
+                        vscode.workspace.workspaceFolders[0]
+                    );
                 } else {
                     this.addMessageToDiscussion({ role: 'system', content: 'Agent requires an active workspace folder.' });
                     this.updateGeneratingState();
@@ -1750,7 +1765,6 @@ Task:
                 break;
 
             case 'requestCommitMessage':
-                // Legacy handler, kept for backward compat but UI now uses requestCommitStaging
                 if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
                     this.log('Generating commit message...');
                     try {
@@ -1767,7 +1781,6 @@ Task:
                 if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
                     try {
                         const status = await this._gitIntegration.getGitStatus(vscode.workspace.workspaceFolders[0]);
-                        // Check if total empty
                         if (status.staged.length === 0 && status.unstaged.length === 0 && status.untracked.length === 0) {
                             vscode.window.showInformationMessage("No changes found in git repository.");
                             return;
@@ -1858,11 +1871,13 @@ Task:
 </head>
 <body>
     <div class="chat-container">
+        <!-- AGENT PLAN ZONE (Top) -->
+        <div id="agent-plan-zone"></div>
+
         <div class="messages" id="messages">
             <div class="search-bar" id="search-bar" style="display: none;">
                 <input type="text" id="searchInput" placeholder="Search discussion...">
                 <span id="search-results-count"></span>
-                <button id="search-prev" title="Previous match"><i class="codicon codicon-arrow-up"></i></button>
                 <button id="search-prev" title="Previous match"><i class="codicon codicon-arrow-up"></i></button>
                 <button id="search-next" title="Next match"><i class="codicon codicon-arrow-down"></i></button>
                 <button id="search-close" title="Close search"><i class="codicon codicon-close"></i></button>

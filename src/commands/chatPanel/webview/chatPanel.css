@@ -16,26 +16,62 @@ body {
     height: 100vh;
 }
 
-.chat-container { height: 100%; display: flex; flex-direction: column; position: relative; }
+.chat-container { height: 100%; display: flex; flex-direction: row; position: relative; overflow: hidden; }
 
-/* --- Agent Plan Zone (New Top Section) --- */
+.chat-content-wrapper {
+    display: flex;
+    flex-direction: row;
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+    width: 100%;
+}
+
+.chat-main-column {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    position: relative;
+}
+
+/* --- Agent Plan Zone (Right Section) --- */
 #agent-plan-zone {
+    width: 300px; /* Default width */
     flex-shrink: 0;
-    max-height: 40%;
-    overflow-y: auto;
     background-color: var(--vscode-sideBar-background);
-    border-bottom: 1px solid var(--vscode-widget-border);
+    border-left: 1px solid var(--vscode-widget-border);
     display: none; /* Hidden by default */
+    overflow-y: auto;
     padding: 0;
-    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-    z-index: 100;
+    z-index: 5;
+    flex-direction: column;
 }
 
 #agent-plan-zone.visible {
+    display: flex;
+}
+
+#plan-resizer {
+    width: 4px;
+    background-color: var(--vscode-widget-border);
+    cursor: col-resize;
+    display: none; /* Hidden by default */
+    z-index: 10;
+    transition: background-color 0.2s;
+    flex-shrink: 0;
+}
+
+#plan-resizer:hover, #plan-resizer.resizing {
+    background-color: var(--vscode-focusBorder);
+}
+
+#plan-resizer.visible {
     display: block;
 }
 
-.messages { flex: 1; overflow-y: auto; padding: 0; display: flex; flex-direction: column; gap: 10px; padding-bottom: 20px; scroll-behavior: smooth; }
+.messages { flex: 1; overflow-y: auto; padding: 0; display: flex; flex-direction: column; gap: 10px; padding-bottom: 20px; scroll-behavior: smooth; min-width: 300px; }
 .message-wrapper { width: 100%; padding: 4px 0; }
 .message { display: flex; flex-direction: row; gap: 12px; padding: 16px 20px; position: relative; transition: background-color 0.2s; border: 1px solid var(--vscode-widget-border); border-radius: 8px; margin: 0 12px; box-sizing: border-box; background-color: var(--vscode-editor-background); }
 .message:hover { background-color: var(--vscode-list-hoverBackground); }
@@ -104,7 +140,7 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 
 /* --- Plan Styling Update --- */
 .plan-wrapper { 
-    margin: 0; /* Remove margin for top zone */
+    margin: 0;
     width: 100%;
     animation: fade-in-up 0.3s ease-out; 
 }
@@ -903,4 +939,3 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
     stroke: var(--vscode-editor-foreground) !important;
     stroke-width: 1.5px !important;
 }
-

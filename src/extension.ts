@@ -202,6 +202,9 @@ export async function activate(context: vscode.ExtensionContext) {
             });
             
             fileDecorationProvider.updateStateProvider(contextStateProvider);
+            
+            // Register Tree Data Provider for Context Files
+            vscode.window.registerTreeDataProvider('lollmsFileTreeView', contextStateProvider);
         }
 
         ChatPanel.panels.forEach(panel => panel.dispose());

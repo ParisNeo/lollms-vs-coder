@@ -1262,9 +1262,17 @@ export function updateContext(contextText: string, files: string[] = []) {
         <div class="message-body">
             <div class="message-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 10px;">
                 <span class="role-name">Project Context</span>
-                <button id="reset-context-bubble-btn" class="code-action-btn delete-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;">
-                    <span class="codicon codicon-clear-all"></span> Reset
-                </button>
+                <div style="display: flex; gap: 5px;">
+                    <button id="save-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Save current file selection">
+                        <span class="codicon codicon-save"></span>
+                    </button>
+                    <button id="load-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Load file selection">
+                        <span class="codicon codicon-folder-opened"></span>
+                    </button>
+                    <button id="reset-context-bubble-btn" class="code-action-btn delete-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Reset context">
+                        <span class="codicon codicon-clear-all"></span> Reset
+                    </button>
+                </div>
             </div>
             <div class="message-content">
                 <details class="info-collapsible" style="margin-bottom: 6px;">
@@ -1291,7 +1299,27 @@ export function updateContext(contextText: string, files: string[] = []) {
         enhanceCodeBlocks(markdownView as HTMLElement, contextText);
     }
 
-    // Attach listener programmatically to bypass CSP restrictions on inline onclick
+    // Attach listeners programmatically to bypass CSP restrictions on inline onclick
+    const saveBtn = document.getElementById('save-context-btn');
+    if (saveBtn) {
+        saveBtn.addEventListener('click', () => {
+            vscode.postMessage({ 
+                command: 'executeLollmsCommand', 
+                details: { command: 'saveContext', params: {} } 
+            });
+        });
+    }
+
+    const loadBtn = document.getElementById('load-context-btn');
+    if (loadBtn) {
+        loadBtn.addEventListener('click', () => {
+            vscode.postMessage({ 
+                command: 'executeLollmsCommand', 
+                details: { command: 'loadContext', params: {} } 
+            });
+        });
+    }
+
     const resetBtn = document.getElementById('reset-context-bubble-btn');
     if (resetBtn) {
         resetBtn.addEventListener('click', () => {

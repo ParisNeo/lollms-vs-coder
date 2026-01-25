@@ -45,6 +45,44 @@ function closeMenu() {
 }
 
 export function initEventHandlers() {
+    // --- Plan Resizer Logic ---
+    const resizer = dom.planResizer;
+    const planZone = dom.agentPlanZone;
+    const wrapper = dom.chatContentWrapper;
+
+    if (resizer && planZone && wrapper) {
+        let isResizing = false;
+
+        resizer.addEventListener('mousedown', (e) => {
+            isResizing = true;
+            resizer.classList.add('resizing');
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none'; // Prevent text selection
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isResizing) return;
+            const containerWidth = wrapper.getBoundingClientRect().width;
+            // The resizer X position roughly indicates the end of the left column
+            // New width of plan zone = total width - mouseX
+            const newWidth = containerWidth - e.clientX;
+            
+            // Constraints
+            if (newWidth > 100 && newWidth < containerWidth - 200) {
+                planZone.style.width = `${newWidth}px`;
+            }
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (isResizing) {
+                isResizing = false;
+                resizer.classList.remove('resizing');
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+            }
+        });
+    }
+
     if (dom.sendButton) dom.sendButton.addEventListener('click', sendMessage);
     if (dom.messageInput) {
         dom.messageInput.addEventListener('keydown', (e: KeyboardEvent) => {

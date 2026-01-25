@@ -155,7 +155,8 @@ export async function getProcessedSystemPrompt(
 }
 
 export function stripThinkingTags(responseText: string): string {
-    return responseText.replace(/<(think|thinking|analysis)>[\s\S]*?<\/\1>/g, '').trim();
+    // Remove content within <think>, <thinking>, <analysis> tags (case insensitive, multiline)
+    return responseText.replace(/<(think|thinking|analysis)>[\s\S]*?<\/\1>/gi, '').trim();
 }
 
 export function extractAndStripMemory(responseText: string): { content: string, memory: string | null } {

@@ -1448,6 +1448,10 @@ export class ChatPanel {
                     vscode.commands.executeCommand('lollms-vs-coder.gitCommit', params.message);
                 } else if (command === 'resetContext') {
                     vscode.commands.executeCommand('lollms-vs-coder.resetContextSelection');
+                } else if (command === 'saveContext') {
+                    vscode.commands.executeCommand('lollms-vs-coder.saveContextSelection');
+                } else if (command === 'loadContext') {
+                    vscode.commands.executeCommand('lollms-vs-coder.loadContextSelection');
                 } else if (command === 'lollms-vs-coder.createGitBranch') {
                     vscode.commands.executeCommand('lollms-vs-coder.createGitBranch', params);
                 } else if (command === 'lollms-vs-coder.mergeGitBranch') {
@@ -1871,49 +1875,176 @@ Task:
 </head>
 <body>
     <div class="chat-container">
-        <!-- AGENT PLAN ZONE (Top) -->
-        <div id="agent-plan-zone"></div>
+        
+        <div class="chat-content-wrapper">
+            <!-- LEFT COLUMN: CHAT -->
+            <div class="chat-main-column">
+                <div class="messages" id="messages">
+                    <div class="search-bar" id="search-bar" style="display: none;">
+                        <input type="text" id="searchInput" placeholder="Search discussion...">
+                        <span id="search-results-count"></span>
+                        <button id="search-prev" title="Previous match"><i class="codicon codicon-arrow-up"></i></button>
+                        <button id="search-next" title="Next match"><i class="codicon codicon-arrow-down"></i></button>
+                        <button id="search-close" title="Close search"><i class="codicon codicon-close"></i></button>
+                    </div>
+                    
+                    <div id="context-container"></div>
+                    
+                    <div class="message special-zone-message" style="display: none;">
+                        <div class="message-avatar">
+                            <span class="codicon codicon-file-text"></span>
+                        </div>
+                        <div class="message-body">
+                            <div class="message-header"><span class="role-name">Attached Files</span></div>
+                            <div class="message-content">
+                                <div id="attachments-container"></div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div id="welcome-message" style="display: none;">
+                        <h3 id="welcome-title"></h3>
+                        <ul>
+                            <li id="welcome-item-1"></li>
+                            <li id="welcome-item-2"></li>
+                            <li id="welcome-item-3"></li>
+                            <li id="welcome-item-4"></li>
+                        </ul>
+                    </div>
 
-        <div class="messages" id="messages">
-            <div class="search-bar" id="search-bar" style="display: none;">
-                <input type="text" id="searchInput" placeholder="Search discussion...">
-                <span id="search-results-count"></span>
-                <button id="search-prev" title="Previous match"><i class="codicon codicon-arrow-up"></i></button>
-                <button id="search-next" title="Next match"><i class="codicon codicon-arrow-down"></i></button>
-                <button id="search-close" title="Close search"><i class="codicon codicon-close"></i></button>
-            </div>
-            
-            <div id="context-container"></div>
-            
-            <div class="message special-zone-message" style="display: none;">
-                <div class="message-avatar">
-                    <span class="codicon codicon-file-text"></span>
+                    <div id="chat-messages-container">
+                        <div id="message-insertion-controls">
+                            <button class="code-action-btn" id="add-user-message-btn"><i class="codicon codicon-add"></i> Add User Message</button>
+                            <button class="code-action-btn" id="add-ai-message-btn"><i class="codicon codicon-add"></i> Add AI Message</button>
+                        </div>
+                    </div>
                 </div>
-                <div class="message-body">
-                    <div class="message-header"><span class="role-name">Attached Files</span></div>
-                    <div class="message-content">
-                        <div id="attachments-container"></div>
+
+                <!-- GENERATING OVERLAY -->
+                <div id="generating-overlay" class="generating-overlay" style="display: none;">
+                    <div class="generating-content">
+                        <div class="spinner"></div>
+                        <span>Generating...</span>
+                    </div>
+                    <button id="stopButton" class="stop-btn-red">Stop Generation</button>
+                </div>
+
+                <div class="input-area-wrapper">
+                    <!-- Menu and Input Area here -->
+                    <div id="more-actions-menu">
+                        <div class="menu-view" id="menu-main">
+                            <div class="menu-item has-submenu" data-target="menu-modes">
+                                <i class="codicon codicon-settings-gear"></i>
+                                <span>Discussion Modes</span>
+                                <span class="menu-arrow">›</span>
+                            </div>
+                            <div class="menu-item has-submenu" data-target="menu-ai">
+                                <i class="codicon codicon-hubot"></i>
+                                <span>AI Configuration</span>
+                                <span class="menu-arrow">›</span>
+                            </div>
+                            <div class="menu-separator"></div>
+                            <button class="menu-item" id="discussionToolsButton"><i class="codicon codicon-tools"></i><span>Advanced Tools</span></button>
+                            <button class="menu-item" id="agentToolsButton"><i class="codicon codicon-briefcase"></i><span>Agent Tools List</span></button>
+                            <div class="menu-separator"></div>
+                            <button class="menu-item" id="attachButton"><i class="codicon codicon-add"></i><span>Attach Files</span></button>
+                            <button class="menu-item" id="importSkillsButton"><i class="codicon codicon-lightbulb"></i><span>Import Skill</span></button>
+                            <button class="menu-item" id="copyFullPromptButton"><i class="codicon codicon-copy"></i><span>Copy Context & Prompt</span></button>
+                            <button class="menu-item" id="setEntryPointButton"><i class="codicon codicon-target"></i><span>Set Project Entry Point</span></button>
+                            <button class="menu-item" id="executeButton"><i class="codicon codicon-play"></i><span>Execute Project</span></button>
+                            <button class="menu-item" id="debugRestartButton"><i class="codicon codicon-debug-restart"></i><span>Re-run Last Debug</span></button>
+                            <button class="menu-item" id="showDebugLogButton"><i class="codicon codicon-output"></i><span>Show Debug Log</span></button>
+                        </div>
+
+                        <!-- Modes View -->
+                        <div class="menu-view hidden" id="menu-modes">
+                            <div class="menu-header">
+                                <button class="back-btn"><i class="codicon codicon-arrow-left"></i></button>
+                                <span>Discussion Modes</span>
+                            </div>
+                            <div class="menu-item-toggle">
+                                <span>🤖 Agent Mode</span>
+                                <label class="switch"><input type="checkbox" id="agentModeCheckbox"><span class="slider"></span></label>
+                            </div>
+                            <div class="menu-item-toggle">
+                                <span>🧠 Auto Context</span>
+                                <label class="switch"><input type="checkbox" id="autoContextCheckbox"><span class="slider"></span></label>
+                            </div>
+                            <div class="menu-item-toggle">
+                                <span>🐂 Herd Mode</span>
+                                <label class="switch"><input type="checkbox" id="herdModeCheckbox"><span class="slider"></span></label>
+                            </div>
+                        </div>
+
+                        <!-- AI Config View -->
+                        <div class="menu-view hidden" id="menu-ai">
+                            <div class="menu-header">
+                                <button class="back-btn"><i class="codicon codicon-arrow-left"></i></button>
+                                <span>AI Configuration</span>
+                            </div>
+                            <label style="margin-left:12px; margin-top:8px; display:block; font-size:11px; font-weight:600;">Model</label>
+                            <select id="model-selector" class="menu-select"></select>
+                            
+                            <label style="margin-left:12px; margin-top:8px; display:block; font-size:11px; font-weight:600;">Persona</label>
+                            <select id="personality-selector" class="menu-select"></select>
+                            
+                            <div style="padding: 0 12px 12px 12px;">
+                                <button id="refresh-models-btn" class="code-action-btn" style="width:100%; justify-content:center;"><i class="codicon codicon-refresh"></i> Refresh Models</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="top-controls">
+                        <div id="status-label" class="status-label">
+                            <div id="status-spinner" class="spinner"></div>
+                            <span id="status-text">Ready</span>
+                        </div>
+                        
+                        <div class="active-badges" id="active-badges">
+                            <!-- Badges injected via JS -->
+                        </div>
+
+                        <!-- Web Search Indicator -->
+                        <div id="websearch-indicator" class="websearch-indicator" title="Web Search Active" style="display: none;">
+                            <i class="codicon codicon-globe"></i>
+                            <span>Web</span>
+                        </div>
+                        
+                        <div id="active-tools-indicator" class="active-tools-indicator"></div>
+                        
+                        <div class="token-progress">
+                            <div class="token-progress-container">
+                                <div class="token-progress-bar" id="token-progress-bar"></div>
+                            </div>
+                            <div id="context-status-container" style="display: flex; align-items: center; gap: 8px;">
+                                <span id="token-count-label"></span>
+                                <button id="cancel-tokens-btn" class="icon-btn" title="Stop Token Calculation" style="display: none;"><i class="codicon codicon-debug-stop"></i></button>
+                                <button id="refresh-context-btn" class="icon-btn" title="Refresh Context"><i class="codicon codicon-refresh"></i></button>
+                            </div>
+                        </div>
+                        
+                        <div id="context-loading-spinner" style="display: none; align-items: center; gap: 8px; font-size: 0.9em; color: var(--vscode-descriptionForeground);">
+                            <div class="spinner"></div>
+                            <span id="loading-files-text"></span>
+                        </div>
+                    </div>
+                    <div class="input-area">
+                        <div class="control-buttons">
+                            <button id="moreActionsButton" title="Menu"><i class="codicon codicon-menu"></i></button>
+                        </div>
+                        
+                        <textarea id="messageInput" placeholder="Enter your message (Shift+Enter for new line)..."></textarea>
+
+                        <div class="control-buttons">
+                            <button id="sendButton" title="Send Message"><i class="codicon codicon-send"></i></button>
+                        </div>
                     </div>
                 </div>
             </div>
-            
-            <div id="welcome-message" style="display: none;">
-                <h3 id="welcome-title"></h3>
-                <ul>
-                    <li id="welcome-item-1"></li>
-                    <li id="welcome-item-2"></li>
-                    <li id="welcome-item-3"></li>
-                    <li id="welcome-item-4"></li>
-                </ul>
-            </div>
 
-            <div id="chat-messages-container">
-                <div id="message-insertion-controls">
-                    <button class="code-action-btn" id="add-user-message-btn"><i class="codicon codicon-add"></i> Add User Message</button>
-                    <button class="code-action-btn" id="add-ai-message-btn"><i class="codicon codicon-add"></i> Add AI Message</button>
-                </div>
-            </div>
-
+            <!-- RIGHT COLUMN: PLAN -->
+            <div id="plan-resizer"></div>
+            <div id="agent-plan-zone"></div>
         </div>
         
         <button id="scrollToBottomBtn" title="Scroll to bottom" style="display: none;">
@@ -2111,126 +2242,6 @@ Task:
                     <button id="save-discussion-tools-btn">Apply</button>
                 </div>
             </div>
-        </div>
-
-        <div class="input-area-wrapper">
-            <div id="more-actions-menu">
-                <div class="menu-view" id="menu-main">
-                    <div class="menu-item has-submenu" data-target="menu-modes">
-                        <i class="codicon codicon-settings-gear"></i>
-                        <span>Discussion Modes</span>
-                        <span class="menu-arrow">›</span>
-                    </div>
-                    <div class="menu-item has-submenu" data-target="menu-ai">
-                        <i class="codicon codicon-hubot"></i>
-                        <span>AI Configuration</span>
-                        <span class="menu-arrow">›</span>
-                    </div>
-                    <div class="menu-separator"></div>
-                    <button class="menu-item" id="discussionToolsButton"><i class="codicon codicon-tools"></i><span>Advanced Tools</span></button>
-                    <button class="menu-item" id="agentToolsButton"><i class="codicon codicon-briefcase"></i><span>Agent Tools List</span></button>
-                    <div class="menu-separator"></div>
-                    <button class="menu-item" id="attachButton"><i class="codicon codicon-add"></i><span>Attach Files</span></button>
-                    <button class="menu-item" id="importSkillsButton"><i class="codicon codicon-lightbulb"></i><span>Import Skill</span></button>
-                    <button class="menu-item" id="copyFullPromptButton"><i class="codicon codicon-copy"></i><span>Copy Context & Prompt</span></button>
-                    <button class="menu-item" id="setEntryPointButton"><i class="codicon codicon-target"></i><span>Set Project Entry Point</span></button>
-                    <button class="menu-item" id="executeButton"><i class="codicon codicon-play"></i><span>Execute Project</span></button>
-                    <button class="menu-item" id="debugRestartButton"><i class="codicon codicon-debug-restart"></i><span>Re-run Last Debug</span></button>
-                    <button class="menu-item" id="showDebugLogButton"><i class="codicon codicon-output"></i><span>Show Debug Log</span></button>
-                </div>
-
-                <!-- Modes View -->
-                <div class="menu-view hidden" id="menu-modes">
-                    <div class="menu-header">
-                        <button class="back-btn"><i class="codicon codicon-arrow-left"></i></button>
-                        <span>Discussion Modes</span>
-                    </div>
-                    <div class="menu-item-toggle">
-                        <span>🤖 Agent Mode</span>
-                        <label class="switch"><input type="checkbox" id="agentModeCheckbox"><span class="slider"></span></label>
-                    </div>
-                    <div class="menu-item-toggle">
-                        <span>🧠 Auto Context</span>
-                        <label class="switch"><input type="checkbox" id="autoContextCheckbox"><span class="slider"></span></label>
-                    </div>
-                    <div class="menu-item-toggle">
-                        <span>🐂 Herd Mode</span>
-                        <label class="switch"><input type="checkbox" id="herdModeCheckbox"><span class="slider"></span></label>
-                    </div>
-                </div>
-
-                <!-- AI Config View -->
-                <div class="menu-view hidden" id="menu-ai">
-                     <div class="menu-header">
-                        <button class="back-btn"><i class="codicon codicon-arrow-left"></i></button>
-                        <span>AI Configuration</span>
-                    </div>
-                     <label style="margin-left:12px; margin-top:8px; display:block; font-size:11px; font-weight:600;">Model</label>
-                     <select id="model-selector" class="menu-select"></select>
-                     
-                     <label style="margin-left:12px; margin-top:8px; display:block; font-size:11px; font-weight:600;">Persona</label>
-                     <select id="personality-selector" class="menu-select"></select>
-                     
-                     <div style="padding: 0 12px 12px 12px;">
-                        <button id="refresh-models-btn" class="code-action-btn" style="width:100%; justify-content:center;"><i class="codicon codicon-refresh"></i> Refresh Models</button>
-                     </div>
-                </div>
-            </div>
-
-            <div class="top-controls">
-                <div id="status-label" class="status-label">
-                    <div id="status-spinner" class="spinner"></div>
-                    <span id="status-text">Ready</span>
-                </div>
-                
-                <div class="active-badges" id="active-badges">
-                    <!-- Badges injected via JS -->
-                </div>
-
-                <!-- Web Search Indicator -->
-                <div id="websearch-indicator" class="websearch-indicator" title="Web Search Active" style="display: none;">
-                    <i class="codicon codicon-globe"></i>
-                    <span>Web</span>
-                </div>
-                
-                <div id="active-tools-indicator" class="active-tools-indicator"></div>
-                
-                <div class="token-progress">
-                    <div class="token-progress-container">
-                        <div class="token-progress-bar" id="token-progress-bar"></div>
-                    </div>
-                    <div id="context-status-container" style="display: flex; align-items: center; gap: 8px;">
-                        <span id="token-count-label"></span>
-                        <button id="cancel-tokens-btn" class="icon-btn" title="Stop Token Calculation" style="display: none;"><i class="codicon codicon-debug-stop"></i></button>
-                        <button id="refresh-context-btn" class="icon-btn" title="Refresh Context"><i class="codicon codicon-refresh"></i></button>
-                    </div>
-                </div>
-                
-                <div id="context-loading-spinner" style="display: none; align-items: center; gap: 8px; font-size: 0.9em; color: var(--vscode-descriptionForeground);">
-                    <div class="spinner"></div>
-                    <span id="loading-files-text"></span>
-                </div>
-            </div>
-            <div class="input-area">
-                <div class="control-buttons">
-                    <button id="moreActionsButton" title="Menu"><i class="codicon codicon-menu"></i></button>
-                </div>
-                
-                <textarea id="messageInput" placeholder="Enter your message (Shift+Enter for new line)..."></textarea>
-
-                <div class="control-buttons">
-                    <button id="sendButton" title="Send Message"><i class="codicon codicon-send"></i></button>
-                </div>
-            </div>
-            
-        </div>
-        
-        <div id="generating-overlay" class="generating-overlay" style="display: none;">
-            <div class="generating-content">
-                <div class="spinner"></div>
-                <span>Generating...</span>
-            </div>
-            <button id="stopButton" class="stop-btn-red">Stop Generation</button>
         </div>
         
         <div id="token-counting-overlay" class="token-counting-overlay" style="display: none;">

@@ -3,7 +3,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.73",
+  "version": "0.5.74",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -936,6 +936,11 @@
           "when": "workspaceFolderCount > 0"
         },
         {
+          "id": "lollmsFileTreeView",
+          "name": "%view.fileTreeView.name%",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
           "id": "lollmsPersonalitiesView",
           "name": "Personalities",
           "when": "workspaceFolderCount > 0"
@@ -1070,6 +1075,21 @@
         }
       ],
       "view/title": [
+        {
+          "command": "lollms-vs-coder.saveContextSelection",
+          "when": "view == lollmsFileTreeView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "lollms-vs-coder.loadContextSelection",
+          "when": "view == lollmsFileTreeView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "lollms-vs-coder.resetContextSelection",
+          "when": "view == lollmsFileTreeView",
+          "group": "navigation@3"
+        },
         {
           "command": "lollms-vs-coder.newDiscussion",
           "when": "view == lollmsDiscussionsView",

@@ -1,2 +1,1 @@
-save as is not working
-command 'lollms-vs-coder.debugErrorSendToDiscussion' not found
+add active skills list to the context information and to the context number of tokens

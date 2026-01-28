@@ -16,6 +16,7 @@ export interface Discussion {
     capabilities?: DiscussionCapabilities; 
     personalityId?: string;
     gitState?: { originalBranch: string, tempBranch: string };
+    importedSkills?: string[];
 }
 
 export interface DiscussionGroup {

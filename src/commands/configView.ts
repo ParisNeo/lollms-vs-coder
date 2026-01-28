@@ -37,6 +37,12 @@ export class SettingsPanel {
     thinkingMode: 'none',
     noThinkMode: false,
     outputFormat: 'legacy',
+    generationFormats: {
+        fullFile: true,
+        diff: false,
+        aider: false
+    },
+    explainCode: true,
     allowedFileFormats: {
         fullFile: true,
         insert: false,
@@ -138,6 +144,13 @@ export class SettingsPanel {
     this._pendingConfig.noThinkMode = config.get<boolean>('noThinkMode') || false;
     this._pendingConfig.outputFormat = config.get<string>('outputFormat') || 'legacy';
     
+    this._pendingConfig.generationFormats = config.get<any>('generationFormats') || {
+        fullFile: true,
+        diff: false,
+        aider: false
+    };
+    this._pendingConfig.explainCode = config.get<boolean>('explainCode') ?? true;
+
     this._pendingConfig.allowedFileFormats = config.get<any>('allowedFileFormats') || {
         fullFile: true,
         insert: false,
@@ -231,6 +244,12 @@ export class SettingsPanel {
               }
               return;
             
+            case 'updateGenerationFormat':
+              if (message.key) {
+                  (this._pendingConfig.generationFormats as any)[message.key] = message.value;
+              }
+              return;
+
             case 'updateFormatValue':
               if (message.key) {
                   (this._pendingConfig.allowedFileFormats as any)[message.key] = message.value;
@@ -340,6 +359,8 @@ export class SettingsPanel {
                   ['thinkingMode', this._pendingConfig.thinkingMode],
                   ['noThinkMode', this._pendingConfig.noThinkMode],
                   ['outputFormat', this._pendingConfig.outputFormat],
+                  ['generationFormats', this._pendingConfig.generationFormats],
+                  ['explainCode', this._pendingConfig.explainCode],
                   ['allowedFileFormats', this._pendingConfig.allowedFileFormats],
                   ['thinkingModeCustomPrompt', this._pendingConfig.thinkingModeCustomPrompt],
                   ['reasoningLevel', this._pendingConfig.reasoningLevel],
@@ -423,8 +444,8 @@ export class SettingsPanel {
                         'requestTimeout', 'agentMaxRetries', 'maxImageSize', 'enableCodeInspector',
                         'inspectorModelName', 'codeInspectorPersona', 'chatPersona', 'agentPersona',
                         'commitMessagePersona', 'contextFileExceptions', 'language', 'thinkingMode',
-                        'noThinkMode', 'outputFormat', 'allowedFileFormats', 'thinkingModeCustomPrompt',
-                        'reasoningLevel', 'failsafeContextSize', 'searchProvider', 'searchApiKey',
+                        'noThinkMode', 'outputFormat', 'generationFormats', 'explainCode', 'allowedFileFormats', 
+                        'thinkingModeCustomPrompt', 'reasoningLevel', 'failsafeContextSize', 'searchProvider', 'searchApiKey',
                         'searchCx', 'autoUpdateChangelog', 'autoGenerateTitle', 
                         'addPedagogicalInstruction', 'forceFullCodePath', 'clipboardInsertRole', 'companion.enableWebSearch',
                         'companion.enableArxivSearch', 'userInfo.name', 'userInfo.email', 
@@ -496,7 +517,7 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, architectModelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, thinkingMode, noThinkMode, outputFormat, allowedFileFormats, thinkingModeCustomPrompt, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, forceFullCodePath, clipboardInsertRole, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle, enableCodeActions, enableInlineSuggestions, mcpServers, herdParticipants, herdPreAnswerParticipants, herdPostAnswerParticipants, herdRounds, herdDynamicMode, herdDynamicModelPool, deleteBranchAfterMerge, unstagedChangesBehavior, showOs, showIp, showShells, systemCustomInfo, agentShellExecution, agentFilesystemWrite, agentFilesystemRead, agentInternetAccess } = config;
+    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, architectModelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, thinkingMode, noThinkMode, outputFormat, generationFormats, explainCode, allowedFileFormats, thinkingModeCustomPrompt, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, forceFullCodePath, clipboardInsertRole, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle, enableCodeActions, enableInlineSuggestions, mcpServers, herdParticipants, herdPreAnswerParticipants, herdPostAnswerParticipants, herdRounds, herdDynamicMode, herdDynamicModelPool, deleteBranchAfterMerge, unstagedChangesBehavior, showOs, showIp, showShells, systemCustomInfo, agentShellExecution, agentFilesystemWrite, agentFilesystemRead, agentInternetAccess } = config;
 
     const t = (key: string, def: string) => vscode.l10n.t({ message: def, key: key });
     
@@ -652,14 +673,6 @@ export class SettingsPanel {
                 <option value="aider" ${outputFormat === 'aider' ? 'selected' : ''}>Aider Mode (Search/Replace)</option>
               </select>
 
-              <h3>Default Allowed Modification Formats</h3>
-              <div class="grid-2">
-                  <div class="checkbox-container"><input type="checkbox" id="fmt-fullFile" ${allowedFileFormats.fullFile ? 'checked' : ''}><label for="fmt-fullFile">Full File</label></div>
-                  <div class="checkbox-container"><input type="checkbox" id="fmt-insert" ${allowedFileFormats.insert ? 'checked' : ''}><label for="fmt-insert">Insert</label></div>
-                  <div class="checkbox-container"><input type="checkbox" id="fmt-replace" ${allowedFileFormats.replace ? 'checked' : ''}><label for="fmt-replace">Replace</label></div>
-                  <div class="checkbox-container"><input type="checkbox" id="fmt-delete" ${allowedFileFormats.delete ? 'checked' : ''}><label for="fmt-delete">Delete</label></div>
-              </div>
-
               <h3>Editor Integration</h3>
               <div class="checkbox-container"><input type="checkbox" id="enableCodeActions" ${enableCodeActions ? 'checked' : ''}><label for="enableCodeActions">Enable Lollms Code Actions (CodeLens)</label></div>
               <div class="checkbox-container"><input type="checkbox" id="enableInlineSuggestions" ${enableInlineSuggestions ? 'checked' : ''}><label for="enableInlineSuggestions">Enable Inline Ghost Text Suggestions</label></div>
@@ -690,14 +703,33 @@ export class SettingsPanel {
               <div class="checkbox-container"><input type="checkbox" id="noThinkMode" ${noThinkMode ? 'checked' : ''}><label for="noThinkMode">Enable /no_think Mode (Global Override)</label></div>
               <div class="checkbox-container"><input type="checkbox" id="autoGenerateTitle" ${autoGenerateTitle ? 'checked' : ''}><label for="autoGenerateTitle">Auto-generate discussion titles</label></div>
               <div class="checkbox-container"><input type="checkbox" id="addPedagogicalInstruction" ${addPedagogicalInstruction ? 'checked' : ''}><label for="addPedagogicalInstruction">Add Pedagogical Instruction (Hidden)</label></div>
-              <!-- NEW OPTION -->
               <div class="checkbox-container"><input type="checkbox" id="forceFullCodePath" ${forceFullCodePath ? 'checked' : ''}><label for="forceFullCodePath">Force Full Code Path Syntax</label></div>
               <p class="help-text">Appends an instruction to user prompts encouraging the LLM to use \`\`\`language:path/to/file\`\`\` for full code blocks.</p>
             </div>
 
-            <!-- TabContext ... -->
+            <!-- TabContext -->
             <div id="TabContext" class="tab-content">
               <h2>${t('config.section.contextAndFile', 'Context & File Strategy')}</h2>
+              
+              <h3>Code Generation Formats</h3>
+              <p class="help-text">Select which formats the AI can use. If multiple are selected, they will be prioritized (Aider > Diff > Full File).</p>
+              <div class="grid-2">
+                  <div class="checkbox-container"><input type="checkbox" id="gen-full" ${generationFormats.fullFile ? 'checked' : ''}><label for="gen-full">Full File Content</label></div>
+                  <div class="checkbox-container"><input type="checkbox" id="gen-diff" ${generationFormats.diff ? 'checked' : ''}><label for="gen-diff">Unified Diff</label></div>
+                  <div class="checkbox-container"><input type="checkbox" id="gen-aider" ${generationFormats.aider ? 'checked' : ''}><label for="gen-aider">Aider Search/Replace</label></div>
+              </div>
+
+              <h3>Response Behavior</h3>
+              <div class="checkbox-container"><input type="checkbox" id="explainCode" ${explainCode ? 'checked' : ''}><label for="explainCode">Explain Output (Uncheck for Code-Only mode)</label></div>
+
+              <h3>Allowed File Operations</h3>
+              <div class="grid-2">
+                  <div class="checkbox-container"><input type="checkbox" id="fmt-insert" ${allowedFileFormats.insert ? 'checked' : ''}><label for="fmt-insert">Insert Snippet</label></div>
+                  <div class="checkbox-container"><input type="checkbox" id="fmt-replace" ${allowedFileFormats.replace ? 'checked' : ''}><label for="fmt-replace">Replace Snippet</label></div>
+                  <div class="checkbox-container"><input type="checkbox" id="fmt-delete" ${allowedFileFormats.delete ? 'checked' : ''}><label for="fmt-delete">Delete Code</label></div>
+              </div>
+
+              <h3 style="margin-top:20px;">Size Limits & Exceptions</h3>
               <label for="failsafeContextSize">${t('config.failsafeContextSize.label', 'Failsafe Context Size')}</label>
               <input type="number" id="failsafeContextSize" value="${failsafeContextSize}" min="1024" step="1024" />
               <label for="maxImageSize">${t('config.maxImageSize.label', 'Max Image Size (px)')}</label>
@@ -1007,7 +1039,7 @@ export class SettingsPanel {
                 };
                 
                 ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','inspectorModelName','codeInspectorPersona','chatPersona','agentPersona','commitMessagePersona','language','thinkingMode','outputFormat','thinkingModeCustomPrompt','reasoningLevel','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','clipboardInsertRole','herdRounds','mcpServers','unstagedChangesBehavior','systemCustomInfo'].forEach(k => bind(k, k));
-                ['disableSsl','enableCodeInspector','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','forceFullCodePath','companionEnableWebSearch','companionEnableArxivSearch','herdDynamicMode','enableCodeActions','enableInlineSuggestions','noThinkMode','deleteBranchAfterMerge','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess'].forEach(id => {
+                ['disableSsl','enableCodeInspector','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','forceFullCodePath','companionEnableWebSearch','companionEnableArxivSearch','herdDynamicMode','enableCodeActions','enableInlineSuggestions','noThinkMode','deleteBranchAfterMerge','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','explainCode'].forEach(id => {
                     const map = { 
                       'disableSsl': 'disableSslVerification', 
                       'deleteBranchAfterMerge': 'git.deleteBranchAfterMerge',
@@ -1035,6 +1067,15 @@ export class SettingsPanel {
 
                 document.getElementById('unstagedChangesBehavior').addEventListener('change', (e) => {
                     postTempUpdate('git.unstagedChangesBehavior', e.target.value);
+                });
+
+                ['gen-full', 'gen-diff', 'gen-aider'].forEach(k => {
+                    document.getElementById(k).addEventListener('change', (e) => {
+                        const key = k.replace('gen-', '');
+                        // Map 'aider' to 'aider', 'full' to 'fullFile'
+                        const map = { 'full': 'fullFile', 'diff': 'diff', 'aider': 'aider' };
+                        vscode.postMessage({ command: 'updateGenerationFormat', key: map[key], value: e.target.checked });
+                    });
                 });
 
                 ['fullFile','insert','replace','delete'].forEach(k => {

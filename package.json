@@ -1,9 +1,8 @@
-
 {
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.74",
+  "version": "0.5.77",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -538,6 +537,25 @@
             "delete": { "type": "boolean", "default": false, "description": "Allow 'DeleteCode:' format (Remove snippet)" }
           }
         },
+        "lollmsVsCoder.generationFormats": {
+          "type": "object",
+          "default": {
+            "fullFile": true,
+            "diff": false,
+            "aider": false
+          },
+          "description": "Preferred formats for code generation.",
+          "properties": {
+            "fullFile": { "type": "boolean", "default": true, "description": "Generate full file content" },
+            "diff": { "type": "boolean", "default": false, "description": "Generate unified diffs" },
+            "aider": { "type": "boolean", "default": false, "description": "Generate Search/Replace blocks (Aider style)" }
+          }
+        },
+        "lollmsVsCoder.explainCode": {
+          "type": "boolean",
+          "default": true,
+          "description": "If true, the AI will explain its code generation using a structured Problem/Hypothesis/Fix format. If false, it will minimize conversational text."
+        },
         "lollmsVsCoder.searchProvider": {
           "type": "string",
           "default": "google_custom_search",
@@ -581,7 +599,7 @@
         },
         "lollmsVsCoder.addPedagogicalInstruction": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "%config.addPedagogicalInstruction.description%"
         },
         "lollmsVsCoder.forceFullCodePath": {
@@ -719,12 +737,12 @@
         },
         "lollmsVsCoder.chatPersona": {
           "type": "string",
-          "default": "You are Lollms, a helpful AI coding assistant integrated into VS Code. Be helpful and concise.",
+          "default": "You are Lollms, an expert AI software engineer. You always start your responses with a clear pedagogical breakdown of the **Problem**, your **Hypothesis**, and your proposed **Fix** before providing code or executing tools.",
           "description": "%config.chatPersona.description%"
         },
         "lollmsVsCoder.agentPersona": {
           "type": "string",
-          "default": "You are a specialized AI agent that follows instructions precisely.",
+          "default": "You are a specialized AI agent. Before performing tasks, you briefly summarize the **Problem**, your **Hypothesis** (approach), and your **Fix** (plan).",
           "description": "%config.agentPersona.description%"
         },
         "lollmsVsCoder.codeInspectorPersona": {

@@ -363,7 +363,10 @@ export class ChatPanel {
 
         try {
             this.log("Fetching context content...");
-            const context = await this._contextManager.getContextContent({ signal });
+            const importedIds = this._currentDiscussion?.importedSkills || [];
+            const context = await this._contextManager.getContextContent({ signal, importedSkillIds: importedIds });
+            const allSkills = this._skillsManager ? await this._skillsManager.getSkills() : [];
+            const skills = allSkills.filter(s => importedIds.includes(s.id));
             
             if (signal.aborted) {
                 this.log("Token calculation aborted.");
@@ -378,7 +381,8 @@ export class ChatPanel {
             this._panel.webview.postMessage({ 
                 command: 'updateContext', 
                 context: context.text,
-                files: includedFiles 
+                files: includedFiles,
+                skills: skills
             });
             this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
             
@@ -557,7 +561,8 @@ export class ChatPanel {
           await this.addMessageToDiscussion({
               id: contextAgentMsgId,
               role: 'system',
-              content: `**🧠 Auto-Context Agent (Manual)**\n*Objective: "${objective.substring(0, 100)}${objective.length>100?'...':''}"*\n\n`
+              content: `**🧠 Auto-Context Agent (Manual)**\n*Objective: "${objective.substring(0, 100)}${objective.length>100?'...':''}"*\n\n`,
+              skipInPrompt: true // Keep it out of future context
           });
           await this._contextManager.runContextAgent(
                 objective, 
@@ -652,7 +657,6 @@ export class ChatPanel {
     const { id: processId, controller } = this.processManager.register(this.discussionId, 'Generating response...');
     this.updateGeneratingState();
 
-    let autoContextText = "";
     const isAutoContext = this._discussionCapabilities.autoContextMode || autoContextMode;
 
     if (isAutoContext) {
@@ -669,7 +673,7 @@ export class ChatPanel {
         });
 
         try {
-            autoContextText = await this._contextManager.runContextAgent(
+            await this._contextManager.runContextAgent(
                 userPromptText, 
                 model, 
                 controller.signal,
@@ -689,11 +693,15 @@ export class ChatPanel {
         }
     }
 
-    let contextText = autoContextText;
-    if (!contextText) {
-        const standardContext = await this._contextManager.getContextContent();
-        contextText = standardContext.text;
-    }
+    // --- CONTEXT ---
+    // Fetch context components for the structured prompt
+    const importedIds = this._currentDiscussion?.importedSkills || [];
+    const contextData = await this._contextManager.getContextContent({ importedSkillIds: importedIds });
+    const context = {
+        tree: contextData.projectTree,
+        files: contextData.selectedFilesContent,
+        skills: contextData.skillsContent
+    };
 
     if (this._discussionCapabilities.herdMode && this.herdManager) {
         let preParticipants = this._discussionCapabilities.herdPreAnswerParticipants;
@@ -756,7 +764,7 @@ export class ChatPanel {
                 postParticipants,
                 this._discussionCapabilities.herdRounds || 2,
                 leaderModel,
-                contextText, 
+                contextData.text, // Use combined text for Herd Context currently
                 (status) => {
                     this._panel.webview.postMessage({ command: 'updateStatus', status });
                 },
@@ -820,20 +828,22 @@ export class ChatPanel {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const forceFullCode = config.get<boolean>('forceFullCodePath') || false;
         
-        const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, forceFullCode);
+        // Use the new structured context method
+        const systemPrompt = await getProcessedSystemPrompt(
+            'chat', 
+            this._discussionCapabilities, 
+            personaContent, 
+            undefined, 
+            forceFullCode,
+            context
+        );
         
-        let combinedSystemContent = systemPrompt;
-        if (contextText && contextText.trim().length > 0) {
-            combinedSystemContent += `\n\n${contextText}`;
-        }
-
-        const systemMessage: ChatMessage = { role: 'system', content: combinedSystemContent };
+        const systemMessage: ChatMessage = { role: 'system', content: systemPrompt };
         
         let messagesToSend: ChatMessage[] = [systemMessage];
         
-        const standardContextForImages = await this._contextManager.getContextContent();
-        if (standardContextForImages.images.length > 0) {
-            const imageContent = standardContextForImages.images.map(img => ({
+        if (contextData.images.length > 0) {
+            const imageContent = contextData.images.map(img => ({
                 type: 'image_url',
                 image_url: { url: `data:image/jpeg;base64,${img.data}` }
             }));
@@ -855,7 +865,7 @@ export class ChatPanel {
                 let suffix = "";
                 
                 if (addPedagogical) {
-                    const pedagogicalSuffix = "\n\n(Important: Please start with a clear pedagogical description of your plan and logic before outputting any code or actions. Teach me!)";
+                    const pedagogicalSuffix = "\n\n(Important: Please start by explaining what you are doing. Use the structure: **Problem**, **Hypothesis**, and **Fix**. Only then provide your code or actions.)";
                     if (typeof lastMsg.content === 'string' && !lastMsg.content.includes(pedagogicalSuffix.trim())) {
                         suffix += pedagogicalSuffix;
                     }
@@ -1032,9 +1042,11 @@ export class ChatPanel {
   }
 
   public handleProjectExecutionResult(output: string, success: boolean) {
+      // Changed from 'system' to 'user' per upgrade request:
+      // "If there are returns from the system (errors, execution output ...) append them to the user message so the llm sees them as if the user did some execution and returned useful information"
       const message: ChatMessage = {
-          id: 'system_exec_' + Date.now() + Math.random().toString(36).substring(2),
-          role: 'system',
+          id: 'execution_result_' + Date.now() + Math.random().toString(36).substring(2),
+          role: 'user',
           content: success 
             ? `✅ **Project Executed Successfully**\n\`\`\`\n${output}\n\`\`\`\n`
             : `❌ **Project Execution Failed**\n\`\`\`\n${output}\n\`\`\`\n`
@@ -1049,8 +1061,17 @@ export class ChatPanel {
       await this.waitForWebviewReady();
       if (this._isDisposed) return;
 
+      const importedIds = this._currentDiscussion?.importedSkills || [];
+      const contextData = await this._contextManager.getContextContent({ importedSkillIds: importedIds });
+      const context = {
+          tree: contextData.projectTree,
+          files: contextData.selectedFilesContent,
+          skills: contextData.skillsContent
+      };
+      
       const personaContent = this.getCurrentPersonaSystemPrompt();
-      const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent);
+      const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, false, context);
+      
       let userPrompt = "";
 
       if (code && language) {
@@ -1078,15 +1099,8 @@ export class ChatPanel {
           };
           await this.addMessageToDiscussion(userMsg);
 
-          const context = await this._contextManager.getContextContent();
-          
-          let combinedSystemContent = systemPrompt;
-          if (context.text && context.text.trim().length > 0) {
-              combinedSystemContent += `\n\n${context.text}`;
-          }
-
           const messages: ChatMessage[] = [
-              { role: 'system', content: combinedSystemContent },
+              { role: 'system', content: systemPrompt },
               ...this._currentDiscussion!.messages
           ];
 
@@ -1168,18 +1182,25 @@ export class ChatPanel {
               canPickMany: true,
               placeHolder: "Select skills to add to the current discussion context"
           });
-          if (selected && selected.length > 0) {
-              let skillText = "";
+          if (selected && selected.length > 0 && this._currentDiscussion) {
+              if (!this._currentDiscussion.importedSkills) {
+                  this._currentDiscussion.importedSkills = [];
+              }
+
               selected.forEach(item => {
-                  skillText += `\n\n--- Skill: ${item.skill.name} ---\n${item.skill.content}\n`;
+                  const s = item.skill;
+                  if (!this._currentDiscussion!.importedSkills!.includes(s.id)) {
+                      this._currentDiscussion!.importedSkills!.push(s.id);
+                  }
               });
-              const skillMessage: ChatMessage = {
-                  id: 'system_skill_' + Date.now(),
-                  role: 'system',
-                  content: `Loaded Skills Context:\n${skillText}`
-              };
-              await this.addMessageToDiscussion(skillMessage);
-              vscode.window.showInformationMessage(`Imported ${selected.length} skills into discussion.`);
+
+              if (!this._currentDiscussion.id.startsWith('temp-')) {
+                  await this._discussionManager.saveDiscussion(this._currentDiscussion);
+              }
+              
+              // No longer adding a visible bubble. The context update will reflect changes in the sidebar/top bubble.
+              this.updateContextAndTokens();
+              vscode.window.showInformationMessage(`Imported ${selected.length} skills into context.`);
           }
       } catch (e: any) {
           this.log(`Error importing skills: ${e.message}`, 'ERROR');
@@ -1188,17 +1209,30 @@ export class ChatPanel {
   }
   
   private async copyFullPromptToClipboard(draftMessage: string) {
+      const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+      const forceFullCode = config.get<boolean>('forceFullCodePath') || false;
+
+      const importedIds = this._currentDiscussion?.importedSkills || [];
+      const contextData = await this._contextManager.getContextContent({ importedSkillIds: importedIds });
+      const context = {
+          tree: contextData.projectTree,
+          files: contextData.selectedFilesContent,
+          skills: contextData.skillsContent
+      };
+
       const personaContent = this.getCurrentPersonaSystemPrompt();
-      const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent);
-      const context = await this._contextManager.getContextContent();
-      let fullText = `--- SYSTEM PROMPT ---\n${systemPrompt}\n\n`;
-      fullText += `--- CONTEXT ---\n${context.text}\n\n`;
+      const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, forceFullCode, context);
+      
+      let fullText = `${systemPrompt}\n\n`;
+
       if (this._currentDiscussion) {
           fullText += `--- CHAT HISTORY ---\n`;
-          this._currentDiscussion.messages.forEach(m => {
-              const content = Array.isArray(m.content) ? m.content.map(c => c.type === 'text' ? c.text : '[Image]').join('\n') : m.content;
-              fullText += `${m.role.toUpperCase()}: ${content}\n\n`;
-          });
+          this._currentDiscussion.messages
+              .filter(m => !m.skipInPrompt)
+              .forEach(m => {
+                  const content = Array.isArray(m.content) ? m.content.map(c => c.type === 'text' ? c.text : '[Image]').join('\n') : m.content;
+                  fullText += `${m.role.toUpperCase()}: ${content}\n\n`;
+              });
       }
       if (draftMessage) {
           fullText += `USER (Draft): ${draftMessage}\n`;
@@ -1411,6 +1445,33 @@ export class ChatPanel {
                         results: results,
                         blockId: blockId
                     });
+                }
+                break;
+            case 'requestAddFileToContext':
+                const uris = await vscode.window.showOpenDialog({
+                    canSelectMany: true,
+                    openLabel: 'Add to Context'
+                });
+                if (uris && uris.length > 0) {
+                    const paths = uris.map(u => vscode.workspace.asRelativePath(u));
+                    await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', paths);
+                    this.updateContextAndTokens();
+                }
+                break;
+            case 'removeFileFromContext':
+                if (this._contextManager && vscode.workspace.workspaceFolders) {
+                    const uri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, message.path);
+                    await this._contextManager.getContextStateProvider()?.setStateForUris([uri], 'tree-only');
+                    this.updateContextAndTokens();
+                }
+                break;
+            case 'removeSkillFromContext':
+                if (this._currentDiscussion && this._currentDiscussion.importedSkills) {
+                    this._currentDiscussion.importedSkills = this._currentDiscussion.importedSkills.filter(id => id !== message.skillId);
+                    if (!this._currentDiscussion.id.startsWith('temp-')) {
+                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                    }
+                    this.updateContextAndTokens();
                 }
                 break;
             case 'showWarning':
@@ -1884,7 +1945,7 @@ Task:
                         <input type="text" id="searchInput" placeholder="Search discussion...">
                         <span id="search-results-count"></span>
                         <button id="search-prev" title="Previous match"><i class="codicon codicon-arrow-up"></i></button>
-                        <button id="search-next" title="Next match"><i class="codicon codicon-arrow-down"></i></button>
+                        <button id="search-prev" title="Next match"><i class="codicon codicon-arrow-down"></i></button>
                         <button id="search-close" title="Close search"><i class="codicon codicon-close"></i></button>
                     </div>
                     

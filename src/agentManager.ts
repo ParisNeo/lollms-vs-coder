@@ -42,6 +42,19 @@ export class AgentManager {
     private skillsManager: SkillsManager;
     private globalFailureLog: string[] = []; 
 
+    // --- RLM & STATE ENHANCEMENTS ---
+    // Persistent state for the current session (REPL variables, active envs, etc.)
+    public sessionState: {
+        activeEnv?: string;
+        replVariables: Record<string, any>;
+        installedPackages: string[];
+        environmentHistory: string[];
+    } = {
+        replVariables: {},
+        installedPackages: [],
+        environmentHistory: []
+    };
+
     constructor(
         private chatPanel: ChatPanel,
         public lollmsApi: LollmsAPI,
@@ -136,8 +149,11 @@ export class AgentManager {
                 const config = vscode.workspace.getConfiguration('lollmsVsCoder');
                 const architectModel = config.get<string>('architectModelName') || this.currentDiscussion.model;
 
+                // Sync persistent state into the planner context via objective augmentation
+                const augmentedObjective = `${objective}\n\n[Persistent Context: Active Env: ${this.sessionState.activeEnv || 'None'}, Memory: ${JSON.stringify(this.sessionState.replVariables)}]`;
+
                 const planResult = await this.planParser.generateAndParsePlan(
-                    objective, 
+                    augmentedObjective, 
                     undefined, 
                     undefined, 
                     undefined, 
@@ -282,7 +298,7 @@ export class AgentManager {
                 } else {
                     // --- SUCCESS: OBSERVE & REFINE ---
                     // Only analyze for significant tools
-                    if (['execute_command', 'read_file', 'search_web', 'run_file', 'scrape_website', 'search_files'].includes(task.action)) {
+                    if (['execute_command', 'read_file', 'search_web', 'run_file', 'scrape_website', 'search_files', 'rlm_repl'].includes(task.action)) {
                          
                          const observation = await this.analyzeStepResult(task, result.output, architectModel, signal);
                          

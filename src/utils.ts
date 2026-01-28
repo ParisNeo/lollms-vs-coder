@@ -19,13 +19,22 @@ export interface DynamicModelEntry {
 }
 
 export interface DiscussionCapabilities {
-    codeGenType: 'full' | 'diff' | 'none';
+    // Replaced codeGenType string with specific flags for better granularity
+    generationFormats: {
+        fullFile: boolean;
+        diff: boolean;
+        aider: boolean; // Search/Replace
+    };
+    // Replaced allowedFormats with specific flags in generationFormats above or kept for legacy tools compatibility?
+    // We will keep allowedFormats for the specific insert/replace/delete tool usage if needed, 
+    // but the PromptTemplates will primarily use generationFormats.
     allowedFormats: {
         fullFile: boolean;
         insert: boolean;
         replace: boolean;
         delete: boolean;
     };
+    explainCode: boolean; // New Flag: Force explanation vs Just Code
     fileRename: boolean;
     fileDelete: boolean;
     fileSelect: boolean;
@@ -148,10 +157,11 @@ export async function getProcessedSystemPrompt(
     capabilities?: DiscussionCapabilities,
     customPersonaContent?: string,
     memoryManager?: MemoryManager,
-    forceFullCode?: boolean
+    forceFullCode?: boolean,
+    context?: { tree: string, files: string, skills: string }
 ): Promise<string> {
     const memory = memoryManager ? await memoryManager.getMemory() : "";
-    return PromptTemplates.getSystemPrompt(promptType, capabilities, customPersonaContent, memory, forceFullCode);
+    return PromptTemplates.getSystemPrompt(promptType, capabilities, customPersonaContent, memory, forceFullCode, context);
 }
 
 export function stripThinkingTags(responseText: string): string {

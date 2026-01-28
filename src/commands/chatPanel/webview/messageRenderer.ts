@@ -383,8 +383,8 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     };
 }
 
-function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | 'file_delete' | null, path: string, stripFirstLine: boolean }[] {
-    const infos: { type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | 'file_delete' | null, path: string, stripFirstLine: boolean }[] = [];
+function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | 'file_delete' | null, path: string, stripFirstLine: boolean, isClosed: boolean }[] {
+    const infos: { type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | 'file_delete' | null, path: string, stripFirstLine: boolean, isClosed: boolean }[] = [];
     const lines = content.split('\n');
     let inBlock = false;
     let fenceLength = 0;
@@ -399,19 +399,19 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
             const xmlSelect = line.match(/<select\s+path=["']([^"']+)["']\s*\/>/i);
             
             if (xmlRename) {
-                infos.push({ type: 'rename', path: `${xmlRename[1]} -> ${xmlRename[2]}`, stripFirstLine: false });
+                infos.push({ type: 'rename', path: `${xmlRename[1]} -> ${xmlRename[2]}`, stripFirstLine: false, isClosed: true });
                 continue;
             }
             if (xmlDelete) {
-                infos.push({ type: 'file_delete', path: xmlDelete[1], stripFirstLine: false });
+                infos.push({ type: 'file_delete', path: xmlDelete[1], stripFirstLine: false, isClosed: true });
                 continue;
             }
             if (xmlRemove) {
-                infos.push({ type: 'file_delete', path: xmlRemove[1], stripFirstLine: false });
+                infos.push({ type: 'file_delete', path: xmlRemove[1], stripFirstLine: false, isClosed: true });
                 continue;
             }
             if (xmlSelect) {
-                infos.push({ type: 'select', path: xmlSelect[1], stripFirstLine: false });
+                infos.push({ type: 'select', path: xmlSelect[1], stripFirstLine: false, isClosed: true });
                 continue;
             }
         }
@@ -529,11 +529,16 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
                     pathStr = pathStr.replace(/[.:]+$/, ''); 
                 }
 
-                infos.push({ type, path: pathStr, stripFirstLine });
+                // Initially assume NOT closed
+                infos.push({ type, path: pathStr, stripFirstLine, isClosed: false });
             } else {
                 if (currentFenceLength >= fenceLength) {
                     inBlock = false;
                     fenceLength = 0;
+                    // Mark the current block as closed
+                    if (infos.length > 0) {
+                        infos[infos.length - 1].isClosed = true;
+                    }
                 }
             }
         }
@@ -560,7 +565,7 @@ function looksLikeDiff(text: string): boolean {
     return headerLines >= 2 || chunkMarkers >= 1;
 }
 
-function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
+function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal: boolean = false) {
     const pres = container.querySelectorAll('pre');
     if (pres.length === 0) return;
 
@@ -738,23 +743,30 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
         summary.appendChild(langLabel);
         summary.appendChild(actions);
 
+        // --- BUTTON DISABLE LOGIC ---
+        // Disable buttons if streaming AND block is not closed yet
+        const isDisabled = !isFinal && (info ? !info.isClosed : false);
+
         const copyBtn = createButton('Copy', 'codicon-copy', () => {
             vscode.postMessage({ command: 'copyToClipboard', text: codeText });
             const icon = copyBtn.querySelector('.codicon');
             if(icon) icon.className = 'codicon codicon-check';
             setTimeout(() => { if(icon) icon.className = 'codicon codicon-copy'; }, 2000);
         });
+        copyBtn.disabled = isDisabled;
         actions.appendChild(copyBtn);
 
         const saveBtn = createButton('Save As...', 'codicon-save', () => {
             vscode.postMessage({ command: 'saveCodeToFile', content: codeText, language: language });
         });
+        saveBtn.disabled = isDisabled;
         actions.appendChild(saveBtn);
 
         if (state.isInspectorEnabled && language !== 'skill') {
             const inspectBtn = createButton('Inspect', 'codicon-search', () => {
                 vscode.postMessage({ command: 'inspectCode', code: codeText, language: language });
             });
+            inspectBtn.disabled = isDisabled;
             actions.appendChild(inspectBtn);
         }
 
@@ -765,6 +777,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             const applyBtn = createButton('Apply to File', 'codicon-tools', () => {
                 vscode.postMessage({ command: 'applyFileContent', filePath: filePath, content: codeText });
             }, 'code-action-btn apply-btn');
+            applyBtn.disabled = isDisabled;
             
             if (actions.firstChild) actions.insertBefore(applyBtn, actions.firstChild);
             else actions.appendChild(applyBtn);
@@ -777,6 +790,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             const applyPatchBtn = createButton('Apply Patch', 'codicon-tools', () => {
                 vscode.postMessage({ command: 'applyPatchContent', filePath: path, content: codeText });
             }, 'code-action-btn apply-btn');
+            applyPatchBtn.disabled = isDisabled;
             
             if (actions.firstChild) actions.insertBefore(applyPatchBtn, actions.firstChild);
             else actions.appendChild(applyPatchBtn);
@@ -787,6 +801,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             const insertBtn = createButton('Insert Code', 'codicon-arrow-right', () => {
                 vscode.postMessage({ command: 'insertCode', filePath: filePath, content: codeText });
             }, 'code-action-btn apply-btn');
+            insertBtn.disabled = isDisabled;
             
             if (actions.firstChild) actions.insertBefore(insertBtn, actions.firstChild);
             else actions.appendChild(insertBtn);
@@ -797,6 +812,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             const replaceBtn = createButton('Replace Code', 'codicon-arrow-swap', () => {
                 vscode.postMessage({ command: 'replaceCode', filePath: filePath, content: codeText });
             }, 'code-action-btn apply-btn');
+            replaceBtn.disabled = isDisabled;
             
             if (actions.firstChild) actions.insertBefore(replaceBtn, actions.firstChild);
             else actions.appendChild(replaceBtn);
@@ -807,6 +823,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             const deleteCodeBtn = createButton('Delete Code', 'codicon-trash', () => {
                 vscode.postMessage({ command: 'deleteCodeBlock', filePath: filePath, content: codeText });
             }, 'code-action-btn delete-btn');
+            deleteCodeBtn.disabled = isDisabled;
             
             if (actions.firstChild) actions.insertBefore(deleteCodeBtn, actions.firstChild);
             else actions.appendChild(deleteCodeBtn);
@@ -821,6 +838,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
                     }
                 });
             }, 'code-action-btn apply-btn');
+            renameBtn.disabled = isDisabled;
             if (actions.firstChild) actions.insertBefore(renameBtn, actions.firstChild);
             else actions.appendChild(renameBtn);
 
@@ -828,6 +846,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             const deleteBtn = createButton('Delete Files', 'codicon-trash', () => {
                 vscode.postMessage({ command: 'deleteFile', filePaths: codeText });
             }, 'code-action-btn delete-btn');
+            deleteBtn.disabled = isDisabled;
             if (actions.firstChild) actions.insertBefore(deleteBtn, actions.firstChild);
             else actions.appendChild(deleteBtn);
 
@@ -844,6 +863,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
                 });
             });
             selectBtn.id = `btn-${blockId}`;
+            selectBtn.disabled = isDisabled;
             
             if (actions.firstChild) actions.insertBefore(selectBtn, actions.firstChild);
             else actions.appendChild(selectBtn);
@@ -852,6 +872,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             const resetBtn = createButton('Reset Context', 'codicon-clear-all', () => {
                 vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'resetContext', params: {} } });
             }, 'code-action-btn delete-btn');
+            resetBtn.disabled = isDisabled;
             if (actions.firstChild) actions.insertBefore(resetBtn, actions.firstChild);
             else actions.appendChild(resetBtn);
 
@@ -860,6 +881,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             const saveSkillBtn = createButton('Save Skill', 'codicon-lightbulb', () => {
                 vscode.postMessage({ command: 'saveSkill', content: codeText });
             }, 'code-action-btn apply-btn');
+            saveSkillBtn.disabled = isDisabled;
             if (actions.firstChild) actions.insertBefore(saveSkillBtn, actions.firstChild);
             else actions.appendChild(saveSkillBtn);
         } else if (language === 'git_commit') {
@@ -867,6 +889,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             const commitBtn = createButton('Git Commit', 'codicon-git-commit', () => {
                 vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'gitCommit', params: { message: codeText } } });
             }, 'code-action-btn apply-btn');
+            commitBtn.disabled = isDisabled;
             if (actions.firstChild) actions.insertBefore(commitBtn, actions.firstChild);
             else actions.appendChild(commitBtn);
         } else {
@@ -875,6 +898,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
                  const executeBtn = createButton('Execute', 'codicon-play', () => {
                      vscode.postMessage({ command: 'runScript', code: codeText, language: language });
                  }, 'code-action-btn apply-btn');
+                 executeBtn.disabled = isDisabled;
                  
                  if (actions.firstChild) actions.insertBefore(executeBtn, actions.firstChild);
                  else actions.appendChild(executeBtn);
@@ -907,6 +931,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any) {
             btn.style.padding = '6px';
             btn.style.fontSize = '12px';
             btn.style.fontWeight = '600';
+            btn.disabled = !isFinal; // Always disable Apply All until message is fully done
             
             btn.onclick = () => {
                 const changes: any[] = [];
@@ -1069,7 +1094,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         }
 
         enhanceWithCommandButtons(wrapper as HTMLElement);
-        enhanceCodeBlocks(wrapper as HTMLElement, rawContent);
+        enhanceCodeBlocks(wrapper as HTMLElement, rawContent, isFinal);
 
     } catch (e) {
         console.error("Error rendering message content:", e);
@@ -1242,17 +1267,42 @@ function addChatMessage(message: any, isFinal: boolean = true) {
     }
 }
 
-export function updateContext(contextText: string, files: string[] = []) {
+export function updateContext(contextText: string, files: string[] = [], skills: any[] = []) {
     if(!dom.contextContainer) return;
     
-    const filesList = files && files.length > 0 
-        ? `<ul style="margin: 0; padding: 8px 12px; list-style-type: none; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px;">
-            ${files.map(f => `<li style="display: flex; align-items: center; gap: 6px; margin-bottom: 2px;"><span class="codicon codicon-file"></span> <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${f}</span></li>`).join('')}
-           </ul>`
-        : '<div style="padding: 8px; opacity: 0.7;">No files selected.</div>';
-
     // Parse project context as markdown for rich display
     const renderedMarkdown = sanitizer.sanitize(marked.parse(contextText) as string, SANITIZE_CONFIG);
+
+    // Interactive File List
+    const filesList = files && files.length > 0 
+        ? `<ul class="context-file-list">
+            ${files.map(f => `
+                <li class="context-item">
+                    <span class="codicon codicon-file"></span> 
+                    <span class="context-item-label" title="${f}">${f}</span>
+                    <button class="remove-context-btn" data-type="file" data-value="${f}" title="Remove file">
+                        <span class="codicon codicon-close"></span>
+                    </button>
+                </li>`).join('')}
+           </ul>`
+        : '<div class="empty-context-msg">No files selected.</div>';
+
+    // Interactive Skills List
+    const skillsList = skills && skills.length > 0
+        ? `<div class="context-skill-list">
+            ${skills.map(s => `
+                <div class="context-item skill-item">
+                    <details class="info-collapsible" style="flex: 1; border: none; padding: 0;">
+                        <summary style="padding: 4px 0; cursor: pointer;">${s.name}</summary>
+                        <div class="skill-content">${sanitizer.sanitize(s.content)}</div>
+                    </details>
+                    <button class="remove-context-btn" data-type="skill" data-value="${s.id}" title="Remove skill">
+                        <span class="codicon codicon-close"></span>
+                    </button>
+                </div>
+            `).join('')}
+           </div>`
+        : '<div class="empty-context-msg">No skills learned.</div>';
 
     const innerHTML = `
     <div class="message special-zone-message context-message">
@@ -1263,6 +1313,13 @@ export function updateContext(contextText: string, files: string[] = []) {
             <div class="message-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 10px;">
                 <span class="role-name">Project Context</span>
                 <div style="display: flex; gap: 5px;">
+                    <button id="add-file-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Add File to Context">
+                        <span class="codicon codicon-add"></span> File
+                    </button>
+                    <button id="add-skill-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Add Skill to Context">
+                        <span class="codicon codicon-lightbulb"></span> Skill
+                    </button>
+                    <div style="width: 1px; background: var(--vscode-widget-border); margin: 0 4px;"></div>
                     <button id="save-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Save current file selection">
                         <span class="codicon codicon-save"></span>
                     </button>
@@ -1282,6 +1339,12 @@ export function updateContext(contextText: string, files: string[] = []) {
                     </div>
                 </details>
                 <details class="info-collapsible">
+                    <summary>Active Skills (${skills.length})</summary>
+                    <div class="collapsible-content">
+                        ${skillsList}
+                    </div>
+                </details>
+                <details class="info-collapsible">
                     <summary>View Loaded Content & Tree</summary>
                     <div class="collapsible-content markdown-context-view" style="max-height: 400px; overflow-y: auto; padding: 10px; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px; font-size: 0.95em;">
                         ${renderedMarkdown}
@@ -1296,37 +1359,62 @@ export function updateContext(contextText: string, files: string[] = []) {
     // Enhance code blocks and tree in the context bubble
     const markdownView = dom.contextContainer.querySelector('.markdown-context-view');
     if (markdownView) {
-        enhanceCodeBlocks(markdownView as HTMLElement, contextText);
+        enhanceCodeBlocks(markdownView as HTMLElement, contextText, true);
     }
 
-    // Attach listeners programmatically to bypass CSP restrictions on inline onclick
+    // --- Event Listeners ---
+
+    // File/Skill Removal Delegation
+    dom.contextContainer.querySelectorAll('.remove-context-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const target = e.currentTarget as HTMLElement;
+            const type = target.dataset.type;
+            const value = target.dataset.value;
+            
+            if (type === 'file') {
+                vscode.postMessage({ command: 'removeFileFromContext', path: value });
+            } else if (type === 'skill') {
+                vscode.postMessage({ command: 'removeSkillFromContext', skillId: value });
+            }
+        });
+    });
+
+    // Add File
+    const addFileBtn = document.getElementById('add-file-context-btn');
+    if (addFileBtn) {
+        addFileBtn.addEventListener('click', () => {
+            // Trigger the file picker from extension side
+            vscode.postMessage({ command: 'requestAddFileToContext' });
+        });
+    }
+
+    // Add Skill
+    const addSkillBtn = document.getElementById('add-skill-context-btn');
+    if (addSkillBtn) {
+        addSkillBtn.addEventListener('click', () => {
+            vscode.postMessage({ command: 'importSkills' });
+        });
+    }
+
+    // Other Buttons
     const saveBtn = document.getElementById('save-context-btn');
     if (saveBtn) {
         saveBtn.addEventListener('click', () => {
-            vscode.postMessage({ 
-                command: 'executeLollmsCommand', 
-                details: { command: 'saveContext', params: {} } 
-            });
+            vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'saveContext', params: {} } });
         });
     }
 
     const loadBtn = document.getElementById('load-context-btn');
     if (loadBtn) {
         loadBtn.addEventListener('click', () => {
-            vscode.postMessage({ 
-                command: 'executeLollmsCommand', 
-                details: { command: 'loadContext', params: {} } 
-            });
+            vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'loadContext', params: {} } });
         });
     }
 
     const resetBtn = document.getElementById('reset-context-bubble-btn');
     if (resetBtn) {
         resetBtn.addEventListener('click', () => {
-            vscode.postMessage({ 
-                command: 'executeLollmsCommand', 
-                details: { command: 'resetContext', params: {} } 
-            });
+            vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'resetContext', params: {} } });
         });
     }
 }

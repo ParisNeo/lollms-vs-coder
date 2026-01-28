@@ -126,9 +126,20 @@ export class QuickEditManager {
 
             prompt += `Please respond with markdown. If you provide code, use code blocks.`;
 
-            let systemPromptContent = await getProcessedSystemPrompt('chat', undefined, undefined, this.memoryManager);
+            // --- ADD GLOBAL CONTEXT (Project Tree + Selected Files) ---
+            const globalContext = await this.contextManager.getContextContent();
+            
+            const contextData = {
+                tree: globalContext.projectTree,
+                files: globalContext.selectedFilesContent,
+                skills: globalContext.skillsContent
+            };
+
+            let systemPromptContent = await getProcessedSystemPrompt('chat', undefined, undefined, this.memoryManager, false, contextData);
 
             if (isNotebook) {
+                // Since systemPromptContent is now structured, appending might break structure or just append to Instructions section.
+                // The structure ends with Instructions. So appending is safe, it just adds to instructions.
                 systemPromptContent += `\n\n**NOTEBOOK MODE ACTIVATED**
 You are an expert Jupyter Notebook assistant.
 - You are editing a specific cell (or selection) within a notebook.
@@ -137,12 +148,6 @@ You are an expert Jupyter Notebook assistant.
 - Do NOT rewrite the entire notebook unless explicitly asked.
 - Do NOT include conversational filler if the user asks for a direct replacement.
 `;
-            }
-
-            // --- ADD GLOBAL CONTEXT (Project Tree + Selected Files) ---
-            const globalContext = await this.contextManager.getContextContent();
-            if (globalContext.text && !globalContext.text.includes("**No workspace folder is currently open.**")) {
-                systemPromptContent += `\n\n# GLOBAL PROJECT CONTEXT\n${globalContext.text}`;
             }
 
             let systemPrompt = systemPromptContent + 

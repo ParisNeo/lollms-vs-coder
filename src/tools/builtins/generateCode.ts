@@ -3,11 +3,15 @@ import { ToolDefinition, ToolExecutionEnv } from '../tool';
 import { getProcessedSystemPrompt } from '../../utils';
 import { ChatMessage } from '../../lollmsAPI';
 
-async function getCoderSystemPrompt(customPrompt: string, planObjective: string, projectContext: string): Promise<ChatMessage> {
-    const agentPersonaPrompt = await getProcessedSystemPrompt('agent');
-    return {
-        role: 'system',
-        content: `You are a code generation AI. You will be given instructions and context to write or modify a file.
+async function getCoderSystemPrompt(customPrompt: string, planObjective: string, projectContext: any): Promise<ChatMessage> {
+    // We pass the context data to getProcessedSystemPrompt so it can build the full structured prompt
+    const agentPersonaPrompt = await getProcessedSystemPrompt('agent', undefined, undefined, undefined, false, projectContext);
+    
+    // We append the specific instructions for this tool
+    const fullContent = `${agentPersonaPrompt}
+
+**CODE GENERATION SPECIFIC INSTRUCTIONS:**
+You are a code generation sub-agent. You will be given instructions and context to write or modify a file.
 **CRITICAL INSTRUCTIONS:**
 1.  **CODE ONLY:** Your entire response MUST be a single markdown code block containing the complete file content.
 2.  **NO EXTRA TEXT:** Do not add any explanations, comments, or conversational text outside of the code block.
@@ -18,12 +22,11 @@ async function getCoderSystemPrompt(customPrompt: string, planObjective: string,
 ${customPrompt}
 **CONTEXT FOR YOUR TASK:**
 - **Main Objective:** ${planObjective}
-- **Project Structure & Context:**
-${projectContext}
-
-**Agent Persona:**
-${agentPersonaPrompt}
-`
+`;
+    
+    return {
+        role: 'system',
+        content: fullContent
     };
 }
 
@@ -47,7 +50,13 @@ export const generateCodeTool: ToolDefinition = {
         }
 
         const modelOverride = env.agentManager?.getCurrentDiscussion()?.model;
-        let projectContextText = "";
+        
+        // Prepare context data structure
+        let contextData = {
+            tree: '',
+            files: '',
+            skills: ''
+        };
 
         // --- STEP 1: DYNAMIC CONTEXT RETRIEVAL (Anti-Hallucination) ---
         if (env.workspaceRoot) {
@@ -93,7 +102,7 @@ Example Output:
                     if (selectedFiles.length > 0) {
                         const dependencyContext = await env.contextManager.readSpecificFiles(selectedFiles);
                         if (dependencyContext) {
-                            projectContextText += `\n\n==== DYNAMICALLY LOADED DEPENDENCIES (READ THESE FOR SIGNATURES) ====\nThe following files were identified as relevant dependencies. Use their definitions to avoid hallucinating functions:\n\n${dependencyContext}\n=========================================\n`;
+                            contextData.files += `\n\n==== DYNAMICALLY LOADED DEPENDENCIES (READ THESE FOR SIGNATURES) ====\nThe following files were identified as relevant dependencies. Use their definitions to avoid hallucinating functions:\n\n${dependencyContext}\n=========================================\n`;
                         }
                     }
                 }
@@ -104,7 +113,9 @@ Example Output:
 
         // --- STEP 2: PREPARE MAIN PROMPT ---
         const baseContext = await env.contextManager.getContextContent();
-        projectContextText += baseContext.text;
+        contextData.tree = baseContext.projectTree;
+        contextData.files = baseContext.selectedFilesContent + contextData.files; // Append dynamic deps
+        contextData.skills = baseContext.skillsContent;
 
         let userPromptContent = params.user_prompt || `Generate code for ${params.file_path}`;
 
@@ -117,7 +128,7 @@ Example Output:
             } catch (error) { }
         }
 
-        const coderSystemPrompt = await getCoderSystemPrompt(params.system_prompt || '', env.currentPlan.objective, projectContextText);
+        const coderSystemPrompt = await getCoderSystemPrompt(params.system_prompt || '', env.currentPlan.objective, contextData);
         const coderUserPrompt: ChatMessage = { role: 'user', content: userPromptContent };
         
         // --- STEP 3: GENERATE CODE ---

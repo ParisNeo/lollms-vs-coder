@@ -3,6 +3,7 @@ import * as path from 'path';
 import { ContextStateProvider } from './commands/contextStateProvider';
 import Jimp = require('jimp');
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
+import { SkillsManager } from './skillsManager';
 import * as mammoth from 'mammoth';
 const pdfParse = require('pdf-parse');
 import { stripThinkingTags } from './utils';
@@ -15,10 +16,14 @@ const execAsync = promisify(exec);
 export interface ContextResult {
   text: string;
   images: { filePath: string; data: string }[];
+  projectTree: string;
+  selectedFilesContent: string;
+  skillsContent: string;
 }
 
 export class ContextManager {
   private contextStateProvider?: ContextStateProvider;
+  private skillsManager?: SkillsManager;
   private context: vscode.ExtensionContext;
   private lollmsAPI: LollmsAPI;
   private imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']);
@@ -100,6 +105,10 @@ export class ContextManager {
       this.contextStateProvider = provider;
   }
 
+  public setSkillsManager(manager: SkillsManager) {
+      this.skillsManager = manager;
+  }
+
   getContextStateProvider(): ContextStateProvider | undefined {
     return this.contextStateProvider;
   }
@@ -178,11 +187,7 @@ export class ContextManager {
 
               const text = buffer.toString('utf8');
               
-              content += `File: ${filePath}\n`;
-              const language = this.getLanguageId(filePath);
-              content += '```' + language + '\n';
-              content += text;
-              content += '\n```\n\n';
+              content += `\`\`\`${this.getLanguageId(filePath)}:${filePath}\n${text}\n\`\`\`\n\n`;
           } catch (error) { }
       }
       return content;
@@ -221,7 +226,7 @@ export class ContextManager {
         }
     }
     return combinedResults;
-}
+  }
 
   // --- AUTO CONTEXT AGENT LOOP ---
   public async runContextAgent(
@@ -505,8 +510,8 @@ You have access to the project structure and the list of currently selected file
       }
   }
 
-  async getContextContent(options?: { includeTree?: boolean, signal?: AbortSignal }): Promise<ContextResult> {
-    const result: ContextResult = { text: '', images: [] };
+  async getContextContent(options?: { includeTree?: boolean, signal?: AbortSignal, importedSkillIds?: string[] }): Promise<ContextResult> {
+    const result: ContextResult = { text: '', images: [], projectTree: '', selectedFilesContent: '', skillsContent: '' };
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const maxImageSize = config.get<number>('maxImageSize') || 1024;
     const includeTree = options?.includeTree !== false; // Default true
@@ -525,20 +530,31 @@ You have access to the project structure and the list of currently selected file
     }
 
     const contextFiles = this.contextStateProvider.getIncludedFiles();
-    let content = `# Project Context\n\n**Workspace:** ${path.basename(workspaceFolder.uri.fsPath)}\n\n`;
     
-    if (includeTree) {
-        if (signal?.aborted) throw new Error("Operation cancelled");
-        content += await this.generateProjectTree(signal);
-        content += '\n';
+    // --- SKILLS ---
+    if (this.skillsManager) {
+        const skills = await this.skillsManager.getSkills();
+        const allowedIds = options?.importedSkillIds;
+
+        if (skills.length > 0 && allowedIds && allowedIds.length > 0) {
+            for (const skill of skills) {
+                if (allowedIds.includes(skill.id)) {
+                    result.skillsContent += `### Skill: ${skill.name}\n\`\`\`${skill.language || 'text'}\n${skill.content}\n\`\`\`\n\n`;
+                }
+            }
+        }
     }
 
+    // --- PROJECT TREE ---
+    if (includeTree) {
+        if (signal?.aborted) throw new Error("Operation cancelled");
+        result.projectTree = await this.generateProjectTree(signal);
+    }
+
+    // --- SELECTED FILES CONTENT ---
     const includedFiles = contextFiles.filter(f => !f.path.endsWith(path.sep));
     
     if (includedFiles.length > 0) {
-      content += `## File Contents (${includedFiles.length} files)\n\n`;
-      content += `Warning: Only some files' contents are shown here. If you need more file contents, don't hesitate to ask the user to select more files that you need to see.\n\n`;
-      
       for (const fileEntry of includedFiles) {
         if (signal?.aborted) throw new Error("Operation cancelled");
 
@@ -553,16 +569,13 @@ You have access to the project structure and the list of currently selected file
           const ext = path.extname(filePath).toLowerCase();
 
           if (this.binaryExtensions.has(ext)) {
-              content += `File: ${filePath}\n(Binary file content excluded)\n\n`;
+              result.selectedFilesContent += `\`\`\`${this.getLanguageId(filePath)}:${filePath}\n(Binary file content excluded)\n\`\`\`\n\n`;
               continue;
           }
 
           if (contextState === 'definitions-only') {
               const definitions = await this.extractDefinitions(fullPath);
-              content += `File: ${filePath} (Definitions Only)\n`;
-              content += '```text\n';
-              content += definitions;
-              content += '\n```\n\n';
+              result.selectedFilesContent += `\`\`\`${this.getLanguageId(filePath)}:${filePath} (Definitions Only)\n${definitions}\n\`\`\`\n\n`;
               continue;
           }
 
@@ -577,7 +590,7 @@ You have access to the project structure and the list of currently selected file
             }
             const base64Data = await image.getBase64Async(image.getMIME());
             result.images.push({ filePath, data: base64Data });
-            content += `### \`${filePath}\` (Image Attached)\n\n`;
+            result.selectedFilesContent += `### \`${filePath}\` (Image Attached)\n\n`;
             continue; 
           } else {
             if (this.docExtensions.has(ext)) {
@@ -610,28 +623,35 @@ You have access to the project structure and the list of currently selected file
                 }
             } else {
                 if (this.isBinary(buffer)) {
-                    content += `File: ${filePath}\n(Binary content detected and excluded)\n\n`;
+                    result.selectedFilesContent += `\`\`\`${this.getLanguageId(filePath)}:${filePath}\n(Binary content detected and excluded)\n\`\`\`\n\n`;
                     continue;
                 }
                 fileContent = buffer.toString('utf8');
             }
           }
           
-          content += `File: ${filePath}\n`;
-          const language = this.getLanguageId(filePath);
-          content += '```' + language + '\n';
-          content += fileContent;
-          content += '\n```\n\n';
+          result.selectedFilesContent += `\`\`\`${this.getLanguageId(filePath)}:${filePath}\n${fileContent}\n\`\`\`\n\n`;
 
         } catch (error) {
-          content += `### ${filePath}\n\n⚠️ **Error processing entry:** ${error}\n\n`;
+          result.selectedFilesContent += `### ${filePath}\n\n⚠️ **Error processing entry:** ${error}\n\n`;
         }
       }
-    } else {
-      content += '## File Contents\n\n**No files are currently included in the context.**\n\n';
     }
 
-    result.text = content;
+    // Construct Legacy Text
+    result.text = `# Project Context\n\n**Workspace:** ${path.basename(workspaceFolder.uri.fsPath)}\n\n`;
+    if (result.skillsContent) {
+        result.text += `## Active Skills\n${result.skillsContent}---\n\n`;
+    }
+    if (result.projectTree) {
+        result.text += `${result.projectTree}\n`;
+    }
+    if (result.selectedFilesContent) {
+        result.text += `## File Contents\n\n${result.selectedFilesContent}`;
+    } else {
+        result.text += '## File Contents\n\n**No files are currently included in the context.**\n\n';
+    }
+
     this._lastContext = result;
     return result;
   }
@@ -652,7 +672,7 @@ Based on this information, you must identify the most relevant files.
 1.  **JSON ONLY:** Your entire response MUST be a single, valid JSON array of strings.
 2.  **NO EXTRA TEXT:** Do not add any conversational text, explanations, apologies, or markdown formatting. Your response must begin with \`[\` and end with \`]\`.
 3.  **FILE PATHS:** The strings in the array must be the exact relative paths of the files as they appear in the project tree.
-4.  **RELEVANCE:** Select only the files that are most likely to be needed to accomplish the user's objective. Do not select irrelevant files.
+4.  **RELENANCE:** Select only the files that are most likely to be needed to accomplish the user's objective. Do not select irrelevant files.
 5.  **DO NOT ANSWER:** Do not answer the user's prompt or provide any other information. Your sole purpose is to output the JSON array of file paths.
 
 Example Response:

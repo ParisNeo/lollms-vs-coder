@@ -22,14 +22,20 @@ export const vscode = new Proxy({} as VsCodeApi, {
     }
 });
 
+// Match interface in src/utils.ts
 export interface DiscussionCapabilities {
-    codeGenType: 'full' | 'diff' | 'none';
+    generationFormats: {
+        fullFile: boolean;
+        diff: boolean;
+        aider: boolean;
+    };
     allowedFormats: {
         fullFile: boolean;
         insert: boolean;
         replace: boolean;
         delete: boolean;
     };
+    explainCode: boolean;
     fileRename: boolean;
     fileDelete: boolean;
     fileSelect: boolean;
@@ -39,7 +45,6 @@ export interface DiscussionCapabilities {
     arxivSearch: boolean;
     funMode: boolean;
     thinkingMode: string;
-    // gitCommit removed
     gitWorkflow: boolean;
     herdMode: boolean;
     herdDynamicMode: boolean;
@@ -153,13 +158,15 @@ export const dom = {
     get generatingOverlay() { return document.getElementById('generating-overlay') as HTMLDivElement; },
     get activeToolsIndicator() { return document.getElementById('active-tools-indicator') as HTMLDivElement; },
     
-    // Discussion Capabilities Inputs
-    // Code Gen Type Radios
-    get radioCodeGenFull() { return document.querySelector('input[name="codeGenType"][value="full"]') as HTMLInputElement; },
-    get radioCodeGenDiff() { return document.querySelector('input[name="codeGenType"][value="diff"]') as HTMLInputElement; },
-    get radioCodeGenNone() { return document.querySelector('input[name="codeGenType"][value="none"]') as HTMLInputElement; },
+    // Updated: Replaced Radios with Checkboxes for Generation Format
+    get checkGenFull() { return document.getElementById('check-gen-full') as HTMLInputElement; },
+    get checkGenDiff() { return document.getElementById('check-gen-diff') as HTMLInputElement; },
+    get checkGenAider() { return document.getElementById('check-gen-aider') as HTMLInputElement; },
     
-    // FORMATS
+    // Updated: Behavior Checkbox
+    get checkBehaviorExplain() { return document.getElementById('check-behavior-explain') as HTMLInputElement; },
+
+    // FORMATS (Legacy / Tool Specific)
     get fmtFullFile() { return document.getElementById('fmt-fullFile') as HTMLInputElement; },
     get fmtInsert() { return document.getElementById('fmt-insert') as HTMLInputElement; },
     get fmtReplace() { return document.getElementById('fmt-replace') as HTMLInputElement; },
@@ -180,7 +187,6 @@ export const dom = {
     get capGitWorkflowContainer() { return document.getElementById('cap-gitWorkflowContainer') as HTMLDivElement; },
 
     get modeFunMode() { return document.getElementById('mode-funMode') as HTMLInputElement; },
-    get modeHeavyCot() { return document.getElementById('mode-heavyCot') as HTMLInputElement; },
     get capThinkingMode() { return document.getElementById('cap-thinkingMode') as HTMLSelectElement; },
     get inputAreaWrapperDiv() { return document.querySelector('.input-area-wrapper') as HTMLDivElement; },
 
@@ -198,7 +204,7 @@ export const dom = {
     get gitMenuMerge() { return document.getElementById('git-menu-merge') as HTMLDivElement; },
     get gitMenuRevert() { return document.getElementById('git-menu-revert') as HTMLDivElement; },
 
-    // Staging Modal (NEW)
+    // Staging Modal
     get stagingModal() { return document.getElementById('staging-modal') as HTMLDivElement; },
     get stagingList() { return document.getElementById('staging-list') as HTMLDivElement; },
     get stagingNextBtn() { return document.getElementById('staging-next-btn') as HTMLButtonElement; },

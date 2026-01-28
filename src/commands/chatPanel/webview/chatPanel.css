@@ -117,6 +117,7 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 .code-actions { display: flex; gap: 8px; align-items: center; }
 .code-action-btn { background-color: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: 1px solid transparent; border-radius: 3px; padding: 2px 10px; font-family: var(--vscode-font-family); font-size: 11px; cursor: pointer; display: flex; align-items: center; gap: 6px; height: 24px; transition: background-color 0.1s; }
 .code-action-btn:hover { background-color: var(--vscode-button-secondaryHoverBackground); }
+.code-action-btn:disabled { opacity: 0.5; cursor: not-allowed; pointer-events: none; filter: grayscale(100%); }
 .code-action-btn.success { background-color: var(--vscode-charts-green) !important; color: white !important; border-color: transparent; transition: all 0.2s ease; }
 .apply-btn { background-color: var(--vscode-button-background); color: var(--vscode-button-foreground); }
 .apply-btn:hover { background-color: var(--vscode-button-hoverBackground); }
@@ -622,7 +623,6 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
     text-align: center;
 }
 
-/* ... (Existing rest of CSS) ... */
 /* --- Commit Modal --- */
 .commit-textarea {
     width: 100%;
@@ -938,4 +938,79 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
 .diagram-container svg g.relation {
     stroke: var(--vscode-editor-foreground) !important;
     stroke-width: 1.5px !important;
+}
+
+/* Context List Styling (NEW) */
+.context-file-list {
+    margin: 0;
+    padding: 8px 12px;
+    list-style-type: none;
+    background: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-widget-border);
+    border-radius: 4px;
+}
+
+.context-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+    padding: 4px;
+    border-radius: 3px;
+}
+
+.context-item:hover {
+    background-color: var(--vscode-list-hoverBackground);
+}
+
+.context-item-label {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.9em;
+}
+
+.remove-context-btn {
+    background: transparent;
+    border: none;
+    color: var(--vscode-icon-foreground);
+    cursor: pointer;
+    padding: 2px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.6;
+    border-radius: 3px;
+    min-width: 20px;
+}
+
+.remove-context-btn:hover {
+    opacity: 1;
+    background-color: var(--vscode-toolbar-hoverBackground);
+    color: var(--vscode-errorForeground);
+}
+
+.empty-context-msg {
+    padding: 8px;
+    opacity: 0.7;
+    font-style: italic;
+    font-size: 0.9em;
+}
+
+.skill-item {
+    border: 1px solid var(--vscode-widget-border);
+    border-radius: 4px;
+    margin-bottom: 4px;
+    background-color: var(--vscode-editor-background);
+}
+
+.skill-content {
+    padding: 8px;
+    background: var(--vscode-textCodeBlock-background);
+    font-family: var(--vscode-editor-font-family);
+    font-size: 0.85em;
+    white-space: pre-wrap;
+    overflow-x: auto;
+    border-top: 1px solid var(--vscode-widget-border);
 }

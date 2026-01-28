@@ -4,6 +4,7 @@ export class HelpPanel {
     public static currentPanel: HelpPanel | undefined;
     private readonly _panel: vscode.WebviewPanel;
     private readonly _extensionUri: vscode.Uri;
+    private _disposables: vscode.Disposable[] = [];
 
     public static createOrShow(extensionUri: vscode.Uri) {
         const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
@@ -34,23 +35,43 @@ export class HelpPanel {
         this._panel = panel;
         this._extensionUri = extensionUri;
         this._panel.webview.html = this._getHtmlForWebview(this._panel.webview);
-        this._panel.onDidDispose(() => this.dispose(), null, []);
+        
+        // Listen for when the panel is disposed
+        // This happens when the user closes the panel or when the panel is closed programmatically
+        this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
     }
 
     public dispose() {
         HelpPanel.currentPanel = undefined;
+        
+        // Clean up our resources
         this._panel.dispose();
+        
+        while (this._disposables.length) {
+            const x = this._disposables.pop();
+            if (x) {
+                x.dispose();
+            }
+        }
     }
 
     private _getHtmlForWebview(webview: vscode.Webview): string {
-        const lollmsIconUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'lollms-icon.svg'));
-        const codiconsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'codicon.css'));
+        // Generate URIs for local content
+        const iconPath = vscode.Uri.joinPath(this._extensionUri, 'media', 'lollms-icon.svg');
+        const stylePath = vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'codicon.css');
+
+        const lollmsIconUri = webview.asWebviewUri(iconPath);
+        const codiconsUri = webview.asWebviewUri(stylePath);
+        
+        // Content Security Policy
+        const csp = `default-src 'none'; img-src ${webview.cspSource} data:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'unsafe-inline'; font-src ${webview.cspSource};`;
 
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="${csp}">
     <title>Lollms Documentation</title>
     <link href="${codiconsUri}" rel="stylesheet" />
     <style>
@@ -222,7 +243,7 @@ export class HelpPanel {
         <!-- NOTEBOOKS -->
         <section id="jupyter">
             <h1>📓 Jupyter Integration</h1>
-            <p>Lollms supercharges `.ipynb` notebooks with context-aware buttons in the cell toolbar.</p>
+            <p>Lollms supercharges \`.ipynb\` notebooks with context-aware buttons in the cell toolbar.</p>
             
             <div class="feature-grid">
                 <div class="feature-item">

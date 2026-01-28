@@ -63,13 +63,13 @@ export async function activate(context: vscode.ExtensionContext) {
     // Initialize Managers
     const memoryManager = new MemoryManager(context.globalStorageUri);
     const contextManager = new ContextManager(context, lollmsAPI);
+    const skillsManager = new SkillsManager();
     const scriptRunner = new ScriptRunner(pythonExtApi);
     const promptManager = new PromptManager(context.globalStorageUri);
     const personalityManager = new PersonalityManager(context.globalStorageUri);
     const workflowManager = new WorkflowManager(context.globalStorageUri);
     const gitIntegration = new GitIntegration(lollmsAPI);
     const processManager = new ProcessManager();
-    const skillsManager = new SkillsManager();
     const codeGraphManager = new CodeGraphManager();
     const notebookManager = new NotebookManager(lollmsAPI);
     const inlineDiffProvider = new InlineDiffProvider(lollmsAPI);
@@ -77,6 +77,8 @@ export async function activate(context: vscode.ExtensionContext) {
     const diffManager = new DiffManager();
     const herdManager = new HerdManager(lollmsAPI, contextManager, personalityManager);
     
+    contextManager.setSkillsManager(skillsManager);
+
     // SETUP DIFF MANAGER
     diffManager.setup(context);
     

@@ -68,7 +68,7 @@ export function handleExtensionMessage(event: MessageEvent) {
                 setGeneratingState(message.isGenerating);
                 break;
             case 'updateContext':
-                updateContext(message.context, message.files);
+                updateContext(message.context, message.files, message.skills);
                 break;
             case 'displayPlan':
                 displayPlan(message.plan);
@@ -112,12 +112,19 @@ export function handleExtensionMessage(event: MessageEvent) {
                 if (caps) {
                     state.capabilities = caps;
 
-                    // Update Modal State
-                    if (dom.radioCodeGenFull && caps.codeGenType === 'full') dom.radioCodeGenFull.checked = true;
-                    if (dom.radioCodeGenDiff && caps.codeGenType === 'diff') dom.radioCodeGenDiff.checked = true;
-                    if (dom.radioCodeGenNone && caps.codeGenType === 'none') dom.radioCodeGenNone.checked = true;
+                    // Update Generation Formats (Checkboxes)
+                    if (caps.generationFormats) {
+                        if (dom.checkGenFull) dom.checkGenFull.checked = caps.generationFormats.fullFile;
+                        if (dom.checkGenDiff) dom.checkGenDiff.checked = caps.generationFormats.diff;
+                        if (dom.checkGenAider) dom.checkGenAider.checked = caps.generationFormats.aider;
+                    }
 
-                    // Update Formats
+                    // Update Behavior
+                    if (dom.checkBehaviorExplain) {
+                        dom.checkBehaviorExplain.checked = caps.explainCode !== false; // Default true if undefined
+                    }
+
+                    // Update Legacy Formats (Tool Specific)
                     if (caps.allowedFormats) {
                         if (dom.fmtFullFile) dom.fmtFullFile.checked = caps.allowedFormats.fullFile;
                         if (dom.fmtInsert) dom.fmtInsert.checked = caps.allowedFormats.insert;

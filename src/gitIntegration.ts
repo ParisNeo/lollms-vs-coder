@@ -50,6 +50,15 @@ export class GitIntegration {
       }
   }
 
+  public async getCurrentHash(folder: vscode.WorkspaceFolder): Promise<string> {
+    try {
+        const { stdout } = await execAsync('git rev-parse HEAD', { cwd: folder.uri.fsPath });
+        return stdout.trim();
+    } catch (e) {
+        return '';
+    }
+  }
+
   public async getBranches(folder: vscode.WorkspaceFolder): Promise<string[]> {
       try {
           const { stdout } = await execAsync('git branch --format="%(refname:short)"', { cwd: folder.uri.fsPath });
@@ -474,8 +483,9 @@ export class GitIntegration {
   public async getCommitHistory(folder: vscode.WorkspaceFolder, count: number = 50): Promise<GitCommit[]> {
     if (!folder) return [];
     try {
+        // Using --all to ensure we see future commits after a revert/checkout of an older hash
         const { stdout } = await execAsync(
-            `git log --pretty=format:"%H|%s|%an|%ad" --date=short -n ${count}`, 
+            `git log --all --pretty=format:"%H|%s|%an|%ad" --date=short -n ${count}`, 
             { cwd: folder.uri.fsPath }
         );
         

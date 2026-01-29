@@ -445,11 +445,22 @@ export function handleExtensionMessage(event: MessageEvent) {
             case 'showGitHistory': {
                 if (dom.historyList) {
                     dom.historyList.innerHTML = '';
+                    const currentHash = message.currentHash || '';
+                    
                     message.commits.forEach((c: any) => {
                         const div = document.createElement('div');
-                        div.className = 'history-item';
-                        div.innerHTML = `<div style="font-weight:bold;">${c.message}</div><div style="font-size:0.85em; opacity:0.8;">${c.hash.substring(0,7)} - ${c.date}</div>`;
+                        const isCurrent = currentHash === c.hash;
+                        
+                        div.className = `custom-menu-item ${isCurrent ? 'current-head' : ''}`;
+                        div.innerHTML = `
+                            <div style="display:flex; flex-direction:column; width:100%;">
+                                <div style="font-weight:bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${c.message}</div>
+                                <div style="font-size:0.85em; opacity:0.8;">${c.hash.substring(0,7)} - ${c.date}</div>
+                            </div>
+                        `;
+                        
                         div.onclick = () => {
+                            if (isCurrent) return; // Already here
                             vscode.postMessage({ command: 'performRevert', hash: c.hash });
                             if (dom.historyModal) dom.historyModal.classList.remove('visible');
                         };
@@ -494,7 +505,7 @@ export function handleExtensionMessage(event: MessageEvent) {
                     createSection('Modified Changes', unstaged, !defaults);
                     createSection('Untracked Files', untracked, !defaults);
                 }
-                if (dom.stagingModal) dom.stagingModal.classList.add('visible');
+                if (dom.stagingModal) dom.stagingModal.classList.remove('visible');
                 break;
             }
             case 'updateDiscussionPersonality':

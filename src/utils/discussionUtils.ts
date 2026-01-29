@@ -16,7 +16,14 @@ export async function startDiscussionWithInitialPrompt(
     await services.discussionManager.saveDiscussion(discussion);
     services.treeProviders.discussion?.refresh();
 
-    const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussion.id, services.skillsManager);
+    const panel = ChatPanel.createOrShow(
+        services.extensionUri, 
+        services.lollmsAPI, 
+        services.discussionManager, 
+        discussion.id, 
+        services.gitIntegration, // Added missing gitIntegration parameter
+        services.skillsManager
+    );
     
     // Inject dependencies into panel
     panel.agentManager = new (require('../agentManager').AgentManager)(

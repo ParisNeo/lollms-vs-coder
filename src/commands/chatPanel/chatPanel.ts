@@ -872,7 +872,7 @@ export class ChatPanel {
                 }
 
                 if (forceFullCode) {
-                    const fullCodeSuffix = "\n\nCRITICAL INSTRUCTION: You must return the FULL CONTENT of the file(s). Do not use diffs, patches, or snippets. Use the format:\n```language:path/to/file\n[FULL CODE]\n```";
+                    const fullCodeSuffix = "\n\nCRITICAL INSTRUCTION: You must return the FULL CONTENT of the file(s). Do NOT use diffs, patches, or snippets. Use the format:\n```language:path/to/file\n[FULL CODE]\n```";
                     if (typeof lastMsg.content === 'string' && !lastMsg.content.includes("CRITICAL INSTRUCTION")) {
                         suffix += fullCodeSuffix;
                     }
@@ -1341,7 +1341,7 @@ export class ChatPanel {
             case 'webview-ready':
                 console.log("ChatPanel: JS Ready signal received.");
                 this._isWebviewReady = true;
-                this._viewReadyResolver(); // Resolve promise for waiting logic
+                this._viewReadyResolver(); // Resolve promise immediately
                 if (this._isLoadPending) {
                     this.loadDiscussion();
                 }
@@ -1871,8 +1871,10 @@ Task:
             case 'requestGitHistory':
                 if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
                     try {
-                        const commits = await this._gitIntegration.getCommitHistory(vscode.workspace.workspaceFolders[0]);
-                        this._panel.webview.postMessage({ command: 'showGitHistory', commits });
+                        const folder = vscode.workspace.workspaceFolders[0];
+                        const commits = await this._gitIntegration.getCommitHistory(folder);
+                        const currentHash = await this._gitIntegration.getCurrentHash(folder);
+                        this._panel.webview.postMessage({ command: 'showGitHistory', commits, currentHash });
                     } catch (e: any) {
                         vscode.window.showErrorMessage("Failed to fetch history: " + e.message);
                     }

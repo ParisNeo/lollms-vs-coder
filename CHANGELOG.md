@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-01-29 01:26]
+
+- chore: bump version to 0.5.78
+
 ## [2026-01-28 21:12]
 
 - feat: bump to v0.5.77, add RLM state handling and UI tweaks

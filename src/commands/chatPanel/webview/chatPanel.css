@@ -34,6 +34,8 @@ body {
     min-width: 0;
     height: 100%;
     position: relative;
+    /* Important: allow absolute children like menus to float outside the flex bounds */
+    overflow: visible !important;
 }
 
 /* --- Agent Plan Zone (Right Section) --- */
@@ -164,7 +166,7 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     background-color: var(--vscode-sideBar-background);
     border-top: 1px solid var(--vscode-panel-border);
     position: relative;
-    z-index: 50;
+    z-index: 2000; /* Extremely high to clear all overlays, messages and scroll buttons */
     overflow: visible !important;
 }
 
@@ -177,7 +179,7 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     width: 250px; 
     background-color: var(--vscode-menu-background); 
     border: 1px solid var(--vscode-menu-border);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.25); 
+    box-shadow: 0 -4px 12px rgba(0,0,0,0.3); /* Adjusted for upward display */
     border-radius: 6px; 
     z-index: 100000; 
     flex-direction: column; 
@@ -514,6 +516,7 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
     align-items: center;
     margin-right: 10px;
     position: relative; /* Anchor for absolute menus */
+    overflow: visible;
 }
 
 .mode-badge {
@@ -584,19 +587,21 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
 .custom-menu {
     display: none;
     position: absolute;
-    top: 100%;
+    bottom: 100%; /* Anchor to bottom and grow upwards to avoid being cropped by bottom of panel */
+    top: auto;
     left: 0;
     background-color: var(--vscode-menu-background);
     color: var(--vscode-menu-foreground);
     border: 1px solid var(--vscode-menu-border);
     border-radius: 4px;
-    box-shadow: 0 4px 10px rgba(0,0,0,0.25);
-    z-index: 1000;
-    min-width: 180px;
+    box-shadow: 0 -4px 12px rgba(0,0,0,0.4); /* Shadow adjusted for upward display */
+    z-index: 100001; /* High z-index to stay on top of everything within wrapper context */
+    min-width: 200px;
     padding: 4px 0;
     flex-direction: column;
-    max-height: 300px;
-    overflow-y: auto;
+    max-height: 60vh; /* Constrain height relative to viewport to force scrollbar */
+    overflow-y: auto; /* Ensure scrollbar appears for many items */
+    margin-bottom: 12px; /* Offset from the badge */
 }
 
 .custom-menu.visible {
@@ -604,17 +609,31 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
 }
 
 .custom-menu-item {
-    padding: 6px 12px;
+    padding: 8px 12px;
     cursor: pointer;
     display: flex;
     align-items: center;
     gap: 8px;
     font-size: 12px;
+    position: relative;
 }
 
 .custom-menu-item:hover {
     background-color: var(--vscode-menu-selectionBackground);
     color: var(--vscode-menu-selectionForeground);
+}
+
+.custom-menu-item.current-head {
+    background-color: var(--vscode-editor-inactiveSelectionBackground);
+    font-weight: bold;
+    color: var(--vscode-textLink-foreground);
+}
+
+.custom-menu-item.current-head::after {
+    content: " (Current)";
+    font-size: 0.8em;
+    opacity: 0.7;
+    margin-left: 4px;
 }
 
 .custom-menu-item .codicon {
@@ -855,7 +874,6 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
     gap: 10px;
 }
 #message-insertion-controls button:hover { background-color: var(--vscode-button-secondaryHoverBackground); }
-.input-area-wrapper { padding: 16px; background-color: var(--vscode-sideBar-background); border-top: 1px solid var(--vscode-panel-border); position: relative; z-index: 50; overflow: visible !important; }
 
 /* --- Mermaid Diagram Fixes --- */
 .diagram-container {

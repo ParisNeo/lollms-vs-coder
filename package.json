@@ -506,6 +506,11 @@
             "internetAccess": { "type": "boolean", "default": true, "description": "Allow web search and website scraping." }
           }
         },
+        "lollmsVsCoder.agent.useRLM": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable Recursive Language Model (RLM) mode for agents. This allows the agent to execute python code recursively to solve problems."
+        },
         "lollmsVsCoder.outputFormat": {
           "type": "string",
           "default": "legacy",

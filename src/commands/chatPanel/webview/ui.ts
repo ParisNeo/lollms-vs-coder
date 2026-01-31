@@ -34,7 +34,10 @@ export function setGeneratingState(isGenerating: boolean) {
             dom.scrollToBottomBtn.style.display = 'none';
         }
         
-        if (dom.messageInput) dom.messageInput.focus();
+        // Re-focus input only if it's visible
+        if (dom.messageInput && dom.inputAreaWrapper && dom.inputAreaWrapper.style.display !== 'none') {
+            dom.messageInput.focus();
+        }
     } else {
         dom.scrollToBottomBtn.style.display = 'none';
     }
@@ -142,6 +145,13 @@ export function updateBadges() {
                     item.style.color = 'var(--vscode-textLink-foreground)';
                 }
                 
+                // --- ATTACH LISTENER HERE ---
+                item.onclick = (e: MouseEvent) => {
+                    e.stopPropagation();
+                    vscode.postMessage({ command: 'updateDiscussionPersonality', personalityId: p.id });
+                    menu.classList.remove('visible');
+                };
+                
                 menu.appendChild(item);
             });
 
@@ -232,20 +242,33 @@ export function updateBadges() {
         menu.id = 'git-menu';
         menu.className = 'custom-menu hidden';
         
-        const createMenuItem = (id: string, iconClass: string, text: string) => {
+        const createMenuItem = (id: string, iconClass: string, text: string, command: string, params?: any) => {
             const item = document.createElement('div');
             item.id = id;
             item.className = 'custom-menu-item';
             item.innerHTML = `<span class="codicon ${iconClass}"></span> ${text}`;
+            
+            // --- ATTACH LISTENER HERE ---
+            item.onclick = (e: MouseEvent) => {
+                e.stopPropagation();
+                if (command.startsWith('lollms-vs-coder')) {
+                    // Send as executeLollmsCommand
+                    vscode.postMessage({ command: 'executeLollmsCommand', details: { command: command, params: params } });
+                } else {
+                    vscode.postMessage({ command: command, ...params });
+                }
+                menu.classList.remove('visible');
+            };
+
             return item;
         };
 
-        // Added "Switch Branch"
-        menu.appendChild(createMenuItem('git-menu-branch', 'codicon-git-branch', 'New Branch'));
-        menu.appendChild(createMenuItem('git-menu-switch', 'codicon-arrow-swap', 'Switch Branch')); // NEW
-        menu.appendChild(createMenuItem('git-menu-commit', 'codicon-check', 'Commit'));
-        menu.appendChild(createMenuItem('git-menu-merge', 'codicon-git-merge', 'Fuse Branch'));
-        menu.appendChild(createMenuItem('git-menu-revert', 'codicon-history', 'Revert / Motion'));
+        // Added Handlers
+        menu.appendChild(createMenuItem('git-menu-branch', 'codicon-git-branch', 'New Branch', 'lollms-vs-coder.createGitBranch'));
+        menu.appendChild(createMenuItem('git-menu-switch', 'codicon-arrow-swap', 'Switch Branch', 'lollms-vs-coder.switchGitBranch'));
+        menu.appendChild(createMenuItem('git-menu-commit', 'codicon-check', 'Commit', 'requestCommitStaging'));
+        menu.appendChild(createMenuItem('git-menu-merge', 'codicon-git-merge', 'Fuse Branch', 'lollms-vs-coder.mergeGitBranch'));
+        menu.appendChild(createMenuItem('git-menu-revert', 'codicon-history', 'Revert / Motion', 'requestGitHistory'));
 
         wrapper.appendChild(menu);
         container.appendChild(wrapper);

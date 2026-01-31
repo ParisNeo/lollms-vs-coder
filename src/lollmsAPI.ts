@@ -1,4 +1,4 @@
-import fetch, { RequestInit, AbortError } from 'node-fetch';
+import fetch, { RequestInit } from 'node-fetch';
 import * as https from 'https';
 import * as fs from 'fs';
 import { URL } from 'url';
@@ -42,7 +42,7 @@ export interface ImageGenerationRequest {
     n?: number;
     quality?: 'standard' | 'hd';
     response_format?: 'url' | 'b64_json';
-    size?: string; // e.g., '1024x1024'
+    size?: string;
     style?: 'vivid' | 'natural';
 }
 
@@ -57,7 +57,6 @@ export interface ImageGenerationResponse {
     data: ImageObject[];
 }
 
-
 export class LollmsAPI {
   private config: LollmsConfig;
   private httpsAgent: https.Agent;
@@ -70,43 +69,51 @@ export class LollmsAPI {
     this.globalState = globalState;
     this.httpsAgent = this.createHttpsAgent();
     
-    // Prioritize environment variable LOLLMS_KEY
     if (!this.config.apiKey) {
         this.config.apiKey = process.env.LOLLMS_KEY || '';
     }
 
-    try {
-        const url = new URL(this.config.apiUrl);
-        this.baseUrl = `${url.protocol}//${url.host}`;
-        console.log(`[LollmsAPI] Base URL initialized: ${this.baseUrl} (Backend: ${this.config.backendType})`);
-    } catch (e) {
-        console.error(`[LollmsAPI] Invalid API URL: ${this.config.apiUrl}`, e);
-        Logger.error("LollmsAPI initialized with invalid URL", this.config.apiUrl);
-        this.baseUrl = "";
-    }
+    this.baseUrl = this.normalizeBaseUrl(this.config.apiUrl);
+    Logger.info(`LollmsAPI Initialized. BaseURL: ${this.baseUrl}, Backend: ${this.config.backendType}`);
+  }
+
+  private normalizeBaseUrl(urlStr: string): string {
+      try {
+          if (!urlStr) return '';
+          urlStr = urlStr.trim();
+          if (!urlStr.startsWith('http')) {
+              urlStr = 'http://' + urlStr;
+          }
+          const url = new URL(urlStr);
+          let cleanUrl = `${url.protocol}//${url.host}${url.pathname}`;
+          if (cleanUrl.endsWith('/')) {
+              cleanUrl = cleanUrl.slice(0, -1);
+          }
+          return cleanUrl;
+      } catch (e) {
+          Logger.error(`Invalid API URL format: ${urlStr}`, e);
+          return urlStr;
+      }
   }
 
   private createHttpsAgent(): https.Agent {
-      // Remove quotes if user pasted path with them
       const certPath = this.config.sslCertPath ? this.config.sslCertPath.replace(/^['"]|['"]$/g, '') : '';
-
       const options: https.AgentOptions = {
           keepAlive: true,
           rejectUnauthorized: !this.config.disableSslVerification,
       };
 
       if (this.config.disableSslVerification) {
-          // Explicitly disable hostname verification when SSL verification is disabled
           options.checkServerIdentity = () => undefined;
-          Logger.info("SSL Verification Disabled: Ignoring cert errors and hostname mismatch.");
+          Logger.info("SSL Verification Disabled.");
       }
 
       if (certPath && fs.existsSync(certPath)) {
           try {
               options.ca = fs.readFileSync(certPath);
-              Logger.info(`Loaded custom SSL certificate from: ${certPath}`);
+              Logger.info(`Loaded custom SSL cert: ${certPath}`);
           } catch (e) {
-              Logger.error(`Failed to read SSL certificate file: ${certPath}`, e);
+              Logger.error(`Failed to read SSL cert: ${certPath}`, e);
           }
       }
 
@@ -114,26 +121,17 @@ export class LollmsAPI {
   }
 
   public updateConfig(newConfig: LollmsConfig) {
+    Logger.info("Updating LollmsAPI Config");
     const oldUrl = this.config.apiUrl;
     this.config = newConfig;
 
-    // Prioritize environment variable LOLLMS_KEY
     if (!this.config.apiKey) {
         this.config.apiKey = process.env.LOLLMS_KEY || '';
     }
 
     this.httpsAgent = this.createHttpsAgent();
+    this.baseUrl = this.normalizeBaseUrl(this.config.apiUrl);
     
-    try {
-        const url = new URL(this.config.apiUrl);
-        this.baseUrl = `${url.protocol}//${url.host}`;
-        console.log(`[LollmsAPI] Configuration updated. Base URL: ${this.baseUrl}`);
-    } catch (error) {
-        Logger.error("Invalid API URL updated:", this.config.apiUrl);
-        this.baseUrl = ''; 
-    }
-    
-    // Only clear cache if the URL or Key has changed
     if (oldUrl !== newConfig.apiUrl && this.globalState) {
         this._cachedModels = null;
         this.globalState.update('lollms_models_cache', undefined);
@@ -146,25 +144,55 @@ export class LollmsAPI {
 
   public async testConnection(): Promise<{ success: boolean; message: string; details?: string }> {
       try {
+          Logger.info("Testing connection...");
           const models = await this.getModels(true);
-          return { 
-              success: true, 
-              message: `✅ Connection Successful! Found ${models.length} models.`,
-              details: `URL: ${this.baseUrl}\nBackend: ${this.config.backendType}`
-          };
+          Logger.info(`Connection test success. Models found: ${models.length}`);
+          if (models.length > 0) {
+            return { 
+                success: true, 
+                message: `✅ Success! Found ${models.length} models.`,
+                details: `URL: ${this.baseUrl}\nBackend: ${this.config.backendType}`
+            };
+          } else {
+            return {
+                success: true,
+                message: `⚠️ Connected, but 0 models returned.`,
+                details: `Server reachable at ${this.baseUrl} but returned empty list.`
+            };
+          }
       } catch (error: any) {
+          Logger.error("Connection test failed", error);
           return { 
               success: false, 
-              message: `❌ Connection Failed: ${error.message}`,
+              message: `❌ Failed: ${error.message}`,
               details: error.stack
           };
       }
   }
 
+  private findModelArray(obj: any): any[] | null {
+    if (!obj) return null;
+    if (Array.isArray(obj)) return obj;
+    
+    if (obj.data && Array.isArray(obj.data)) return obj.data;
+    if (obj.models && Array.isArray(obj.models)) return obj.models;
+    
+    for (const key of Object.keys(obj)) {
+        if (Array.isArray(obj[key]) && obj[key].length > 0) {
+            const item = obj[key][0];
+            if (typeof item === 'string' || (typeof item === 'object' && (item.id || item.name || item.model))) {
+                return obj[key];
+            }
+        }
+    }
+    return null;
+  }
+
   public async getModels(forceRefresh: boolean = false): Promise<Array<{ id: string }>> {
-    Logger.info(`Fetching models from ${this.baseUrl} (Force: ${forceRefresh}, Backend: ${this.config.backendType})`);
+    Logger.info(`[getModels] Called. URL: ${this.baseUrl}, Force: ${forceRefresh}`);
 
     if (this._cachedModels && this._cachedModels.length > 0 && !forceRefresh) {
+        Logger.info(`[getModels] Returning ${this._cachedModels.length} cached models.`);
         return this._cachedModels;
     }
 
@@ -172,28 +200,28 @@ export class LollmsAPI {
         const storedModels = this.globalState.get<Array<{ id: string }>>('lollms_models_cache');
         if (storedModels && storedModels.length > 0) {
             this._cachedModels = storedModels;
-            Logger.debug("Using cached models from global state");
+            Logger.info(`[getModels] Returning ${storedModels.length} models from global state.`);
             return storedModels;
         }
     }
 
     if (!this.baseUrl) {
-        throw new Error("Invalid API URL");
+        Logger.error("[getModels] No Base URL.");
+        throw new Error("Invalid API URL. Please check settings.");
     }
 
-    let modelsUrl = '';
-    
+    let endpoint = '';
     if (this.config.backendType === 'ollama') {
-        modelsUrl = `${this.baseUrl}/api/tags`; // Native Ollama
+        endpoint = '/api/tags';
     } else {
-        // OpenAI or Lollms
-        modelsUrl = `${this.baseUrl}/v1/models`;
+        endpoint = '/v1/models';
     }
 
-    const isHttps = modelsUrl.startsWith('https');
+    const primaryUrl = `${this.baseUrl}${endpoint}`;
+    Logger.info(`[getModels] Requesting: ${primaryUrl}`);
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000); // 10s timeout for models check
+    const timeout = setTimeout(() => controller.abort(), 15000); 
 
     const options: RequestInit = {
         method: 'GET',
@@ -201,42 +229,80 @@ export class LollmsAPI {
         signal: controller.signal
     };
 
-    if (isHttps) {
+    if (primaryUrl.startsWith('https')) {
         options.agent = this.httpsAgent;
     }
 
     try {
-        const response = await fetch(modelsUrl, options);
-        if (!response.ok) {
-            throw new Error(`Failed to fetch models: ${response.status} ${response.statusText}`);
+        let response: any;
+        try {
+            response = await fetch(primaryUrl, options);
+            Logger.info(`[getModels] Primary response: ${response.status}`);
+        } catch (fetchErr: any) {
+            Logger.warn(`[getModels] Primary fetch failed: ${fetchErr.message}`);
+             if (fetchErr.name !== 'AbortError') {
+                 const fallbackEndpoint = this.config.backendType === 'ollama' ? '/v1/models' : '/api/tags';
+                 const fallbackUrl = `${this.baseUrl}${fallbackEndpoint}`;
+                 Logger.info(`[getModels] Trying fallback: ${fallbackUrl}`);
+                 response = await fetch(fallbackUrl, options);
+                 Logger.info(`[getModels] Fallback response: ${response.status}`);
+             } else {
+                 throw fetchErr;
+             }
         }
-        const data = await response.json();
-        let models: Array<{ id: string }> = [];
 
-        if (this.config.backendType === 'ollama') {
-            // Ollama returns { models: [ { name: "model" }, ... ] }
-            if (data.models && Array.isArray(data.models)) {
-                models = data.models.map((m: any) => ({ id: m.name }));
+        if (!response.ok) {
+            if (response.status === 404) {
+                 const fallbackEndpoint = this.config.backendType === 'ollama' ? '/v1/models' : '/api/tags';
+                 const fallbackUrl = `${this.baseUrl}${fallbackEndpoint}`;
+                 Logger.info(`[getModels] 404 on primary. Trying fallback: ${fallbackUrl}`);
+                 response = await fetch(fallbackUrl, options);
             }
-        } else {
-            // OpenAI/Lollms returns { data: [ { id: "model" }, ... ] }
-            models = data.data || [];
         }
+
+        if (!response.ok) {
+            const txt = await response.text();
+            Logger.error(`[getModels] HTTP Error: ${response.status} - ${txt}`);
+            throw new Error(`HTTP ${response.status}: ${txt}`);
+        }
+
+        const rawText = await response.text();
+        Logger.debug(`[getModels] Raw body length: ${rawText.length}`);
         
+        let data;
+        try {
+            data = JSON.parse(rawText);
+        } catch (e) {
+            Logger.error(`[getModels] JSON parse error. Raw: ${rawText.substring(0, 200)}`);
+            throw new Error(`Invalid JSON from server.`);
+        }
+
+        const rawList = this.findModelArray(data);
+        if (!rawList) {
+            Logger.warn('[getModels] No model array found in response object:', JSON.stringify(data));
+            throw new Error('Response JSON does not contain a recognized list of models.');
+        }
+
+        const models = rawList.map((m: any) => {
+            if (typeof m === 'string') return { id: m };
+            return { id: m.id || m.name || m.model || String(m) };
+        }).filter(m => m.id);
+
         this._cachedModels = models;
         if (this.globalState) {
-            await this.globalState.update('lollms_models_cache', models);
+            this.globalState.update('lollms_models_cache', models);
         }
         
-        Logger.info(`Successfully fetched ${models.length} models`);
+        Logger.info(`[getModels] Success. Parsed ${models.length} models.`);
         return models;
+
     } catch (error: any) {
-        Logger.error(`Error fetching models from ${modelsUrl}`, error);
+        Logger.error(`[getModels] Final Error: ${error.message}`);
         
         if (this.globalState) {
             const storedModels = this.globalState.get<Array<{ id: string }>>('lollms_models_cache');
             if (storedModels && storedModels.length > 0) {
-                Logger.warn("Using stale cached models due to fetch error.");
+                Logger.warn("[getModels] Using stale cache due to error.");
                 this._cachedModels = storedModels;
                 return storedModels;
             }
@@ -249,7 +315,6 @@ export class LollmsAPI {
 
   public async tokenize(text: string, model?: string): Promise<TokenizeResponse> {
     const useExtensions = this.config.useLollmsExtensions;
-    Logger.debug(`Tokenize called. Extensions: ${useExtensions}`);
     
     if (!useExtensions) {
         return { count: Math.ceil(text.length / 4), tokens: [], isEstimation: true };
@@ -264,9 +329,8 @@ export class LollmsAPI {
         body.model = modelToSend;
     }
 
-    // Short timeout for tokenization to avoid freezing UI
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout
+    const timeout = setTimeout(() => controller.abort(), 8000); 
 
     const options: RequestInit = {
         method: 'POST',
@@ -290,7 +354,6 @@ export class LollmsAPI {
         const data = await response.json() as TokenizeResponse;
         return { ...data, isEstimation: false };
     } catch (e: any) {
-        Logger.warn(`Tokenize endpoint failed (${e.message}), falling back to estimation.`);
         return { count: Math.ceil(text.length / 4), tokens: [], isEstimation: true };
     } finally {
         clearTimeout(timeout);
@@ -314,9 +377,8 @@ export class LollmsAPI {
         body.model = modelToSend;
     }
 
-    // Short timeout for context size
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout
+    const timeout = setTimeout(() => controller.abort(), 8000);
 
     const options: RequestInit = {
         method: 'POST',
@@ -340,7 +402,6 @@ export class LollmsAPI {
         const data = await response.json() as ContextSizeResponse;
         return { ...data, isEstimation: false };
     } catch (e: any) {
-        Logger.warn(`Context Size endpoint failed (${e.message}), falling back to default.`);
         return { context_size: defaultSize, isEstimation: true };
     } finally {
         clearTimeout(timeout);
@@ -349,7 +410,7 @@ export class LollmsAPI {
 
   async extractText(base64Data: string, fileName: string): Promise<string> {
     if (!this.config.useLollmsExtensions) {
-        return "[Lollms extensions disabled: Cannot extract text from document on server]";
+        return "[Lollms extensions disabled]";
     }
 
     const extractUrl = `${this.baseUrl}/v1/extract_text`;
@@ -372,9 +433,7 @@ export class LollmsAPI {
 
     const response = await fetch(extractUrl, options);
     if (!response.ok) {
-        const errorBody = await response.text();
-        Logger.error('Lollms Text Extraction API Error:', errorBody);
-        throw new Error(`Failed to extract text: ${response.status} ${response.statusText}`);
+        throw new Error(`Failed to extract text: ${response.status}`);
     }
     const data = await response.json();
     return data.text || '';
@@ -422,7 +481,7 @@ export class LollmsAPI {
         if (!response.ok) {
             const errorBody = await response.text();
             Logger.error('Lollms Image Generation API Error:', errorBody);
-            throw new Error(`Lollms Image API error: ${response.status} ${response.statusText} - ${errorBody}`);
+            throw new Error(`Lollms Image API error: ${response.status} - ${errorBody}`);
         }
 
         const data: ImageGenerationResponse = await response.json();
@@ -433,12 +492,12 @@ export class LollmsAPI {
             throw new Error('API response did not contain valid b64_json image data.');
         }
 
-    } catch (error) {
-        if (error instanceof AbortError) {
+    } catch (error: any) {
+        if (error.name === 'AbortError') {
             if (token?.isCancellationRequested) {
-              throw error; // Propagate user-initiated abort
+              throw error; 
             } else {
-              throw new Error(`Image generation request timed out after ${timeoutDuration / 1000} seconds.`);
+              throw new Error(`Image generation request timed out.`);
             }
           }
           throw error;
@@ -454,7 +513,7 @@ export class LollmsAPI {
     modelOverride?: string
   ): Promise<string> {
     if (!this.baseUrl) {
-      throw new Error("Lollms API URL is not configured correctly. Please check the settings.");
+      throw new Error("Lollms API URL is not configured correctly.");
     }
 
     const modelToSend = modelOverride || this.config.modelName;
@@ -464,9 +523,6 @@ export class LollmsAPI {
 
     const filteredMessages = messages.filter(m => !m.skipInPrompt);
 
-    // Strictly sanitize messages to include ONLY role and content.
-    // This prevents sending internal properties like 'id', 'startTime', 'timestamp' etc.
-    // which cause strict OpenAI-compatible endpoints to reject the request or fail.
     const sanitizedMessages = filteredMessages.map(m => ({
         role: m.role,
         content: m.content
@@ -516,29 +572,14 @@ export class LollmsAPI {
         options.agent = this.httpsAgent;
       }
 
-      Logger.debug("Sending chat request", { url: chatUrl, model: modelToSend, stream, backend: this.config.backendType });
+      Logger.debug("Sending chat request", { url: chatUrl, model: modelToSend, stream });
 
       const response = await fetch(chatUrl, options);
 
       if (!response.ok) {
         const errorBody = await response.text();
         Logger.error('API Error:', errorBody);
-        
-        let detailedError = `API error: ${response.status} ${response.statusText}.`;
-        try {
-            const parsedError = JSON.parse(errorBody);
-            // Handle various error formats
-            if (parsedError.error && parsedError.error.message) {
-                detailedError += `\n\nDetails: ${parsedError.error.message}`;
-            } else if (parsedError.error) {
-                detailedError += `\n\nDetails: ${parsedError.error}`;
-            } else {
-                detailedError += `\n\nFull Response: ${errorBody}`;
-            }
-        } catch (e) {
-            detailedError += `\n\nRaw Response: ${errorBody}`;
-        }
-        throw new Error(detailedError);
+        throw new Error(`API error: ${response.status} ${response.statusText} - ${errorBody}`);
       }
       
       if (stream && onChunk && response.body) {
@@ -552,7 +593,7 @@ export class LollmsAPI {
                     if ((response.body as any).destroy) {
                         (response.body as any).destroy();
                     }
-                    throw new AbortError('Request was aborted');
+                    throw new Error('AbortError');
                 }
 
                 const chunkText = decoder.decode(chunk as any, { stream: true });
@@ -565,7 +606,6 @@ export class LollmsAPI {
                     const trimmedLine = line.trim();
                     if (trimmedLine === '') continue;
 
-                    // OLLAMA NATIVE STREAMING
                     if (this.config.backendType === 'ollama') {
                         try {
                             const parsed = JSON.parse(trimmedLine);
@@ -576,12 +616,8 @@ export class LollmsAPI {
                             if (parsed.done) {
                                 return fullResponse;
                             }
-                        } catch (e) {
-                            Logger.warn(`Error parsing Ollama stream line: ${trimmedLine}`);
-                        }
-                    } 
-                    // OPENAI / LOLLMS STREAMING
-                    else {
+                        } catch (e) { }
+                    } else {
                         if (trimmedLine.startsWith('data: ')) {
                             const data = trimmedLine.substring(6).trim();
                             if (data === '[DONE]') return fullResponse;
@@ -598,7 +634,6 @@ export class LollmsAPI {
                                 Logger.error('Error parsing stream data line:', data);
                             }
                         } else if (trimmedLine.startsWith('{')) {
-                            // Raw JSON fallback for non-standard streams
                             try {
                                 const parsed = JSON.parse(trimmedLine);
                                 let content = parsed.choices?.[0]?.delta?.content;
@@ -608,15 +643,13 @@ export class LollmsAPI {
                                     fullResponse += content;
                                     onChunk(content);
                                 }
-                            } catch (e) { 
-                                Logger.warn(`Failed to parse raw JSON line: ${trimmedLine}`);
-                            }
+                            } catch (e) { }
                         }
                     }
                 }
             }
-        } catch (streamError) {
-             if (streamError instanceof AbortError) throw streamError;
+        } catch (streamError: any) {
+             if (streamError.name === 'AbortError' || streamError.message === 'AbortError') throw streamError;
              throw streamError;
         }
         return fullResponse;
@@ -628,10 +661,10 @@ export class LollmsAPI {
         }
         return data.choices?.[0]?.message?.content || '';
       }
-    } catch (error) {
-        if (error instanceof AbortError) {
+    } catch (error: any) {
+        if (error.name === 'AbortError' || error.message === 'AbortError') {
             if (timedOut) {
-              throw new Error(`Request to API timed out after ${timeoutDuration / 1000} seconds.`);
+              throw new Error(`Request timeout.`);
             }
             throw error;
         }

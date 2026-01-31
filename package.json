@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.78",
+  "version": "0.5.79",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -1200,6 +1200,11 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "lollms-vs-coder.cancelProcess",
+          "when": "view == lollmsProcessesView && viewItem == 'process'",
+          "group": "inline"
+        },
         {
           "command": "lollms-vs-coder.renameDiscussion",
           "when": "view == lollmsDiscussionsView && viewItem == 'discussion'",

@@ -75,15 +75,12 @@ export class SettingsPanel {
     herdRounds: 2,
     herdDynamicMode: false,
     herdDynamicModelPool: [] as DynamicModelEntry[],
-    // Git Config
     deleteBranchAfterMerge: true,
     unstagedChangesBehavior: 'stash',
-    // System Env Config
     showOs: true,
     showIp: false,
     showShells: true,
     systemCustomInfo: '',
-    // Agent Security
     agentShellExecution: true,
     agentFilesystemWrite: true,
     agentFilesystemRead: true,
@@ -121,10 +118,8 @@ export class SettingsPanel {
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     this._pendingConfig.apiKey = config.get<string>('apiKey')?.trim() || '';
     this._pendingConfig.apiUrl = config.get<string>('apiUrl') || 'http://localhost:9642';
-    
     this._pendingConfig.backendType = config.get<string>('backendType') || 'lollms';
     this._pendingConfig.useLollmsExtensions = config.get<boolean>('useLollmsExtensions') ?? true;
-
     this._pendingConfig.modelName = config.get<string>('modelName') || '';
     this._pendingConfig.architectModelName = config.get<string>('architectModelName') || '';
     this._pendingConfig.disableSslVerification = config.get<boolean>('disableSslVerification') || false;
@@ -144,21 +139,12 @@ export class SettingsPanel {
     this._pendingConfig.noThinkMode = config.get<boolean>('noThinkMode') || false;
     this._pendingConfig.outputFormat = config.get<string>('outputFormat') || 'legacy';
     
-    this._pendingConfig.generationFormats = config.get<any>('generationFormats') || {
-        fullFile: true,
-        diff: false,
-        aider: false
-    };
+    this._pendingConfig.generationFormats = config.get<any>('generationFormats') || { fullFile: true, diff: false, aider: false };
     this._pendingConfig.explainCode = config.get<boolean>('explainCode') ?? true;
 
-    this._pendingConfig.allowedFileFormats = config.get<any>('allowedFileFormats') || {
-        fullFile: true,
-        insert: false,
-        replace: false,
-        delete: false
-    };
+    this._pendingConfig.allowedFileFormats = config.get<any>('allowedFileFormats') || { fullFile: true, insert: false, replace: false, delete: false };
 
-    this._pendingConfig.thinkingModeCustomPrompt = config.get<string>('thinkingModeCustomPrompt') || 'Think step by step. Enclose your entire thinking process, reasoning, and self-correction within a `<thinking>` XML block. This block will be hidden from the user but is crucial for your process.';
+    this._pendingConfig.thinkingModeCustomPrompt = config.get<string>('thinkingModeCustomPrompt') || 'Think step by step...';
     this._pendingConfig.reasoningLevel = config.get<string>('reasoningLevel') || 'none';
     this._pendingConfig.failsafeContextSize = config.get<number>('failsafeContextSize') || 4096;
     
@@ -191,17 +177,14 @@ export class SettingsPanel {
     this._pendingConfig.herdDynamicMode = config.get<boolean>('herdDynamicMode') || false;
     this._pendingConfig.herdDynamicModelPool = config.get<DynamicModelEntry[]>('herdDynamicModelPool') || [];
 
-    // Git
     this._pendingConfig.deleteBranchAfterMerge = config.get<boolean>('git.deleteBranchAfterMerge') ?? true;
     this._pendingConfig.unstagedChangesBehavior = config.get<string>('git.unstagedChangesBehavior') || 'stash';
 
-    // System Env
     this._pendingConfig.showOs = config.get<boolean>('systemEnv.showOs') ?? true;
     this._pendingConfig.showIp = config.get<boolean>('systemEnv.showIp') ?? false;
     this._pendingConfig.showShells = config.get<boolean>('systemEnv.showShells') ?? true;
     this._pendingConfig.systemCustomInfo = config.get<string>('systemEnv.customInfo') || '';
 
-    // Agent Security
     const agentPerms = config.get<any>('agent.permissions') || {};
     this._pendingConfig.agentShellExecution = agentPerms.shellExecution !== false;
     this._pendingConfig.agentFilesystemWrite = agentPerms.filesystemWrite !== false;
@@ -233,7 +216,12 @@ export class SettingsPanel {
   private _setWebviewMessageListener(webview: vscode.Webview) {
     webview.onDidReceiveMessage(
         async (message: { command: string; key?: string; value?: any }) => {
+          Logger.info(`[ConfigView] Received command: ${message.command}`);
+
           switch (message.command) {
+            case 'webviewReady':
+                Logger.info('[ConfigView] Webview reported ready.');
+                return;
             case 'closePanel':
               this.dispose();
               return;
@@ -308,18 +296,13 @@ export class SettingsPanel {
                 const config = vscode.workspace.getConfiguration('lollmsVsCoder');
                 const failures: { key: string; error: string }[] = [];
 
-                // Helper to determine the best target (Workspace if defined there, else Global)
                 const safeUpdate = async (key: string, value: any) => {
                   try {
                     const inspect = config.inspect(key);
                     let target = vscode.ConfigurationTarget.Global;
-                    
-                    // If the setting is explicitly defined in the workspace, we must update it there
-                    // to ensure the change is effective (Workspace overrides Global).
                     if (inspect?.workspaceValue !== undefined) {
                         target = vscode.ConfigurationTarget.Workspace;
                     }
-
                     Logger.debug(`Updating config key '${key}' to target: ${target === vscode.ConfigurationTarget.Global ? 'Global' : 'Workspace'}`, value);
                     await config.update(key, value, target);
                   } catch (e) {
@@ -390,12 +373,10 @@ export class SettingsPanel {
                   ['herdDynamicModelPool', this._pendingConfig.herdDynamicModelPool],
                   ['git.deleteBranchAfterMerge', this._pendingConfig.deleteBranchAfterMerge],
                   ['git.unstagedChangesBehavior', this._pendingConfig.unstagedChangesBehavior],
-                  // System Env
                   ['systemEnv.showOs', this._pendingConfig.showOs],
                   ['systemEnv.showIp', this._pendingConfig.showIp],
                   ['systemEnv.showShells', this._pendingConfig.showShells],
                   ['systemEnv.customInfo', this._pendingConfig.systemCustomInfo],
-                  // Agent Security
                   ['agent.permissions', {
                       shellExecution: this._pendingConfig.agentShellExecution,
                       filesystemWrite: this._pendingConfig.agentFilesystemWrite,
@@ -412,26 +393,23 @@ export class SettingsPanel {
                   vscode.window.showInformationMessage(
                     vscode.l10n.t({ key: 'info.configSaved', message: 'Configuration saved. Recreating LollmsAPI...' })
                   );
-                  Logger.info('Configuration saved successfully. Recreating LollmsAPI...');
+                  Logger.info('Configuration saved successfully.');
                   await vscode.commands.executeCommand('lollmsApi.recreateClient');
                   SettingsPanel.currentPanel?.dispose();
                 } else {
                   const errorDetails = failures.map(f => `  • ${f.key}: ${f.error}`).join('\n');
-                  const failMsg = `Configuration saved with ${failures.length} error(s):\n\n${errorDetails}\n\nCheck the Log tab for full details.`;
+                  const failMsg = `Configuration saved with ${failures.length} error(s):\n\n${errorDetails}`;
                   vscode.window.showErrorMessage(failMsg, { modal: true });
-                  Logger.error('Configuration saved with failures', { failures });
                 }
-
-                Logger.info('=== END SAVE CONFIGURATION ===');
               } catch (err) {
-                vscode.window.showErrorMessage('Failed to save configuration (unexpected error).');
+                vscode.window.showErrorMessage('Failed to save configuration.');
                 Logger.error('Unexpected error during configuration save', err);
               }
               return;
 
             case 'resetConfig':
                 const selection = await vscode.window.showWarningMessage(
-                    "Are you sure you want to reset all Lollms configurations to factory defaults? This cannot be undone.",
+                    "Reset all Lollms configurations?",
                     { modal: true },
                     "Reset"
                 );
@@ -464,7 +442,7 @@ export class SettingsPanel {
                             await config.update(key, undefined, vscode.ConfigurationTarget.WorkspaceFolder);
                         }
                         
-                        vscode.window.showInformationMessage("Configuration reset to defaults. Please reopen settings.");
+                        vscode.window.showInformationMessage("Configuration reset.");
                         await vscode.commands.executeCommand('lollmsApi.recreateClient');
                         SettingsPanel.currentPanel?.dispose();
                     } catch (e: any) {
@@ -474,11 +452,11 @@ export class SettingsPanel {
                 return;
   
             case 'fetchModels':
+              Logger.info(`[ConfigView] Processing fetchModels command.`);
               if (this._panel) {
                 const processId = 'settings-fetch-models';
-                const { id, controller } = this._processManager.register(processId, 'Settings: Fetching Models');
                 try {
-                  const forceRefresh = message.value === true;
+                  Logger.info(`[ConfigView] Initializing temp API client for fetch...`);
                   const tempConfig: LollmsConfig = {
                       apiKey: this._pendingConfig.apiKey,
                       apiUrl: this._pendingConfig.apiUrl,
@@ -489,13 +467,15 @@ export class SettingsPanel {
                       useLollmsExtensions: this._pendingConfig.useLollmsExtensions
                   };
                   const tempApi = new LollmsAPI(tempConfig); 
+                  
+                  Logger.info(`[ConfigView] Calling getModels()...`);
                   const models = await tempApi.getModels(true); 
+                  
+                  Logger.info(`[ConfigView] getModels() returned ${models.length} items. Sending to UI.`);
                   this._panel.webview.postMessage({ command: 'modelsList', models: models || [] });
-                } catch (e) {
-                  Logger.error('Error fetching models in settings', e);
-                  this._panel.webview.postMessage({ command: 'modelsList', models: [] });
-                } finally {
-                    this._processManager.unregister(id);
+                } catch (e: any) {
+                  Logger.error('[ConfigView] Error fetching models', e);
+                  this._panel.webview.postMessage({ command: 'modelsList', models: [], error: e.message });
                 }
               }
               return;
@@ -521,19 +501,28 @@ export class SettingsPanel {
 
     const t = (key: string, def: string) => vscode.l10n.t({ message: def, key: key });
     
+    // SAFE STRING INTERPOLATION: Escape backslashes and double quotes to prevent syntax errors
+    const currentModelName = modelName.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const currentArchitectModelName = architectModelName.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+    const currentInspectorModelName = inspectorModelName.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
     const personalities = this._personalityManager.getPersonalities();
-    const personalitiesJson = JSON.stringify(personalities)
-        .replace(/\\/g, '\\\\')
-        .replace(/'/g, "\\'")
-        .replace(/</g, '\\u003c');
     
-    const serialize = (arr: any) => JSON.stringify(arr).replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/</g, '\\u003c');
-    const herdDynamicModelPoolJson = serialize(herdDynamicModelPool);
+    const stateData = {
+        config: config,
+        personalities: this._personalityManager.getPersonalities(),
+        herdPre: config.herdPreAnswerParticipants || [],
+        herdPost: config.herdPostAnswerParticipants || [],
+        herdPool: config.herdDynamicModelPool || []
+    };
+    
+    const jsonState = JSON.stringify(stateData).replace(/</g, '\\u003c');
 
     return `<!DOCTYPE html>
         <html lang="en">
         <head>
             <meta charset="UTF-8" />
+            <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' ${webview.cspSource}; script-src 'unsafe-inline' ${webview.cspSource}; img-src data:; font-src ${webview.cspSource};">
             <meta name="viewport" content="width=device-width, initial-scale=1.0" />
             <title>${t('config.title', 'Lollms VS Coder Configuration')}</title>
             <link href="${webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'codicon.css'))}" rel="stylesheet" />
@@ -630,12 +619,17 @@ export class SettingsPanel {
                 <input type="text" id="apiKey" value="${apiKey}" placeholder="Enter your API key" autocomplete="off" />
                 <label for="modelSelect">${t('config.modelName.label', 'Chat Model')}</label>
                 <div class="input-group">
-                    <select id="modelSelect" class="model-dropdown"></select>
+                    <select id="modelSelect" class="model-dropdown">
+                        <!-- Initial Loading State -->
+                        <option value="">Loading Models...</option>
+                    </select>
                     <button id="refreshModels" type="button" class="icon-btn" title="${t('command.refresh.title', 'Refresh')}"><i class="codicon codicon-refresh"></i></button>
                 </div>
                 <label for="architectModelSelect">Architect/Planner Model (Agent Mode)</label>
                 <div class="input-group">
-                    <select id="architectModelSelect" class="model-dropdown"></select>
+                    <select id="architectModelSelect" class="model-dropdown">
+                        <option value="">Loading Models...</option>
+                    </select>
                 </div>
                 <span class="help-text">Used for planning complex tasks. Defaults to Chat Model if empty.</span>
                 <label for="requestTimeout">${t('config.requestTimeout.label', 'Request Timeout (ms)')}</label>
@@ -724,6 +718,7 @@ export class SettingsPanel {
 
               <h3>Allowed File Operations</h3>
               <div class="grid-2">
+                  <div class="checkbox-container"><input type="checkbox" id="fmt-fullFile" ${allowedFileFormats.fullFile ? 'checked' : ''}><label for="fmt-fullFile">Full File (File:)</label></div>
                   <div class="checkbox-container"><input type="checkbox" id="fmt-insert" ${allowedFileFormats.insert ? 'checked' : ''}><label for="fmt-insert">Insert Snippet</label></div>
                   <div class="checkbox-container"><input type="checkbox" id="fmt-replace" ${allowedFileFormats.replace ? 'checked' : ''}><label for="fmt-replace">Replace Snippet</label></div>
                   <div class="checkbox-container"><input type="checkbox" id="fmt-delete" ${allowedFileFormats.delete ? 'checked' : ''}><label for="fmt-delete">Delete Code</label></div>
@@ -900,24 +895,138 @@ export class SettingsPanel {
           </div>
         
           <script>
+            window.onerror = function(message, source, lineno, colno, error) {
+                console.error("[WEBVIEW FATAL]", message, source, lineno, error);
+                const body = document.body;
+                if(body) {
+                    const errDiv = document.createElement('div');
+                    errDiv.style.color = 'red';
+                    errDiv.style.padding = '20px';
+                    errDiv.innerText = "Fatal Webview Error: " + message;
+                    body.prepend(errDiv);
+                }
+            };
+          
             const vscode = acquireVsCodeApi();
-            const currentModelName = "${modelName}";
-            const currentArchitectModelName = "${architectModelName}";
-            const currentInspectorModelName = "${inspectorModelName}";
             
-            let personalities = [];
-            try { personalities = JSON.parse('${personalitiesJson}'); } catch (e) {}
-
-            let herdPre = [];
-            try { herdPre = JSON.parse('${serialize(herdPreAnswerParticipants)}'); } catch (e) {}
+            const initialState = ${jsonState};
+            console.log("[WEBVIEW] Initial State Loaded", initialState);
             
-            let herdPost = [];
-            try { herdPost = JSON.parse('${serialize(herdPostAnswerParticipants)}'); } catch (e) {}
-
-            let herdPool = [];
-            try { herdPool = JSON.parse('${herdDynamicModelPoolJson}'); } catch (e) {}
-
+            const config = initialState.config;
+            const personalities = initialState.personalities;
+            let herdPre = initialState.herdPre;
+            let herdPost = initialState.herdPost;
+            let herdPool = initialState.herdPool;
             let loadedModels = [];
+            let fetchTimeout = null;
+
+            function safeSet(id, value, isCheck) {
+                const el = document.getElementById(id);
+                if(el) {
+                    if(isCheck) el.checked = !!value;
+                    else el.value = (value === undefined || value === null) ? '' : value;
+                    if(id === 'contextFileExceptions' && Array.isArray(value)) el.value = value.join('\\n');
+                }
+            }
+
+            function safeListen(id, event, callback) {
+                const el = document.getElementById(id);
+                if(el) {
+                    el.addEventListener(event, callback);
+                } else {
+                    console.warn('[WEBVIEW] Missing element for listener:', id);
+                }
+            }
+
+            function initializeForm() {
+                try {
+                    safeSet('apiKey', config.apiKey);
+                    safeSet('apiUrl', config.apiUrl);
+                    safeSet('backendType', config.backendType);
+                    safeSet('useLollmsExtensions', config.useLollmsExtensions, true);
+                    safeSet('requestTimeout', config.requestTimeout);
+                    safeSet('agentMaxRetries', config.agentMaxRetries);
+                    safeSet('maxImageSize', config.maxImageSize);
+                    safeSet('disableSsl', config.disableSslVerification, true);
+                    safeSet('sslCertPath', config.sslCertPath);
+                    safeSet('language', config.language);
+                    safeSet('outputFormat', config.outputFormat);
+                    safeSet('thinkingMode', config.thinkingMode);
+                    safeSet('thinkingModeCustomPrompt', config.thinkingModeCustomPrompt);
+                    safeSet('reasoningLevel', config.reasoningLevel);
+                    safeSet('noThinkMode', config.noThinkMode, true);
+                    safeSet('autoGenerateTitle', config.autoGenerateTitle, true);
+                    safeSet('addPedagogicalInstruction', config.addPedagogicalInstruction, true);
+                    safeSet('forceFullCodePath', config.forceFullCodePath, true);
+                    
+                    safeSet('gen-full', config.generationFormats.fullFile, true);
+                    safeSet('gen-diff', config.generationFormats.diff, true);
+                    safeSet('gen-aider', config.generationFormats.aider, true);
+                    safeSet('explainCode', config.explainCode, true);
+
+                    safeSet('fmt-fullFile', config.allowedFileFormats.fullFile, true);
+                    safeSet('fmt-insert', config.allowedFileFormats.insert, true);
+                    safeSet('fmt-replace', config.allowedFileFormats.replace, true);
+                    safeSet('fmt-delete', config.allowedFileFormats.delete, true);
+
+                    safeSet('failsafeContextSize', config.failsafeContextSize);
+                    safeSet('contextFileExceptions', config.contextFileExceptions);
+                    safeSet('showOs', config.showOs, true);
+                    safeSet('showIp', config.showIp, true);
+                    safeSet('showShells', config.showShells, true);
+                    safeSet('systemCustomInfo', config.systemCustomInfo);
+                    
+                    safeSet('agentShellExecution', config.agentShellExecution, true);
+                    safeSet('agentFilesystemWrite', config.agentFilesystemWrite, true);
+                    safeSet('agentFilesystemRead', config.agentFilesystemRead, true);
+                    safeSet('agentInternetAccess', config.agentInternetAccess, true);
+                    
+                    safeSet('enableCodeInspector', config.enableCodeInspector, true);
+                    safeSet('codeInspectorPersona', config.codeInspectorPersona);
+                    safeSet('chatPersona', config.chatPersona);
+                    safeSet('agentPersona', config.agentPersona);
+                    safeSet('commitMessagePersona', config.commitMessagePersona);
+
+                    safeSet('searchApiKey', config.searchApiKey);
+                    safeSet('searchCx', config.searchCx);
+                    safeSet('companionEnableWebSearch', config.companionEnableWebSearch, true);
+                    safeSet('companionEnableArxivSearch', config.companionEnableArxivSearch, true);
+
+                    safeSet('mcpServers', config.mcpServers);
+                    
+                    safeSet('autoUpdateChangelog', config.autoUpdateChangelog, true);
+                    safeSet('deleteBranchAfterMerge', config.deleteBranchAfterMerge, true);
+                    safeSet('unstagedChangesBehavior', config.unstagedChangesBehavior);
+
+                    safeSet('herdDynamicMode', config.herdDynamicMode, true);
+                    safeSet('herdRounds', config.herdRounds);
+                    
+                    safeSet('userInfoName', config.userInfoName);
+                    safeSet('userInfoEmail', config.userInfoEmail);
+                    safeSet('userInfoLicense', config.userInfoLicense);
+                    safeSet('userInfoCodingStyle', config.userInfoCodingStyle);
+                    
+                    const herdDynamic = document.getElementById('herdDynamicMode').checked;
+                    document.getElementById('static-herd-config').style.display = herdDynamic ? 'none' : 'block';
+                    document.getElementById('dynamic-herd-config').style.display = herdDynamic ? 'block' : 'none';
+                    
+                    const thinkingMode = document.getElementById('thinkingMode').value;
+                    document.getElementById('custom-thinking-prompt-container').style.display = thinkingMode === 'custom' ? 'block' : 'none';
+                    
+                    populateModelDropdown(document.getElementById('modelSelect'), config.modelName);
+                    populateModelDropdown(document.getElementById('architectModelSelect'), config.architectModelName);
+                    populateModelDropdown(document.getElementById('inspectorModelName'), config.inspectorModelName);
+
+                    renderParticipantsList('herd-pre-list', herdPre, 'herdPreAnswerParticipants');
+                    renderParticipantsList('herd-post-list', herdPost, 'herdPostAnswerParticipants');
+                    renderPoolList();
+
+                    updatePersonaSelects();
+
+                } catch(e) {
+                    console.error("[WEBVIEW] Error initializing form:", e);
+                }
+            }
 
             function openTab(evt, tabName) {
                 var i, tabcontent, tablinks;
@@ -927,12 +1036,40 @@ export class SettingsPanel {
                 for (i = 0; i < tablinks.length; i++) { tablinks[i].className = tablinks[i].className.replace(" active", ""); }
                 document.getElementById(tabName).style.display = "block";
                 document.getElementById(tabName).classList.add("active");
-                evt.currentTarget.className += " active";
+                if(evt) evt.currentTarget.className += " active";
+                else document.querySelector(".tab-link").className += " active"; 
                 if (tabName === 'TabLog') vscode.postMessage({ command: 'requestLog' });
             }
 
-            function populateModelDropdown(selectElement, selectedValue) {
+            function updatePersonaSelects() {
+                document.querySelectorAll('.persona-select').forEach(sel => {
+                    const targetId = sel.dataset.target;
+                    const targetEl = document.getElementById(targetId);
+                    sel.innerHTML = '<option value="">-- Select a Preset --</option>';
+                    personalities.forEach(p => {
+                        const opt = new Option(p.name, p.id);
+                        opt.dataset.prompt = p.systemPrompt;
+                        sel.appendChild(opt);
+                    });
+                    sel.onchange = (e) => {
+                         const opt = sel.options[sel.selectedIndex];
+                         if(opt && targetEl) {
+                             targetEl.value = opt.dataset.prompt || '';
+                             postTempUpdate(targetId, targetEl.value);
+                         }
+                    };
+                });
+            }
+
+            function populateModelDropdown(selectElement, selectedValue, error) {
+                console.log("[WEBVIEW] Populating dropdown", selectElement.id, selectedValue, error);
                 selectElement.innerHTML = '';
+                
+                if (error) {
+                    selectElement.appendChild(new Option("Error: " + error, ""));
+                    return;
+                }
+
                 if (loadedModels.length > 0) {
                     if (selectElement.id === 'inspectorModelName' || selectElement.id === 'architectModelSelect') {
                         selectElement.appendChild(new Option("Same as Chat Model (Default)", ""));
@@ -940,11 +1077,11 @@ export class SettingsPanel {
                     loadedModels.forEach(model => selectElement.appendChild(new Option(model.id, model.id)));
                     if (selectedValue) selectElement.value = selectedValue;
                 } else {
-                    selectElement.appendChild(new Option(selectedValue || "Loading...", selectedValue));
+                    const placeholder = selectedValue ? selectedValue + " (Cached)" : "No models found";
+                    selectElement.appendChild(new Option(placeholder, selectedValue));
                 }
             }
 
-            // ... (renderParticipantsList, renderPoolList helper functions) ...
             function renderParticipantsList(containerId, list, keyName) {
                 const container = document.getElementById(containerId);
                 container.innerHTML = '';
@@ -1024,153 +1161,176 @@ export class SettingsPanel {
                 });
             }
 
-            window.addEventListener('DOMContentLoaded', () => {
-                openTab({ currentTarget: document.querySelector('.tab-link.active') }, 'TabApi');
+            initializeForm();
+            openTab(null, 'TabApi');
 
-                const bind = (id, key) => {
+            const bind = (id, key) => {
+                safeListen(id, document.getElementById(id)?.type === 'checkbox' ? 'change' : 'input', () => {
                     const el = document.getElementById(id);
-                    if(!el) return;
-                    el.addEventListener(el.type === 'checkbox' ? 'change' : 'input', () => {
+                    if(el) {
                         let val = el.type === 'checkbox' ? el.checked : el.value;
                         if(el.type === 'number') val = parseInt(val);
                         if(key === 'contextFileExceptions') val = val.split('\\n').map(s=>s.trim()).filter(Boolean);
                         postTempUpdate(key, val);
-                    });
+                    }
+                });
+            };
+            
+            ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','inspectorModelName','codeInspectorPersona','chatPersona','agentPersona','commitMessagePersona','language','thinkingMode','outputFormat','thinkingModeCustomPrompt','reasoningLevel','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','clipboardInsertRole','herdRounds','mcpServers','unstagedChangesBehavior','systemCustomInfo'].forEach(k => bind(k, k));
+            ['disableSsl','enableCodeInspector','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','forceFullCodePath','companionEnableWebSearch','companionEnableArxivSearch','herdDynamicMode','enableCodeActions','enableInlineSuggestions','noThinkMode','deleteBranchAfterMerge','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','explainCode'].forEach(id => {
+                const map = { 
+                  'disableSsl': 'disableSslVerification', 
+                  'deleteBranchAfterMerge': 'git.deleteBranchAfterMerge',
+                  'showOs': 'systemEnv.showOs',
+                  'showIp': 'systemEnv.showIp',
+                  'showShells': 'systemEnv.showShells',
+                  'systemCustomInfo': 'systemEnv.customInfo'
                 };
-                
-                ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','inspectorModelName','codeInspectorPersona','chatPersona','agentPersona','commitMessagePersona','language','thinkingMode','outputFormat','thinkingModeCustomPrompt','reasoningLevel','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','clipboardInsertRole','herdRounds','mcpServers','unstagedChangesBehavior','systemCustomInfo'].forEach(k => bind(k, k));
-                ['disableSsl','enableCodeInspector','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','forceFullCodePath','companionEnableWebSearch','companionEnableArxivSearch','herdDynamicMode','enableCodeActions','enableInlineSuggestions','noThinkMode','deleteBranchAfterMerge','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','explainCode'].forEach(id => {
-                    const map = { 
-                      'disableSsl': 'disableSslVerification', 
-                      'deleteBranchAfterMerge': 'git.deleteBranchAfterMerge',
-                      'showOs': 'systemEnv.showOs',
-                      'showIp': 'systemEnv.showIp',
-                      'showShells': 'systemEnv.showShells',
-                      'systemCustomInfo': 'systemEnv.customInfo'
-                    };
-                    const key = map[id] || id; 
-                    if(id==='companionEnableWebSearch') bind(id, 'companion.enableWebSearch');
-                    else if(id==='companionEnableArxivSearch') bind(id, 'companion.enableArxivSearch');
-                    else bind(id, key);
-                });
+                const key = map[id] || id; 
+                if(id==='companionEnableWebSearch') bind(id, 'companion.enableWebSearch');
+                else if(id==='companionEnableArxivSearch') bind(id, 'companion.enableArxivSearch');
+                else bind(id, key);
+            });
 
-                document.getElementById('formatMcpBtn').addEventListener('click', () => {
-                    const area = document.getElementById('mcpServers');
-                    try {
-                        const parsed = JSON.parse(area.value);
-                        area.value = JSON.stringify(parsed, null, 2);
-                        postTempUpdate('mcpServers', area.value);
-                    } catch (e) {
-                        alert('Invalid JSON: ' + e.message);
-                    }
-                });
-
-                document.getElementById('unstagedChangesBehavior').addEventListener('change', (e) => {
-                    postTempUpdate('git.unstagedChangesBehavior', e.target.value);
-                });
-
-                ['gen-full', 'gen-diff', 'gen-aider'].forEach(k => {
-                    document.getElementById(k).addEventListener('change', (e) => {
-                        const key = k.replace('gen-', '');
-                        // Map 'aider' to 'aider', 'full' to 'fullFile'
-                        const map = { 'full': 'fullFile', 'diff': 'diff', 'aider': 'aider' };
-                        vscode.postMessage({ command: 'updateGenerationFormat', key: map[key], value: e.target.checked });
-                    });
-                });
-
-                ['fullFile','insert','replace','delete'].forEach(k => {
-                    document.getElementById('fmt-'+k).addEventListener('change', (e) => {
-                        vscode.postMessage({ command: 'updateFormatValue', key: k, value: e.target.checked });
-                    });
-                });
-
-                const chatModelSelect = document.getElementById('modelSelect');
-                const inspectorModelSelect = document.getElementById('inspectorModelName');
-                const architectModelSelect = document.getElementById('architectModelSelect');
-                
-                chatModelSelect.addEventListener('change', () => postTempUpdate('modelName', chatModelSelect.value));
-                inspectorModelSelect.addEventListener('change', () => postTempUpdate('inspectorModelName', inspectorModelSelect.value));
-                architectModelSelect.addEventListener('change', () => postTempUpdate('architectModelName', architectModelSelect.value));
-
-                const herdDynamicCheckbox = document.getElementById('herdDynamicMode');
-                const staticConfig = document.getElementById('static-herd-config');
-                const dynamicConfig = document.getElementById('dynamic-herd-config');
-                
-                herdDynamicCheckbox.addEventListener('change', () => {
-                     const isDynamic = herdDynamicCheckbox.checked;
-                     staticConfig.style.display = isDynamic ? 'none' : 'block';
-                     dynamicConfig.style.display = isDynamic ? 'block' : 'none';
-                });
-
-                document.getElementById('addPreParticipantBtn').addEventListener('click', () => {
-                    herdPre.push({ model: currentModelName, personality: 'default_coder' });
-                    renderParticipantsList('herd-pre-list', herdPre, 'herdPreAnswerParticipants');
-                    postTempUpdate('herdPreAnswerParticipants', herdPre);
-                });
-                document.getElementById('addPostParticipantBtn').addEventListener('click', () => {
-                    herdPost.push({ model: currentModelName, personality: 'code_reviewer' });
-                    renderParticipantsList('herd-post-list', herdPost, 'herdPostAnswerParticipants');
-                    postTempUpdate('herdPostAnswerParticipants', herdPost);
-                });
-                
-                document.getElementById('addPoolModelBtn').addEventListener('click', () => {
-                    herdPool.push({ model: currentModelName, description: 'General purpose model' });
-                    renderPoolList();
-                    postTempUpdate('herdDynamicModelPool', herdPool);
-                });
-
-                document.getElementById('refreshModels').addEventListener('click', () => refreshModelsList(true));
-                document.getElementById('refreshInspectorModels').addEventListener('click', () => refreshModelsList(true));
-                document.getElementById('saveToolbar').addEventListener('click', () => vscode.postMessage({ command: 'saveConfig' }));
-                document.getElementById('resetToolbar').addEventListener('click', () => vscode.postMessage({ command: 'resetConfig' }));
-                document.getElementById('closeToolbar').addEventListener('click', () => vscode.postMessage({ command: 'closePanel' }));
-                document.getElementById('testConnection').addEventListener('click', () => vscode.postMessage({ command: 'testConnection' }));
-                document.getElementById('browseCertPath').addEventListener('click', () => vscode.postMessage({ command: 'browseCertPath' }));
-                document.getElementById('createPersonalityBtn').addEventListener('click', () => vscode.postMessage({ command: 'createPersonality' }));
-                document.getElementById('editPromptsBtn').addEventListener('click', () => vscode.postMessage({ command: 'editPrompts' }));
-
-                function postTempUpdate(key, value) { vscode.postMessage({ command: 'updateTempValue', key, value }); }
-                
-                function refreshModelsList(force) {
-                    chatModelSelect.innerHTML = '<option>Loading...</option>';
-                    inspectorModelSelect.innerHTML = '<option>Loading...</option>';
-                    architectModelSelect.innerHTML = '<option>Loading...</option>';
-                    vscode.postMessage({ command: 'fetchModels', value: force });
+            safeListen('formatMcpBtn', 'click', () => {
+                const area = document.getElementById('mcpServers');
+                try {
+                    const parsed = JSON.parse(area.value);
+                    area.value = JSON.stringify(parsed, null, 2);
+                    postTempUpdate('mcpServers', area.value);
+                } catch (e) {
+                    alert('Invalid JSON: ' + e.message);
                 }
+            });
 
-                renderParticipantsList('herd-pre-list', herdPre, 'herdPreAnswerParticipants');
-                renderParticipantsList('herd-post-list', herdPost, 'herdPostAnswerParticipants');
-                renderPoolList();
-                refreshModelsList(false);
+            safeListen('unstagedChangesBehavior', 'change', (e) => {
+                postTempUpdate('git.unstagedChangesBehavior', e.target.value);
+            });
 
-                window.addEventListener('message', event => {
-                    const message = event.data;
-                    if (message.command === 'modelsList') {
-                        loadedModels = message.models || [];
-                        populateModelDropdown(chatModelSelect, currentModelName);
-                        populateModelDropdown(inspectorModelSelect, currentInspectorModelName);
-                        populateModelDropdown(architectModelSelect, currentArchitectModelName);
-                        
-                        renderParticipantsList('herd-pre-list', herdPre, 'herdPreAnswerParticipants');
-                        renderParticipantsList('herd-post-list', herdPost, 'herdPostAnswerParticipants');
-                        renderPoolList();
-                    } else if (message.command === 'updateCertPath') {
-                        document.getElementById('sslCertPath').value = message.path;
-                        postTempUpdate('sslCertPath', message.path);
-                    } else if (message.command === 'updatePersonalities') {
-                        personalities = message.personalities;
-                        renderParticipantsList('herd-pre-list', herdPre, 'herdPreAnswerParticipants');
-                        renderParticipantsList('herd-post-list', herdPost, 'herdPostAnswerParticipants');
-                        document.querySelectorAll('.persona-select').forEach(sel => {
-                            const val = sel.value;
-                            sel.innerHTML = '<option value="">-- Select a Preset --</option>';
-                            personalities.forEach(p => sel.appendChild(new Option(p.name, p.id)));
-                            sel.value = val;
-                        });
-                    } else if (message.command === 'logData') {
-                        document.getElementById('logContent').textContent = message.content || 'No log data.';
-                    }
+            ['gen-full', 'gen-diff', 'gen-aider'].forEach(k => {
+                safeListen(k, 'change', (e) => {
+                    const key = k.replace('gen-', '');
+                    const map = { 'full': 'fullFile', 'diff': 'diff', 'aider': 'aider' };
+                    vscode.postMessage({ command: 'updateGenerationFormat', key: map[key], value: e.target.checked });
                 });
+            });
+
+            ['fullFile','insert','replace','delete'].forEach(k => {
+                safeListen('fmt-'+k, 'change', (e) => {
+                    vscode.postMessage({ command: 'updateFormatValue', key: k, value: e.target.checked });
+                });
+            });
+
+            const chatModelSelect = document.getElementById('modelSelect');
+            const inspectorModelSelect = document.getElementById('inspectorModelName');
+            const architectModelSelect = document.getElementById('architectModelSelect');
+            
+            safeListen('modelSelect', 'change', () => postTempUpdate('modelName', chatModelSelect.value));
+            safeListen('inspectorModelName', 'change', () => postTempUpdate('inspectorModelName', inspectorModelSelect.value));
+            safeListen('architectModelSelect', 'change', () => postTempUpdate('architectModelName', architectModelSelect.value));
+
+            safeListen('herdDynamicMode', 'change', () => {
+                 const isDynamic = document.getElementById('herdDynamicMode').checked;
+                 document.getElementById('static-herd-config').style.display = isDynamic ? 'none' : 'block';
+                 document.getElementById('dynamic-herd-config').style.display = isDynamic ? 'block' : 'none';
+            });
+
+            safeListen('addPreParticipantBtn', 'click', () => {
+                herdPre.push({ model: config.modelName, personality: 'default_coder' });
+                renderParticipantsList('herd-pre-list', herdPre, 'herdPreAnswerParticipants');
+                postTempUpdate('herdPreAnswerParticipants', herdPre);
+            });
+            safeListen('addPostParticipantBtn', 'click', () => {
+                herdPost.push({ model: config.modelName, personality: 'code_reviewer' });
+                renderParticipantsList('herd-post-list', herdPost, 'herdPostAnswerParticipants');
+                postTempUpdate('herdPostAnswerParticipants', herdPost);
+            });
+            
+            safeListen('addPoolModelBtn', 'click', () => {
+                herdPool.push({ model: config.modelName, description: 'General purpose model' });
+                renderPoolList();
+                postTempUpdate('herdDynamicModelPool', herdPool);
+            });
+
+            safeListen('refreshModels', 'click', () => refreshModelsList(true));
+            safeListen('refreshInspectorModels', 'click', () => refreshModelsList(true));
+            safeListen('saveToolbar', 'click', () => vscode.postMessage({ command: 'saveConfig' }));
+            safeListen('resetToolbar', 'click', () => vscode.postMessage({ command: 'resetConfig' }));
+            safeListen('closeToolbar', 'click', () => vscode.postMessage({ command: 'closePanel' }));
+            safeListen('testConnection', 'click', () => vscode.postMessage({ command: 'testConnection' }));
+            safeListen('browseCertPath', 'click', () => vscode.postMessage({ command: 'browseCertPath' }));
+            safeListen('createPersonalityBtn', 'click', () => vscode.postMessage({ command: 'createPersonality' }));
+            safeListen('editPromptsBtn', 'click', () => vscode.postMessage({ command: 'editPrompts' }));
+
+            function postTempUpdate(key, value) { vscode.postMessage({ command: 'updateTempValue', key, value }); }
+            
+            function refreshModelsList(force) {
+                console.log("[WEBVIEW] Refresh models clicked");
+                const loadingOption = new Option("Loading...", "");
+                
+                chatModelSelect.innerHTML = '';
+                chatModelSelect.appendChild(loadingOption.cloneNode(true));
+                chatModelSelect.disabled = true;
+                
+                inspectorModelSelect.innerHTML = '';
+                inspectorModelSelect.appendChild(loadingOption.cloneNode(true));
+                inspectorModelSelect.disabled = true;
+                
+                architectModelSelect.innerHTML = '';
+                architectModelSelect.appendChild(loadingOption.cloneNode(true));
+                architectModelSelect.disabled = true;
+                
+                vscode.postMessage({ command: 'fetchModels', value: force });
+
+                if (fetchTimeout) clearTimeout(fetchTimeout);
+                fetchTimeout = setTimeout(() => {
+                    console.log("[WEBVIEW] Fetch timed out");
+                    chatModelSelect.disabled = false;
+                    chatModelSelect.innerHTML = '<option>Request Timed Out</option>';
+                    inspectorModelSelect.disabled = false;
+                    architectModelSelect.disabled = false;
+                }, 15000);
+            }
+
+            renderParticipantsList('herd-pre-list', herdPre, 'herdPreAnswerParticipants');
+            renderParticipantsList('herd-post-list', herdPost, 'herdPostAnswerParticipants');
+            renderPoolList();
+            
+            refreshModelsList(false);
+
+            window.addEventListener('message', event => {
+                const message = event.data;
+                console.log("[WEBVIEW] Message received:", message.command);
+                
+                if (message.command === 'modelsList') {
+                    if (fetchTimeout) clearTimeout(fetchTimeout);
+
+                    loadedModels = message.models || [];
+                    const error = message.error;
+                    
+                    populateModelDropdown(chatModelSelect, config.modelName, error);
+                    chatModelSelect.disabled = false;
+
+                    populateModelDropdown(inspectorModelSelect, config.inspectorModelName, error);
+                    inspectorModelSelect.disabled = false;
+
+                    populateModelDropdown(architectModelSelect, config.architectModelName, error);
+                    architectModelSelect.disabled = false;
+                    
+                    renderParticipantsList('herd-pre-list', herdPre, 'herdPreAnswerParticipants');
+                    renderParticipantsList('herd-post-list', herdPost, 'herdPostAnswerParticipants');
+                    renderPoolList();
+                } else if (message.command === 'updateCertPath') {
+                    document.getElementById('sslCertPath').value = message.path;
+                    postTempUpdate('sslCertPath', message.path);
+                } else if (message.command === 'updatePersonalities') {
+                    personalities = message.personalities;
+                    renderParticipantsList('herd-pre-list', herdPre, 'herdPreAnswerParticipants');
+                    renderParticipantsList('herd-post-list', herdPost, 'herdPostAnswerParticipants');
+                    updatePersonaSelects();
+                } else if (message.command === 'logData') {
+                    document.getElementById('logContent').textContent = message.content || 'No log data.';
+                }
             });
           </script>
         </body>

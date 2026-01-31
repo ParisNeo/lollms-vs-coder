@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { Logger } from './logger';
 
 export interface RunningProcess {
     id: string;
@@ -24,7 +25,7 @@ export class ProcessManager {
             controller
         };
         this.processes.set(id, process);
-        console.log(`[ProcessManager] Registered process ${id} for discussion ${discussionId}`);
+        Logger.info(`[ProcessManager] Registered process: ${id} (${description}) for discussion: ${discussionId}`);
         this._onDidProcessChange.fire();
         return process;
     }
@@ -32,26 +33,29 @@ export class ProcessManager {
     public unregister(id: string): void {
         if (this.processes.has(id)) {
             this.processes.delete(id);
-            console.log(`[ProcessManager] Unregistered process ${id}`);
+            Logger.info(`[ProcessManager] Unregistered process: ${id}`);
             this._onDidProcessChange.fire();
         }
     }
 
-    public cancel(id: string): void {
+    public async cancel(id: string): Promise<void> {
         const process = this.processes.get(id);
         if (process) {
+            Logger.info(`[ProcessManager] Cancelling process: ${id}`);
             process.controller.abort();
-            // The process will be unregistered in the 'finally' block of the API call,
-            // but we also unregister here to update the UI immediately.
+            // Small delay to ensure listeners react to abort signal before removing from UI
+            await new Promise(resolve => setTimeout(resolve, 50));
             this.unregister(id);
+        } else {
+            Logger.warn(`[ProcessManager] Cannot cancel process ${id}: Not found.`);
         }
     }
 
-    public cancelForDiscussion(discussionId: string): void {
-        for (const process of this.processes.values()) {
-            if (process.discussionId === discussionId) {
-                this.cancel(process.id);
-            }
+    public async cancelForDiscussion(discussionId: string): Promise<void> {
+        Logger.info(`[ProcessManager] Cancelling all processes for discussion: ${discussionId}`);
+        const processesToCancel = Array.from(this.processes.values()).filter(p => p.discussionId === discussionId);
+        for (const process of processesToCancel) {
+            await this.cancel(process.id);
         }
     }
 

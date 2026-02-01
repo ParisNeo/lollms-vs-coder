@@ -186,7 +186,7 @@ export async function activate(context: vscode.ExtensionContext) {
         await discussionManager.switchWorkspace(folder.uri);
         services.treeProviders.discussion?.refresh();
         
-        await skillsManager.switchWorkspace(folder.uri);
+        await skillsManager.switchWorkspace(folder.uri, context.extensionUri);
         services.treeProviders.skills?.refresh();
         
         codeGraphManager.setWorkspaceRoot(folder.uri);

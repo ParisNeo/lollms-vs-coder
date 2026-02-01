@@ -47,7 +47,6 @@
     "config.developerName.label": "Developer Name",
     "config.developerName.description": "Your name, which can be used as a placeholder ({{developer_name}}) in system prompts to personalize the AI's responses.",
     "config.language.label": "Language",
-    "config.language.description": "Influences the AI's response language. The extension UI follows VS Code's display language setting.",
     "config.section.apiAndModel": "API & Model",
     "config.reasoningLevel.label": "Reasoning Level",
     "config.reasoningLevel.description": "Select a reasoning level for the AI. This prefix command instructs models that support it to adjust their verbosity and depth of thought. Overridden by '/no_think' mode.",
@@ -225,5 +224,8 @@
     "view.codeGraph.classDiagram": "Class Diagram",
     "tooltip.node.type": "Type:",
     "view.codeGraph.emptyState": "No code structure found or graph has not been built yet. Click the diagram icon in the 'Discussions' view sidebar to build the graph.",
-    "config.addPedagogicalInstruction.description": "Automatically append a pedagogical instruction to the last user message when sending to the AI (hidden from chat view)."
+    "config.addPedagogicalInstruction.description": "Automatically append a pedagogical instruction to the last user message when sending to the AI (hidden from chat view).",
+    "config.responseMode.silent": "Silent: Just code and actions.",
+    "config.responseMode.balanced": "Balanced: standard Problem/Hypothesis/Fix structure.",
+    "config.responseMode.pedagogical": "Pedagogical: Detailed deep-dives and teaching approach."
 }

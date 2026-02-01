@@ -1,0 +1,8 @@
+{
+  "id": "lollms-long-context",
+  "name": "Long Context Management",
+  "description": "Techniques for processing texts larger than the model's context window.",
+  "category": "python/lollms_client",
+  "language": "markdown",
+  "content": "# LoLLMs Long Context Management\n\nThe `long_context_processing` (or `sequential_summarize`) method helps process texts larger than the model's context window.\n\n```python\nfrom lollms_client import LollmsClient\n\nlc = LollmsClient()\n\nlarge_text = \"... very long document ...\"\n\n# Summarize in chunks\nsummary = lc.sequential_summarize(\n    text=large_text,\n    chunk_size=2000,\n    overlap=200\n)\n```\n"
+}

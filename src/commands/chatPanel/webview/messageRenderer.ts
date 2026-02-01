@@ -80,7 +80,6 @@ function createButton(text: string, icon: string, onClick: () => void, className
     return btn;
 }
 
-// ... (createGenerationBlock, createSearchBlock, enablePanZoom, renderDiagram unchanged) ...
 function createGenerationBlock(type: string, filePath: string, prompt: string): HTMLElement {
     const block = document.createElement('div');
     block.className = 'generation-block';
@@ -100,7 +99,7 @@ function createGenerationBlock(type: string, filePath: string, prompt: string): 
         vscode.postMessage({
             command: 'generateImage',
             prompt: prompt,
-            filePath: filePath, // filePath might be empty string
+            filePath: filePath, 
             buttonId: buttonId
         });
     }, 'code-action-btn apply-btn');
@@ -167,7 +166,6 @@ function enablePanZoom(container: HTMLElement) {
     const svg = container.querySelector('svg') as HTMLElement;
     if (!svg) return;
 
-    // Make container clip overflow but show grab cursor
     container.style.overflow = 'hidden';
     container.style.cursor = 'grab';
     container.style.border = '1px solid var(--vscode-widget-border)';
@@ -181,7 +179,6 @@ function enablePanZoom(container: HTMLElement) {
     svg.style.width = '100%'; 
     svg.style.height = '100%';
     
-    // Ensure SVG is block level to avoid extra spacing
     svg.style.display = 'block';
 
     const updateTransform = () => {
@@ -189,7 +186,6 @@ function enablePanZoom(container: HTMLElement) {
     };
 
     container.addEventListener('wheel', (e) => {
-        // Only zoom if over the diagram
         e.preventDefault();
         e.stopPropagation();
         const delta = e.deltaY > 0 ? 0.9 : 1.1;
@@ -202,10 +198,9 @@ function enablePanZoom(container: HTMLElement) {
         startX = e.clientX - panX;
         startY = e.clientY - panY;
         container.style.cursor = 'grabbing';
-        svg.style.transition = 'none'; // Disable transition for dragging
+        svg.style.transition = 'none';
     });
 
-    // Listen on window to catch drags outside container
     window.addEventListener('mousemove', (e) => {
         if (!isDragging) return;
         e.preventDefault();
@@ -244,7 +239,6 @@ function renderDiagram(codeElement: HTMLElement, language: string, container: HT
         try {
             mermaid.render(id, text).then((result: any) => {
                 const svg = typeof result === 'string' ? result : result.svg;
-                // Bypassing sanitizer for Mermaid to preserve styles, defs, and ids
                 diagramContainer.innerHTML = svg;
                 container.appendChild(diagramContainer);
                 
@@ -266,7 +260,6 @@ function renderDiagram(codeElement: HTMLElement, language: string, container: HT
              container.appendChild(diagramContainer);
         }
     } else if (language === 'svg') {
-        // SVG from text is still sanitized
         diagramContainer.innerHTML = sanitizer.sanitize(codeElement.textContent || '', { USE_PROFILES: { svg: true } });
         container.appendChild(diagramContainer);
         
@@ -276,7 +269,6 @@ function renderDiagram(codeElement: HTMLElement, language: string, container: HT
     }
 }
 
-// ... (startEdit, extractFilePaths, looksLikeDiff, enhanceCodeBlocks, enhanceWithCommandButtons, processThinkTags unchanged) ...
 function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     let originalContent: any;
     try {
@@ -454,7 +446,6 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
                     if (langPathMatch) {
                         pathStr = langPathMatch[2];
                         stripFirstLine = true;
-                        // Determine type based on prefix provided in line
                         const prefix = langPathMatch[1].toLowerCase();
                         if (prefix === 'diff') type = 'diff';
                         else if (prefix === 'insert') type = 'insert';
@@ -529,13 +520,11 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
                     pathStr = pathStr.replace(/[.:]+$/, ''); 
                 }
 
-                // Initially assume NOT closed
                 infos.push({ type, path: pathStr, stripFirstLine, isClosed: false });
             } else {
                 if (currentFenceLength >= fenceLength) {
                     inBlock = false;
                     fenceLength = 0;
-                    // Mark the current block as closed
                     if (infos.length > 0) {
                         infos[infos.length - 1].isClosed = true;
                     }
@@ -551,7 +540,6 @@ function looksLikeDiff(text: string): boolean {
     let headerLines = 0;
     let chunkMarkers = 0;
     
-    // Check first 20 lines for unified diff indicators
     for (let i = 0; i < Math.min(lines.length, 20); i++) {
         const line = lines[i].trim();
         if (line.startsWith('--- ') || line.startsWith('+++ ')) {
@@ -667,7 +655,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
             }
         } 
         
-        // --- SECONDARY AUTO-DETECTION ---
         if (!isDiff && (language === 'diff' || looksLikeDiff(codeText))) {
             isDiff = true;
             const headerMatch = codeText.match(/(?:---|\+\+\+)\s+(?:[ab]\/)?([^\s\n\r]+)/);
@@ -681,7 +668,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
             }
         }
 
-        // Special Autodetection: If it's supposed to be a file but looks like a diff
         if (isFileBlock && !isDiff && looksLikeDiff(codeText)) {
             const warningDiv = document.createElement('div');
             warningDiv.style.backgroundColor = 'var(--vscode-inputValidation-warningBackground)';
@@ -743,8 +729,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
         summary.appendChild(langLabel);
         summary.appendChild(actions);
 
-        // --- BUTTON DISABLE LOGIC ---
-        // Disable buttons if streaming AND block is not closed yet
         const isDisabled = !isFinal && (info ? !info.isClosed : false);
 
         const copyBtn = createButton('Copy', 'codicon-copy', () => {
@@ -931,7 +915,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
             btn.style.padding = '6px';
             btn.style.fontSize = '12px';
             btn.style.fontWeight = '600';
-            btn.disabled = !isFinal; // Always disable Apply All until message is fully done
+            btn.disabled = !isFinal; 
             
             btn.onclick = () => {
                 const changes: any[] = [];
@@ -1189,7 +1173,6 @@ function addChatMessage(message: any, isFinal: boolean = true) {
     if (role === 'user') {
         avatarDiv.innerHTML = '<span class="codicon codicon-account"></span>';
     } else if (role === 'assistant') {
-        // Handled by CSS
     } else {
         avatarDiv.innerHTML = '<span class="codicon codicon-gear"></span>';
     }
@@ -1270,10 +1253,8 @@ function addChatMessage(message: any, isFinal: boolean = true) {
 export function updateContext(contextText: string, files: string[] = [], skills: any[] = []) {
     if(!dom.contextContainer) return;
     
-    // Parse project context as markdown for rich display
     const renderedMarkdown = sanitizer.sanitize(marked.parse(contextText) as string, SANITIZE_CONFIG);
 
-    // Interactive File List
     const filesList = files && files.length > 0 
         ? `<ul class="context-file-list">
             ${files.map(f => `
@@ -1287,7 +1268,6 @@ export function updateContext(contextText: string, files: string[] = [], skills:
            </ul>`
         : '<div class="empty-context-msg">No files selected.</div>';
 
-    // Interactive Skills List
     const skillsList = skills && skills.length > 0
         ? `<div class="context-skill-list">
             ${skills.map(s => `
@@ -1356,15 +1336,11 @@ export function updateContext(contextText: string, files: string[] = [], skills:
     
     dom.contextContainer.innerHTML = contextText ? innerHTML : '';
 
-    // Enhance code blocks and tree in the context bubble
     const markdownView = dom.contextContainer.querySelector('.markdown-context-view');
     if (markdownView) {
         enhanceCodeBlocks(markdownView as HTMLElement, contextText, true);
     }
 
-    // --- Event Listeners ---
-
-    // File/Skill Removal Delegation
     dom.contextContainer.querySelectorAll('.remove-context-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             const target = e.currentTarget as HTMLElement;
@@ -1379,16 +1355,13 @@ export function updateContext(contextText: string, files: string[] = [], skills:
         });
     });
 
-    // Add File
     const addFileBtn = document.getElementById('add-file-context-btn');
     if (addFileBtn) {
         addFileBtn.addEventListener('click', () => {
-            // Trigger the file picker from extension side
             vscode.postMessage({ command: 'requestAddFileToContext' });
         });
     }
 
-    // Add Skill
     const addSkillBtn = document.getElementById('add-skill-context-btn');
     if (addSkillBtn) {
         addSkillBtn.addEventListener('click', () => {
@@ -1396,7 +1369,6 @@ export function updateContext(contextText: string, files: string[] = [], skills:
         });
     }
 
-    // Other Buttons
     const saveBtn = document.getElementById('save-context-btn');
     if (saveBtn) {
         saveBtn.addEventListener('click', () => {
@@ -1420,16 +1392,18 @@ export function updateContext(contextText: string, files: string[] = [], skills:
 }
 
 export function displayPlan(plan: any) {
-    if(!dom.agentPlanZone) return; // Must have plan zone
+    if(!dom.agentPlanZone) return; 
     
     if (!plan) {
         dom.agentPlanZone.innerHTML = '';
         dom.agentPlanZone.classList.remove('visible');
+        dom.planResizer.classList.remove('visible');
         return;
     }
 
     dom.agentPlanZone.innerHTML = '';
     dom.agentPlanZone.classList.add('visible');
+    dom.planResizer.classList.add('visible');
 
     let scratchpadHtml = plan.scratchpad ? `
         <div class="plan-scratchpad" style="margin-top:10px;">
@@ -1463,13 +1437,32 @@ export function displayPlan(plan: any) {
             retryButtonHtml = `<button class="retry-btn" data-task-id="${task.id}" title="Retry this task"><span class="codicon codicon-debug-restart"></span> Retry</button>`;
         }
         
-        let resultHtml = task.result ? `
-            <div class="task-result">
-                <details ${task.status === 'failed' ? 'open' : ''}>
-                    <summary class="task-result-summary">View Result</summary>
-                    <div class="task-result-box">${sanitizer.sanitize(task.result)}</div>
-                </details>
-            </div>` : '';
+        let paramsHtml = '';
+        if (task.parameters && Object.keys(task.parameters).length > 0) {
+            paramsHtml = `
+                <div class="task-params" style="margin-top: 5px;">
+                    <details>
+                        <summary class="task-result-summary" style="font-size: 10px; opacity: 0.7;">Command Details</summary>
+                        <div class="task-result-box" style="font-size: 11px; padding: 4px; border-style: dashed;">${sanitizer.sanitize(JSON.stringify(task.parameters, null, 2))}</div>
+                    </details>
+                </div>`;
+        }
+
+        let resultHtml = '';
+        if (task.result) {
+            const isFailure = task.status === 'failed';
+            const label = isFailure ? 'Failure Details' : 'Output';
+            const resultBoxClass = isFailure ? 'failure' : 'success';
+            const summaryClass = isFailure ? 'failure-text' : 'success-text';
+
+            resultHtml = `
+                <div class="task-result">
+                    <details ${isFailure ? 'open' : ''}>
+                        <summary class="task-result-summary ${summaryClass}">${label}</summary>
+                        <div class="task-result-box ${resultBoxClass}">${sanitizer.sanitize(task.result)}</div>
+                    </details>
+                </div>`;
+        }
 
         return `
             <li class="plan-task" data-task-id="${task.id}">
@@ -1479,6 +1472,7 @@ export function displayPlan(plan: any) {
                         <div class="task-description">${sanitizer.sanitize(task.description)}</div>
                         ${toolBadge}
                         ${retryButtonHtml}
+                        ${paramsHtml}
                     </div>
                 </div>
                 ${resultHtml}

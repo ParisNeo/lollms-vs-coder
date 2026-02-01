@@ -1,0 +1,8 @@
+{
+  "id": "lollms-instantiation",
+  "name": "Lollms Client Instantiation",
+  "description": "How to initialize the LollmsClient with different bindings and configuration.",
+  "category": "python/lollms_client",
+  "language": "markdown",
+  "content": "# LoLLMs Client Instantiation\n\nThe `LollmsClient` is the main entry point. You can configure it to use different bindings (backends) using the `llm_binding_config` dictionary.\n\n## Installation\n\n```bash\npip install lollms-client\n```\n\n## Examples\n\n### LoLLMs Server (Default)\nConnects to a running LoLLMs server (e.g., lollms-webui).\n\n```python\nfrom lollms_client import LollmsClient\n\nlc = LollmsClient(\n    llm_binding_name=\"lollms\", \n    llm_binding_config={\n        \"host_address\": \"http://localhost:9642\",\n    }\n)\n```\n\n### Ollama\nConnects to a local Ollama instance.\n\n```python\nlc = LollmsClient(\n    llm_binding_name=\"ollama\", \n    llm_binding_config={\n        \"model_name\": \"llama3\",\n        \"host_address\": \"http://localhost:11434\"\n    }\n)\n```\n"
+}

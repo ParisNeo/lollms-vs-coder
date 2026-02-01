@@ -5,30 +5,30 @@ import { setGeneratingState, updateBadges } from './ui.js';
 import { isScrolledToBottom } from './utils.js';
 
 export function initEventHandlers() {
-    // --- RESIZER LOGIC ---
     const resizer = dom.planResizer;
     const planZone = dom.agentPlanZone;
     const wrapper = dom.chatContentWrapper;
 
     if (resizer && planZone && wrapper) {
         let isResizing = false;
-
         resizer.addEventListener('mousedown', (e) => {
             isResizing = true;
             resizer.classList.add('resizing');
             document.body.style.cursor = 'col-resize';
+            // Disable interactions with iframes or chat while resizing to prevent mouse capture issues
             document.querySelectorAll('iframe, .messages').forEach(el => (el as HTMLElement).style.pointerEvents = 'none');
         });
-
         window.addEventListener('mousemove', (e) => {
             if (!isResizing) return;
-            const containerWidth = wrapper.getBoundingClientRect().width;
-            const newWidth = containerWidth - e.clientX;
-            if (newWidth > 150 && newWidth < containerWidth * 0.8) {
+            
+            const rect = wrapper.getBoundingClientRect();
+            // Since planZone is on the right, width is rect.right - mouseX
+            const newWidth = rect.right - e.clientX;
+            
+            if (newWidth > 150 && newWidth < rect.width * 0.85) {
                 planZone.style.width = `${newWidth}px`;
             }
         });
-
         window.addEventListener('mouseup', () => {
             if (isResizing) {
                 isResizing = false;
@@ -39,7 +39,6 @@ export function initEventHandlers() {
         });
     }
 
-    // --- MAIN INPUT & SEND ---
     if (dom.sendButton) dom.sendButton.addEventListener('click', () => {
         const text = dom.messageInput.value.trim();
         if (text) {
@@ -60,38 +59,49 @@ export function initEventHandlers() {
             dom.messageInput.style.height = 'auto';
             dom.messageInput.style.height = dom.messageInput.scrollHeight + 'px';
         });
+        dom.messageInput.addEventListener('paste', (e: ClipboardEvent) => {
+            const items = e.clipboardData?.items;
+            if (!items) return;
+            for (const item of items) {
+                if (item.type.indexOf('image') !== -1) {
+                    const blob = item.getAsFile();
+                    if (blob) {
+                        const reader = new FileReader();
+                        reader.onload = (event) => {
+                            const base64 = event.target?.result as string;
+                            vscode.postMessage({ command: 'loadFile', file: { name: `pasted_image_${Date.now()}.png`, content: base64, isImage: true } });
+                        };
+                        reader.readAsDataURL(blob);
+                        e.preventDefault();
+                    }
+                }
+            }
+        });
     }
 
-    // --- STOP BUTTON ---
     if (dom.stopButton) {
         dom.stopButton.addEventListener('click', () => {
-            console.log("[WEBVIEW] Stop button clicked");
             vscode.postMessage({ command: 'stopGeneration' });
-            // Optimistically update UI
             setGeneratingState(false);
         });
     }
 
-    // --- MAIN MENU TOGGLE ---
     if (dom.moreActionsButton) dom.moreActionsButton.addEventListener('click', (e) => {
         e.stopPropagation();
         dom.moreActionsMenu.classList.toggle('visible');
     });
 
-    // Close menus on outside click
     window.addEventListener('click', () => {
         if (dom.moreActionsMenu) dom.moreActionsMenu.classList.remove('visible');
         document.querySelectorAll('.custom-menu').forEach(el => el.classList.remove('visible'));
     });
 
-    // Prevent closing when clicking inside the menu
     if (dom.moreActionsMenu) {
         dom.moreActionsMenu.addEventListener('click', (e) => {
             e.stopPropagation();
         });
     }
 
-    // --- MAIN MENU NAVIGATION (Submenus) ---
     dom.subMenuTriggers.forEach(trigger => {
         trigger.addEventListener('click', (e) => {
             const targetId = (trigger as HTMLElement).dataset.target;
@@ -117,7 +127,6 @@ export function initEventHandlers() {
         });
     });
 
-    // --- MENU ACTIONS ---
     const bindClick = (el: HTMLElement | null, command: string, params?: any) => {
         if (el) el.addEventListener('click', () => {
             vscode.postMessage({ command, ...params });
@@ -133,7 +142,7 @@ export function initEventHandlers() {
         });
     }
 
-    bindClick(dom.attachButton, 'requestAddFileToContext'); // Opens file dialog via extension
+    bindClick(dom.attachButton, 'requestAddFileToContext'); 
     bindClick(dom.importSkillsButton, 'importSkills');
     bindClick(dom.copyFullPromptButton, 'copyFullPrompt', { draftMessage: dom.messageInput ? dom.messageInput.value : '' });
     bindClick(dom.setEntryPointButton, 'setEntryPoint');
@@ -141,12 +150,23 @@ export function initEventHandlers() {
     bindClick(dom.debugRestartButton, 'debugRestart');
     bindClick(dom.showDebugLogButton, 'requestLog');
 
-    // --- TOGGLES & INPUTS ---
+    // Message insertion bindings
+    if (dom.addUserMessageBtn) {
+        dom.addUserMessageBtn.addEventListener('click', () => {
+            insertNewMessageEditor('user');
+        });
+    }
+
+    if (dom.addAiMessageBtn) {
+        dom.addAiMessageBtn.addEventListener('click', () => {
+            insertNewMessageEditor('assistant');
+        });
+    }
+
     const bindChange = (el: HTMLInputElement | HTMLSelectElement | null, handler: (e: Event) => void) => {
         if (el) el.addEventListener('change', handler);
     };
 
-    // Modes
     bindChange(dom.agentModeCheckbox, (e) => {
         vscode.postMessage({ command: 'toggleAgentMode' });
     });
@@ -157,7 +177,17 @@ export function initEventHandlers() {
         vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { herdMode: (e.target as HTMLInputElement).checked } });
     });
 
-    // AI Config
+    dom.respModeRadios.forEach(radio => {
+        radio.addEventListener('change', () => {
+            if (radio.checked) {
+                vscode.postMessage({ 
+                    command: 'updateDiscussionCapabilitiesPartial', 
+                    partial: { responseMode: radio.value } 
+                });
+            }
+        });
+    });
+
     bindChange(dom.modelSelector, (e) => {
         const val = (e.target as HTMLSelectElement).value;
         vscode.postMessage({ command: 'updateDiscussionModel', model: val });
@@ -176,9 +206,6 @@ export function initEventHandlers() {
         vscode.postMessage({ command: 'updateDiscussionPersonality', personalityId: val });
     });
 
-    // --- MODALS ---
-    
-    // Tools Modal
     if (dom.closeToolsModal) dom.closeToolsModal.addEventListener('click', () => dom.toolsModal.classList.remove('visible'));
     if (dom.saveToolsBtn) dom.saveToolsBtn.addEventListener('click', () => {
         const selected = Array.from(dom.toolsListDiv.querySelectorAll('input:checked')).map((el: any) => el.value);
@@ -186,12 +213,10 @@ export function initEventHandlers() {
         dom.toolsModal.classList.remove('visible');
     });
 
-    // Discussion Tools Modal
     if (dom.closeDiscussionToolsModal) dom.closeDiscussionToolsModal.addEventListener('click', () => dom.discussionToolsModal.classList.remove('visible'));
     
     if (dom.saveDiscussionToolsBtn) {
         dom.saveDiscussionToolsBtn.addEventListener('click', () => {
-            // Gather all capabilities
             const caps = {
                 generationFormats: {
                     fullFile: dom.checkGenFull?.checked ?? true,
@@ -204,6 +229,7 @@ export function initEventHandlers() {
                     replace: dom.fmtReplace?.checked ?? false,
                     delete: dom.fmtDelete?.checked ?? false
                 },
+                responseMode: (document.querySelector('input[name="responseMode"]:checked') as HTMLInputElement)?.value || 'balanced',
                 explainCode: dom.checkBehaviorExplain?.checked ?? true,
                 fileRename: dom.capFileRename?.checked ?? true,
                 fileDelete: dom.capFileDelete?.checked ?? true,
@@ -218,13 +244,11 @@ export function initEventHandlers() {
                 herdMode: dom.capHerdMode?.checked ?? false,
                 herdRounds: parseInt(dom.capHerdRounds?.value || "2", 10)
             };
-            
             vscode.postMessage({ command: 'updateDiscussionCapabilities', capabilities: caps });
             dom.discussionToolsModal.classList.remove('visible');
         });
     }
 
-    // Git Staging/Commit Modals
     if (dom.stagingCloseBtn) dom.stagingCloseBtn.addEventListener('click', () => dom.stagingModal.classList.remove('visible'));
     if (dom.stagingNextBtn) dom.stagingNextBtn.addEventListener('click', () => {
         const checked = Array.from(dom.stagingList.querySelectorAll('input:checked')).map((el: any) => el.value);
@@ -247,7 +271,6 @@ export function initEventHandlers() {
 
     if (dom.historyCloseBtn) dom.historyCloseBtn.addEventListener('click', () => dom.historyModal.classList.remove('visible'));
 
-    // --- SEARCH BAR ---
     if (dom.searchCloseBtn) dom.searchCloseBtn.addEventListener('click', () => {
         if(dom.searchBar) dom.searchBar.style.display = 'none';
         clearSearch();
@@ -266,7 +289,6 @@ export function initEventHandlers() {
         });
     }
     
-    // --- TOP BAR CONTROLS ---
     if (dom.refreshContextBtn) dom.refreshContextBtn.addEventListener('click', () => {
         vscode.postMessage({ command: 'calculateTokens' });
     });
@@ -274,7 +296,6 @@ export function initEventHandlers() {
         vscode.postMessage({ command: 'stopTokenCalculation' });
     });
 
-    // Keybindings (Ctrl+F)
     window.addEventListener('keydown', (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
             if (dom.searchBar) {
@@ -289,15 +310,11 @@ export function initEventHandlers() {
             }
         }
     });
-
-    // Add File Input Change Listener (Hidden input for loading files)
+        
     if (dom.fileInput) {
         dom.fileInput.addEventListener('change', async (e) => {
             const files = (e.target as HTMLInputElement).files;
             if (files && files.length > 0) {
-                // We handle this via VS Code API for simplicity now, but if drag & drop is used:
-                // ... logic to read file and send to extension ...
-                // Currently attaching is done via 'requestAddFileToContext' or 'requestAddAttachment' commands
             }
         });
     }

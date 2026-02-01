@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.79",
+  "version": "0.5.82",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -510,6 +510,21 @@
           "type": "boolean",
           "default": false,
           "description": "Enable Recursive Language Model (RLM) mode for agents. This allows the agent to execute python code recursively to solve problems."
+        },
+        "lollmsVsCoder.responseMode": {
+          "type": "string",
+          "default": "balanced",
+          "description": "Select the verbosity and depth of the AI response.",
+          "enum": [
+            "silent",
+            "balanced",
+            "pedagogical"
+          ],
+          "enumDescriptions": [
+            "Silent: Just provide code or actions. No conversational text.",
+            "Balanced: Standard approach with Problem/Hypothesis/Fix breakdown.",
+            "Pedagogical: Deep analysis, concept explanations, and tutorial-style guidance."
+          ]
         },
         "lollmsVsCoder.outputFormat": {
           "type": "string",

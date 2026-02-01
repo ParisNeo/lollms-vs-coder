@@ -4,22 +4,26 @@ import { getProcessedSystemPrompt } from '../../utils';
 import { ChatMessage } from '../../lollmsAPI';
 
 async function getCoderSystemPrompt(customPrompt: string, planObjective: string, projectContext: any): Promise<ChatMessage> {
-    // We pass the context data to getProcessedSystemPrompt so it can build the full structured prompt
     const agentPersonaPrompt = await getProcessedSystemPrompt('agent', undefined, undefined, undefined, false, projectContext);
     
-    // We append the specific instructions for this tool
     const fullContent = `${agentPersonaPrompt}
 
 **CODE GENERATION SPECIFIC INSTRUCTIONS:**
 You are a code generation sub-agent. You will be given instructions and context to write or modify a file.
+
+**SKILLS KNOWLEDGE:**
+If the context contains a **Skill** (like Moltbook), you MUST treat that documentation as the source of truth for all API calls, parameters, and security rules. Do not hallucinate API endpoints; use the ones from the skills.
+
 **CRITICAL INSTRUCTIONS:**
 1.  **CODE ONLY:** Your entire response MUST be a single markdown code block containing the complete file content.
 2.  **NO EXTRA TEXT:** Do not add any explanations, comments, or conversational text outside of the code block.
 3.  **COMPLETE FILE:** Your output must be the full and complete code for the file, not just the changed parts.
 4.  **NO PLACEHOLDERS:** Do not use placeholders like "...".
-5.  **NO PATCHES:** You are strictly forbidden from generating git patches, unified diffs, or using formats like \`--- a/file\`. You must output the full file content using the standard markdown block format (\`\`\`language\\ncontent\\n\`\`\`).
+5.  **NO PATCHES:** You are strictly forbidden from generating git patches or diffs.
+
 **CUSTOM INSTRUCTIONS FOR THIS TASK:**
 ${customPrompt}
+
 **CONTEXT FOR YOUR TASK:**
 - **Main Objective:** ${planObjective}
 `;
@@ -49,16 +53,16 @@ export const generateCodeTool: ToolDefinition = {
             return { success: false, output: "Error: 'file_path' parameter is required." };
         }
 
-        const modelOverride = env.agentManager?.getCurrentDiscussion()?.model;
+        const currentDiscussion = env.agentManager?.getCurrentDiscussion();
+        const modelOverride = currentDiscussion?.model;
+        const importedSkills = currentDiscussion?.importedSkills;
         
-        // Prepare context data structure
         let contextData = {
             tree: '',
             files: '',
             skills: ''
         };
 
-        // --- STEP 1: DYNAMIC CONTEXT RETRIEVAL (Anti-Hallucination) ---
         if (env.workspaceRoot) {
             try {
                 const allFiles = await env.contextManager.getWorkspaceFilePaths();
@@ -67,23 +71,14 @@ export const generateCodeTool: ToolDefinition = {
                 if (allFiles.length > 0) {
                     const selectionSystemPrompt: ChatMessage = {
                         role: 'system',
-                        content: `You are a dependency analyzer. You are about to write code for the file: "${params.file_path}".
-Your task is to identify which *other* existing files in the project are crucial to read (e.g., for type definitions, utility functions, signatures, or base classes) to ensure the new code is correct and DOES NOT HALLUCINATE functions.
-
-**INSTRUCTIONS:**
-1. Review the provided file list.
-2. Select up to 10 most relevant files that you need to read to get signatures and definitions.
-3. Return ONLY a valid JSON array of strings containing the relative paths.
-4. Do NOT select the target file "${params.file_path}" itself (we will read it separately).
-5. If no other files are needed, return an empty JSON array [].
-
-Example Output:
-["src/types.ts", "src/utils/helpers.ts"]`
+                        content: `You are a dependency analyzer for file: "${params.file_path}".
+Identify which *other* existing files in the project are crucial to read (type definitions, utility functions, signatures, base classes, or CLI structures) to ensure correct implementation.
+Select up to 10 relevant files. Return ONLY a valid JSON array of strings. Do NOT select the target file itself.`
                     };
 
                     const selectionUserPrompt: ChatMessage = {
                         role: 'user',
-                        content: `**Target File to Write:** ${params.file_path}\n\n**User Instruction:** ${params.user_prompt}\n\n**Project File List:**\n${fileListString}`
+                        content: `**Target File:** ${params.file_path}\n**Instruction:** ${params.user_prompt}\n**File List:**\n${fileListString}`
                     };
 
                     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
@@ -96,25 +91,24 @@ Example Output:
                     if (jsonMatch) {
                         try {
                             selectedFiles = JSON.parse(jsonMatch[0]);
-                        } catch (e) { console.error("Error parsing dependency selection JSON", e); }
+                        } catch (e) { }
                     }
 
                     if (selectedFiles.length > 0) {
                         const dependencyContext = await env.contextManager.readSpecificFiles(selectedFiles);
                         if (dependencyContext) {
-                            contextData.files += `\n\n==== DYNAMICALLY LOADED DEPENDENCIES (READ THESE FOR SIGNATURES) ====\nThe following files were identified as relevant dependencies. Use their definitions to avoid hallucinating functions:\n\n${dependencyContext}\n=========================================\n`;
+                            contextData.files += `\n\n==== DYNAMICALLY LOADED DEPENDENCIES ====\n${dependencyContext}\n=========================================\n`;
                         }
                     }
                 }
-            } catch (e) {
-                console.error("Dynamic context retrieval failed:", e);
-            }
+            } catch (e) { }
         }
 
-        // --- STEP 2: PREPARE MAIN PROMPT ---
-        const baseContext = await env.contextManager.getContextContent();
+        const baseContext = await env.contextManager.getContextContent({
+            importedSkillIds: importedSkills
+        });
         contextData.tree = baseContext.projectTree;
-        contextData.files = baseContext.selectedFilesContent + contextData.files; // Append dynamic deps
+        contextData.files = baseContext.selectedFilesContent + contextData.files; 
         contextData.skills = baseContext.skillsContent;
 
         let userPromptContent = params.user_prompt || `Generate code for ${params.file_path}`;
@@ -124,26 +118,29 @@ Example Output:
                 const fileUri = vscode.Uri.joinPath(env.workspaceRoot.uri, params.file_path);
                 const fileContentBytes = await vscode.workspace.fs.readFile(fileUri);
                 const existingContent = Buffer.from(fileContentBytes).toString('utf8');
-                userPromptContent = `I am working on the file \`${params.file_path}\`. Here is its current content:\n\n\`\`\`\n${existingContent}\n\`\`\`\n\nMy instruction is: ${userPromptContent}`;
+                userPromptContent = `I am working on the file \`${params.file_path}\`. Current content:\n\n\`\`\`\n${existingContent}\n\`\`\`\n\nInstruction: ${userPromptContent}`;
             } catch (error) { }
         }
 
         const coderSystemPrompt = await getCoderSystemPrompt(params.system_prompt || '', env.currentPlan.objective, contextData);
         const coderUserPrompt: ChatMessage = { role: 'user', content: userPromptContent };
         
-        // --- STEP 3: GENERATE CODE ---
         const responseText = await env.lollmsApi.sendChat([coderSystemPrompt, coderUserPrompt], null, signal, modelOverride);
 
         const codeBlockRegex = /```(?:[^\n]*)\n([\s\S]+?)\n```/s;
         const match = responseText.match(codeBlockRegex);
         const generatedCode = match ? match[1].trim() : responseText.trim();
 
-        if (!generatedCode) {
-            return { success: false, output: `Coder agent failed to produce any valid code. Full response:\n${responseText}` };
+        if (!generatedCode || generatedCode === responseText) {
+             const fallbackMatch = responseText.match(/([\s\S]*)/);
+             if (fallbackMatch && responseText.includes('import') || responseText.includes('def ')) {
+             } else {
+                 return { success: false, output: `Coder agent failed to produce a valid code block.` };
+             }
         }
 
         if (!env.workspaceRoot) {
-            return { success: false, output: "Error: No active workspace folder to write the file." };
+            return { success: false, output: "Error: No active workspace folder." };
         }
 
         try {
@@ -153,7 +150,7 @@ Example Output:
             await vscode.workspace.fs.writeFile(fileUri, Buffer.from(generatedCode, 'utf8'));
             return { success: true, output: `Successfully generated and wrote code to file: ${params.file_path}` };
         } catch (error: any) {
-            return { success: false, output: `Error writing generated code to file ${params.file_path}: ${error.message}` };
+            return { success: false, output: `Error writing generated code: ${error.message}` };
         }
     }
 };

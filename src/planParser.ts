@@ -23,7 +23,8 @@ export class PlanParser {
         signal?: AbortSignal,
         modelOverride?: string,
         chatHistory: ChatMessage[] = [],
-        allowedTools?: ToolDefinition[]
+        allowedTools?: ToolDefinition[],
+        importedSkills?: string[]
     ): Promise<{ plan: Plan | null, rawResponse: string, error?: string }> {
         
         const toolsToUse = allowedTools || this.toolManager.getEnabledTools();
@@ -31,7 +32,6 @@ export class PlanParser {
         let lastResponse = "";
         let lastError = "";
         
-        // Prepare initial messages outside the loop to preserve the base request
         let messages: ChatMessage[] = [];
         try {
             const systemPromptMessage = await this.getPlannerSystemPrompt(!!existingPlan, toolsToUse);
@@ -46,7 +46,10 @@ ${failureReason}
 The user needs you to interpret this result or fix the error. Generate a NEW plan fragment to finish the objective.`;
                 messages.push({ role: 'user', content: failureContext });
             } else {
-                const projectContext = await this.contextManager.getContextContent({ includeTree: true });
+                const projectContext = await this.contextManager.getContextContent({ 
+                    includeTree: true,
+                    importedSkillIds: importedSkills
+                });
                 
                 const groundingBlock = `
 # PROJECT WORLD STATE
@@ -56,13 +59,13 @@ ${projectContext.text}
 # ARCHITECT PROTOCOL:
 1. Output ONLY the JSON plan.
 2. Every plan MUST end with \`submit_response\`.
-3. **DO NOT USE TEMPLATES**: Do NOT use syntax like \`{{ ... | regex_search ... }}\`. You CANNOT perform parsing in the final response.
-4. **PROTOCOL**: 
+3. **SKILLS ADHERENCE**: If a Skill (e.g. Moltbook) is present in the context, your plan MUST implement the specific logic and security rules defined in that skill.
+4. **DO NOT USE TEMPLATES**: Do NOT use syntax like \`{{ ... | regex_search ... }}\`. You CANNOT perform parsing in the final response.
+5. **PROTOCOL**: 
    - Execute tool.
    - Observe output.
    - If output contains the answer, create a NEW task to \`submit_response\` with the HARDCODED answer.
 `;
-                // Convert chat history to passive context to preventing role confusion
                 const historyContext = this.formatHistoryForContext(chatHistory);
 
                 messages.push({ 
@@ -76,41 +79,48 @@ ${projectContext.text}
 
         for (let i = 0; i <= this.maxRetries; i++) {
             try {
+                if (signal?.aborted) return { plan: null, rawResponse: "", error: "Aborted" };
+
                 if (i > 0) {
-                    // This is a retry
                     console.log(`PlanParser: Retry attempt ${i}. Last error: ${lastError}`);
                     
                     const correctionPrompt = { 
                         role: 'system' as const, 
-                        content: `❌ **JSON PARSING FAILED**
-The previous response was not valid JSON or did not match the schema.
-**Error Details:** ${lastError}
+                        content: `❌ **CRITICAL ERROR: INVALID JSON FORMAT**
+Your previous response was not a valid plan. You probably tried to answer the user directly or output shell commands without the JSON wrapper.
 
-**INSTRUCTIONS FOR RETRY:**
-1. Fix the JSON syntax errors.
-2. Ensure you are returning a SINGLE valid JSON object containing a "tasks" array.
-3. Do not include any text before or after the JSON (no markdown fences if possible, or strictly \`\`\`json ... \`\`\`).
-4. Output the corrected JSON now.` 
+**MANDATORY CORRECTION:**
+1. You MUST use the \`submit_response\` tool to give the answer.
+2. You MUST NOT output raw text like "To set a variable, use..." or "setx MYVAR...".
+3. Your response must be valid JSON ONLY.
+4. Start your response with \`{\` and end with \`}\`.
+
+**EXAMPLE OF CORRECT OUTPUT FOR YOUR TASK:**
+{
+  "objective": "${objective.substring(0, 50)}...",
+  "scratchpad": "I will provide the requested information using the submit_response tool.",
+  "tasks": [
+    { "id": 1, "task_type": "simple_action", "action": "submit_response", "description": "Provide the requested instructions", "parameters": {"response": "The detailed instructions go here..."} }
+  ]
+}` 
                     };
                     
-                    // Add the previous response and the correction prompt to the history
                     messages.push({ role: 'assistant', content: lastResponse });
                     messages.push(correctionPrompt);
                 }
 
                 lastResponse = await this.lollmsApi.sendChat(messages, null, signal, modelOverride);
                 
-                // CRITICAL: Strip thinking tags first to avoid parsing "crud" JSON from thought process
                 const cleanResponse = stripThinkingTags(lastResponse);
                 const jsonString = this.extractJson(cleanResponse);
 
-                if (!jsonString) throw new Error("No valid JSON structure found in response (expected { ... }).");
+                if (!jsonString) throw new Error("Could not find a valid JSON object containing the 'tasks' key. Ensure you are not providing conversational text.");
 
                 let plan: Plan;
                 try {
                     plan = JSON.parse(jsonString) as Plan;
                 } catch (e: any) {
-                    throw new Error(`JSON Parse Error: ${e.message}. Content was: ${jsonString.substring(0, 100)}...`);
+                    throw new Error(`JSON Parse Error: ${e.message}`);
                 }
 
                 this.validateAndInitializePlan(plan, toolsToUse);
@@ -119,9 +129,8 @@ The previous response was not valid JSON or did not match the schema.
 
             } catch (error: any) {
                 lastError = error.message;
-                // If this was the last retry, return failure
                 if (i >= this.maxRetries) {
-                    return { plan: null, rawResponse: lastResponse, error: `Failed after ${this.maxRetries} retries. Last error: ${lastError}` };
+                    return { plan: null, rawResponse: lastResponse, error: `Failed after ${this.maxRetries} retries. ${lastError}` };
                 }
             }
         }
@@ -134,7 +143,6 @@ The previous response was not valid JSON or did not match the schema.
         let text = "## PREVIOUS CONVERSATION HISTORY\n(For Context Only - Do not repeat previous actions unless requested)\n\n";
         
         for (const msg of history) {
-            // Skip system messages to prevent persona injection from history
             if (msg.role === 'system') continue; 
             
             let contentStr = "";
@@ -144,7 +152,6 @@ The previous response was not valid JSON or did not match the schema.
                 contentStr = String(msg.content);
             }
             
-            // Truncate very long messages (e.g. large file reads) to save tokens and focus
             if (contentStr.length > 3000) {
                 contentStr = contentStr.substring(0, 3000) + "\n... [truncated] ...";
             }
@@ -158,7 +165,6 @@ The previous response was not valid JSON or did not match the schema.
     private validateAndInitializePlan(plan: any, allowedTools: ToolDefinition[]): void {
         if (!plan || typeof plan !== 'object') throw new Error("Plan is not an object.");
         
-        // Support common hallucinations for the task list key
         if (!plan.tasks) {
             if (plan.steps && Array.isArray(plan.steps)) plan.tasks = plan.steps;
             else if (plan.plan && Array.isArray(plan.plan)) plan.tasks = plan.plan;
@@ -178,27 +184,19 @@ The previous response was not valid JSON or did not match the schema.
     }
 
     public extractJson(text: string): string | null {
-        // Try to match standard markdown json block
+        const firstBrace = text.indexOf('{');
+        const lastBrace = text.lastIndexOf('}');
+        
+        if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+            const candidate = text.substring(firstBrace, lastBrace + 1);
+            if (candidate.includes('"tasks"') || candidate.includes('"steps"')) {
+                return candidate;
+            }
+        }
+
         const markdownMatch = text.match(/```(?:json)?\s*([\s\S]+?)\s*```/);
         if (markdownMatch) {
             return markdownMatch[1].trim();
-        }
-        
-        // Try to match raw JSON object
-        const objectMatch = text.match(/\{[\s\S]*\}/);
-        if (objectMatch) {
-            return objectMatch[0].trim();
-        }
-
-        // Try to match raw JSON array (sometimes models output array of tasks directly)
-        // If so, we wrap it in the expected plan structure
-        const arrayMatch = text.match(/\[\s*\{[\s\S]*\}\s*\]/);
-        if (arrayMatch) {
-            return JSON.stringify({
-                objective: "Inferred Objective from Task List",
-                scratchpad: "Plan generated as raw task list.",
-                tasks: JSON.parse(arrayMatch[0])
-            });
         }
 
         return null;
@@ -217,19 +215,32 @@ The previous response was not valid JSON or did not match the schema.
 You are the **Plan Architect**. 
 
 ### MANDATORY CONSTRAINTS:
-1. **NO CONVERSATION**: Output ONLY the JSON object.
-2. **DATA EXTRACTION RULES**: 
-   - **NEVER** use \`{{ ... | regex_search ... }}\` or Jinja templates.
-   - **NEVER** assume you can parse output in the \`submit_response\`.
-   - You MUST instruct the agent to run a command, and then the Supervisor will observe the output.
-3. **CHRONOLOGY**: Plan steps are executed in order.
+1. **JSON ONLY**: Your response MUST be a single JSON object.
+2. **NO CONVERSATION**: Do NOT explain your plan. Do NOT chat. 
+3. **NO RAW OUTPUT**: Do NOT output shell commands or code snippets as raw text. Everything must be inside a tool call.
+4. **MANDATORY START**: Your response MUST start with the character \`{\`.
+5. **SKILL USE**: If there is a **Skill** in the context (like Moltbook), you MUST refer to its documentation for the correct API endpoints, auth headers, and logic.
+
+### PROHIBITED BEHAVIOR:
+- **Do not** start with "Certainly!" or "Here is the plan".
+- **Do not** provide the answer directly in markdown.
+- **Do not** output a bash/powershell script block unless it is a parameter of a tool.
+
+### EXAMPLE: Skill-based Implementation
+**User:** "Add login feature to my moltbook script"
+**Output:**
+{
+  "objective": "Update moltbook script with login logic",
+  "scratchpad": "I will read the moltbook skill documentation to find the correct registration endpoint, then update the script.",
+  "tasks": [
+    { "id": 1, "task_type": "simple_action", "action": "read_file", "description": "Read current script", "parameters": {"path": "moltbook_interact.py"} },
+    { "id": 2, "task_type": "simple_action", "action": "generate_code", "description": "Implement login logic based on Moltbook Skill", "parameters": {"file_path": "moltbook_interact.py", "user_prompt": "Add the /agents/register endpoint logic as defined in the Moltbook skill documentation."} },
+    { "id": 3, "task_type": "simple_action", "action": "submit_response", "description": "Notify user", "parameters": {"response": "Login logic has been added to moltbook_interact.py."} }
+  ]
+}
 
 ### Tools Available:
 ${toolDescriptions}
-
-### Variable Use:
-Reference result of task ID 1 like this: \`{{tasks[1].result}}\`. 
-**WARNING**: This only pastes the RAW string output. It does NOT extract data.
 
 ### Format:
 \`\`\`json

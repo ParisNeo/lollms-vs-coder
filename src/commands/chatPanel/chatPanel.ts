@@ -625,7 +625,6 @@ export class ChatPanel {
         await this.waitForWebviewReady();
     }
 
-    // --- AGENT MODE / INPUT INTERCEPTION ---
     if (this._inputResolver) {
         const text = (typeof message.content === 'string') ? message.content : "User provided input.";
         const resolver = this._inputResolver;
@@ -651,7 +650,6 @@ export class ChatPanel {
         return;
     }
 
-    // --- STANDARD CHAT ---
     await this.addMessageToDiscussion(message);
 
     const { id: processId, controller } = this.processManager.register(this.discussionId, 'Generating response...');
@@ -693,8 +691,6 @@ export class ChatPanel {
         }
     }
 
-    // --- CONTEXT ---
-    // Fetch context components for the structured prompt
     const importedIds = this._currentDiscussion?.importedSkills || [];
     const contextData = await this._contextManager.getContextContent({ importedSkillIds: importedIds });
     const context = {
@@ -828,7 +824,6 @@ export class ChatPanel {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const forceFullCode = config.get<boolean>('forceFullCodePath') || false;
         
-        // Use the new structured context method
         const systemPrompt = await getProcessedSystemPrompt(
             'chat', 
             this._discussionCapabilities, 
@@ -857,7 +852,6 @@ export class ChatPanel {
 
         const addPedagogical = config.get<boolean>('addPedagogicalInstruction');
 
-        // Modify the LAST user message only (the current prompt)
         const lastMsgIndex = messagesToSend.length - 1;
         if (lastMsgIndex >= 0) {
             const lastMsg = messagesToSend[lastMsgIndex];
@@ -1042,8 +1036,6 @@ export class ChatPanel {
   }
 
   public handleProjectExecutionResult(output: string, success: boolean) {
-      // Changed from 'system' to 'user' per upgrade request:
-      // "If there are returns from the system (errors, execution output ...) append them to the user message so the llm sees them as if the user did some execution and returned useful information"
       const message: ChatMessage = {
           id: 'execution_result_' + Date.now() + Math.random().toString(36).substring(2),
           role: 'user',
@@ -1198,7 +1190,6 @@ export class ChatPanel {
                   await this._discussionManager.saveDiscussion(this._currentDiscussion);
               }
               
-              // No longer adding a visible bubble. The context update will reflect changes in the sidebar/top bubble.
               this.updateContextAndTokens();
               vscode.window.showInformationMessage(`Imported ${selected.length} skills into context.`);
           }
@@ -1341,7 +1332,7 @@ export class ChatPanel {
             case 'webview-ready':
                 console.log("ChatPanel: JS Ready signal received.");
                 this._isWebviewReady = true;
-                this._viewReadyResolver(); // Resolve promise immediately
+                this._viewReadyResolver();
                 if (this._isLoadPending) {
                     this.loadDiscussion();
                 }
@@ -1350,7 +1341,11 @@ export class ChatPanel {
                 vscode.window.showErrorMessage(message.message);
                 break;
             case 'sendMessage':
-                await this.sendMessage(message.message, message.autoContext);
+                const userMsg = message.message;
+                if (!userMsg.id) {
+                    userMsg.id = 'user_' + Date.now() + Math.random().toString(36).substring(2);
+                }
+                await this.sendMessage(userMsg, message.autoContext);
                 break;
             case 'runAutoContext':
                 await this.handleManualAutoContext(message.prompt);
@@ -1495,7 +1490,6 @@ export class ChatPanel {
                 if (this._tokenAbortController) {
                     this._tokenAbortController.abort();
                     this._tokenAbortController = null;
-                    // Note: Abort will trigger logic in updateContextAndTokens catch block
                 }
                 break;
             case 'copyToClipboard':
@@ -1664,7 +1658,6 @@ Task:
                         if (message.filePath && vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
                             saveUri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, message.filePath);
                         } else {
-                            // Ask user where to save
                             saveUri = await vscode.window.showSaveDialog({
                                 title: 'Save Generated Image',
                                 filters: { 'Images': ['png'] },
@@ -2006,6 +1999,11 @@ Task:
                                 <span>AI Configuration</span>
                                 <span class="menu-arrow">›</span>
                             </div>
+                            <div class="menu-item has-submenu" data-target="menu-response-style">
+                                <i class="codicon codicon-quote"></i>
+                                <span>Response Style</span>
+                                <span class="menu-arrow">›</span>
+                            </div>
                             <div class="menu-separator"></div>
                             <button class="menu-item" id="discussionToolsButton"><i class="codicon codicon-tools"></i><span>Advanced Tools</span></button>
                             <button class="menu-item" id="agentToolsButton"><i class="codicon codicon-briefcase"></i><span>Agent Tools List</span></button>
@@ -2053,6 +2051,23 @@ Task:
                             
                             <div style="padding: 0 12px 12px 12px;">
                                 <button id="refresh-models-btn" class="code-action-btn" style="width:100%; justify-content:center;"><i class="codicon codicon-refresh"></i> Refresh Models</button>
+                            </div>
+                        </div>
+
+                        <!-- Response Style View -->
+                        <div class="menu-view hidden" id="menu-response-style">
+                            <div class="menu-header">
+                                <button class="back-btn"><i class="codicon codicon-arrow-left"></i></button>
+                                <span>Response Style</span>
+                            </div>
+                            <div class="menu-item-radio">
+                                <label><input type="radio" name="respMode" value="silent"> 🤐 Silent (Code Only)</label>
+                            </div>
+                            <div class="menu-item-radio">
+                                <label><input type="radio" name="respMode" value="balanced"> ⚖️ Balanced</label>
+                            </div>
+                            <div class="menu-item-radio">
+                                <label><input type="radio" name="respMode" value="pedagogical"> 🎓 Pedagogical</label>
                             </div>
                         </div>
                     </div>
@@ -2128,7 +2143,7 @@ Task:
             </div>
         </div>
 
-        <!-- STAGING MODAL (NEW) -->
+        <!-- STAGING MODAL -->
         <div id="staging-modal" class="modal">
             <div class="modal-content">
                 <div class="modal-header">
@@ -2136,7 +2151,6 @@ Task:
                     <span class="close-btn" id="staging-close-btn">&times;</span>
                 </div>
                 <div class="modal-body" id="staging-list">
-                    <!-- Checkboxes injected here -->
                 </div>
                 <div class="modal-footer">
                     <button id="staging-next-btn">Next (Generate Message)</button>
@@ -2168,7 +2182,6 @@ Task:
                     <span class="close-btn" id="history-close-btn">&times;</span>
                 </div>
                 <div class="modal-body" id="history-list">
-                    <!-- Items injected here -->
                 </div>
             </div>
         </div>
@@ -2296,7 +2309,7 @@ Task:
                         <div class="checkbox-grid">
                             <div class="checkbox-container">
                                 <label class="switch"><input type="checkbox" id="mode-funMode"><span class="slider"></span></label>
-                                <label for="mode-funMode">Fun Mode ðŸ¤ª</label>
+                                <label for="mode-funMode">Fun Mode 🤪</label>
                             </div>
                         </div>
                     </div>

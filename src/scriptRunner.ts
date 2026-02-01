@@ -3,6 +3,7 @@ import { ChatPanel } from './commands/chatPanel/chatPanel';
 import * as fs from 'fs';
 import * as path from 'path';
 import { runCommandInTerminal } from './extensionState';
+import { getAvailableShells } from './utils';
 
 export class ScriptRunner {
   private pythonExtApi: any;
@@ -11,10 +12,45 @@ export class ScriptRunner {
     this.pythonExtApi = pythonExtApi;
   }
 
+  private toUnixPath(p: string): string {
+    let unixPath = p.replace(/\\/g, '/');
+    if (process.platform === 'win32') {
+        unixPath = unixPath.replace(/^([a-zA-Z]):/, (match, drive) => `/${drive.toLowerCase()}`);
+    }
+    return unixPath;
+  }
+
   /**
-   * Runs a script extracted from a chat code block.
-   * Now uses the consolidated terminal logic for visibility and stoppable execution.
+   * Asks the LLM to translate a script to a compatible shell.
    */
+  private async translateScript(code: string, fromLang: string, toLang: string, panel: ChatPanel): Promise<string | null> {
+    const systemPrompt = `You are a script translation expert. 
+Translate the provided ${fromLang} script into a ${toLang} script for the user's environment (${process.platform}).
+- Ensure all logic (loops, conditionals, variables) is correctly converted.
+- Provide ONLY the code block. 
+- No conversational text.`;
+
+    const userPrompt = `Translate this ${fromLang} to ${toLang}:\n\n\`\`\`${fromLang}\n${code}\n\`\`\``;
+
+    return await vscode.window.withProgress({
+        location: vscode.ProgressLocation.Notification,
+        title: `Lollms: Translating script to ${toLang}...`,
+        cancellable: false
+    }, async () => {
+        try {
+            const response = await panel._lollmsAPI.sendChat([
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt }
+            ]);
+            // Extract code from response
+            const match = response.match(/```(?:\w+)?\n([\s\S]+?)\n```/);
+            return match ? match[1].trim() : response.trim();
+        } catch (e) {
+            return null;
+        }
+    });
+  }
+
   public async runScript(code: string, language: string, panel: ChatPanel, workspaceFolder: vscode.WorkspaceFolder) {
     if (!workspaceFolder) {
         panel.addMessageToDiscussion({ role: 'system', content: 'Cannot execute script: No workspace folder is open.' });
@@ -22,137 +58,141 @@ export class ScriptRunner {
     }
     const workspaceRoot = workspaceFolder.uri.fsPath;
     const isWin = process.platform === 'win32';
+    const availableShells = await getAvailableShells();
 
-    // Create a unique temporary file for this execution
-    const tempDir = path.join(workspaceRoot, '.lollms', 'temp_scripts');
-    try {
-        if (!fs.existsSync(tempDir)) {
-            fs.mkdirSync(tempDir, { recursive: true });
+    let currentCode = code;
+    let currentLang = language.toLowerCase();
+
+    // --- AGENTIC TRANSLATION LOGIC ---
+    if (isWin && (currentLang === 'bash' || currentLang === 'sh' || currentLang === 'shell')) {
+        if (!availableShells.includes('bash')) {
+            const choice = await vscode.window.showWarningMessage(
+                "Bash is not available on this Windows machine. Would you like the AI to translate this script to PowerShell?",
+                "Translate & Run", "Cancel"
+            );
+            if (choice === "Translate & Run") {
+                const translated = await this.translateScript(currentCode, currentLang, 'powershell', panel);
+                if (translated) {
+                    currentCode = translated;
+                    currentLang = 'powershell';
+                    panel.addMessageToDiscussion({ role: 'system', content: `🔄 **Script Translated:** Original ${language} converted to PowerShell for compatibility.` });
+                } else {
+                    panel.addMessageToDiscussion({ role: 'system', content: "❌ Translation failed." });
+                    return;
+                }
+            } else {
+                return;
+            }
         }
-    } catch (error: any) {
-        panel.addMessageToDiscussion({ role: 'system', content: `Failed to create temporary script directory: ${error.message}` });
-        return;
     }
+
+    const tempDir = path.join(workspaceRoot, '.lollms', 'temp_scripts');
+    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
     
     let fullCommand: string;
     let fileExtension: string;
-    const originalCode = code; 
+    let targetShell: 'powershell' | 'cmd' | 'bash' | 'zsh' | 'fish' = isWin ? 'powershell' : 'bash';
+    const originalCode = currentCode; 
 
     const tempFileBase = path.join(tempDir, `lollms_script_${Date.now()}`);
     let tempFilePath: string;
 
-    const langLower = language.toLowerCase();
-
-    switch (langLower) {
+    switch (currentLang) {
       case 'py':
       case 'python': {
         fileExtension = '.py';
         tempFilePath = `${tempFileBase}${fileExtension}`;
-        fs.writeFileSync(tempFilePath, code);
-        
-        let pythonExecutable = 'python'; // Default fallback
-
-        // Try to respect the user's configured VS Code Python interpreter
+        fs.writeFileSync(tempFilePath, currentCode);
+        let pythonExecutable = 'python'; 
         if (this.pythonExtApi) {
             try {
                 const execDetails = this.pythonExtApi.settings.getExecutionDetails(workspaceFolder.uri);
-                if (execDetails?.execCommand?.[0]) {
-                    pythonExecutable = execDetails.execCommand[0];
-                }
-            } catch (error) {
-                console.error("Error getting Python execution details:", error);
-            }
+                if (execDetails?.execCommand?.[0]) pythonExecutable = execDetails.execCommand[0];
+            } catch (error) {}
         }
-        
-        // Use -u for unbuffered output to ensure real-time terminal updates
-        fullCommand = `"${pythonExecutable}" -u "${tempFilePath}"`;
+        if (isWin) {
+            fullCommand = `& '${pythonExecutable}' -u '${tempFilePath.replace(/\\/g, '/')}'`;
+            targetShell = 'powershell';
+        } else {
+            fullCommand = `"${pythonExecutable}" -u "${tempFilePath}"`;
+            targetShell = 'bash';
+        }
         break;
       }
       case 'javascript':
       case 'js':
         fileExtension = '.js';
         tempFilePath = `${tempFileBase}${fileExtension}`;
-        fs.writeFileSync(tempFilePath, code);
-        fullCommand = `node "${tempFilePath}"`;
+        fs.writeFileSync(tempFilePath, currentCode);
+        fullCommand = `node '${tempFilePath.replace(/\\/g, '/')}'`;
         break;
       case 'typescript':
       case 'ts':
         fileExtension = '.ts';
         tempFilePath = `${tempFileBase}${fileExtension}`;
-        fs.writeFileSync(tempFilePath, code);
-        // Assumes ts-node or npx ts-node is available
-        fullCommand = `npx ts-node "${tempFilePath}"`;
+        fs.writeFileSync(tempFilePath, currentCode);
+        fullCommand = `npx ts-node '${tempFilePath.replace(/\\/g, '/')}'`;
         break;
       case 'bash':
       case 'sh':
       case 'shell':
-        fileExtension = isWin ? '.bat' : '.sh';
+      case 'zsh':
+      case 'fish':
+        fileExtension = '.sh';
         tempFilePath = `${tempFileBase}${fileExtension}`;
-        fs.writeFileSync(tempFilePath, code);
-        
+        fs.writeFileSync(tempFilePath, currentCode);
+        const requestedShell = (currentLang === 'zsh' || currentLang === 'fish') ? currentLang : 'bash';
+        const shellToUse = availableShells.includes(requestedShell) ? requestedShell : (isWin ? 'bash' : 'sh');
         if (isWin) {
-            // Check if bash exists on Windows (Git Bash, WSL, etc.)
-            fullCommand = `bash "${tempFilePath}"`;
-            panel.addMessageToDiscussion({ 
-                role: 'system', 
-                content: `⚠️ **Windows Note:** Attempting to run a bash script. This requires Git Bash or WSL to be in your PATH. If this fails, ask the AI to generate a Batch (.bat) or PowerShell (.ps1) script instead.` 
-            });
+            const unixPath = this.toUnixPath(tempFilePath);
+            fullCommand = `${shellToUse} '${unixPath}'`;
+            targetShell = 'bash';
         } else {
-            fullCommand = `bash "${tempFilePath}"`;
+            fullCommand = `${shellToUse} "${tempFilePath}"`;
+            targetShell = shellToUse as any;
         }
         break;
       case 'powershell':
       case 'pwsh':
         fileExtension = '.ps1';
         tempFilePath = `${tempFileBase}${fileExtension}`;
-        fs.writeFileSync(tempFilePath, code);
-        fullCommand = `powershell -ExecutionPolicy Bypass -File "${tempFilePath}"`;
+        fs.writeFileSync(tempFilePath, currentCode);
+        if (isWin) {
+            fullCommand = `powershell -ExecutionPolicy Bypass -File '${tempFilePath.replace(/\\/g, '/')}'`;
+            targetShell = 'powershell';
+        } else {
+            fullCommand = `pwsh -File "${tempFilePath}"`;
+            // @ts-ignore
+            targetShell = 'pwsh';
+        }
         break;
       case 'batch':
       case 'cmd':
       case 'bat':
         fileExtension = '.bat';
         tempFilePath = `${tempFileBase}${fileExtension}`;
-        fs.writeFileSync(tempFilePath, code);
+        fs.writeFileSync(tempFilePath, currentCode);
         fullCommand = `"${tempFilePath}"`;
+        targetShell = 'cmd';
         break;
       default:
         panel.addMessageToDiscussion({ role: 'system', content: `Unsupported language for execution: ${language}` });
         return;
     }
     
-    panel.addMessageToDiscussion({ role: 'system', content: `🚀 Executing ${language} script in terminal... (You can stop it manually in the Terminal panel)` });
+    panel.addMessageToDiscussion({ role: 'system', content: `🚀 Executing ${currentLang} script in terminal...` });
     
     try {
-        // Execute in terminal using our centralized task-based logic
-        const result = await runCommandInTerminal(
-            fullCommand, 
-            workspaceRoot, 
-            `Lollms Script: ${langLower}`
-        );
-        
-        const resultMessage = {
-            role: 'system' as const,
-            content: `**Execution Result (Success: ${result.success})**\n\n\`\`\`\n${result.output || '(No output)'}\n\`\`\``
-        };
+        const result = await runCommandInTerminal(fullCommand, workspaceRoot, `Lollms Script: ${currentLang}`, undefined, { shell: targetShell });
+        const resultMessage = { role: 'system' as const, content: `**Execution Result (Success: ${result.success})**\n\n\`\`\`\n${result.output || '(No output)'}\n\`\`\`` };
         panel.addMessageToDiscussion(resultMessage);
-        
-        // Analyze for potential fixes or explanation using the AI
         if (result.output.trim().length > 0) {
-            panel.analyzeExecutionResult(originalCode, language, result.output, result.success ? 0 : 1);
+            panel.analyzeExecutionResult(originalCode, currentLang, result.output, result.success ? 0 : 1);
         }
-
     } catch (err: any) {
         panel.addMessageToDiscussion({ role: 'system', content: `❌ Terminal execution error: ${err.message}` });
     } finally {
-        // Cleanup the temporary script file
-        try {
-            if (fs.existsSync(tempFilePath)) {
-                fs.unlinkSync(tempFilePath);
-            }
-        } catch (err: any) {
-            console.error(`Failed to delete temporary script file: ${tempFilePath}`, err);
-        }
+        try { if (fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath); } catch (err: any) {}
     }
   }
 }

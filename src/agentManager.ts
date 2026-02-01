@@ -160,7 +160,8 @@ export class AgentManager {
                     controller.signal, 
                     architectModel,
                     this.chatHistory,
-                    this.toolManager.getEnabledTools()
+                    this.toolManager.getEnabledTools(),
+                    this.currentDiscussion?.importedSkills
                 );
                 
                 if (controller.signal.aborted) return;
@@ -454,7 +455,8 @@ ${truncatedOutput}
             signal,
             modelOverride,
             this.chatHistory,
-            this.toolManager.getEnabledTools()
+            this.toolManager.getEnabledTools(),
+            this.currentDiscussion?.importedSkills
         );
 
         if (signal.aborted || !planResult.plan) return false;
@@ -536,7 +538,8 @@ ${truncatedOutput}
                 signal,
                 plannerModel,
                 this.chatHistory,
-                this.toolManager.getEnabledTools()
+                this.toolManager.getEnabledTools(),
+                this.currentDiscussion?.importedSkills
             );
 
             if (!planResult.plan) return { success: false, output: "Failed to generate new plan." };

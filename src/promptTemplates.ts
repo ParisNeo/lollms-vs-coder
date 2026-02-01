@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as os from 'os';
-import { DiscussionCapabilities } from './utils';
+import { DiscussionCapabilities, getAvailableShells } from './utils';
 
 /**
  * This file centralizes all system prompt logic to ensure consistent AI behavior
@@ -14,7 +14,6 @@ export class PromptTemplates {
      */
     private static getFormatInstructions(capabilities?: DiscussionCapabilities, forceFullCode?: boolean): string {
         
-        // 1. Force Full Code Mode (Overrides everything else)
         if (forceFullCode) {
             return `
 ### FILE MODIFICATION RULES (STRICT FULL CONTENT)
@@ -29,12 +28,10 @@ Format:
 `;
         }
 
-        // --- DYNAMIC FORMAT SELECTION ---
         let allowedFormats = [];
         let formatInstructions = "";
         let logicInstructions = "";
 
-        // Default if capabilities are missing (legacy fallback)
         let useFull = true;
         let useDiff = false;
         let useAider = false;
@@ -45,7 +42,6 @@ Format:
             useAider = capabilities.generationFormats.aider;
         }
 
-        // Add Full File Format
         if (useFull) {
             allowedFormats.push("Full File Content");
             formatInstructions += `
@@ -56,7 +52,6 @@ Format:
 `;
         }
 
-        // Add Aider Format
         if (useAider) {
             allowedFormats.push("SEARCH/REPLACE Block");
             formatInstructions += `
@@ -74,7 +69,6 @@ Format:
 `;
         }
 
-        // Add Diff Format
         if (useDiff) {
             allowedFormats.push("Unified Diff");
             formatInstructions += `
@@ -91,7 +85,6 @@ Format:
 `;
         }
 
-        // Logic for privileging formats
         if (useAider && useDiff) {
             logicInstructions += "PREFERENCE: Use SEARCH/REPLACE (Aider) over Diff when possible for surgical edits.\n";
         }
@@ -107,11 +100,8 @@ Format:
         return `
 ### FILE MODIFICATION RULES
 You may use the following formats: ${allowedFormats.join(', ')}.
-
 ${logicInstructions}
-
 ${formatInstructions}
-
 **CRITICAL**: Ensure the lines surrounding your change match the source code EXACTLY. Do not move code to the end of functions if it belongs at the top.
 `;
     }
@@ -130,8 +120,8 @@ ${formatInstructions}
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const userName = config.get<string>('userInfo.name') || 'Developer';
         const thinkingMode = capabilities?.thinkingMode || config.get<string>('thinkingMode') || 'none';
+        const responseMode = capabilities?.responseMode || config.get<string>('responseMode') || 'balanced';
 
-        // 1. Define Persona
         let persona = customPersonaContent || config.get<string>(
             promptType === 'chat' ? 'chatPersona' :
             promptType === 'agent' ? 'agentPersona' :
@@ -141,18 +131,26 @@ ${formatInstructions}
 
         if (capabilities?.funMode) persona += " Be extremely enthusiastic and use emojis!";
 
-        // 2. Assemble Formatting Instructions
         const formatting = this.getFormatInstructions(capabilities, forceFullCode);
+        const shells = await getAvailableShells();
 
-        // 3. Assemble Environment Context & Final Rules
         const env = `
 ### ENVIRONMENT INFO
-- OS: ${os.platform()}
+- OS Platform: ${os.platform()} (${os.type()} ${os.release()})
 - Developer: ${userName}
 - Date: ${new Date().toISOString().split('T')[0]}
+- Available Shells: ${shells.join(', ')}
 ${memory ? `\n### LONG-TERM MEMORY\n${memory}` : ''}`;
 
-        // Reasoning instruction
+        const agentProtocols = promptType === 'agent' ? `
+### AGENT AUTONOMY & STATE PROTOCOLS
+1. **Self-Evolution**: Extension-provided skills (like Moltbook) are read-only, but you can create/update your own intelligence in \`.lollms/skills/\`. Use \`build_skill\` to refine your capabilities.
+2. **CLI for Agent Strategy**: You are encouraged to build and maintain CLI scripts (e.g. \`moltbook_interact.py\`) that allow you to perform complex API tasks via \`execute_command\`. This makes your actions reproducible and robust.
+3. **Project Memory**: Use \`.lollms/research_notes.md\` to store useful snippets from the web and \`.lollms/project_state.json\` for persistent variables (API keys, heartbeat state, status).
+4. **Investigation**: If you lack a specific skill or API knowledge, use \`research_web_page\` or \`rlm_repl\` to experiment and find answers before committing to a plan.
+5. **Skill Application**: If a **Skill** is in the context, you MUST strictly follow its technical documentation for API endpoints and parameters.
+` : '';
+
         let thinking = '';
         if (thinkingMode !== 'none' && thinkingMode !== 'no_think') {
             thinking = `\n### REASONING PROTOCOL\nBefore outputting code, analyze the file structure. Specifically:
@@ -160,39 +158,57 @@ ${memory ? `\n### LONG-TERM MEMORY\n${memory}` : ''}`;
 - Ensure your edit anchors (SEARCH block or Diff context) are unique and correctly ordered relative to the rest of the function.\n`;
         }
 
-        // Explanation vs Code Only Logic
         let responseStyle = "";
-        const explain = capabilities ? (capabilities.explainCode !== false) : true; // Default true if undefined
         
-        if (explain) {
-            responseStyle = `
-### RESPONSE STYLE
-- **CRITICAL**: You MUST always start your response by explaining what you are doing using the following structure:
-  1. **Problem**: Describe the issue, request, or logic you are addressing.
-  2. **Hypothesis**: Explain your reasoning, the logic of your proposed solution, or your interpretation of the code.
-  3. **Fix**: Briefly outline the changes or steps you are about to provide.
-- Only after this explanation should you provide code blocks or execute tools.
-- Provide clear pedagogical descriptions to teach the user.
+        switch (responseMode) {
+            case 'silent':
+                responseStyle = `
+### RESPONSE STYLE: SILENT (CODE ONLY)
+- **CRITICAL**: You must provide ONLY code blocks or tool executions.
+- **NO CONVERSATION**: Do not explain, apologize, or provide any text outside of the code blocks.
+- If you are answering a question that doesn't involve code, use a markdown block.
+- Zero verbosity. Zero fluff.
 `;
-        } else {
-            responseStyle = `
-### RESPONSE STYLE (CODE ONLY MODE)
-- Minimize conversational filler.
-- Go straight to the code or solution.
-- Do NOT explain unless there is a critical ambiguity or error.
+                break;
+            case 'pedagogical':
+                responseStyle = `
+### RESPONSE STYLE: PEDAGOGICAL (TEACH ME EVERYTHING)
+- **TEACHING MISSION**: You are a mentor. Your goal is not just to provide code, but to ensure the user understands the concepts, the 'why' behind decisions, and the architecture.
+- **DEEP ANALYSIS**: For every task, provide a deep analysis before and after the solution.
+- **STRUCTURED BREAKDOWN**:
+  1. **Problem Analysis**: A detailed deep-dive into the issue.
+  2. **Architectural Decisions**: Why you chose this approach over others.
+  3. **Hypothesis**: The logic path leading to the fix.
+  4. **The Fix**: The implementation.
+  5. **Learning Summary**: Key takeaways and potential edge cases to watch for.
+- Use analogies and clear documentation.
 `;
+                break;
+            case 'balanced':
+            default:
+                responseStyle = `
+### RESPONSE STYLE: BALANCED
+- **STRUCTURED BREAKDOWN**: You MUST always start your response by explaining what you are doing using this structure:
+  1. **Problem**: Describe the issue or request.
+  2. **Hypothesis**: Explain your reasoning or approach.
+  3. **Fix**: Briefly outline the changes.
+- Provide clear descriptions to teach the user while staying concise.
+`;
+                break;
         }
+
+        const shellNote = os.platform() === 'win32' 
+            ? "\n### WINDOWS SHELL NOTE\nYou are in a PowerShell environment. \n- **CRITICAL**: Use \`curl.exe\` instead of \`curl\` to avoid PowerShell alias issues.\n- Ensure strings in commands are escaped correctly for PowerShell."
+            : "";
 
         const finalInstruction = forceFullCode 
             ? `\n# FINAL INSTRUCTION\nYou MUST return the FULL CONTENT of any modified files. Do not output diffs or partial snippets.`
             : `\n# FINAL INSTRUCTION\nEnsure all code modifications are surgical and anchored correctly to the source text. Never hallucinate the position of code.`;
 
-        // --- NEW STRUCTURE ---
         const treeContext = context?.tree || "(No project tree)";
         const filesContext = context?.files || "(No files selected)";
         const skillsContext = context?.skills || "(No skills loaded)";
 
-        // Skills placed BEFORE the file tree and content as requested
         const prompt = `# Personality ROLE
 ${persona}
 
@@ -213,7 +229,7 @@ ${filesContext}
 ${formatting}
 ${responseStyle}
 ${thinking}
-${env}
+${env}${agentProtocols}${shellNote}
 ${finalInstruction}`;
 
         return thinkingMode === 'no_think' ? `/no_think\n${prompt}` : prompt;

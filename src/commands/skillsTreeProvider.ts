@@ -24,11 +24,7 @@ export class SkillsTreeProvider implements vscode.TreeDataProvider<vscode.TreeIt
             return [placeholder];
         }
 
-        // Map skills to a tree structure based on category
-        // Format: category/subcategory/skill
-        
         if (!element) {
-            // Root level
             return this.getNodes(skills, '');
         } else if (element instanceof SkillCategoryItem) {
             return this.getNodes(skills, element.fullPath);
@@ -44,34 +40,23 @@ export class SkillsTreeProvider implements vscode.TreeDataProvider<vscode.TreeIt
         skills.forEach(skill => {
             const category = skill.category ? skill.category.replace(/\\/g, '/') : '';
             
-            // Check if skill belongs to the current parent path
             if (parentPath === '' && !category) {
-                // Root level skill (no category)
                 items.push(new SkillItem(skill));
-            } else if (category.startsWith(parentPath)) {
-                // Calculate relative path from current parent
+            } else if (category === parentPath) {
+                items.push(new SkillItem(skill));
+            } else if (category.startsWith(parentPath ? parentPath + '/' : '')) {
                 const relativePath = parentPath ? category.substring(parentPath.length + 1) : category;
+                const parts = relativePath.split('/');
+                const nextCategorySegment = parts[0];
                 
-                if (!relativePath) {
-                    // Exact match (shouldn't happen if logic is correct for folders vs items, unless skill has same name as category?)
-                    // Actually if category matches parentPath exactly, it means the skill is IN this category.
-                    // But we stripped parentPath. If relativePath is empty, it means we are IN the category.
-                    items.push(new SkillItem(skill));
-                } else {
-                    // It's a subfolder or a skill in a subfolder
-                    const parts = relativePath.split('/');
-                    const nextCategorySegment = parts[0];
-                    
-                    if (parts.length > 0 && !seenCategories.has(nextCategorySegment)) {
-                        const fullCategoryPath = parentPath ? `${parentPath}/${nextCategorySegment}` : nextCategorySegment;
-                        items.push(new SkillCategoryItem(nextCategorySegment, fullCategoryPath));
-                        seenCategories.add(nextCategorySegment);
-                    }
+                if (nextCategorySegment && !seenCategories.has(nextCategorySegment)) {
+                    const fullCategoryPath = parentPath ? `${parentPath}/${nextCategorySegment}` : nextCategorySegment;
+                    items.push(new SkillCategoryItem(nextCategorySegment, fullCategoryPath));
+                    seenCategories.add(nextCategorySegment);
                 }
             }
         });
 
-        // Sort: Categories first, then skills
         return items.sort((a, b) => {
             if (a instanceof SkillCategoryItem && b instanceof SkillItem) return -1;
             if (a instanceof SkillItem && b instanceof SkillCategoryItem) return 1;
@@ -100,5 +85,14 @@ class SkillItem extends vscode.TreeItem {
         this.tooltip = new vscode.MarkdownString(`**${skill.name}**\n\n*${skill.description}*\n\n\`\`\`${skill.language || ''}\n${skill.content}\n\`\`\``);
         this.iconPath = new vscode.ThemeIcon('lightbulb');
         this.contextValue = 'skill';
+        
+        /**
+         * Trigger the Skill Editor Panel when clicking the skill in the sidebar
+         */
+        this.command = {
+            command: 'lollms-vs-coder.editSkill',
+            title: 'Edit Skill',
+            arguments: [this.skill]
+        };
     }
 }

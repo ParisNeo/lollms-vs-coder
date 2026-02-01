@@ -112,20 +112,17 @@ export function handleExtensionMessage(event: MessageEvent) {
                 if (caps) {
                     state.capabilities = caps;
 
-                    // Update Generation Formats (Checkboxes)
                     if (caps.generationFormats) {
                         if (dom.checkGenFull) dom.checkGenFull.checked = caps.generationFormats.fullFile;
                         if (dom.checkGenDiff) dom.checkGenDiff.checked = caps.generationFormats.diff;
                         if (dom.checkGenAider) dom.checkGenAider.checked = caps.generationFormats.aider;
                     }
 
-                    // Update Behavior
                     if (dom.checkBehaviorExplain) {
-                        dom.checkBehaviorExplain.checked = caps.explainCode !== false; // Default true if undefined
+                        dom.checkBehaviorExplain.checked = caps.explainCode !== false;
                     }
 
-                    // Update Legacy Formats (Tool Specific)
-                    if (caps.allowedFormats) {
+                    if (dom.allowedFormats) {
                         if (dom.fmtFullFile) dom.fmtFullFile.checked = caps.allowedFormats.fullFile;
                         if (dom.fmtInsert) dom.fmtInsert.checked = caps.allowedFormats.insert;
                         if (dom.fmtReplace) dom.fmtReplace.checked = caps.allowedFormats.replace;
@@ -141,21 +138,17 @@ export function handleExtensionMessage(event: MessageEvent) {
                     if(dom.capWebSearch) dom.capWebSearch.checked = caps.webSearch;
                     if(dom.capArxivSearch) dom.capArxivSearch.checked = caps.arxivSearch;
                     
-                    // Git Workflow
                     if(dom.capGitWorkflow) dom.capGitWorkflow.checked = caps.gitWorkflow;
                     
                     if(dom.modeFunMode) dom.modeFunMode.checked = caps.funMode;
                     
-                    // Update Thinking Mode selector
                     if (dom.capThinkingMode && caps.thinkingMode) {
                         dom.capThinkingMode.value = caps.thinkingMode;
                     }
 
-                    // Update Herd Mode Inputs (Modal & Menu)
                     if (dom.capHerdMode) dom.capHerdMode.checked = caps.herdMode || false;
                     if (dom.capHerdRounds) dom.capHerdRounds.value = caps.herdRounds || 2;
 
-                    // Update Menu Checkboxes -> These now reflect Visibility (GUI State)
                     const guiState = caps.guiState || { agentBadge: true, autoContextBadge: true, herdBadge: true };
                     
                     if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = guiState.agentBadge;
@@ -166,7 +159,6 @@ export function handleExtensionMessage(event: MessageEvent) {
                         dom.herdConfigSection.style.display = caps.herdMode ? 'block' : 'none';
                     }
 
-                    // Update Visual Indicators
                     if (dom.activeToolsIndicator) {
                         dom.activeToolsIndicator.innerHTML = '';
                         if (caps.arxivSearch) {
@@ -174,12 +166,16 @@ export function handleExtensionMessage(event: MessageEvent) {
                         }
                     }
 
-                    // Toggle Web Search Indicator
                     if (dom.websearchIndicator) {
                         dom.websearchIndicator.style.display = caps.webSearch ? 'flex' : 'none';
                     }
+
+                    if (caps.responseMode) {
+                        dom.respModeRadios.forEach(r => {
+                            if (r.value === caps.responseMode) r.checked = true;
+                        });
+                    }
                     
-                    // Update Badges via ui.ts helper
                     updateBadges();
                 }
                 break;
@@ -225,7 +221,6 @@ export function handleExtensionMessage(event: MessageEvent) {
                     });
                     dom.modelSelector.value = message.currentModel || '';
                     
-                    // Update Badges via ui.ts helper
                     updateBadges();
                 }
                 break;
@@ -303,7 +298,6 @@ export function handleExtensionMessage(event: MessageEvent) {
                 if (state.capabilities) {
                     state.capabilities.agentMode = message.isActive;
                 }
-                // Sync badge using shared helper
                 updateBadges();
                 
                 if (!message.isActive) setGeneratingState(false);
@@ -315,7 +309,6 @@ export function handleExtensionMessage(event: MessageEvent) {
             case 'setInputText':
                 if (dom.messageInput) {
                     dom.messageInput.value = message.text;
-                    // Trigger input event to resize textarea
                     dom.messageInput.dispatchEvent(new Event('input'));
                     dom.messageInput.focus();
                 }
@@ -460,7 +453,7 @@ export function handleExtensionMessage(event: MessageEvent) {
                         `;
                         
                         div.onclick = () => {
-                            if (isCurrent) return; // Already here
+                            if (isCurrent) return;
                             vscode.postMessage({ command: 'performRevert', hash: c.hash });
                             if (dom.historyModal) dom.historyModal.classList.remove('visible');
                         };

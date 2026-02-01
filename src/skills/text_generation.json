@@ -1,0 +1,8 @@
+{
+  "id": "lollms-text-gen",
+  "name": "Text Generation",
+  "description": "Basic and streaming text generation using the Lollms Python Client.",
+  "category": "python/lollms_client",
+  "language": "markdown",
+  "content": "# LoLLMs Text Generation\n\nGenerate text using `generate_text` or `generate_from_messages`.\n\n## Basic Text Generation\n\n```python\nfrom lollms_client import LollmsClient, MSG_TYPE\n\n# Callback for streaming\ndef simple_callback(chunk: str, msg_type: MSG_TYPE, params=None, metadata=None) -> bool:\n    if msg_type == MSG_TYPE.MSG_TYPE_CHUNK:\n        print(chunk, end=\"\", flush=True)\n    return True\n\nlc = LollmsClient(llm_binding_name=\"ollama\", llm_binding_config={\"model_name\": \"llama3\"})\n\nresponse = lc.generate_text(\n    prompt=\"Explain quantum computing in one sentence.\",\n    n_predict=100,\n    stream=True,\n    streaming_callback=simple_callback\n)\nprint(f\"\\nResponse: {response}\")\n```\n"
+}

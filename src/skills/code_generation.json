@@ -1,0 +1,8 @@
+{
+  "id": "lollms-code-gen",
+  "name": "Code Generation",
+  "description": "Best practices for generating code and using code interpreter MCPs with Lollms.",
+  "category": "python/lollms_client",
+  "language": "markdown",
+  "content": "# LoLLMs Code Generation\n\nYou can use the client to generate code. For advanced use cases, use an Agentic workflow (Personality) with a code interpreter MCP.\n\n## Example\n\n```python\nfrom lollms_client import LollmsClient\n\nlc = LollmsClient()\n\ncode = lc.generate_text(\n    prompt=\"Write a python function to calculate the fibonacci sequence.\",\n    n_predict=512\n)\n# Use the result to build or execute scripts via MCP tools\n```\n"
+}

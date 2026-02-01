@@ -1,0 +1,8 @@
+{
+  "id": "lollms-mcp",
+  "name": "Generation with MCP",
+  "description": "Enabling the LLM to use external tools via the Model Context Protocol.",
+  "category": "python/lollms_client",
+  "language": "markdown",
+  "content": "# LoLLMs Generation with MCP (Model Context Protocol)\n\nEnable LLMs to use external tools (MCPs) to perform actions (web search, file I/O, etc.).\n\n```python\nfrom lollms_client import LollmsClient\n\nlc = LollmsClient()\n\n# List available tools on the server\ntools = lc.list_mcp_tools()\n\n# Execute a task using tool-calling capabilities\nresponse = lc.generate_with_tools(\n    prompt=\"Find the current price of Bitcoin\",\n    tools=tools\n)\n```\n"
+}

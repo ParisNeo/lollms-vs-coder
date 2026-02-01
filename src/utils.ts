@@ -19,22 +19,19 @@ export interface DynamicModelEntry {
 }
 
 export interface DiscussionCapabilities {
-    // Replaced codeGenType string with specific flags for better granularity
     generationFormats: {
         fullFile: boolean;
         diff: boolean;
-        aider: boolean; // Search/Replace
+        aider: boolean; 
     };
-    // Replaced allowedFormats with specific flags in generationFormats above or kept for legacy tools compatibility?
-    // We will keep allowedFormats for the specific insert/replace/delete tool usage if needed, 
-    // but the PromptTemplates will primarily use generationFormats.
     allowedFormats: {
         fullFile: boolean;
         insert: boolean;
         replace: boolean;
         delete: boolean;
     };
-    explainCode: boolean; // New Flag: Force explanation vs Just Code
+    responseMode: 'silent' | 'balanced' | 'pedagogical';
+    explainCode: boolean; 
     fileRename: boolean;
     fileDelete: boolean;
     fileSelect: boolean;
@@ -59,6 +56,30 @@ export interface DiscussionCapabilities {
         autoContextBadge: boolean;
         herdBadge: boolean;
     };
+}
+
+/**
+ * Detects available shells on the current system (Windows, Linux, macOS).
+ */
+export async function getAvailableShells(): Promise<string[]> {
+    const shells: string[] = [];
+    const platform = os.platform();
+
+    if (platform === 'win32') {
+        shells.push('powershell', 'cmd');
+        try { execSync('pwsh --version', { stdio: 'ignore' }); shells.push('pwsh'); } catch {}
+        try { execSync('bash --version', { stdio: 'ignore' }); shells.push('bash'); } catch {}
+        try { execSync('wsl --list', { stdio: 'ignore' }); shells.push('wsl'); } catch {}
+    } else {
+        // Unix-like (Linux, macOS/Darwin)
+        shells.push('sh');
+        try { execSync('bash --version', { stdio: 'ignore' }); shells.push('bash'); } catch {}
+        try { execSync('zsh --version', { stdio: 'ignore' }); shells.push('zsh'); } catch {}
+        try { execSync('fish --version', { stdio: 'ignore' }); shells.push('fish'); } catch {}
+        try { execSync('pwsh --version', { stdio: 'ignore' }); shells.push('pwsh'); } catch {}
+    }
+
+    return shells;
 }
 
 /**
@@ -165,7 +186,6 @@ export async function getProcessedSystemPrompt(
 }
 
 export function stripThinkingTags(responseText: string): string {
-    // Remove content within <think>, <thinking>, <analysis> tags (case insensitive, multiline)
     return responseText.replace(/<(think|thinking|analysis)>[\s\S]*?<\/\1>/gi, '').trim();
 }
 

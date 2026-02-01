@@ -42,14 +42,26 @@ export function disposeTerminal() {
 }
 
 /**
+ * Normalizes a Windows path to Unix-style for Bash.
+ */
+function toBashPath(p: string): string {
+    let unixPath = p.replace(/\\/g, '/');
+    if (process.platform === 'win32') {
+        unixPath = unixPath.replace(/^([a-zA-Z]):/, (match, drive) => `/${drive.toLowerCase()}`);
+    }
+    return unixPath;
+}
+
+/**
  * Executes a command in a visible VS Code terminal via the Task API.
- * This allows the user to see output in real-time and stop the process manually.
+ * Handles PowerShell, CMD, and various Unix shells (Bash, Zsh, Fish).
  */
 export async function runCommandInTerminal(
     command: string, 
     cwd: string, 
     taskName: string, 
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    options?: { shell?: 'powershell' | 'cmd' | 'bash' | 'zsh' | 'fish' }
 ): Promise<{ success: boolean, output: string }> {
     return new Promise(async (resolve) => {
         const outputDir = path.join(cwd, '.lollms');
@@ -60,32 +72,45 @@ export async function runCommandInTerminal(
         const outputFile = path.join(outputDir, 'last_output.txt');
         const exitCodeFile = path.join(outputDir, 'last_exit_code.txt');
 
-        // Cleanup old results
-        if (fs.existsSync(outputFile)) { 
-            try { fs.unlinkSync(outputFile); } catch(e) {}
-        }
-        if (fs.existsSync(exitCodeFile)) { 
-            try { fs.unlinkSync(exitCodeFile); } catch(e) {}
-        }
+        if (fs.existsSync(outputFile)) { try { fs.unlinkSync(outputFile); } catch(e) {} }
+        if (fs.existsSync(exitCodeFile)) { try { fs.unlinkSync(exitCodeFile); } catch(e) {} }
 
         const isWin = process.platform === 'win32';
         let execution: vscode.ShellExecution;
+        const shellType = options?.shell || (isWin ? 'powershell' : 'bash');
+
+        let sanitizedCommand = command;
+        if (isWin && (sanitizedCommand.startsWith('curl ') || sanitizedCommand.includes(' curl '))) {
+            sanitizedCommand = sanitizedCommand.replace(/\bcurl\b/g, 'curl.exe');
+        }
 
         if (isWin) {
-            // CRITICAL FIX: 
-            // 1. Force PowerShell to output UTF8 to file to fix garbage characters (OEM/CP850 issues).
-            // 2. Wrap command to capture exit code correctly.
-            const psCommand = `
-                $OutputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8;
-                & { ${command} } | Tee-Object -FilePath "${outputFile}";
-                $LASTEXITCODE | Out-File -FilePath "${exitCodeFile}" -Encoding utf8
-            `.trim().replace(/\n/g, ' ');
-            
-            execution = new vscode.ShellExecution("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psCommand], { cwd });
+            if (shellType === 'powershell') {
+                const safeOutputFile = outputFile.replace(/\\/g, '/');
+                const safeExitCodeFile = exitCodeFile.replace(/\\/g, '/');
+                // Added chcp 65001 and explicit Out-File encoding to fix accented characters
+                const psCommand = `
+                    chcp 65001 | Out-Null;
+                    $OutputEncoding = [System.Text.Encoding]::UTF8;
+                    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8;
+                    & { ${sanitizedCommand} } 2>&1 | ForEach-Object { $_.ToString() } | Tee-Object -FilePath '${safeOutputFile}';
+                    $LASTEXITCODE | Out-File -FilePath '${safeExitCodeFile}' -Encoding utf8
+                `.trim().replace(/\n/g, ' ');
+                execution = new vscode.ShellExecution("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psCommand], { cwd });
+            } else if (shellType === 'cmd') {
+                // Force UTF-8 in CMD as well
+                const cmdCommand = `chcp 65001 > nul && ${sanitizedCommand} > "${outputFile}" 2>&1 & echo %errorlevel% > "${exitCodeFile}"`;
+                execution = new vscode.ShellExecution("cmd.exe", ["/c", cmdCommand], { cwd });
+            } else {
+                const bashOutputFile = toBashPath(outputFile);
+                const bashExitCodeFile = toBashPath(exitCodeFile);
+                const shCommand = `export LANG=en_US.UTF-8; (${sanitizedCommand}) 2>&1 | tee '${bashOutputFile}'; echo $? > '${bashExitCodeFile}'`;
+                execution = new vscode.ShellExecution("bash.exe", ["-c", shCommand], { cwd });
+            }
         } else {
-            // Bash style
-            const shCommand = `(${command}) 2>&1 | tee "${outputFile}"; echo $? > "${exitCodeFile}"`;
-            execution = new vscode.ShellExecution(shCommand, { cwd });
+            const targetShell = options?.shell || 'bash';
+            const shCommand = `export LANG=en_US.UTF-8; (${sanitizedCommand}) 2>&1 | tee "${outputFile}"; echo $? > "${exitCodeFile}"`;
+            execution = new vscode.ShellExecution(targetShell, ["-c", shCommand], { cwd });
         }
 
         const task = new vscode.Task(
@@ -105,18 +130,16 @@ export async function runCommandInTerminal(
         };
 
         const executionTask = await vscode.tasks.executeTask(task);
-
         const disposable = vscode.tasks.onDidEndTaskProcess(e => {
             if (e.execution === executionTask) {
                 disposable.dispose();
-                
-                // Small delay to ensure files are flushed to disk
                 setTimeout(() => {
                     let output = "";
                     let success = true;
                     try {
                         if (fs.existsSync(outputFile)) {
-                            output = fs.readFileSync(outputFile, 'utf8');
+                            // Read as UTF-8 and strip BOM if present
+                            output = fs.readFileSync(outputFile, 'utf8').replace(/^\uFEFF/, '');
                         }
                         if (fs.existsSync(exitCodeFile)) {
                             const code = fs.readFileSync(exitCodeFile, 'utf8').trim().replace(/^\uFEFF/, '');

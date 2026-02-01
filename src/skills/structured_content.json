@@ -1,0 +1,8 @@
+{
+  "id": "lollms-structured",
+  "name": "Structured Content",
+  "description": "How to generate valid JSON output using schemas with the Lollms Client.",
+  "category": "python/lollms_client",
+  "language": "markdown",
+  "content": "# LoLLMs Structured Content Generation\n\nUse `generate_structured_content` to force the LLM to output valid JSON conforming to a specific structure.\n\n```python\nfrom lollms_client import LollmsClient\n\nlc = LollmsClient()\n\nschema = {\n    \"type\": \"object\",\n    \"properties\": {\n        \"name\": {\"type\": \"string\"},\n        \"age\": {\"type\": \"integer\"}\n    },\n    \"required\": [\"name\", \"age\"]\n}\n\nresult = lc.generate_structured_content(\n    prompt=\"Generate a random persona\",\n    schema=schema\n)\nprint(result)\n```\n"
+}

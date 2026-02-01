@@ -35,6 +35,7 @@ export class SettingsPanel {
     contextFileExceptions: [] as string[],
     language: 'auto',
     thinkingMode: 'none',
+    responseMode: 'balanced',
     noThinkMode: false,
     outputFormat: 'legacy',
     generationFormats: {
@@ -136,6 +137,7 @@ export class SettingsPanel {
     this._pendingConfig.contextFileExceptions = config.get<string[]>('contextFileExceptions') || [];
     this._pendingConfig.language = config.get<string>('language') || 'auto';
     this._pendingConfig.thinkingMode = config.get<string>('thinkingMode') || 'none';
+    this._pendingConfig.responseMode = config.get<string>('responseMode') || 'balanced';
     this._pendingConfig.noThinkMode = config.get<boolean>('noThinkMode') || false;
     this._pendingConfig.outputFormat = config.get<string>('outputFormat') || 'legacy';
     
@@ -340,6 +342,7 @@ export class SettingsPanel {
                   ['contextFileExceptions', this._pendingConfig.contextFileExceptions],
                   ['language', this._pendingConfig.language],
                   ['thinkingMode', this._pendingConfig.thinkingMode],
+                  ['responseMode', this._pendingConfig.responseMode],
                   ['noThinkMode', this._pendingConfig.noThinkMode],
                   ['outputFormat', this._pendingConfig.outputFormat],
                   ['generationFormats', this._pendingConfig.generationFormats],
@@ -422,7 +425,7 @@ export class SettingsPanel {
                         'requestTimeout', 'agentMaxRetries', 'maxImageSize', 'enableCodeInspector',
                         'inspectorModelName', 'codeInspectorPersona', 'chatPersona', 'agentPersona',
                         'commitMessagePersona', 'contextFileExceptions', 'language', 'thinkingMode',
-                        'noThinkMode', 'outputFormat', 'generationFormats', 'explainCode', 'allowedFileFormats', 
+                        'responseMode', 'noThinkMode', 'outputFormat', 'generationFormats', 'explainCode', 'allowedFileFormats', 
                         'thinkingModeCustomPrompt', 'reasoningLevel', 'failsafeContextSize', 'searchProvider', 'searchApiKey',
                         'searchCx', 'autoUpdateChangelog', 'autoGenerateTitle', 
                         'addPedagogicalInstruction', 'forceFullCodePath', 'clipboardInsertRole', 'companion.enableWebSearch',
@@ -452,11 +455,8 @@ export class SettingsPanel {
                 return;
   
             case 'fetchModels':
-              Logger.info(`[ConfigView] Processing fetchModels command.`);
               if (this._panel) {
-                const processId = 'settings-fetch-models';
                 try {
-                  Logger.info(`[ConfigView] Initializing temp API client for fetch...`);
                   const tempConfig: LollmsConfig = {
                       apiKey: this._pendingConfig.apiKey,
                       apiUrl: this._pendingConfig.apiUrl,
@@ -467,14 +467,9 @@ export class SettingsPanel {
                       useLollmsExtensions: this._pendingConfig.useLollmsExtensions
                   };
                   const tempApi = new LollmsAPI(tempConfig); 
-                  
-                  Logger.info(`[ConfigView] Calling getModels()...`);
                   const models = await tempApi.getModels(true); 
-                  
-                  Logger.info(`[ConfigView] getModels() returned ${models.length} items. Sending to UI.`);
                   this._panel.webview.postMessage({ command: 'modelsList', models: models || [] });
                 } catch (e: any) {
-                  Logger.error('[ConfigView] Error fetching models', e);
                   this._panel.webview.postMessage({ command: 'modelsList', models: [], error: e.message });
                 }
               }
@@ -497,15 +492,10 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, architectModelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, thinkingMode, noThinkMode, outputFormat, generationFormats, explainCode, allowedFileFormats, thinkingModeCustomPrompt, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, forceFullCodePath, clipboardInsertRole, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle, enableCodeActions, enableInlineSuggestions, mcpServers, herdParticipants, herdPreAnswerParticipants, herdPostAnswerParticipants, herdRounds, herdDynamicMode, herdDynamicModelPool, deleteBranchAfterMerge, unstagedChangesBehavior, showOs, showIp, showShells, systemCustomInfo, agentShellExecution, agentFilesystemWrite, agentFilesystemRead, agentInternetAccess } = config;
+    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, architectModelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, thinkingMode, responseMode, noThinkMode, outputFormat, generationFormats, explainCode, allowedFileFormats, thinkingModeCustomPrompt, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, forceFullCodePath, clipboardInsertRole, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle, enableCodeActions, enableInlineSuggestions, mcpServers, herdParticipants, herdPreAnswerParticipants, herdPostAnswerParticipants, herdRounds, herdDynamicMode, herdDynamicModelPool, deleteBranchAfterMerge, unstagedChangesBehavior, showOs, showIp, showShells, systemCustomInfo, agentShellExecution, agentFilesystemWrite, agentFilesystemRead, agentInternetAccess } = config;
 
     const t = (key: string, def: string) => vscode.l10n.t({ message: def, key: key });
     
-    // SAFE STRING INTERPOLATION: Escape backslashes and double quotes to prevent syntax errors
-    const currentModelName = modelName.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    const currentArchitectModelName = architectModelName.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    const currentInspectorModelName = inspectorModelName.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-
     const personalities = this._personalityManager.getPersonalities();
     
     const stateData = {
@@ -620,7 +610,6 @@ export class SettingsPanel {
                 <label for="modelSelect">${t('config.modelName.label', 'Chat Model')}</label>
                 <div class="input-group">
                     <select id="modelSelect" class="model-dropdown">
-                        <!-- Initial Loading State -->
                         <option value="">Loading Models...</option>
                     </select>
                     <button id="refreshModels" type="button" class="icon-btn" title="${t('command.refresh.title', 'Refresh')}"><i class="codicon codicon-refresh"></i></button>
@@ -660,6 +649,14 @@ export class SettingsPanel {
                 <option value="ar" ${language === 'ar' ? 'selected' : ''}>Arabic</option>
               </select>
 
+              <label for="responseMode">Response Verbosity Mode</label>
+              <select id="responseMode">
+                <option value="silent" ${responseMode === 'silent' ? 'selected' : ''}>Silent (Code Only)</option>
+                <option value="balanced" ${responseMode === 'balanced' ? 'selected' : ''}>Balanced (Problem/Hypothesis/Fix)</option>
+                <option value="pedagogical" ${responseMode === 'pedagogical' ? 'selected' : ''}>Pedagogical (Teach me everything)</option>
+              </select>
+              <p class="help-text">Controls how much reasoning and explanation the AI provides before outputting code.</p>
+
               <label for="outputFormat">Global Code Format</label>
               <select id="outputFormat">
                 <option value="legacy" ${outputFormat === 'legacy' ? 'selected' : ''}>Legacy (Markdown)</option>
@@ -698,7 +695,6 @@ export class SettingsPanel {
               <div class="checkbox-container"><input type="checkbox" id="autoGenerateTitle" ${autoGenerateTitle ? 'checked' : ''}><label for="autoGenerateTitle">Auto-generate discussion titles</label></div>
               <div class="checkbox-container"><input type="checkbox" id="addPedagogicalInstruction" ${addPedagogicalInstruction ? 'checked' : ''}><label for="addPedagogicalInstruction">Add Pedagogical Instruction (Hidden)</label></div>
               <div class="checkbox-container"><input type="checkbox" id="forceFullCodePath" ${forceFullCodePath ? 'checked' : ''}><label for="forceFullCodePath">Force Full Code Path Syntax</label></div>
-              <p class="help-text">Appends an instruction to user prompts encouraging the LLM to use \`\`\`language:path/to/file\`\`\` for full code blocks.</p>
             </div>
 
             <!-- TabContext -->
@@ -733,26 +729,15 @@ export class SettingsPanel {
               <textarea id="contextFileExceptions" rows="8">${contextFileExceptions.join('\n')}</textarea>
               
               <h3>Environment Information</h3>
-              <p class="help-text">Share system details with the AI to ensure compatible script and command generation.</p>
-              <div class="checkbox-container">
-                  <input type="checkbox" id="showOs" ${showOs ? 'checked' : ''}>
-                  <label for="showOs">Share Operating System (OS)</label>
-              </div>
-              <div class="checkbox-container">
-                  <input type="checkbox" id="showIp" ${showIp ? 'checked' : ''}>
-                  <label for="showIp">Share Local IP Addresses</label>
-              </div>
-              <div class="checkbox-container">
-                  <input type="checkbox" id="showShells" ${showShells ? 'checked' : ''}>
-                  <label for="showShells">Share Available Shells (PowerShell, Bash, etc.)</label>
-              </div>
+              <div class="checkbox-container"><input type="checkbox" id="showOs" ${showOs ? 'checked' : ''}><label for="showOs">Share Operating System (OS)</label></div>
+              <div class="checkbox-container"><input type="checkbox" id="showIp" ${showIp ? 'checked' : ''}><label for="showIp">Share Local IP Addresses</label></div>
+              <div class="checkbox-container"><input type="checkbox" id="showShells" ${showShells ? 'checked' : ''}><label for="showShells">Share Available Shells</label></div>
               <label for="systemCustomInfo">Additional Environment Context</label>
               <textarea id="systemCustomInfo" rows="3" placeholder="e.g. 'I am using Git Bash as my default terminal on Windows'">${systemCustomInfo}</textarea>
             </div>
 
-            <!-- TabAgent ... -->
+            <!-- TabAgent -->
             <div id="TabAgent" class="tab-content">
-              <!-- ... existing agent content ... -->
               <h2>${t('config.section.agentAndInspector', 'Agent & Tools')}</h2>
               
               <h3>Execution & Self-Correction</h3>
@@ -767,7 +752,6 @@ export class SettingsPanel {
               </div>
 
               <h3>Security & Permissions</h3>
-              <p class="help-text">Define global restrictions for the AI Agent's autonomous actions.</p>
               <div class="grid-2">
                 <div class="checkbox-container"><input type="checkbox" id="agentShellExecution" ${agentShellExecution ? 'checked' : ''}><label for="agentShellExecution">Shell Execution (Terminal)</label></div>
                 <div class="checkbox-container"><input type="checkbox" id="agentFilesystemWrite" ${agentFilesystemWrite ? 'checked' : ''}><label for="agentFilesystemWrite">Filesystem Write (Save/Modify)</label></div>
@@ -786,7 +770,7 @@ export class SettingsPanel {
               <div class="checkbox-container"><input type="checkbox" id="companionEnableArxivSearch" ${companionEnableArxivSearch ? 'checked' : ''}><label for="companionEnableArxivSearch">Enable ArXiv Search in Companion</label></div>
 
               <h3>MCP Servers Configuration</h3>
-              <p class="help-text">Connect to external tools using the <strong>Model Context Protocol</strong>. This allows the AI Agent to use local or remote tools for research, memory, and more.</p>
+                            <p class="help-text">Connect to external tools using the <strong>Model Context Protocol</strong>. This allows the AI Agent to use local or remote tools for research, memory, and more.</p>
               
               <div class="mcp-help-box">
                 <strong>Format:</strong> <code>{ "server-name": "execution-command args" }</code>
@@ -804,7 +788,7 @@ export class SettingsPanel {
               <textarea id="mcpServers" rows="8" placeholder='{"server-name": "command arg1 arg2"}' style="font-family: monospace; margin-top: 5px;">${mcpServers}</textarea>
             </div>
 
-            <!-- TabGit ... -->
+            <!-- TabGit -->
             <div id="TabGit" class="tab-content">
               <h2>Git Integration</h2>
               <div class="checkbox-container"><input type="checkbox" id="autoUpdateChangelog" ${autoUpdateChangelog ? 'checked' : ''}><label for="autoUpdateChangelog">Auto-update CHANGELOG.md</label></div>
@@ -822,39 +806,28 @@ export class SettingsPanel {
               <textarea id="commitMessagePersona" rows="4">${commitMessagePersona}</textarea>
             </div>
 
-            <!-- TabHerd ... -->
+            <!-- TabHerd -->
             <div id="TabHerd" class="tab-content">
               <h2>Herd Mode 🐂</h2>
-
-              <p class="help-text">Configure multi-model brainstorming sessions.</p>
-
-              <div class="checkbox-container">
-                  <input type="checkbox" id="herdDynamicMode" ${herdDynamicMode ? 'checked' : ''}>
-                  <label for="herdDynamicMode">Dynamic Herd Mode (AI builds the team for you)</label>
-              </div>
-              
+              <div class="checkbox-container"><input type="checkbox" id="herdDynamicMode" ${herdDynamicMode ? 'checked' : ''}><label for="herdDynamicMode">Dynamic Herd Mode (AI builds the team for you)</label></div>
               <label for="herdRounds">Number of Rounds</label>
               <input type="number" id="herdRounds" value="${herdRounds}" min="1" max="10" />
-
               <div id="static-herd-config" style="display: ${herdDynamicMode ? 'none' : 'block'};">
                   <h3>Phase 1: Brainstorming Agents</h3>
                   <div id="herd-pre-list"></div>
                   <button id="addPreParticipantBtn" class="secondary-button"><i class="codicon codicon-add"></i> Add Agent</button>
-
                   <h3>Phase 3: Critique & Review Agents</h3>
                   <div id="herd-post-list"></div>
                   <button id="addPostParticipantBtn" class="secondary-button"><i class="codicon codicon-add"></i> Add Agent</button>
               </div>
-
               <div id="dynamic-herd-config" style="display: ${herdDynamicMode ? 'block' : 'none'};">
                   <h3>Dynamic Model Pool</h3>
-                  <p class="help-text">Define models available for the AI to choose from when building a team.</p>
                   <div id="herd-pool-list"></div>
                   <button id="addPoolModelBtn" class="secondary-button"><i class="codicon codicon-add"></i> Add Model to Pool</button>
               </div>
             </div>
 
-            <!-- TabPersonas ... -->
+            <!-- TabPersonas -->
             <div id="TabPersonas" class="tab-content">
               <h2>${t('config.section.personas', 'Personas / System Prompts')}</h2>
               <button id="createPersonalityBtn" class="secondary-button" style="margin-bottom: 15px;"><i class="codicon codicon-add"></i> Create New Personality</button>
@@ -867,13 +840,12 @@ export class SettingsPanel {
               <label for="codeInspectorPersona">${t('config.codeInspectorPersona.label', 'Code Inspector Persona')}</label>
               <div class="persona-selector-row"><span class="help-text">Preset:</span><select class="persona-select" data-target="codeInspectorPersona"></select></div>
               <textarea id="codeInspectorPersona" rows="4">${codeInspectorPersona}</textarea>
-              
               <div style="margin-top: 24px; border-top: 1px solid var(--primary-accent); padding-top: 12px;">
                   <button id="editPromptsBtn" class="secondary-button">${t('command.editPromptsFile.title', 'Edit Prompts JSON File')}</button>
               </div>
             </div>
 
-            <!-- TabUser ... -->
+            <!-- TabUser -->
             <div id="TabUser" class="tab-content">
               <h2>User Information</h2>
               <label for="userInfoName">Full Name</label>
@@ -895,23 +867,8 @@ export class SettingsPanel {
           </div>
         
           <script>
-            window.onerror = function(message, source, lineno, colno, error) {
-                console.error("[WEBVIEW FATAL]", message, source, lineno, error);
-                const body = document.body;
-                if(body) {
-                    const errDiv = document.createElement('div');
-                    errDiv.style.color = 'red';
-                    errDiv.style.padding = '20px';
-                    errDiv.innerText = "Fatal Webview Error: " + message;
-                    body.prepend(errDiv);
-                }
-            };
-          
             const vscode = acquireVsCodeApi();
-            
             const initialState = ${jsonState};
-            console.log("[WEBVIEW] Initial State Loaded", initialState);
-            
             const config = initialState.config;
             const personalities = initialState.personalities;
             let herdPre = initialState.herdPre;
@@ -925,17 +882,12 @@ export class SettingsPanel {
                 if(el) {
                     if(isCheck) el.checked = !!value;
                     else el.value = (value === undefined || value === null) ? '' : value;
-                    if(id === 'contextFileExceptions' && Array.isArray(value)) el.value = value.join('\\n');
                 }
             }
 
             function safeListen(id, event, callback) {
                 const el = document.getElementById(id);
-                if(el) {
-                    el.addEventListener(event, callback);
-                } else {
-                    console.warn('[WEBVIEW] Missing element for listener:', id);
-                }
+                if(el) el.addEventListener(event, callback);
             }
 
             function initializeForm() {
@@ -950,6 +902,7 @@ export class SettingsPanel {
                     safeSet('disableSsl', config.disableSslVerification, true);
                     safeSet('sslCertPath', config.sslCertPath);
                     safeSet('language', config.language);
+                    safeSet('responseMode', config.responseMode);
                     safeSet('outputFormat', config.outputFormat);
                     safeSet('thinkingMode', config.thinkingMode);
                     safeSet('thinkingModeCustomPrompt', config.thinkingModeCustomPrompt);
@@ -958,49 +911,39 @@ export class SettingsPanel {
                     safeSet('autoGenerateTitle', config.autoGenerateTitle, true);
                     safeSet('addPedagogicalInstruction', config.addPedagogicalInstruction, true);
                     safeSet('forceFullCodePath', config.forceFullCodePath, true);
-                    
                     safeSet('gen-full', config.generationFormats.fullFile, true);
                     safeSet('gen-diff', config.generationFormats.diff, true);
                     safeSet('gen-aider', config.generationFormats.aider, true);
                     safeSet('explainCode', config.explainCode, true);
-
                     safeSet('fmt-fullFile', config.allowedFileFormats.fullFile, true);
                     safeSet('fmt-insert', config.allowedFileFormats.insert, true);
                     safeSet('fmt-replace', config.allowedFileFormats.replace, true);
                     safeSet('fmt-delete', config.allowedFileFormats.delete, true);
-
                     safeSet('failsafeContextSize', config.failsafeContextSize);
-                    safeSet('contextFileExceptions', config.contextFileExceptions);
+                    if(document.getElementById('contextFileExceptions')) document.getElementById('contextFileExceptions').value = config.contextFileExceptions.join('\\n');
                     safeSet('showOs', config.showOs, true);
                     safeSet('showIp', config.showIp, true);
                     safeSet('showShells', config.showShells, true);
                     safeSet('systemCustomInfo', config.systemCustomInfo);
-                    
                     safeSet('agentShellExecution', config.agentShellExecution, true);
                     safeSet('agentFilesystemWrite', config.agentFilesystemWrite, true);
                     safeSet('agentFilesystemRead', config.agentFilesystemRead, true);
                     safeSet('agentInternetAccess', config.agentInternetAccess, true);
-                    
                     safeSet('enableCodeInspector', config.enableCodeInspector, true);
                     safeSet('codeInspectorPersona', config.codeInspectorPersona);
                     safeSet('chatPersona', config.chatPersona);
                     safeSet('agentPersona', config.agentPersona);
                     safeSet('commitMessagePersona', config.commitMessagePersona);
-
                     safeSet('searchApiKey', config.searchApiKey);
                     safeSet('searchCx', config.searchCx);
                     safeSet('companionEnableWebSearch', config.companionEnableWebSearch, true);
                     safeSet('companionEnableArxivSearch', config.companionEnableArxivSearch, true);
-
                     safeSet('mcpServers', config.mcpServers);
-                    
                     safeSet('autoUpdateChangelog', config.autoUpdateChangelog, true);
                     safeSet('deleteBranchAfterMerge', config.deleteBranchAfterMerge, true);
                     safeSet('unstagedChangesBehavior', config.unstagedChangesBehavior);
-
                     safeSet('herdDynamicMode', config.herdDynamicMode, true);
                     safeSet('herdRounds', config.herdRounds);
-                    
                     safeSet('userInfoName', config.userInfoName);
                     safeSet('userInfoEmail', config.userInfoEmail);
                     safeSet('userInfoLicense', config.userInfoLicense);
@@ -1009,20 +952,17 @@ export class SettingsPanel {
                     const herdDynamic = document.getElementById('herdDynamicMode').checked;
                     document.getElementById('static-herd-config').style.display = herdDynamic ? 'none' : 'block';
                     document.getElementById('dynamic-herd-config').style.display = herdDynamic ? 'block' : 'none';
-                    
                     const thinkingMode = document.getElementById('thinkingMode').value;
                     document.getElementById('custom-thinking-prompt-container').style.display = thinkingMode === 'custom' ? 'block' : 'none';
                     
                     populateModelDropdown(document.getElementById('modelSelect'), config.modelName);
                     populateModelDropdown(document.getElementById('architectModelSelect'), config.architectModelName);
                     populateModelDropdown(document.getElementById('inspectorModelName'), config.inspectorModelName);
-
                     renderParticipantsList('herd-pre-list', herdPre, 'herdPreAnswerParticipants');
                     renderParticipantsList('herd-post-list', herdPost, 'herdPostAnswerParticipants');
                     renderPoolList();
-
                     updatePersonaSelects();
-
+                
                 } catch(e) {
                     console.error("[WEBVIEW] Error initializing form:", e);
                 }
@@ -1040,6 +980,8 @@ export class SettingsPanel {
                 else document.querySelector(".tab-link").className += " active"; 
                 if (tabName === 'TabLog') vscode.postMessage({ command: 'requestLog' });
             }
+
+            function postTempUpdate(key, value) { vscode.postMessage({ command: 'updateTempValue', key, value }); }
 
             function updatePersonaSelects() {
                 document.querySelectorAll('.persona-select').forEach(sel => {
@@ -1062,14 +1004,8 @@ export class SettingsPanel {
             }
 
             function populateModelDropdown(selectElement, selectedValue, error) {
-                console.log("[WEBVIEW] Populating dropdown", selectElement.id, selectedValue, error);
                 selectElement.innerHTML = '';
-                
-                if (error) {
-                    selectElement.appendChild(new Option("Error: " + error, ""));
-                    return;
-                }
-
+                if (error) { selectElement.appendChild(new Option("Error: " + error, "")); return; }
                 if (loadedModels.length > 0) {
                     if (selectElement.id === 'inspectorModelName' || selectElement.id === 'architectModelSelect') {
                         selectElement.appendChild(new Option("Same as Chat Model (Default)", ""));
@@ -1088,35 +1024,18 @@ export class SettingsPanel {
                 list.forEach((p, index) => {
                     const row = document.createElement('div');
                     row.className = 'participant-row';
-                    
                     const modelSelect = document.createElement('select');
-                    modelSelect.className = 'herd-model-select';
                     populateModelDropdown(modelSelect, p.model);
-                    modelSelect.onchange = (e) => {
-                        list[index].model = e.target.value;
-                        postTempUpdate(keyName, list);
-                    };
-
+                    modelSelect.onchange = (e) => { list[index].model = e.target.value; postTempUpdate(keyName, list); };
                     const personaSelect = document.createElement('select');
                     personalities.forEach(person => personaSelect.appendChild(new Option(person.name, person.id)));
                     personaSelect.value = p.personality;
-                    personaSelect.onchange = (e) => {
-                        list[index].personality = e.target.value;
-                        postTempUpdate(keyName, list);
-                    };
-
+                    personaSelect.onchange = (e) => { list[index].personality = e.target.value; postTempUpdate(keyName, list); };
                     const removeBtn = document.createElement('button');
                     removeBtn.className = 'remove-btn icon-btn';
                     removeBtn.innerHTML = '<i class="codicon codicon-trash"></i>';
-                    removeBtn.onclick = () => {
-                        list.splice(index, 1);
-                        renderParticipantsList(containerId, list, keyName);
-                        postTempUpdate(keyName, list);
-                    };
-
-                    row.appendChild(modelSelect);
-                    row.appendChild(personaSelect);
-                    row.appendChild(removeBtn);
+                    removeBtn.onclick = () => { list.splice(index, 1); renderParticipantsList(containerId, list, keyName); postTempUpdate(keyName, list); };
+                    row.appendChild(modelSelect); row.appendChild(personaSelect); row.appendChild(removeBtn);
                     container.appendChild(row);
                 });
             }
@@ -1127,36 +1046,18 @@ export class SettingsPanel {
                 herdPool.forEach((item, index) => {
                     const row = document.createElement('div');
                     row.className = 'participant-row';
-
                     const modelSelect = document.createElement('select');
-                    modelSelect.className = 'herd-model-select';
                     populateModelDropdown(modelSelect, item.model);
-                    modelSelect.onchange = (e) => {
-                        herdPool[index].model = e.target.value;
-                        postTempUpdate('herdDynamicModelPool', herdPool);
-                    };
-
+                    modelSelect.onchange = (e) => { herdPool[index].model = e.target.value; postTempUpdate('herdDynamicModelPool', herdPool); };
                     const descInput = document.createElement('input');
                     descInput.type = 'text';
-                    descInput.placeholder = 'Description (e.g. "Fast reasoning")';
                     descInput.value = item.description || '';
-                    descInput.oninput = (e) => {
-                        herdPool[index].description = e.target.value;
-                        postTempUpdate('herdDynamicModelPool', herdPool);
-                    };
-
+                    descInput.oninput = (e) => { herdPool[index].description = e.target.value; postTempUpdate('herdDynamicModelPool', herdPool); };
                     const removeBtn = document.createElement('button');
                     removeBtn.className = 'remove-btn icon-btn';
                     removeBtn.innerHTML = '<i class="codicon codicon-trash"></i>';
-                    removeBtn.onclick = () => {
-                        herdPool.splice(index, 1);
-                        renderPoolList();
-                        postTempUpdate('herdDynamicModelPool', herdPool);
-                    };
-
-                    row.appendChild(modelSelect);
-                    row.appendChild(descInput);
-                    row.appendChild(removeBtn);
+                    removeBtn.onclick = () => { herdPool.splice(index, 1); renderPoolList(); postTempUpdate('herdDynamicModelPool', herdPool); };
+                    row.appendChild(modelSelect); row.appendChild(descInput); row.appendChild(removeBtn);
                     container.appendChild(row);
                 });
             }
@@ -1175,17 +1076,9 @@ export class SettingsPanel {
                     }
                 });
             };
-            
-            ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','inspectorModelName','codeInspectorPersona','chatPersona','agentPersona','commitMessagePersona','language','thinkingMode','outputFormat','thinkingModeCustomPrompt','reasoningLevel','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','clipboardInsertRole','herdRounds','mcpServers','unstagedChangesBehavior','systemCustomInfo'].forEach(k => bind(k, k));
+            ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','inspectorModelName','codeInspectorPersona','chatPersona','agentPersona','commitMessagePersona','language','thinkingMode','responseMode','outputFormat','thinkingModeCustomPrompt','reasoningLevel','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','clipboardInsertRole','herdRounds','mcpServers','unstagedChangesBehavior','systemCustomInfo'].forEach(k => bind(k, k));
             ['disableSsl','enableCodeInspector','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','forceFullCodePath','companionEnableWebSearch','companionEnableArxivSearch','herdDynamicMode','enableCodeActions','enableInlineSuggestions','noThinkMode','deleteBranchAfterMerge','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','explainCode'].forEach(id => {
-                const map = { 
-                  'disableSsl': 'disableSslVerification', 
-                  'deleteBranchAfterMerge': 'git.deleteBranchAfterMerge',
-                  'showOs': 'systemEnv.showOs',
-                  'showIp': 'systemEnv.showIp',
-                  'showShells': 'systemEnv.showShells',
-                  'systemCustomInfo': 'systemEnv.customInfo'
-                };
+                const map = { 'disableSsl': 'disableSslVerification', 'deleteBranchAfterMerge': 'git.deleteBranchAfterMerge', 'showOs': 'systemEnv.showOs', 'showIp': 'systemEnv.showIp', 'showShells': 'systemEnv.showShells', 'systemCustomInfo': 'systemEnv.customInfo' };
                 const key = map[id] || id; 
                 if(id==='companionEnableWebSearch') bind(id, 'companion.enableWebSearch');
                 else if(id==='companionEnableArxivSearch') bind(id, 'companion.enableArxivSearch');
@@ -1262,72 +1155,22 @@ export class SettingsPanel {
             safeListen('createPersonalityBtn', 'click', () => vscode.postMessage({ command: 'createPersonality' }));
             safeListen('editPromptsBtn', 'click', () => vscode.postMessage({ command: 'editPrompts' }));
 
-            function postTempUpdate(key, value) { vscode.postMessage({ command: 'updateTempValue', key, value }); }
-            
             function refreshModelsList(force) {
-                console.log("[WEBVIEW] Refresh models clicked");
                 const loadingOption = new Option("Loading...", "");
-                
-                chatModelSelect.innerHTML = '';
-                chatModelSelect.appendChild(loadingOption.cloneNode(true));
-                chatModelSelect.disabled = true;
-                
-                inspectorModelSelect.innerHTML = '';
-                inspectorModelSelect.appendChild(loadingOption.cloneNode(true));
-                inspectorModelSelect.disabled = true;
-                
-                architectModelSelect.innerHTML = '';
-                architectModelSelect.appendChild(loadingOption.cloneNode(true));
-                architectModelSelect.disabled = true;
-                
+                document.getElementById('modelSelect').innerHTML = ''; document.getElementById('modelSelect').appendChild(loadingOption.cloneNode(true));
                 vscode.postMessage({ command: 'fetchModels', value: force });
-
-                if (fetchTimeout) clearTimeout(fetchTimeout);
-                fetchTimeout = setTimeout(() => {
-                    console.log("[WEBVIEW] Fetch timed out");
-                    chatModelSelect.disabled = false;
-                    chatModelSelect.innerHTML = '<option>Request Timed Out</option>';
-                    inspectorModelSelect.disabled = false;
-                    architectModelSelect.disabled = false;
-                }, 15000);
             }
-
-            renderParticipantsList('herd-pre-list', herdPre, 'herdPreAnswerParticipants');
-            renderParticipantsList('herd-post-list', herdPost, 'herdPostAnswerParticipants');
-            renderPoolList();
-            
-            refreshModelsList(false);
 
             window.addEventListener('message', event => {
                 const message = event.data;
-                console.log("[WEBVIEW] Message received:", message.command);
-                
                 if (message.command === 'modelsList') {
-                    if (fetchTimeout) clearTimeout(fetchTimeout);
-
                     loadedModels = message.models || [];
-                    const error = message.error;
-                    
-                    populateModelDropdown(chatModelSelect, config.modelName, error);
-                    chatModelSelect.disabled = false;
-
-                    populateModelDropdown(inspectorModelSelect, config.inspectorModelName, error);
-                    inspectorModelSelect.disabled = false;
-
-                    populateModelDropdown(architectModelSelect, config.architectModelName, error);
-                    architectModelSelect.disabled = false;
-                    
-                    renderParticipantsList('herd-pre-list', herdPre, 'herdPreAnswerParticipants');
-                    renderParticipantsList('herd-post-list', herdPost, 'herdPostAnswerParticipants');
-                    renderPoolList();
+                    populateModelDropdown(document.getElementById('modelSelect'), config.modelName, message.error);
+                    populateModelDropdown(document.getElementById('architectModelSelect'), config.architectModelName, message.error);
+                    populateModelDropdown(document.getElementById('inspectorModelName'), config.inspectorModelName, message.error);
                 } else if (message.command === 'updateCertPath') {
                     document.getElementById('sslCertPath').value = message.path;
                     postTempUpdate('sslCertPath', message.path);
-                } else if (message.command === 'updatePersonalities') {
-                    personalities = message.personalities;
-                    renderParticipantsList('herd-pre-list', herdPre, 'herdPreAnswerParticipants');
-                    renderParticipantsList('herd-post-list', herdPost, 'herdPostAnswerParticipants');
-                    updatePersonaSelects();
                 } else if (message.command === 'logData') {
                     document.getElementById('logContent').textContent = message.content || 'No log data.';
                 }

@@ -13,6 +13,7 @@ import { listFilesTool } from './listFiles';
 import { readCodeGraphTool } from './readCodeGraph';
 import { readFileTool } from './readFile';
 import { requestUserInputTool } from './requestUserInput';
+import { rlmReplTool } from './rlmRepl';
 import { runFileTool } from './runFile';
 import { scrapeWebsiteTool } from './scrapeWebsite';
 import { searchArxivTool } from './searchArxiv';
@@ -32,7 +33,7 @@ import { runFileTool } from './runFile';
 import { submitResponseTool } from './submitResponse';
 import { buildSkillTool } from './buildSkill';
 import { prepareEnvironmentTool } from './prepareEnvironment';
-import { rlmReplTool } from './rlmRepl';
+import { researchWebPageTool } from './researchWebPage';
 
 export const allTools: ToolDefinition[] = [
     autoSelectContextFilesTool,
@@ -49,6 +50,7 @@ export const allTools: ToolDefinition[] = [
     readCodeGraphTool,
     readFileTool,
     requestUserInputTool,
+    rlmReplTool,
     runFileTool,
     scrapeWebsiteTool,
     searchArxivTool,
@@ -68,5 +70,5 @@ export const allTools: ToolDefinition[] = [
     submitResponseTool,
     buildSkillTool,
     prepareEnvironmentTool,
-    rlmReplTool
+    researchWebPageTool
 ];

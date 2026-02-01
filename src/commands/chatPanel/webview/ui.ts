@@ -17,12 +17,10 @@ export function setGeneratingState(isGenerating: boolean) {
     if(dom.setEntryPointButton) dom.setEntryPointButton.disabled = isGenerating;
     if(dom.debugRestartButton) dom.debugRestartButton.disabled = isGenerating;
 
-    // Toggle the input container visibility completely
     if (dom.inputAreaWrapper) {
         dom.inputAreaWrapper.style.display = isGenerating ? 'none' : 'block';
     }
 
-    // Toggle the generating overlay
     if (dom.generatingOverlay) {
         dom.generatingOverlay.style.display = isGenerating ? 'flex' : 'none';
     }
@@ -34,7 +32,6 @@ export function setGeneratingState(isGenerating: boolean) {
             dom.scrollToBottomBtn.style.display = 'none';
         }
         
-        // Re-focus input only if it's visible
         if (dom.messageInput && dom.inputAreaWrapper && dom.inputAreaWrapper.style.display !== 'none') {
             dom.messageInput.focus();
         }
@@ -54,13 +51,8 @@ function createToggleBadge(
     if (!isVisible) return null;
 
     const span = document.createElement('span');
-    
-    // isActive = Mode is actually running/ON
-    // isVisible = Mode is allowed/visible in GUI
-    
     span.className = `mode-badge ${activeClass} ${isActive ? 'active' : 'inactive'} clickable`;
     
-    // Custom Tooltip for Split Behavior
     if (isActive && onExecute) {
         span.title = `${text}: Click checkmark to Deactivate.\nClick badge to Execute with current input.`;
     } else {
@@ -74,13 +66,11 @@ function createToggleBadge(
     label.className = 'badge-label';
     label.textContent = text;
     
-    // Toggle Icon Click: Always toggles state
     toggle.onclick = (e) => {
         e.stopPropagation();
         onToggle();
     };
 
-    // Badge Body Click: Executes if active and supported, otherwise toggles
     span.onclick = (e) => {
         e.stopPropagation();
         if (isActive && onExecute) {
@@ -100,10 +90,8 @@ export function updateBadges() {
     const container = dom.activeBadges;
     if (!container) return;
     
-    // Clear current badges
     container.innerHTML = '';
 
-    // Model Badge (Always show)
     if (dom.modelSelector && dom.modelSelector.value) {
         const model = dom.modelSelector.value;
         const span = document.createElement('span');
@@ -113,7 +101,6 @@ export function updateBadges() {
         container.appendChild(span);
     }
 
-    // Interactive Personality Badge
     if (state.personalities && state.personalities.length > 0) {
         const currentP = state.personalities.find(p => p.id === state.currentPersonalityId);
         if (currentP) {
@@ -127,7 +114,6 @@ export function updateBadges() {
             pBadge.title = `Active Personality: ${currentP.name}. Click to switch.`;
             pBadge.innerHTML = `<span class="codicon codicon-account"></span> <span class="badge-label">${currentP.name}</span>`;
             
-            // Create Menu
             const menu = document.createElement('div');
             menu.id = 'personality-menu';
             menu.className = 'custom-menu hidden';
@@ -145,7 +131,6 @@ export function updateBadges() {
                     item.style.color = 'var(--vscode-textLink-foreground)';
                 }
                 
-                // --- ATTACH LISTENER HERE ---
                 item.onclick = (e: MouseEvent) => {
                     e.stopPropagation();
                     vscode.postMessage({ command: 'updateDiscussionPersonality', personalityId: p.id });
@@ -157,7 +142,6 @@ export function updateBadges() {
 
             pBadge.onclick = (e) => {
                 e.stopPropagation();
-                // Close other menus
                 document.querySelectorAll('.custom-menu').forEach(m => {
                     if (m.id !== 'personality-menu') m.classList.remove('visible');
                 });
@@ -175,43 +159,53 @@ export function updateBadges() {
     const caps = state.capabilities;
     const guiState = caps.guiState || { agentBadge: true, autoContextBadge: true, herdBadge: true };
 
-    // Agent Mode Badge
+    const styleSpan = document.createElement('span');
+    const styleIcon = caps.responseMode === 'silent' ? 'codicon-mute' : (caps.responseMode === 'pedagogical' ? 'codicon-mortar-board' : 'codicon-law');
+    styleSpan.className = `mode-badge active clickable`;
+    styleSpan.style.backgroundColor = 'var(--vscode-button-secondaryBackground)';
+    styleSpan.style.color = 'var(--vscode-button-secondaryForeground)';
+    styleSpan.title = `Active Response Style: ${caps.responseMode.toUpperCase()}`;
+    styleSpan.innerHTML = `<span class="codicon ${styleIcon}"></span> <span class="badge-label">${caps.responseMode.charAt(0).toUpperCase() + caps.responseMode.slice(1)}</span>`;
+    styleSpan.onclick = (e) => {
+        e.stopPropagation();
+        const mainView = document.getElementById('menu-main');
+        const styleView = document.getElementById('menu-response-style');
+        if (mainView && styleView && dom.moreActionsMenu) {
+            mainView.classList.add('hidden');
+            styleView.classList.remove('hidden');
+            dom.moreActionsMenu.classList.add('visible');
+        }
+    };
+    container.appendChild(styleSpan);
+
     const agentBadge = createToggleBadge('🤖 Agent', 'agent', guiState.agentBadge, caps.agentMode, () => {
-        // Toggle ACTIVATION
         vscode.postMessage({ command: 'toggleAgentMode' });
     });
     if (agentBadge) container.appendChild(agentBadge);
 
-    // Auto Context Badge
     const ctxBadge = createToggleBadge(
         '🧠 AutoCtx', 
         'autocontext', 
         guiState.autoContextBadge, 
         caps.autoContextMode, 
         () => {
-            // Toggle ACTIVATION
             vscode.postMessage({ command: 'toggleAutoContext', enabled: !caps.autoContextMode });
         },
         () => {
-            // EXECUTE (When active)
             const prompt = dom.messageInput ? dom.messageInput.value : "";
             vscode.postMessage({ command: 'runAutoContext', prompt: prompt });
         }
     );
     if (ctxBadge) container.appendChild(ctxBadge);
 
-    // Herd Mode Badge
     const herdBadge = createToggleBadge('🐂 Herd', 'herd', guiState.herdBadge, caps.herdMode, () => {
-        // Toggle ACTIVATION (Capability)
         vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { herdMode: !caps.herdMode } });
     });
     if (herdBadge) container.appendChild(herdBadge);
 
-    // Git Workflow Badge (Custom Menu)
     if (caps.gitWorkflow) {
         const branchName = state.currentBranch || 'git-workflow';
         
-        // Wrapper for positioning
         const wrapper = document.createElement('div');
         wrapper.id = 'git-badge-wrapper';
         wrapper.className = 'badge-wrapper';
@@ -237,7 +231,6 @@ export function updateBadges() {
         
         wrapper.appendChild(badge);
         
-        // Create the Menu
         const menu = document.createElement('div');
         menu.id = 'git-menu';
         menu.className = 'custom-menu hidden';
@@ -248,11 +241,9 @@ export function updateBadges() {
             item.className = 'custom-menu-item';
             item.innerHTML = `<span class="codicon ${iconClass}"></span> ${text}`;
             
-            // --- ATTACH LISTENER HERE ---
             item.onclick = (e: MouseEvent) => {
                 e.stopPropagation();
                 if (command.startsWith('lollms-vs-coder')) {
-                    // Send as executeLollmsCommand
                     vscode.postMessage({ command: 'executeLollmsCommand', details: { command: command, params: params } });
                 } else {
                     vscode.postMessage({ command: command, ...params });
@@ -263,7 +254,6 @@ export function updateBadges() {
             return item;
         };
 
-        // Added Handlers
         menu.appendChild(createMenuItem('git-menu-branch', 'codicon-git-branch', 'New Branch', 'lollms-vs-coder.createGitBranch'));
         menu.appendChild(createMenuItem('git-menu-switch', 'codicon-arrow-swap', 'Switch Branch', 'lollms-vs-coder.switchGitBranch'));
         menu.appendChild(createMenuItem('git-menu-commit', 'codicon-check', 'Commit', 'requestCommitStaging'));
@@ -273,10 +263,8 @@ export function updateBadges() {
         wrapper.appendChild(menu);
         container.appendChild(wrapper);
 
-        // Toggle logic
         badge.onclick = (e) => {
             e.stopPropagation();
-            // Close other menus
             document.querySelectorAll('.custom-menu').forEach(m => {
                 if (m.id !== 'git-menu') m.classList.remove('visible');
             });

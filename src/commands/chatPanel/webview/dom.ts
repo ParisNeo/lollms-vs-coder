@@ -1,13 +1,11 @@
 import { EditorView } from "@codemirror/view";
 
-// ... VsCodeApi definition ...
 export interface VsCodeApi {
     postMessage(message: any): void;
     getState(): any;
     setState(state: any): void;
 }
 
-// ... vscode proxy ...
 export const vscode = new Proxy({} as VsCodeApi, {
     get: (target, prop) => {
         const api = (window as any).vscode;
@@ -22,7 +20,6 @@ export const vscode = new Proxy({} as VsCodeApi, {
     }
 });
 
-// Match interface in src/utils.ts
 export interface DiscussionCapabilities {
     generationFormats: {
         fullFile: boolean;
@@ -35,6 +32,7 @@ export interface DiscussionCapabilities {
         replace: boolean;
         delete: boolean;
     };
+    responseMode: 'silent' | 'balanced' | 'pedagogical';
     explainCode: boolean;
     fileRename: boolean;
     fileDelete: boolean;
@@ -61,7 +59,6 @@ export interface DiscussionCapabilities {
     };
 }
 
-// ... state object ...
 export const state: {
     searchMatches: HTMLElement[],
     currentMatchIndex: number,
@@ -84,7 +81,6 @@ export const state: {
     personalities: []
 };
 
-// ... dom object ...
 export const dom = {
     get personalitySelector() { return document.getElementById('personality-selector') as HTMLSelectElement; },
     get messagesDiv() { return document.getElementById('messages') as HTMLDivElement; },
@@ -107,15 +103,14 @@ export const dom = {
     get showDebugLogButton() { return document.getElementById('showDebugLogButton') as HTMLButtonElement; },
     get fileInput() { return document.getElementById('fileInput') as HTMLInputElement; },
     
-    // Updated Selectors for New Menu
     get agentModeCheckbox() { return document.getElementById('agentModeCheckbox') as HTMLInputElement; },
     get autoContextCheckbox() { return document.getElementById('autoContextCheckbox') as HTMLInputElement; },
     get herdModeCheckbox() { return document.getElementById('herdModeCheckbox') as HTMLInputElement; },
     get activeBadges() { return document.getElementById('active-badges') as HTMLDivElement; },
     
-    // Submenu Triggers
     get subMenuTriggers() { return document.querySelectorAll('.has-submenu'); },
     get backButtons() { return document.querySelectorAll('.back-btn'); },
+    get respModeRadios() { return document.querySelectorAll('input[name="respMode"]') as NodeListOf<HTMLInputElement>; },
     
     get modelSelector() { return document.getElementById('model-selector') as HTMLSelectElement; },
     get refreshModelsBtn() { return document.getElementById('refresh-models-btn') as HTMLButtonElement; },
@@ -158,28 +153,21 @@ export const dom = {
     get generatingOverlay() { return document.getElementById('generating-overlay') as HTMLDivElement; },
     get activeToolsIndicator() { return document.getElementById('active-tools-indicator') as HTMLDivElement; },
     
-    // Updated: Replaced Radios with Checkboxes for Generation Format
     get checkGenFull() { return document.getElementById('check-gen-full') as HTMLInputElement; },
     get checkGenDiff() { return document.getElementById('check-gen-diff') as HTMLInputElement; },
     get checkGenAider() { return document.getElementById('check-gen-aider') as HTMLInputElement; },
-    
-    // Updated: Behavior Checkbox
     get checkBehaviorExplain() { return document.getElementById('check-behavior-explain') as HTMLInputElement; },
 
-    // FORMATS (Legacy / Tool Specific)
     get fmtFullFile() { return document.getElementById('fmt-fullFile') as HTMLInputElement; },
     get fmtInsert() { return document.getElementById('fmt-insert') as HTMLInputElement; },
     get fmtReplace() { return document.getElementById('fmt-replace') as HTMLInputElement; },
     get fmtDelete() { return document.getElementById('fmt-delete') as HTMLInputElement; },
 
-    // File Tools
     get capFileRename() { return document.getElementById('cap-fileRename') as HTMLInputElement; },
     get capFileDelete() { return document.getElementById('cap-fileDelete') as HTMLInputElement; },
-
     get capFileSelect() { return document.getElementById('cap-fileSelect') as HTMLInputElement; },
     get capFileReset() { return document.getElementById('cap-fileReset') as HTMLInputElement; },
 
-    // Capabilities
     get capImageGen() { return document.getElementById('cap-imageGen') as HTMLInputElement; },
     get capWebSearch() { return document.getElementById('cap-webSearch') as HTMLInputElement; },
     get capArxivSearch() { return document.getElementById('cap-arxivSearch') as HTMLInputElement; },
@@ -190,13 +178,11 @@ export const dom = {
     get capThinkingMode() { return document.getElementById('cap-thinkingMode') as HTMLSelectElement; },
     get inputAreaWrapperDiv() { return document.querySelector('.input-area-wrapper') as HTMLDivElement; },
 
-    // Herd Mode Config (In Modal)
     get capHerdMode() { return document.getElementById('cap-herdMode') as HTMLInputElement; },
     get capHerdRounds() { return document.getElementById('cap-herdRounds') as HTMLInputElement; },
     get herdConfigSection() { return document.getElementById('herd-config-section') as HTMLDivElement; },
     get herdModelsList() { return document.getElementById('herd-models-list') as HTMLDivElement; },
 
-    // Git Menu
     get gitBadgeWrapper() { return document.getElementById('git-badge-wrapper') as HTMLDivElement; },
     get gitMenu() { return document.getElementById('git-menu') as HTMLDivElement; },
     get gitMenuCommit() { return document.getElementById('git-menu-commit') as HTMLDivElement; },
@@ -204,19 +190,16 @@ export const dom = {
     get gitMenuMerge() { return document.getElementById('git-menu-merge') as HTMLDivElement; },
     get gitMenuRevert() { return document.getElementById('git-menu-revert') as HTMLDivElement; },
 
-    // Staging Modal
     get stagingModal() { return document.getElementById('staging-modal') as HTMLDivElement; },
     get stagingList() { return document.getElementById('staging-list') as HTMLDivElement; },
     get stagingNextBtn() { return document.getElementById('staging-next-btn') as HTMLButtonElement; },
     get stagingCloseBtn() { return document.getElementById('staging-close-btn') as HTMLSpanElement; },
 
-    // Commit Modal
     get commitModal() { return document.getElementById('commit-modal') as HTMLDivElement; },
     get commitMessageInput() { return document.getElementById('commit-message-input') as HTMLTextAreaElement; },
     get commitConfirmBtn() { return document.getElementById('commit-confirm-btn') as HTMLButtonElement; },
     get commitCancelBtn() { return document.getElementById('commit-cancel-btn') as HTMLButtonElement; },
 
-    // History Modal
     get historyModal() { return document.getElementById('history-modal') as HTMLDivElement; },
     get historyList() { return document.getElementById('history-list') as HTMLDivElement; },
     get historyCloseBtn() { return document.getElementById('history-close-btn') as HTMLButtonElement; }

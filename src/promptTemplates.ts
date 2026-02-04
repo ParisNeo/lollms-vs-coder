@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as os from 'os';
-import { DiscussionCapabilities, getAvailableShells } from './utils';
+import { DiscussionCapabilities, getAvailableShells, ResponseProfile } from './utils';
 
 /**
  * This file centralizes all system prompt logic to ensure consistent AI behavior
@@ -119,8 +119,11 @@ ${formatInstructions}
     ): Promise<string> {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const userName = config.get<string>('userInfo.name') || 'Developer';
-        const thinkingMode = capabilities?.thinkingMode || config.get<string>('thinkingMode') || 'none';
-        const responseMode = capabilities?.responseMode || config.get<string>('responseMode') || 'balanced';
+        
+        // Get Profiles
+        const profiles = config.get<ResponseProfile[]>('responseProfiles') || [];
+        const activeProfileId = capabilities?.responseProfileId || config.get<string>('defaultResponseProfileId') || 'balanced';
+        const activeProfile = profiles.find(p => p.id === activeProfileId) || profiles[0];
 
         let persona = customPersonaContent || config.get<string>(
             promptType === 'chat' ? 'chatPersona' :
@@ -128,8 +131,6 @@ ${formatInstructions}
             promptType === 'inspector' ? 'codeInspectorPersona' :
             'commitMessagePersona'
         ) || "You are an expert software engineer.";
-
-        if (capabilities?.funMode) persona += " Be extremely enthusiastic and use emojis!";
 
         const formatting = this.getFormatInstructions(capabilities, forceFullCode);
         const shells = await getAvailableShells();
@@ -144,58 +145,16 @@ ${memory ? `\n### LONG-TERM MEMORY\n${memory}` : ''}`;
 
         const agentProtocols = promptType === 'agent' ? `
 ### AGENT AUTONOMY & STATE PROTOCOLS
-1. **Self-Evolution**: Extension-provided skills (like Moltbook) are read-only, but you can create/update your own intelligence in \`.lollms/skills/\`. Use \`build_skill\` to refine your capabilities.
-2. **CLI for Agent Strategy**: You are encouraged to build and maintain CLI scripts (e.g. \`moltbook_interact.py\`) that allow you to perform complex API tasks via \`execute_command\`. This makes your actions reproducible and robust.
-3. **Project Memory**: Use \`.lollms/research_notes.md\` to store useful snippets from the web and \`.lollms/project_state.json\` for persistent variables (API keys, heartbeat state, status).
-4. **Investigation**: If you lack a specific skill or API knowledge, use \`research_web_page\` or \`rlm_repl\` to experiment and find answers before committing to a plan.
-5. **Skill Application**: If a **Skill** is in the context, you MUST strictly follow its technical documentation for API endpoints and parameters.
+1. **NATIVE TOOL PRIORITY**: You MUST use the provided tools (e.g., \`moltbook_action\`, \`read_file\`) directly. **DO NOT** create Python scripts (like \`interact.py\`) to call APIs unless the tool does not exist.
+2. **Efficiency**: Check the history. If a task was already completed successfully, do not repeat it.
+3. **Project Memory**: Use \`.lollms/research_notes.md\` to store useful snippets from the web.
+4. **Investigation**: If you lack knowledge, use \`research_web_page\` or \`analyze_image\` before committing to a plan.
+5. **Skill Application**: If a **Skill** is in the context, strictly follow its documentation.
 ` : '';
 
-        let thinking = '';
-        if (thinkingMode !== 'none' && thinkingMode !== 'no_think') {
-            thinking = `\n### REASONING PROTOCOL\nBefore outputting code, analyze the file structure. Specifically:
-- Identify the exact line number or unique text block where a bug exists.
-- Ensure your edit anchors (SEARCH block or Diff context) are unique and correctly ordered relative to the rest of the function.\n`;
-        }
-
-        let responseStyle = "";
-        
-        switch (responseMode) {
-            case 'silent':
-                responseStyle = `
-### RESPONSE STYLE: SILENT (CODE ONLY)
-- **CRITICAL**: You must provide ONLY code blocks or tool executions.
-- **NO CONVERSATION**: Do not explain, apologize, or provide any text outside of the code blocks.
-- If you are answering a question that doesn't involve code, use a markdown block.
-- Zero verbosity. Zero fluff.
-`;
-                break;
-            case 'pedagogical':
-                responseStyle = `
-### RESPONSE STYLE: PEDAGOGICAL (TEACH ME EVERYTHING)
-- **TEACHING MISSION**: You are a mentor. Your goal is not just to provide code, but to ensure the user understands the concepts, the 'why' behind decisions, and the architecture.
-- **DEEP ANALYSIS**: For every task, provide a deep analysis before and after the solution.
-- **STRUCTURED BREAKDOWN**:
-  1. **Problem Analysis**: A detailed deep-dive into the issue.
-  2. **Architectural Decisions**: Why you chose this approach over others.
-  3. **Hypothesis**: The logic path leading to the fix.
-  4. **The Fix**: The implementation.
-  5. **Learning Summary**: Key takeaways and potential edge cases to watch for.
-- Use analogies and clear documentation.
-`;
-                break;
-            case 'balanced':
-            default:
-                responseStyle = `
-### RESPONSE STYLE: BALANCED
-- **STRUCTURED BREAKDOWN**: You MUST always start your response by explaining what you are doing using this structure:
-  1. **Problem**: Describe the issue or request.
-  2. **Hypothesis**: Explain your reasoning or approach.
-  3. **Fix**: Briefly outline the changes.
-- Provide clear descriptions to teach the user while staying concise.
-`;
-                break;
-        }
+        // INJECT CONFIGURABLE RESPONSE INSTRUCTIONS from Profile
+        const responseInstructions = activeProfile ? `\n${activeProfile.systemPrompt}\n` : "";
+        const prefix = (activeProfile && activeProfile.prefix) ? activeProfile.prefix + "\n" : "";
 
         const shellNote = os.platform() === 'win32' 
             ? "\n### WINDOWS SHELL NOTE\nYou are in a PowerShell environment. \n- **CRITICAL**: Use \`curl.exe\` instead of \`curl\` to avoid PowerShell alias issues.\n- Ensure strings in commands are escaped correctly for PowerShell."
@@ -209,7 +168,7 @@ ${memory ? `\n### LONG-TERM MEMORY\n${memory}` : ''}`;
         const filesContext = context?.files || "(No files selected)";
         const skillsContext = context?.skills || "(No skills loaded)";
 
-        const prompt = `# Personality ROLE
+        const promptBody = `# Personality ROLE
 ${persona}
 
 # Project context:
@@ -227,11 +186,10 @@ ${filesContext}
 
 ## Instructions
 ${formatting}
-${responseStyle}
-${thinking}
+${responseInstructions}
 ${env}${agentProtocols}${shellNote}
 ${finalInstruction}`;
 
-        return thinkingMode === 'no_think' ? `/no_think\n${prompt}` : prompt;
+        return prefix + promptBody;
     }
 }

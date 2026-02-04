@@ -3,7 +3,7 @@ import { LollmsAPI, LollmsConfig } from '../lollmsAPI';
 import { Logger } from '../logger';
 import { ProcessManager } from '../processManager';
 import { PersonalityManager } from '../personalityManager';
-import { HerdParticipant, DynamicModelEntry } from '../utils';
+import { HerdParticipant, DynamicModelEntry, ResponseProfile } from '../utils';
 
 export class SettingsPanel {
   public static currentPanel: SettingsPanel | undefined;
@@ -34,10 +34,11 @@ export class SettingsPanel {
     commitMessagePersona: '',
     contextFileExceptions: [] as string[],
     language: 'auto',
-    thinkingMode: 'none',
-    responseMode: 'balanced',
-    noThinkMode: false,
-    outputFormat: 'legacy',
+    
+    // REPLACED OLD MODES WITH PROFILES
+    responseProfiles: [] as ResponseProfile[],
+    defaultResponseProfileId: 'balanced',
+    
     generationFormats: {
         fullFile: true,
         diff: false,
@@ -50,7 +51,6 @@ export class SettingsPanel {
         replace: false,
         delete: false
     },
-    thinkingModeCustomPrompt: '',
     reasoningLevel: 'none',
     failsafeContextSize: 8192,
     searchProvider: 'google_custom_search',
@@ -85,7 +85,23 @@ export class SettingsPanel {
     agentShellExecution: true,
     agentFilesystemWrite: true,
     agentFilesystemRead: true,
-    agentInternetAccess: true
+    agentInternetAccess: true,
+    agentUseRLM: false,
+    moltbookEnable: false,
+    moltbookApiKey: '',
+    moltbookBotName: 'Lollms-VS-Bot',
+    moltbookBotPurpose: 'An autonomous software engineering assistant integrated with VS Code.',
+    
+    // Remote Integration Settings
+    remoteServerPort: 3000,
+    remoteDiscordEnabled: false,
+    remoteDiscordToken: '',
+    remoteSlackEnabled: false,
+    remoteSlackToken: '',
+    remoteSlackSigningSecret: '',
+    remoteAllowedUsers: [] as string[],
+    remoteAdminUsers: [] as string[],
+    remoteAllowedChannels: [] as string[]
   };
 
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, processManager: ProcessManager, personalityManager: PersonalityManager) {
@@ -136,17 +152,16 @@ export class SettingsPanel {
     this._pendingConfig.commitMessagePersona = config.get<string>('commitMessagePersona') || '';
     this._pendingConfig.contextFileExceptions = config.get<string[]>('contextFileExceptions') || [];
     this._pendingConfig.language = config.get<string>('language') || 'auto';
-    this._pendingConfig.thinkingMode = config.get<string>('thinkingMode') || 'none';
-    this._pendingConfig.responseMode = config.get<string>('responseMode') || 'balanced';
-    this._pendingConfig.noThinkMode = config.get<boolean>('noThinkMode') || false;
-    this._pendingConfig.outputFormat = config.get<string>('outputFormat') || 'legacy';
     
+    // NEW PROFILES CONFIG
+    this._pendingConfig.responseProfiles = config.get<ResponseProfile[]>('responseProfiles') || [];
+    this._pendingConfig.defaultResponseProfileId = config.get<string>('defaultResponseProfileId') || 'balanced';
+
     this._pendingConfig.generationFormats = config.get<any>('generationFormats') || { fullFile: true, diff: false, aider: false };
     this._pendingConfig.explainCode = config.get<boolean>('explainCode') ?? true;
 
     this._pendingConfig.allowedFileFormats = config.get<any>('allowedFileFormats') || { fullFile: true, insert: false, replace: false, delete: false };
 
-    this._pendingConfig.thinkingModeCustomPrompt = config.get<string>('thinkingModeCustomPrompt') || 'Think step by step...';
     this._pendingConfig.reasoningLevel = config.get<string>('reasoningLevel') || 'none';
     this._pendingConfig.failsafeContextSize = config.get<number>('failsafeContextSize') || 4096;
     
@@ -192,6 +207,23 @@ export class SettingsPanel {
     this._pendingConfig.agentFilesystemWrite = agentPerms.filesystemWrite !== false;
     this._pendingConfig.agentFilesystemRead = agentPerms.filesystemRead !== false;
     this._pendingConfig.agentInternetAccess = agentPerms.internetAccess !== false;
+    this._pendingConfig.agentUseRLM = config.get<boolean>('agent.useRLM') || false;
+
+    this._pendingConfig.moltbookEnable = config.get<boolean>('moltbook.enable') || false;
+    this._pendingConfig.moltbookApiKey = config.get<string>('moltbook.apiKey') || '';
+    this._pendingConfig.moltbookBotName = config.get<string>('moltbook.botName') || 'Lollms-VS-Bot';
+    this._pendingConfig.moltbookBotPurpose = config.get<string>('moltbook.botPurpose') || 'An autonomous software engineering assistant integrated with VS Code.';
+
+    // Load Remote Configuration
+    this._pendingConfig.remoteServerPort = config.get<number>('remote.server.port') || 3000;
+    this._pendingConfig.remoteDiscordEnabled = config.get<boolean>('remote.discord.enabled') || false;
+    this._pendingConfig.remoteDiscordToken = config.get<string>('remote.discord.token') || '';
+    this._pendingConfig.remoteSlackEnabled = config.get<boolean>('remote.slack.enabled') || false;
+    this._pendingConfig.remoteSlackToken = config.get<string>('remote.slack.token') || '';
+    this._pendingConfig.remoteSlackSigningSecret = config.get<string>('remote.slack.signingSecret') || '';
+    this._pendingConfig.remoteAllowedUsers = config.get<string[]>('remote.allowedUsers') || [];
+    this._pendingConfig.remoteAdminUsers = config.get<string[]>('remote.adminUsers') || [];
+    this._pendingConfig.remoteAllowedChannels = config.get<string[]>('remote.allowedChannels') || [];
 
     this._panel.webview.html = this._getHtml(this._panel.webview, this._pendingConfig);
     this._setWebviewMessageListener(this._panel.webview);
@@ -217,7 +249,7 @@ export class SettingsPanel {
 
   private _setWebviewMessageListener(webview: vscode.Webview) {
     webview.onDidReceiveMessage(
-        async (message: { command: string; key?: string; value?: any }) => {
+        async (message: { command: string; key?: string; value?: any; profiles?: any[]; defaultId?: string }) => {
           Logger.info(`[ConfigView] Received command: ${message.command}`);
 
           switch (message.command) {
@@ -230,10 +262,44 @@ export class SettingsPanel {
 
             case 'updateTempValue':
               if (message.key && message.key in this._pendingConfig) {
-                (this._pendingConfig as any)[message.key] = message.value;
+                // Special handling for array text areas (split by newline)
+                if (['contextFileExceptions', 'remoteAllowedUsers', 'remoteAdminUsers', 'remoteAllowedChannels'].includes(message.key as string)) {
+                     if (Array.isArray(message.value)) {
+                         (this._pendingConfig as any)[message.key as string] = message.value;
+                     } else {
+                         (this._pendingConfig as any)[message.key as string] = String(message.value).split('\n').map(s => s.trim()).filter(s => s);
+                     }
+                } else {
+                    (this._pendingConfig as any)[message.key!] = message.value;
+                }
               }
               return;
             
+            case 'updateProfiles':
+                if (message.profiles) this._pendingConfig.responseProfiles = message.profiles;
+                if (message.defaultId) this._pendingConfig.defaultResponseProfileId = message.defaultId;
+                return;
+
+            case 'exportProfiles':
+                const content = JSON.stringify(this._pendingConfig.responseProfiles, null, 2);
+                const uri = await vscode.window.showSaveDialog({ filters: {'JSON': ['json']}, saveLabel: 'Export Profiles' });
+                if(uri) await vscode.workspace.fs.writeFile(uri, Buffer.from(content));
+                return;
+
+            case 'importProfiles':
+                const openUris = await vscode.window.showOpenDialog({ filters: {'JSON': ['json']}, canSelectMany: false });
+                if(openUris && openUris[0]) {
+                    const fileData = await vscode.workspace.fs.readFile(openUris[0]);
+                    try {
+                        const newProfiles = JSON.parse(Buffer.from(fileData).toString());
+                        if(Array.isArray(newProfiles)) {
+                            this._pendingConfig.responseProfiles = newProfiles;
+                            this._panel.webview.postMessage({ command: 'refreshProfiles', profiles: newProfiles });
+                        }
+                    } catch(e) { vscode.window.showErrorMessage("Invalid profile file."); }
+                }
+                return;
+
             case 'updateGenerationFormat':
               if (message.key) {
                   (this._pendingConfig.generationFormats as any)[message.key] = message.value;
@@ -341,14 +407,14 @@ export class SettingsPanel {
                   ['commitMessagePersona', this._pendingConfig.commitMessagePersona],
                   ['contextFileExceptions', this._pendingConfig.contextFileExceptions],
                   ['language', this._pendingConfig.language],
-                  ['thinkingMode', this._pendingConfig.thinkingMode],
-                  ['responseMode', this._pendingConfig.responseMode],
-                  ['noThinkMode', this._pendingConfig.noThinkMode],
-                  ['outputFormat', this._pendingConfig.outputFormat],
+                  
+                  // NEW PROFILES
+                  ['responseProfiles', this._pendingConfig.responseProfiles],
+                  ['defaultResponseProfileId', this._pendingConfig.defaultResponseProfileId],
+
                   ['generationFormats', this._pendingConfig.generationFormats],
                   ['explainCode', this._pendingConfig.explainCode],
                   ['allowedFileFormats', this._pendingConfig.allowedFileFormats],
-                  ['thinkingModeCustomPrompt', this._pendingConfig.thinkingModeCustomPrompt],
                   ['reasoningLevel', this._pendingConfig.reasoningLevel],
                   ['failsafeContextSize', this._pendingConfig.failsafeContextSize],
                   ['searchProvider', this._pendingConfig.searchProvider],
@@ -385,7 +451,23 @@ export class SettingsPanel {
                       filesystemWrite: this._pendingConfig.agentFilesystemWrite,
                       filesystemRead: this._pendingConfig.agentFilesystemRead,
                       internetAccess: this._pendingConfig.agentInternetAccess
-                  }]
+                  }],
+                  ['agent.useRLM', this._pendingConfig.agentUseRLM],
+                  ['moltbook.enable', this._pendingConfig.moltbookEnable],
+                  ['moltbook.apiKey', this._pendingConfig.moltbookApiKey],
+                  ['moltbook.botName', this._pendingConfig.moltbookBotName],
+                  ['moltbook.botPurpose', this._pendingConfig.moltbookBotPurpose],
+                  
+                  // Remote Settings
+                  ['remote.server.port', this._pendingConfig.remoteServerPort],
+                  ['remote.discord.enabled', this._pendingConfig.remoteDiscordEnabled],
+                  ['remote.discord.token', this._pendingConfig.remoteDiscordToken],
+                  ['remote.slack.enabled', this._pendingConfig.remoteSlackEnabled],
+                  ['remote.slack.token', this._pendingConfig.remoteSlackToken],
+                  ['remote.slack.signingSecret', this._pendingConfig.remoteSlackSigningSecret],
+                  ['remote.allowedUsers', this._pendingConfig.remoteAllowedUsers],
+                  ['remote.adminUsers', this._pendingConfig.remoteAdminUsers],
+                  ['remote.allowedChannels', this._pendingConfig.remoteAllowedChannels]
                 ];
 
                 for (const [key, value] of updates) {
@@ -424,9 +506,8 @@ export class SettingsPanel {
                         'architectModelName', 'disableSslVerification', 'sslCertPath', 
                         'requestTimeout', 'agentMaxRetries', 'maxImageSize', 'enableCodeInspector',
                         'inspectorModelName', 'codeInspectorPersona', 'chatPersona', 'agentPersona',
-                        'commitMessagePersona', 'contextFileExceptions', 'language', 'thinkingMode',
-                        'responseMode', 'noThinkMode', 'outputFormat', 'generationFormats', 'explainCode', 'allowedFileFormats', 
-                        'thinkingModeCustomPrompt', 'reasoningLevel', 'failsafeContextSize', 'searchProvider', 'searchApiKey',
+                        'commitMessagePersona', 'contextFileExceptions', 'language', 'generationFormats', 'explainCode', 'allowedFileFormats', 
+                        'reasoningLevel', 'failsafeContextSize', 'searchProvider', 'searchApiKey',
                         'searchCx', 'autoUpdateChangelog', 'autoGenerateTitle', 
                         'addPedagogicalInstruction', 'forceFullCodePath', 'clipboardInsertRole', 'companion.enableWebSearch',
                         'companion.enableArxivSearch', 'userInfo.name', 'userInfo.email', 
@@ -435,7 +516,12 @@ export class SettingsPanel {
                         'herdPreAnswerParticipants', 'herdPostAnswerParticipants', 'herdRounds', 
                         'herdDynamicMode', 'herdDynamicModelPool', 'git.deleteBranchAfterMerge',
                         'git.unstagedChangesBehavior', 'systemEnv.showOs', 'systemEnv.showIp', 
-                        'systemEnv.showShells', 'systemEnv.customInfo', 'agent.permissions'
+                        'systemEnv.showShells', 'systemEnv.customInfo', 'agent.permissions', 'agent.useRLM',
+                        'moltbook.enable', 'moltbook.apiKey', 'moltbook.botName', 'moltbook.botPurpose',
+                        'remote.server.port', 'remote.discord.enabled', 'remote.discord.token',
+                        'remote.slack.enabled', 'remote.slack.token', 'remote.slack.signingSecret',
+                        'remote.allowedUsers', 'remote.adminUsers', 'remote.allowedChannels',
+                        'responseProfiles', 'defaultResponseProfileId'
                     ];
                     
                     try {
@@ -492,7 +578,7 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, architectModelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, thinkingMode, responseMode, noThinkMode, outputFormat, generationFormats, explainCode, allowedFileFormats, thinkingModeCustomPrompt, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, forceFullCodePath, clipboardInsertRole, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle, enableCodeActions, enableInlineSuggestions, mcpServers, herdParticipants, herdPreAnswerParticipants, herdPostAnswerParticipants, herdRounds, herdDynamicMode, herdDynamicModelPool, deleteBranchAfterMerge, unstagedChangesBehavior, showOs, showIp, showShells, systemCustomInfo, agentShellExecution, agentFilesystemWrite, agentFilesystemRead, agentInternetAccess } = config;
+    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, architectModelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, generationFormats, explainCode, allowedFileFormats, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, forceFullCodePath, clipboardInsertRole, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle, enableCodeActions, enableInlineSuggestions, mcpServers, herdParticipants, herdPreAnswerParticipants, herdPostAnswerParticipants, herdRounds, herdDynamicMode, herdDynamicModelPool, deleteBranchAfterMerge, unstagedChangesBehavior, showOs, showIp, showShells, systemCustomInfo, agentShellExecution, agentFilesystemWrite, agentFilesystemRead, agentInternetAccess, agentUseRLM, moltbookEnable, moltbookApiKey, moltbookBotName, moltbookBotPurpose, remoteServerPort, remoteDiscordEnabled, remoteDiscordToken, remoteSlackEnabled, remoteSlackToken, remoteSlackSigningSecret, remoteAllowedUsers, remoteAdminUsers, remoteAllowedChannels } = config;
 
     const t = (key: string, def: string) => vscode.l10n.t({ message: def, key: key });
     
@@ -562,6 +648,8 @@ export class SettingsPanel {
               .log-container { background: var(--vscode-textCodeBlock-background); padding: 12px; border-radius: 4px; border: 1px solid var(--vscode-panel-border); font-family: monospace; font-size: 12px; white-space: pre-wrap; height: 100%; overflow: auto; }
               .mcp-help-box { background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-panel-border); border-radius: var(--border-radius-sm); padding: 12px; margin-top: 10px; font-size: 12px; }
               .mcp-example { background: var(--vscode-textCodeBlock-background); padding: 6px 10px; border-radius: 4px; margin: 4px 0 10px 0; font-family: monospace; color: var(--success-color); }
+              .security-warning { background: rgba(244, 135, 113, 0.1); border: 1px solid var(--error-color); border-radius: var(--border-radius-sm); padding: 12px; margin-top: 10px; color: var(--error-color); font-size: 12px; }
+              .security-warning strong { color: var(--error-color); display: block; margin-bottom: 4px; }
             </style>
         </head>
         <body>
@@ -580,6 +668,7 @@ export class SettingsPanel {
               <button class="tab-link" onclick="openTab(event, 'TabGeneral')">⚡ General</button>
               <button class="tab-link" onclick="openTab(event, 'TabContext')">📦 Context</button>
               <button class="tab-link" onclick="openTab(event, 'TabAgent')">🤖 Agent & Tools</button>
+              <button class="tab-link" onclick="openTab(event, 'TabRemote')">📡 Remote</button>
               <button class="tab-link" onclick="openTab(event, 'TabGit')">🐙 Git</button>
               <button class="tab-link" onclick="openTab(event, 'TabHerd')">🐂 Herd Mode</button>
               <button class="tab-link" onclick="openTab(event, 'TabPersonas')">🎭 Personas</button>
@@ -649,20 +738,31 @@ export class SettingsPanel {
                 <option value="ar" ${language === 'ar' ? 'selected' : ''}>Arabic</option>
               </select>
 
-              <label for="responseMode">Response Verbosity Mode</label>
-              <select id="responseMode">
-                <option value="silent" ${responseMode === 'silent' ? 'selected' : ''}>Silent (Code Only)</option>
-                <option value="balanced" ${responseMode === 'balanced' ? 'selected' : ''}>Balanced (Problem/Hypothesis/Fix)</option>
-                <option value="pedagogical" ${responseMode === 'pedagogical' ? 'selected' : ''}>Pedagogical (Teach me everything)</option>
-              </select>
-              <p class="help-text">Controls how much reasoning and explanation the AI provides before outputting code.</p>
+              <h3>Response Profiles (Modes)</h3>
+              <p class="help-text">Configure how Lollms responds (Thinking modes, pedagogical styles, brevity, etc.).</p>
+              
+              <div style="display:flex; gap:10px; margin-bottom:10px;">
+                  <select id="defaultProfileSelect" style="flex:1"></select>
+                  <button id="addProfileBtn" class="secondary-button" style="margin:0"><i class="codicon codicon-add"></i> New</button>
+                  <button id="importProfileBtn" class="icon-btn" title="Import"><i class="codicon codicon-cloud-upload"></i></button>
+                  <button id="exportProfileBtn" class="icon-btn" title="Export"><i class="codicon codicon-cloud-download"></i></button>
+              </div>
 
-              <label for="outputFormat">Global Code Format</label>
-              <select id="outputFormat">
-                <option value="legacy" ${outputFormat === 'legacy' ? 'selected' : ''}>Legacy (Markdown)</option>
-                <option value="xml" ${outputFormat === 'xml' ? 'selected' : ''}>XML Mode (Anthropic)</option>
-                <option value="aider" ${outputFormat === 'aider' ? 'selected' : ''}>Aider Mode (Search/Replace)</option>
-              </select>
+              <div id="profiles-container" style="display:flex; flex-direction:column; gap:10px;"></div>
+              
+              <!-- Editor Modal Overlay (Simple inline hidden div) -->
+              <div id="profile-editor" style="display:none; border:1px solid var(--primary-accent); padding:15px; margin-top:10px; background:var(--vscode-editor-inactiveSelectionBackground);">
+                  <h4>Edit Profile</h4>
+                  <label>ID (Unique)</label><input type="text" id="p_id">
+                  <label>Name</label><input type="text" id="p_name">
+                  <label>Description</label><input type="text" id="p_desc">
+                  <label>Prefix Command (e.g. /no_think)</label><input type="text" id="p_prefix">
+                  <label>System Instructions</label><textarea id="p_prompt" rows="5"></textarea>
+                  <div style="display:flex; gap:10px; margin-top:10px;">
+                      <button id="p_save" class="primary">Update</button>
+                      <button id="p_cancel" class="secondary-button">Cancel</button>
+                  </div>
+              </div>
 
               <h3>Editor Integration</h3>
               <div class="checkbox-container"><input type="checkbox" id="enableCodeActions" ${enableCodeActions ? 'checked' : ''}><label for="enableCodeActions">Enable Lollms Code Actions (CodeLens)</label></div>
@@ -676,22 +776,6 @@ export class SettingsPanel {
                 <option value="high" ${reasoningLevel === 'high' ? 'selected' : ''}>High</option>
               </select>
               
-              <label for="thinkingMode">${t('config.thinkingMode.label', 'Thinking Mode')}</label>
-              <select id="thinkingMode">
-                <option value="none" ${thinkingMode === 'none' ? 'selected' : ''}>None</option>
-                <option value="chain_of_thought" ${thinkingMode === 'chain_of_thought' ? 'selected' : ''}>Chain of Thought</option>
-                <option value="chain_of_verification" ${thinkingMode === 'chain_of_verification' ? 'selected' : ''}>Chain of Verification</option>
-                <option value="plan_and_solve" ${thinkingMode === 'plan_and_solve' ? 'selected' : ''}>Plan and Solve</option>
-                <option value="self_critique" ${thinkingMode === 'self_critique' ? 'selected' : ''}>Self-Critique</option>
-                <option value="custom" ${thinkingMode === 'custom' ? 'selected' : ''}>Custom</option>
-              </select>
-              
-              <div id="custom-thinking-prompt-container" style="display: ${thinkingMode === 'custom' ? 'block' : 'none'};">
-                <label for="thinkingModeCustomPrompt">${t('config.thinkingModeCustomPrompt.label', 'Custom Thinking Prompt')}</label>
-                <textarea id="thinkingModeCustomPrompt" rows="4">${thinkingModeCustomPrompt}</textarea>
-              </div>
-
-              <div class="checkbox-container"><input type="checkbox" id="noThinkMode" ${noThinkMode ? 'checked' : ''}><label for="noThinkMode">Enable /no_think Mode (Global Override)</label></div>
               <div class="checkbox-container"><input type="checkbox" id="autoGenerateTitle" ${autoGenerateTitle ? 'checked' : ''}><label for="autoGenerateTitle">Auto-generate discussion titles</label></div>
               <div class="checkbox-container"><input type="checkbox" id="addPedagogicalInstruction" ${addPedagogicalInstruction ? 'checked' : ''}><label for="addPedagogicalInstruction">Add Pedagogical Instruction (Hidden)</label></div>
               <div class="checkbox-container"><input type="checkbox" id="forceFullCodePath" ${forceFullCodePath ? 'checked' : ''}><label for="forceFullCodePath">Force Full Code Path Syntax</label></div>
@@ -751,6 +835,10 @@ export class SettingsPanel {
                   <button id="refreshInspectorModels" type="button" class="icon-btn" title="${t('command.refresh.title', 'Refresh')}"><i class="codicon codicon-refresh"></i></button>
               </div>
 
+              <h3>Recursive Language Model (RLM)</h3>
+              <div class="checkbox-container"><input type="checkbox" id="agentUseRLM" ${agentUseRLM ? 'checked' : ''}><label for="agentUseRLM">Enable RLM with REPL</label></div>
+              <p class="help-text">Allow the agent to maintain persistent python state across calls using a REPL environment. Essential for complex multi-step reasoning.</p>
+
               <h3>Security & Permissions</h3>
               <div class="grid-2">
                 <div class="checkbox-container"><input type="checkbox" id="agentShellExecution" ${agentShellExecution ? 'checked' : ''}><label for="agentShellExecution">Shell Execution (Terminal)</label></div>
@@ -758,7 +846,27 @@ export class SettingsPanel {
                 <div class="checkbox-container"><input type="checkbox" id="agentFilesystemRead" ${agentFilesystemRead ? 'checked' : ''}><label for="agentFilesystemRead">Filesystem Read (Open/List)</label></div>
                 <div class="checkbox-container"><input type="checkbox" id="agentInternetAccess" ${agentInternetAccess ? 'checked' : ''}><label for="agentInternetAccess">Internet Access (Search/Scrape)</label></div>
               </div>
+
+              <h3>Moltbook Connection (Social)</h3>
+              <div class="security-warning">
+                <strong>⚠️ SECURITY WARNING</strong>
+                Enabling Moltbook allowing the AI Agent to post, comment, and read feeds on the Moltbook. 
+                The AI may accidentally leak your code or project information if explicitly asked to post about it.
+              </div>
+              <div class="checkbox-container">
+                  <input type="checkbox" id="moltbookEnable" ${moltbookEnable ? 'checked' : ''}>
+                  <label for="moltbookEnable">Enable Moltbook Connection</label>
+              </div>
+              <label for="moltbookApiKey">Moltbook API Key</label>
+              <input type="text" id="moltbookApiKey" value="${moltbookApiKey}" placeholder="Moltbook v1 API Key..." autocomplete="off" />
+              <p class="help-text">Keys are checked in order: .env file (MOLTBOOK_API_KEY) -> Environment Variable -> Config above.</p>
               
+              <label for="moltbookBotName">Bot Identity: Name</label>
+              <input type="text" id="moltbookBotName" value="${moltbookBotName}" placeholder="e.g. My-Cusom-Bot" />
+              
+              <label for="moltbookBotPurpose">Bot Identity: Purpose</label>
+              <textarea id="moltbookBotPurpose" rows="3" placeholder="Explain what your bot is for...">${moltbookBotPurpose}</textarea>
+
               <h3>Web Search</h3>
               <label for="searchApiKey">Google Custom Search API Key</label>
               <input type="text" id="searchApiKey" value="${searchApiKey}" placeholder="Enter API Key" />
@@ -786,6 +894,52 @@ export class SettingsPanel {
                 <button id="formatMcpBtn" class="secondary-button" style="margin:0; padding: 4px 8px;">Prettify JSON</button>
               </div>
               <textarea id="mcpServers" rows="8" placeholder='{"server-name": "command arg1 arg2"}' style="font-family: monospace; margin-top: 5px;">${mcpServers}</textarea>
+            </div>
+
+            <!-- TabRemote (NEW) -->
+            <div id="TabRemote" class="tab-content">
+                <h2>Remote Agent Integration</h2>
+                <p class="help-text">Allows the Agent to interact via external platforms. Ensure you restrict access to trusted users.</p>
+                
+                <h3>Webhook Server (Push)</h3>
+                <label for="remoteServerPort">Server Port</label>
+                <input type="number" id="remoteServerPort" value="${remoteServerPort}" />
+                <p class="help-text">Local port for incoming webhooks. Use ngrok to expose this if needed.</p>
+
+                <h3>Platforms</h3>
+                
+                <!-- Discord -->
+                <div class="checkbox-container">
+                    <input type="checkbox" id="remoteDiscordEnabled" ${remoteDiscordEnabled ? 'checked' : ''}>
+                    <label for="remoteDiscordEnabled">Enable Discord Integration</label>
+                </div>
+                <label for="remoteDiscordToken">Discord Bot Token</label>
+                <input type="text" id="remoteDiscordToken" value="${remoteDiscordToken}" placeholder="Bot Token..." autocomplete="off" />
+                
+                <!-- Slack -->
+                <div class="checkbox-container">
+                    <input type="checkbox" id="remoteSlackEnabled" ${remoteSlackEnabled ? 'checked' : ''}>
+                    <label for="remoteSlackEnabled">Enable Slack Integration</label>
+                </div>
+                <label for="remoteSlackToken">Slack Bot Token (xoxb-...)</label>
+                <input type="text" id="remoteSlackToken" value="${remoteSlackToken}" placeholder="xoxb-..." autocomplete="off" />
+                <label for="remoteSlackSigningSecret">Slack Signing Secret (for Events API)</label>
+                <input type="text" id="remoteSlackSigningSecret" value="${remoteSlackSigningSecret}" placeholder="Signing Secret..." autocomplete="off" />
+
+                <h3>Access Control List (ACL)</h3>
+                <div class="security-warning">
+                    <strong>⚠️ SECURITY WARNING</strong>
+                    Only add trusted User IDs. "Admin" users can execute shell commands and modify files.
+                </div>
+                
+                <label for="remoteAllowedUsers">Allowed Users (User IDs, one per line)</label>
+                <textarea id="remoteAllowedUsers" rows="3" placeholder="U12345678">${remoteAllowedUsers.join('\n')}</textarea>
+                
+                <label for="remoteAdminUsers">Admin Users (Can Execute Tools) (User IDs, one per line)</label>
+                <textarea id="remoteAdminUsers" rows="3" placeholder="U12345678">${remoteAdminUsers.join('\n')}</textarea>
+                
+                <label for="remoteAllowedChannels">Allowed Channels (Channel IDs, one per line)</label>
+                <textarea id="remoteAllowedChannels" rows="3" placeholder="C12345678">${remoteAllowedChannels.join('\n')}</textarea>
             </div>
 
             <!-- TabGit -->
@@ -875,7 +1029,11 @@ export class SettingsPanel {
             let herdPost = initialState.herdPost;
             let herdPool = initialState.herdPool;
             let loadedModels = [];
-            let fetchTimeout = null;
+            
+            // PROFILES STATE
+            let profiles = config.responseProfiles || [];
+            let defaultId = config.defaultResponseProfileId || 'balanced';
+            let editingIndex = -1;
 
             function safeSet(id, value, isCheck) {
                 const el = document.getElementById(id);
@@ -890,6 +1048,112 @@ export class SettingsPanel {
                 if(el) el.addEventListener(event, callback);
             }
 
+            function renderProfiles() {
+                const container = document.getElementById('profiles-container');
+                const selector = document.getElementById('defaultProfileSelect');
+                container.innerHTML = '';
+                selector.innerHTML = '';
+
+                profiles.forEach((p, idx) => {
+                    // Populate Selector
+                    const opt = new Option(p.name + (p.id === defaultId ? " (Default)" : ""), p.id);
+                    opt.selected = p.id === defaultId;
+                    selector.appendChild(opt);
+
+                    // Populate List
+                    const item = document.createElement('div');
+                    item.className = 'participant-row';
+                    item.innerHTML = \`
+                        <div style="flex:1">
+                            <strong>\${p.name}</strong> <small>(\${p.id})</small><br>
+                            <span style="opacity:0.8; font-size:0.9em">\${p.description}</span>
+                        </div>
+                        <button id="edit-profile-\${idx}" class="icon-btn"><i class="codicon codicon-edit"></i></button>
+                        <button id="del-profile-\${idx}" class="icon-btn remove-btn"><i class="codicon codicon-trash"></i></button>
+                    \`;
+                    container.appendChild(item);
+                    
+                    document.getElementById('edit-profile-'+idx).onclick = () => editProfile(idx);
+                    document.getElementById('del-profile-'+idx).onclick = () => deleteProfile(idx);
+                });
+                
+                vscode.postMessage({ command: 'updateProfiles', profiles, defaultId });
+            }
+
+            function editProfile(index) {
+                editingIndex = index;
+                openEditor(profiles[index]);
+            }
+
+            function deleteProfile(index) {
+                if(confirm("Delete this profile?")) {
+                    if (profiles[index].id === defaultId) {
+                        alert("Cannot delete the default profile. Please change the default first.");
+                        return;
+                    }
+                    profiles.splice(index, 1);
+                    renderProfiles();
+                }
+            }
+
+            function openEditor(p) {
+                document.getElementById('p_id').value = p.id;
+                document.getElementById('p_id').disabled = editingIndex !== -1;
+                document.getElementById('p_name').value = p.name;
+                document.getElementById('p_desc').value = p.description;
+                document.getElementById('p_prefix').value = p.prefix || '';
+                document.getElementById('p_prompt').value = p.systemPrompt;
+                document.getElementById('profile-editor').style.display = 'block';
+                document.getElementById('profiles-container').style.display = 'none';
+            }
+
+            document.getElementById('defaultProfileSelect').addEventListener('change', (e) => {
+                defaultId = e.target.value;
+                renderProfiles();
+            });
+
+            document.getElementById('addProfileBtn').addEventListener('click', () => {
+                editingIndex = -1;
+                openEditor({ id: 'new_mode', name: 'New Mode', description: '', systemPrompt: '', prefix: '' });
+            });
+
+            document.getElementById('p_cancel').addEventListener('click', () => {
+                document.getElementById('profile-editor').style.display = 'none';
+                document.getElementById('profiles-container').style.display = 'flex';
+            });
+
+            document.getElementById('p_save').addEventListener('click', () => {
+                const newP = {
+                    id: document.getElementById('p_id').value,
+                    name: document.getElementById('p_name').value,
+                    description: document.getElementById('p_desc').value,
+                    prefix: document.getElementById('p_prefix').value,
+                    systemPrompt: document.getElementById('p_prompt').value
+                };
+
+                if (!newP.id || !newP.name) {
+                    alert("ID and Name are required");
+                    return;
+                }
+
+                if (editingIndex === -1) {
+                    if (profiles.find(x => x.id === newP.id)) {
+                        alert("ID already exists");
+                        return;
+                    }
+                    profiles.push(newP);
+                } else {
+                    profiles[editingIndex] = newP;
+                }
+
+                document.getElementById('profile-editor').style.display = 'none';
+                document.getElementById('profiles-container').style.display = 'flex';
+                renderProfiles();
+            });
+
+            document.getElementById('exportProfileBtn').addEventListener('click', () => vscode.postMessage({ command: 'exportProfiles' }));
+            document.getElementById('importProfileBtn').addEventListener('click', () => vscode.postMessage({ command: 'importProfiles' }));
+
             function initializeForm() {
                 try {
                     safeSet('apiKey', config.apiKey);
@@ -902,12 +1166,7 @@ export class SettingsPanel {
                     safeSet('disableSsl', config.disableSslVerification, true);
                     safeSet('sslCertPath', config.sslCertPath);
                     safeSet('language', config.language);
-                    safeSet('responseMode', config.responseMode);
-                    safeSet('outputFormat', config.outputFormat);
-                    safeSet('thinkingMode', config.thinkingMode);
-                    safeSet('thinkingModeCustomPrompt', config.thinkingModeCustomPrompt);
                     safeSet('reasoningLevel', config.reasoningLevel);
-                    safeSet('noThinkMode', config.noThinkMode, true);
                     safeSet('autoGenerateTitle', config.autoGenerateTitle, true);
                     safeSet('addPedagogicalInstruction', config.addPedagogicalInstruction, true);
                     safeSet('forceFullCodePath', config.forceFullCodePath, true);
@@ -929,6 +1188,7 @@ export class SettingsPanel {
                     safeSet('agentFilesystemWrite', config.agentFilesystemWrite, true);
                     safeSet('agentFilesystemRead', config.agentFilesystemRead, true);
                     safeSet('agentInternetAccess', config.agentInternetAccess, true);
+                    safeSet('agentUseRLM', config.agentUseRLM, true);
                     safeSet('enableCodeInspector', config.enableCodeInspector, true);
                     safeSet('codeInspectorPersona', config.codeInspectorPersona);
                     safeSet('chatPersona', config.chatPersona);
@@ -948,12 +1208,26 @@ export class SettingsPanel {
                     safeSet('userInfoEmail', config.userInfoEmail);
                     safeSet('userInfoLicense', config.userInfoLicense);
                     safeSet('userInfoCodingStyle', config.userInfoCodingStyle);
+                    safeSet('moltbookEnable', config.moltbookEnable, true);
+                    safeSet('moltbookApiKey', config.moltbookApiKey);
+                    safeSet('moltbookBotName', config.moltbookBotName);
+                    safeSet('moltbookBotPurpose', config.moltbookBotPurpose);
                     
+                    // Remote Settings
+                    safeSet('remoteServerPort', config.remoteServerPort);
+                    safeSet('remoteDiscordEnabled', config.remoteDiscordEnabled, true);
+                    safeSet('remoteDiscordToken', config.remoteDiscordToken);
+                    safeSet('remoteSlackEnabled', config.remoteSlackEnabled, true);
+                    safeSet('remoteSlackToken', config.remoteSlackToken);
+                    safeSet('remoteSlackSigningSecret', config.remoteSlackSigningSecret);
+                    
+                    if(document.getElementById('remoteAllowedUsers')) document.getElementById('remoteAllowedUsers').value = config.remoteAllowedUsers.join('\\n');
+                    if(document.getElementById('remoteAdminUsers')) document.getElementById('remoteAdminUsers').value = config.remoteAdminUsers.join('\\n');
+                    if(document.getElementById('remoteAllowedChannels')) document.getElementById('remoteAllowedChannels').value = config.remoteAllowedChannels.join('\\n');
+
                     const herdDynamic = document.getElementById('herdDynamicMode').checked;
                     document.getElementById('static-herd-config').style.display = herdDynamic ? 'none' : 'block';
                     document.getElementById('dynamic-herd-config').style.display = herdDynamic ? 'block' : 'none';
-                    const thinkingMode = document.getElementById('thinkingMode').value;
-                    document.getElementById('custom-thinking-prompt-container').style.display = thinkingMode === 'custom' ? 'block' : 'none';
                     
                     populateModelDropdown(document.getElementById('modelSelect'), config.modelName);
                     populateModelDropdown(document.getElementById('architectModelSelect'), config.architectModelName);
@@ -962,6 +1236,7 @@ export class SettingsPanel {
                     renderParticipantsList('herd-post-list', herdPost, 'herdPostAnswerParticipants');
                     renderPoolList();
                     updatePersonaSelects();
+                    renderProfiles(); // Init Profiles
                 
                 } catch(e) {
                     console.error("[WEBVIEW] Error initializing form:", e);
@@ -1071,14 +1346,25 @@ export class SettingsPanel {
                     if(el) {
                         let val = el.type === 'checkbox' ? el.checked : el.value;
                         if(el.type === 'number') val = parseInt(val);
-                        if(key === 'contextFileExceptions') val = val.split('\\n').map(s=>s.trim()).filter(Boolean);
+                        if(key === 'contextFileExceptions' || key === 'remoteAllowedUsers' || key === 'remoteAdminUsers' || key === 'remoteAllowedChannels') {
+                            val = val.split('\\n').map(s=>s.trim()).filter(Boolean);
+                        }
                         postTempUpdate(key, val);
                     }
                 });
             };
-            ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','inspectorModelName','codeInspectorPersona','chatPersona','agentPersona','commitMessagePersona','language','thinkingMode','responseMode','outputFormat','thinkingModeCustomPrompt','reasoningLevel','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','clipboardInsertRole','herdRounds','mcpServers','unstagedChangesBehavior','systemCustomInfo'].forEach(k => bind(k, k));
-            ['disableSsl','enableCodeInspector','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','forceFullCodePath','companionEnableWebSearch','companionEnableArxivSearch','herdDynamicMode','enableCodeActions','enableInlineSuggestions','noThinkMode','deleteBranchAfterMerge','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','explainCode'].forEach(id => {
-                const map = { 'disableSsl': 'disableSslVerification', 'deleteBranchAfterMerge': 'git.deleteBranchAfterMerge', 'showOs': 'systemEnv.showOs', 'showIp': 'systemEnv.showIp', 'showShells': 'systemEnv.showShells', 'systemCustomInfo': 'systemEnv.customInfo' };
+            ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','inspectorModelName','codeInspectorPersona','chatPersona','agentPersona','commitMessagePersona','language','reasoningLevel','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','clipboardInsertRole','herdRounds','mcpServers','unstagedChangesBehavior','systemCustomInfo','moltbookApiKey','moltbookBotName','moltbookBotPurpose',
+            'remoteServerPort', 'remoteDiscordToken', 'remoteSlackToken', 'remoteSlackSigningSecret', 'remoteAllowedUsers', 'remoteAdminUsers', 'remoteAllowedChannels'].forEach(k => bind(k, k));
+            
+            ['disableSsl','enableCodeInspector','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','forceFullCodePath','companionEnableWebSearch','companionEnableArxivSearch','herdDynamicMode','enableCodeActions','enableInlineSuggestions','deleteBranchAfterMerge','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','agentUseRLM','explainCode','moltbookEnable',
+            'remoteDiscordEnabled', 'remoteSlackEnabled'].forEach(id => {
+                const map = { 
+                    'disableSsl': 'disableSslVerification', 'deleteBranchAfterMerge': 'git.deleteBranchAfterMerge', 
+                    'showOs': 'systemEnv.showOs', 'showIp': 'systemEnv.showIp', 'showShells': 'systemEnv.showShells', 
+                    'systemCustomInfo': 'systemEnv.customInfo', 'moltbookEnable': 'moltbookEnable',
+                    'remoteDiscordEnabled': 'remoteDiscordEnabled', 'remoteSlackEnabled': 'remoteSlackEnabled',
+                    'agentUseRLM': 'agent.useRLM'
+                };
                 const key = map[id] || id; 
                 if(id==='companionEnableWebSearch') bind(id, 'companion.enableWebSearch');
                 else if(id==='companionEnableArxivSearch') bind(id, 'companion.enableArxivSearch');
@@ -1173,6 +1459,9 @@ export class SettingsPanel {
                     postTempUpdate('sslCertPath', message.path);
                 } else if (message.command === 'logData') {
                     document.getElementById('logContent').textContent = message.content || 'No log data.';
+                } else if (message.command === 'refreshProfiles') {
+                    profiles = message.profiles;
+                    renderProfiles();
                 }
             });
           </script>

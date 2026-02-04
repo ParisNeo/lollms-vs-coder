@@ -20,6 +20,14 @@ export const vscode = new Proxy({} as VsCodeApi, {
     }
 });
 
+export interface ResponseProfile {
+    id: string;
+    name: string;
+    description: string;
+    systemPrompt: string;
+    prefix?: string;
+}
+
 export interface DiscussionCapabilities {
     generationFormats: {
         fullFile: boolean;
@@ -32,7 +40,7 @@ export interface DiscussionCapabilities {
         replace: boolean;
         delete: boolean;
     };
-    responseMode: 'silent' | 'balanced' | 'pedagogical';
+    responseProfileId: string;
     explainCode: boolean;
     fileRename: boolean;
     fileDelete: boolean;
@@ -41,14 +49,12 @@ export interface DiscussionCapabilities {
     imageGen: boolean;
     webSearch: boolean;
     arxivSearch: boolean;
-    funMode: boolean;
-    thinkingMode: string;
     gitWorkflow: boolean;
     herdMode: boolean;
     herdDynamicMode: boolean;
     herdParticipants: any[];
-    herdPreCodeParticipants: any[];
-    herdPostCodeParticipants: any[];
+    herdPreAnswerParticipants: any[];
+    herdPostAnswerParticipants: any[];
     herdRounds: number;
     agentMode: boolean;
     autoContextMode: boolean;
@@ -68,7 +74,8 @@ export const state: {
     capabilities: DiscussionCapabilities | null,
     currentBranch: string,
     currentPersonalityId: string,
-    personalities: any[]
+    personalities: any[],
+    profiles: ResponseProfile[]
 } = {
     searchMatches: [],
     currentMatchIndex: -1,
@@ -78,7 +85,8 @@ export const state: {
     capabilities: null,
     currentBranch: '',
     currentPersonalityId: 'default_coder',
-    personalities: []
+    personalities: [],
+    profiles: [] // Properly initialized to prevent forEach on undefined
 };
 
 export const dom = {
@@ -110,7 +118,6 @@ export const dom = {
     
     get subMenuTriggers() { return document.querySelectorAll('.has-submenu'); },
     get backButtons() { return document.querySelectorAll('.back-btn'); },
-    get respModeRadios() { return document.querySelectorAll('input[name="respMode"]') as NodeListOf<HTMLInputElement>; },
     
     get modelSelector() { return document.getElementById('model-selector') as HTMLSelectElement; },
     get refreshModelsBtn() { return document.getElementById('refresh-models-btn') as HTMLButtonElement; },
@@ -175,7 +182,6 @@ export const dom = {
     get capGitWorkflowContainer() { return document.getElementById('cap-gitWorkflowContainer') as HTMLDivElement; },
 
     get modeFunMode() { return document.getElementById('mode-funMode') as HTMLInputElement; },
-    get capThinkingMode() { return document.getElementById('cap-thinkingMode') as HTMLSelectElement; },
     get inputAreaWrapperDiv() { return document.querySelector('.input-area-wrapper') as HTMLDivElement; },
 
     get capHerdMode() { return document.getElementById('cap-herdMode') as HTMLInputElement; },

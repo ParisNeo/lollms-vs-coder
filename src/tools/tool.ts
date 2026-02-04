@@ -9,6 +9,7 @@ export interface Plan {
     objective: string;
     scratchpad: string;
     tasks: any[];
+    investigation?: any[]; // Stores architect investigation steps
 }
 
 export interface ToolExecutionEnv {

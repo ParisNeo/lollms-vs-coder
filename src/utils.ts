@@ -18,6 +18,14 @@ export interface DynamicModelEntry {
     description: string;
 }
 
+export interface ResponseProfile {
+    id: string;
+    name: string;
+    description: string;
+    systemPrompt: string;
+    prefix?: string;
+}
+
 export interface DiscussionCapabilities {
     generationFormats: {
         fullFile: boolean;
@@ -30,7 +38,7 @@ export interface DiscussionCapabilities {
         replace: boolean;
         delete: boolean;
     };
-    responseMode: 'silent' | 'balanced' | 'pedagogical';
+    responseProfileId: string;
     explainCode: boolean; 
     fileRename: boolean;
     fileDelete: boolean;
@@ -39,8 +47,6 @@ export interface DiscussionCapabilities {
     imageGen: boolean;
     webSearch: boolean;
     arxivSearch: boolean;
-    funMode: boolean;
-    thinkingMode: 'none' | 'chain_of_thought' | 'chain_of_verification' | 'plan_and_solve' | 'self_critique' | 'no_think';
     gitWorkflow: boolean;
     gitCommit?: boolean;
     herdMode: boolean;

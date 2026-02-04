@@ -63,9 +63,17 @@ export class DiscussionManager {
         const herdPostAnswerParticipants = config.get<HerdParticipant[]>('herdPostAnswerParticipants') || [];
         const herdRounds = config.get<number>('herdRounds') || 2;
         const herdDynamicMode = config.get<boolean>('herdDynamicMode') || false;
+        
+        // Load default profile ID from config
+        const defaultProfileId = config.get<string>('defaultResponseProfileId') || 'balanced';
 
         const defaults: DiscussionCapabilities = {
-            codeGenType: 'full',
+            responseProfileId: defaultProfileId, // New field replacing old modes
+            generationFormats: {
+                fullFile: true,
+                diff: false,
+                aider: false
+            },
             allowedFormats: allowedFormats,
             fileRename: true,
             fileDelete: true,
@@ -74,8 +82,7 @@ export class DiscussionManager {
             imageGen: true,
             webSearch: false,
             arxivSearch: false,
-            funMode: false,
-            thinkingMode: 'none',
+            // Removed specific thinkingMode and funMode, now handled by profile
             herdMode: false,
             herdDynamicMode: herdDynamicMode,
             herdParticipants: [], 
@@ -85,6 +92,7 @@ export class DiscussionManager {
             agentMode: false,
             autoContextMode: false,
             gitWorkflow: false,
+            explainCode: true,
             guiState: {
                 agentBadge: true,
                 autoContextBadge: true,
@@ -96,12 +104,15 @@ export class DiscussionManager {
         
         if (saved) {
             const merged = { ...defaults, ...saved };
-            // Legacy Migration
             if ((!merged.herdPreAnswerParticipants || merged.herdPreAnswerParticipants.length === 0) && (merged as any).herdPreCodeParticipants) {
                 merged.herdPreAnswerParticipants = (merged as any).herdPreCodeParticipants;
             }
             if ((!merged.herdPostAnswerParticipants || merged.herdPostAnswerParticipants.length === 0) && (merged as any).herdPostCodeParticipants) {
                 merged.herdPostAnswerParticipants = (merged as any).herdPostCodeParticipants;
+            }
+            // Ensure responseProfileId exists if loading old capability object
+            if (!merged.responseProfileId) {
+                merged.responseProfileId = defaultProfileId;
             }
             return merged;
         }
@@ -119,7 +130,8 @@ export class DiscussionManager {
             groupId,
             plan: null,
             capabilities: caps,
-            personalityId: 'default_coder'
+            personalityId: 'default_coder',
+            importedSkills: []
         };
     }
 
@@ -198,11 +210,9 @@ export class DiscussionManager {
     async generateDiscussionTitle(discussion: Discussion): Promise<string | null> {
         if (!discussion.messages || discussion.messages.length === 0) return null;
         
-        // Find the first user message
         const firstUserMessage = discussion.messages.find(m => m.role === 'user');
         if (!firstUserMessage) return null;
 
-        // Truncate to avoid context overflow for simple title task
         let contentSnippet = typeof firstUserMessage.content === 'string' 
             ? firstUserMessage.content.substring(0, 2000) 
             : firstUserMessage.content.filter(part => part.type === 'text').map(part => part.text).join('\n').substring(0, 2000);
@@ -222,24 +232,19 @@ Output ONLY the JSON.`
 
             const cleanResponse = stripThinkingTags(rawResponse).trim();
             
-            // Robust JSON extraction
             const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
             if (jsonMatch) {
                 try {
                     const parsed = JSON.parse(jsonMatch[0]);
                     if (parsed.title) return parsed.title.trim().replace(/["']/g, '');
-                } catch (e) {
-                    console.warn("Title JSON parse failed, falling back to raw text.", e);
-                }
+                } catch (e) {}
             }
 
-            // Fallback: If no JSON, try to take the first line as the title
             const fallbackTitle = cleanResponse.split('\n')[0].trim().replace(/[#{}"']/g, '').substring(0, 60);
             return fallbackTitle || null;
 
         } catch (error: any) {
-            console.error("Title generation API error:", error);
-            throw error; // Rethrow to let the command handler report it
+            throw error; 
         }
     }
 }

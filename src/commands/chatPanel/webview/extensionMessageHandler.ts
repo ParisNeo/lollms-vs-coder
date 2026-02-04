@@ -111,6 +111,13 @@ export function handleExtensionMessage(event: MessageEvent) {
                 const caps = message.capabilities;
                 if (caps) {
                     state.capabilities = caps;
+                    
+                    // FIXED: Initialize profiles from message to prevent "forEach on undefined" crashes
+                    if (message.profiles) {
+                        state.profiles = message.profiles;
+                    } else if (!state.profiles) {
+                        state.profiles = [];
+                    }
 
                     if (caps.generationFormats) {
                         if (dom.checkGenFull) dom.checkGenFull.checked = caps.generationFormats.fullFile;
@@ -142,18 +149,15 @@ export function handleExtensionMessage(event: MessageEvent) {
                     
                     if(dom.modeFunMode) dom.modeFunMode.checked = caps.funMode;
                     
-                    if (dom.capThinkingMode && caps.thinkingMode) {
-                        dom.capThinkingMode.value = caps.thinkingMode;
-                    }
-
                     if (dom.capHerdMode) dom.capHerdMode.checked = caps.herdMode || false;
                     if (dom.capHerdRounds) dom.capHerdRounds.value = caps.herdRounds || 2;
 
                     const guiState = caps.guiState || { agentBadge: true, autoContextBadge: true, herdBadge: true };
                     
-                    if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = guiState.agentBadge;
-                    if (dom.autoContextCheckbox) dom.autoContextCheckbox.checked = guiState.autoContextBadge;
-                    if (dom.herdModeCheckbox) dom.herdModeCheckbox.checked = guiState.herdBadge;
+                    // FIXED: Checkboxes reflect functionality (Mode), not visibility (Badge)
+                    if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = caps.agentMode;
+                    if (dom.autoContextCheckbox) dom.autoContextCheckbox.checked = caps.autoContextMode;
+                    if (dom.herdModeCheckbox) dom.herdModeCheckbox.checked = caps.herdMode;
 
                     if (dom.herdConfigSection) {
                         dom.herdConfigSection.style.display = caps.herdMode ? 'block' : 'none';
@@ -168,12 +172,6 @@ export function handleExtensionMessage(event: MessageEvent) {
 
                     if (dom.websearchIndicator) {
                         dom.websearchIndicator.style.display = caps.webSearch ? 'flex' : 'none';
-                    }
-
-                    if (caps.responseMode) {
-                        dom.respModeRadios.forEach(r => {
-                            if (r.value === caps.responseMode) r.checked = true;
-                        });
                     }
                     
                     updateBadges();
@@ -194,14 +192,8 @@ export function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'updateThinkingMode':
                 if (dom.thinkingIndicator) {
-                    const mode = message.mode;
-                    if (mode && mode !== 'none' && mode !== 'no_think') {
-                        dom.thinkingIndicator.style.display = 'flex';
-                        let label = mode.replace(/_/g, ' ').replace(/\b\w/g, (l:string) => l.toUpperCase());
-                        dom.thinkingIndicator.querySelector('span')!.textContent = label;
-                    } else {
-                        dom.thinkingIndicator.style.display = 'none';
-                    }
+                    // Legacy command compatibility, ignored now that we use Profiles
+                    dom.thinkingIndicator.style.display = 'none';
                 }
                 break;
 
@@ -299,6 +291,8 @@ export function handleExtensionMessage(event: MessageEvent) {
                     state.capabilities.agentMode = message.isActive;
                 }
                 updateBadges();
+                
+                if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = message.isActive;
                 
                 if (!message.isActive) setGeneratingState(false);
                 break;

@@ -123,6 +123,8 @@ export class ChatPanel {
     if (this._isDisposed) return;
     if (this._panel.webview) {
         const process = this._currentDiscussion ? this.processManager.getForDiscussion(this._currentDiscussion.id) : undefined;
+        // Natural Input fix: If we are waiting for user input, we are NOT generating.
+        // This allows the input box to be enabled.
         const isGenerating = !!process && !this._inputResolver;
         this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating });
     }
@@ -176,7 +178,8 @@ export class ChatPanel {
                   groupId: null,
                   plan: null,
                   capabilities: this._discussionCapabilities, 
-                  personalityId: 'default_coder'
+                  personalityId: 'default_coder',
+                  importedSkills: []
               };
           } else {
               discussion = await this._discussionManager.getDiscussion(this.discussionId);
@@ -206,6 +209,10 @@ export class ChatPanel {
               }
               if (!discussion.personalityId) {
                   discussion.personalityId = 'default_coder';
+                  needsSave = true;
+              }
+              if (!discussion.importedSkills) {
+                  discussion.importedSkills = [];
                   needsSave = true;
               }
 
@@ -239,6 +246,7 @@ export class ChatPanel {
 
       const config = vscode.workspace.getConfiguration('lollmsVsCoder');
       const isInspectorEnabled = config.get<boolean>('enableCodeInspector', true);
+      const profiles = config.get('responseProfiles') || [];
 
       if (this._contextManager) {
           const cachedContext = this._contextManager.getLastContext();
@@ -247,7 +255,8 @@ export class ChatPanel {
               this._panel.webview.postMessage({ 
                   command: 'updateContext', 
                   context: cachedContext.text,
-                  files: includedFiles 
+                  files: includedFiles,
+                  skills: cachedContext.importedSkills || []
               });
               this._panel.webview.postMessage({ command: 'updateImageContext', images: cachedContext.images });
           }
@@ -263,7 +272,8 @@ export class ChatPanel {
       
       this._panel.webview.postMessage({ 
           command: 'updateDiscussionCapabilities', 
-          capabilities: this._discussionCapabilities 
+          capabilities: this._discussionCapabilities,
+          profiles: profiles
       });
       
       let isRepo = false;
@@ -276,8 +286,6 @@ export class ChatPanel {
       if (this._discussionCapabilities.gitWorkflow && workspaceFolder) {
           this.sendGitBranchState(workspaceFolder);
       }
-
-      this._panel.webview.postMessage({ command: 'updateThinkingMode', mode: this._discussionCapabilities.thinkingMode });
 
       if (this._personalityManager) {
           this._panel.webview.postMessage({
@@ -365,8 +373,6 @@ export class ChatPanel {
             this.log("Fetching context content...");
             const importedIds = this._currentDiscussion?.importedSkills || [];
             const context = await this._contextManager.getContextContent({ signal, importedSkillIds: importedIds });
-            const allSkills = this._skillsManager ? await this._skillsManager.getSkills() : [];
-            const skills = allSkills.filter(s => importedIds.includes(s.id));
             
             if (signal.aborted) {
                 this.log("Token calculation aborted.");
@@ -382,7 +388,7 @@ export class ChatPanel {
                 command: 'updateContext', 
                 context: context.text,
                 files: includedFiles,
-                skills: skills
+                skills: context.importedSkills || []
             });
             this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
             
@@ -595,13 +601,14 @@ export class ChatPanel {
       return new Promise((resolve, reject) => {
           this._inputResolver = resolve;
           
+          // NATURAL USE FIX: Send as an assistant message instead of a system block
           this.addMessageToDiscussion({
               id: 'agent_request_' + Date.now(),
-              role: 'system',
-              content: `**❓ Agent Question:** ${question}\n\n*Please type your answer below.*`
+              role: 'assistant',
+              content: question,
+              model: this._currentDiscussion?.model || this._lollmsAPI.getModelName()
           });
           
-          // Make input enabled for user response
           this.updateGeneratingState();
 
           const disposable = signal.addEventListener('abort', () => {
@@ -633,6 +640,12 @@ export class ChatPanel {
         await this.addMessageToDiscussion(message);
         resolver(text);
         return;
+    }
+
+    if (this._discussionCapabilities.agentMode && !this.agentManager.getIsActive()) {
+        this.agentManager.toggleAgentMode();
+    } else if (!this._discussionCapabilities.agentMode && this.agentManager.getIsActive()) {
+        this.agentManager.toggleAgentMode();
     }
 
     if (this.agentManager && this.agentManager.getIsActive()) {
@@ -760,7 +773,7 @@ export class ChatPanel {
                 postParticipants,
                 this._discussionCapabilities.herdRounds || 2,
                 leaderModel,
-                contextData.text, // Use combined text for Herd Context currently
+                contextData.text, 
                 (status) => {
                     this._panel.webview.postMessage({ command: 'updateStatus', status });
                 },
@@ -2226,7 +2239,7 @@ Task:
                         <div class="checkbox-grid">
                             <div class="checkbox-container">
                                 <label class="switch"><input type="checkbox" id="fmt-fullFile" checked><span class="slider"></span></label>
-                                <label for="fmt-fullFile">Full File (File:)</label>
+                                <label for="fmt-fullFile">Full File </label>
                             </div>
                             <div class="checkbox-container">
                                 <label class="switch"><input type="checkbox" id="fmt-insert"><span class="slider"></span></label>
@@ -2353,3 +2366,4 @@ Task:
 </html>`;
   }
 }
+

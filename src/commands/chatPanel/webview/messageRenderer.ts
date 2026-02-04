@@ -1405,10 +1405,42 @@ export function displayPlan(plan: any) {
     dom.agentPlanZone.classList.add('visible');
     dom.planResizer.classList.add('visible');
 
+    let investigationHtml = '';
+    if (plan.investigation && plan.investigation.length > 0) {
+        const invItems = plan.investigation.map((item: any) => {
+            let statusIcon = '';
+            if (item.status === 'completed') statusIcon = '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span>';
+            else if (item.status === 'failed') statusIcon = '<span class="codicon codicon-error" style="color:var(--vscode-charts-red)"></span>';
+            else statusIcon = '<span class="codicon codicon-sync spin" style="color:var(--vscode-charts-yellow)"></span>';
+            
+            return `
+            <div class="investigation-item" style="padding: 8px; border-bottom: 1px solid var(--vscode-widget-border); font-size: 12px; background: var(--vscode-sideBar-background);">
+                <div style="display:flex; justify-content:space-between; align-items:center; font-weight:600;">
+                    <span>${statusIcon} ${item.action}</span>
+                </div>
+                <details style="margin-top:4px;">
+                    <summary style="opacity:0.7; cursor:pointer; font-size: 10px;">Details</summary>
+                    <div style="background:var(--vscode-textCodeBlock-background); padding:6px; margin-top:4px; border-radius:4px; overflow-x:auto; font-family:var(--vscode-editor-font-family); border: 1px solid var(--vscode-widget-border);">
+                        <div style="margin-bottom:4px;"><strong style="color:var(--vscode-descriptionForeground)">Parameters:</strong> ${JSON.stringify(item.parameters)}</div>
+                        ${item.result ? `<div><strong style="color:var(--vscode-descriptionForeground)">Result:</strong> ${sanitizer.sanitize(item.result.substring(0, 1000))}${item.result.length > 1000 ? '...' : ''}</div>` : ''}
+                    </div>
+                </details>
+            </div>`;
+        }).join('');
+
+        investigationHtml = `
+        <div class="plan-scratchpad" style="margin-top:10px; border-left: 4px solid var(--vscode-charts-blue); background: var(--vscode-editor-background);">
+            <details open>
+                <summary class="scratchpad-header" style="background: var(--vscode-editor-inactiveSelectionBackground);"><span class="codicon codicon-search"></span> Architect Investigation Steps</summary>
+                <div class="scratchpad-content" style="padding:0;">${invItems}</div>
+            </details>
+        </div>`;
+    }
+
     let scratchpadHtml = plan.scratchpad ? `
         <div class="plan-scratchpad" style="margin-top:10px;">
             <details open>
-                <summary class="scratchpad-header"><span class="codicon codicon-lightbulb"></span> Thought Process</summary>
+                <summary class="scratchpad-header"><span class="codicon codicon-lightbulb"></span> Current Process / Thoughts</summary>
                 <div class="scratchpad-content">${sanitizer.sanitize(marked.parse(plan.scratchpad) as string, SANITIZE_CONFIG)}</div>
             </details>
         </div>` : '';
@@ -1427,57 +1459,60 @@ export function displayPlan(plan: any) {
         return `<span class="tool-badge"><span class="codicon codicon-tools"></span> ${toolName}</span>`;
     }
 
-    let tasksHtml = plan.tasks.map((task: any) => {
-        let statusClass = `status-${task.status}`;
-        let icon = getStatusIcon(task.status);
-        let toolBadge = task.action ? getToolBadge(task.action) : '';
-        
-        let retryButtonHtml = '';
-        if (task.status === 'failed' && task.can_retry) {
-            retryButtonHtml = `<button class="retry-btn" data-task-id="${task.id}" title="Retry this task"><span class="codicon codicon-debug-restart"></span> Retry</button>`;
-        }
-        
-        let paramsHtml = '';
-        if (task.parameters && Object.keys(task.parameters).length > 0) {
-            paramsHtml = `
-                <div class="task-params" style="margin-top: 5px;">
-                    <details>
-                        <summary class="task-result-summary" style="font-size: 10px; opacity: 0.7;">Command Details</summary>
-                        <div class="task-result-box" style="font-size: 11px; padding: 4px; border-style: dashed;">${sanitizer.sanitize(JSON.stringify(task.parameters, null, 2))}</div>
-                    </details>
-                </div>`;
-        }
+    let tasksHtml = '';
+    if (plan.tasks && plan.tasks.length > 0) {
+        tasksHtml = plan.tasks.map((task: any) => {
+            let statusClass = `status-${task.status}`;
+            let icon = getStatusIcon(task.status);
+            let toolBadge = task.action ? getToolBadge(task.action) : '';
+            
+            let retryButtonHtml = '';
+            if (task.status === 'failed' && task.can_retry) {
+                retryButtonHtml = `<button class="retry-btn" data-task-id="${task.id}" title="Retry this task"><span class="codicon codicon-debug-restart"></span> Retry</button>`;
+            }
+            
+            let paramsHtml = '';
+            if (task.parameters && Object.keys(task.parameters).length > 0) {
+                paramsHtml = `
+                    <div class="task-params" style="margin-top: 5px;">
+                        <details>
+                            <summary class="task-result-summary" style="font-size: 10px; opacity: 0.7;">Command Details</summary>
+                            <div class="task-result-box" style="font-size: 11px; padding: 4px; border-style: dashed;">${sanitizer.sanitize(JSON.stringify(task.parameters, null, 2))}</div>
+                        </details>
+                    </div>`;
+            }
 
-        let resultHtml = '';
-        if (task.result) {
-            const isFailure = task.status === 'failed';
-            const label = isFailure ? 'Failure Details' : 'Output';
-            const resultBoxClass = isFailure ? 'failure' : 'success';
-            const summaryClass = isFailure ? 'failure-text' : 'success-text';
+            let resultHtml = '';
+            if (task.result) {
+                const isFailure = task.status === 'failed';
+                const label = isFailure ? 'Failure Details' : 'Output';
+                const resultBoxClass = isFailure ? 'failure' : 'success';
+                const summaryClass = isFailure ? 'failure-text' : 'success-text';
 
-            resultHtml = `
-                <div class="task-result">
-                    <details ${isFailure ? 'open' : ''}>
-                        <summary class="task-result-summary ${summaryClass}">${label}</summary>
-                        <div class="task-result-box ${resultBoxClass}">${sanitizer.sanitize(task.result)}</div>
-                    </details>
-                </div>`;
-        }
+                resultHtml = `
+                    <div class="task-result">
+                        <details ${isFailure ? 'open' : ''}>
+                            <summary class="task-result-summary ${summaryClass}">${label}</summary>
+                            <div class="task-result-box ${resultBoxClass}">${sanitizer.sanitize(task.result)}</div>
+                        </details>
+                    </div>`;
+            }
 
-        return `
-            <li class="plan-task" data-task-id="${task.id}">
-                <div class="task-header">
-                    <div class="task-status-icon ${statusClass}">${icon}</div>
-                    <div class="task-details">
-                        <div class="task-description">${sanitizer.sanitize(task.description)}</div>
-                        ${toolBadge}
-                        ${retryButtonHtml}
-                        ${paramsHtml}
+            return `
+                <li class="plan-task" data-task-id="${task.id}">
+                    <div class="task-header">
+                        <div class="task-status-icon ${statusClass}">${icon}</div>
+                        <div class="task-details">
+                            <div class="task-description">${sanitizer.sanitize(task.description)}</div>
+                            ${toolBadge}
+                            ${retryButtonHtml}
+                            ${paramsHtml}
+                        </div>
                     </div>
-                </div>
-                ${resultHtml}
-            </li>`;
-    }).join('');
+                    ${resultHtml}
+                </li>`;
+        }).join('');
+    }
 
     const planWrapper = document.createElement('div');
     planWrapper.className = 'plan-wrapper';
@@ -1491,8 +1526,9 @@ export function displayPlan(plan: any) {
                 </summary>
                 <div class="plan-content">
                     <div class="plan-objective"><strong>Objective:</strong> ${sanitizer.sanitize(plan.objective)}</div>
-                    <ul class="plan-tasks">${tasksHtml}</ul>
+                    ${investigationHtml}
                     ${scratchpadHtml}
+                    <ul class="plan-tasks">${tasksHtml}</ul>
                 </div>
             </details>
         </div>`;

@@ -34,6 +34,10 @@ import { submitResponseTool } from './submitResponse';
 import { buildSkillTool } from './buildSkill';
 import { prepareEnvironmentTool } from './prepareEnvironment';
 import { researchWebPageTool } from './researchWebPage';
+import { moltbookActionTool } from './moltbookAction';
+import { waitTool } from './wait';
+import { analyzeImageTool } from './analyzeImage';
+import { moveFileTool } from './moveFile';
 
 export const allTools: ToolDefinition[] = [
     autoSelectContextFilesTool,
@@ -70,5 +74,9 @@ export const allTools: ToolDefinition[] = [
     submitResponseTool,
     buildSkillTool,
     prepareEnvironmentTool,
-    researchWebPageTool
+    researchWebPageTool,
+    moltbookActionTool,
+    waitTool,
+    analyzeImageTool,
+    moveFileTool
 ];

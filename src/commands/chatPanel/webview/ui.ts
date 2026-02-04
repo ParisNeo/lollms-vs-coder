@@ -48,7 +48,7 @@ function createToggleBadge(
     onToggle: () => void,
     onExecute?: () => void
 ): HTMLElement | null {
-    if (!isVisible) return null;
+    if (!isVisible && !isActive) return null;
 
     const span = document.createElement('span');
     span.className = `mode-badge ${activeClass} ${isActive ? 'active' : 'inactive'} clickable`;
@@ -92,6 +92,7 @@ export function updateBadges() {
     
     container.innerHTML = '';
 
+    // Model Badge
     if (dom.modelSelector && dom.modelSelector.value) {
         const model = dom.modelSelector.value;
         const span = document.createElement('span');
@@ -101,6 +102,7 @@ export function updateBadges() {
         container.appendChild(span);
     }
 
+    // Personality Badge
     if (state.personalities && state.personalities.length > 0) {
         const currentP = state.personalities.find(p => p.id === state.currentPersonalityId);
         if (currentP) {
@@ -159,24 +161,66 @@ export function updateBadges() {
     const caps = state.capabilities;
     const guiState = caps.guiState || { agentBadge: true, autoContextBadge: true, herdBadge: true };
 
-    const styleSpan = document.createElement('span');
-    const styleIcon = caps.responseMode === 'silent' ? 'codicon-mute' : (caps.responseMode === 'pedagogical' ? 'codicon-mortar-board' : 'codicon-law');
-    styleSpan.className = `mode-badge active clickable`;
-    styleSpan.style.backgroundColor = 'var(--vscode-button-secondaryBackground)';
-    styleSpan.style.color = 'var(--vscode-button-secondaryForeground)';
-    styleSpan.title = `Active Response Style: ${caps.responseMode.toUpperCase()}`;
-    styleSpan.innerHTML = `<span class="codicon ${styleIcon}"></span> <span class="badge-label">${caps.responseMode.charAt(0).toUpperCase() + caps.responseMode.slice(1)}</span>`;
-    styleSpan.onclick = (e) => {
-        e.stopPropagation();
-        const mainView = document.getElementById('menu-main');
-        const styleView = document.getElementById('menu-response-style');
-        if (mainView && styleView && dom.moreActionsMenu) {
-            mainView.classList.add('hidden');
-            styleView.classList.remove('hidden');
-            dom.moreActionsMenu.classList.add('visible');
-        }
-    };
-    container.appendChild(styleSpan);
+    // Response Profile Badge (Mode)
+    const currentProfileId = caps.responseProfileId || 'balanced';
+    const currentProfile = state.profiles.find(p => p.id === currentProfileId) || state.profiles[0];
+    
+    if (currentProfile) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'badge-wrapper';
+        wrapper.style.position = 'relative';
+
+        const modeBadge = document.createElement('span');
+        modeBadge.className = 'mode-badge active clickable';
+        modeBadge.style.backgroundColor = 'var(--vscode-button-secondaryBackground)';
+        modeBadge.style.color = 'var(--vscode-button-secondaryForeground)';
+        modeBadge.title = `Current Mode: ${currentProfile.name}\n${currentProfile.description}`;
+        modeBadge.innerHTML = `<span class="codicon codicon-settings"></span> <span class="badge-label">${currentProfile.name}</span>`;
+
+        const menu = document.createElement('div');
+        menu.id = 'profile-menu';
+        menu.className = 'custom-menu hidden';
+        
+        state.profiles.forEach(p => {
+             const item = document.createElement('div');
+             item.className = 'custom-menu-item';
+             item.innerHTML = `<span class="codicon ${p.id === currentProfileId ? 'codicon-check' : 'codicon-circle-outline'}"></span> ${p.name}`;
+             item.onclick = (e: MouseEvent) => {
+                 e.stopPropagation();
+                 vscode.postMessage({ 
+                     command: 'updateDiscussionCapabilitiesPartial', 
+                     partial: { responseProfileId: p.id } 
+                 });
+                 menu.classList.remove('visible');
+             };
+             menu.appendChild(item);
+        });
+        
+        const configItem = document.createElement('div');
+        configItem.className = 'custom-menu-item';
+        configItem.style.borderTop = '1px solid var(--vscode-menu-separatorBackground)';
+        configItem.style.marginTop = '4px';
+        configItem.style.paddingTop = '8px';
+        configItem.innerHTML = `<span class="codicon codicon-gear"></span> Configure Modes...`;
+        configItem.onclick = (e) => {
+            e.stopPropagation();
+            vscode.postMessage({ command: 'openSettings' });
+            menu.classList.remove('visible');
+        };
+        menu.appendChild(configItem);
+
+        modeBadge.onclick = (e) => {
+            e.stopPropagation();
+             document.querySelectorAll('.custom-menu').forEach(m => {
+                if (m.id !== 'profile-menu') m.classList.remove('visible');
+            });
+            menu.classList.toggle('visible');
+        };
+
+        wrapper.appendChild(modeBadge);
+        wrapper.appendChild(menu);
+        container.appendChild(wrapper);
+    }
 
     const agentBadge = createToggleBadge('🤖 Agent', 'agent', guiState.agentBadge, caps.agentMode, () => {
         vscode.postMessage({ command: 'toggleAgentMode' });

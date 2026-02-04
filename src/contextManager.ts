@@ -3,7 +3,7 @@ import * as path from 'path';
 import { ContextStateProvider } from './commands/contextStateProvider';
 import Jimp = require('jimp');
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
-import { SkillsManager } from './skillsManager';
+import { SkillsManager, Skill } from './skillsManager';
 import * as mammoth from 'mammoth';
 const pdfParse = require('pdf-parse');
 import { stripThinkingTags } from './utils';
@@ -19,6 +19,7 @@ export interface ContextResult {
   projectTree: string;
   selectedFilesContent: string;
   skillsContent: string;
+  importedSkills: Skill[];
 }
 
 export class ContextManager {
@@ -201,7 +202,6 @@ export class ContextManager {
     for (const keyword of keywords) {
         const pattern = keyword.replace(/"/g, '\\"');
         try {
-            // Try git grep first as it is fast and accurate
             try {
                 const { stdout } = await execAsync(`git grep -n -I -c "${pattern}"`, { cwd });
                 if (stdout.trim()) {
@@ -210,7 +210,6 @@ export class ContextManager {
                 }
             } catch (e) {}
 
-            // Fallback to platform specific tools
             let command = os.platform() === 'win32' 
               ? `findstr /S /N /I /P "${pattern}" *` 
               : `grep -r -n -I -l "${pattern}" .`;
@@ -228,7 +227,6 @@ export class ContextManager {
     return combinedResults;
   }
 
-  // --- AUTO CONTEXT AGENT LOOP ---
   public async runContextAgent(
       userPrompt: string, 
       model: string,
@@ -250,7 +248,6 @@ export class ContextManager {
           return "";
       }
 
-      // Initialize with currently included files
       const currentContextFiles = this.contextStateProvider.getIncludedFiles().map(f => f.path);
       const selectedFiles = new Set<string>(currentContextFiles);
       const initialCount = selectedFiles.size;
@@ -286,7 +283,6 @@ You have access to the project structure and the list of currently selected file
       const actionLog: string[] = [];
       let initialUserContent = `**User Request:** "${userPrompt}"\n\n**Project Structure:**\n${fileTree}`;
       
-      // Ground the agent with keywords if provided
       if (initialKeywords && initialKeywords.length > 0) {
           actionLog.push(`🔍 Grounding search for keywords: ${initialKeywords.join(', ')}...`);
           const searchResults = await this.searchWorkspaceKeywords(initialKeywords, workspaceFolder.uri.fsPath);
@@ -306,7 +302,6 @@ You have access to the project structure and the list of currently selected file
           const sortedFiles = Array.from(selectedFiles).sort();
           const filesListItems = sortedFiles.map(f => `<li><span class="codicon codicon-file"></span> ${f}</li>`).join('');
           
-          // Show files tree always open if finished, or open if we have files
           const filesTree = selectedFiles.size > 0 
               ? `<details ${finished ? 'open' : ''}><summary>📂 <strong>Context Files (${selectedFiles.size})</strong></summary><ul class="file-list-tree">${filesListItems}</ul></details>`
               : `*No files selected.*`;
@@ -339,13 +334,11 @@ You have access to the project structure and the list of currently selected file
       for (let step = 0; step < MAX_STEPS; step++) {
           if (signal.aborted) throw new Error("Context agent aborted.");
 
-          // Inject current state into prompt
           chatHistory.push({ 
               role: 'system', 
               content: `[System Update] Currently selected files: ${JSON.stringify(Array.from(selectedFiles))}. Continue refining or call done().` 
           });
 
-          // Call LLM
           let response = "";
           try {
               response = await this.lollmsAPI.sendChat(chatHistory, null, signal, model);
@@ -357,7 +350,6 @@ You have access to the project structure and the list of currently selected file
           
           chatHistory.push({ role: 'assistant', content: response });
 
-          // Parse Tool
           const cleanResponse = stripThinkingTags(response);
           let jsonMatch = cleanResponse.match(/```json\s*([\s\S]+?)\s*```/) || cleanResponse.match(/\{[\s\S]*\}/);
           
@@ -380,7 +372,6 @@ You have access to the project structure and the list of currently selected file
               const toolName = toolCall.tool;
               const params = toolCall.params || {};
 
-              // Reset retry count on successful parse
               retryCount = 0;
 
               if (toolName === 'done') {
@@ -437,10 +428,8 @@ You have access to the project structure and the list of currently selected file
           }
       }
 
-      // Final consistency check visualization
       renderUpdate("Context Ready", true, stepsTaken);
 
-      // Return content
       if (selectedFiles.size > 0) {
           return await this.readSpecificFiles(Array.from(selectedFiles));
       }
@@ -511,10 +500,10 @@ You have access to the project structure and the list of currently selected file
   }
 
   async getContextContent(options?: { includeTree?: boolean, signal?: AbortSignal, importedSkillIds?: string[] }): Promise<ContextResult> {
-    const result: ContextResult = { text: '', images: [], projectTree: '', selectedFilesContent: '', skillsContent: '' };
+    const result: ContextResult = { text: '', images: [], projectTree: '', selectedFilesContent: '', skillsContent: '', importedSkills: [] };
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const maxImageSize = config.get<number>('maxImageSize') || 1024;
-    const includeTree = options?.includeTree !== false; // Default true
+    const includeTree = options?.includeTree !== false; 
     const signal = options?.signal;
 
     if (!this.contextStateProvider) {
@@ -531,7 +520,6 @@ You have access to the project structure and the list of currently selected file
 
     const contextFiles = this.contextStateProvider.getIncludedFiles();
     
-    // --- SKILLS ---
     if (this.skillsManager) {
         const skills = await this.skillsManager.getSkills();
         const allowedIds = options?.importedSkillIds;
@@ -539,19 +527,18 @@ You have access to the project structure and the list of currently selected file
         if (skills.length > 0 && allowedIds && allowedIds.length > 0) {
             for (const skill of skills) {
                 if (allowedIds.includes(skill.id)) {
+                    result.importedSkills.push(skill);
                     result.skillsContent += `### Skill: ${skill.name}\n\`\`\`${skill.language || 'text'}\n${skill.content}\n\`\`\`\n\n`;
                 }
             }
         }
     }
 
-    // --- PROJECT TREE ---
     if (includeTree) {
         if (signal?.aborted) throw new Error("Operation cancelled");
         result.projectTree = await this.generateProjectTree(signal);
     }
 
-    // --- SELECTED FILES CONTENT ---
     const includedFiles = contextFiles.filter(f => !f.path.endsWith(path.sep));
     
     if (includedFiles.length > 0) {
@@ -638,7 +625,6 @@ You have access to the project structure and the list of currently selected file
       }
     }
 
-    // Construct Legacy Text
     result.text = `# Project Context\n\n**Workspace:** ${path.basename(workspaceFolder.uri.fsPath)}\n\n`;
     if (result.skillsContent) {
         result.text += `## Active Skills\n${result.skillsContent}---\n\n`;
@@ -670,15 +656,14 @@ Based on this information, you must identify the most relevant files.
 
 **CRITICAL INSTRUCTIONS:**
 1.  **JSON ONLY:** Your entire response MUST be a single, valid JSON array of strings.
-2.  **NO EXTRA TEXT:** Do not add any conversational text, explanations, apologies, or markdown formatting. Your response must begin with \`[\` and end with \`]\`.
-3.  **FILE PATHS:** The strings in the array must be the exact relative paths of the files as they appear in the project tree.
-4.  **RELENANCE:** Select only the files that are most likely to be needed to accomplish the user's objective. Do not select irrelevant files.
-5.  **DO NOT ANSWER:** Do not answer the user's prompt or provide any other information. Your sole purpose is to output the JSON array of file paths.
+2.  **NO EXTRA TEXT:** Do NOT add any conversational text.
+3.  **FILE PATHS:** The strings in the array must be the exact relative paths of the files.
+4.  **RELENANCE:** Select only the files that are most likely to be needed.
+5.  **DO NOT ANSWER:** Your sole purpose is to output the JSON array.
 
 Example Response:
 [
   "src/commands/chatPanel.ts",
-  "src/extension.ts",
   "package.json"
 ]`;
     
@@ -698,7 +683,7 @@ Based on the objective and the file tree, which files are the most relevant? Ret
 
         const jsonString = this.extractJsonArray(responseText);
         if (!jsonString) {
-            throw new Error(`No valid JSON array found in the AI's response. Raw response: ${responseText}`);
+            throw new Error(`No valid JSON array found in the AI's response.`);
         }
 
         const fileList = JSON.parse(jsonString);

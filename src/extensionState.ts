@@ -88,15 +88,26 @@ export async function runCommandInTerminal(
             if (shellType === 'powershell') {
                 const safeOutputFile = outputFile.replace(/\\/g, '/');
                 const safeExitCodeFile = exitCodeFile.replace(/\\/g, '/');
-                // Added chcp 65001 and explicit Out-File encoding to fix accented characters
-                const psCommand = `
-                    chcp 65001 | Out-Null;
-                    $OutputEncoding = [System.Text.Encoding]::UTF8;
-                    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8;
-                    & { ${sanitizedCommand} } 2>&1 | ForEach-Object { $_.ToString() } | Tee-Object -FilePath '${safeOutputFile}';
-                    $LASTEXITCODE | Out-File -FilePath '${safeExitCodeFile}' -Encoding utf8
-                `.trim().replace(/\n/g, ' ');
-                execution = new vscode.ShellExecution("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psCommand], { cwd });
+                
+                // Use Base64 encoding to avoid all quoting/escaping issues in PowerShell arguments.
+                // We also preserve newlines to support comments (#) and multi-line scripts.
+                const psScript = `
+$OutputEncoding = [System.Text.Encoding]::UTF8
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+& {
+${sanitizedCommand}
+} 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath '${safeOutputFile}'
+if ($LASTEXITCODE -eq $null) { $LASTEXITCODE = 0 }
+$LASTEXITCODE | Out-File -FilePath '${safeExitCodeFile}' -Encoding utf8
+`;
+                // PowerShell expects UTF-16LE for EncodedCommand
+                const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+
+                execution = new vscode.ShellExecution(
+                    "powershell.exe", 
+                    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], 
+                    { cwd }
+                );
             } else if (shellType === 'cmd') {
                 // Force UTF-8 in CMD as well
                 const cmdCommand = `chcp 65001 > nul && ${sanitizedCommand} > "${outputFile}" 2>&1 & echo %errorlevel% > "${exitCodeFile}"`;

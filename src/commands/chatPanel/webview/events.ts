@@ -15,16 +15,12 @@ export function initEventHandlers() {
             isResizing = true;
             resizer.classList.add('resizing');
             document.body.style.cursor = 'col-resize';
-            // Disable interactions with iframes or chat while resizing to prevent mouse capture issues
             document.querySelectorAll('iframe, .messages').forEach(el => (el as HTMLElement).style.pointerEvents = 'none');
         });
         window.addEventListener('mousemove', (e) => {
             if (!isResizing) return;
-            
             const rect = wrapper.getBoundingClientRect();
-            // Since planZone is on the right, width is rect.right - mouseX
             const newWidth = rect.right - e.clientX;
-            
             if (newWidth > 150 && newWidth < rect.width * 0.85) {
                 planZone.style.width = `${newWidth}px`;
             }
@@ -150,7 +146,6 @@ export function initEventHandlers() {
     bindClick(dom.debugRestartButton, 'debugRestart');
     bindClick(dom.showDebugLogButton, 'requestLog');
 
-    // Message insertion bindings
     if (dom.addUserMessageBtn) {
         dom.addUserMessageBtn.addEventListener('click', () => {
             insertNewMessageEditor('user');
@@ -175,17 +170,6 @@ export function initEventHandlers() {
     });
     bindChange(dom.herdModeCheckbox, (e) => {
         vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { herdMode: (e.target as HTMLInputElement).checked } });
-    });
-
-    dom.respModeRadios.forEach(radio => {
-        radio.addEventListener('change', () => {
-            if (radio.checked) {
-                vscode.postMessage({ 
-                    command: 'updateDiscussionCapabilitiesPartial', 
-                    partial: { responseMode: radio.value } 
-                });
-            }
-        });
     });
 
     bindChange(dom.modelSelector, (e) => {
@@ -229,7 +213,7 @@ export function initEventHandlers() {
                     replace: dom.fmtReplace?.checked ?? false,
                     delete: dom.fmtDelete?.checked ?? false
                 },
-                responseMode: (document.querySelector('input[name="responseMode"]:checked') as HTMLInputElement)?.value || 'balanced',
+                responseProfileId: state.capabilities?.responseProfileId || 'balanced', // Persist current profile
                 explainCode: dom.checkBehaviorExplain?.checked ?? true,
                 fileRename: dom.capFileRename?.checked ?? true,
                 fileDelete: dom.capFileDelete?.checked ?? true,
@@ -239,8 +223,6 @@ export function initEventHandlers() {
                 webSearch: dom.capWebSearch?.checked ?? false,
                 arxivSearch: dom.capArxivSearch?.checked ?? false,
                 gitWorkflow: dom.capGitWorkflow?.checked ?? false,
-                funMode: dom.modeFunMode?.checked ?? false,
-                thinkingMode: dom.capThinkingMode?.value ?? 'none',
                 herdMode: dom.capHerdMode?.checked ?? false,
                 herdRounds: parseInt(dom.capHerdRounds?.value || "2", 10)
             };

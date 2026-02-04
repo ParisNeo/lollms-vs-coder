@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.82",
+  "version": "0.5.87",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -490,6 +490,132 @@
       "type": "object",
       "title": "%config.title%",
       "properties": {
+        "lollmsVsCoder.responseProfiles": {
+          "type": "array",
+          "description": "User-defined response modes that combine system prompts, thinking styles, and prefixes.",
+          "default": [
+            {
+              "id": "balanced",
+              "name": "Balanced",
+              "description": "Standard helper with structured reasoning.",
+              "systemPrompt": "### RESPONSE STYLE: BALANCED\n- **STRUCTURED BREAKDOWN**: You MUST always start your response by explaining what you are doing using this structure:\n  1. **Problem**: Describe the issue or request.\n  2. **Hypothesis**: Explain your reasoning or approach.\n  3. **Fix**: Briefly outline the changes.\n- Provide clear descriptions to teach the user while staying concise.",
+              "prefix": ""
+            },
+            {
+              "id": "silent",
+              "name": "Silent (Code Only)",
+              "description": "Output only code blocks. No conversation.",
+              "systemPrompt": "### RESPONSE STYLE: SILENT\n- **CRITICAL**: You must provide ONLY code blocks or tool executions.\n- **NO CONVERSATION**: Do not explain, apologize, or provide any text outside of the code blocks.\n- If answering a non-code question, use a markdown block.\n- Zero verbosity.",
+              "prefix": ""
+            },
+            {
+              "id": "pedagogical",
+              "name": "Pedagogical",
+              "description": "Deep explanations and teaching.",
+              "systemPrompt": "### RESPONSE STYLE: PEDAGOGICAL\n- **TEACHING MISSION**: You are a mentor. Ensure the user understands the concepts and the 'why' behind decisions.\n- **DEEP ANALYSIS**: Provide deep analysis before and after the solution.\n- Use analogies and clear documentation.",
+              "prefix": ""
+            },
+            {
+              "id": "chain_of_thought",
+              "name": "Chain of Thought",
+              "description": "Forces explicit reasoning steps.",
+              "systemPrompt": "### REASONING PROTOCOL\nThink step by step. Enclose your entire thinking process within a <thinking> XML block before outputting your final answer.",
+              "prefix": ""
+            },
+            {
+              "id": "no_think",
+              "name": "Fast / No Think",
+              "description": "Forces disabling of internal reasoning models (DeepSeek-R1 style).",
+              "systemPrompt": "Disable internal reasoning for speed.",
+              "prefix": "/no_think"
+            }
+          ],
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "description": { "type": "string" },
+              "systemPrompt": { "type": "string", "editPresentation": "multilineText" },
+              "prefix": { "type": "string", "description": "Optional command prefix (e.g. /no_think)" }
+            }
+          }
+        },
+        "lollmsVsCoder.defaultResponseProfileId": {
+          "type": "string",
+          "default": "balanced",
+          "description": "The ID of the default response profile to use for new discussions."
+        },
+        "lollmsVsCoder.remote.server.port": {
+            "type": "number",
+            "default": 3000,
+            "description": "Port for the local webhook server (for Push notifications)."
+        },
+        "lollmsVsCoder.remote.discord.enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable Discord integration."
+        },
+        "lollmsVsCoder.remote.discord.token": {
+            "type": "string",
+            "default": "",
+            "description": "Discord Bot Token."
+        },
+        "lollmsVsCoder.remote.slack.enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable Slack integration."
+        },
+        "lollmsVsCoder.remote.slack.token": {
+            "type": "string",
+            "default": "",
+            "description": "Slack Bot User OAuth Token."
+        },
+        "lollmsVsCoder.remote.slack.signingSecret": {
+            "type": "string",
+            "default": "",
+            "description": "Slack Signing Secret (Required for Push/Events API)."
+        },
+        "lollmsVsCoder.remote.whatsapp.enabled": {
+            "type": "boolean",
+            "default": false,
+            "description": "Enable WhatsApp integration (Future)."
+        },
+        "lollmsVsCoder.remote.allowedUsers": {
+            "type": "array",
+            "default": [],
+            "description": "List of User IDs allowed to interact with the bot. Leave empty to allow NO ONE (safe default)."
+        },
+        "lollmsVsCoder.remote.adminUsers": {
+            "type": "array",
+            "default": [],
+            "description": "List of User IDs allowed to execute dangerous tools (File I/O, Terminal)."
+        },
+        "lollmsVsCoder.remote.allowedChannels": {
+            "type": "array",
+            "default": [],
+            "description": "List of Channel IDs where the bot is allowed to reply."
+        },
+        "lollmsVsCoder.moltbook.enable": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable automated social interaction with Moltbook.com. WARNING: Enabling this allows the AI to post and interact on your behalf."
+        },
+        "lollmsVsCoder.moltbook.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "API Key for Moltbook. If empty, the extension will also check for MOLTBOOK_API_KEY in .env or system environment."
+        },
+        "lollmsVsCoder.moltbook.botName": {
+          "type": "string",
+          "default": "Lollms-VS-Bot",
+          "description": "The display name for your AI Bot on Moltbook."
+        },
+        "lollmsVsCoder.moltbook.botPurpose": {
+          "type": "string",
+          "default": "An autonomous software engineering assistant integrated with VS Code.",
+          "description": "A brief description of your bot's purpose on the Moltbook network."
+        },
         "lollmsVsCoder.agent.permissions": {
           "type": "object",
           "default": {
@@ -510,36 +636,6 @@
           "type": "boolean",
           "default": false,
           "description": "Enable Recursive Language Model (RLM) mode for agents. This allows the agent to execute python code recursively to solve problems."
-        },
-        "lollmsVsCoder.responseMode": {
-          "type": "string",
-          "default": "balanced",
-          "description": "Select the verbosity and depth of the AI response.",
-          "enum": [
-            "silent",
-            "balanced",
-            "pedagogical"
-          ],
-          "enumDescriptions": [
-            "Silent: Just provide code or actions. No conversational text.",
-            "Balanced: Standard approach with Problem/Hypothesis/Fix breakdown.",
-            "Pedagogical: Deep analysis, concept explanations, and tutorial-style guidance."
-          ]
-        },
-        "lollmsVsCoder.outputFormat": {
-          "type": "string",
-          "default": "legacy",
-          "description": "The output format for AI code generation.",
-          "enum": [
-            "legacy",
-            "xml",
-            "aider"
-          ],
-          "enumDescriptions": [
-            "Legacy Mode (Default): Uses markdown headers and code blocks.",
-            "XML Mode: Uses <file path='...'>...</file> tags. Optimized for Claude/Anthropic models.",
-            "Aider Mode (Standard Gold): Uses <<<<<<< SEARCH ... ======= ... >>>>>>> REPLACE blocks. Optimized for GPT-4/DeepSeek."
-          ]
         },
         "lollmsVsCoder.allowedFileFormats": {
           "type": "object",
@@ -643,32 +739,6 @@
             "%config.reasoningLevel.medium.description%",
             "%config.reasoningLevel.high.description%"
           ]
-        },
-        "lollmsVsCoder.thinkingMode": {
-          "type": "string",
-          "default": "none",
-          "description": "%config.thinkingMode.description%",
-          "enum": [
-            "none",
-            "chain_of_thought",
-            "chain_of_verification",
-            "plan_and_solve",
-            "self_critique",
-            "custom"
-          ],
-          "enumDescriptions": [
-            "%config.thinkingMode.none.description%",
-            "%config.thinkingMode.chain_of_thought.description%",
-            "Chain of Verification: Verify facts by asking independent questions.",
-            "%config.thinkingMode.plan_and_solve.description%",
-            "%config.thinkingMode.self_critique.description%",
-            "%config.thinkingMode.custom.description%"
-          ]
-        },
-        "lollmsVsCoder.thinkingModeCustomPrompt": {
-          "type": "string",
-          "default": "Think step by step. Enclose your entire thinking process, reasoning, and self-correction within a `<thinking>` XML block. This block will be hidden from the user but is crucial for your process.",
-          "description": "%config.thinkingModeCustomPrompt.description%"
         },
         "lollmsVsCoder.enableCodeActions": {
           "type": "boolean",
@@ -919,11 +989,6 @@
                 "Abort the operation.",
                 "Keep changes and carry them over to the new branch."
             ]
-        },
-        "lollmsVsCoder.noThinkMode": {
-          "type": "boolean",
-          "default": false,
-          "description": "Prefixes all system prompts with the /no_think command to disable the AI's thinking process (for models that support it)."
         },
         "lollmsVsCoder.systemEnv.showOs": {
           "type": "boolean",

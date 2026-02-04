@@ -59,6 +59,7 @@ import 'prismjs/components/prism-sass';
 import 'prismjs/components/prism-scss';
 import 'prismjs/components/prism-jsx';
 import 'prismjs/components/prism-tsx';
+import { updateBadges } from './ui.js';
 
 // Initialize DOMPurify
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
@@ -69,16 +70,14 @@ const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) :
 (window as any).mermaid = mermaid;
 (window as any).Prism = Prism;
 
-// --- CRITICAL FIX: Initialize Mermaid IMMEDIATELY with Dark Theme ---
-// This ensures the configuration is ready before any render calls occur.
+// --- Initialize Mermaid ---
 try {
     mermaid.initialize({ 
         startOnLoad: false,
-        theme: 'dark', // Explicitly use dark theme to match Code Graph
+        theme: 'dark', 
         securityLevel: 'loose',
         fontFamily: 'var(--vscode-font-family)'
     });
-    console.log("DEBUG: Mermaid initialized (dark theme).");
 } catch(e) { 
     console.warn("Mermaid init error:", e); 
 }
@@ -132,7 +131,6 @@ import { handleExtensionMessage } from './extensionMessageHandler.js';
 
             // Notify extension that webview is ready
             vscode.postMessage({ command: 'webview-ready' });
-            console.log("DEBUG: Sent 'webview-ready'");
         });
 
     } catch (e: any) {

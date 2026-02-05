@@ -44,7 +44,12 @@ export class SkillsManager {
     private async ensureBootstrapSkills() {
         if (!this.extensionUri) return;
 
-        const bootstrapDir = vscode.Uri.joinPath(this.extensionUri, 'src', 'skills');
+        /**
+         * FIX: Point to 'out/skills' instead of 'src/skills'.
+         * The 'src' directory is excluded from the final package via .vscodeignore,
+         * but the 'copy-assets' script places the JSON files in 'out/skills'.
+         */
+        const bootstrapDir = vscode.Uri.joinPath(this.extensionUri, 'out', 'skills');
         try {
             const entries = await vscode.workspace.fs.readDirectory(bootstrapDir);
             const currentGlobalSkills = await this.getGlobalSkills();
@@ -63,7 +68,7 @@ export class SkillsManager {
                 }
             }
         } catch (e) {
-            console.warn("No bootstrap skills found or error loading them.", e);
+            console.warn("No bootstrap skills found in 'out/skills' or error loading them.", e);
         }
     }
 

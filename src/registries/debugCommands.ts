@@ -32,8 +32,6 @@ export function registerDebugCommands(context: vscode.ExtensionContext, services
         const error = debugErrorManager.lastError;
         if (!error) return;
         
-        // We do NOT fetch the full context content here, as the ChatPanel will inject it into the system prompt.
-        // We only check if the specific file needs to be added manually.
         const includedFiles = services.contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || [];
         
         let prompt = "";
@@ -54,11 +52,22 @@ export function registerDebugCommands(context: vscode.ExtensionContext, services
             }
         }
 
-        // 2. Error Details
-        prompt += `I encountered an exception while debugging my code.\n\n**Error Message:**\n${error.message}\n\n**Location:**\nFile: \`${error.filePath?.fsPath}\`\nLine: ${error.line}\n\n**Stack Trace:**\n\`\`\`\n${error.stack || 'No stack trace available'}\n\`\`\`\n\n`;
+        // 2. Error Details & Live State
+        prompt += `### DEBUG EXCEPTION CAPTURED\n`;
+        prompt += `**Error Message:** ${error.message}\n`;
+        prompt += `**Exact Location:** \`${error.filePath?.fsPath}\` at Line ${error.line}\n\n`;
+
+        if (error.locals) {
+            prompt += `#### RUNTIME STATE (LOCALS)\n`;
+            prompt += `Values of involved variables at the moment of exception:\n`;
+            prompt += `\`\`\`\n${error.locals}\n\`\`\`\n\n`;
+        }
+
+        prompt += `#### STACK TRACE\n`;
+        prompt += `\`\`\`\n${error.stack || 'No stack trace available'}\n\`\`\`\n\n`;
 
         // 3. Instructions
-        prompt += `Please analyze the error and provide a fix.`;
+        prompt += `Please analyze the error using the provided source code and the runtime variable values. Propose a fix to prevent this exception.`;
         
         if (getActiveWorkspace()) {
             await startDiscussionWithInitialPrompt(services, prompt, getActiveWorkspace()!);
@@ -79,7 +88,16 @@ export function registerDebugCommands(context: vscode.ExtensionContext, services
         }
 
         const errorFileRelative = error.filePath ? vscode.workspace.asRelativePath(error.filePath) : 'Unknown file';
-        const errorText = `I encountered an exception while debugging.\n\n**Error:** ${error.message}\n**Location:** \`${errorFileRelative}\` at line ${error.line}\n\n**Stack Trace:**\n\`\`\`\n${error.stack || 'No stack trace available'}\n\`\`\`\n\nPlease analyze this error and suggest a fix.`;
+        
+        let errorText = `### 🛑 RUNTIME EXCEPTION\n`;
+        errorText += `**Error:** ${error.message}\n`;
+        errorText += `**Location:** \`${errorFileRelative}\` at line ${error.line}\n\n`;
+
+        if (error.locals) {
+            errorText += `**Local Variables:**\n\`\`\`\n${error.locals}\n\`\`\`\n\n`;
+        }
+
+        errorText += `**Stack Trace:**\n\`\`\`\n${error.stack || 'No stack trace available'}\n\`\`\`\n\nPlease analyze this error and suggest a fix.`;
 
         await panel.addMessageToDiscussion({
             id: 'user_debug_err_' + Date.now(),

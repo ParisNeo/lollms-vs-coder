@@ -19,7 +19,7 @@ export class ChatPanel {
   public static currentPanel: ChatPanel | undefined;
   public readonly _panel: vscode.WebviewPanel;
   private readonly _extensionUri: vscode.Uri;
-  private readonly _lollmsAPI: LollmsAPI;
+  public readonly _lollmsAPI: LollmsAPI;
   private _contextManager!: ContextManager;
   private _discussionManager!: DiscussionManager;
   private _gitIntegration: GitIntegration;
@@ -123,8 +123,6 @@ export class ChatPanel {
     if (this._isDisposed) return;
     if (this._panel.webview) {
         const process = this._currentDiscussion ? this.processManager.getForDiscussion(this._currentDiscussion.id) : undefined;
-        // Natural Input fix: If we are waiting for user input, we are NOT generating.
-        // This allows the input box to be enabled.
         const isGenerating = !!process && !this._inputResolver;
         this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating });
     }
@@ -601,7 +599,6 @@ export class ChatPanel {
       return new Promise((resolve, reject) => {
           this._inputResolver = resolve;
           
-          // NATURAL USE FIX: Send as an assistant message instead of a system block
           this.addMessageToDiscussion({
               id: 'agent_request_' + Date.now(),
               role: 'assistant',
@@ -665,6 +662,29 @@ export class ChatPanel {
 
     await this.addMessageToDiscussion(message);
 
+    /**
+     * AUTO-GENERATE TITLE LOGIC
+     * If enabled, trigger title generation after the first real user message.
+     */
+    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+    if (config.get<boolean>('autoGenerateTitle') && 
+        this._currentDiscussion && 
+        !this._currentDiscussion.id.startsWith('temp-') &&
+        (this._currentDiscussion.title === 'New Discussion' || !this._currentDiscussion.title)) {
+        
+        const userMessages = this._currentDiscussion.messages.filter(m => m.role === 'user');
+        if (userMessages.length === 1) {
+            this._discussionManager.generateDiscussionTitle(this._currentDiscussion).then(newTitle => {
+                if (newTitle && this._currentDiscussion && !this._isDisposed) {
+                    this._currentDiscussion.title = newTitle;
+                    this._panel.title = newTitle;
+                    this._discussionManager.saveDiscussion(this._currentDiscussion);
+                    vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
+                }
+            }).catch(e => this.log(`Auto-title generation failed: ${e.message}`, 'WARN'));
+        }
+    }
+
     const { id: processId, controller } = this.processManager.register(this.discussionId, 'Generating response...');
     this.updateGeneratingState();
 
@@ -716,7 +736,6 @@ export class ChatPanel {
         let preParticipants = this._discussionCapabilities.herdPreAnswerParticipants;
         let postParticipants = this._discussionCapabilities.herdPostAnswerParticipants;
         const leaderModel = this._currentDiscussion.model || this._lollmsAPI.getModelName();
-        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const dynamicMode = config.get<boolean>('herdDynamicMode') || false;
         
         if (dynamicMode) {
@@ -834,7 +853,6 @@ export class ChatPanel {
 
     try {
         const personaContent = this.getCurrentPersonaSystemPrompt();
-        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const forceFullCode = config.get<boolean>('forceFullCodePath') || false;
         
         const systemPrompt = await getProcessedSystemPrompt(
@@ -1174,7 +1192,6 @@ export class ChatPanel {
             return;
         }
 
-        // 1. Identify Unique Categories for Bundling
         const categories = new Set<string>();
         allSkills.forEach(s => {
             if (s.category) {
@@ -1187,7 +1204,6 @@ export class ChatPanel {
             }
         });
 
-        // 2. Create QuickPick Items
         const bundleItems = Array.from(categories).sort().map(cat => ({
             label: `$(folder) ${cat} (Bundle)`,
             description: `Enable all skills in this category`,
@@ -1213,8 +1229,7 @@ export class ChatPanel {
 
         if (!selected || selected.length === 0) return;
 
-        // 3. Resolve selections to Skill Objects
-        const finalSkillsToImport = new Map<string, any>(); // Map ID to Skill to avoid duplicates
+        const finalSkillsToImport = new Map<string, any>(); 
 
         for (const item of selected) {
             if (item.isBundle) {
@@ -1227,7 +1242,6 @@ export class ChatPanel {
 
         const skillList = Array.from(finalSkillsToImport.values());
 
-        // 4. Determine Scope and Apply
         const choice = await vscode.window.showQuickPick(
             [
                 { label: "Current Discussion Only", detail: "Active only for this chat window." },
@@ -1748,7 +1762,7 @@ Task:
                     description, 
                     content,
                     language: 'markdown',
-                    scope: scope // 'global' or 'local'
+                    scope: scope 
                 });
                 vscode.window.showInformationMessage(`Skill '${name}' saved to ${scope} library.`);
                 vscode.commands.executeCommand('lollms-vs-coder.refreshSkills'); 
@@ -2006,7 +2020,6 @@ Task:
     <div class="chat-container">
         
         <div class="chat-content-wrapper">
-            <!-- LEFT COLUMN: CHAT -->
             <div class="chat-main-column">
                 <div class="messages" id="messages">
                     <div class="search-bar" id="search-bar" style="display: none;">
@@ -2049,7 +2062,6 @@ Task:
                     </div>
                 </div>
 
-                <!-- GENERATING OVERLAY -->
                 <div id="generating-overlay" class="generating-overlay" style="display: none;">
                     <div class="generating-content">
                         <div class="spinner"></div>
@@ -2059,7 +2071,6 @@ Task:
                 </div>
 
                 <div class="input-area-wrapper">
-                    <!-- Menu and Input Area here -->
                     <div id="more-actions-menu">
                         <div class="menu-view" id="menu-main">
                             <div class="menu-item has-submenu" data-target="menu-modes">
@@ -2090,7 +2101,6 @@ Task:
                             <button class="menu-item" id="showDebugLogButton"><i class="codicon codicon-output"></i><span>Show Debug Log</span></button>
                         </div>
 
-                        <!-- Modes View -->
                         <div class="menu-view hidden" id="menu-modes">
                             <div class="menu-header">
                                 <button class="back-btn"><i class="codicon codicon-arrow-left"></i></button>
@@ -2110,7 +2120,6 @@ Task:
                             </div>
                         </div>
 
-                        <!-- AI Config View -->
                         <div class="menu-view hidden" id="menu-ai">
                             <div class="menu-header">
                                 <button class="back-btn"><i class="codicon codicon-arrow-left"></i></button>
@@ -2127,7 +2136,6 @@ Task:
                             </div>
                         </div>
 
-                        <!-- Response Style View -->
                         <div class="menu-view hidden" id="menu-response-style">
                             <div class="menu-header">
                                 <button class="back-btn"><i class="codicon codicon-arrow-left"></i></button>
@@ -2152,10 +2160,8 @@ Task:
                         </div>
                         
                         <div class="active-badges" id="active-badges">
-                            <!-- Badges injected via JS -->
                         </div>
 
-                        <!-- Web Search Indicator -->
                         <div id="websearch-indicator" class="websearch-indicator" title="Web Search Active" style="display: none;">
                             <i class="codicon codicon-globe"></i>
                             <span>Web</span>
@@ -2193,7 +2199,6 @@ Task:
                 </div>
             </div>
 
-            <!-- RIGHT COLUMN: PLAN -->
             <div id="plan-resizer"></div>
             <div id="agent-plan-zone"></div>
         </div>
@@ -2202,7 +2207,6 @@ Task:
             <i class="codicon codicon-arrow-down"></i>
         </button>
 
-        <!-- AGENT TOOLS MODAL -->
         <div id="tools-modal" class="modal">
             <div class="modal-content">
                 <div class="modal-header">
@@ -2216,7 +2220,6 @@ Task:
             </div>
         </div>
 
-        <!-- STAGING MODAL -->
         <div id="staging-modal" class="modal">
             <div class="modal-content">
                 <div class="modal-header">
@@ -2231,7 +2234,6 @@ Task:
             </div>
         </div>
 
-        <!-- COMMIT MODAL -->
         <div id="commit-modal" class="modal">
             <div class="modal-content">
                 <div class="modal-header">
@@ -2247,7 +2249,6 @@ Task:
             </div>
         </div>
 
-        <!-- HISTORY MODAL -->
         <div id="history-modal" class="modal">
             <div class="modal-content">
                 <div class="modal-header">
@@ -2259,7 +2260,6 @@ Task:
             </div>
         </div>
 
-        <!-- DISCUSSION TOOLS MODAL -->
         <div id="discussion-tools-modal" class="modal">
             <div class="modal-content">
                 <div class="modal-header">

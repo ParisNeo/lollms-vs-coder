@@ -24,7 +24,7 @@ export class LollmsDebugAdapterTracker implements vscode.DebugAdapterTracker {
             }
             
             // Get Stack Trace (top frame) to locate the file/line
-            const stackTrace = await session.customRequest('stackTrace', { threadId, startFrame: 0, levels: 1 });
+            const stackTrace = await session.customRequest('stackTrace', { threadId, startFrame: 0, levels: 20 });
             
             if (stackTrace && stackTrace.stackFrames && stackTrace.stackFrames.length > 0) {
                 const topFrame = stackTrace.stackFrames[0];
@@ -34,16 +34,38 @@ export class LollmsDebugAdapterTracker implements vscode.DebugAdapterTracker {
                     const uri = vscode.Uri.file(source.path);
                     const line = topFrame.line;
                     
-                    // Try to get more stack frames for context
-                    let stackString = "";
+                    // Format Stack Trace
+                    const stackString = stackTrace.stackFrames.map((f: any) => 
+                        `${f.name} (${f.source?.path || 'unknown'}:${f.line})`
+                    ).join('\n');
+
+                    // --- NEW: Fetch Variable Values (Locals) ---
+                    let localsString = "";
                     try {
-                        const fullStack = await session.customRequest('stackTrace', { threadId, startFrame: 0, levels: 20 });
-                        stackString = fullStack.stackFrames.map((f: any) => `${f.name} (${f.source?.path || 'unknown'}:${f.line})`).join('\n');
-                    } catch {
-                        stackString = "Stack trace unavailable";
+                        const scopes = await session.customRequest('scopes', { frameId: topFrame.id });
+                        if (scopes && scopes.scopes) {
+                            // Find the 'Locals' scope - name can vary by debugger
+                            const localScope = scopes.scopes.find((s: any) => 
+                                s.name === 'Locals' || s.presentationHint === 'locals'
+                            );
+
+                            if (localScope) {
+                                const variables = await session.customRequest('variables', { 
+                                    variablesReference: localScope.variablesReference 
+                                });
+                                
+                                if (variables && variables.variables) {
+                                    localsString = variables.variables.map((v: any) => 
+                                        `${v.name} = ${v.value} (${v.type || 'unknown'})`
+                                    ).join('\n');
+                                }
+                            }
+                        }
+                    } catch (varError) {
+                        localsString = "Local variables unavailable.";
                     }
                     
-                    debugErrorManager.setError(message, stackString, uri, line);
+                    debugErrorManager.setError(message, stackString, uri, line, localsString);
                 }
             }
         } catch (e) {

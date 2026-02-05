@@ -9,10 +9,16 @@ export let lollmsExecutionTerminal: vscode.Terminal | null = null;
 export const debugErrorManager = {
     _onDidChange: new vscode.EventEmitter<void>(),
     get onDidChange(): vscode.Event<void> { return this._onDidChange.event; },
-    lastError: null as { message: string, stack?: string, filePath?: vscode.Uri, line?: number } | null,
+    lastError: null as { 
+        message: string, 
+        stack?: string, 
+        filePath?: vscode.Uri, 
+        line?: number,
+        locals?: string // Added to store runtime variable state
+    } | null,
     
-    setError(message: string, stack?: string, filePath?: vscode.Uri, line?: number) {
-        this.lastError = { message, stack, filePath, line };
+    setError(message: string, stack?: string, filePath?: vscode.Uri, line?: number, locals?: string) {
+        this.lastError = { message, stack, filePath, line, locals };
         vscode.commands.executeCommand('setContext', 'lollms:hasDebugError', true);
         this._onDidChange.fire();
         Logger.info(`Debug error captured: ${message}`, { stack, filePath, line });

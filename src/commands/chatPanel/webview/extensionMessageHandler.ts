@@ -232,21 +232,20 @@ export function handleExtensionMessage(event: MessageEvent) {
                 updateBadges();
                 break;
             case 'tokenCalculationStarted':
-                if (dom.tokenCountingOverlay) {
-                    dom.tokenCountingOverlay.style.display = 'flex';
-                    if (dom.tokenCountingText && message.text) {
-                        dom.tokenCountingText.textContent = message.text;
-                    }
+                if (dom.contextLoadingSpinner) {
+                    dom.contextLoadingSpinner.style.display = 'flex';
+                    const text = dom.contextLoadingSpinner.querySelector('span');
+                    if (text) text.textContent = message.text || 'Updating context...';
                 }
-                if (dom.cancelTokensBtn) dom.cancelTokensBtn.style.display = 'inline-flex';
-                if (dom.inputAreaWrapper) dom.inputAreaWrapper.style.display = 'none';
+                // Optionally hide the token label until we have a real number
+                if (dom.tokenCountLabel) dom.tokenCountLabel.style.opacity = '0.5';
                 break;
+
             case 'tokenCalculationFinished':
-                if (dom.tokenCountingOverlay) dom.tokenCountingOverlay.style.display = 'none';
-                if (dom.cancelTokensBtn) dom.cancelTokensBtn.style.display = 'none';
-                if (dom.inputAreaWrapper && !state.isGenerating) {
-                    dom.inputAreaWrapper.style.display = 'block';
+                if (dom.contextLoadingSpinner) {
+                    dom.contextLoadingSpinner.style.display = 'none';
                 }
+                if (dom.tokenCountLabel) dom.tokenCountLabel.style.opacity = '1';
                 break;
             case 'updateTokenProgress':
                 if(dom.tokenCountLabel) {

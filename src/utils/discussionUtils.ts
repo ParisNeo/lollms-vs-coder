@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { LollmsServices } from '../lollmsContext';
 import { ChatMessage } from '../lollmsAPI';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
+import { AgentManager } from '../agentManager';
 
 export async function startDiscussionWithInitialPrompt(
     services: LollmsServices, 
@@ -12,7 +13,6 @@ export async function startDiscussionWithInitialPrompt(
     if (!services.discussionManager) return;
 
     const discussion = services.discussionManager.createNewDiscussion();
-    
     await services.discussionManager.saveDiscussion(discussion);
     services.treeProviders.discussion?.refresh();
 
@@ -21,20 +21,20 @@ export async function startDiscussionWithInitialPrompt(
         services.lollmsAPI, 
         services.discussionManager, 
         discussion.id, 
-        services.gitIntegration, // Added missing gitIntegration parameter
+        services.gitIntegration,
         services.skillsManager
     );
     
-    // Inject dependencies into panel
-    panel.agentManager = new (require('../agentManager').AgentManager)(
+    panel.agentManager = new AgentManager(
         panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
-        services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager
+        services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
+        services.rlmDb // Passed here
     );
     panel.setProcessManager(services.processManager);
     panel.agentManager.setProcessManager(services.processManager);
     panel.setContextManager(services.contextManager);
     panel.setPersonalityManager(services.personalityManager);
-    panel.setHerdManager(services.herdManager); // Added injection
+    panel.setHerdManager(services.herdManager);
 
     await panel.loadDiscussion();
 

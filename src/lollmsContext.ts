@@ -15,6 +15,7 @@ import { InlineDiffProvider } from './commands/inlineDiffProvider';
 import { WorkflowManager } from './workflow/workflowManager';
 import { DiffManager } from './diffManager';
 import { HerdManager } from './herdManager';
+import { RLMDatabaseManager } from './rlmDatabaseManager';
 
 export interface LollmsServices {
     extensionUri: vscode.Uri;
@@ -34,8 +35,8 @@ export interface LollmsServices {
     inlineDiffProvider: InlineDiffProvider;
     diffManager: DiffManager;
     herdManager: HerdManager;
+    rlmDb: RLMDatabaseManager; // Added here
     
-    // Providers needed for refreshing
     treeProviders: {
         discussion?: any;
         chatPrompt?: any;

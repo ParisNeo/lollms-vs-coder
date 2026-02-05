@@ -86,6 +86,29 @@ try {
 import { initEventHandlers } from './events.js'; 
 import { handleExtensionMessage } from './extensionMessageHandler.js';
 
+
+
+// Add to global scope
+(window as any).saveSkill = (encodedContent: string, scope: 'global' | 'local') => {
+    const content = decodeURIComponent(encodedContent);
+    // Try to extract a name
+    const nameMatch = content.match(/^#\s+(.*)/m);
+    const name = nameMatch ? nameMatch[1].trim() : "New Skill";
+    
+    // Try to extract description
+    const lines = content.split('\n');
+    let desc = "Generated skill";
+    if (lines.length > 2) {
+        desc = lines.find((l, i) => i > 0 && l.trim().length > 0 && !l.startsWith('```') && !l.startsWith('#')) || desc;
+    }
+
+    vscode.postMessage({ 
+        command: 'saveGeneratedSkill', 
+        skillData: { name, description: desc, content, scope } 
+    });
+};
+
+
 // --- Initialization ---
 (function() {
     try {
@@ -140,3 +163,4 @@ import { handleExtensionMessage } from './extensionMessageHandler.js';
         }
     }
 })();
+

@@ -96,6 +96,9 @@ export class ContextManager {
   };
   
   private _lastContext: ContextResult | null = null;
+  
+  // Storage key for persistent project skills
+  private static PROJECT_SKILLS_KEY = 'lollms_project_active_skills';
 
   constructor(context: vscode.ExtensionContext, lollmsAPI: LollmsAPI) {
     this.context = context;
@@ -498,14 +501,26 @@ You have access to the project structure and the list of currently selected file
           return buffer.toString('utf8');
       }
   }
-
+  
   async getContextContent(options?: { includeTree?: boolean, signal?: AbortSignal, importedSkillIds?: string[] }): Promise<ContextResult> {
     const result: ContextResult = { text: '', images: [], projectTree: '', selectedFilesContent: '', skillsContent: '', importedSkills: [] };
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const maxImageSize = config.get<number>('maxImageSize') || 1024;
     const includeTree = options?.includeTree !== false; 
     const signal = options?.signal;
-
+    // We add this here so it's always present when inspecting or sending context
+    const skillProtocol = `
+### SKILL CREATION PROTOCOL
+If the user asks to "save this as a skill", "remember this", or "learn how to do X", wrap the resulting documentation/code in a <skill> tag.
+Format:
+<skill>
+# Skill Name
+Description of what this teaches or provides.
+\`\`\`language
+code or instructions
+\`\`\`
+</skill>
+`;
     if (!this.contextStateProvider) {
       result.text = this.getNoWorkspaceMessage();
       this._lastContext = result;
@@ -625,10 +640,42 @@ You have access to the project structure and the list of currently selected file
       }
     }
 
+    // MERGE Discussion Skills AND Project Persistent Skills
+    const discussionSkillIds = options?.importedSkillIds || [];
+    const projectSkillIds = await this.getActiveProjectSkills();
+    
+    // Unique set of IDs
+    const allSkillIds = Array.from(new Set([...discussionSkillIds, ...projectSkillIds]));
+
+    if (this.skillsManager && allSkillIds.length > 0) {
+        const skills = await this.skillsManager.getSkills();
+        for (const skill of skills) {
+            if (allSkillIds.includes(skill.id)) {
+                result.importedSkills.push(skill);
+                const scopeLabel = skill.scope === 'global' ? 'GLOBAL' : 'PROJECT';
+                result.skillsContent += `### Skill (${scopeLabel}): ${skill.name}\n> ${skill.description}\n\`\`\`${skill.language || 'text'}\n${skill.content}\n\`\`\`\n\n`;
+            }
+        }
+    }
+    if (this.skillsManager && allSkillIds.length > 0) {
+        result.skillsContent += skillProtocol + "\n"; // Inject the protocol here
+        const skills = await this.skillsManager.getSkills();
+        for (const skill of skills) {
+            if (allSkillIds.includes(skill.id)) {
+                result.importedSkills.push(skill);
+                const scopeLabel = skill.scope === 'global' ? 'GLOBAL' : 'PROJECT';
+                result.skillsContent += `### Skill (${scopeLabel}): ${skill.name}\n> ${skill.description}\n\`\`\`${skill.language || 'text'}\n${skill.content}\n\`\`\`\n\n`;
+            }
+        }
+    } else {
+        // Even if no skills are loaded, we provide the protocol so the AI knows it CAN create them
+        result.skillsContent = skillProtocol;
+    }    
     result.text = `# Project Context\n\n**Workspace:** ${path.basename(workspaceFolder.uri.fsPath)}\n\n`;
     if (result.skillsContent) {
-        result.text += `## Active Skills\n${result.skillsContent}---\n\n`;
+        result.text += `## Active Skills & Protocols\n${result.skillsContent}---\n\n`;
     }
+
     if (result.projectTree) {
         result.text += `${result.projectTree}\n`;
     }
@@ -812,4 +859,24 @@ To use Lollms with your project files:
 Currently operating without project context.
 `;
   }
+
+
+  public async getActiveProjectSkills(): Promise<string[]> {
+      return this.context.workspaceState.get<string[]>(ContextManager.PROJECT_SKILLS_KEY, []);
+  }
+
+  public async addSkillToProject(skillId: string) {
+      const current = await this.getActiveProjectSkills();
+      if (!current.includes(skillId)) {
+          await this.context.workspaceState.update(ContextManager.PROJECT_SKILLS_KEY, [...current, skillId]);
+      }
+  }
+
+  public async removeSkillFromProject(skillId: string) {
+      const current = await this.getActiveProjectSkills();
+      const updated = current.filter(id => id !== skillId);
+      await this.context.workspaceState.update(ContextManager.PROJECT_SKILLS_KEY, updated);
+  }
+
 }
+

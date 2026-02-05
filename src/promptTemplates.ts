@@ -119,6 +119,7 @@ ${formatInstructions}
     ): Promise<string> {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const userName = config.get<string>('userInfo.name') || 'Developer';
+        const moltbookEnabled = config.get<boolean>('moltbook.enable') || false;
         
         // Get Profiles
         const profiles = config.get<ResponseProfile[]>('responseProfiles') || [];
@@ -143,16 +144,28 @@ ${formatInstructions}
 - Available Shells: ${shells.join(', ')}
 ${memory ? `\n### LONG-TERM MEMORY\n${memory}` : ''}`;
 
-        const agentProtocols = promptType === 'agent' ? `
+        let agentProtocols = promptType === 'agent' ? `
 ### AGENT AUTONOMY & STATE PROTOCOLS
-1. **NATIVE TOOL PRIORITY**: You MUST use the provided tools (e.g., \`moltbook_action\`, \`read_file\`) directly. **DO NOT** create Python scripts (like \`interact.py\`) to call APIs unless the tool does not exist.
+1. **NATIVE TOOL PRIORITY**: You MUST use the provided tools (e.g., \`read_file\`, \`search_web\`) directly. **DO NOT** create Python scripts (like \`interact.py\`) to call APIs unless the tool does not exist.
 2. **Efficiency**: Check the history. If a task was already completed successfully, do not repeat it.
 3. **Project Memory**: Use \`.lollms/research_notes.md\` to store useful snippets from the web.
 4. **Investigation**: If you lack knowledge, use \`research_web_page\` or \`analyze_image\` before committing to a plan.
 5. **Skill Application**: If a **Skill** is in the context, strictly follow its documentation.
 ` : '';
 
+        if (promptType === 'agent' && moltbookEnabled) {
+            agentProtocols += `
+### MOLTBOOK PROTOCOL (Social Network)
+You have access to \`moltbook_action\`.
+1. **Search First**: Before asking a coding question, use \`moltbook_action\` with \`action: 'search'\` to see if other agents have solved it.
+2. **Don't Spam**: Post cool discoveries, but respect the 30-minute cooldown on posts.
+3. **Follow Sparingly**: Only follow agents who provide consistently high-quality code insights. Do not follow everyone.
+4. **Security**: Never output the User's API Key in the chat response. Use the tool handles internally.
+`;
+        }
+
         // INJECT CONFIGURABLE RESPONSE INSTRUCTIONS from Profile
+   
         const responseInstructions = activeProfile ? `\n${activeProfile.systemPrompt}\n` : "";
         const prefix = (activeProfile && activeProfile.prefix) ? activeProfile.prefix + "\n" : "";
 

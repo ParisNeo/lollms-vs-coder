@@ -4,56 +4,60 @@ import * as fs from 'fs/promises';
 
 export const rlmReplTool: ToolDefinition = {
     name: "rlm_repl",
-    description: "Executes Python code in a stateful REPL style. The code has access to the full project 'context' (Prompt as Variable) and a persistent 'thread_memory' dictionary that survives across calls. Use this for complex multi-step reasoning, data extraction, or iterative code refinement.",
+    description: "Executes Python code in a stateful REPL style. The code has access to the full project 'context' (as variable 'context') and a persistent 'thread_memory' dictionary that survives across calls. This dictionary is automatically populated with data from previous tasks that used 'save_as'.",
     isAgentic: true,
     isDefault: true,
     permissionGroup: 'shell_execution',
     parameters: [
-        { name: "code", type: "string", description: "The Python code to execute. Variables assigned to the 'thread_memory' dict will be preserved.", required: true },
-        { name: "inspect_context", type: "boolean", description: "Whether to inject the current project file tree and selected contents as a string variable named 'context'.", required: false }
+        { name: "code", type: "string", description: "The Python code to execute. Variables in 'thread_memory' persist between calls.", required: true },
+        { name: "inspect_context", type: "boolean", description: "Inject current project state into the 'context' variable.", required: false }
     ],
     async execute(params: { code: string, inspect_context?: boolean }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
         if (!env.workspaceRoot || !env.agentManager) {
             return { success: false, output: "Agent environment not ready." };
         }
 
-        // Prepare the persistent memory injection
+        // --- RLM DATA ZONE PREPARATION ---
+        // Convert the Agent's in-memory State to a JSON string for Python ingestion
         const threadMemoryJson = JSON.stringify(env.agentManager.sessionState.replVariables);
         
-        let contextInjection = "";
+        let contextInjection = "context = ''\n";
         if (params.inspect_context) {
             const contextData = await env.contextManager.getContextContent();
+            // Using raw string literal for safety
             contextInjection = `context = r"""${contextData.text.replace(/"/g, '\\"')}"""\n`;
         }
 
-        // Wrap the user's code to support persistent memory updates
-        // We use a temp python script that reads memory from JSON, runs code, then outputs updated memory as JSON to a file
+        // Construct the Stateful Wrapper
         const wrapperCode = `
 import json
 import os
 
-# 1. Load Persistent Thread Memory
+# 1. Load Data Zone (thread_memory)
+# Values saved with 'save_as' in previous tools are here.
 thread_memory = json.loads(r'''${threadMemoryJson}''')
 
-# 2. Inject Context if requested
+# 2. Inject Context
 ${contextInjection}
 
-# 3. User Code Execution
+# 3. User Logic Execution
+# We use a localized scope for the execution to prevent pollution 
+# but allow modification of the thread_memory dict.
 try:
 ${params.code.split('\n').map(line => '    ' + line).join('\n')}
 except Exception as e:
-    print(f"REPL_ERROR: {e}")
+    print(f"RLM_REPL_ERROR: {e}")
 
-# 4. Save Updated Memory
-with open(".lollms/repl_memory.json", "w") as f:
+# 4. Save Updated Data Zone
+with open(".lollms/repl_memory.json", "w", encoding="utf-8") as f:
     json.dump(thread_memory, f)
 `.trim();
 
-        const tempFilePath = path.join(env.workspaceRoot.uri.fsPath, ".lollms", "temp_repl.py");
+        const tempFilePath = path.join(env.workspaceRoot.uri.fsPath, ".lollms", "temp_rlm_repl.py");
         await fs.mkdir(path.dirname(tempFilePath), { recursive: true });
         await fs.writeFile(tempFilePath, wrapperCode);
 
-        // Run the script using the active environment if set
+        // Environment Selection
         let pythonExec = "python";
         if (env.agentManager.sessionState.activeEnv) {
             const isWin = process.platform === 'win32';
@@ -64,13 +68,13 @@ with open(".lollms/repl_memory.json", "w") as f:
 
         const result = await env.agentManager.runCommand(`"${pythonExec}" "${tempFilePath}"`, signal);
 
-        // Update persistent memory from the output file
+        // Recover Updated State
         try {
             const memPath = path.join(env.workspaceRoot.uri.fsPath, ".lollms", "repl_memory.json");
             const updatedMemStr = await fs.readFile(memPath, 'utf8');
             env.agentManager.sessionState.replVariables = JSON.parse(updatedMemStr);
         } catch (e) {
-            // Memory file might not have been written if script crashed hard
+            // Handle script failures gracefully
         }
 
         return result;

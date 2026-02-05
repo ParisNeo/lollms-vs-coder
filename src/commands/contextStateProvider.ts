@@ -364,16 +364,19 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     public async getAllVisibleFiles(signal?: AbortSignal): Promise<string[]> {
         const rootUri = vscode.Uri.file(this.workspaceRoot);
         const visibleFiles: string[] = [];
-        
-        // Debugging: Track where we are
-        let lastProcessed = "";
-    
+        let count = 0;
+
         const processDirectory = async (dirUri: vscode.Uri) => {
             if (signal?.aborted) return;
 
+            // PERFORMANCE FIX: Yield to the event loop every 50 directories
+            // to keep the extension host responsive
+            count++;
+            if (count % 50 === 0) {
+                await new Promise(resolve => setTimeout(resolve, 0));
+            }
+
             const relativePath = this.normalize(vscode.workspace.asRelativePath(dirUri, false));
-            
-            // Check state with inheritance
             let currentState = this.getStateForUri(dirUri);
 
             if (currentState === 'fully-excluded' || this.isExcluded(dirUri)) {
@@ -382,7 +385,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
             if (currentState === 'collapsed') {
                 visibleFiles.push(relativePath);
-                return; // Stop recursion
+                return; 
             }
     
             let entries;
@@ -391,9 +394,6 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             } catch (error) {
                 return; 
             }
-
-            // Yield to event loop to prevent UI freeze during large scans
-            await new Promise(resolve => setTimeout(resolve, 0));
     
             for (const [name, type] of entries) {
                 if (signal?.aborted) return;
@@ -401,9 +401,6 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
                 const entryUri = vscode.Uri.joinPath(dirUri, name);
                 const entryRelativePath = this.normalize(vscode.workspace.asRelativePath(entryUri, false));
                 
-                lastProcessed = entryRelativePath;
-    
-                // Re-check child exclusion
                 if (this.isExcluded(entryUri)) {
                     continue;
                 }
@@ -419,13 +416,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             }
         };
     
-        try {
-            await processDirectory(rootUri);
-        } finally {
-            if (signal?.aborted) {
-                Logger.info(`Context scan aborted. Last processed item: ${lastProcessed}`);
-            }
-        }
+        await processDirectory(rootUri);
         return visibleFiles;
     }
     

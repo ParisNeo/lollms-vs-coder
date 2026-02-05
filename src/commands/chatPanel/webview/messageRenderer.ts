@@ -219,7 +219,30 @@ function enablePanZoom(container: HTMLElement) {
 
     window.addEventListener('mouseup', stopDrag);
 }
+// Helper to render skill creation blocks
+function renderSkillBlock(content: string, messageId: string): string {
+    // Basic extraction of title/content for preview
+    const lines = content.split('\n');
+    const titleLine = lines.find(l => l.startsWith('#')) || "New Skill";
+    const title = titleLine.replace(/^#+\s*/, '').trim();
+    
+    // We encode the content to pass it safely to the button click handler
+    const safeContent = encodeURIComponent(content);
 
+    return `
+    <div class="skill-creation-block">
+        <div class="skill-header"><span class="codicon codicon-lightbulb"></span> Skill Generated: ${title}</div>
+        <div class="skill-preview markdown-body">${sanitizer.sanitize(marked.parse(content))}</div>
+        <div class="skill-actions">
+            <button class="code-action-btn" onclick="saveSkill('${safeContent}', 'local')">
+                <span class="codicon codicon-save"></span> Save to Project
+            </button>
+            <button class="code-action-btn" onclick="saveSkill('${safeContent}', 'global')">
+                <span class="codicon codicon-globe"></span> Save Global
+            </button>
+        </div>
+    </div>`;
+}
 function renderDiagram(codeElement: HTMLElement, language: string, container: HTMLElement) {
     const diagramContainer = document.createElement('div');
     diagramContainer.className = 'diagram-container';
@@ -1073,6 +1096,17 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 .replace(/<select\s+path=["']([^"']+)["']\s*\/>/g, (match, path) => {
                     return `\`\`\`select\n${path}\n\`\`\``;
                 });
+            // --- NEW: Process <skill> tags ---
+            let finalHtml = processedContent;
+            const skillRegex = /<skill>([\s\S]*?)<\/skill>/g;
+            
+            // Replace <skill> blocks with HTML UI
+            finalHtml = finalHtml.replace(skillRegex, (match, skillContent) => {
+                return renderSkillBlock(skillContent, messageId);
+            });
+
+            // Parse Markdown for the rest
+            finalHtml = sanitizer.sanitize(marked.parse(finalHtml) as string, SANITIZE_CONFIG);
 
             contentDiv.innerHTML = sanitizer.sanitize(marked.parse(xmlProcessedContent) as string, SANITIZE_CONFIG);
         }
@@ -1391,20 +1425,10 @@ export function updateContext(contextText: string, files: string[] = [], skills:
     }
 }
 
-export function displayPlan(plan: any) {
-    if(!dom.agentPlanZone) return; 
-    
-    if (!plan) {
-        dom.agentPlanZone.innerHTML = '';
-        dom.agentPlanZone.classList.remove('visible');
-        dom.planResizer.classList.remove('visible');
-        return;
-    }
-
-    dom.agentPlanZone.innerHTML = '';
-    dom.agentPlanZone.classList.add('visible');
-    dom.planResizer.classList.add('visible');
-
+/**
+ * Renders a single plan structure.
+ */
+function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
     let investigationHtml = '';
     if (plan.investigation && plan.investigation.length > 0) {
         const invItems = plan.investigation.map((item: any) => {
@@ -1414,7 +1438,7 @@ export function displayPlan(plan: any) {
             else statusIcon = '<span class="codicon codicon-sync spin" style="color:var(--vscode-charts-yellow)"></span>';
             
             return `
-            <div class="investigation-item" style="padding: 8px; border-bottom: 1px solid var(--vscode-widget-border); font-size: 12px; background: var(--vscode-sideBar-background);">
+            <div class="investigation-item" style="padding: 8px; border-bottom: 1px solid var(--vscode-widget-border); font-size: 12px;">
                 <div style="display:flex; justify-content:space-between; align-items:center; font-weight:600;">
                     <span>${statusIcon} ${item.action}</span>
                 </div>
@@ -1429,9 +1453,9 @@ export function displayPlan(plan: any) {
         }).join('');
 
         investigationHtml = `
-        <div class="plan-scratchpad" style="margin-top:10px; border-left: 4px solid var(--vscode-charts-blue); background: var(--vscode-editor-background);">
-            <details open>
-                <summary class="scratchpad-header" style="background: var(--vscode-editor-inactiveSelectionBackground);"><span class="codicon codicon-search"></span> Architect Investigation Steps</summary>
+        <div class="plan-scratchpad" style="margin-top:10px; border-left: 4px solid var(--vscode-charts-blue);">
+            <details ${isPrevious ? '' : 'open'}>
+                <summary class="scratchpad-header"><span class="codicon codicon-search"></span> Architect Investigation Steps</summary>
                 <div class="scratchpad-content" style="padding:0;">${invItems}</div>
             </details>
         </div>`;
@@ -1439,8 +1463,8 @@ export function displayPlan(plan: any) {
 
     let scratchpadHtml = plan.scratchpad ? `
         <div class="plan-scratchpad" style="margin-top:10px;">
-            <details open>
-                <summary class="scratchpad-header"><span class="codicon codicon-lightbulb"></span> Current Process / Thoughts</summary>
+            <details ${isPrevious ? '' : 'open'}>
+                <summary class="scratchpad-header"><span class="codicon codicon-lightbulb"></span> Process / Thoughts</summary>
                 <div class="scratchpad-content">${sanitizer.sanitize(marked.parse(plan.scratchpad) as string, SANITIZE_CONFIG)}</div>
             </details>
         </div>` : '';
@@ -1455,33 +1479,18 @@ export function displayPlan(plan: any) {
         }
     }
 
-    function getToolBadge(toolName: string) {
-        return `<span class="tool-badge"><span class="codicon codicon-tools"></span> ${toolName}</span>`;
-    }
-
     let tasksHtml = '';
     if (plan.tasks && plan.tasks.length > 0) {
         tasksHtml = plan.tasks.map((task: any) => {
             let statusClass = `status-${task.status}`;
             let icon = getStatusIcon(task.status);
-            let toolBadge = task.action ? getToolBadge(task.action) : '';
+            let toolBadge = task.action ? `<span class="tool-badge"><span class="codicon codicon-tools"></span> ${task.action}</span>` : '';
             
             let retryButtonHtml = '';
-            if (task.status === 'failed' && task.can_retry) {
+            if (task.status === 'failed' && task.can_retry && !isPrevious) {
                 retryButtonHtml = `<button class="retry-btn" data-task-id="${task.id}" title="Retry this task"><span class="codicon codicon-debug-restart"></span> Retry</button>`;
             }
             
-            let paramsHtml = '';
-            if (task.parameters && Object.keys(task.parameters).length > 0) {
-                paramsHtml = `
-                    <div class="task-params" style="margin-top: 5px;">
-                        <details>
-                            <summary class="task-result-summary" style="font-size: 10px; opacity: 0.7;">Command Details</summary>
-                            <div class="task-result-box" style="font-size: 11px; padding: 4px; border-style: dashed;">${sanitizer.sanitize(JSON.stringify(task.parameters, null, 2))}</div>
-                        </details>
-                    </div>`;
-            }
-
             let resultHtml = '';
             if (task.result) {
                 const isFailure = task.status === 'failed';
@@ -1506,7 +1515,6 @@ export function displayPlan(plan: any) {
                             <div class="task-description">${sanitizer.sanitize(task.description)}</div>
                             ${toolBadge}
                             ${retryButtonHtml}
-                            ${paramsHtml}
                         </div>
                     </div>
                     ${resultHtml}
@@ -1514,33 +1522,84 @@ export function displayPlan(plan: any) {
         }).join('');
     }
 
-    const planWrapper = document.createElement('div');
-    planWrapper.className = 'plan-wrapper';
+    const attemptDiv = document.createElement('div');
+    attemptDiv.className = `plan-block ${isPrevious ? 'stale' : 'active'}`;
     
-    planWrapper.innerHTML = `
-        <div class="plan-block">
-            <details class="plan-details" open>
-                <summary class="plan-header">
-                    <span class="codicon codicon-list-ordered"></span>
-                    <span>Agent Plan</span>
-                </summary>
-                <div class="plan-content">
-                    <div class="plan-objective"><strong>Objective:</strong> ${sanitizer.sanitize(plan.objective)}</div>
-                    ${investigationHtml}
-                    ${scratchpadHtml}
-                    <ul class="plan-tasks">${tasksHtml}</ul>
-                </div>
-            </details>
-        </div>`;
+    attemptDiv.innerHTML = `
+        <details class="plan-details" ${isPrevious ? '' : 'open'}>
+            <summary class="plan-header">
+                <span class="codicon ${isPrevious ? 'codicon-history' : 'codicon-list-ordered'}"></span>
+                <span>${isPrevious ? 'Previous Attempt' : 'Active Plan'}</span>
+            </summary>
+            <div class="plan-content">
+                <div class="plan-objective"><strong>Objective:</strong> ${sanitizer.sanitize(plan.objective)}</div>
+                ${investigationHtml}
+                ${scratchpadHtml}
+                <ul class="plan-tasks">${tasksHtml}</ul>
+            </div>
+        </details>`;
 
-    planWrapper.querySelectorAll('.retry-btn').forEach(btn => {
+    attemptDiv.querySelectorAll('.retry-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation(); 
             vscode.postMessage({ command: 'retryAgentTask', taskId: (btn as HTMLElement).dataset.taskId });
         });
     });
 
-    dom.agentPlanZone.appendChild(planWrapper);
+    return attemptDiv;
+}
+
+export function displayPlan(plan: any) {
+    if(!dom.agentPlanZone) return; 
+    
+    if (!plan) {
+        dom.agentPlanZone.innerHTML = '';
+        dom.agentPlanZone.classList.remove('visible');
+        dom.planResizer.classList.remove('visible');
+        return;
+    }
+
+    dom.agentPlanZone.innerHTML = '';
+    dom.agentPlanZone.classList.add('visible');
+    dom.planResizer.classList.add('visible');
+
+    // 1. CREATE THE STICKY TOOLBAR FIRST
+    const globalActions = document.createElement('div');
+    globalActions.className = 'plan-global-actions';
+    
+    const copyLogBtn = createButton('Copy Full Experience Log', 'codicon-copy', () => {
+        const text = formatPlanForCopy(plan);
+        vscode.postMessage({ command: 'copyToClipboard', text: text });
+        
+        copyLogBtn.innerHTML = '<span class="codicon codicon-check"></span> <span class="btn-text">Experience Log Copied!</span>';
+        copyLogBtn.style.backgroundColor = 'var(--vscode-charts-green)';
+        
+        setTimeout(() => {
+            copyLogBtn.innerHTML = '<span class="codicon codicon-copy"></span> <span class="btn-text">Copy Full Experience Log</span>';
+            copyLogBtn.style.backgroundColor = '';
+        }, 2000);
+    }, 'code-action-btn copy-log-btn');
+    
+    globalActions.appendChild(copyLogBtn);
+    
+    // Add the toolbar to the zone
+    dom.agentPlanZone.appendChild(globalActions);
+
+    // 2. CREATE SCROLLABLE WRAPPER FOR THE CONTENT
+    const wrapper = document.createElement('div');
+    wrapper.className = 'plan-wrapper';
+
+    // Render History (Blocks of Experience)
+    if (plan.attempts && plan.attempts.length > 0) {
+        plan.attempts.forEach((oldPlan: any) => {
+            wrapper.appendChild(renderPlanAttempt(oldPlan, true));
+        });
+    }
+
+    // Render Current Active Plan
+    wrapper.appendChild(renderPlanAttempt(plan, false));
+
+    dom.agentPlanZone.appendChild(wrapper);
 }
 
 export function insertNewMessageEditor(role: 'user' | 'assistant') {
@@ -1601,3 +1660,47 @@ export function insertNewMessageEditor(role: 'user' | 'assistant') {
         (cancelBtn as HTMLElement).addEventListener('click', () => editorWrapper.remove());
     }
 }
+
+/**
+ * Formats the entire plan history into a single Markdown string for debugging.
+ */
+function formatPlanForCopy(plan: any): string {
+    let log = `# AGENT EXPERIENCE LOG\n\n`;
+    log += `**OBJECTIVE:** ${plan.objective}\n\n`;
+
+    const allAttempts = [...(plan.attempts || []), plan];
+
+    allAttempts.forEach((attempt: any, index: number) => {
+        const isCurrent = index === allAttempts.length - 1;
+        log += `## ATTEMPT ${index + 1} ${isCurrent ? '(CURRENT)' : '(ARCHIVED)'}\n`;
+        log += `> ${attempt.scratchpad}\n\n`;
+
+        if (attempt.investigation && attempt.investigation.length > 0) {
+            log += `### Investigation Steps\n`;
+            attempt.investigation.forEach((inv: any) => {
+                log += `- **${inv.action}** [${inv.status}]\n`;
+                log += `  - Params: ${JSON.stringify(inv.parameters)}\n`;
+                if (inv.result) log += `  - Result: ${inv.result}\n`;
+            });
+            log += `\n`;
+        }
+
+        if (attempt.tasks && attempt.tasks.length > 0) {
+            log += `### Task Execution\n`;
+            attempt.tasks.forEach((task: any) => {
+                log += `#### Task ${task.id}: ${task.description}\n`;
+                log += `- Action: \`${task.action}\` | Status: **${task.status}**\n`;
+                if (task.parameters) log += `- Parameters: \`${JSON.stringify(task.parameters)}\` \n`;
+                if (task.result) {
+                    log += `\`\`\`\n${task.result}\n\`\`\`\n`;
+                }
+                log += `\n`;
+            });
+        }
+        log += `--- \n\n`;
+    });
+
+    return log;
+}
+
+

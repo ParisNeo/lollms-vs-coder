@@ -3,6 +3,7 @@ import { LollmsServices } from '../lollmsContext';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
 import { DiscussionItem, DiscussionGroupItem } from '../commands/discussionTreeProvider';
 import { startDiscussionWithInitialPrompt } from '../utils/discussionUtils';
+import { AgentManager } from '../agentManager';
 
 export function registerChatCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
     
@@ -20,10 +21,10 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
         await services.discussionManager.saveDiscussion(discussion);
         const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussion.id, services.gitIntegration, services.skillsManager);
         
-        // Inject dependencies into panel
-        panel.agentManager = new (require('../agentManager').AgentManager)(
+        panel.agentManager = new AgentManager(
             panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
-            services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager
+            services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
+            services.rlmDb // Passed from services
         );
         panel.setProcessManager(services.processManager);
         panel.agentManager.setProcessManager(services.processManager);
@@ -34,7 +35,6 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
         await panel.loadDiscussion();
         services.treeProviders.discussion?.refresh();
     }));
-
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newTempDiscussion', async () => {
         // Generate a temporary ID. The ChatPanel and DiscussionManager logic 
         // uses the 'temp-' prefix to avoid auto-saving to disk.
@@ -130,12 +130,13 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
             }
         });
     }));
-    
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.switchDiscussion', async (discussionId: string) => {
         const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussionId, services.gitIntegration, services.skillsManager);
-        panel.agentManager = new (require('../agentManager').AgentManager)(
+        panel.agentManager = new AgentManager(
             panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
-            services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager
+            services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
+            services.rlmDb // Passed from services
         );
         panel.setProcessManager(services.processManager);
         panel.agentManager.setProcessManager(services.processManager);
@@ -144,6 +145,7 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
         panel.setHerdManager(services.herdManager); 
         await panel.loadDiscussion();
     }));
+
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.quickEdit', () => {
         services.quickEditManager.triggerQuickEdit();

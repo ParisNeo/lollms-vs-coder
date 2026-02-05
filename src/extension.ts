@@ -32,6 +32,11 @@ import { HerdManager } from './herdManager';
 import { LollmsDebugAdapterTrackerFactory } from './debugAdapterTracker';
 import { CodeExplorerPanel } from './commands/codeExplorerView';
 
+// RLM Database Imports
+import { RLMDatabaseManager } from './rlmDatabaseManager';
+import { RLMDatabaseTreeProvider } from './commands/rlmDatabaseTreeProvider';
+import { InfoPanel } from './commands/infoPanel';
+
 export async function activate(context: vscode.ExtensionContext) {
     Logger.initialize(context);
     Logger.info('Lollms VS Coder is now active!');
@@ -63,7 +68,8 @@ export async function activate(context: vscode.ExtensionContext) {
     // Initialize Managers
     const memoryManager = new MemoryManager(context.globalStorageUri);
     const contextManager = new ContextManager(context, lollmsAPI);
-    const skillsManager = new SkillsManager();
+    // Pass global storage URI
+    const skillsManager = new SkillsManager(context.globalStorageUri); 
     const scriptRunner = new ScriptRunner(pythonExtApi);
     const promptManager = new PromptManager(context.globalStorageUri);
     const personalityManager = new PersonalityManager(context.globalStorageUri);
@@ -77,6 +83,11 @@ export async function activate(context: vscode.ExtensionContext) {
     const diffManager = new DiffManager();
     const herdManager = new HerdManager(lollmsAPI, contextManager, personalityManager);
     
+    // Initialize RLM Database Manager
+    const rlmDb = new RLMDatabaseManager(context);
+    const rlmProvider = new RLMDatabaseTreeProvider(rlmDb);
+    vscode.window.registerTreeDataProvider('lollmsRLMView', rlmProvider);
+
     contextManager.setSkillsManager(skillsManager);
 
     // SETUP DIFF MANAGER
@@ -85,13 +96,14 @@ export async function activate(context: vscode.ExtensionContext) {
     // Discussion Manager requires process manager
     const discussionManager = new DiscussionManager(lollmsAPI, processManager, context);
 
-    // Services Container
+    // Services Container - Added rlmDb here so commands can access it
     const services: LollmsServices = {
         extensionUri: context.extensionUri,
         lollmsAPI, contextManager, discussionManager, processManager, promptManager,
         personalityManager, skillsManager, codeGraphManager, notebookManager,
         gitIntegration, scriptRunner, quickEditManager, workflowManager,
         inlineDiffProvider, diffManager, herdManager,
+        rlmDb, // Injected RLM Database
         treeProviders: {}
     };
 
@@ -122,7 +134,7 @@ export async function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(recreateClientDisposable);
 
-    // Add this command registration in the activate function, after other command registrations
+    // Code Graph Panel Command
     const showCodeGraphPanelCommand = vscode.commands.registerCommand('lollms-vs-coder.showCodeGraphPanel', () => {
         if (services.codeGraphManager) {
             CodeExplorerPanel.createOrShow(context.extensionUri, services.codeGraphManager);
@@ -132,17 +144,20 @@ export async function activate(context: vscode.ExtensionContext) {
     });
     context.subscriptions.push(showCodeGraphPanelCommand);    
 
+    // View Knowledge Command (for RLM entries)
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.viewKnowledge', (title, content) => {
+        InfoPanel.createOrShow(context.extensionUri, `Knowledge: ${title}`, content);
+    }));
+
     // Register Providers
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, new DebugCodeLensProvider(debugErrorManager)));
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, inlineDiffProvider));
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'untitled' }, inlineDiffProvider));
     context.subscriptions.push(vscode.notebooks.registerNotebookCellStatusBarItemProvider('jupyter-notebook', new LollmsNotebookCellActionProvider()));
     
-    // Register DiffCodeLensProvider for specific diff files
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file', pattern: '**/.lollms/diffs/**' }, new DiffCodeLensProvider(diffManager)));
     context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(DiffManager.SCHEME, diffManager));
 
-    // Register Debug Adapter Tracker
     context.subscriptions.push(vscode.debug.registerDebugAdapterTrackerFactory('*', new LollmsDebugAdapterTrackerFactory()));
 
     if (config.get<boolean>('enableInlineSuggestions')) {
@@ -165,8 +180,6 @@ export async function activate(context: vscode.ExtensionContext) {
                 backendType: newConfig.get<'lollms' | 'openai' | 'ollama'>('backendType') || 'lollms',
                 useLollmsExtensions: newConfig.get<boolean>('useLollmsExtensions') ?? true
             });
-            
-            // Re-check connection if connectivity settings changed
             if (e.affectsConfiguration('lollmsVsCoder.apiUrl') || e.affectsConfiguration('lollmsVsCoder.apiKey')) {
                 statusBar.checkConnection();
             }
@@ -191,21 +204,19 @@ export async function activate(context: vscode.ExtensionContext) {
         
         codeGraphManager.setWorkspaceRoot(folder.uri);
         services.treeProviders.codeExplorer?.refresh();
+
+        // Switch RLM DB Workspace
+        await rlmDb.switchWorkspace(folder.uri);
         
         if (contextStateProvider) {
             await contextStateProvider.switchWorkspace(folder.uri.fsPath);
         } else {
             contextStateProvider = new ContextStateProvider(folder.uri.fsPath, context);
             contextManager.setContextStateProvider(contextStateProvider);
-            
-            // Set the context setter callback for CodeGraphManager
             codeGraphManager.setContextSetter((key, value) => {
                 vscode.commands.executeCommand('setContext', `lollms:${key}`, value);
             });
-            
             fileDecorationProvider.updateStateProvider(contextStateProvider);
-            
-            // Register Tree Data Provider for Context Files
             vscode.window.registerTreeDataProvider('lollmsFileTreeView', contextStateProvider);
         }
 

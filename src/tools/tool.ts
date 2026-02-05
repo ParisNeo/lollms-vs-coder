@@ -10,6 +10,8 @@ export interface Plan {
     scratchpad: string;
     tasks: any[];
     investigation?: any[]; // Stores architect investigation steps
+    attempts?: Plan[];     // Historical versions of the plan after replanning
+    status?: 'active' | 'stale' | 'failed'; 
 }
 
 export interface ToolExecutionEnv {

@@ -38,6 +38,9 @@ import { moltbookActionTool } from './moltbookAction';
 import { waitTool } from './wait';
 import { analyzeImageTool } from './analyzeImage';
 import { moveFileTool } from './moveFile';
+import { storeKnowledgeTool } from './storeKnowledge';
+import { extractYoutubeTranscriptTool } from './extractYoutubeTranscript';
+import { summarizeTextTool } from './summarizeText';
 
 export const allTools: ToolDefinition[] = [
     autoSelectContextFilesTool,
@@ -78,5 +81,9 @@ export const allTools: ToolDefinition[] = [
     moltbookActionTool,
     waitTool,
     analyzeImageTool,
-    moveFileTool
+    moveFileTool,
+    moltbookActionTool,
+    storeKnowledgeTool,
+    extractYoutubeTranscriptTool,
+    summarizeTextTool
 ];

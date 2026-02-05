@@ -1166,51 +1166,98 @@ export class ChatPanel {
       vscode.commands.executeCommand('lollms-vs-coder.refreshSkills'); 
   }
   
-  private async handleImportSkills() {
-      if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
-          vscode.window.showWarningMessage("Please open a workspace to import skills.");
-          return;
-      }
-      try {
-          const skills = await this._skillsManager.getSkills();
-          if (skills.length === 0) {
-              vscode.window.showInformationMessage("No saved skills found. Learn skills from the sidebar or chat first.");
-              return;
-          }
-          const items = skills.map(s => ({
-              label: s.name,
-              description: s.description,
-              detail: s.content.substring(0, 50) + "...",
-              skill: s
-          }));
-          const selected = await vscode.window.showQuickPick(items, {
-              canPickMany: true,
-              placeHolder: "Select skills to add to the current discussion context"
-          });
-          if (selected && selected.length > 0 && this._currentDiscussion) {
-              if (!this._currentDiscussion.importedSkills) {
-                  this._currentDiscussion.importedSkills = [];
-              }
 
-              selected.forEach(item => {
-                  const s = item.skill;
-                  if (!this._currentDiscussion!.importedSkills!.includes(s.id)) {
-                      this._currentDiscussion!.importedSkills!.push(s.id);
-                  }
-              });
+    private async handleImportSkills() {
+        const allSkills = await this._skillsManager.getSkills();
+        if (allSkills.length === 0) {
+            vscode.window.showInformationMessage("No saved skills found.");
+            return;
+        }
 
-              if (!this._currentDiscussion.id.startsWith('temp-')) {
-                  await this._discussionManager.saveDiscussion(this._currentDiscussion);
-              }
-              
-              this.updateContextAndTokens();
-              vscode.window.showInformationMessage(`Imported ${selected.length} skills into context.`);
-          }
-      } catch (e: any) {
-          this.log(`Error importing skills: ${e.message}`, 'ERROR');
-          vscode.window.showErrorMessage(`Failed to import skills: ${e.message}`);
-      }
-  }
+        // 1. Identify Unique Categories for Bundling
+        const categories = new Set<string>();
+        allSkills.forEach(s => {
+            if (s.category) {
+                const parts = s.category.replace(/\\/g, '/').split('/');
+                let current = "";
+                parts.forEach(p => {
+                    current = current ? `${current}/${p}` : p;
+                    categories.add(current);
+                });
+            }
+        });
+
+        // 2. Create QuickPick Items
+        const bundleItems = Array.from(categories).sort().map(cat => ({
+            label: `$(folder) ${cat} (Bundle)`,
+            description: `Enable all skills in this category`,
+            isBundle: true,
+            categoryPath: cat
+        }));
+
+        const individualItems = allSkills.map(s => ({
+            label: `${s.scope === 'global' ? '$(globe)' : '$(file-code)'} ${s.name}`,
+            description: s.category ? `Category: ${s.category}` : s.description,
+            detail: s.content.substring(0, 80) + "...",
+            isBundle: false,
+            skill: s
+        }));
+
+        const selected = await vscode.window.showQuickPick(
+            [...bundleItems, { label: "", kind: vscode.QuickPickItemKind.Separator }, ...individualItems] as any, 
+            {
+                canPickMany: true,
+                placeHolder: "Select individual skills or folder bundles to import"
+            }
+        );
+
+        if (!selected || selected.length === 0) return;
+
+        // 3. Resolve selections to Skill Objects
+        const finalSkillsToImport = new Map<string, any>(); // Map ID to Skill to avoid duplicates
+
+        for (const item of selected) {
+            if (item.isBundle) {
+                const bundleSkills = await this._skillsManager.getSkillsInBundle(item.categoryPath);
+                bundleSkills.forEach(s => finalSkillsToImport.set(s.id, s));
+            } else {
+                finalSkillsToImport.set(item.skill.id, item.skill);
+            }
+        }
+
+        const skillList = Array.from(finalSkillsToImport.values());
+
+        // 4. Determine Scope and Apply
+        const choice = await vscode.window.showQuickPick(
+            [
+                { label: "Current Discussion Only", detail: "Active only for this chat window." },
+                { label: "Entire Project (Persistent)", detail: "Active for all chats in this workspace." }
+            ],
+            { placeHolder: `Apply ${skillList.length} skills to:` }
+        );
+
+        if (!choice) return;
+
+        if (choice.label.startsWith("Entire")) {
+            for (const skill of skillList) {
+                await this._contextManager.addSkillToProject(skill.id);
+            }
+            vscode.window.showInformationMessage(`Added ${skillList.length} skills to Project Context.`);
+        } else {
+            if (this._currentDiscussion) {
+                if (!this._currentDiscussion.importedSkills) this._currentDiscussion.importedSkills = [];
+                skillList.forEach(skill => {
+                    if (!this._currentDiscussion!.importedSkills!.includes(skill.id)) {
+                        this._currentDiscussion!.importedSkills!.push(skill.id);
+                    }
+                });
+                await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                vscode.window.showInformationMessage(`Added ${skillList.length} skills to Discussion.`);
+            }
+        }
+        
+        this.updateContextAndTokens();
+    }
   
   private async copyFullPromptToClipboard(draftMessage: string) {
       const config = vscode.workspace.getConfiguration('lollmsVsCoder');
@@ -1694,6 +1741,19 @@ Task:
             case 'saveSkill':
                 await this.handleSaveSkill(message.content);
                 break;
+            case 'saveGeneratedSkill':
+                const { name, description, content, scope } = message.skillData;
+                await this._skillsManager.addSkill({
+                    name, 
+                    description, 
+                    content,
+                    language: 'markdown',
+                    scope: scope // 'global' or 'local'
+                });
+                vscode.window.showInformationMessage(`Skill '${name}' saved to ${scope} library.`);
+                vscode.commands.executeCommand('lollms-vs-coder.refreshSkills'); 
+                break;
+
             case 'importSkills':
                 await this.handleImportSkills();
                 break;
@@ -2366,4 +2426,3 @@ Task:
 </html>`;
   }
 }
-

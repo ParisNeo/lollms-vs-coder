@@ -220,29 +220,34 @@ function enablePanZoom(container: HTMLElement) {
     window.addEventListener('mouseup', stopDrag);
 }
 // Helper to render skill creation blocks
-function renderSkillBlock(content: string, messageId: string): string {
-    // Basic extraction of title/content for preview
-    const lines = content.split('\n');
-    const titleLine = lines.find(l => l.startsWith('#')) || "New Skill";
-    const title = titleLine.replace(/^#+\s*/, '').trim();
+function renderSkillBlock(content: string, titleAttr: string | undefined, messageId: string): string {
+    let title = titleAttr || "New Skill";
     
-    // We encode the content to pass it safely to the button click handler
+    // If no attribute, try extraction (legacy fallback)
+    if (!titleAttr) {
+        const lines = content.split('\n');
+        const titleLine = lines.find(l => l.startsWith('#'));
+        if (titleLine) title = titleLine.replace(/^#+\s*/, '').trim();
+    }
+    
     const safeContent = encodeURIComponent(content);
+    const safeTitle = encodeURIComponent(title);
 
     return `
     <div class="skill-creation-block">
         <div class="skill-header"><span class="codicon codicon-lightbulb"></span> Skill Generated: ${title}</div>
         <div class="skill-preview markdown-body">${sanitizer.sanitize(marked.parse(content))}</div>
         <div class="skill-actions">
-            <button class="code-action-btn" onclick="saveSkill('${safeContent}', 'local')">
+            <button class="code-action-btn" onclick="saveSkill('${safeContent}', 'local', '${safeTitle}')">
                 <span class="codicon codicon-save"></span> Save to Project
             </button>
-            <button class="code-action-btn" onclick="saveSkill('${safeContent}', 'global')">
+            <button class="code-action-btn" onclick="saveSkill('${safeContent}', 'global', '${safeTitle}')">
                 <span class="codicon codicon-globe"></span> Save Global
             </button>
         </div>
     </div>`;
 }
+
 function renderDiagram(codeElement: HTMLElement, language: string, container: HTMLElement) {
     const diagramContainer = document.createElement('div');
     diagramContainer.className = 'diagram-container';
@@ -680,7 +685,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
         
         if (!isDiff && (language === 'diff' || looksLikeDiff(codeText))) {
             isDiff = true;
-            const headerMatch = codeText.match(/(?:---|\+\+\+)\s+(?:[ab]\/)?([^\s\n\r]+)/);
+            const headerMatch = codeText.match(/(?:---|\+\+)\s+(?:[ab]\/)?([^\s\n\r]+)/);
             if (headerMatch && headerMatch[1]) {
                 diffFilePath = headerMatch[1].trim();
             }
@@ -1096,19 +1101,22 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 .replace(/<select\s+path=["']([^"']+)["']\s*\/>/g, (match, path) => {
                     return `\`\`\`select\n${path}\n\`\`\``;
                 });
+            
             // --- NEW: Process <skill> tags ---
-            let finalHtml = processedContent;
-            const skillRegex = /<skill>([\s\S]*?)<\/skill>/g;
+            let finalHtml = xmlProcessedContent;
+            
+            // Regex captures optional title attribute
+            const skillRegex = /<skill(?:\s+title=["']([^"']*)["'])?>([\s\S]*?)<\/skill>/g;
             
             // Replace <skill> blocks with HTML UI
-            finalHtml = finalHtml.replace(skillRegex, (match, skillContent) => {
-                return renderSkillBlock(skillContent, messageId);
+            finalHtml = finalHtml.replace(skillRegex, (match, title, skillContent) => {
+                return renderSkillBlock(skillContent, title, messageId);
             });
 
             // Parse Markdown for the rest
             finalHtml = sanitizer.sanitize(marked.parse(finalHtml) as string, SANITIZE_CONFIG);
 
-            contentDiv.innerHTML = sanitizer.sanitize(marked.parse(xmlProcessedContent) as string, SANITIZE_CONFIG);
+            contentDiv.innerHTML = finalHtml;
         }
 
         enhanceWithCommandButtons(wrapper as HTMLElement);
@@ -1702,5 +1710,3 @@ function formatPlanForCopy(plan: any): string {
 
     return log;
 }
-
-

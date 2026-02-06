@@ -1,8 +1,8 @@
 {
   "id": "lollms-code-gen",
-  "name": "Code Generation",
-  "description": "Best practices for generating code and using code interpreter MCPs with Lollms.",
-  "category": "python/lollms_client",
+  "name": "Code Operations",
+  "description": "Generating and editing code using the Text Processor.",
+  "category": "python/lollms_client/generation",
   "language": "markdown",
-  "content": "# LoLLMs Code Generation\n\nYou can use the client to generate code. For advanced use cases, use an Agentic workflow (Personality) with a code interpreter MCP.\n\n## Example\n\n```python\nfrom lollms_client import LollmsClient\n\nlc = LollmsClient()\n\ncode = lc.generate_text(\n    prompt=\"Write a python function to calculate the fibonacci sequence.\",\n    n_predict=512\n)\n# Use the result to build or execute scripts via MCP tools\n```\n"
+  "content": "# Code Operations\n\n## Generate Code\n```python\ncode = lc.llm.tp.generate_code(\n    prompt=\"Write a Python function to sort a list\",\n    language=\"python\"\n)\n```\n\n## Edit Code\n```python\noriginal = \"def add(a,b): return a+b\"\nedited = lc.llm.tp.edit_code(\n    original_code=original,\n    edit_instruction=\"Add type hints\",\n    language=\"python\"\n)\n```\n\n## Multi-file Generation\n```python\nfiles = lc.llm.tp.generate_codes(\n    prompt=\"Create a React component with css file\"\n)\n# Returns dict: {'Comp.jsx': '...', 'Comp.css': '...'}\n```\n"
 }

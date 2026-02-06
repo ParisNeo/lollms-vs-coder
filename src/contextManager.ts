@@ -97,7 +97,6 @@ export class ContextManager {
   
   private _lastContext: ContextResult | null = null;
   
-  // Storage key for persistent project skills
   private static PROJECT_SKILLS_KEY = 'lollms_project_active_skills';
 
   constructor(context: vscode.ExtensionContext, lollmsAPI: LollmsAPI) {
@@ -410,7 +409,7 @@ You have access to the project structure and the list of currently selected file
                   if (pathArg && allFiles.includes(pathArg)) {
                       const content = await this.readSpecificFiles([pathArg]);
                       const snippet = content.substring(0, 4000);
-                      chatHistory.push({ role: 'system', content: `Content of ${pathArg}:\n\`\`\`\n${snippet}\n\`\`\`` });
+                      chatHistory.push({ role: 'system', content: `Content of ${pathArg}:\n\`\`\`\n${snippet}\n\`\`\`\n\n(Truncated if too long)` });
                       actionLog.push(`📖 Peeked: ${pathArg}`);
                       renderUpdate("Reading file...", false, step);
                   }
@@ -508,13 +507,11 @@ You have access to the project structure and the list of currently selected file
     const maxImageSize = config.get<number>('maxImageSize') || 1024;
     const includeTree = options?.includeTree !== false; 
     const signal = options?.signal;
-    // We add this here so it's always present when inspecting or sending context
     const skillProtocol = `
 ### SKILL CREATION PROTOCOL
 If the user asks to "save this as a skill", "remember this", or "learn how to do X", wrap the resulting documentation/code in a <skill> tag.
 Format:
-<skill>
-# Skill Name
+<skill title="Skill Name">
 Description of what this teaches or provides.
 \`\`\`language
 code or instructions
@@ -640,11 +637,9 @@ code or instructions
       }
     }
 
-    // MERGE Discussion Skills AND Project Persistent Skills
     const discussionSkillIds = options?.importedSkillIds || [];
     const projectSkillIds = await this.getActiveProjectSkills();
     
-    // Unique set of IDs
     const allSkillIds = Array.from(new Set([...discussionSkillIds, ...projectSkillIds]));
 
     if (this.skillsManager && allSkillIds.length > 0) {
@@ -658,7 +653,7 @@ code or instructions
         }
     }
     if (this.skillsManager && allSkillIds.length > 0) {
-        result.skillsContent += skillProtocol + "\n"; // Inject the protocol here
+        result.skillsContent += skillProtocol + "\n"; 
         const skills = await this.skillsManager.getSkills();
         for (const skill of skills) {
             if (allSkillIds.includes(skill.id)) {
@@ -668,7 +663,6 @@ code or instructions
             }
         }
     } else {
-        // Even if no skills are loaded, we provide the protocol so the AI knows it CAN create them
         result.skillsContent = skillProtocol;
     }    
     result.text = `# Project Context\n\n**Workspace:** ${path.basename(workspaceFolder.uri.fsPath)}\n\n`;
@@ -785,19 +779,23 @@ Based on the objective and the file tree, which files are the most relevant? Ret
     
     const fileTree: { [key: string]: any } = {};
     
-    allVisibleFiles.forEach(filePath => {
-      const parts = filePath.split(path.sep).filter(part => part.length > 0);
-      let current = fileTree;
-      
-      parts.forEach((part, index) => {
-        if (!current[part]) {
-          current[part] = index === parts.length - 1 ? null : {};
-        }
-        if (current[part] !== null) {
-          current = current[part];
-        }
-      });
-    });
+    // Performance Optimization: Process file list in chunks to avoid blocking the event loop
+    for (let i = 0; i < allVisibleFiles.length; i++) {
+        if (i % 200 === 0) await new Promise(resolve => setTimeout(resolve, 0));
+        
+        const filePath = allVisibleFiles[i];
+        const parts = filePath.split(path.sep).filter(part => part.length > 0);
+        let current = fileTree;
+        
+        parts.forEach((part, index) => {
+            if (!current[part]) {
+                current[part] = index === parts.length - 1 ? null : {};
+            }
+            if (current[part] !== null) {
+                current = current[part];
+            }
+        });
+    }
 
     const generateTreeString = (obj: any, prefix: string = '', isLast: boolean = true, currentPath: string = ''): string => {
       let result = '';
@@ -879,4 +877,3 @@ Currently operating without project context.
   }
 
 }
-

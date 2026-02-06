@@ -1,8 +1,8 @@
 {
   "id": "lollms-long-context",
-  "name": "Long Context Management",
-  "description": "Techniques for processing texts larger than the model's context window.",
-  "category": "python/lollms_client",
+  "name": "Long Context Processing",
+  "description": "Summarizing and extracting from large documents.",
+  "category": "python/lollms_client/context",
   "language": "markdown",
-  "content": "# LoLLMs Long Context Management\n\nThe `long_context_processing` (or `sequential_summarize`) method helps process texts larger than the model's context window.\n\n```python\nfrom lollms_client import LollmsClient\n\nlc = LollmsClient()\n\nlarge_text = \"... very long document ...\"\n\n# Summarize in chunks\nsummary = lc.sequential_summarize(\n    text=large_text,\n    chunk_size=2000,\n    overlap=200\n)\n```\n"
+  "content": "# Long Context Processing\n\nProcess texts larger than the context window.\n\n## Text Generation\n```python\nsummary = lc.long_context_processing(\n    text_to_process=very_long_text,\n    contextual_prompt=\"Summarize the main points.\",\n    chunk_size_tokens=4000\n)\n```\n\n## Structured Extraction (TP)\n```python\nresult = lc.llm.tp.long_context_processing(\n    text_to_process=book_text,\n    contextual_prompt=\"Extract all character names.\",\n    processing_type=\"structured\",\n    schema={\"type\": \"object\", \"properties\": {\"names\": {\"type\": \"array\"}}}\n)\n```\n"
 }

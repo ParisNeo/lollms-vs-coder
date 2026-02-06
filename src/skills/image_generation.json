@@ -1,8 +1,8 @@
 {
   "id": "lollms-image-gen",
-  "name": "Image Generation",
-  "description": "Generating images using TTI (Text-to-Image) bindings in Lollms.",
-  "category": "python/lollms_client",
+  "name": "Image Generation & Vision",
+  "description": "Generating images and using vision models.",
+  "category": "python/lollms_client/multimodal",
   "language": "markdown",
-  "content": "# LoLLMs Image Generation\n\nUse the `diffusers` binding or other TTI (Text-to-Image) bindings to generate images.\n\n```python\nfrom lollms_client import LollmsClient\n\nlc = LollmsClient()\n\n# Note: Requires a TTI binding to be active on the server\nimage_data = lc.generate_image(\n    prompt=\"A futuristic city in the style of cyberpunk\",\n    width=512,\n    height=512\n)\n```\n"
+  "content": "# Multimodal Operations\n\n## Text-to-Image\nRequires a TTI binding (e.g., `diffusers`).\n\n```python\nlc = LollmsClient(tti_binding_name=\"diffusers\", ...)\n\nimg_bytes = lc.generate_image(\n    prompt=\"Cyberpunk city\",\n    width=1024,\n    height=1024\n)\n```\n\n## Vision (Chat)\nSend images to a vision model.\n\n```python\ndiscussion.add_message(\n    sender=\"user\",\n    content=\"What is this?\",\n    images=[base64_image_string]\n)\nresponse = discussion.chat()\n```\n"
 }

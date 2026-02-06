@@ -296,7 +296,11 @@ export class ChatPanel {
       this.displayPlan(this._currentDiscussion.plan);
       this.updateGeneratingState();
 
-      this.updateContextAndTokens();
+      // Defer token calculation and context refresh to allow UI to render first
+      setTimeout(() => {
+          this.updateContextAndTokens();
+      }, 100);
+      
       await this._fetchAndSetModels(false);
   }
 
@@ -1032,7 +1036,7 @@ export class ChatPanel {
       const config = vscode.workspace.getConfiguration('lollmsVsCoder');
       const model = config.get<string>('inspectorModelName') || this._currentDiscussion?.model || this._lollmsAPI.getModelName();
       const systemPrompt = await getProcessedSystemPrompt('inspector');
-      const userPrompt = `Review the following ${args.language} code for bugs, security vulnerabilities, and logic errors. Provide a detailed report.\n\n\`\`\`${args.language}\n${args.code}\n\`\`\``;
+      const userPrompt = `Review the following ${args.language} code for bugs, security vulnerabilities, and logic errors. Provide a detailed report.\n\n\`\`\`${args.language}\n${args.code}\n\`\`\`\n\n`;
 
       await this.sendIsolatedMessage(systemPrompt, userPrompt, model);
   }
@@ -1173,7 +1177,7 @@ export class ChatPanel {
           this._panel.webview.postMessage({ command: 'addMessage', message: message });
       }
   }
-
+  
   private async handleSaveSkill(content: string) {
       const name = await vscode.window.showInputBox({ prompt: "Enter a name for the new skill" });
       if (!name) return;

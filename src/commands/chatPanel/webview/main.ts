@@ -86,21 +86,26 @@ try {
 import { initEventHandlers } from './events.js'; 
 import { handleExtensionMessage } from './extensionMessageHandler.js';
 
-
-
 // Add to global scope
-(window as any).saveSkill = (encodedContent: string, scope: 'global' | 'local') => {
+(window as any).saveSkill = (encodedContent: string, scope: 'global' | 'local', encodedTitle?: string) => {
     const content = decodeURIComponent(encodedContent);
-    // Try to extract a name
-    const nameMatch = content.match(/^#\s+(.*)/m);
-    const name = nameMatch ? nameMatch[1].trim() : "New Skill";
+    let name = encodedTitle ? decodeURIComponent(encodedTitle) : "New Skill";
+    
+    // If name is still default and not provided in title, try regex
+    if (name === "New Skill" && !encodedTitle) {
+         const nameMatch = content.match(/^#\s+(.*)/m);
+         if (nameMatch) name = nameMatch[1].trim();
+    }
     
     // Try to extract description
     const lines = content.split('\n');
     let desc = "Generated skill";
-    if (lines.length > 2) {
-        desc = lines.find((l, i) => i > 0 && l.trim().length > 0 && !l.startsWith('```') && !l.startsWith('#')) || desc;
-    }
+    // Find first non-empty line that isn't a header or code block fence
+    const descLine = lines.find((l) => {
+        const t = l.trim();
+        return t.length > 0 && !t.startsWith('```') && !t.startsWith('#');
+    });
+    if (descLine) desc = descLine.trim();
 
     vscode.postMessage({ 
         command: 'saveGeneratedSkill', 
@@ -163,4 +168,3 @@ import { handleExtensionMessage } from './extensionMessageHandler.js';
         }
     }
 })();
-

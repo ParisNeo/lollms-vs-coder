@@ -1,8 +1,8 @@
 {
-  "id": "lollms-mcp",
-  "name": "Generation with MCP",
-  "description": "Enabling the LLM to use external tools via the Model Context Protocol.",
-  "category": "python/lollms_client",
+  "id": "lollms-agentic",
+  "name": "Agents & Tools (MCP)",
+  "description": "Creating agents with personalities and tools.",
+  "category": "python/lollms_client/agents",
   "language": "markdown",
-  "content": "# LoLLMs Generation with MCP (Model Context Protocol)\n\nEnable LLMs to use external tools (MCPs) to perform actions (web search, file I/O, etc.).\n\n```python\nfrom lollms_client import LollmsClient\n\nlc = LollmsClient()\n\n# List available tools on the server\ntools = lc.list_mcp_tools()\n\n# Execute a task using tool-calling capabilities\nresponse = lc.generate_with_tools(\n    prompt=\"Find the current price of Bitcoin\",\n    tools=tools\n)\n```\n"
+  "content": "# Agentic Workflows\n\n## Defining an Agent\n\n```python\nfrom lollms_client import LollmsPersonality\n\nagent = LollmsPersonality(\n    name=\"Researcher\",\n    system_prompt=\"You research topics using tools.\",\n    active_mcps=[\"search_web\", \"scrape_website\"] # Enable tools\n)\n```\n\n## Running the Agent\n\n```python\n# Initialize with MCP binding\nlc = LollmsClient(..., mcp_binding_name=\"local_mcp\")\ndiscussion = LollmsDiscussion.create_new(lc)\n\n# Chat with the specific personality\nresponse = discussion.chat(\n    user_message=\"Find the latest news on AI.\",\n    personality=agent,\n    max_llm_iterations=5 # Allow multiple tool calls\n)\n```\n"
 }

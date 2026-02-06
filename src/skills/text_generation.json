@@ -1,8 +1,8 @@
 {
   "id": "lollms-text-gen",
   "name": "Text Generation",
-  "description": "Basic and streaming text generation using the Lollms Python Client.",
-  "category": "python/lollms_client",
+  "description": "Generating text and streaming responses.",
+  "category": "python/lollms_client/generation",
   "language": "markdown",
-  "content": "# LoLLMs Text Generation\n\nGenerate text using `generate_text` or `generate_from_messages`.\n\n## Basic Text Generation\n\n```python\nfrom lollms_client import LollmsClient, MSG_TYPE\n\n# Callback for streaming\ndef simple_callback(chunk: str, msg_type: MSG_TYPE, params=None, metadata=None) -> bool:\n    if msg_type == MSG_TYPE.MSG_TYPE_CHUNK:\n        print(chunk, end=\"\", flush=True)\n    return True\n\nlc = LollmsClient(llm_binding_name=\"ollama\", llm_binding_config={\"model_name\": \"llama3\"})\n\nresponse = lc.generate_text(\n    prompt=\"Explain quantum computing in one sentence.\",\n    n_predict=100,\n    stream=True,\n    streaming_callback=simple_callback\n)\nprint(f\"\\nResponse: {response}\")\n```\n"
+  "content": "# Text Generation\n\n## Basic Generation\n```python\nfrom lollms_client import LollmsClient\nlc = LollmsClient(...)\n\nresponse = lc.generate_text(\n    prompt=\"Why is the sky blue?\",\n    n_predict=512,\n    temperature=0.7\n)\nprint(response)\n```\n\n## Streaming\n```python\nfrom lollms_client import MSG_TYPE\n\ndef callback(chunk, type, **kwargs):\n    if type == MSG_TYPE.MSG_TYPE_CHUNK:\n        print(chunk, end=\"\", flush=True)\n    return True\n\nlc.generate_text(\n    prompt=\"Tell me a story\",\n    stream=True,\n    streaming_callback=callback\n)\n```\n\n## Chat Generation (Messages)\n```python\nmessages = [\n    {\"role\": \"system\", \"content\": \"You are a helpful assistant.\"},\n    {\"role\": \"user\", \"content\": \"Hello!\"}\n]\nresponse = lc.generate_from_messages(messages)\n```\n"
 }

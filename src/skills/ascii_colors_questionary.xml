@@ -1,0 +1,342 @@
+<skill id="ascii-colors-questionary">
+    <name>ASCIIColors Questionary</name>
+    <description>Interactive user prompts: text, password, confirmation, selection, autocomplete, and forms.</description>
+    <category>python/ascii_colors/questionary</category>
+    <language>markdown</language>
+    <timestamp>1738425600000</timestamp>
+    <content>
+        <![CDATA[
+# ASCIIColors Questionary
+
+Interactive, beautiful command-line prompts. Drop-in replacement for the `questionary` library.
+
+```python
+from ascii_colors import questionary
+# Or: from ascii_colors.questionary_compat import text, password, confirm, select, checkbox, autocomplete, form
+```
+
+---
+
+## Basic Prompts
+
+### Text Input
+
+```python
+from ascii_colors import questionary
+
+# Simple
+name = questionary.text("What's your name?").ask()
+
+# With default
+name = questionary.text(
+    "What's your name?",
+    default="Anonymous"
+).ask()
+
+# Multiline
+description = questionary.text(
+    "Enter description (Ctrl+D to finish):",
+    multiline=True
+).ask()
+
+# With validation
+def validate_email(text):
+    return "@" in text and "." in text.split("@")[1]
+
+email = questionary.text(
+    "Enter email:",
+    validate=validate_email
+).ask()
+```
+
+### Password Input
+
+```python
+# Hidden input
+password = questionary.password("Enter password:").ask()
+
+# With confirmation (enter twice)
+password = questionary.password(
+    "Set password:",
+    confirm=True,
+    confirm_message="Confirm password:"
+).ask()
+```
+
+### Confirmation (Yes/No)
+
+```python
+if questionary.confirm("Do you want to continue?").ask():
+    proceed()
+
+# With default
+proceed = questionary.confirm(
+    "Proceed with installation?",
+    default=True
+).ask()
+
+# styled
+if questionary.confirm(
+    "Delete all data?",
+    default=False
+    # Uses default ASCIIColors styling
+).ask():
+    wipe_data()
+```
+
+---
+
+## Selection Prompts
+
+### Single Select
+
+```python
+# Simple list
+color = questionary.select(
+    "Favorite color?",
+    choices=["Red", "Green", "Blue", "Yellow"]
+).ask()
+
+# With values (display name → return value)
+format_choice = questionary.select(
+    "Export format:",
+    choices=[
+        {"name": "JSON (recommended)", "value": "json"},
+        {"name": "YAML", "value": "yaml"},
+        {"name": "XML (legacy)", "value": "xml", "disabled": True}
+    ],
+    default="json"  # Display name or value
+).ask()  # Returns: "json", "yaml", or "xml"
+
+# With search/filtering
+country = questionary.select(
+    "Select country:",
+    choices=["United States", "United Kingdom", ...],  # Long list
+    use_search=True  # Type to filter
+).ask()
+```
+
+### Multi-Select (Checkbox)
+
+```python
+# Simple
+features = questionary.checkbox(
+    "Select features:",
+    choices=["Auth", "Logging", "Cache", "WebSocket"]
+).ask()  # Returns: ["Auth", "Cache"] etc.
+
+# Pre-selected defaults
+features = questionary.checkbox(
+    "Select toppings:",
+    choices=[
+        {"name": "Cheese", "value": "cheese", "checked": True},
+        {"name": "Pepperoni", "value": "pepperoni"},
+        {"name": "Mushrooms", "value": "mushrooms"},
+        {"name": "Anchovies", "value": "anchovies", "disabled": True}
+    ]
+).ask()
+
+# Minimum selection
+required = questionary.checkbox(
+    "Select at least one category:",
+    choices=["A", "B", "C"],
+    min_selected=1
+).ask()
+```
+
+---
+
+## Autocomplete
+
+Search-as-you-type with fuzzy matching.
+
+```python
+city = questionary.autocomplete(
+    "Enter city:",
+    choices=[
+        "New York", "Los Angeles", "Chicago", "Houston", "Boston",
+        "Seattle", "Denver", "Atlanta", "Miami", "San Francisco",
+        "New Orleans", "New Haven", "Las Vegas"
+    ],
+    ignore_case=True,      # Case-insensitive matching
+    match_middle=True,     # "geles" matches "Los Angeles"
+    max_suggestions=5      # Show max 5 suggestions
+).ask()
+```
+
+---
+
+## Forms (Sequential Questions)
+
+Chain multiple prompts into a single flow.
+
+```python
+user_info = questionary.form(
+    questionary.text("First name"),
+    questionary.text("Last name"),
+    questionary.password("Password", confirm=True),
+    questionary.confirm("Subscribe to newsletter?", default=False)
+).ask()
+
+# Returns:
+# {
+#     "First name": "...",
+#     "Last name": "...",
+#     "Password": "...",
+#     "Subscribe to newsletter?": True/False
+# }
+```
+
+### Conditional Skipping
+
+```python
+# Ask follow-up only if condition met
+is_company = questionary.confirm("Is this a company account?").ask()
+
+company_name = questionary.text(
+    "Company name:"
+).skip_if(not is_company, default="N/A").ask()
+```
+
+---
+
+## Advanced Validation
+
+### Using Validator Class
+
+```python
+from ascii_colors.questionary_compat import Validator, ValidationError
+
+class NonEmptyValidator(Validator):
+    def validate(self, document):
+        if not document.text.strip():
+            raise ValidationError(
+                message="Please enter a value",
+                cursor_position=len(document.text)
+            )
+
+value = questionary.text(
+    "Required field:",
+    validate=NonEmptyValidator()
+).ask()
+```
+
+### Complex Validation
+
+```python
+import re
+
+class StrongPasswordValidator(Validator):
+    def validate(self, document):
+        text = document.text
+        errors = []
+        
+        if len(text) < 12:
+            errors.append("at least 12 characters")
+        if not re.search(r'[A-Z]', text):
+            errors.append("uppercase letter")
+        if not re.search(r'[a-z]', text):
+            errors.append("lowercase letter")
+        if not re.search(r'\d', text):
+            errors.append("digit")
+        if not re.search(r'[!@#$%^&*]', text):
+            errors.append("special character")
+        
+        if errors:
+            raise ValidationError(
+                message=f"Password must contain: {', '.join(errors)}"
+            )
+
+password = questionary.password(
+    "Create strong password:",
+    validate=StrongPasswordValidator()
+).ask()
+```
+
+---
+
+## Complete CLI Wizard Example
+
+```python
+from ascii_colors import questionary, ASCIIColors
+
+def setup_project():
+    """Interactive project configuration wizard."""
+    
+    ASCIIColors.green("=== Project Setup Wizard ===")
+    
+    # Basic info
+    config = questionary.form(
+        questionary.text("Project name:", validate=lambda x: len(x) > 0),
+        questionary.text("Description:", multiline=True),
+        questionary.select(
+            "Project type:",
+            choices=["Web App", "API", "CLI Tool", "Library", "Data Pipeline"]
+        )
+    ).ask()
+    
+    # Technology stack
+    stack = questionary.checkbox(
+        "Select technologies:",
+        choices=[
+            {"name": "Python", "value": "python", "checked": True},
+            {"name": "TypeScript", "value": "typescript"},
+            {"name": "PostgreSQL", "value": "postgres"},
+            {"name": "Redis", "value": "redis"},
+            {"name": "Docker", "value": "docker", "checked": True},
+            {"name": "Kubernetes", "value": "k8s"},
+        ]
+    ).ask()
+    
+    # Deployment
+    deploy = questionary.select(
+        "Deployment target:",
+        choices=[
+            {"name": "AWS", "value": "aws"},
+            {"name": "Google Cloud", "value": "gcp"},
+            {"name": "Azure", "value": "azure"},
+            {"name": "Self-hosted", "value": "self"},
+            {"name": "None (local only)", "value": "none"},
+        ]
+    ).ask()
+    
+    # Confirm
+    if not questionary.confirm("Create project with these settings?", default=True).ask():
+        ASCIIColors.yellow("Setup cancelled.")
+        return None
+    
+    # Final options
+    init_git = questionary.confirm("Initialize git repository?", default=True).ask()
+    
+    return {
+        **config,
+        "stack": stack,
+        "deployment": deploy,
+        "init_git": init_git
+    }
+
+# Run
+config = setup_project()
+if config:
+    ASCIIColors.green(f"✓ Project '{config['Project name']}' configured!")
+    print(f"  Stack: {', '.join(config['stack'])}")
+```
+
+---
+
+## Direct API Alternative
+
+```python
+# Alternative import style (same functionality)
+from ascii_colors.questionary_compat import (
+    text, password, confirm, select, checkbox, autocomplete, form
+)
+
+# Usage identical
+name = text("Name?").ask()
+proceed = confirm("Continue?").ask()
+```
+
+]]>
+    </content>
+</skill>

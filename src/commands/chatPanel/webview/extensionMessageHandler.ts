@@ -1,6 +1,6 @@
 import { dom, vscode, state } from './dom.js';
 import { addMessage, renderMessageContent, updateContext, displayPlan, scheduleRender } from './messageRenderer.js';
-import { setGeneratingState, updateBadges } from './ui.js';
+import { setGeneratingState, updateBadges, renderSkillsTree } from './ui.js';
 
 export function handleExtensionMessage(event: MessageEvent) {
     try {
@@ -112,7 +112,6 @@ export function handleExtensionMessage(event: MessageEvent) {
                 if (caps) {
                     state.capabilities = caps;
                     
-                    // FIXED: Initialize profiles from message to prevent "forEach on undefined" crashes
                     if (message.profiles) {
                         state.profiles = message.profiles;
                     } else if (!state.profiles) {
@@ -154,7 +153,6 @@ export function handleExtensionMessage(event: MessageEvent) {
 
                     const guiState = caps.guiState || { agentBadge: true, autoContextBadge: true, herdBadge: true };
                     
-                    // FIXED: Checkboxes reflect functionality (Mode), not visibility (Badge)
                     if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = caps.agentMode;
                     if (dom.autoContextCheckbox) dom.autoContextCheckbox.checked = caps.autoContextMode;
                     if (dom.herdModeCheckbox) dom.herdModeCheckbox.checked = caps.herdMode;
@@ -192,7 +190,6 @@ export function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'updateThinkingMode':
                 if (dom.thinkingIndicator) {
-                    // Legacy command compatibility, ignored now that we use Profiles
                     dom.thinkingIndicator.style.display = 'none';
                 }
                 break;
@@ -237,7 +234,6 @@ export function handleExtensionMessage(event: MessageEvent) {
                     const text = dom.contextLoadingSpinner.querySelector('span');
                     if (text) text.textContent = message.text || 'Updating context...';
                 }
-                // Optionally hide the token label until we have a real number
                 if (dom.tokenCountLabel) dom.tokenCountLabel.style.opacity = '0.5';
                 break;
 
@@ -500,6 +496,15 @@ export function handleExtensionMessage(event: MessageEvent) {
                     dom.personalitySelector.value = message.personalityId;
                 }
                 updateBadges();
+                break;
+            case 'showSkillsModal':
+                if (dom.skillsTreeContainer) {
+                    dom.skillsTreeContainer.innerHTML = '';
+                    renderSkillsTree(dom.skillsTreeContainer, message.skillsTree);
+                }
+                if (dom.skillsModal) {
+                    dom.skillsModal.classList.add('visible');
+                }
                 break;
         }
     } catch(e: any) {

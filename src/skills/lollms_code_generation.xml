@@ -1,0 +1,515 @@
+<skill id="lollms-code-generation">
+    <name>Code Generation & Execution</name>
+    <description>Generate, validate, and execute code with LoLLMs — from functions to complete programs with visualization.</description>
+    <category>python/lollms_client/code</category>
+    <language>markdown</language>
+    <timestamp>1738425600000</timestamp>
+    <content>
+        <![CDATA[
+# Code Generation & Execution
+
+Generate executable code with LoLLMs, validate safety, and run with automatic error recovery.
+
+---
+
+## Basic Code Generation
+
+### Simple Function
+
+```python
+from lollms_client import LollmsClient
+
+lc = LollmsClient("llama_cpp_server", {
+    "model_name": "codellama-7b.Q4_K_M.gguf"
+})
+
+code = lc.generate_code(
+    prompt="Write a function to calculate factorial with memoization",
+    language="python"
+)
+
+print(code)
+# Output: def factorial(n, _cache={}): ...
+```
+
+### With Specifications
+
+```python
+code = lc.generate_code(
+    prompt="""Write a function that:
+    - Takes a list of numbers
+    - Returns moving average with window size n
+    - Handles edge cases (empty list, n > len)
+    - Include type hints and docstring""",
+    language="python",
+    temperature=0.2  # Precise code
+)
+```
+
+---
+
+## Complete Example: Function Plotting
+
+### Step 1: Generate Plotting Code
+
+```python
+from lollms_client import LollmsClient
+import os
+
+lc = LollmsClient("llama_cpp_server", {
+    "model_name": "codellama-13b.Q4_K_M.gguf",
+    "n_gpu_layers": -1
+})
+
+# Generate visualization code
+plot_prompt = """Write a Python function `plot_mathematical_functions()` that:
+1. Creates a figure with 2x2 subplots
+2. Plots: sin(x), cos(x), tan(x), and e^(-x^2) * cos(5x)
+3. x range: -2π to 2π, 1000 points
+4. Proper labels, titles, grid, legend
+5. Save to 'math_functions.png' with 150 DPI
+6. Return the figure object
+
+Use matplotlib and numpy. Handle any warnings."""
+```
+
+### Step 2: Extract and Validate
+
+```python
+# Get code with markdown fences stripped
+code = lc.generate_code(plot_prompt, language="python")
+
+# Or extract manually from full response
+full_response = lc.generate_text(plot_prompt)
+code = extract_code_blocks(full_response, language="python")[0]
+
+# Safety check (basic)
+dangerous = ['os.system', 'subprocess', 'eval(', 'exec(', '__import__', 'open(']
+for d in dangerous:
+    if d in code and d not in ['# os.system', '# eval(']:  # Allow comments
+        raise SecurityError(f"Potentially dangerous pattern: {d}")
+
+print("Generated code:")
+print(code)
+```
+
+### Step 3: Execute Safely
+
+```python
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend
+
+# Method 1: Execute in isolated namespace
+def execute_generated_code(code: str, timeout: int = 30):
+    """Execute with restricted globals."""
+    
+    import numpy as np
+    import matplotlib.pyplot as plt
+    
+    # Prepare namespace with safe imports
+    safe_globals = {
+        '__builtins__': {
+            'print': print,
+            'range': range,
+            'len': len,
+            'float': float,
+            'int': int,
+            'str': str,
+            'list': list,
+            'dict': dict,
+            'tuple': tuple,
+            'zip': zip,
+            'enumerate': enumerate,
+        },
+        'np': np,
+        'plt': plt,
+        'numpy': np,
+        'matplotlib': matplotlib,
+    }
+    
+    # Execute
+    exec(code, safe_globals)
+    
+    # Extract defined function
+    if 'plot_mathematical_functions' in safe_globals:
+        func = safe_globals['plot_mathematical_functions']
+        return func()
+    
+    return None
+
+# Run
+fig = execute_generated_code(code)
+print(f"✓ Figure created: {fig}")
+
+# Verify output exists
+if os.path.exists('math_functions.png'):
+    print("✓ Saved: math_functions.png")
+```
+
+### Step 4: Interactive Display (if available)
+
+```python
+from IPython.display import Image, display
+
+# In Jupyter/notebook
+display(Image('math_functions.png'))
+
+# Or open with default viewer
+import subprocess
+subprocess.run(['xdg-open', 'math_functions.png'])  # Linux
+# subprocess.run(['open', 'math_functions.png'])    # macOS
+# os.startfile('math_functions.png')                # Windows
+```
+
+---
+
+## Advanced: Self-Correcting Code
+
+### Generate → Execute → Fix Loop
+
+```python
+def generate_and_execute_with_retry(lc, prompt, max_attempts=3):
+    """Auto-fix compilation/runtime errors."""
+    
+    for attempt in range(max_attempts):
+        # Generate
+        code = lc.generate_code(prompt, language="python")
+        
+        # Try execution
+        error = test_code_execution(code)
+        
+        if error is None:
+            return code, "success"
+        
+        # Retry with error feedback
+        fix_prompt = f"""The previous code had this error:
+{error}
+
+Please fix and regenerate the complete function.
+
+Original request: {prompt}"""
+        
+        prompt = fix_prompt
+    
+    raise RuntimeError(f"Failed after {max_attempts} attempts")
+
+def test_code_execution(code: str) -> Optional[str]:
+    """Test code, return error message or None."""
+    
+    try:
+        # Syntax check
+        compile(code, '<generated>', 'exec')
+        
+        # Execution test (with dummy data)
+        namespace = {}
+        exec(code, namespace)
+        
+        # Try to call main function if found
+        for name, obj in namespace.items():
+            if callable(obj) and not name.startswith('_'):
+                try:
+                    obj()  # Attempt call with no args
+                except TypeError as e:
+                    if 'required positional argument' in str(e):
+                        pass  # Expected, needs args
+                    else:
+                        raise
+        
+        return None
+        
+    except Exception as e:
+        return f"{type(e).__name__}: {str(e)}"
+
+# Usage
+code, status = generate_and_execute_with_retry(
+    lc,
+    "Create a pandas DataFrame from JSON API response with error handling"
+)
+```
+
+---
+
+## Multi-File Generation
+
+### Complete Project Structure
+
+```python
+project_prompt = """Create a Python web API with:
+1. main.py: FastAPI app with /predict endpoint
+2. model.py: ML model wrapper with preprocessing
+3. config.py: Pydantic settings from env vars
+4. requirements.txt: Dependencies
+
+Use sklearn for a simple classifier example."""
+
+# Generate all files
+files = lc.generate_codes(project_prompt)
+
+# Returns dict: {filename: content}
+for filename, content in files.items():
+    filepath = Path("generated_project") / filename
+    filepath.parent.mkdir(exist_ok=True)
+    filepath.write_text(content)
+    print(f"✓ Created: {filepath}")
+
+# Verify and run
+import subprocess
+subprocess.run(["pip", "install", "-r", "generated_project/requirements.txt"])
+subprocess.run(["uvicorn", "generated_project.main:app", "--reload"])
+```
+
+---
+
+## Code Editing (Non-Destructive)
+
+### Modify Existing Code
+
+```python
+original_code = """
+def calculate_stats(data):
+    total = sum(data)
+    mean = total / len(data)
+    return {"mean": mean}
+"""
+
+edit_prompt = "Add median calculation and handle empty list"
+
+updated_code = lc.edit_code(
+    original_code=original_code,
+    edit_instruction=edit_prompt,
+    language="python"
+)
+
+# Result: Only adds median, keeps structure
+print(updated_code)
+# def calculate_stats(data):
+#     if not data:
+#         return {"mean": None, "median": None}
+#     total = sum(data)
+#     mean = total / len(data)
+#     median = sorted(data)[len(data)//2]
+#     return {"mean": mean, "median": median}
+```
+
+---
+
+## Visualization Gallery
+
+### Statistical Plots
+
+```python
+plots = [
+    ("histogram with KDE overlay for normal distribution", "dist_plot.py"),
+    ("correlation heatmap with annotations", "corr_plot.py"),
+    ("time series with trend and seasonal decomposition", "ts_plot.py"),
+    ("3D surface plot of z = sin(x) * cos(y)", "surface3d.py"),
+]
+
+for description, filename in plots:
+    code = lc.generate_code(
+        f"Create matplotlib figure: {description}. "
+        f"Save to '{filename.replace('.py', '.png')}'. "
+        f"Use professional styling.",
+        language="python"
+    )
+    
+    # Execute and save
+    exec(code, {'__builtins__': __builtins__, 
+                'plt': __import__('matplotlib.pyplot'),
+                'np': __import__('numpy')})
+```
+
+### Interactive Widgets (if in Jupyter)
+
+```python
+widget_code = lc.generate_code("""
+Create ipywidgets interactive plot:
+- Slider for frequency (0.1 to 10.0)
+- Dropdown for wave type (sine, square, sawtooth)
+- Real-time updating matplotlib plot
+""", language="python")
+
+# Requires: pip install ipywidgets
+from IPython.display import display
+exec(widget_code)
+```
+
+---
+
+## Safety & Sandboxing
+
+### Restricted Execution
+
+```python
+import ast
+import sys
+
+class CodeSafetyChecker(ast.NodeVisitor):
+    """AST-based security analysis."""
+    
+    DANGEROUS_NODES = (
+        ast.Import, ast.ImportFrom,  # Control imports
+        ast.Call,  # Check call targets
+        ast.Subscript,  # __getitem__ abuse
+    )
+    
+    ALLOWED_MODULES = {'numpy', 'np', 'matplotlib', 'plt', 
+                      'pandas', 'pd', 'sklearn', 'scipy'}
+    
+    def __init__(self):
+        self.issues = []
+    
+    def visit_Import(self, node):
+        for alias in node.names:
+            if alias.name not in self.ALLOWED_MODULES:
+                self.issues.append(f"Disallowed import: {alias.name}")
+    
+    def visit_Call(self, node):
+        # Check for dangerous calls
+        if isinstance(node.func, ast.Name):
+            if node.func.id in ['eval', 'exec', 'compile', '__import__']:
+                self.issues.append(f"Dangerous call: {node.func.id}")
+        self.generic_visit(node)
+
+def safe_execute(code: str, allowed_imports: dict):
+    """Multi-layer safety."""
+    
+    # Layer 1: AST analysis
+    tree = ast.parse(code)
+    checker = CodeSafetyChecker()
+    checker.visit(tree)
+    if checker.issues:
+        raise SecurityError(f"Safety issues: {checker.issues}")
+    
+    # Layer 2: Restricted namespace
+    safe_builtins = {
+        'print': print, 'range': range, 'len': len,
+        'float': float, 'int': int, 'str': str,
+        'list': list, 'dict': dict, 'tuple': tuple,
+        'zip': zip, 'enumerate': enumerate, 'map': map,
+        'filter': filter, 'sum': sum, 'min': min, 'max': max,
+        'abs': abs, 'round': round, 'pow': pow,
+    }
+    
+    namespace = {'__builtins__': safe_builtins}
+    namespace.update(allowed_imports)
+    
+    # Layer 3: Resource limits (Unix)
+    import resource
+    resource.setrlimit(resource.RLIMIT_CPU, (30, 30))  # 30 sec CPU
+    resource.setrlimit(resource.RLIMIT_AS, (512*1024*1024, 512*1024*1024))  # 512MB RAM
+    
+    # Execute
+    exec(code, namespace)
+    return namespace
+
+# Usage
+safe_execute(generated_code, {
+    'np': __import__('numpy'),
+    'plt': __import__('matplotlib.pyplot'),
+    'pd': __import__('pandas'),
+})
+```
+
+---
+
+## Complete Application: Auto-Visualization
+
+```python
+#!/usr/bin/env python3
+"""
+Auto-Visualizer: Natural language → executable visualization
+"""
+
+import sys
+from pathlib import Path
+from lollms_client import LollmsClient
+
+class AutoVisualizer:
+    def __init__(self, model_config: dict):
+        self.lc = LollmsClient(
+            model_config.get("binding", "llama_cpp_server"),
+            model_config.get("config", {})
+        )
+        self.output_dir = Path("visualizations")
+        self.output_dir.mkdir(exist_ok=True)
+    
+    def create(self, description: str, data: dict = None) -> Path:
+        """Generate and execute visualization from description."""
+        
+        # Build prompt with data if provided
+        data_info = f"\nAvailable data: {list(data.keys()) if data else 'None'}" 
+        
+        prompt = f"""Create a Python visualization: {description}
+{data_info}
+
+Requirements:
+- Use matplotlib and/or seaborn
+- Professional styling (titles, labels, grid, legend)
+- Save to 'output.png' in current directory
+- Include if __name__ == '__main__' block
+- Handle any edge cases gracefully"""
+
+        # Generate
+        code = self.lc.generate_code(prompt, language="python", temperature=0.2)
+        
+        # Save code for inspection
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        code_file = self.output_dir / f"viz_{timestamp}.py"
+        code_file.write_text(code)
+        
+        # Prepare execution environment
+        namespace = {
+            '__builtins__': self._safe_builtins(),
+            'np': __import__('numpy'),
+            'plt': __import__('matplotlib.pyplot'),
+            'sns': __import__('seaborn'),
+            'pd': __import__('pandas'),
+        }
+        
+        if data:
+            namespace.update(data)
+        
+        # Execute
+        exec(code, namespace)
+        
+        # Move output to organized location
+        output = self.output_dir / f"viz_{timestamp}.png"
+        Path("output.png").rename(output)
+        
+        return output
+    
+    def _safe_builtins(self):
+        """Restricted builtins for code execution."""
+        return {
+            'print': print, 'range': range, 'len': len,
+            'float': float, 'int': int, 'str': str,
+            'list': list, 'dict': dict, 'tuple': tuple,
+            'zip': zip, 'enumerate': enumerate,
+            'sum': sum, 'min': min, 'max': sum,
+            'abs': abs, 'round': round, 'sorted': sorted,
+            'reversed': reversed, 'filter': filter, 'map': map,
+        }
+
+# Usage
+viz = AutoVisualizer({
+    "binding": "llama_cpp_server",
+    "config": {"model_name": "codellama-13b.Q4_K_M.gguf"}
+})
+
+# Simple plot
+output = viz.create("Scatter plot of random 100 points with trend line")
+print(f"Created: {output}")
+
+# With data
+import pandas as pd
+df = pd.read_csv("sales.csv")
+output = viz.create(
+    "Monthly sales trend with year-over-year comparison",
+    data={"df": df, "sales_data": df}
+)
+```
+
+]]>
+    </content>
+</skill>

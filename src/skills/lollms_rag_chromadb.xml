@@ -1,0 +1,905 @@
+<skill id="lollms-rag-document-system">
+    <name>RAG Document System</name>
+    <description>Building a complete RAG system with LoLLMs: document ingestion, vectorization, and agentic retrieval from mixed file types.</description>
+    <category>python/lollms_client/rag</category>
+    <language>markdown</language>
+    <timestamp>1738425600000</timestamp>
+    <content>
+        <![CDATA[
+# RAG Document System with LoLLMs
+
+## Overview
+
+Build a **Retrieval-Augmented Generation (RAG)** system that ingests documents from nested folders, structures content with LoLLMs, vectorizes for semantic search, and enables agentic question-answering.
+
+| Stage | LoLLMs Role |
+|-------|-------------|
+| **Ingestion** | Extract & clean text from PDFs, DOCX, XLSX, PPTX, Outlook MSG |
+| **Structuring** | Summarize, identify entities, chunk intelligently |
+| **Embedding** | Generate vector representations (local or API) |
+| **Retrieval** | Semantic search + reranking |
+| **Agentic Use** | Multi-step reasoning with document tools |
+
+---
+
+## Architecture
+
+```
+📁 document_folders/
+├── 📁 projects/
+│   ├── 📄 proposal.pdf
+│   ├── 📄 budget.xlsx
+│   └── 📁 research/
+│       ├── 📄 paper.pdf
+│       └── 📄 data.xlsx
+├── 📁 clients/
+│   ├── 📄 contract.docx
+│   └── 📄 meeting_notes.msg (Outlook)
+└── 📁 presentations/
+    └── 📄 pitch.pptx
+
+→ Ingestion Pipeline → Structured Chunks → Vector DB → LoLLMs Agent
+```
+
+---
+
+## Installation
+
+```bash
+# Core
+pip install lollms_client
+
+# Document processing
+pip install pypdf python-docx openpyxl python-pptx extract-msg
+
+# Vector database
+pip install chromadb faiss-cpu  # or faiss-gpu
+
+# Embeddings
+pip install sentence-transformers  # Local embeddings
+# OR rely on LoLLMs for API embeddings (OpenAI, etc.)
+```
+
+---
+
+## Document Ingestion Engine
+
+### Unified Document Loader
+
+```python
+import os
+import json
+from pathlib import Path
+from typing import List, Dict, Any, Optional
+import hashlib
+
+# Document parsers
+import pypdf
+from docx import Document
+import openpyxl
+from pptx import Presentation
+import extract_msg
+
+class DocumentLoader:
+    """Load and extract text from various document formats."""
+    
+    SUPPORTED = {
+        '.pdf': '_load_pdf',
+        '.docx': '_load_docx',
+        '.xlsx': '_load_xlsx', '.xls': '_load_xlsx',
+        '.pptx': '_load_pptx',
+        '.msg': '_load_msg',
+        '.txt': '_load_text',
+        '.md': '_load_text',
+        '.json': '_load_json',
+    }
+    
+    def __init__(self, llm_client=None):
+        self.lc = llm_client  # Optional: for LLM-enhanced extraction
+    
+    def load_file(self, path: str) -> Dict[str, Any]:
+        """Load single document with metadata."""
+        path = Path(path)
+        ext = path.suffix.lower()
+        
+        if ext not in self.SUPPORTED:
+            return {"error": f"Unsupported: {ext}", "content": ""}
+        
+        loader = getattr(self, self.SUPPORTED[ext])
+        content = loader(path)
+        
+        return {
+            "path": str(path),
+            "filename": path.name,
+            "extension": ext,
+            "size_bytes": path.stat().st_size,
+            "content_hash": hashlib.md5(content.encode()).hexdigest()[:16],
+            "content": content,
+            "metadata": self._extract_metadata(path, content)
+        }
+    
+    def _load_pdf(self, path: Path) -> str:
+        text = []
+        with open(path, 'rb') as f:
+            reader = pypdf.PdfReader(f)
+            for i, page in enumerate(reader.pages):
+                page_text = page.extract_text()
+                text.append(f"[Page {i+1}]\n{page_text}")
+        return "\n\n".join(text)
+    
+    def _load_docx(self, path: Path) -> str:
+        doc = Document(path)
+        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+        return "\n".join(paragraphs)
+    
+    def _load_xlsx(self, path: Path) -> str:
+        wb = openpyxl.load_workbook(path, data_only=True)
+        sheets = []
+        for sheet_name in wb.sheetnames:
+            sheet = wb[sheet_name]
+            rows = []
+            for row in sheet.iter_rows(values_only=True):
+                row_text = " | ".join(str(cell) for cell in row if cell is not None)
+                if row_text.strip():
+                    rows.append(row_text)
+            sheets.append(f"[Sheet: {sheet_name}]\n" + "\n".join(rows))
+        return "\n\n".join(sheets)
+    
+    def _load_pptx(self, path: Path) -> str:
+        prs = Presentation(path)
+        slides = []
+        for i, slide in enumerate(prs.slides, 1):
+            texts = []
+            for shape in slide.shapes:
+                if hasattr(shape, "text") and shape.text.strip():
+                    texts.append(shape.text)
+            if texts:
+                slides.append(f"[Slide {i}]\n" + "\n".join(texts))
+        return "\n\n".join(slides)
+    
+    def _load_msg(self, path: Path) -> str:
+        msg = extract_msg.Message(path)
+        return f"""From: {msg.sender}
+To: {msg.to}
+Subject: {msg.subject}
+Date: {msg.date}
+Body:
+{msg.body}"""
+    
+    def _load_text(self, path: Path) -> str:
+        return path.read_text(encoding='utf-8', errors='ignore')
+    
+    def _load_json(self, path: Path) -> str:
+        data = json.loads(path.read_text())
+        return json.dumps(data, indent=2)
+    
+    def _extract_metadata(self, path: Path, content: str) -> Dict:
+        """Basic metadata; enhance with LLM if available."""
+        meta = {
+            "word_count": len(content.split()),
+            "line_count": len(content.splitlines()),
+            "has_tables": "|" in content and "\n" in content,  # Heuristic
+            "folder_depth": len(path.parts) - 1
+        }
+        
+        # LLM-enhanced metadata extraction
+        if self.lc and len(content) < 10000:  # Skip for huge docs
+            meta.update(self._llm_enrich_metadata(content))
+        
+        return meta
+    
+    def _llm_enrich_metadata(self, content: str) -> Dict:
+        """Use LoLLMs to extract document intelligence."""
+        
+        prompt = f"""Analyze this document excerpt and extract:
+- document_type: (report, email, spreadsheet, presentation, contract, etc.)
+- key_entities: list of people, organizations, projects mentioned
+- summary: 2-sentence summary
+- topics: list of main topics
+
+Excerpt (first 2000 chars):
+{content[:2000]}
+
+Return JSON only."""
+        
+        try:
+            result = self.lc.generate_structured_content(
+                prompt,
+                schema={
+                    "document_type": "string",
+                    "key_entities": "list",
+                    "summary": "string",
+                    "topics": "list"
+                },
+                temperature=0.1
+            )
+            return result or {}
+        except:
+            return {}
+    
+    def load_directory(self, root_path: str, 
+                       recursive: bool = True,
+                       include_patterns: List[str] = None) -> List[Dict]:
+        """Load all supported documents from directory."""
+        
+        root = Path(root_path)
+        include_patterns = include_patterns or list(self.SUPPORTED.keys())
+        
+        documents = []
+        
+        pattern = "**/*" if recursive else "*"
+        for file_path in root.glob(pattern):
+            if file_path.is_file() and file_path.suffix.lower() in include_patterns:
+                try:
+                    doc = self.load_file(file_path)
+                    if not doc.get("error"):
+                        documents.append(doc)
+                        print(f"✓ Loaded: {file_path.relative_to(root)}")
+                except Exception as e:
+                    print(f"✗ Failed: {file_path} - {e}")
+        
+        return documents
+```
+
+---
+
+## Intelligent Chunking with LoLLMs
+
+### Semantic Chunking (LLM-Powered)
+
+```python
+class LLMChunker:
+    """Create intelligent document chunks using LoLLMs."""
+    
+    def __init__(self, llm_client, target_chunk_size: int = 500):
+        self.lc = llm_client
+        self.target_size = target_chunk_size
+    
+    def chunk_document(self, doc: Dict[str, Any]) -> List[Dict]:
+        """Create semantically coherent chunks."""
+        
+        content = doc["content"]
+        
+        # For small docs, no chunking needed
+        if len(content) < self.target_size * 2:
+            return [self._create_chunk(doc, content, 0, 1)]
+        
+        # LLM-guided chunking for complex documents
+        chunks = self._llm_chunk(content)
+        
+        return [
+            self._create_chunk(doc, chunk_text, i, len(chunks))
+            for i, chunk_text in enumerate(chunks)
+        ]
+    
+    def _llm_chunk(self, content: str) -> List[str]:
+        """Ask LLM to identify natural break points."""
+        
+        # For very large docs, use sliding window with LLM summarization
+        if len(content) > 50000:
+            return self._hierarchical_chunk(content)
+        
+        prompt = f"""Split this document into {self._estimate_chunks(content)} semantically coherent sections.
+
+Preserve:
+- Complete sections/paragraphs
+- Table boundaries
+- Logical topic shifts
+
+Document:
+{content[:8000]}...
+
+Return as JSON list: {{"chunks": ["section 1 text", "section 2 text", ...]}}"""
+        
+        try:
+            result = self.lc.generate_structured_content(
+                prompt,
+                schema={"chunks": "list"},
+                temperature=0.1
+            )
+            return result.get("chunks", self._fallback_chunk(content))
+        except:
+            return self._fallback_chunk(content)
+    
+    def _hierarchical_chunk(self, content: str) -> List[str]:
+        """Multi-level chunking for very large documents."""
+        
+        # Level 1: Chunk by structure (pages/slides/sheets)
+        structural_chunks = self._structural_split(content)
+        
+        # Level 2: LLM summarize each large chunk
+        processed = []
+        for chunk in structural_chunks:
+            if len(chunk) > self.target_size * 3:
+                # Summarize and keep key details
+                summary = self._llm_summarize_chunk(chunk)
+                processed.append(summary)
+            else:
+                processed.append(chunk)
+        
+        return processed
+    
+    def _structural_split(self, content: str) -> List[str]:
+        """Split on obvious structural boundaries."""
+        import re
+        
+        # Split on page/slide/sheet markers
+        markers = r'(\[Page \d+\]|\[Slide \d+\]|\[Sheet: [^\]]+\])'
+        parts = re.split(markers, content)
+        
+        # Recombine markers with content
+        chunks = []
+        current = ""
+        for part in parts:
+            if re.match(markers, part):
+                if current:
+                    chunks.append(current.strip())
+                current = part + "\n"
+            else:
+                current += part
+        if current:
+            chunks.append(current.strip())
+        
+        return chunks or [content]
+    
+    def _llm_summarize_chunk(self, chunk: str) -> str:
+        """Create condensed representation preserving key facts."""
+        
+        prompt = f"""Condense this document section for retrieval.
+Keep: key facts, numbers, names, decisions, action items.
+Length: ~{self.target_size} words.
+
+Section:
+{chunk[:4000]}
+
+Condensed version:"""
+        
+        return self.lc.generate_text(prompt, n_predict=self.target_size*2)
+    
+    def _fallback_chunk(self, content: str) -> List[str]:
+        """Simple overlap chunking if LLM fails."""
+        words = content.split()
+        chunks = []
+        stride = self.target_size // 2
+        
+        for i in range(0, len(words), stride):
+            chunk_words = words[i:i + self.target_size]
+            chunks.append(" ".join(chunk_words))
+        
+        return chunks
+    
+    def _estimate_chunks(self, content: str) -> int:
+        """Estimate number of chunks needed."""
+        words = len(content.split())
+        return max(1, words // self.target_size)
+    
+    def _create_chunk(self, doc: Dict, text: str, 
+                      index: int, total: int) -> Dict:
+        """Create enriched chunk record."""
+        
+        return {
+            "id": f"{doc['content_hash']}-{index}",
+            "source_path": doc["path"],
+            "filename": doc["filename"],
+            "chunk_index": index,
+            "total_chunks": total,
+            "text": text,
+            "word_count": len(text.split()),
+            "metadata": {
+                **doc.get("metadata", {}),
+                "folder": str(Path(doc["path"]).parent)
+            }
+        }
+```
+
+---
+
+## Vector Store & Embeddings
+
+### ChromaDB Integration
+
+```python
+import chromadb
+from chromadb.config import Settings
+import numpy as np
+
+class VectorStore:
+    """ChromaDB-based vector storage with LoLLMs embeddings."""
+    
+    def __init__(self, collection_name: str = "documents",
+                 embedding_function = None,
+                 llm_client = None):
+        
+        self.client = chromadb.Client(Settings(
+            chroma_db_impl="duckdb+parquet",
+            persist_directory="./chroma_db"
+        ))
+        
+        self.collection = self.client.get_or_create_collection(
+            name=collection_name,
+            metadata={"hnsw:space": "cosine"}
+        )
+        
+        self.lc = llm_client
+        self.embedding_fn = embedding_function or self._default_embed
+    
+    def _default_embed(self, texts: List[str]) -> List[List[float]]:
+        """Generate embeddings using LoLLMs or sentence-transformers."""
+        
+        # Prefer LoLLMs if available (API-based embeddings)
+        if self.lc and hasattr(self.lc.llm, 'embed'):
+            return [self.lc.llm.embed(t) for t in texts]
+        
+        # Fallback: sentence-transformers
+        from sentence_transformers import SentenceTransformer
+        model = SentenceTransformer('all-MiniLM-L6-v2')
+        return model.encode(texts).tolist()
+    
+    def add_chunks(self, chunks: List[Dict]):
+        """Index document chunks."""
+        
+        texts = [c["text"] for c in chunks]
+        embeddings = self.embedding_fn(texts)
+        
+        self.collection.add(
+            ids=[c["id"] for c in chunks],
+            embeddings=embeddings,
+            documents=texts,
+            metadatas=[{
+                "source": c["source_path"],
+                "filename": c["filename"],
+                "chunk_index": c["chunk_index"],
+                **{k: str(v) for k, v in c["metadata"].items() 
+                   if isinstance(v, (str, int, float, bool))}
+            } for c in chunks]
+        )
+        
+        print(f"Indexed {len(chunks)} chunks")
+    
+    def query(self, query_text: str, n_results: int = 5,
+              filter_dict: Dict = None) -> List[Dict]:
+        """Semantic search with optional filtering."""
+        
+        query_embed = self.embedding_fn([query_text])[0]
+        
+        results = self.collection.query(
+            query_embeddings=[query_embed],
+            n_results=n_results,
+            where=filter_dict
+        )
+        
+        # Format results
+        formatted = []
+        for i in range(len(results["ids"][0])):
+            formatted.append({
+                "id": results["ids"][0][i],
+                "text": results["documents"][0][i],
+                "distance": results["distances"][0][i],
+                "metadata": results["metadatas"][0][i]
+            })
+        
+        return formatted
+    
+    def hybrid_search(self, query_text: str, 
+                      keyword_boost: float = 0.3,
+                      n_results: int = 5) -> List[Dict]:
+        """Combine semantic + keyword search."""
+        
+        # Semantic results
+        semantic = self.query(query_text, n_results=n_results * 2)
+        
+        # Simple keyword scoring
+        keywords = set(query_text.lower().split())
+        for result in semantic:
+            text_lower = result["text"].lower()
+            keyword_hits = sum(1 for kw in keywords if kw in text_lower)
+            result["keyword_score"] = keyword_hits / max(len(keywords), 1)
+        
+        # Combine scores
+        for result in semantic:
+            # Normalize distance (cosine: lower is better)
+            sem_score = 1 - result["distance"]
+            result["combined_score"] = (
+                (1 - keyword_boost) * sem_score + 
+                keyword_boost * result["keyword_score"]
+            )
+        
+        # Re-rank and return top
+        semantic.sort(key=lambda x: x["combined_score"], reverse=True)
+        return semantic[:n_results]
+```
+
+---
+
+## RAG Tool for Agentic Use
+
+```python
+class RAGTool:
+    """Complete RAG system as LoLLMs tool."""
+    
+    def __init__(self, vector_store: VectorStore, 
+                 llm_client,
+                 top_k: int = 5):
+        self.vs = vector_store
+        self.lc = llm_client
+        self.top_k = top_k
+    
+    def search(self, query: str, context_lines: int = 2) -> Dict:
+        """Retrieve relevant document chunks."""
+        
+        results = self.vs.hybrid_search(query, n_results=self.top_k)
+        
+        # Enhance with surrounding context if available
+        enhanced = self._add_context(results, context_lines)
+        
+        return {
+            "success": True,
+            "query": query,
+            "sources": [
+                {
+                    "content": r["text"],
+                    "source": r["metadata"]["source"],
+                    "filename": r["metadata"]["filename"],
+                    "relevance_score": round(1 - r["distance"], 3),
+                    "chunk_index": r["metadata"].get("chunk_index", 0)
+                }
+                for r in enhanced
+            ],
+            "count": len(enhanced)
+        }
+    
+    def _add_context(self, results: List[Dict], lines: int) -> List[Dict]:
+        """Fetch adjacent chunks for context."""
+        # Implementation: query vector store for nearby chunk_indices
+        return results
+    
+    def answer(self, question: str) -> Dict:
+        """Generate answer with citations."""
+        
+        # Retrieve
+        retrieval = self.search(question)
+        
+        # Synthesize with LLM
+        context = "\n\n".join([
+            f"[{i+1}] From {s['filename']}:\n{s['content']}"
+            for i, s in enumerate(retrieval["sources"])
+        ])
+        
+        prompt = f"""Answer the question using only the provided documents.
+Cite sources as [1], [2], etc. If information is insufficient, say so.
+
+Documents:
+{context}
+
+Question: {question}
+
+Answer:"""
+        
+        answer = self.lc.generate_text(prompt, temperature=0.3)
+        
+        return {
+            "success": True,
+            "answer": answer,
+            "sources": retrieval["sources"],
+            "query": question
+        }
+    
+    def get_tool_spec(self) -> Dict:
+        """LoLLMs-compatible tool definition."""
+        
+        return {
+            "search_documents": {
+                "name": "search_documents",
+                "description": """Search the document knowledge base.
+Use for: finding specific information, locating files, fact-checking.
+Returns relevant excerpts with source attribution.""",
+                "parameters": [
+                    {
+                        "name": "query",
+                        "type": "str",
+                        "description": "Search query in natural language",
+                        "optional": False
+                    },
+                    {
+                        "name": "top_k",
+                        "type": "int",
+                        "description": "Number of results (default: 5)",
+                        "optional": True,
+                        "default": 5
+                    }
+                ],
+                "output": [
+                    {"name": "success", "type": "bool"},
+                    {"name": "sources", "type": "list"},
+                    {"name": "count", "type": "int"}
+                ],
+                "callable": self.search
+            },
+            "ask_documents": {
+                "name": "ask_documents",
+                "description": "Ask a question and get synthesized answer from documents",
+                "parameters": [
+                    {
+                        "name": "question",
+                        "type": "str",
+                        "description": "Question to answer",
+                        "optional": False
+                    }
+                ],
+                "output": [
+                    {"name": "success", "type": "bool"},
+                    {"name": "answer", "type": "str"},
+                    {"name": "sources", "type": "list"}
+                ],
+                "callable": self.answer
+            }
+        }
+```
+
+---
+
+## Complete Pipeline
+
+### Build Knowledge Base
+
+```python
+from lollms_client import LollmsClient
+
+def build_knowledge_base(document_root: str, 
+                         llm_config: dict,
+                         collection_name: str = "my_docs"):
+    """Full pipeline: load → chunk → embed → index."""
+    
+    # Initialize LoLLMs
+    lc = LollmsClient(
+        llm_config.get("binding", "llama_cpp_server"),
+        llm_config.get("config", {})
+    )
+    
+    # 1. Load documents
+    print("📂 Loading documents...")
+    loader = DocumentLoader(llm_client=lc)
+    documents = loader.load_directory(document_root, recursive=True)
+    print(f"Loaded {len(documents)} documents")
+    
+    # 2. Chunk with LLM intelligence
+    print("✂️  Chunking documents...")
+    chunker = LLMChunker(lc, target_chunk_size=400)
+    all_chunks = []
+    for doc in documents:
+        chunks = chunker.chunk_document(doc)
+        all_chunks.extend(chunks)
+        print(f"  {doc['filename']}: {len(chunks)} chunks")
+    
+    # 3. Index in vector store
+    print("🔢 Embedding and indexing...")
+    vs = VectorStore(collection_name, llm_client=lc)
+    vs.add_chunks(all_chunks)
+    
+    # 4. Create RAG tool
+    rag = RAGTool(vs, lc)
+    
+    print(f"\n✅ Knowledge base ready: {len(all_chunks)} chunks indexed")
+    
+    return {
+        "vector_store": vs,
+        "rag_tool": rag,
+        "llm_client": lc,
+        "tools": rag.get_tool_spec()
+    }
+
+# Execute
+kb = build_knowledge_base(
+    document_root="./document_folders",
+    llm_config={
+        "binding": "llama_cpp_server",
+        "config": {
+            "model_name": "mixtral-8x7b.Q4_K_M.gguf",
+            "n_gpu_layers": -1,
+            "ctx_size": 32768
+        }
+    }
+)
+```
+
+---
+
+## Agentic Document Assistant
+
+### Setup Agent with RAG Tools
+
+```python
+from lollms_client import LollmsDiscussion, LollmsPersonality
+
+def create_document_agent(kb_components: dict):
+    """Create agent with document access."""
+    
+    lc = kb_components["llm_client"]
+    rag_tools = kb_components["tools"]
+    
+    # Agent personality
+    agent = LollmsPersonality(
+        name="DocumentAnalyst",
+        system_prompt="""You are a document analysis assistant with access to a knowledge base.
+
+CAPABILITIES:
+- Search for specific information across all documents
+- Synthesize answers from multiple sources
+- Identify connections between documents
+- Extract structured data (names, dates, numbers)
+
+WORKFLOW:
+1. Use search_documents to find relevant excerpts
+2. For complex questions, search multiple times with different queries
+3. Synthesize findings with proper citations [1], [2], etc.
+4. If information is missing or unclear, say so
+
+Always cite your sources. Be precise with facts, dates, and figures."""
+    )
+    
+    # Discussion with RAG context
+    discussion = LollmsDiscussion.create_new(lollms_client=lc)
+    discussion.discussion_data_zone = """You have access to a document knowledge base containing:
+- Project documents, proposals, budgets
+- Client contracts and correspondence
+- Research papers and data
+- Presentations and meeting notes
+
+Use search_documents and ask_documents tools to access this information."""
+    
+    return {
+        "discussion": discussion,
+        "agent": agent,
+        "tools": rag_tools
+    }
+
+# Initialize
+agent_components = create_document_agent(kb)
+discussion = agent_components["discussion"]
+```
+
+### Agentic Interactions
+
+```python
+def ask_agent(question: str, tools: dict, 
+              discussion, agent, max_steps: int = 5):
+    """Query with full agentic reasoning."""
+    
+    response = discussion.chat(
+        user_message=question,
+        personality=agent,
+        tools=tools,
+        max_reasoning_steps=max_steps,
+        decision_temperature=0.2,  # Precise tool use
+        final_answer_temperature=0.5  # Factual synthesis
+    )
+    
+    # Display with source attribution
+    ai_msg = response["ai_message"]
+    metadata = ai_msg.metadata or {}
+    
+    print(f"\n🤖 {ai_msg.content}")
+    
+    if "sources" in metadata:
+        print(f"\n📚 Sources consulted: {len(metadata['sources'])}")
+        for src in metadata["sources"][:3]:
+            print(f"   • {src.get('filename', 'Unknown')}")
+    
+    if "tool_calls" in metadata:
+        print(f"\n🔧 Tools used: {len(metadata['tool_calls'])} calls")
+        for call in metadata["tool_calls"]:
+            print(f"   - {call['name']}: {call.get('params', {}).get('query', 'N/A')[:50]}...")
+    
+    return response
+
+# Example queries
+ask_agent(
+    "What was the budget for the Alpha project and who approved it?",
+    agent_components["tools"],
+    discussion,
+    agent_components["agent"]
+)
+
+ask_agent(
+    "Find all email communications with Acme Corp in Q3 2024",
+    agent_components["tools"],
+    discussion,
+    agent_components["agent"]
+)
+
+ask_agent(
+    "Compare the technical approaches in the two research papers about neural networks",
+    agent_components["tools"],
+    discussion,
+    agent_components["agent"],
+    max_steps=8  # More steps for complex comparison
+)
+```
+
+---
+
+## Advanced: Multi-Step Document Workflows
+
+### Document-Driven Task Execution
+
+```python
+def execute_document_task(task_description: str, 
+                          kb_components: dict,
+                          output_format: str = "report"):
+    """Agent performs complex multi-document task."""
+    
+    lc = kb_components["llm_client"]
+    tools = kb_components["tools"]
+    
+    # Create task-specific discussion
+    task_discussion = LollmsDiscussion.create_new(lollms_client=lc)
+    task_discussion.discussion_data_zone = f"""Task: {task_description}
+
+You have access to the full document knowledge base. 
+Break this into steps, search iteratively, and produce {output_format}."""
+    
+    agent = LollmsPersonality(
+        name="TaskExecutor",
+        system_prompt="""Execute document-based tasks methodically.
+
+PROCESS:
+1. Decompose task into sub-tasks
+2. For each sub-task, search relevant documents
+3. Extract specific information (quotes, data, dates)
+4. Synthesize into requested output format
+5. Cite all sources
+
+Use scratchpad to track progress across steps."""
+    )
+    
+    # Run with extended reasoning
+    response = task_discussion.chat(
+        user_message=task_description,
+        personality=agent,
+        tools=tools,
+        max_reasoning_steps=15,  # Complex tasks need more steps
+        decision_temperature=0.3,
+        final_answer_temperature=0.6
+    )
+    
+    # Save task memory
+    task_discussion.memorize()
+    
+    return response["ai_message"].content
+
+# Example complex tasks
+execute_document_task(
+    """Create a timeline of all Project Phoenix milestones from proposal to completion.
+    Include: dates, responsible parties, budget changes, and blockers.""",
+    kb,
+    output_format="chronological report with table"
+)
+
+execute_document_task(
+    """Draft a risk assessment report by analyzing:
+    - All contracts for liability clauses
+    - Budget spreadsheets for overruns
+    - Email threads for unresolved issues""",
+    kb,
+    output_format="structured risk matrix"
+)
+```
+
+---
+
+## Best Practices
+
+| Practice | Implementation |
+|----------|---------------|
+| **Chunk size** | 300-500 words balances granularity and context |
+| **Overlap** | 10-20% between chunks preserves continuity |
+| **Metadata filtering** | Add folder, date, doc-type for targeted search |
+| **Hybrid search** | Combine semantic + keyword for better recall |
+| **Source attribution** | Always cite [1], [2] in answers |
+| **Confidence threshold** | Flag low-relevance retrievals |
+| **Incremental updates** | Hash documents, only re-index changed files |
+| **Memory integration** | `discussion.memorize()` for recurring queries |
+
+]]>
+    </content>
+</skill>

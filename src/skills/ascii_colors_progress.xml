@@ -1,0 +1,345 @@
+<skill id="ascii-colors-progress-bars">
+    <name>ASCIIColors Progress Bars</name>
+    <description>Customizable progress bars with multiple styles, thread safety, and manual control.</description>
+    <category>python/ascii_colors/progress</category>
+    <language>markdown</language>
+    <timestamp>1738425600000</timestamp>
+    <content>
+        <![CDATA[
+# ASCIIColors Progress Bars
+
+`tdqm`-like progress bars with custom styles, thread safety, and flexible control.
+
+```python
+from ascii_colors import ProgressBar, ASCIIColors
+```
+
+---
+
+## Basic Usage
+
+### Wrap Any Iterable
+
+```python
+from ascii_colors import ProgressBar
+import time
+
+# Automatic progress tracking
+for item in ProgressBar(range(100), desc="Processing"):
+    time.sleep(0.01)  # Your work here
+```
+
+Output:
+```
+Processing: 100%|████████████████████| 100/100 [00:01<00:00, 98.50it/s]
+```
+
+---
+
+## Custom Styling
+
+### Bar Styles
+
+```python
+# Fill style (default) — solid blocks
+for item in ProgressBar(range(100), desc="Uploading", bar_style="fill"):
+    process(item)
+
+# Line style — ASCII characters
+for item in ProgressBar(range(100), desc="Downloading", bar_style="line"):
+    download(item)
+
+# Blocks style — shaded gradients
+for item in ProgressBar(range(100), desc="Analyzing", bar_style="blocks"):
+    analyze(item)
+
+# Emoji style — fun indicators
+for item in ProgressBar(range(100), desc="Building", bar_style="emoji",
+                        progress_char="🚀", empty_char="⬛"):
+    build_step()
+```
+
+### Full Customization
+
+```python
+for item in ProgressBar(
+    range(1000),
+    desc="Uploading",
+    unit="files",           # Unit name (default: "it")
+    color=ASCIIColors.color_cyan,
+    bar_style="fill",
+    progress_char="█",      # Filled portion
+    empty_char="░",         # Empty portion
+    bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]"
+):
+    upload_file(item)
+```
+
+---
+
+## Manual Control
+
+### Context Manager (Recommended)
+
+```python
+with ProgressBar(
+    total=1024 * 1024 * 100,  # 100 MB
+    desc="Uploading",
+    unit="B",
+    unit_scale=True,          # Auto-convert to KB, MB, GB
+    unit_divisor=1024
+) as pbar:
+    while chunk := read_chunk():
+        pbar.update(len(chunk))  # Update by bytes read
+        # Progress bar redraws automatically
+```
+
+### Manual Control (Advanced)
+
+```python
+# Create without context manager
+pbar = ProgressBar(total=100, desc="Custom")
+
+pbar.update(10)    # Increment by 10 (now at 10)
+pbar.update(20)    # Increment by 20 (now at 30)
+pbar.n = 50        # Set absolute position
+pbar.refresh()     # Force redraw
+pbar.set_postfix({"speed": "1.2MB/s"})  # Add extra info
+pbar.close()       # Clean up (or use context manager)
+```
+
+---
+
+## Thread-Safe Updates
+
+Multiple threads can update the same progress bar safely.
+
+```python
+import threading
+from ascii_colors import ProgressBar
+
+def worker(pbar, worker_id):
+    """Worker that updates shared progress bar."""
+    for _ in range(25):
+        # Simulate work
+        time.sleep(0.01)
+        pbar.update(1)  # Thread-safe update
+
+# Shared progress bar
+pbar = ProgressBar(total=100, desc="Parallel Workers")
+
+# Spawn threads
+threads = [
+    threading.Thread(target=worker, args=(pbar, i))
+    for i in range(4)
+]
+
+for t in threads:
+    t.start()
+
+for t in threads:
+    t.join()
+
+pbar.close()
+```
+
+---
+
+## Nested Progress Bars
+
+```python
+from ascii_colors import ProgressBar
+
+# Outer loop: files
+with ProgressBar(total=10, desc="Files", position=0) as file_pbar:
+    for file in files:
+        
+        # Inner loop: chunks per file
+        with ProgressBar(total=100, desc=f"  {file.name}", 
+                        position=1, leave=False) as chunk_pbar:
+            for chunk in file.chunks():
+                process(chunk)
+                chunk_pbar.update(1)
+        
+        file_pbar.update(1)
+```
+
+---
+
+## Integration with Loops
+
+### For Loop with Enumeration
+
+```python
+# Standard pattern
+for i, item in enumerate(ProgressBar(data, desc="Processing")):
+    result = process(item, index=i)
+```
+
+### While Loop Pattern
+
+```python
+pbar = ProgressBar(total=None, desc="Streaming")  # Unknown total
+
+while True:
+    item = stream.get_next(timeout=1)
+    if item is None:
+        break
+    pbar.update(1)
+    # Total auto-adjusts or use set_total() when known
+
+pbar.close()
+```
+
+### Error Handling
+
+```python
+with ProgressBar(total=100, desc="Processing") as pbar:
+    try:
+        for item in items:
+            process(item)
+            pbar.update(1)
+    except Exception as e:
+        pbar.set_postfix({"status": f"Error: {str(e)[:20]}"})
+        pbar.color = ASCIIColors.color_red
+        raise  # Re-raise after visual feedback
+```
+
+---
+
+## Complete Examples
+
+### File Download with Speed
+
+```python
+import requests
+from ascii_colors import ProgressBar, ASCIIColors
+
+def download_file(url: str, local_path: str):
+    """Download with progress bar showing speed and size."""
+    
+    response = requests.get(url, stream=True)
+    total_size = int(response.headers.get('content-length', 0))
+    
+    with ProgressBar(
+        total=total_size,
+        desc=url.split('/')[-1][:20],
+        unit="B",
+        unit_scale=True,
+        unit_divisor=1024,
+        color=ASCIIColors.color_green
+    ) as pbar:
+        
+        with open(local_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    pbar.update(len(chunk))
+                    # Auto-calculates: 1.5MB/s, 00:30 remaining, etc.
+    
+    ASCIIColors.green(f"✓ Downloaded to {local_path}")
+
+# Usage
+download_file("https://example.com/large-file.zip", "file.zip")
+```
+
+### Batch Processing with Stats
+
+```python
+from ascii_colors import ProgressBar
+from collections import Counter
+
+results = Counter()
+
+with ProgressBar(
+    total=len(items),
+    desc="Processing",
+    bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} "
+              "[{elapsed}<{remaining}] {postfix}"
+) as pbar:
+    
+    for item in items:
+        status = process_item(item)
+        results[status] += 1
+        
+        # Dynamic postfix with live stats
+        pbar.set_postfix({
+            "✓": results['success'],
+            "✗": results['error'],
+            "⚠": results['warning']
+        })
+        pbar.update(1)
+
+print(f"\nResults: {dict(results)}")
+```
+
+### Training Loop (ML)
+
+```python
+from ascii_colors import ProgressBar
+
+epochs = 10
+batches_per_epoch = 100
+
+for epoch in range(epochs):
+    # Epoch-level bar
+    with ProgressBar(
+        total=batches_per_epoch,
+        desc=f"Epoch {epoch+1}/{epochs}",
+        colour='green' if epoch % 2 == 0 else 'blue'
+    ) as pbar:
+        
+        for batch in range(batches_per_epoch):
+            # Training step
+            loss = train_step(batch)
+            accuracy = evaluate_step(batch)
+            
+            # Update with metrics
+            pbar.set_postfix({
+                "loss": f"{loss:.4f}",
+                "acc": f"{accuracy:.2%}"
+            })
+            pbar.update(1)
+    
+    # Validation after epoch
+    val_loss = validate()
+    ASCIIColors.print(f"Validation loss: {val_loss:.4f}", 
+                     color=ASCIIColors.color_cyan)
+```
+
+---
+
+## Progress Bar API Reference
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `total` | `int` or `None` | `None` | Total expected iterations |
+| `desc` | `str` | `None` | Description prefix |
+| `unit` | `str` | `"it"` | Unit name displayed |
+| `unit_scale` | `bool` | `False` | Auto-scale units (K, M, G) |
+| `unit_divisor` | `int` | `1000` | Scale divisor (1000 or 1024) |
+| `initial` | `int` | `0` | Initial counter value |
+| `colour` / `color` | `str` | `None` | Progress bar color |
+| `bar_style` | `str` | `"fill"` | `"fill"`, `"line"`, `"blocks"`, `"emoji"` |
+| `progress_char` | `str` | `"█"` | Character for filled portion |
+| `empty_char` | `str` | `"░"` | Character for empty portion |
+| `bar_format` | `str` | `None` | Custom format string |
+| `position` | `int` | `None` | Line position for nested bars |
+| `leave` | `bool` | `True` | Keep bar after completion |
+| `dynamic_ncols` | `bool` | `True` | Adapt width to terminal |
+
+### Methods
+
+| Method | Description |
+|--------|-------------|
+| `update(n=1)` | Increment progress by `n` |
+| `set_postfix(dict)` | Add/update extra statistics |
+| `set_description(str)` | Change description text |
+| `refresh()` | Force redraw |
+| `close()` | Clean up and hide |
+| `clear()` | Remove from display |
+| `unpause()` / `pause()` | Control updates |
+
+]]>
+    </content>
+</skill>

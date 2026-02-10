@@ -1,0 +1,276 @@
+<skill id="lollms-instantiation">
+    <name>Client Setup &amp; Bindings</name>
+    <description>Complete guide for initializing LollmsClient with any backend.</description>
+    <category>python/lollms_client/setup</category>
+    <language>markdown</language>
+    <timestamp>1738425600000</timestamp>
+    <content>
+        <![CDATA[
+# LoLLMs Client Setup Guide
+
+## What is lollms_client?
+
+`lollms_client` is the official Python client library for interacting with various LLM backends through a unified interface. It supports:
+- **Self-hosted servers** (LoLLMs, Ollama, vLLM, etc.)
+- **Local execution** (LlamaCpp, Transformers, TensorRT)
+- **Cloud APIs** (OpenAI, Anthropic, Google, Groq, etc.)
+- **Multi-provider gateways** (LiteLLM, OpenRouter)
+
+---
+
+## Installation
+
+```bash
+# Base client
+pip install lollms_client
+
+# With specific extras (optional)
+pip install lollms_client[llama_cpp]   # For local GGUF support
+pip install lollms_client[transformers] # For HuggingFace local models
+```
+
+---
+
+## Import
+
+```python
+from lollms_client import LollmsClient
+
+# Optional: for environment-based configuration
+import os
+from dotenv import load_dotenv
+```
+
+---
+
+## General Instantiation Pattern
+
+All bindings follow this structure:
+
+```python
+lc = LollmsClient(
+    llm_binding_name="BINDING_NAME",    # String identifier
+    llm_binding_config={...}            # Binding-specific dict
+)
+```
+
+### Universal Config Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `model_name` | `str` | **Always required** — model identifier |
+| `host_address` | `str` | Server URL (server-based bindings) |
+| `service_key` | `str` | API key / auth token |
+| `verify_ssl_certificate` | `bool` | TLS verification (default: `True`) |
+| `certificate_file_name` | `str` | Path to custom CA cert |
+
+---
+
+## Binding Reference
+
+### 1. Self-Managed Local (No External Server)
+
+| Binding | Use Case | Key Params |
+|---------|----------|------------|
+| `llama_cpp_server` | Direct GGUF control, max performance | `model_name`, `ctx_size`, `n_gpu_layers` |
+| `transformers` | HuggingFace models locally | `model_name`, `device`, `load_in_8bit` |
+| `tensor_rt` | NVIDIA optimized inference | `models_path`, `model_name` |
+
+**Characteristics:**
+- Binding manages its own server process
+- No `host_address` needed (internal)
+- No API keys required
+
+---
+
+### 2. External Server (You Run the Server)
+
+| Binding | Default Port | Auth |
+|---------|-------------|------|
+| `lollms` | 9642 | Optional (`service_key`) |
+| `ollama` | 11434 | Optional |
+| `vllm` | 8000 | Varies |
+| `openllm` | 3000 | Varies |
+| `openwebui` | 8080 | Optional |
+
+**Required:** `host_address`, `model_name`
+
+---
+
+### 3. Cloud APIs (OpenAI-Compatible)
+
+| Binding | Default Host | Key Format |
+|---------|-------------|------------|
+| `openai` | `https://api.openai.com/v1` | `sk-...` |
+| `claude` | Anthropic endpoint | `sk-ant-...` |
+| `gemini` | Google endpoint | Direct API key |
+| `groq` | Groq endpoint | `gsk_...` |
+| `grok` | xAI endpoint | `xai-...` |
+| `mistral` | Mistral endpoint | Direct key |
+| `perplexity` | Perplexity endpoint | `pplx-...` |
+| `novita_ai` | Novita endpoint | Direct key |
+| `azure_openai` | **Your** Azure endpoint | Azure key |
+| `hugging_face_inference_api` | HF endpoint | `hf_...` |
+
+**Required:** `model_name`, `service_key`
+**Optional:** `host_address` (has default)
+
+---
+
+### 4. Multi-Provider Gateways
+
+| Binding | Requires Host | Description |
+|---------|-------------|-------------|
+| `litellm` | ✅ | Unified proxy for 100+ providers |
+| `open_router` | ✅ | Access models from multiple APIs |
+
+**Required:** `host_address`, `model_name`, `service_key`
+
+---
+
+## Instantiation Examples
+
+### Minimal: LlamaCpp (Recommended for Local)
+
+```python
+from lollms_client import LollmsClient
+
+lc = LollmsClient(
+    "llama_cpp_server",
+    {"model_name": "mistral-7b.Q4_K_M.gguf"}
+)
+```
+
+### Minimal: LoLLMs Server
+
+```python
+lc = LollmsClient("lollms", {
+    "host_address": "http://localhost:9642",
+    "model_name": "mistral"
+})
+```
+
+### Minimal: Ollama
+
+```python
+lc = LollmsClient("ollama", {
+    "host_address": "http://localhost:11434",
+    "model_name": "llama3.2"
+})
+```
+
+### Minimal: OpenAI
+
+```python
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+lc = LollmsClient("openai", {
+    "model_name": "gpt-4o",
+    "service_key": os.getenv("OPENAI_API_KEY")
+})
+```
+
+### Full: Cloud with All Options
+
+```python
+lc = LollmsClient("groq", {
+    "model_name": "llama-3.1-70b-versatile",
+    "service_key": os.getenv("GROQ_API_KEY"),
+    "verify_ssl_certificate": True
+})
+```
+
+### Full: Self-Managed with Tuning
+
+```python
+lc = LollmsClient("llama_cpp_server", {
+    "model_name": "llama-3.1-8b.Q4_K_M.gguf",
+    "ctx_size": 32768,        # Extended context
+    "n_gpu_layers": -1,       # Full GPU offload
+    "n_threads": 8,           # Fixed CPU threads
+    "n_parallel": 2           # Parallel sequences
+})
+```
+
+---
+
+## Best Practices & Security
+
+### 🔐 Use Environment Variables
+
+```python
+# ✅ Secure pattern
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+lc = LollmsClient("openai", {
+    "model_name": "gpt-4o",
+    "service_key": os.getenv("OPENAI_API_KEY")
+})
+```
+
+### `.env` Template
+
+```bash
+# Cloud APIs
+OPENAI_API_KEY=sk-...
+ANTHROPIC_API_KEY=sk-ant-...
+GROQ_API_KEY=gsk_...
+GOOGLE_API_KEY=...
+MISTRAL_API_KEY=...
+PERPLEXITY_API_KEY=pplx-...
+NOVITA_API_KEY=...
+OPENROUTER_API_KEY=sk-or-v1-...
+HUGGINGFACE_TOKEN=hf_...
+
+# Local servers (if auth enabled)
+LOLLMS_SERVICE_KEY=lollms_...
+OLLAMA_SERVICE_KEY=...
+
+# Custom endpoints
+LOLLMS_HOST=http://localhost:9642
+OLLAMA_HOST=http://localhost:11434
+VLLM_HOST=http://localhost:8000
+```
+
+### Security Checklist
+
+| Do | Don't |
+|--|-------|
+| ✅ Add `.env` to `.gitignore` | ❌ Commit keys to version control |
+| ✅ Use `load_dotenv()` at startup | ❌ Hardcode keys in source |
+| ✅ Set fallback defaults for local dev | ❌ Expose production keys in logs |
+| ✅ Rotate keys regularly | ❌ Share keys across projects |
+| ✅ Use dedicated keys per environment | ❌ Use personal keys for production |
+
+### Production Deployment
+
+For production, consider:
+- **Secret managers**: HashiCorp Vault, AWS Secrets Manager, Azure Key Vault
+- **Container secrets**: Docker secrets, Kubernetes secrets
+- **CI/CD**: Inject via environment in pipeline, never store in repo
+
+---
+
+## Quick Selection Guide
+
+| Scenario | Recommended Binding | Why |
+|----------|---------------------|-----|
+| Maximum local performance, no deps | `llama_cpp_server` | Direct GGUF, GPU control |
+| Easy model management | `ollama` | Pull, manage, switch models easily |
+| Already running LoLLMs | `lollms` | Native ecosystem integration |
+| Enterprise/Azure | `azure_openai` | Compliance, private endpoints |
+| Fast inference, cheap | `groq` | 800+ tokens/sec |
+| Multi-model fallback | `open_router` | One key, many providers |
+| HF ecosystem | `transformers` or `hugging_face_inference_api` | Direct model hub access |
+
+> 📚 **For binding-specific details** (commands, multimodal, advanced params), load the dedicated skill: `python/lollms_client/setup/BINDING_NAME`
+
+]]>
+    </content>
+</skill>

@@ -1,0 +1,202 @@
+<skill id="pipmaster-basics">
+    <name>PipMaster Basics</name>
+    <description>Essential package management with pipmaster: installation, updates, and environment validation.</description>
+    <category>python/pipmaster/basics</category>
+    <language>markdown</language>
+    <timestamp>1738425600000</timestamp>
+    <content>
+        <![CDATA[
+# PipMaster Quick Start
+
+## What is it?
+
+PipMaster is a **programmatic Python package manager** that automates dependency handling directly from your code. No more `pip install -r requirements.txt` — your application manages its own environment.
+
+```bash
+pip install pipmaster
+```
+
+---
+
+## Core Pattern: `ensure_*`
+
+All operations are **idempotent** — safe to run repeatedly, only acts when needed.
+
+```python
+import pipmaster as pm
+
+# Single package
+pm.ensure_packages("requests")
+
+# Multiple packages
+pm.ensure_packages(["pandas", "numpy", "matplotlib"])
+
+# With versions
+pm.ensure_packages({
+    "requests": ">=2.25.0",
+    "pandas": None,  # Any version
+    "torch": {"specifier": ">=2.0.0", "index_url": "https://download.pytorch.org/whl/cu121"}
+})
+
+# From requirements file
+pm.ensure_requirements("requirements.txt")
+
+# Async (for non-blocking)
+await pm.async_ensure_packages(["httpx", "aiofiles"])
+```
+
+---
+
+## Common Operations
+
+| Task | Code |
+|------|------|
+| Install | `pm.install("package", verbose=True)` |
+| Upgrade | `pm.upgrade("package")` |
+| Uninstall | `pm.uninstall("package")` |
+| Check installed | `pm.is_installed("package")` |
+| Get version | `pm.get_installed_version("package")` |
+| Vulnerability scan | `pm.check_vulnerabilities()` |
+
+---
+
+## Backend Selection
+
+```python
+# Use pip (default)
+pm.ensure_packages("numpy", backend="pip")
+
+# Use uv (faster, experimental)
+pm.ensure_packages("numpy", backend="uv")
+
+# Auto-detect
+pm.ensure_packages("numpy")  # Uses best available
+```
+
+---
+
+## Quick Examples
+
+### Self-Healing Application
+
+```python
+import pipmaster as pm
+
+# At startup: ensure all deps
+required = {
+    "fastapi": ">=0.100.0",
+    "uvicorn": {"specifier": ">=0.23.0", "extras": ["standard"]},
+    "sqlalchemy": ">=2.0.0",
+    "pydantic": ">=2.0.0"
+}
+
+if not pm.ensure_packages(required, verbose=True):
+    print("Failed to install dependencies")
+    exit(1)
+
+# Now safe to import
+from fastapi import FastAPI
+app = FastAPI()
+```
+
+### Conditional Installation
+
+```python
+import pipmaster as pm
+import sys
+
+# Platform-specific
+if sys.platform == "win32":
+    pm.ensure_packages("pywin32")
+elif sys.platform == "linux":
+    pm.ensure_packages("systemd-python")
+
+# GPU vs CPU PyTorch
+if pm.is_installed("torch"):
+    # Already have torch, check CUDA
+    import torch
+    if torch.cuda.is_available():
+        print("CUDA torch already installed")
+    else:
+        # Upgrade to CUDA version
+        pm.ensure_packages({
+            "torch": {"specifier": ">=2.0.0", "index_url": "https://download.pytorch.org/whl/cu121"}
+        })
+else:
+    # Fresh install with CUDA
+    pm.ensure_packages({
+        "torch": {"specifier": ">=2.0.0", "index_url": "https://download.pytorch.org/whl/cu121"}
+    })
+```
+
+### Vulnerability Check
+
+```python
+import pipmaster as pm
+
+found, report = pm.check_vulnerabilities()
+if found:
+    print("⚠️  Vulnerabilities detected!")
+    for vuln in report:
+        print(f"  {vuln['package']}: {vuln['vulnerability_id']}")
+        print(f"    Fixed in: {vuln.get('fixed_version', 'unknown')}")
+    
+    # Auto-upgrade vulnerable packages
+    pm.upgrade([v['package'] for v in report if v.get('fixed_version')])
+else:
+    print("✓ No known vulnerabilities")
+```
+
+---
+
+## Dry Run & Debugging
+
+```python
+# Preview changes without installing
+pm.ensure_packages("pandas", dry_run=True, verbose=True)
+# Output: Would install pandas-2.1.4, numpy-1.26.2...
+
+# Full verbosity
+pm.ensure_packages("transformers", verbose=True, debug=True)
+```
+
+---
+
+## Async API
+
+```python
+import pipmaster as pm
+import asyncio
+
+async def setup_env():
+    # Parallel installations
+    await asyncio.gather(
+        pm.async_install("numpy"),
+        pm.async_install("pandas"),
+        pm.async_install("scipy")
+    )
+    
+    # Check all together
+    await pm.async_ensure_packages(["fastapi", "uvicorn", "sqlalchemy"])
+
+asyncio.run(setup_env())
+```
+
+---
+
+## Comparison: Manual vs PipMaster
+
+| Scenario | Manual pip | PipMaster |
+|----------|-----------|-----------|
+| App startup deps | `requirements.txt` + manual install | `ensure_packages()` in code |
+| Missing dep error | Crash, user must fix | Auto-install, continue |
+| Version conflicts | Manual resolution | Automatic, idempotent |
+| Platform-specific | Multiple requirement files | Conditional `ensure_packages()` |
+| CI/CD | `pip install -r` | Same code as production |
+| Vulnerability mgmt | External tools | Built-in `check_vulnerabilities()` |
+
+> 📚 **For advanced features** (virtual environments, uv backend, portable Python, custom index servers), load: `python/pipmaster/advanced`
+
+]]>
+    </content>
+</skill>

@@ -51,19 +51,6 @@ body {
     flex-direction: column;
 }
 
-
-#agent-plan-zone {
-    width: 400px;
-    flex-shrink: 0;
-    background-color: var(--vscode-sideBar-background);
-    border-left: 1px solid var(--vscode-widget-border);
-    display: none;
-    overflow-y: auto;
-    padding: 0;
-    z-index: 5;
-    flex-direction: column;
-}
-
 #agent-plan-zone.visible {
     display: flex;
 }
@@ -134,15 +121,50 @@ body {
 .special-zone-message { border: 1px solid var(--vscode-focusBorder); background-color: var(--vscode-editor-inactiveSelectionBackground); margin: 10px 12px; opacity: 0.95; }
 .special-zone-message .message-avatar { background-color: transparent; border: 1px solid var(--vscode-focusBorder); color: var(--vscode-foreground); }
 .special-zone-message .message-header { font-weight: bold; color: var(--vscode-textLink-foreground); }
-.message-body { flex: 1; min-width: 0; }
+
+/* --- UPDATED MESSAGE BODY FOR STICKY TOOLBAR --- */
+.message-body {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    position: relative; /* Context for children */
+}
+
+/* --- UPDATED STICKY TOOLBAR --- */
+.message-actions { 
+    position: sticky;
+    top: 6px;
+    align-self: flex-end; /* Right align in column flex */
+    margin-bottom: -32px; /* Overlap header/content so it floats on top */
+    z-index: 20;
+    
+    display: flex; 
+    gap: 4px;
+    background-color: var(--vscode-editor-background); 
+    border-radius: 4px; 
+    padding: 2px; 
+    border: 1px solid var(--vscode-editorGroup-border); 
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1); 
+    
+    opacity: 0;
+    transition: opacity 0.2s;
+    pointer-events: none;
+}
+
+.message:hover .message-actions {
+    opacity: 1;
+    pointer-events: auto;
+}
+
 .message-header { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-bottom: 6px; line-height: 1.5; }
 .role-name { font-weight: 600; color: var(--vscode-editor-foreground); }
 .generation-stats { font-size: 11px; color: var(--vscode-descriptionForeground); margin-left: 8px; background-color: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 2px 6px; border-radius: 10px; opacity: 0.8; }
 .message-content { line-height: 1.6; font-size: var(--vscode-editor-font-size); overflow-wrap: break-word; color: var(--vscode-editor-foreground); width: 100%; }
 .message-content p { margin-top: 0; margin-bottom: 0.8em; }
 .message-content p:last-child { margin-bottom: 0; }
-.message-actions { display: none; position: absolute; top: 8px; right: 8px; gap: 4px; background-color: var(--vscode-editor-background); border-radius: 4px; padding: 2px; border: 1px solid var(--vscode-editorGroup-border); z-index: 10; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-.message:hover .message-actions { display: flex; }
+.message-actions { position: sticky; top: 6px; align-self: flex-end; margin-bottom: -32px; z-index: 20; display: flex; gap: 4px; background-color: var(--vscode-editor-background); border-radius: 4px; padding: 2px; border: 1px solid var(--vscode-editorGroup-border); box-shadow: 0 2px 4px rgba(0,0,0,0.1); opacity: 0; transition: opacity 0.2s; pointer-events: none; }
+.message:hover .message-actions { opacity: 1; pointer-events: auto; }
 .msg-action-btn { background: transparent; border: none; color: var(--vscode-icon-foreground); cursor: pointer; padding: 4px; border-radius: 3px; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; }
 .msg-action-btn:hover { background-color: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground); }
 .waiting-animation { display: flex; align-items: center; gap: 12px; padding: 8px 0; color: var(--vscode-descriptionForeground); font-family: var(--vscode-font-family); opacity: 0.9; }
@@ -789,11 +811,6 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
     border-radius: 0; overflow: hidden;
     box-shadow: none;
 }
-.plan-header {
-    background-color: var(--vscode-sideBarSectionHeader-background); color: var(--vscode-sideBarSectionHeader-foreground);
-    padding: 8px 12px; font-weight: 600; display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; user-select: none;
-}
-.plan-header .codicon { font-size: 16px; }
 .plan-content { padding: 0; }
 .plan-objective { padding: 12px; border-bottom: 1px solid var(--vscode-widget-border); font-size: 13px; background-color: var(--vscode-editor-background); }
 .plan-objective strong { color: var(--vscode-textLink-foreground); }
@@ -1133,36 +1150,43 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
     animation: lollms-rotation 1s linear infinite;
 }
 
-/* Add to CSS */
-.skill-creation-block {
-    border: 1px solid var(--vscode-textLink-foreground);
-    background-color: var(--vscode-editor-inactiveSelectionBackground);
-    border-radius: 6px;
-    margin: 10px 0;
-    overflow: hidden;
+/* Skills Modal Tree Styles */
+.skills-tree-list {
+    list-style: none;
+    padding-left: 10px;
+    margin: 0;
 }
-
-.skill-header {
-    background-color: var(--vscode-textLink-foreground);
-    color: white;
-    padding: 6px 12px;
-    font-weight: bold;
-    font-size: 12px;
+.skills-tree-item {
+    margin: 4px 0;
+}
+.skill-node {
     display: flex;
-    align-items: center; gap: 6px;
+    align-items: center;
+    gap: 8px;
 }
-
-.skill-preview {
-    padding: 10px;
-    font-size: 0.9em;
-    max-height: 200px;
-    overflow-y: auto;
-}
-
-.skill-actions {
+.skill-node label {
+    cursor: pointer;
     display: flex;
-    gap: 10px;
-    padding: 8px;
-    border-top: 1px solid var(--vscode-widget-border);
-    background-color: var(--vscode-editor-background);
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+}
+.skill-summary {
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    padding: 4px 0;
+}
+.skill-summary:hover {
+    background-color: var(--vscode-list-hoverBackground);
+}
+.skill-children {
+    padding-left: 20px;
+    border-left: 1px solid var(--vscode-tree-indentGuidesStroke);
+    margin-left: 4px;
+}
+.skill-checkbox, .bundle-checkbox {
+    cursor: pointer;
 }

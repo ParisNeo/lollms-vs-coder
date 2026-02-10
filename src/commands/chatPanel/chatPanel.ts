@@ -135,15 +135,14 @@ export class ChatPanel {
   public setProcessManager(processManager: ProcessManager) { 
       this.processManager = processManager; 
       
-      // Initialize AgentManager
-      // Check if an agent already exists for this discussion (reconnection logic)
+      // Initialize AgentManager logic
       if (ChatPanel.activeAgents.has(this.discussionId)) {
           this.log(`Reconnecting to existing active agent for discussion ${this.discussionId}`);
           this.agentManager = ChatPanel.activeAgents.get(this.discussionId)!;
-          // Hot-swap the UI implementation to this new panel
           this.agentManager.setUI(this);
       } else {
-          // Create new AgentManager if none exists
+          // If created here directly (fallback), we construct it.
+          // Usually registry creates it and calls setAgentManager
           this.agentManager = new AgentManager(
               this, 
               this._lollmsAPI, 
@@ -151,24 +150,13 @@ export class ChatPanel {
               this._gitIntegration,
               this._discussionManager,
               this._extensionUri,
-              // @ts-ignore
-              // These dependencies might be injected later via setters in some flows, 
-              // but standard flow expects them. If passed via createOrShow, they are set.
-              // Assuming caller sets them immediately after construction if using constructor injection.
-              // Here we rely on properties being set before agentManager is used.
-              // Note: The agentManager constructor signature requires them. 
-              // In the registry flow, createOrShow is called, then agentManager is created externally and assigned.
-              // Here we are creating it internally if not assigned? 
-              // Actually, the registry assigns `panel.agentManager = ...`. 
-              // Let's defer creation to the registry if possible, OR if we are in the constructor, 
-              // we can't create it yet because we lack dependencies.
-              // Correct logic: The registry creates the agent. We just need to check if we should overwrite it.
+              // @ts-ignore - Assuming dependencies injected shortly after
+              undefined, 
+              this._skillsManager
           );
       }
   }
   
-  // This setter is called by the registry after creating the panel.
-  // We intercept it to implement the reconnection logic.
   public setAgentManager(agent: AgentManager) {
       if (ChatPanel.activeAgents.has(this.discussionId)) {
           this.log(`Reconnecting to EXISTING active agent for discussion ${this.discussionId}`);
@@ -184,12 +172,9 @@ export class ChatPanel {
   public updateGeneratingState() {
     if (this._isDisposed) return;
     if (this._panel.webview) {
-        // Use discussionId directly, it is reliable.
         const process = this.processManager.getForDiscussion(this.discussionId);
-        // Check both process manager AND our static registry for standard generations
         const hasActiveGen = ChatPanel.activeGenerations.has(this.discussionId);
         
-        // Also check active agent status
         const activeAgent = ChatPanel.activeAgents.get(this.discussionId);
         const agentIsActive = activeAgent ? activeAgent.getIsActive() : false;
 
@@ -322,7 +307,6 @@ export class ChatPanel {
           if (cachedContext) {
               const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || [];
               
-              // Only send full context if it's small enough, otherwise send placeholder
               const contextTextToSend = cachedContext.text.length > 50000 
                   ? `# Context Hidden (Too Large for Preview)\n\nThe full context (${cachedContext.text.length} chars) is loaded in backend memory for AI usage, but is hidden from this preview to improve UI performance.`
                   : cachedContext.text;
@@ -345,12 +329,10 @@ export class ChatPanel {
           isInspectorEnabled: isInspectorEnabled
       });
       
-      // RECONNECTION LOGIC: Check for active generation
       const activeGen = ChatPanel.activeGenerations.get(this.discussionId);
       if (activeGen) {
           this.log(`Reconnecting to active generation for ${this.discussionId}`);
           
-          // 1. Send the incomplete message to UI
           const tempMsg: ChatMessage = {
               id: activeGen.messageId,
               role: 'assistant',
@@ -360,7 +342,6 @@ export class ChatPanel {
           };
           this._panel.webview.postMessage({ command: 'addMessage', message: tempMsg });
           
-          // 2. Subscribe to updates
           const listener = (chunk: string) => {
               if (!this._isDisposed && this._panel.webview) {
                   this._panel.webview.postMessage({ 
@@ -385,7 +366,6 @@ export class ChatPanel {
           activeGen.listeners.add(listener);
           activeGen.onComplete.add(completionListener);
           
-          // Force UI to generating state
           this.updateGeneratingState();
       }
 
@@ -507,8 +487,6 @@ export class ChatPanel {
 
             const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || [];
             
-            // UI Optimization: Truncate large context for display
-            // Sending > 50KB JSON to webview can cause lag/hangs
             const PREVIEW_LIMIT = 50000;
             const contextTextToSend = context.text.length > PREVIEW_LIMIT
                 ? `# Context Hidden (Too Large for Preview)\n\nThe full context (${context.text.length} chars) is loaded in backend memory for AI usage, but is hidden from this preview to improve UI performance.`
@@ -727,6 +705,159 @@ export class ChatPanel {
       }
   }
 
+  // --- REPLACED: NEW HIERARCHICAL IMPORT LOGIC ---
+  private async handleImportSkills() {
+    const allSkills = await this._skillsManager.getSkills();
+    if (allSkills.length === 0) {
+        vscode.window.showInformationMessage("No saved skills found.");
+        return;
+    }
+
+    const root: any = { id: 'root', label: 'Skills Library', children: [], isSkill: false };
+
+    allSkills.forEach(skill => {
+        const category = skill.category || 'Uncategorized';
+        // Handle backslashes and split
+        const parts = category.replace(/\\/g, '/').split('/').filter(p => p);
+        
+        let current = root;
+        let pathSoFar = "";
+        
+        // Build/Navigate Categories
+        parts.forEach(part => {
+            pathSoFar = pathSoFar ? `${pathSoFar}/${part}` : part;
+            let existing = current.children.find((c:any) => c.label === part && !c.isSkill);
+            if (!existing) {
+                existing = { id: pathSoFar, label: part, children: [], isSkill: false, isBundle: true };
+                current.children.push(existing);
+            }
+            current = existing;
+        });
+        
+        // Add Skill Leaf
+        current.children.push({
+            id: skill.id,
+            label: skill.name,
+            isSkill: true,
+            description: skill.description,
+            skill: skill 
+        });
+    });
+
+    this._panel.webview.postMessage({ command: 'showSkillsModal', skillsTree: root });
+  }
+
+  private async copyFullPromptToClipboard(draftMessage: string) {
+      const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+      const forceFullCode = config.get<boolean>('forceFullCodePath') || false;
+
+      const importedIds = this._currentDiscussion?.importedSkills || [];
+      const contextData = await this._contextManager.getContextContent({ importedSkillIds: importedIds });
+      const context = {
+          tree: contextData.projectTree,
+          files: contextData.selectedFilesContent,
+          skills: contextData.skillsContent
+      };
+
+      const personaContent = this.getCurrentPersonaSystemPrompt();
+      const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, forceFullCode, context);
+      
+      let fullText = `${systemPrompt}\n\n`;
+
+      if (this._currentDiscussion) {
+          fullText += `--- CHAT HISTORY ---\n`;
+          this._currentDiscussion.messages
+              .filter(m => !m.skipInPrompt)
+              .forEach(m => {
+                  const content = Array.isArray(m.content) ? m.content.map(c => c.type === 'text' ? c.text : '[Image]').join('\n') : m.content;
+                  fullText += `${m.role.toUpperCase()}: ${content}\n\n`;
+              });
+      }
+      if (draftMessage) {
+          fullText += `USER (Draft): ${draftMessage}\n`;
+      }
+      await vscode.env.clipboard.writeText(fullText);
+      vscode.window.showInformationMessage("Full prompt context copied to clipboard.");
+  }
+  
+  private async deleteMessage(messageId: string) {
+      if (this._currentDiscussion) {
+          this._currentDiscussion.messages = this._currentDiscussion.messages.filter(m => m.id !== messageId);
+          if (!this._currentDiscussion.id.startsWith('temp-')) {
+              await this._discussionManager.saveDiscussion(this._currentDiscussion);
+          }
+          await this.loadDiscussion(); 
+      }
+  }
+  
+  private async regenerateFromMessage(messageId: string) {
+      if (!this._currentDiscussion) return;
+      const index = this._currentDiscussion.messages.findIndex(m => m.id === messageId);
+      if (index === -1) return;
+      const messageToResend = this._currentDiscussion.messages[index];
+      if (messageToResend.role !== 'user') return;
+      this._currentDiscussion.messages = this._currentDiscussion.messages.slice(0, index); 
+      await this.sendMessage(messageToResend);
+  }
+  
+  private async insertMessage(afterMessageId: string | null, role: 'user' | 'assistant', content: string) {
+      if (!this._currentDiscussion) return;
+      const newMessage: ChatMessage = {
+          id: role + '_' + Date.now(),
+          role: role,
+          content: content,
+          timestamp: Date.now()
+      } as any;
+      if (afterMessageId) {
+          const index = this._currentDiscussion.messages.findIndex(m => m.id === afterMessageId);
+          if (index !== -1) {
+              this._currentDiscussion.messages.splice(index + 1, 0, newMessage);
+          } else {
+              this._currentDiscussion.messages.push(newMessage);
+          }
+      } else {
+          this._currentDiscussion.messages.push(newMessage);
+      }
+      if (!this._currentDiscussion.id.startsWith('temp-')) {
+          await this._discussionManager.saveDiscussion(this._currentDiscussion);
+      }
+      await this.loadDiscussion();
+  }
+  
+  private async updateMessage(messageId: string, newContent: string) {
+      if (!this._currentDiscussion) return;
+      const msg = this._currentDiscussion.messages.find(m => m.id === messageId);
+      if (msg) {
+          msg.content = newContent;
+          if (!this._currentDiscussion.id.startsWith('temp-')) {
+              await this._discussionManager.saveDiscussion(this._currentDiscussion);
+          }
+      }
+  }
+  
+  private async _handleFileAttachment(name: string, content: string, isImage: boolean) {
+      if (isImage) {
+          const msg: ChatMessage = {
+              id: 'user_img_' + Date.now() + Math.random().toString(36).substring(2),
+              role: 'user',
+              content: [
+                  { type: 'text', text: `Attached image: ${name}` },
+                  { type: 'image_url', image_url: { url: content } }
+              ]
+          };
+          this.addMessageToDiscussion(msg);
+      } else {
+          const base64 = content.split(',')[1];
+          const text = await this._contextManager.processFile(name, base64);
+          const systemMsg: ChatMessage = {
+              id: 'system_file_' + Date.now() + Math.random().toString(36).substring(2),
+              role: 'system',
+              content: `Attached file: **${name}**\n\`\`\`\n${text}\n\`\`\`\n`
+          };
+          this.addMessageToDiscussion(systemMsg);
+      }
+  }
+  
   public async requestUserInput(question: string, signal: AbortSignal): Promise<string> {
       return new Promise((resolve, reject) => {
           this._inputResolver = resolve;
@@ -794,9 +925,6 @@ export class ChatPanel {
 
     await this.addMessageToDiscussion(message);
 
-    /**
-     * AUTO-GENERATE TITLE LOGIC
-     */
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     if (config.get<boolean>('autoGenerateTitle') && 
         this._currentDiscussion && 
@@ -1041,7 +1169,6 @@ export class ChatPanel {
 
         const assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
         
-        // --- Register Generation Session for Persistence ---
         const generationSession: ActiveGeneration = {
             messageId: assistantMessageId,
             buffer: '',
@@ -1051,7 +1178,6 @@ export class ChatPanel {
             onComplete: new Set()
         };
         
-        // Add the listener for THIS specific panel instance
         const panelListener = (chunk: string) => {
              if (!this._isDisposed && this._panel.webview) {
                  this._panel.webview.postMessage({
@@ -1095,17 +1221,13 @@ export class ChatPanel {
 
         await this._lollmsAPI.sendChat(messagesToSend, (chunk) => {
             if (this._isDisposed) {
-                // Background processing: Continue accumulating buffer
-                // Do NOT return here if you want background completion
+                // Background processing
             }
             
             fullResponse += chunk;
             tokenCount++; 
             
-            // Update session buffer
             generationSession.buffer += chunk;
-            
-            // Notify all listeners
             generationSession.listeners.forEach(listener => listener(chunk));
 
             const searchMatch = fullResponse.match(/<web_search>(.*?)<\/web_search>/);
@@ -1133,13 +1255,10 @@ export class ChatPanel {
                 };
 
                 await this.addMessageToDiscussion(assistantMessage, false);
-
-                // Notify completion listeners (UI finalize)
                 generationSession.onComplete.forEach(fn => fn(cleanResponse));
             }
         }
         
-        // Cleanup Session
         ChatPanel.activeGenerations.delete(this.discussionId);
 
     } catch (error: any) {
@@ -1346,219 +1465,12 @@ export class ChatPanel {
       vscode.commands.executeCommand('lollms-vs-coder.refreshSkills'); 
   }
   
-
-    private async handleImportSkills() {
-        const allSkills = await this._skillsManager.getSkills();
-        if (allSkills.length === 0) {
-            vscode.window.showInformationMessage("No saved skills found.");
-            return;
-        }
-
-        const categories = new Set<string>();
-        allSkills.forEach(s => {
-            if (s.category) {
-                const parts = s.category.replace(/\\/g, '/').split('/');
-                let current = "";
-                parts.forEach(p => {
-                    current = current ? `${current}/${p}` : p;
-                    categories.add(current);
-                });
-            }
-        });
-
-        const bundleItems = Array.from(categories).sort().map(cat => ({
-            label: `$(folder) ${cat} (Bundle)`,
-            description: `Enable all skills in this category`,
-            isBundle: true,
-            categoryPath: cat
-        }));
-
-        const individualItems = allSkills.map(s => ({
-            label: `${s.scope === 'global' ? '$(globe)' : '$(file-code)'} ${s.name}`,
-            description: s.category ? `Category: ${s.category}` : s.description,
-            detail: s.content.substring(0, 80) + "...",
-            isBundle: false,
-            skill: s
-        }));
-
-        const selected = await vscode.window.showQuickPick(
-            [...bundleItems, { label: "", kind: vscode.QuickPickItemKind.Separator }, ...individualItems] as any, 
-            {
-                canPickMany: true,
-                placeHolder: "Select individual skills or folder bundles to import"
-            }
-        );
-
-        if (!selected || selected.length === 0) return;
-
-        const finalSkillsToImport = new Map<string, any>(); 
-
-        for (const item of selected) {
-            if (item.isBundle) {
-                const bundleSkills = await this._skillsManager.getSkillsInBundle(item.categoryPath);
-                bundleSkills.forEach(s => finalSkillsToImport.set(s.id, s));
-            } else {
-                finalSkillsToImport.set(item.skill.id, item.skill);
-            }
-        }
-
-        const skillList = Array.from(finalSkillsToImport.values());
-
-        const choice = await vscode.window.showQuickPick(
-            [
-                { label: "Current Discussion Only", detail: "Active only for this chat window." },
-                { label: "Entire Project (Persistent)", detail: "Active for all chats in this workspace." }
-            ],
-            { placeHolder: `Apply ${skillList.length} skills to:` }
-        );
-
-        if (!choice) return;
-
-        if (choice.label.startsWith("Entire")) {
-            for (const skill of skillList) {
-                await this._contextManager.addSkillToProject(skill.id);
-            }
-            vscode.window.showInformationMessage(`Added ${skillList.length} skills to Project Context.`);
-        } else {
-            if (this._currentDiscussion) {
-                if (!this._currentDiscussion.importedSkills) this._currentDiscussion.importedSkills = [];
-                skillList.forEach(skill => {
-                    if (!this._currentDiscussion!.importedSkills!.includes(skill.id)) {
-                        this._currentDiscussion!.importedSkills!.push(skill.id);
-                    }
-                });
-                await this._discussionManager.saveDiscussion(this._currentDiscussion);
-                vscode.window.showInformationMessage(`Added ${skillList.length} skills to Discussion.`);
-            }
-        }
-        
-        this.updateContextAndTokens();
-    }
-  
-  private async copyFullPromptToClipboard(draftMessage: string) {
-      const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-      const forceFullCode = config.get<boolean>('forceFullCodePath') || false;
-
-      const importedIds = this._currentDiscussion?.importedSkills || [];
-      const contextData = await this._contextManager.getContextContent({ importedSkillIds: importedIds });
-      const context = {
-          tree: contextData.projectTree,
-          files: contextData.selectedFilesContent,
-          skills: contextData.skillsContent
-      };
-
-      const personaContent = this.getCurrentPersonaSystemPrompt();
-      const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, forceFullCode, context);
-      
-      let fullText = `${systemPrompt}\n\n`;
-
-      if (this._currentDiscussion) {
-          fullText += `--- CHAT HISTORY ---\n`;
-          this._currentDiscussion.messages
-              .filter(m => !m.skipInPrompt)
-              .forEach(m => {
-                  const content = Array.isArray(m.content) ? m.content.map(c => c.type === 'text' ? c.text : '[Image]').join('\n') : m.content;
-                  fullText += `${m.role.toUpperCase()}: ${content}\n\n`;
-              });
-      }
-      if (draftMessage) {
-          fullText += `USER (Draft): ${draftMessage}\n`;
-      }
-      await vscode.env.clipboard.writeText(fullText);
-      vscode.window.showInformationMessage("Full prompt context copied to clipboard.");
-  }
-  
-  private async deleteMessage(messageId: string) {
-      if (this._currentDiscussion) {
-          this._currentDiscussion.messages = this._currentDiscussion.messages.filter(m => m.id !== messageId);
-          if (!this._currentDiscussion.id.startsWith('temp-')) {
-              await this._discussionManager.saveDiscussion(this._currentDiscussion);
-          }
-          await this.loadDiscussion(); 
-      }
-  }
-  
-  private async regenerateFromMessage(messageId: string) {
-      if (!this._currentDiscussion) return;
-      const index = this._currentDiscussion.messages.findIndex(m => m.id === messageId);
-      if (index === -1) return;
-      const messageToResend = this._currentDiscussion.messages[index];
-      if (messageToResend.role !== 'user') return;
-      this._currentDiscussion.messages = this._currentDiscussion.messages.slice(0, index); 
-      await this.sendMessage(messageToResend);
-  }
-  
-  private async insertMessage(afterMessageId: string | null, role: 'user' | 'assistant', content: string) {
-      if (!this._currentDiscussion) return;
-      const newMessage: ChatMessage = {
-          id: role + '_' + Date.now(),
-          role: role,
-          content: content,
-          timestamp: Date.now()
-      } as any;
-      if (afterMessageId) {
-          const index = this._currentDiscussion.messages.findIndex(m => m.id === afterMessageId);
-          if (index !== -1) {
-              this._currentDiscussion.messages.splice(index + 1, 0, newMessage);
-          } else {
-              this._currentDiscussion.messages.push(newMessage);
-          }
-      } else {
-          this._currentDiscussion.messages.push(newMessage);
-      }
-      if (!this._currentDiscussion.id.startsWith('temp-')) {
-          await this._discussionManager.saveDiscussion(this._currentDiscussion);
-      }
-      await this.loadDiscussion();
-  }
-  
-  private async updateMessage(messageId: string, newContent: string) {
-      if (!this._currentDiscussion) return;
-      const msg = this._currentDiscussion.messages.find(m => m.id === messageId);
-      if (msg) {
-          msg.content = newContent;
-          if (!this._currentDiscussion.id.startsWith('temp-')) {
-              await this._discussionManager.saveDiscussion(this._currentDiscussion);
-          }
-      }
-  }
-  
-  private async _handleFileAttachment(name: string, content: string, isImage: boolean) {
-      if (isImage) {
-          const msg: ChatMessage = {
-              id: 'user_img_' + Date.now() + Math.random().toString(36).substring(2),
-              role: 'user',
-              content: [
-                  { type: 'text', text: `Attached image: ${name}` },
-                  { type: 'image_url', image_url: { url: content } }
-              ]
-          };
-          this.addMessageToDiscussion(msg);
-      } else {
-          const base64 = content.split(',')[1];
-          const text = await this._contextManager.processFile(name, base64);
-          const systemMsg: ChatMessage = {
-              id: 'system_file_' + Date.now() + Math.random().toString(36).substring(2),
-              role: 'system',
-              content: `Attached file: **${name}**\n\`\`\`\n${text}\n\`\`\`\n`
-          };
-          this.addMessageToDiscussion(systemMsg);
-      }
-  }
-  
   public dispose() {
     this._isDisposed = true;
     ChatPanel.currentPanel = undefined;
     ChatPanel.panels.delete(this.discussionId);
     this._panel.dispose();
     while (this._executionLogs.length) { this._executionLogs.pop(); }
-    
-    // IMPORTANT: We do NOT remove the AgentManager from the activeAgents map automatically.
-    // This allows background execution to continue.
-    // If the agent finishes, it will be idle in the map until reconnected or cleaned up later.
-    
-    // NOTE: We also do NOT remove from activeGenerations here, 
-    // because we want the background generation to finish and save.
   }
   
   private _setWebviewMessageListener(webview: vscode.Webview) {
@@ -1936,9 +1848,47 @@ Task:
                 vscode.window.showInformationMessage(`Skill '${name}' saved to ${scope} library.`);
                 vscode.commands.executeCommand('lollms-vs-coder.refreshSkills'); 
                 break;
-
             case 'importSkills':
                 await this.handleImportSkills();
+                break;
+            case 'importSelectedSkills':
+                const skillIds = message.skillIds;
+                if (!skillIds || skillIds.length === 0) {
+                    vscode.window.showInformationMessage("No skills selected.");
+                    return;
+                }
+                
+                const allSkills = await this._skillsManager.getSkills();
+                const selectedSkills = allSkills.filter(s => skillIds.includes(s.id));
+                
+                const choice = await vscode.window.showQuickPick(
+                    [
+                        { label: "Current Discussion Only", detail: "Active only for this chat window." },
+                        { label: "Entire Project (Persistent)", detail: "Active for all chats in this workspace." }
+                    ],
+                    { placeHolder: `Apply ${selectedSkills.length} skills to:` }
+                );
+
+                if (choice) {
+                    if (choice.label.startsWith("Entire")) {
+                        for (const skill of selectedSkills) {
+                            await this._contextManager.addSkillToProject(skill.id);
+                        }
+                        vscode.window.showInformationMessage(`Added ${selectedSkills.length} skills to Project Context.`);
+                    } else {
+                        if (this._currentDiscussion) {
+                            if (!this._currentDiscussion.importedSkills) this._currentDiscussion.importedSkills = [];
+                            selectedSkills.forEach(skill => {
+                                if (!this._currentDiscussion!.importedSkills!.includes(skill.id)) {
+                                    this._currentDiscussion!.importedSkills!.push(skill.id);
+                                }
+                            });
+                            await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                            vscode.window.showInformationMessage(`Added ${selectedSkills.length} skills to Discussion.`);
+                        }
+                    }
+                    this.updateContextAndTokens();
+                }
                 break;
             case 'openSettings':
                 vscode.commands.executeCommand('lollms-vs-coder.showConfigView');
@@ -2425,6 +2375,21 @@ Task:
                     <span class="close-btn" id="history-close-btn">&times;</span>
                 </div>
                 <div class="modal-body" id="history-list">
+                </div>
+            </div>
+        </div>
+
+        <div id="skills-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Import Skills</h2>
+                    <span class="close-btn" id="skills-close-btn">&times;</span>
+                </div>
+                <div class="modal-body" id="skills-tree-container">
+                    <!-- Tree generated dynamically -->
+                </div>
+                <div class="modal-footer">
+                    <button id="skills-import-btn">Import Selected</button>
                 </div>
             </div>
         </div>

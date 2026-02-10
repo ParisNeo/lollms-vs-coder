@@ -1,0 +1,289 @@
+<skill id="ascii-colors-rich-integration">
+    <name>ASCIIColors Rich Integration</name>
+    <description>Advanced terminal output with multicolor, highlighting, spinners, and enhanced tracebacks.</description>
+    <category>python/ascii_colors/rich</category>
+    <language>markdown</language>
+    <timestamp>1738425600000</timestamp>
+    <content>
+        <![CDATA[
+# ASCIIColors Rich Integration
+
+## Advanced Output Features
+
+Beyond simple colors — multiline blocks, dynamic highlighting, execution animations, and beautiful error traces.
+
+---
+
+## Multicolor Text
+
+Inline color changes without multiple print calls.
+
+```python
+from ascii_colors import ASCIIColors
+
+# Single line, multiple colors
+ASCIIColors.multicolor(
+    ["System: ", "ONLINE", " | CPU: ", "45%", " | Memory: ", "OK"],
+    [
+        ASCIIColors.color_white,      # "System: "
+        ASCIIColors.color_bright_green,  # "ONLINE"
+        ASCIIColors.color_white,      # " | CPU: "
+        ASCIIColors.color_yellow,     # "45%"
+        ASCIIColors.color_white,      # " | Memory: "
+        ASCIIColors.color_green       # "OK"
+    ]
+)
+
+# With backgrounds
+ASCIIColors.multicolor(
+    [" ERROR ", " Disk full ", " FIX REQUIRED "],
+    [
+        ASCIIColors.color_white + ASCIIColors.color_bg_red,
+        ASCIIColors.color_black + ASCIIColors.color_bg_yellow,
+        ASCIIColors.color_white + ASCIIColors.color_bg_blue
+    ]
+)
+```
+
+---
+
+## Pattern Highlighting
+
+Highlight substrings or entire lines matching patterns.
+
+```python
+# Highlight specific words
+log_output = """\
+INFO: Server starting on port 8080
+ERROR: Database connection timeout
+INFO: Retry attempt 1
+ERROR: Max retries exceeded
+CRITICAL: Shutting down
+"""
+
+ASCIIColors.highlight(
+    log_output,
+    subtext=["ERROR", "CRITICAL"],           # Words to highlight
+    highlight_color=ASCIIColors.color_bright_red,
+    color=ASCIIColors.color_white             # Non-matching text color
+)
+
+# Highlight entire lines containing pattern
+ASCIIColors.highlight(
+    log_output,
+    subtext="ERROR",
+    whole_line=True,                          # Highlight full line
+    highlight_color=ASCIIColors.color_bg_bright_red + ASCIIColors.color_white
+)
+```
+
+---
+
+## Execution Animation (Spinners)
+
+Show spinner while function runs, with success/failure indicators.
+
+```python
+from ascii_colors import ASCIIColors
+
+def long_operation():
+    import time
+    time.sleep(3)
+    return "processed_data"
+
+# Automatic spinner with result handling
+result = ASCIIColors.execute_with_animation(
+    "Processing large dataset...",           # Spinner message
+    long_operation,
+    color=ASCIIColors.color_cyan             # Spinner color
+)
+# Shows: ⠋ Processing large dataset... → ✓ (on success)
+# Shows: ⠋ Processing large dataset... → ✗ (on exception)
+
+# Custom messages
+result = ASCIIColors.execute_with_animation(
+    "Uploading to cloud...",
+    upload_function,
+    color=ASCIIColors.color_blue
+)
+```
+
+---
+
+## Enhanced Exception Tracebacks
+
+Beautiful, informative error displays with local variables.
+
+```python
+from ascii_colors import trace_exception, get_trace_exception
+
+def problematic_function():
+    x = 42
+    y = "text"
+    z = x + y  # TypeError
+
+try:
+    problematic_function()
+except Exception as e:
+    # Standard display
+    trace_exception(e, enhanced=False)
+    
+    # Enhanced visual traceback (recommended)
+    trace_exception(e, enhanced=True)
+    
+    # Or capture as string for logging
+    formatted = get_trace_exception(e, enhanced=True, max_width=120)
+    print(formatted)
+```
+
+**Enhanced traceback shows:**
+- Boxed frame with file paths
+- Line numbers and source code
+- Local variables in each frame
+- Formatted exception message
+
+---
+
+## Syntax Highlighting
+
+Basic code highlighting in terminal.
+
+```python
+code = '''
+def hello_world():
+    print("Hello, World!")
+    return 42
+'''
+
+ASCIIColors.highlight(
+    code,
+    subtext=["def", "return", "print"],      # Keywords
+    highlight_color=ASCIIColors.color_magenta,
+    color=ASCIIColors.color_white
+)
+```
+
+---
+
+## Utility Helpers
+
+### Confirm / Prompt
+
+```python
+from ascii_colors import confirm, prompt
+
+# Yes/No confirmation
+if confirm("Delete this file?", default_yes=False):
+    delete_file()
+
+# Styled prompt
+name = prompt("Your name: ", color=ASCIIColors.color_green)
+password = prompt("Password: ", hide_input=True, color=ASCIIColors.color_magenta)
+```
+
+### Conditional Styling
+
+```python
+def status_line(service, is_running, cpu_percent):
+    status_text = "RUNNING" if is_running else "STOPPED"
+    status_color = ASCIIColors.color_green if is_running else ASCIIColors.color_red
+    
+    cpu_color = ASCIIColors.color_green
+    if cpu_percent > 50:
+        cpu_color = ASCIIColors.color_yellow
+    if cpu_percent > 80:
+        cpu_color = ASCIIColors.color_red
+    
+    ASCIIColors.multicolor(
+        [f"{service}: ", status_text, " | CPU: ", f"{cpu_percent}%"],
+        [ASCIIColors.color_white, status_color, 
+         ASCIIColors.color_white, cpu_color]
+    )
+
+# Usage
+status_line("api-server", True, 34)   # Green/Green
+status_line("database", True, 67)     # Green/Yellow
+status_line("cache", False, 0)        # Red/Green
+```
+
+---
+
+## Complete Dashboard Example
+
+```python
+from ascii_colors import ASCIIColors
+import time
+
+def render_dashboard(systems):
+    ASCIIColors.clear_screen()  # If available, or print newlines
+    
+    # Header
+    ASCIIColors.print(" SYSTEM DASHBOARD ", 
+                     color=ASCIIColors.color_black,
+                     background=ASCIIColors.color_bg_cyan,
+                     style=ASCIIColors.style_bold)
+    print()
+    
+    # System status table
+    for name, status in systems.items():
+        health = status['health']
+        load = status['load']
+        
+        # Health indicator
+        health_indicators = {
+            'healthy': (ASCIIColors.color_bright_green, "●"),
+            'degraded': (ASCIIColors.color_yellow, "◐"),
+            'critical': (ASCIIColors.color_bright_red, "●")
+        }
+        color, symbol = health_indicators.get(health, (ASCIIColors.color_white, "?"))
+        
+        # Load bar
+        bar_len = 20
+        filled = int(load / 100 * bar_len)
+        bar = "█" * filled + "░" * (bar_len - filled)
+        bar_color = ASCIIColors.color_green if load < 50 else \
+                    ASCIIColors.color_yellow if load < 80 else ASCIIColors.color_red
+        
+        # Render line
+        ASCIIColors.multicolor(
+            [f" {symbol} ", f"{name:15}", f" [{bar}] ", f"{load:3}%"],
+            [color, ASCIIColors.color_white, bar_color, ASCIIColors.color_white]
+        )
+    
+    print()
+    ASCIIColors.dim("Last updated: " + time.strftime("%H:%M:%S"))
+
+# Run
+systems = {
+    'web-api': {'health': 'healthy', 'load': 34},
+    'database': {'health': 'healthy', 'load': 67},
+    'cache': {'health': 'degraded', 'load': 89},
+    'worker-1': {'health': 'critical', 'load': 95},
+}
+render_dashboard(systems)
+```
+
+---
+
+## Output Redirection
+
+Control where output goes.
+
+```python
+import sys
+
+# To stderr
+ASCIIColors.red("Error message", file=sys.stderr)
+
+# Capture to string
+output = ASCIIColors.green("Success", emit=False)  # Returns string, no print
+
+# Custom ending
+ASCIIColors.print("Loading...", end="", flush=True)
+# Do work...
+ASCIIColors.print(" Done!", color=ASCIIColors.color_green)
+```
+
+]]>
+    </content>
+</skill>

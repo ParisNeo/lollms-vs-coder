@@ -1,0 +1,592 @@
+<skill id="lollms-sqlite-database">
+    <name>SQLite Database with LoLLMs</name>
+    <description>Building and interacting with SQLite databases using LoLLMs for natural language queries.</description>
+    <category>python/lollms_client/database/sqlite</category>
+    <language>markdown</language>
+    <timestamp>1738425600000</timestamp>
+    <content>
+        <![CDATA[
+# SQLite Database with LoLLMs
+
+## Overview
+
+Combine SQLite's simplicity with LoLLMs to create **natural language database interfaces**. The LLM generates SQL from user questions, executes queries, and formats results conversationally.
+
+| Component | Purpose |
+|-----------|---------|
+| **SQLite** | Serverless, file-based relational database |
+| **LoLLMs** | Natural language → SQL translation, result explanation |
+| **Schema Awareness** | LLM knows tables/columns for accurate queries |
+| **Safety** | Read-only or validated write operations |
+
+---
+
+## Installation
+
+```bash
+# Core requirements (usually pre-installed)
+pip install lollms_client sqlite3
+```
+
+---
+
+## Basic Setup
+
+### 1. Create Database & Schema
+
+```python
+import sqlite3
+import os
+
+DB_PATH = "my_app.db"
+
+def init_database():
+    """Initialize SQLite database with sample schema."""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Example: Product catalog
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS products (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            category TEXT,
+            price REAL,
+            stock INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # Example: Orders
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            customer_name TEXT,
+            product_id INTEGER,
+            quantity INTEGER,
+            total_price REAL,
+            order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (product_id) REFERENCES products(id)
+        )
+    """)
+    
+    # Seed sample data
+    sample_products = [
+        ("Laptop Pro", "Electronics", 1299.99, 15),
+        ("Wireless Mouse", "Electronics", 29.99, 100),
+        ("Desk Chair", "Furniture", 249.50, 20),
+        ("Notebook", "Stationery", 12.99, 500),
+        ("Monitor 4K", "Electronics", 499.00, 8),
+    ]
+    cursor.executemany(
+        "INSERT INTO products (name, category, price, stock) VALUES (?, ?, ?, ?)",
+        sample_products
+    )
+    
+    conn.commit()
+    conn.close()
+    print(f"Database initialized: {DB_PATH}")
+
+init_database()
+```
+
+### 2. Database Tool for LoLLMs
+
+```python
+import sqlite3
+import json
+from typing import List, Dict, Any
+
+class SQLiteTool:
+    """SQLite database interface for LoLLMs agents."""
+    
+    def __init__(self, db_path: str, read_only: bool = False):
+        self.db_path = db_path
+        self.read_only = read_only
+        self.schema = self._extract_schema()
+    
+    def _extract_schema(self) -> str:
+        """Get database schema as text for LLM context."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        schema_parts = []
+        
+        # Get all tables
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = cursor.fetchall()
+        
+        for (table_name,) in tables:
+            schema_parts.append(f"\nTable: {table_name}")
+            
+            # Get columns
+            cursor.execute(f"PRAGMA table_info({table_name})")
+            columns = cursor.fetchall()
+            for col in columns:
+                cid, name, dtype, notnull, dflt_value, pk = col
+                pk_flag = " PRIMARY KEY" if pk else ""
+                null_flag = " NOT NULL" if notnull else ""
+                schema_parts.append(f"  - {name}: {dtype}{pk_flag}{null_flag}")
+            
+            # Get foreign keys
+            cursor.execute(f"PRAGMA foreign_key_list({table_name})")
+            fks = cursor.fetchall()
+            for fk in fks:
+                id, seq, table, from_col, to_col, on_update, on_delete, match = fk
+                schema_parts.append(f"  - FOREIGN KEY: {from_col} → {table}({to_col})")
+        
+        conn.close()
+        return "\n".join(schema_parts)
+    
+    def execute_query(self, query: str, params: tuple = ()) -> Dict[str, Any]:
+        """Execute SQL query safely."""
+        # Safety: block dangerous operations if read-only
+        if self.read_only:
+            dangerous = ["INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER"]
+            if any(q in query.upper() for q in dangerous):
+                return {
+                    "success": False,
+                    "error": "Write operations blocked in read-only mode",
+                    "results": []
+                }
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row  # Dict-like access
+            cursor = conn.cursor()
+            
+            cursor.execute(query, params)
+            
+            # SELECT returns rows, others return rowcount
+            if query.strip().upper().startswith("SELECT"):
+                rows = cursor.fetchall()
+                results = [dict(row) for row in rows]
+                return {
+                    "success": True,
+                    "results": results,
+                    "row_count": len(results)
+                }
+            else:
+                conn.commit()
+                return {
+                    "success": True,
+                    "results": [],
+                    "row_count": cursor.rowcount,
+                    "last_row_id": cursor.lastrowid
+                }
+                
+        except sqlite3.Error as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "results": []
+            }
+        finally:
+            conn.close()
+    
+    def get_tool_spec(self) -> Dict[str, Any]:
+        """Return LoLLMs-compatible tool specification."""
+        return {
+            "execute_sql": {
+                "name": "execute_sql",
+                "description": f"""Execute SQL query on SQLite database.
+                
+Database Schema:
+{self.schema}
+
+Use SELECT for queries. Write operations only if not read-only.
+Return results as structured data.""",
+                "parameters": [
+                    {
+                        "name": "query",
+                        "type": "str",
+                        "description": "SQL query to execute",
+                        "optional": False
+                    },
+                    {
+                        "name": "params",
+                        "type": "list",
+                        "description": "Query parameters (for parameterized queries)",
+                        "optional": True,
+                        "default": []
+                    }
+                ],
+                "output": [
+                    {"name": "success", "type": "bool"},
+                    {"name": "results", "type": "list"},
+                    {"name": "row_count", "type": "int"},
+                    {"name": "error", "type": "str", "optional": True}
+                ],
+                "callable": self._tool_wrapper
+            }
+        }
+    
+    def _tool_wrapper(self, query: str, params: list = None) -> Dict[str, Any]:
+        """Wrapper for LoLLMs tool calling."""
+        params = params or []
+        return self.execute_query(query, tuple(params))
+```
+
+---
+
+## Natural Language Database Interface
+
+### Complete Integration
+
+```python
+from lollms_client import LollmsClient, LollmsDiscussion, LollmsPersonality
+import os
+
+def create_database_agent(db_path: str, read_only: bool = True):
+    """Create LoLLMs agent with database access."""
+    
+    # Initialize database tool
+    db_tool = SQLiteTool(db_path, read_only=read_only)
+    
+    # Setup LoLLMs client
+    lc = LollmsClient(
+        "llama_cpp_server",  # or "openai", etc.
+        {"model_name": "codellama-7b.Q4_K_M.gguf"}  # Code-capable model recommended
+    )
+    
+    # Create agent personality
+    agent = LollmsPersonality(
+        name="DatabaseAssistant",
+        system_prompt=f"""You are a database assistant. Help users query data using SQL.
+
+DATABASE SCHEMA:
+{db_tool.schema}
+
+GUIDELINES:
+- Generate correct SQLite syntax
+- Use parameterized queries for user inputs (prevent injection)
+- Explain results in natural language
+- Suggest follow-up queries when relevant
+- If query fails, diagnose and suggest fixes
+
+Always use the execute_sql tool for database operations."""
+    )
+    
+    # Create discussion with database in context
+    discussion = LollmsDiscussion.create_new(lollms_client=lc)
+    
+    # Pre-load schema into discussion data zone
+    discussion.discussion_data_zone = f"""Available database tables and structure:
+
+{db_tool.schema}
+
+You can query this database using natural language. I'll translate to SQL."""
+    
+    return {
+        "client": lc,
+        "discussion": discussion,
+        "agent": agent,
+        "db_tool": db_tool,
+        "tools": db_tool.get_tool_spec()
+    }
+
+# Initialize
+agent_components = create_database_agent("my_app.db", read_only=True)
+discussion = agent_components["discussion"]
+agent = agent_components["agent"]
+tools = agent_components["tools"]
+```
+
+### Chat with Database
+
+```python
+def ask_database(question: str):
+    """Ask natural language question about database."""
+    
+    response = discussion.chat(
+        user_message=question,
+        personality=agent,
+        tools=tools,
+        max_reasoning_steps=5,
+        decision_temperature=0.1,  # Precise SQL generation
+        final_answer_temperature=0.7  # Natural explanation
+    )
+    
+    # Extract SQL from tool calls for display
+    ai_message = response["ai_message"]
+    metadata = ai_message.metadata or {}
+    
+    print(f"\n🤖 {ai_message.content}")
+    
+    # Show executed queries
+    if "tool_calls" in metadata:
+        for call in metadata["tool_calls"]:
+            if call["name"] == "execute_sql":
+                print(f"\n📊 Executed SQL: {call['params']['query']}")
+                if call["result"].get("row_count"):
+                    print(f"   Rows: {call['result']['row_count']}")
+    
+    return response
+
+# Example interactions
+ask_database("What products do we have in Electronics?")
+ask_database("What's our total inventory value by category?")
+ask_database("Which products are low in stock (under 10 units)?")
+ask_database("Show me the most expensive product in each category")
+```
+
+---
+
+## Advanced Patterns
+
+### Multi-Table Analysis with Composable Answers
+
+```python
+# Complex query requiring multiple steps
+response = discussion.chat(
+    user_message="""Analyze our business:
+    1. Which category generates most revenue?
+    2. What are our top 3 products by margin?
+    3. Any inventory risks (low stock + high demand)?""",
+    
+    personality=agent,
+    tools=tools,
+    max_reasoning_steps=10  # Allow multiple analytical queries
+)
+
+# Agent automatically:
+# - Runs separate queries for each question
+# - Uses append_to_answer() for each analysis section
+# - Synthesizes final business report
+```
+
+### Write Operations (Validated)
+
+```python
+class ValidatedDatabaseTool(SQLiteTool):
+    """Database tool with LLM-based change validation."""
+    
+    def __init__(self, db_path: str, lc: LollmsClient):
+        super().__init__(db_path, read_only=False)
+        self.lc = lc
+    
+    def validate_write(self, query: str, explanation: str) -> bool:
+        """Use LLM to validate write operation safety."""
+        
+        validation_prompt = f"""Validate this database write operation:
+
+SQL: {query}
+User Explanation: {explanation}
+
+Check for:
+- Accidental data loss (DELETE without WHERE, DROP TABLE)
+- Unintended mass updates
+- Violation of business rules
+
+Respond with JSON: {{"safe": true/false, "reason": "..."}}"""
+
+        result = self.lc.generate_structured_content(
+            validation_prompt,
+            schema={"safe": "boolean", "reason": "string"}
+        )
+        
+        return result.get("safe", False)
+    
+    def execute_write(self, query: str, explanation: str, params: tuple = ()):
+        """Execute write with LLM validation."""
+        
+        if not self.validate_write(query, explanation):
+            return {
+                "success": False,
+                "error": "Write validation failed. Please clarify your intent.",
+                "results": []
+            }
+        
+        return self.execute_query(query, params)
+
+# Usage
+validated_db = ValidatedDatabaseTool("my_app.db", lc)
+
+# Agent must provide explanation for writes
+def write_wrapper(query: str, explanation: str = "", params: list = None):
+    return validated_db.execute_write(query, explanation, tuple(params or []))
+
+# Update tool spec to require explanation
+tools["execute_write"] = {
+    "name": "execute_write",
+    "description": "Execute INSERT/UPDATE/DELETE with required explanation",
+    "parameters": [
+        {"name": "query", "type": "str", "optional": False},
+        {"name": "explanation", "type": "str", "optional": False, 
+         "description": "Why this write is safe and correct"},
+        {"name": "params", "type": "list", "optional": True, "default": []}
+    ],
+    "output": [...],
+    "callable": write_wrapper
+}
+```
+
+### Persistent Memory with Database
+
+```python
+# Store conversation insights in database for future sessions
+
+def memorize_insight(discussion, db_tool, insight_text: str):
+    """Extract and store key insight from discussion."""
+    
+    # Auto-generate memory entry
+    memory_prompt = f"""From this discussion, extract a key fact to remember:
+
+Insight: {insight_text}
+
+Format: Title and structured content."""
+    
+    memory = discussion.lollmsClient.generate_structured_content(
+        memory_prompt,
+        schema={"title": "string", "content": "string"}
+    )
+    
+    # Store in database
+    db_tool.execute_query(
+        "INSERT INTO conversation_memories (title, content, created_at) VALUES (?, ?, datetime('now'))",
+        (memory["title"], memory["content"])
+    )
+    
+    # Also update LoLLMs memory
+    discussion.memory = f"{discussion.memory or ''}\n\n{memory['title']}: {memory['content']}"
+```
+
+---
+
+## Complete Application Example
+
+```python
+#!/usr/bin/env python3
+"""
+Natural Language Database CLI
+"""
+
+import sqlite3
+import os
+from lollms_client import LollmsClient, LollmsDiscussion, LollmsPersonality
+
+class NLDatabaseApp:
+    def __init__(self, db_path: str, model_config: dict):
+        self.db = SQLiteTool(db_path, read_only=False)
+        
+        self.lc = LollmsClient(
+            model_config.get("binding", "llama_cpp_server"),
+            model_config.get("config", {})
+        )
+        
+        self.discussion = LollmsDiscussion.create_new(lollms_client=self.lc)
+        self.agent = LollmsPersonality(
+            name="DBAssistant",
+            system_prompt=self._build_system_prompt()
+        )
+        
+        # Load schema
+        self.discussion.discussion_data_zone = self.db.schema
+        
+        self.tools = self.db.get_tool_spec()
+    
+    def _build_system_prompt(self):
+        return """You are a database assistant. Convert natural language to SQL.
+
+CAPABILITIES:
+- Query data with SELECT
+- Analyze with aggregations (SUM, COUNT, AVG, etc.)
+- Join tables when needed
+- Suggest improvements or anomalies
+
+SAFETY:
+- Confirm destructive operations
+- Use transactions for multi-step writes
+- Explain your reasoning"""
+    
+    def chat(self, user_input: str):
+        """Process user message."""
+        
+        # Check for meta-commands
+        if user_input.startswith("/"):
+            return self._handle_command(user_input)
+        
+        # Normal database query
+        response = self.discussion.chat(
+            user_message=user_input,
+            personality=self.agent,
+            tools=self.tools,
+            max_reasoning_steps=5
+        )
+        
+        return response["ai_message"].content
+    
+    def _handle_command(self, cmd: str):
+        """Handle special commands."""
+        match cmd.split():
+            case ["/schema"]:
+                return f"```\n{self.db.schema}\n```"
+            case ["/tables"]:
+                return "Tables: " + ", ".join(
+                    line.split(":")[1].strip() 
+                    for line in self.db.schema.split("\n") 
+                    if line.startswith("Table:")
+                )
+            case ["/export", table]:
+                result = self.db.execute_query(f"SELECT * FROM {table}")
+                return json.dumps(result["results"], indent=2)
+            case _:
+                return "Unknown command. Try: /schema, /tables, /export <table>"
+    
+    def run_interactive(self):
+        """Run interactive CLI."""
+        print("🗄️  Natural Language Database")
+        print(f"Connected to: {self.db.db_path}")
+        print("Type /schema for structure, or ask questions in plain English.\n")
+        
+        while True:
+            try:
+                user_input = input("You: ").strip()
+                if not user_input:
+                    continue
+                if user_input in ["exit", "quit"]:
+                    break
+                
+                response = self.chat(user_input)
+                print(f"\nAssistant: {response}\n")
+                
+            except KeyboardInterrupt:
+                break
+            except Exception as e:
+                print(f"Error: {e}")
+        
+        print("\nGoodbye!")
+
+# Run
+if __name__ == "__main__":
+    app = NLDatabaseApp(
+        db_path="business_data.db",
+        model_config={
+            "binding": "llama_cpp_server",
+            "config": {
+                "model_name": "codellama-7b.Q4_K_M.gguf",
+                "n_gpu_layers": -1
+            }
+        }
+    )
+    app.run_interactive()
+```
+
+---
+
+## Best Practices
+
+| Practice | Why |
+|----------|-----|
+| **Read-only by default** | Prevent accidental data loss |
+| **Parameterized queries** | SQL injection prevention |
+| **Schema in system prompt** | Accurate, context-aware SQL generation |
+| **Code-capable models** | Better SQL syntax (Codellama, GPT-4, etc.) |
+| **Low temp for SQL gen** | Precise, deterministic queries |
+| **Validate writes with LLM** | Double-check destructive operations |
+| **Transaction wrapper** | Atomic multi-step operations |
+
+]]>
+    </content>
+</skill>
+```

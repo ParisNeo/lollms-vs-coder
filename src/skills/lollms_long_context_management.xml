@@ -1,0 +1,565 @@
+<skill id="lollms-long-context">
+    <name>Long Context Processing</name>
+    <description>Handle documents exceeding context limits with intelligent chunking, synthesis, and recursive analysis.</description>
+    <category>python/lollms_client/long_context</category>
+    <language>markdown</language>
+    <timestamp>1738425600000</timestamp>
+    <content>
+        <![CDATA[
+# Long Context Processing
+
+Process documents, transcripts, and datasets that exceed your model's context window through intelligent chunking and recursive synthesis.
+
+---
+
+## Core Method: `long_context_processing`
+
+```python
+from lollms_client import LollmsClient, MSG_TYPE
+
+lc = LollmsClient("llama_cpp_server", {
+    "model_name": "mixtral-8x7b.Q4_K_M.gguf",
+    "ctx_size": 32768  # Your actual limit
+})
+
+# Document larger than ctx_size
+with open("100k_token_report.txt") as f:
+    huge_document = f.read()  # 150K tokens
+
+result = lc.long_context_processing(
+    text_to_process=huge_document,
+    contextual_prompt="Summarize key findings about climate policy",
+    processing_type="text",  # "text", "structured", "yes_no"
+    
+    # Chunking strategy
+    chunk_size_tokens=8000,   # Per-chunk limit (leave room for prompt)
+    overlap_tokens=500,       # Context preservation between chunks
+    
+    # Synthesis
+    temperature=0.1,
+    streaming_callback=progress_callback
+)
+```
+
+---
+
+## Processing Types
+
+| Type | Output | Use Case |
+|------|--------|----------|
+| `"text"` | String | Summarization, analysis, rewriting |
+| `"structured"` | Dict/List | Extraction, entity recognition, tables |
+| `"yes_no"` | Bool + explanation | Decision questions, verification |
+
+---
+
+## How It Works
+
+```
+Document (150K tokens)
+    │
+    ▼
+┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐
+│ Chunk 1 │ │ Chunk 2 │ │ Chunk 3 │ │ Chunk 4 │
+│ 8K tok  │ │ 8K tok  │ │ 8K tok  │ │ 8K tok  │
+│ + 500   │◄┼►+ 500   │◄┼►+ 500   │◄┼►+ 500   │
+│ overlap │ │ overlap │ │ overlap │ │         │
+└────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘
+     │           │           │           │
+     ▼           ▼           ▼           ▼
+  [Process each chunk with contextual_prompt]
+     │           │           │           │
+     └───────────┴───────────┴───────────┘
+                   │
+                   ▼
+         [Synthesize intermediate results]
+                   │
+                   ▼
+            Final coherent output
+```
+
+---
+
+## Basic Examples
+
+### Summarization
+
+```python
+# Legal contract analysis
+contract = open("merger_agreement_50pages.txt").read()
+
+summary = lc.long_context_processing(
+    text_to_process=contract,
+    contextual_prompt="""
+    Summarize this merger agreement for a board presentation.
+    Include: deal value, key terms, risks, closing conditions.
+    Format: 3 bullet points per section.
+    """,
+    chunk_size_tokens=6000,
+    overlap_tokens=300
+)
+
+print(summary)
+# Structured executive summary across all 50 pages
+```
+
+### Structured Extraction
+
+```python
+# Extract all obligations from contract
+obligations = lc.long_context_processing(
+    text_to_process=contract,
+    contextual_prompt="Extract all party obligations with deadlines",
+    processing_type="structured",
+    schema={
+        "obligations": ["list", {
+            "party": "string",
+            "obligation": "string",
+            "deadline": "string",
+            "consequences": "string"
+        }]
+    }
+)
+
+# Returns merged list from all chunks, deduplicated
+```
+
+### Yes/No Verification
+
+```python
+# Check compliance across entire document
+is_compliant = lc.long_context_processing(
+    text_to_process=full_audit_trail,
+    contextual_prompt="Does this audit trail show GDPR Article 17 compliance?",
+    processing_type="yes_no",
+    return_explanation=True
+)
+
+# Returns: {
+#   "answer": False,
+#   "explanation": "Missing deletion timestamps in 3 records...",
+#   "confidence": "high"
+# }
+```
+
+---
+
+## Advanced: Recursive Deep Analysis
+
+### Multi-Level Synthesis
+
+For very complex documents, use recursive analysis:
+
+```python
+def recursive_document_analysis(lc, document, depth=2):
+    """Hierarchical processing for maximum coherence."""
+    
+    if len(document) < lc.ctx_size * 0.8:
+        # Fits in context, direct processing
+        return lc.generate_text(
+            f"Analyze thoroughly: {document[:1000]}... [full text]",
+            temperature=0.2
+        )
+    
+    # Level 1: Chunk summaries
+    chunk_summaries = lc.long_context_processing(
+        document,
+        contextual_prompt="Create detailed summary preserving all key facts, figures, and relationships",
+        processing_type="structured",
+        schema={"summaries": ["list", "string"]}  # List of chunk summaries
+    )["summaries"]
+    
+    if depth > 1:
+        # Level 2: Synthesize summaries
+        combined = "\n\n".join(chunk_summaries)
+        
+        if len(combined) > lc.ctx_size * 0.8:
+            # Still too large, recurse
+            return recursive_document_analysis(lc, combined, depth - 1)
+        
+        # Final synthesis
+        return lc.generate_text(
+            f"Synthesize these section summaries into coherent analysis:\n\n{combined}",
+            temperature=0.3
+        )
+    
+    return "\n\n".join(chunk_summaries)
+
+# Analyze 500-page technical specification
+analysis = recursive_document_analysis(lc, huge_spec, depth=2)
+```
+
+---
+
+## Streaming Progress
+
+### Real-Time Chunk Processing
+
+```python
+from ascii_colors import ASCIIColors, ProgressBar
+
+def progress_callback(chunk: str, msg_type: MSG_TYPE, params=None):
+    """Visual feedback during long processing."""
+    
+    if msg_type == MSG_TYPE.MSG_TYPE_STEP_START:
+        print(f"\n▶️  {chunk}")
+        
+    elif msg_type == MSG_TYPE.MSG_TYPE_STEP:
+        # Chunk progress
+        current = params.get('current_chunk', 0)
+        total = params.get('total_chunks', 1)
+        print(f"   Processing chunk {current}/{total}...")
+        
+    elif msg_type == MSG_TYPE.MSG_TYPE_STEP_END:
+        result_preview = str(params.get('result', ''))[:100]
+        print(f"   ✓ Done: {result_preview}...")
+        
+    elif msg_type == MSG_TYPE.MSG_TYPE_CHUNK:
+        # Final synthesis streaming
+        print(chunk, end="", flush=True)
+    
+    return True  # Continue
+
+# Run with visualization
+with ProgressBar(total=100, desc="Document analysis") as pbar:
+    def wrapped_callback(chunk, msg_type, params):
+        if msg_type == MSG_TYPE.MSG_TYPE_STEP:
+            pbar.update(100 / params.get('total_chunks', 1))
+        return progress_callback(chunk, msg_type, params)
+    
+    result = lc.long_context_processing(
+        huge_document,
+        contextual_prompt="Extract all named entities and their relationships",
+        streaming_callback=wrapped_callback
+    )
+```
+
+---
+
+## Domain-Specific Patterns
+
+### Academic Paper Analysis
+
+```python
+paper = open("research_paper.txt").read()  # 30 pages
+
+analysis = lc.long_context_processing(
+    paper,
+    contextual_prompt="""
+    Analyze this research paper:
+    1. Research question and hypothesis
+    2. Methodology summary
+    3. Key findings with statistics
+    4. Limitations acknowledged
+    5. Relation to prior work (citations)
+    
+    Format as structured academic review.
+    """,
+    processing_type="structured",
+    schema={
+        "research_question": "string",
+        "hypothesis": "string",
+        "methodology": "string",
+        "findings": ["list", "string"],
+        "statistics": ["list", {"metric": "string", "value": "string"}],
+        "limitations": ["list", "string"],
+        "prior_work_relations": ["list", "string"],
+        "overall_assessment": "string"
+    }
+)
+```
+
+### Financial Report Extraction
+
+```python
+annual_report = open("10k_filing.txt").read()
+
+financial_data = lc.long_context_processing(
+    annual_report,
+    contextual_prompt="""
+    Extract financial data from this 10-K filing.
+    Preserve exact figures, units, and time periods.
+    Flag any restatements or auditor qualifications.
+    """,
+    processing_type="structured",
+    schema={
+        "fiscal_year": "string",
+        "revenue": {"value": "number", "unit": "string", "growth_yoy": "number"},
+        "net_income": {"value": "number", "unit": "string"},
+        "balance_sheet": {
+            "total_assets": "number",
+            "total_liabilities": "number",
+            "shareholders_equity": "number"
+        },
+        "key_metrics": ["list", {"name": "string", "value": "number", "period": "string"}],
+        "risks": ["list", "string"],
+        "auditor_notes": "string",
+        "restatements": ["list", {"item": "string", "correction": "string"}]
+    }
+)
+```
+
+### Code Repository Analysis
+
+```python
+# Concatenated source files
+codebase = ""
+for py_file in Path("src").rglob("*.py"):
+    codebase += f"\n\n=== {py_file} ===\n"
+    codebase += py_file.read_text()
+
+architecture = lc.long_context_processing(
+    codebase,
+    contextual_prompt="""
+    Analyze this codebase architecture:
+    - Main components and their responsibilities
+    - Dependency relationships (which module uses which)
+    - Design patterns employed
+    - Potential refactoring opportunities
+    - Security-sensitive code locations
+    """,
+    chunk_size_tokens=6000,  # Code needs more context per chunk
+    overlap_tokens=1000      # Preserve function definitions across chunks
+)
+```
+
+---
+
+## Comparison: Long Context vs. RAG
+
+| Approach | When to Use | Trade-off |
+|----------|-------------|-----------|
+| **Long Context** | Single document, sequential analysis | Slower, guaranteed coverage |
+| **RAG** | Multiple documents, targeted queries | Faster, may miss connections |
+
+### Hybrid Approach
+
+```python
+# For massive document + specific queries
+def hybrid_analysis(lc, document, specific_questions: list):
+    """Long context for overview + RAG for details."""
+    
+    # Step 1: Long context for structure and summary
+    overview = lc.long_context_processing(
+        document,
+        contextual_prompt="Create detailed summary and document structure",
+        chunk_size_tokens=8000
+    )
+    
+    # Step 2: Index for RAG
+    from lollms_client import VectorStore
+    vs = VectorStore()
+    vs.add_document(document, metadata={"overview": overview})
+    
+    # Step 3: RAG for specific questions
+    answers = {}
+    for question in specific_questions:
+        context = vs.query(question, top_k=3)
+        answers[question] = lc.generate_text(
+            f"Based on this context, answer: {question}\n\n{context}"
+        )
+    
+    return {"overview": overview, "details": answers}
+```
+
+---
+
+## Performance Optimization
+
+| Parameter | Default | Tuning |
+|-----------|---------|--------|
+| `chunk_size_tokens` | 4000 | Increase for coherent sections, decrease for dense content |
+| `overlap_tokens` | 200 | Increase for context-dependent analysis (narratives), decrease for independent facts |
+| `temperature` | 0.1 | Lower for extraction, higher for synthesis |
+
+### Parallel Chunk Processing (if using API backend)
+
+```python
+import asyncio
+
+async def parallel_chunk_process(lc, chunks, prompt_template):
+    """Process chunks concurrently (API rate limits apply)."""
+    
+    async def process_one(chunk):
+        return await lc.async_generate_text(
+            prompt_template.format(chunk=chunk),
+            temperature=0.1
+        )
+    
+    results = await asyncio.gather(*[process_one(c) for c in chunks])
+    return results
+
+# Then synthesize results
+```
+
+---
+
+## Complete Application: Document Q&A System
+
+```python
+#!/usr/bin/env python3
+"""
+Long Document Q&A: Natural questions → accurate answers from any-length documents
+"""
+
+from lollms_client import LollmsClient, LollmsDiscussion, LollmsPersonality
+from pathlib import Path
+import hashlib
+
+class DocumentQA:
+    def __init__(self, llm_config: dict):
+        self.lc = LollmsClient(
+            llm_config.get("binding", "llama_cpp_server"),
+            llm_config.get("config", {})
+        )
+        self.cache_dir = Path(".doc_cache")
+        self.cache_dir.mkdir(exist_ok=True)
+    
+    def load_document(self, path: str) -> str:
+        """Load and cache document content."""
+        
+        path = Path(path)
+        doc_hash = hashlib.md5(path.read_bytes()).hexdigest()[:16]
+        cache_file = self.cache_dir / f"{doc_hash}.txt"
+        
+        if cache_file.exists():
+            return cache_file.read_text()
+        
+        # Load with format detection
+        text = self._extract_text(path)
+        cache_file.write_text(text)
+        return text
+    
+    def _extract_text(self, path: Path) -> str:
+        """Universal text extraction."""
+        
+        if path.suffix == '.pdf':
+            import pypdf
+            # ... PDF extraction
+        elif path.suffix == '.docx':
+            from docx import Document
+            # ... DOCX extraction
+        else:
+            return path.read_text(errors='ignore')
+    
+    def ask(self, document_path: str, question: str, 
+            answer_type: str = "detailed") -> dict:
+        """Answer question using appropriate processing strategy."""
+        
+        document = self.load_document(document_path)
+        
+        # Strategy selection based on question type
+        if answer_type == "yes_no":
+            return self._yes_no_answer(document, question)
+        
+        elif answer_type == "structured":
+            return self._structured_answer(document, question)
+        
+        elif len(document) < self.lc.ctx_size * 0.7:
+            # Short enough for direct processing
+            return self._direct_answer(document, question)
+        
+        else:
+            # Long context processing
+            return self._long_context_answer(document, question)
+    
+    def _long_context_answer(self, document: str, question: str) -> dict:
+        """Use chunking for large documents."""
+        
+        # First: get relevant sections via semantic search on chunks
+        chunks = self._chunk_document(document, size=6000, overlap=500)
+        
+        # Score chunks for relevance
+        scored = []
+        for chunk in chunks:
+            relevance = self._score_relevance(chunk, question)
+            scored.append((relevance, chunk))
+        
+        # Take top chunks that fit in context
+        scored.sort(reverse=True)
+        selected = []
+        total_tokens = 0
+        for score, chunk in scored:
+            chunk_tokens = len(chunk.split())  # Approximate
+            if total_tokens + chunk_tokens < self.lc.ctx_size * 0.6:
+                selected.append(chunk)
+                total_tokens += chunk_tokens
+        
+        # Synthesize answer from selected chunks
+        combined = "\n\n[SECTION]\n".join(selected)
+        
+        answer = self.lc.generate_text(
+            f"""Answer this question based on the provided document sections.
+            If information is insufficient, say so clearly.
+            
+            Document sections:
+            {combined[:15000]}
+            
+            Question: {question}
+            
+            Answer:""",
+            temperature=0.2,
+            n_predict=2000
+        )
+        
+        return {
+            "answer": answer,
+            "method": "chunked_retrieval",
+            "sections_used": len(selected),
+            "confidence": "high" if len(selected) > 2 else "medium"
+        }
+    
+    def _chunk_document(self, text: str, size: int, overlap: int) -> list:
+        """Create overlapping chunks."""
+        
+        words = text.split()
+        chunks = []
+        stride = size - overlap
+        
+        for i in range(0, len(words), stride):
+            chunk_words = words[i:i + size]
+            chunks.append(" ".join(chunk_words))
+        
+        return chunks
+    
+    def _score_relevance(self, chunk: str, question: str) -> float:
+        """Simple relevance scoring (can use embeddings for better results)."""
+        
+        # Keyword overlap
+        q_words = set(question.lower().split())
+        c_words = set(chunk.lower().split())
+        overlap = len(q_words & c_words) / len(q_words) if q_words else 0
+        
+        # Ask LLM for relevance score
+        score_prompt = f"""Rate relevance 0-10:
+        Question: {question[:100]}
+        Text excerpt: {chunk[:200]}...
+        Relevance score (0-10):"""
+        
+        try:
+            score_text = self.lc.generate_text(score_prompt, n_predict=10, temperature=0.1)
+            score = float(score_text.strip().split()[0])
+            return min(10, max(0, score)) / 10
+        except:
+            return overlap  # Fallback
+
+# Usage
+qa = DocumentQA({
+    "binding": "llama_cpp_server",
+    "config": {"model_name": "mixtral-8x7b.Q4_K_M.gguf", "ctx_size": 32768}
+})
+
+# Simple question on long document
+result = qa.ask("annual_report_2024.pdf", 
+                "What was the year-over-year revenue growth?")
+print(result["answer"])
+
+# Complex analysis
+result = qa.ask("technical_specification.docx",
+                "Identify all compatibility requirements with third-party systems",
+                answer_type="structured")
+```
+
+]]>
+    </content>
+</skill>

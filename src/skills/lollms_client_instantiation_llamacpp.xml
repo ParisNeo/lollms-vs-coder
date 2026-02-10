@@ -1,0 +1,341 @@
+<skill id="lollms-instantiation">
+    <name>Client Setup &amp; Bindings</name>
+    <description>Initializing LollmsClient with llama_cpp_server binding for direct GGUF model execution.</description>
+    <category>python/lollms_client/setup/llama_cpp_server</category>
+    <language>markdown</language>
+    <timestamp>1738425600000</timestamp>
+    <content>
+        <![CDATA[
+# LlamaCpp Server Binding
+
+## What Is It?
+
+`llama_cpp_server` is a **self-managed local binding** that runs [llama.cpp](https://github.com/ggerganov/llama.cpp) directly within your Python process. Unlike other bindings, it **does not require an external server** — the binding automatically starts, manages, and stops the llama.cpp server for you.
+
+### Key Characteristics
+
+| Feature | Implementation |
+|---------|---------------|
+| **Process Model** | Binding-owned server (port 9624 default, file-locked) |
+| **Model Format** | GGUF (GPT-Generated Unified Format) |
+| **Multimodal** | Native support via `.mmproj` vision projectors |
+| **Split Models** | Auto-detects multi-part GGUF (`model-00001-of-00005.gguf`) |
+| **API Compatibility** | OpenAI-compatible `/v1/chat/completions` endpoint |
+
+---
+
+## When To Use This Binding
+
+| ✅ Use `llama_cpp_server` when... | ❌ Consider alternatives when... |
+|-----------------------------------|--------------------------------|
+| Maximum control over inference | You need multi-user access (use `lollms` or `vllm`) |
+| No external dependencies | You want easy model management (use `ollama`) |
+| Direct GPU layer control | You need cloud API features (use `openai`, etc.) |
+| Running GGUF models from HuggingFace | You need non-GGUF formats (use `transformers`) |
+| Embedded/edge deployment | You need production-grade serving (use `vllm`) |
+| Privacy: 100% local, no network calls | |
+
+---
+
+## Installation
+
+```bash
+# Base lollms_client (llama.cpp binaries included)
+pip install lollms_client
+
+# Or with explicit llama_cpp extra
+pip install lollms_client[llama_cpp]
+
+# Verify: binaries auto-download on first use (~50-200MB depending on platform)
+```
+
+---
+
+## Import & Basic Instantiation
+
+```python
+from lollms_client import LollmsClient
+
+# Absolute minimal — only model_name required
+lc = LollmsClient(
+    llm_binding_name="llama_cpp_server",
+    llm_binding_config={
+        "model_name": "mistral-7b-v0.1.Q4_K_M.gguf"
+    }
+)
+```
+
+The binding will:
+1. Scan `models_path` for the GGUF file
+2. Start llama.cpp server on port 9624 (file-locked, single instance)
+3. Load the model with default optimizations
+4. Expose OpenAI-compatible API internally
+
+---
+
+## Complete Parameter Reference
+
+| Parameter | Type | Default | Tier | Description |
+|-----------|------|---------|------|-------------|
+| `model_name` | `str` | `""` | 🔴 | GGUF filename. For split models, use first part only |
+| `models_path` | `str` | `"models/llama_cpp_models"` | 🟢 | Directory scanned for `.gguf` files |
+| `host` | `str` | `"localhost"` | 🟢 | Server bind address |
+| `port` | `int` | `9624` | 🟢 | Server port (file-locked, prevents duplicates) |
+| `ctx_size` | `int` | `4096` | 🟢 | Context window in tokens |
+| `n_gpu_layers` | `int` | `-1` | 🟢 | GPU offload: `-1`=all, `0`=CPU, `N`=specific layers |
+| `n_threads` | `int\|null` | `null` | 🟢 | CPU threads (`null`=auto-detect) |
+| `n_parallel` | `int` | `1` | 🟢 | Parallel sequence decoding (concurrent requests) |
+
+---
+
+## Parameter Deep-Dive
+
+### `model_name` (🔴 Required)
+
+```python
+# Single-file model
+"model_name": "mistral-7b-instruct-v0.2.Q4_K_M.gguf"
+
+# Split model — specify FIRST part only, rest auto-detected
+"model_name": "mixtral-8x7b-v0.1.Q4_K_M-00001-of-00004.gguf"
+# Binding finds: -00002-of-00004, -00003..., etc.
+```
+
+### `models_path` (🟢 Optional)
+
+```python
+# Default structure
+models/
+└── llama_cpp_models/
+    ├── mistral-7b.Q4_K_M.gguf
+    ├── llama-3-8b.Q5_K_M.gguf
+    └── mmproj-llava-v1.5-7b-f16.gguf  # Multimodal projector
+
+# Custom path
+"models_path": "/mnt/ai/models/gguf"
+"models_path": os.path.expanduser("~/models")
+```
+
+### Performance Tuning (`n_gpu_layers`, `ctx_size`, `n_threads`, `n_parallel`)
+
+```python
+# GPU-only, maximum context
+{
+    "model_name": "model.gguf",
+    "n_gpu_layers": -1,        # All layers on GPU
+    "ctx_size": 128000,        # Full context (requires VRAM)
+    "n_parallel": 1            # Single sequence
+}
+
+# CPU-optimized batch processing
+{
+    "model_name": "model.gguf",
+    "n_gpu_layers": 0,         # CPU only
+    "n_threads": 16,           # Fixed thread count
+    "n_parallel": 4,           # 4 concurrent sequences
+    "ctx_size": 4096
+}
+
+# Hybrid: partial GPU for large model
+{
+    "model_name": "70b-model.Q4_K_M.gguf",
+    "n_gpu_layers": 20,        # ~20GB VRAM offload, rest CPU
+    "ctx_size": 8192
+}
+```
+
+### Server Binding (`host`, `port`)
+
+```python
+# Local only (default)
+"host": "localhost", "port": 9624
+
+# Expose to network (security risk)
+"host": "0.0.0.0", "port": 8080
+
+# Multiple instances (different ports)
+# Instance 1: port 9624
+# Instance 2: port 9625 (automatic if 9624 locked by other binding)
+```
+
+> **Port Locking**: File-based lock ensures only one server per port. If port busy, binding connects to existing or fails gracefully.
+
+---
+
+## Custom Commands
+
+The binding exposes additional methods beyond standard `LollmsClient` inference:
+
+### `pull_model()` — Download from Hugging Face
+
+Downloads GGUF models (and optional multimodal projectors) directly from HuggingFace.
+
+```python
+lc.pull_model(
+    repo_id="TheBloke/Mistral-7B-Instruct-v0.2-GGUF",
+    filename="mistral-7b-instruct-v0.2.Q4_K_M.gguf",
+    
+    # Optional: multimodal projector for vision
+    mmproj_repo_id="mys/ggml_llava-v1.5-7b",
+    mmproj_filename="mmproj-model-f16.gguf"
+)
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `repo_id` | `str` | ✅ | HuggingFace repository (`owner/repo-name`) |
+| `filename` | `str` | ✅ | Specific GGUF file to download |
+| `mmproj_repo_id` | `str` | ❌ | Projector repository (for vision models) |
+| `mmproj_filename` | `str` | ❌ | Projector filename |
+
+**Progress Callback**: Returns `{"status": str, "completed": int, "total": int}`
+
+---
+
+### `bind_multimodal_model()` — Manual Projector Association
+
+Explicitly pair a vision model with its projector when auto-detection fails.
+
+```python
+lc.bind_multimodal_model(
+    model_name="llava-v1.5-7b-Q4_K_M.gguf",
+    mmproj_name="mmproj-llava-v1.5-7b-f16.gguf"
+)
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `model_name` | `str` | ✅ | Base GGUF model filename |
+| `mmproj_name` | `str` | ✅ | Projector GGUF filename |
+
+---
+
+## Multimodal (Vision) Support
+
+### Auto-Detection Behavior
+
+| Scenario | Result |
+|----------|--------|
+| `pull_model()` with `mmproj_*` params | Auto-associated, projector hidden from model list |
+| Manual download to same folder | Auto-detected if filenames match patterns |
+| Custom pairing needed | Use `bind_multimodal_model()` |
+| Projector in registry | Local registry lookup for association |
+
+### Using Vision Models
+
+```python
+# 1. Pull or ensure model + projector exist
+lc.pull_model(
+    repo_id="mys/ggml_llava-v1.5-7b",
+    filename="ggml-model-q4_k.gguf",
+    mmproj_repo_id="mys/ggml_llava-v1.5-7b",
+    mmproj_filename="mmproj-model-f16.gguf"
+)
+
+# 2. Standard chat with image
+response = lc.generate_text(
+    "Describe this image: [image_data]",
+    # Image processing handled automatically when projector bound
+)
+```
+
+---
+
+## Complete Examples
+
+### Minimal CPU Inference
+
+```python
+from lollms_client import LollmsClient
+
+lc = LollmsClient("llama_cpp_server", {
+    "model_name": "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
+    "n_gpu_layers": 0  # Force CPU
+})
+```
+
+### Maximum Performance GPU
+
+```python
+lc = LollmsClient("llama_cpp_server", {
+    "model_name": "mixtral-8x7b-instruct-v0.1.Q4_K_M.gguf",
+    "n_gpu_layers": -1,      # Full GPU offload
+    "ctx_size": 32768,       # Large context
+    "n_parallel": 2          # Concurrent requests
+})
+```
+
+### Custom Paths & Network Exposure
+
+```python
+import os
+
+lc = LollmsClient("llama_cpp_server", {
+    "model_name": "custom-model.Q5_K_M.gguf",
+    "models_path": os.path.expanduser("~/ai-models/gguf"),
+    "host": "0.0.0.0",       # Allow external connections
+    "port": 8080,
+    "ctx_size": 8192,
+    "n_gpu_layers": 35       # Partial offload for 24GB VRAM
+})
+```
+
+### Full Workflow: Download + Run
+
+```python
+from lollms_client import LollmsClient
+import time
+
+# Initialize (no model yet, will use default path)
+lc = LollmsClient("llama_cpp_server", {
+    "models_path": "./my_models"
+})
+
+# Download model
+print("Downloading...")
+lc.pull_model(
+    repo_id="TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
+    filename="tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+)
+
+# Re-initialize with downloaded model
+lc = LollmsClient("llama_cpp_server", {
+    "model_name": "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
+    "models_path": "./my_models",
+    "ctx_size": 2048
+})
+
+# Use
+response = lc.generate_text("Hello, world!")
+print(response)
+```
+
+---
+
+## Troubleshooting
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| `Model not found` | Wrong `models_path` or filename | Verify path with `os.listdir(models_path)` |
+| `CUDA out of memory` | `n_gpu_layers=-1` exceeds VRAM | Reduce `n_gpu_layers` or `ctx_size` |
+| Slow CPU inference | `n_threads=None` on NUMA system | Explicitly set `n_threads=physical_cores` |
+| Port already in use | Another llama.cpp process | Change `port` or kill existing process |
+| Multimodal not working | Projector not associated | Check `bind_multimodal_model()` or re-pull with mmproj params |
+| Split model fails to load | Specified middle part instead of first | Use `*-00001-of-*.gguf` filename |
+
+---
+
+## Comparison: `llama_cpp_server` vs Alternatives
+
+| Aspect | `llama_cpp_server` | `lollms` | `ollama` | `vllm` |
+|--------|-------------------|----------|----------|--------|
+| Setup complexity | Zero (self-contained) | Medium (run server) | Low (install ollama) | High (CUDA setup) |
+| Model management | Manual / `pull_model()` | Web UI / API | CLI + automatic | Manual |
+| GPU control | Granular (per-layer) | Server-configured | Automatic | Automatic |
+| Multimodal | Native `.mmproj` | Via binding | Limited | Limited |
+| Concurrent requests | `n_parallel` | Server-handled | Server-handled | Excellent |
+| Best for | Embedded, edge, single-app | Multi-user, ecosystem | Easy local dev | Production serving |
+
+]]>
+    </content>
+</skill>

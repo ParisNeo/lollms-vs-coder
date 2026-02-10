@@ -253,6 +253,21 @@ export function initEventHandlers() {
 
     if (dom.historyCloseBtn) dom.historyCloseBtn.addEventListener('click', () => dom.historyModal.classList.remove('visible'));
 
+    // --- Skills Modal Events ---
+    if (dom.skillsCloseBtn) {
+        dom.skillsCloseBtn.addEventListener('click', () => {
+            dom.skillsModal.classList.remove('visible');
+        });
+    }
+
+    if (dom.skillsImportBtn) {
+        dom.skillsImportBtn.addEventListener('click', () => {
+            const selectedSkills = Array.from(dom.skillsTreeContainer.querySelectorAll('.skill-checkbox:checked')).map((el: any) => el.value);
+            vscode.postMessage({ command: 'importSelectedSkills', skillIds: selectedSkills });
+            dom.skillsModal.classList.remove('visible');
+        });
+    }
+
     if (dom.searchCloseBtn) dom.searchCloseBtn.addEventListener('click', () => {
         if(dom.searchBar) dom.searchBar.style.display = 'none';
         clearSearch();

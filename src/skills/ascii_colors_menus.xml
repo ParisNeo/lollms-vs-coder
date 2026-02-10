@@ -1,0 +1,361 @@
+<skill id="ascii-colors-menus">
+    <name>ASCIIColors Menus</name>
+    <description>Interactive terminal menus with keyboard navigation, submenus, filtering, and multi-select.</description>
+    <category>python/ascii_colors/menus</category>
+    <language>markdown</language>
+    <timestamp>1738425600000</timestamp>
+    <content>
+        <![CDATA[
+# ASCIIColors Menus
+
+Keyboard-navigable interactive menus for building terminal applications.
+
+```python
+from ascii_colors import Menu, ASCIIColors
+```
+
+---
+
+## Menu Modes
+
+| Mode | Behavior | Use Case |
+|------|----------|----------|
+| `return` | Select and return value | Configuration, data selection |
+| `execute` | Run action immediately | Application control, operations |
+| `checkbox` | Multi-select with toggles | Feature selection, batch operations |
+
+---
+
+## Return Mode (Selection)
+
+### Basic Selection
+
+```python
+from ascii_colors import Menu
+
+menu = Menu("Choose export format", mode='return')
+
+menu.add_choice("JSON", value="json")
+menu.add_choice("YAML", value="yaml")
+menu.add_choice("XML", value="xml")
+menu.add_choice("CSV", value="csv")
+
+format_choice = menu.run()  # Returns: "json", "yaml", "xml", or "csv"
+print(f"Selected: {format_choice}")
+```
+
+### With Filtering
+
+Type to filter choices in long lists.
+
+```python
+menu = Menu("Select user", mode='return', enable_filtering=True)
+
+menu.add_choices([
+    ("Alice Anderson", "alice"),
+    ("Bob Baker", "bob"),
+    ("Charlie Chen", "charlie"),
+    ("Diana Davis", "diana"),
+    ("Evan Edwards", "evan"),
+])
+
+user = menu.run()  # Type "al" → filters to "Alice Anderson"
+```
+
+---
+
+## Execute Mode (Actions)
+
+### Immediate Execution
+
+```python
+def show_status():
+    ASCIIColors.green("✓ All systems operational")
+
+def restart_service():
+    ASCIIColors.yellow("Restarting...")
+    # Restart logic
+    ASCIIColors.green("✓ Service restarted")
+
+def quit_app():
+    ASCIIColors.cyan("Goodbye!")
+    exit(0)
+
+main_menu = Menu("System Manager", mode='execute')
+
+main_menu.add_action("Show Status", show_status)
+main_menu.add_action("Restart Service", restart_service)
+main_menu.add_action("Quit", quit_app)
+
+main_menu.run()  # Menu loops until quit action selected
+```
+
+---
+
+## Checkbox Mode (Multi-Select)
+
+### Toggle Selection
+
+```python
+features_menu = Menu("Select features to install", mode='checkbox')
+
+features_menu.add_checkbox("Authentication", value="auth", checked=True)
+features_menu.add_checkbox("Logging", value="logging", checked=True)
+features_menu.add_checkbox("Caching", value="cache", checked=False)
+features_menu.add_checkbox("WebSocket", value="websocket", checked=False)
+features_menu.add_checkbox("GraphQL API", value="graphql", checked=False)
+
+selected = features_menu.run()  
+# Space to toggle, Enter to confirm
+# Returns: ['auth', 'logging', 'cache'] (selected values)
+```
+
+### Pre-Checked Defaults
+
+```python
+menu = Menu("Select toppings", mode='checkbox')
+
+menu.add_choices([
+    {"name": "Cheese", "value": "cheese", "checked": True},
+    {"name": "Pepperoni", "value": "pepperoni", "checked": False},
+    {"name": "Mushrooms", "value": "mushrooms"},
+    {"name": "Anchovies", "value": "anchovies", "disabled": True}
+])
+
+selected = menu.run()
+```
+
+---
+
+## Advanced Features
+
+### Submenus
+
+Create hierarchical navigation.
+
+```python
+# Create submenu
+settings_menu = Menu("Settings", mode='execute')
+settings_menu.add_action("General", show_general_settings)
+settings_menu.add_action("Network", show_network_settings)
+settings_menu.add_action("Security", show_security_settings)
+
+# Main menu with submenu
+main = Menu("Application Menu", mode='execute')
+main.add_action("Start Application", start_app)
+main.add_submenu("Settings →", settings_menu)  # ↗ indicates submenu
+main.add_action("Exit", exit_app)
+
+main.run()
+```
+
+### Custom Styling
+
+```python
+menu = Menu(
+    "Styled Menu",
+    mode='return',
+    
+    # Visual elements
+    pointer="▶",                    # Selection indicator
+    selected_icon="●",              # Selected checkbox
+    unselected_icon="○",            # Unselected checkbox
+    
+    # Behavior
+    clear_screen_on_run=True,       # Clear before showing
+    show_search_hint=True           # Show filter instructions
+)
+```
+
+### Input Fields
+
+Collect text within menu flow.
+
+```python
+menu = Menu("Configuration", mode='execute')
+
+menu.add_input("Username", initial_value="admin")
+menu.add_input("Server URL", initial_value="http://localhost:8080")
+menu.add_action("Save & Continue", save_config)
+
+result = menu.run()
+# Returns dict with input values if mode='return'
+```
+
+---
+
+## Complete Examples
+
+### Application Launcher
+
+```python
+from ascii_colors import Menu, ASCIIColors
+
+def run_dev_server():
+    ASCIIColors.green("Starting development server on http://localhost:3000")
+    # subprocess.run(["npm", "start"])
+
+def run_tests():
+    ASCIIColors.blue("Running test suite...")
+    # subprocess.run(["pytest"])
+
+def deploy_staging():
+    if not Menu("Confirm deploy to staging?", mode='return').add_choice("Yes", True).add_choice("No", False).run():
+        return
+    ASCIIColors.yellow("Deploying to staging...")
+
+def open_logs():
+    ASCIIColors.print("Showing last 50 log lines...", color=ASCIIColors.color_cyan)
+
+launcher = Menu("🚀 Dev Tools", mode='execute', clear_screen_on_run=True)
+
+launcher.add_action("▶  Start Dev Server", run_dev_server)
+launcher.add_action("🧪 Run Tests", run_tests)
+launcher.add_action("📊 View Logs", open_logs)
+launcher.add_separator()  # Visual divider
+launcher.add_action("🚀 Deploy to Staging", deploy_staging)
+
+launcher.run()
+```
+
+### Configuration Wizard
+
+```python
+from ascii_colors import Menu, ASCIIColors
+
+def setup_database():
+    db_type = Menu("Select database", mode='return').add_choices([
+        ("PostgreSQL", "postgres"),
+        ("MySQL", "mysql"),
+        ("SQLite", "sqlite"),
+        ("MongoDB", "mongo")
+    ]).run()
+    
+    config = {"type": db_type}
+    
+    if db_type != "sqlite":
+        host = Menu("Database host", mode='return').add_input("Host", "localhost").run()
+        config["host"] = host
+    
+    return config
+
+def setup_features():
+    return Menu("Enable features", mode='checkbox').add_choices([
+        ("User Authentication", "auth", True),
+        ("Email Notifications", "email", False),
+        ("Real-time Updates", "websocket", False),
+        ("Admin Dashboard", "admin", True),
+        ("API Rate Limiting", "ratelimit", True)
+    ]).run()
+
+# Main setup flow
+def run_setup_wizard():
+    ASCIIColors.print("=== Project Setup Wizard ===", 
+                     color=ASCIIColors.color_cyan,
+                     style=ASCIIColors.style_bold)
+    
+    config = {
+        "database": setup_database(),
+        "features": setup_features(),
+        "theme": Menu("Select theme", mode='return').add_choices([
+            ("Dark", "dark"),
+            ("Light", "light"),
+            ("System", "system")
+        ]).run()
+    }
+    
+    # Confirm
+    ASCIIColors.print(f"\nConfiguration:", color=ASCIIColors.color_green)
+    print(f"  Database: {config['database']['type']}")
+    print(f"  Features: {', '.join(config['features'])}")
+    print(f"  Theme: {config['theme']}")
+    
+    if Menu("Save this configuration?", mode='return').add_choice("✓ Save", True).add_choice("✗ Cancel", False).run():
+        save_config(config)
+        ASCIIColors.green("✓ Configuration saved!")
+    
+    return config
+```
+
+### Multi-Level Navigation
+
+```python
+from ascii_colors import Menu
+
+def build_main_menu():
+    """Build complete application menu structure."""
+    
+    # File submenu
+    file_menu = Menu("File", mode='execute')
+    file_menu.add_action("New Project", new_project)
+    file_menu.add_action("Open...", open_project)
+    file_menu.add_action("Save", save_project)
+    file_menu.add_separator()
+    file_menu.add_action("Exit", exit_app)
+    
+    # Edit submenu
+    edit_menu = Menu("Edit", mode='execute')
+    edit_menu.add_action("Undo", undo)
+    edit_menu.add_action("Redo", redo)
+    edit_menu.add_separator()
+    edit_menu.add_action("Preferences", show_preferences)
+    
+    # Tools submenu
+    tools_menu = Menu("Tools", mode='execute')
+    tools_menu.add_action("Run Linter", run_linter)
+    tools_menu.add_action("Format Code", format_code)
+    tools_menu.add_submenu("Deployment", Menu("Deploy", mode='execute')
+        .add_action("Staging", deploy_staging)
+        .add_action("Production", deploy_prod))
+    
+    # Main menu
+    main = Menu("MyApp", mode='execute', clear_screen_on_run=True)
+    main.add_submenu("File →", file_menu)
+    main.add_submenu("Edit →", edit_menu)
+    main.add_submenu("Tools →", tools_menu)
+    main.add_action("Help", show_help)
+    
+    return main
+
+# Run
+menu = build_main_menu()
+menu.run()  # Loops until exit action
+```
+
+---
+
+## Menu API Reference
+
+### Creation
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `title` | `str` | required | Menu header |
+| `mode` | `str` | `'return'` | `'return'`, `'execute'`, `'checkbox'` |
+| `clear_screen_on_run` | `bool` | `False` | Clear terminal before display |
+| `enable_filtering` | `bool` | `False` | Type-to-filter for long lists |
+| `pointer` | `str` | `'>'` | Selection indicator |
+| `selected_icon` | `str` | `'[*]'` | Checked box |
+| `unselected_icon` | `str` | `'[ ]'` | Unchecked box |
+
+### Adding Items
+
+| Method | Description |
+|--------|-------------|
+| `add_choice(name, value)` | Selectable option (return mode) |
+| `add_choices(list)` | Batch add from list/dict |
+| `add_action(name, callable)` | Executable action |
+| `add_checkbox(name, value, checked=False)` | Toggle option |
+| `add_submenu(name, menu)` | Nested menu |
+| `add_input(name, initial_value)` | Text input field |
+| `add_separator()` | Visual divider |
+
+### Execution
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `run()` | `value`, `list`, or `None` | Display and process menu |
+
+]]>
+    </content>
+</skill>

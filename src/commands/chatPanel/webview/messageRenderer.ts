@@ -61,11 +61,16 @@ const SANITIZE_CONFIG = {
     ADD_ATTR: ['target', 'allow', 'allowfullscreen', 'frameborder', 'scrolling']
 };
 
-function createButton(text: string, icon: string, onClick: () => void, className = 'code-action-btn'): HTMLButtonElement {
+function createButton(text: string, icon: string, onClick: () => void, className = 'code-action-btn', tooltip?: string): HTMLButtonElement {
     const btn = document.createElement('button');
     btn.className = className;
-    btn.title = text;
-    btn.innerHTML = `<span class="codicon ${icon}"></span> <span class="btn-text">${text}</span>`;
+    btn.title = tooltip || text;
+    
+    if (text) {
+        btn.innerHTML = `<span class="codicon ${icon}"></span> <span class="btn-text">${text}</span>`;
+    } else {
+        btn.innerHTML = `<span class="codicon ${icon}"></span>`;
+    }
     
     btn.onclick = (e) => {
         e.preventDefault();
@@ -73,7 +78,7 @@ function createButton(text: string, icon: string, onClick: () => void, className
         try {
             onClick();
         } catch (err) {
-            console.error(`Error executing action for ${text}:`, err);
+            console.error(`Error executing action for ${text || tooltip}:`, err);
             vscode.postMessage({ command: 'showError', message: `Action failed: ${err}` });
         }
     };
@@ -346,7 +351,8 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     
     contentDiv.innerHTML = '';
     contentDiv.appendChild(editOverlay);
-    actionsDiv.style.display = 'none';
+    actionsDiv.style.opacity = '0';
+    actionsDiv.style.pointerEvents = 'none';
     
     const editState = EditorState.create({
         doc: textContent,
@@ -383,7 +389,8 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
 
     cancelBtn.onclick = () => {
         renderMessageContent(messageId, textContent, true);
-        actionsDiv.style.display = '';
+        actionsDiv.style.opacity = '';
+        actionsDiv.style.pointerEvents = '';
     };
 
     saveBtn.onclick = () => {
@@ -399,7 +406,8 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
         } else {
             renderMessageContent(messageId, textContent, true);
         }
-        actionsDiv.style.display = '';
+        actionsDiv.style.opacity = '';
+        actionsDiv.style.pointerEvents = '';
     };
 }
 
@@ -1225,6 +1233,41 @@ function addChatMessage(message: any, isFinal: boolean = true) {
     bodyDiv.className = 'message-body';
     messageDiv.appendChild(bodyDiv);
 
+    // -- CHANGED: Insert Actions inside Body to enable Sticky/Float behavior --
+    const actions = document.createElement('div');
+    actions.className = 'message-actions';
+    
+    const isMultipart = Array.isArray(rawContent);
+    const textForClipboard = isMultipart 
+        ? (rawContent.find(p => p.type === 'text')?.text || '') 
+        : (typeof rawContent === 'string' ? rawContent : '');
+
+    if (role !== 'system') {
+        if (!isMultipart) {
+            actions.appendChild(createButton('', 'codicon-edit', () => startEdit(messageDiv, id, role), 'msg-action-btn', 'Edit Message'));
+        }
+        if (role === 'user') {
+            actions.appendChild(createButton('', 'codicon-sync', () => vscode.postMessage({ command: 'regenerateFromMessage', messageId: id }), 'msg-action-btn', 'Regenerate Response'));
+        }
+    }
+    
+    const copyBtn = createButton('', 'codicon-copy', () => {
+        vscode.postMessage({ command: 'copyToClipboard', text: textForClipboard });
+        copyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
+        setTimeout(() => { copyBtn.innerHTML = '<span class="codicon codicon-copy"></span>'; }, 2000);
+    }, 'msg-action-btn', 'Copy Message');
+    actions.appendChild(copyBtn);
+
+    if (role === 'assistant') {
+        actions.appendChild(createButton('', 'codicon-save', () => vscode.postMessage({ command: 'saveMessageAsPrompt', content: textForClipboard }), 'msg-action-btn', 'Save as Prompt'));
+        actions.appendChild(createButton('', 'codicon-book', () => vscode.postMessage({ command: 'requestLog' }), 'msg-action-btn', 'Show Debug Log'));
+    }
+    
+    actions.appendChild(createButton('', 'codicon-trash', () => vscode.postMessage({ command: 'requestDeleteMessage', messageId: id }), 'msg-action-btn', 'Delete Message'));
+
+    // Insert actions at start of body so it can be sticky at top right
+    bodyDiv.appendChild(actions);
+
     const headerDiv = document.createElement('div');
     headerDiv.className = 'message-header';
     let roleDisplay = 'System';
@@ -1247,37 +1290,6 @@ function addChatMessage(message: any, isFinal: boolean = true) {
     
     bodyDiv.appendChild(contentDiv);
 
-    const actions = document.createElement('div');
-    actions.className = 'message-actions';
-    const isMultipart = Array.isArray(rawContent);
-    const textForClipboard = isMultipart 
-        ? (rawContent.find(p => p.type === 'text')?.text || '') 
-        : (typeof rawContent === 'string' ? rawContent : '');
-
-    if (role !== 'system') {
-        if (!isMultipart) {
-            actions.appendChild(createButton('', 'codicon-edit', () => startEdit(messageDiv, id, role), 'msg-action-btn'));
-        }
-        if (role === 'user') {
-            actions.appendChild(createButton('', 'codicon-sync', () => vscode.postMessage({ command: 'regenerateFromMessage', messageId: id }), 'msg-action-btn'));
-        }
-    }
-    
-    const copyBtn = createButton('', 'codicon-copy', () => {
-        vscode.postMessage({ command: 'copyToClipboard', text: textForClipboard });
-        copyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
-        setTimeout(() => { copyBtn.innerHTML = '<span class="codicon codicon-copy"></span>'; }, 2000);
-    }, 'msg-action-btn');
-    actions.appendChild(copyBtn);
-
-    if (role === 'assistant') {
-        actions.appendChild(createButton('', 'codicon-save', () => vscode.postMessage({ command: 'saveMessageAsPrompt', content: textForClipboard }), 'msg-action-btn'));
-        actions.appendChild(createButton('', 'codicon-book', () => vscode.postMessage({ command: 'requestLog' }), 'msg-action-btn'));
-    }
-    
-    actions.appendChild(createButton('', 'codicon-trash', () => vscode.postMessage({ command: 'requestDeleteMessage', messageId: id }), 'msg-action-btn'));
-
-    messageDiv.appendChild(actions);
     messageWrapper.appendChild(messageDiv);
     
     const insertionControls = document.getElementById('message-insertion-controls');

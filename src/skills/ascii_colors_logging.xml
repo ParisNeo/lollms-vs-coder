@@ -1,0 +1,351 @@
+<skill id="ascii-colors-logging">
+    <name>ASCIIColors Logging</name>
+    <description>Production-grade logging with colors, multiple handlers, JSON output, and context tracking.</description>
+    <category>python/ascii_colors/logging</category>
+    <language>markdown</language>
+    <timestamp>1738425600000</timestamp>
+    <content>
+        <![CDATA[
+# ASCIIColors Logging
+
+Drop-in replacement for Python's `logging` with colors, structured output, and advanced features.
+
+```python
+import ascii_colors as logging  # Familiar alias!
+```
+
+---
+
+## Quick Start
+
+```python
+import sys
+import ascii_colors as logging
+
+# Basic configuration
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)-8s] %(name)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    stream=sys.stdout
+)
+
+# Use throughout your code
+logger = logging.getLogger("MyApp")
+logger.info("Application started")
+logger.warning("Disk space low: %d%%", 85)
+logger.error("Failed to connect to database")
+```
+
+---
+
+## Multiple Handlers
+
+Different outputs for different purposes.
+
+```python
+import sys
+from ascii_colors import (
+    logging, LogLevel, ConsoleHandler, FileHandler,
+    RotatingFileHandler, Formatter, JSONFormatter
+)
+
+# Clear any existing configuration
+logging.getLogger().handlers = []
+
+# 1. Console: colorful, brief, INFO+
+console = ConsoleHandler(stream=sys.stdout, level=LogLevel.INFO)
+console.setFormatter(Formatter(
+    "{level_name:>8} | {message}",  # Brace style format
+    style='{'  # Use {var} syntax
+))
+console.setLevel(LogLevel.INFO)
+
+# 2. Debug file: detailed, all levels
+debug_file = FileHandler("debug.log", mode='a', level=LogLevel.DEBUG)
+debug_file.setFormatter(Formatter(
+    "%(asctime)s | %(levelname)-8s | %(name)s | %(funcName)s:%(lineno)d | %(message)s",
+    include_source=True  # Add file:line:function
+))
+
+# 3. JSON file for log aggregation (structured)
+json_handler = FileHandler("app.jsonl", mode='a')
+json_handler.setFormatter(JSONFormatter(
+    include_fields=["timestamp", "levelname", "name", "message", 
+                   "pathname", "lineno", "funcName"],
+    datefmt="iso"  # ISO 8601 format
+))
+json_handler.setLevel(LogLevel.WARNING)  # Only WARNING and above
+
+# 4. Rotating file: auto-rotate by size
+rotate_handler = RotatingFileHandler(
+    "app.log",
+    maxBytes=10*1024*1024,  # 10 MB per file
+    backupCount=5            # Keep 5 backups
+)
+
+# Register all handlers
+logging.getLogger().addHandler(console)
+logging.getLogger().addHandler(debug_file)
+logging.getLogger().addHandler(json_handler)
+logging.getLogger().addHandler(rotate_handler)
+
+# Set global level
+logging.set_log_level(LogLevel.DEBUG)
+```
+
+---
+
+## Formatter Styles
+
+| Style | Syntax | Example |
+|-------|--------|---------|
+| Percent | `%(name)s` | `"%(asctime)s [%(levelname)s]"` |
+| Brace | `{name}` | `"{asctime} [{level_name:>8}]"` |
+| Dollar | `$name` | `"$asctime [$levelname]"` |
+
+```python
+# Percent style (standard logging compatible)
+percent_fmt = Formatter(
+    "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    style='%'
+)
+
+# Brace style (Python str.format)
+brace_fmt = Formatter(
+    "{asctime} [{level_name:>8}] {name}: {message}",
+    datefmt="%H:%M:%S",
+    style='{'
+)
+
+# With source information
+source_fmt = Formatter(
+    "[{func_name}:{lineno}] {message}",
+    include_source=True,
+    style='{'
+)
+```
+
+---
+
+## JSON Formatter
+
+Structured logging for log aggregation systems.
+
+```python
+from ascii_colors import JSONFormatter
+
+# All fields
+json_all = JSONFormatter()  # Includes everything
+
+# Selected fields
+json_select = JSONFormatter(
+    include_fields=[
+        "timestamp", "levelname", "name", "message",
+        "pathname", "lineno", "funcName", "thread", "process"
+    ]
+)
+
+# Pretty-printed for development
+json_pretty = JSONFormatter(
+    include_fields=["levelname", "name", "message"],
+    json_indent=2
+)
+
+# ISO timestamps
+json_iso = JSONFormatter(
+    datefmt="iso"  # 2024-01-15T09:30:00.123456+00:00
+)
+```
+
+---
+
+## Context-Aware Logging
+
+Attach persistent or temporary context to all logs.
+
+### Persistent Context
+
+```python
+from ascii_colors import logging
+
+# Set once, included in all subsequent logs
+logging.set_context(
+    app_name="PaymentService",
+    app_version="2.3.1",
+    environment="production",
+    datacenter="us-east-1"
+)
+
+# All logs now include these fields
+formatter = Formatter(
+    "[{asctime}] {app_name}/{app_version} [{levelname}] {message}",
+    style='{'
+)
+# Output: [2024-01-15 09:30:00] PaymentService/2.3.1 [INFO] Processing payment
+```
+
+### Temporary Context (Context Manager)
+
+```python
+from ascii_colors import logging
+
+# Context automatically restored after block
+with logging.context(
+    request_id="req-abc-123",
+    user_id="user-456",
+    trace_id="trace-xyz-789"
+):
+    # All logs in this block include request context
+    logger.info("Processing payment")  
+    logger.debug("Validating card...")
+    try:
+        process()
+    except Exception as e:
+        logger.error("Payment failed: %s", e)  # Includes full context
+
+# After block: request context removed
+# But app_name, app_version, etc. still present
+logger.info("Cleanup complete")
+```
+
+### Thread-Local Context
+
+Each thread has isolated context — perfect for concurrent servers.
+
+```python
+import threading
+from ascii_colors import logging
+
+def worker(thread_id):
+    # Each thread gets its own context
+    logging.set_context(thread=thread_id, worker_type="background")
+    logger.info("Worker starting")  # Includes this thread's context
+    
+    with logging.context(task_id=f"task-{thread_id}"):
+        do_work()
+        logger.info("Task complete")  # thread + task context
+    
+    logger.info("Worker done")  # Back to thread context only
+
+# Spawn workers
+for i in range(5):
+    threading.Thread(target=worker, args=(i,)).start()
+```
+
+---
+
+## Exception Logging
+
+```python
+def risky_operation():
+    return 1 / 0
+
+try:
+    risky_operation()
+except Exception as e:
+    # Standard: exception message only
+    logger.error("Operation failed: %s", e)
+    
+    # With traceback
+    logger.exception("Operation failed")  # Automatically includes exc_info
+    
+    # Enhanced visual traceback (to console)
+    from ascii_colors import trace_exception
+    trace_exception(e, enhanced=True)
+```
+
+---
+
+## Log Levels
+
+| Level | Value | Use For |
+|-------|-------|---------|
+| `DEBUG` | 10 | Detailed diagnostic information |
+| `INFO` | 20 | Confirmation that things are working |
+| `WARNING` | 30 | Indication of unexpected issue |
+| `ERROR` | 40 | Serious problem, couldn't perform function |
+| `CRITICAL` | 50 | Program may be unable to continue |
+
+```python
+logger.debug("Connection pool: %d active", pool.size)
+logger.info("Server listening on %s:%d", host, port)
+logger.warning("Retry %d/%d failed", attempt, max_retries)
+logger.error("Database unavailable: %s", error)
+logger.critical("Out of memory! Shutting down.")
+```
+
+---
+
+## Complete Production Setup
+
+```python
+import os
+import sys
+from ascii_colors import (
+    logging, LogLevel, 
+    ConsoleHandler, FileHandler, RotatingFileHandler,
+    Formatter, JSONFormatter
+)
+
+def configure_logging(app_name: str, log_dir: str = "./logs"):
+    """Production-ready logging configuration."""
+    
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # Root logger
+    root = logging.getLogger()
+    root.handlers = []  # Clear defaults
+    root.setLevel(LogLevel.DEBUG)
+    
+    # Set persistent context
+    logging.set_context(
+        app_name=app_name,
+        app_version=os.getenv("APP_VERSION", "dev"),
+        environment=os.getenv("ENV", "development")
+    )
+    
+    # Console: human-readable, INFO+
+    console = ConsoleHandler(sys.stdout, level=LogLevel.INFO)
+    console.setFormatter(Formatter(
+        "{level_name:>8} | {app_name} | {message}",
+        style='{'
+    ))
+    root.addHandler(console)
+    
+    # Structured: JSON for log aggregation, WARNING+
+    json_handler = FileHandler(
+        f"{log_dir}/{app_name}.jsonl",
+        level=LogLevel.WARNING
+    )
+    json_handler.setFormatter(JSONFormatter(
+        include_fields=["timestamp", "levelname", "name", "message",
+                       "pathname", "lineno", "funcName", "app_name", 
+                       "environment", "request_id"]
+    ))
+    root.addHandler(json_handler)
+    
+    # Debug: detailed local file, all levels
+    debug_handler = RotatingFileHandler(
+        f"{log_dir}/debug.log",
+        maxBytes=50*1024*1024,  # 50 MB
+        backupCount=10,
+        level=LogLevel.DEBUG
+    )
+    debug_handler.setFormatter(Formatter(
+        "%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d | %(message)s",
+        include_source=True
+    ))
+    root.addHandler(debug_handler)
+    
+    return logging.getLogger(app_name)
+
+# Usage
+logger = configure_logging("payment-api")
+logger.info("Service starting...")  # Console + debug file
+logger.warning("Rate limit approaching")  # All handlers
+```
+
+]]>
+    </content>
+</skill>

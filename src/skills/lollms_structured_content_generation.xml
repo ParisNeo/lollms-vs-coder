@@ -1,0 +1,366 @@
+<skill id="lollms-structured-content">
+    <name>Structured Content Generation</name>
+    <description>Reliable JSON/schema output from LLMs using generate_structured_content with validation and recovery.</description>
+    <category>python/lollms_client/structured</category>
+    <language>markdown</language>
+    <timestamp>1738425600000</timestamp>
+    <content>
+        <![CDATA[
+# Structured Content Generation
+
+Extract reliable, machine-readable data from LLMs using schema enforcement, validation, and automatic recovery.
+
+---
+
+## Core Method
+
+```python
+from lollms_client import LollmsClient
+
+lc = LollmsClient("llama_cpp_server", {"model_name": "codellama-7b.Q4_K_M.gguf"})
+
+result = lc.generate_structured_content(
+    prompt="Extract person information from: John Doe is 34, works at Acme Inc.",
+    schema={
+        "name": "string",
+        "age": "integer",
+        "company": "string"
+    },
+    temperature=0.1  # Low for determinism
+)
+# Returns: {"name": "John Doe", "age": 34, "company": "Acme Inc"}
+```
+
+---
+
+## Schema Types
+
+| Type | Python Equivalent | Example Output |
+|------|-------------------|--------------|
+| `"string"` | `str` | `"Hello"` |
+| `"integer"` | `int` | `42` |
+| `"number"` | `float` | `3.14` |
+| `"boolean"` | `bool` | `true` |
+| `"list"` | `list` | `["a", "b"]` |
+| `["list", "of", "strings"]` | `List[str]` | `["item1", "item2"]` |
+| `{"nested": "schema"}` | `Dict` | `{"key": "value"}` |
+
+---
+
+## Complex Schemas
+
+### Nested Objects
+
+```python
+resume_schema = {
+    "candidate": {
+        "name": "string",
+        "email": "string",
+        "phone": "string"
+    },
+    "experience": ["list", {
+        "company": "string",
+        "title": "string",
+        "years": "integer",
+        "skills": ["list", "strings"]
+    }],
+    "education": {
+        "degree": "string",
+        "field": "string",
+        "university": "string"
+    },
+    "summary": "string"
+}
+
+resume_text = """\
+Jane Smith
+jane@email.com | (555) 123-4567
+
+Experience:
+- Senior Engineer at TechCorp (2019-2024)
+  Built ML pipelines with Python, TensorFlow, AWS
+
+Education:
+MS Computer Science, Stanford University
+
+Summary: ML engineer with 5+ years production experience."""
+
+result = lc.generate_structured_content(
+    f"Parse this resume:\n\n{resume_text}",
+    schema=resume_schema,
+    temperature=0.1
+)
+```
+
+### Arrays of Objects
+
+```python
+products_schema = {
+    "products": ["list", {
+        "id": "string",
+        "name": "string",
+        "price": "number",
+        "in_stock": "boolean",
+        "tags": ["list", "strings"]
+    }],
+    "total_count": "integer"
+}
+
+catalog_text = """Our store carries:
+- SKU-001: Wireless Mouse $29.99 (in stock) [electronics, peripherals]
+- SKU-002: Mechanical Keyboard $89.99 (out of stock) [electronics, typing]
+- SKU-003: USB-C Cable $12.99 (in stock) [electronics, cables]"""
+
+result = lc.generate_structured_content(
+    catalog_text,
+    schema=products_schema
+)
+# {"products": [{"id": "SKU-001", "name": "Wireless Mouse", ...}], "total_count": 3}
+```
+
+---
+
+## Pydantic Integration
+
+Use Pydantic models for validation and IDE support.
+
+```python
+from pydantic import BaseModel, Field, validator
+from typing import List, Optional
+
+class Experience(BaseModel):
+    company: str
+    title: str
+    years: int = Field(ge=0, le=50)
+    skills: List[str]
+    
+    @validator('years')
+    def validate_years(cls, v):
+        if v > 40:
+            raise ValueError("Suspicious career length")
+        return v
+
+class Resume(BaseModel):
+    candidate_name: str = Field(alias="candidate_name")
+    email: str
+    experience: List[Experience]
+    summary: Optional[str] = None
+
+# Convert Pydantic to LoLLMs schema
+def pydantic_to_schema(model: type[BaseModel]) -> dict:
+    """Generate LoLLMs-compatible schema from Pydantic model."""
+    # Implementation or use model.schema()
+    return model.schema()
+
+# Usage
+result = lc.generate_structured_content(
+    prompt_text,
+    schema=pydantic_to_schema(Resume),
+    temperature=0.1
+)
+
+# Validate with Pydantic
+resume = Resume(**result)  # Full validation, type coercion
+```
+
+---
+
+## Validation & Recovery
+
+### Automatic Retry
+
+```python
+from lollms_client import LollmsClient, MSG_TYPE
+
+def robust_extract(prompt, schema, max_retries=3):
+    """Extract with validation and automatic retry."""
+    
+    for attempt in range(max_retries):
+        try:
+            result = lc.generate_structured_content(
+                prompt,
+                schema=schema,
+                temperature=0.1 + (attempt * 0.05)  # Slightly increase temp on retry
+            )
+            
+            # Manual validation
+            if not validate_business_rules(result, schema):
+                raise ValueError("Business rule violation")
+            
+            return result
+            
+        except Exception as e:
+            if attempt == max_retries - 1:
+                # Final fallback: partial extraction
+                return extract_partial(prompt, schema)
+            
+            # Retry with error feedback
+            prompt += f"\n\nPrevious attempt failed: {str(e)}. Please fix and retry."
+    
+    return None
+
+def validate_business_rules(data, schema):
+    """Custom validation beyond schema types."""
+    # Example: age must be reasonable
+    if "age" in data and not (0 < data["age"] < 150):
+        return False
+    return True
+```
+
+### Partial Extraction Fallback
+
+```python
+def extract_partial(text, schema):
+    """When full schema fails, extract what we can."""
+    
+    # Ask LLM to identify what's extractable
+    diagnostic = lc.generate_text(
+        f"""From this text, what information is available for extraction?
+        Schema needed: {json.dumps(schema)}
+        Text: {text[:2000]}
+        
+        List which fields can be filled and which are missing.""",
+        temperature=0.3
+    )
+    
+    # Build partial result
+    partial = {}
+    for key in schema.keys():
+        # Try individual field extraction
+        field_result = lc.generate_structured_content(
+            f"Extract only '{key}' from:\n{text[:1000]}",
+            schema={key: schema[key]},
+            temperature=0.1
+        )
+        if key in field_result:
+            partial[key] = field_result[key]
+    
+    return {"partial": True, "data": partial, "diagnostic": diagnostic}
+```
+
+---
+
+## Use Cases
+
+### Form Extraction
+
+```python
+form_schema = {
+    "form_type": "string",  # invoice, receipt, contract, etc.
+    "fields": ["list", {
+        "label": "string",
+        "value": "string",
+        "confidence": "number"  # 0.0-1.0
+    }],
+    "total_amount": "number",
+    "date": "string",
+    "vendor": "string"
+}
+
+# OCR output or scanned document text
+ocr_text = """INVOICE #1234
+Date: 2024-01-15
+From: Acme Supplies Inc.
+
+Items:
+- Widget A (qty 10) @ $5.00 = $50.00
+- Widget B (qty 5) @ $12.00 = $60.00
+
+Total: $110.00"""
+
+invoice = lc.generate_structured_content(
+    f"Extract structured data from this document:\n{ocr_text}",
+    schema=form_schema
+)
+```
+
+### API Response Parsing
+
+```python
+# Unstructured API documentation → structured endpoint spec
+api_doc = """
+GET /users/{id}
+Returns user by ID. Response includes id, name, email, created_at.
+Errors: 404 if not found, 429 if rate limited.
+
+POST /users
+Creates new user. Requires name and email in body.
+Returns 201 with Location header. Errors: 400 for invalid data.
+"""
+
+api_schema = {
+    "endpoints": ["list", {
+        "method": "string",
+        "path": "string",
+        "parameters": ["list", "strings"],
+        "request_body": ["list", "strings"],
+        "response_fields": ["list", "strings"],
+        "status_codes": ["list", {
+            "code": "integer",
+            "description": "string"
+        }]
+    }]
+}
+
+spec = lc.generate_structured_content(api_doc, schema=api_schema)
+# Generate client code from spec...
+```
+
+### Decision Trees
+
+```python
+decision_schema = {
+    "decision": "string",           # approve, reject, escalate
+    "confidence": "number",         # 0.0-1.0
+    "reasoning": "string",          # Explanation
+    "factors": ["list", "strings"], # Key considerations
+    "conditions": ["list", {        # Required follow-ups
+        "condition": "string",
+        "severity": "string"        # required, recommended, optional
+    }]
+}
+
+claim_text = """Auto insurance claim #CLM-2024-001
+Policy: PD-12345678
+Incident: Rear collision at intersection, 2024-01-10
+Damage: $4,500 estimated repair
+Injuries: Claimant reports neck pain, no hospital visit
+Police report: Other driver at fault (cited for running red)
+Prior claims: 0 in 5 years"""
+
+decision = lc.generate_structured_content(
+    f"""Analyze this insurance claim and make structured decision.
+    Consider: fault, injury severity, damage amount, claim history.
+    
+    Claim: {claim_text}""",
+    schema=decision_schema,
+    temperature=0.2  # Slightly higher for reasoning
+)
+```
+
+---
+
+## Error Handling
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| `KeyError` in result | LLM omitted field | Add `"optional": True` or retry |
+| Type mismatch | Wrong format (string vs number) | Use `temperature=0.1`, retry |
+| Truncated JSON | Output too long | Increase `n_predict`, chunk input |
+| Hallucinated fields | LLM invented keys | Strict schema validation |
+| Nested structure fails | Complex nesting | Flatten schema or use Pydantic |
+
+---
+
+## Best Practices
+
+1. **Low temperature** (0.0-0.2) for extraction tasks
+2. **Explicit examples** in prompt for ambiguous fields
+3. **Validate outputs** with Pydantic or custom rules
+4. **Handle missing** with `"optional": True` or defaults
+5. **Chunk large inputs** before structured extraction
+6. **Retry with feedback** on validation failures
+
+]]>
+    </content>
+</skill>

@@ -1,0 +1,435 @@
+<skill id="lollms-agentic">
+    <name>Agents &amp; Advanced Reasoning</name>
+    <description>Building agentic workflows with tools, composable answers, self-correction, and recursive reasoning.</description>
+    <category>python/lollms_client/agents</category>
+    <language>markdown</language>
+    <timestamp>1738425600000</timestamp>
+    <content>
+        <![CDATA[
+# Agentic Workflows with LoLLMs
+
+## Overview
+
+Modern LoLLMs agentic system provides **composable answers**, **dynamic scratchpads**, **self-correction**, and **recursive reasoning** — far beyond simple tool calling.
+
+| Feature | Description |
+|---------|-------------|
+| **Composable Answers** | Build responses incrementally through multiple tool calls |
+| **Dynamic Scratchpad** | Persistent note-taking across reasoning steps |
+| **Self-Correction** | Revise assumptions based on new information |
+| **RLM Mode** | Recursive Language Model for large inputs (>10K chars) |
+| **Intent Detection** | Automatic analysis of query needs |
+| **Unified Tools** | RAG, MCPs, custom functions — one interface |
+| **Context Budget** | Automatic token management |
+
+---
+
+## Basic Agent Setup
+
+### Simple Personality-Based Agent
+
+```python
+from lollms_client import LollmsPersonality, LollmsClient, LollmsDiscussion
+
+# Define agent personality
+agent = LollmsPersonality(
+    name="ResearchAssistant",
+    system_prompt="""You are a research assistant. Use available tools to gather 
+    information, then synthesize comprehensive answers. Always cite your sources."""
+)
+
+# Setup client and discussion
+lc = LollmsClient("llama_cpp_server", {"model_name": "model.gguf"})
+discussion = LollmsDiscussion.create_new(lollms_client=lc)
+
+# Simple chat (no tools)
+response = discussion.chat(
+    user_message="Explain quantum computing",
+    personality=agent
+)
+```
+
+---
+
+## Tool-Enabled Agents
+
+### Defining Tools
+
+Tools follow a unified schema with typed parameters and outputs:
+
+```python
+def search_web(query: str, max_results: int = 5) -> dict:
+    """Search the web for information."""
+    # Implementation...
+    return {
+        "results": [...],
+        "sources": ["https://..."],
+        "success": True
+    }
+
+# Tool specification
+tools = {
+    "search_web": {
+        "name": "search_web",
+        "description": "Search the web for relevant information",
+        "parameters": [
+            {
+                "name": "query",
+                "type": "str",
+                "description": "Search query string",
+                "optional": False
+            },
+            {
+                "name": "max_results",
+                "type": "int",
+                "description": "Maximum results to return",
+                "optional": True,
+                "default": 5
+            }
+        ],
+        "output": [
+            {"name": "results", "type": "list", "description": "Search results"},
+            {"name": "sources", "type": "list", "description": "Source URLs"},
+            {"name": "success", "type": "bool", "description": "Operation status"}
+        ],
+        "callable": search_web
+    }
+}
+```
+
+### Running with Tools
+
+```python
+response = discussion.chat(
+    user_message="What are the latest developments in fusion energy?",
+    personality=agent,
+    tools=tools,                    # Enable tool access
+    max_reasoning_steps=10,         # Maximum agent iterations
+    decision_temperature=0.3,       # Conservative tool selection
+    final_answer_temperature=0.7,   # Creative synthesis
+    
+    # Optional: streaming callback
+    streaming_callback=lambda chunk, msg_type, metadata: print(chunk, end="")
+)
+```
+
+**Response structure:**
+```python
+{
+    "user_message": LollmsMessage,      # User's message object
+    "ai_message": LollmsMessage,        # AI's final response
+    "sources": [...],                    # All sources collected
+    "scratchpad": {...},                 # Final scratchpad state
+    "self_corrections": [...]            # Corrections made during reasoning
+}
+```
+
+---
+
+## Composable Answers
+
+Build complex answers piece by piece, with ability to revise:
+
+### How It Works
+
+```
+User: "Give me examples from 3 themes: renewable energy, 
+      AI in healthcare, and space exploration"
+
+Agent workflow:
+1. search_web("renewable energy breakthroughs 2024")
+   → append_to_answer("Theme 1: Renewable Energy...", sources=[...])
+   
+2. search_web("AI healthcare applications 2024")
+   → append_to_answer("Theme 2: AI in Healthcare...", sources=[...])
+   
+3. search_web("space exploration milestones 2024")
+   → append_to_answer("Theme 3: Space Exploration...", sources=[...])
+   
+4. final_answer() → Combines all sections
+```
+
+### Internal Tools (Auto-Available in Agentic Mode)
+
+| Tool | Purpose |
+|------|---------|
+| `append_to_answer(content, section_id, sources)` | Add content section |
+| `update_answer_section(section_id, new_content, reason)` | Self-correct a section |
+| `remove_answer_section(section_id, reason)` | Delete section |
+| `get_current_answer()` | View built answer state |
+
+---
+
+## Dynamic Scratchpad
+
+Persistent memory across reasoning steps for complex tasks:
+
+### Scratchpad Categories
+
+```python
+# Agent automatically uses:
+scratchpad = {
+    "notes": {          # General observations
+        "searched_topics": ["renewable energy", "AI healthcare"],
+        "key_finding": "Fusion breakthrough in December 2024"
+    },
+    "assumptions": {    # Tracked assumptions with status
+        "fusion_timeline": {
+            "value": "Commercial fusion by 2030",
+            "status": "UNCERTAIN",  # → VALID/WRONG
+            "timestamp": "..."
+        }
+    },
+    "history": [...],   # All scratchpad changes
+    "corrections": []   # Self-corrections made
+}
+```
+
+### Self-Correction Workflow
+
+```
+1. Agent assumes: "Fusion commercial by 2030"
+   → update_scratchpad("fusion_timeline", "2030", "assumptions")
+
+2. Search reveals: "Most estimates now say 2040+"
+   → update_assumption_status("fusion_timeline", "WRONG", 
+                              "ITER delays pushed timeline")
+
+3. Agent revises answer:
+   → update_answer_section("theme_1", corrected_content, 
+                          "Corrected fusion timeline based on new data")
+```
+
+---
+
+## RLM Mode (Recursive Language Model)
+
+For inputs >10,000 characters, automatic chunked processing:
+
+### Auto-Activation
+
+```python
+# Large document — RLM activates automatically
+long_document = open("100k_token_report.txt").read()
+
+response = discussion.chat(
+    user_message=long_document,  # >10K chars triggers RLM
+    tools=tools,
+    
+    # RLM uses python_exec + llm_query tools internally
+    # Document stored in: USER_INPUT_CONTEXT variable
+)
+```
+
+### RLM Strategy
+
+| Step | Action |
+|------|--------|
+| 1 | Store full text in `USER_INPUT_CONTEXT` |
+| 2 | Provide preview (first 500 chars) to LLM |
+| 3 | Agent uses `python_exec()` to read chunks |
+| 4 | Recursive `llm_query()` calls on manageable sections |
+| 5 | Synthesize results |
+
+---
+
+## Intent Detection & Smart Routing
+
+Automatic query analysis before tool selection:
+
+```python
+# Internal intent detection (no manual setup)
+intent = {
+    "needs_internal_knowledge": True,   # Use personality data_source?
+    "needs_full_documents": False,      # Load data zones?
+    "needs_external_search": True,      # Use RAG tools?
+    "reasoning": "Query requires current web information"
+}
+```
+
+### Data Zones Integration
+
+Agent automatically uses discussion data zones:
+
+| Zone | Use Case | Access |
+|------|----------|--------|
+| `memory` | Long-term facts from `memorize()` | Always included |
+| `user_data_zone` | User-specific context | If `needs_full_documents` |
+| `discussion_data_zone` | Session documents | If `needs_full_documents` |
+| `personality_data_zone` | Temporary tool results | Dynamic (tool outputs) |
+
+---
+
+## Advanced Configuration
+
+### Context Budget Management
+
+```python
+response = discussion.chat(
+    user_message="Complex query...",
+    tools=tools,
+    
+    # Budget allocation (auto-calculated from model ctx_size)
+    max_context_size=32000,  # Trigger pruning if exceeded
+    
+    # RAG tuning
+    rag_top_k=5,
+    rag_min_similarity_percent=0.5,
+    max_rag_queries=10,      # Limit search iterations
+    
+    # Generation control
+    decision_temperature=0.2,      # Conservative tool choice
+    final_answer_temperature=0.7,  # Creative synthesis
+    remove_thinking_blocks=True,   # Clean <thinking> tags
+    debug=True                     # Verbose logging
+)
+```
+
+### Streaming with Callbacks
+
+```python
+from lollms_client import MSG_TYPE
+
+def callback(chunk, msg_type, metadata=None):
+    match msg_type:
+        case MSG_TYPE.MSG_TYPE_INFO:
+            print(f"[INFO] {chunk}")
+        case MSG_TYPE.MSG_TYPE_STEP_START:
+            print(f"▶️  {chunk} (id: {metadata.get('id')})")
+        case MSG_TYPE.MSG_TYPE_STEP_END:
+            print(f"✓ Completed")
+        case MSG_TYPE.MSG_TYPE_SOURCES_LIST:
+            print(f"📚 Sources: {len(chunk)} found")
+        case _:
+            print(chunk, end="")  # Actual content
+
+response = discussion.chat(
+    user_message="...",
+    tools=tools,
+    streaming_callback=callback
+)
+```
+
+---
+
+## Complete Examples
+
+### Research Agent with Self-Correction
+
+```python
+from lollms_client import LollmsClient, LollmsDiscussion, LollmsPersonality
+import os
+
+# Setup
+lc = LollmsClient("openai", {
+    "model_name": "gpt-4o",
+    "service_key": os.getenv("OPENAI_API_KEY")
+})
+
+agent = LollmsPersonality(
+    name="Analyst",
+    system_prompt="""You are a financial analyst. Research companies thoroughly,
+    track your assumptions, and correct yourself when new data contradicts 
+    earlier conclusions. Always cite sources."""
+)
+
+discussion = LollmsDiscussion.create_new(lollms_client=lc)
+
+# Define search tool
+def search_financial(query: str) -> dict:
+    # Implementation calling financial API
+    return {"results": [...], "sources": [...], "success": True}
+
+tools = {
+    "search_financial": {
+        "name": "search_financial",
+        "description": "Search financial databases",
+        "parameters": [{"name": "query", "type": "str", "optional": False}],
+        "output": [{"name": "results", "type": "list"}, 
+                   {"name": "sources", "type": "list"}],
+        "callable": search_financial
+    }
+}
+
+# Complex query requiring self-correction
+response = discussion.chat(
+    user_message="""Analyze Tesla's Q3 2024 performance vs BYD. 
+    Compare revenue growth, margin trends, and market expansion.""",
+    personality=agent,
+    tools=tools,
+    max_reasoning_steps=15
+)
+
+# Check if self-corrections occurred
+if response["self_corrections"]:
+    print(f"Agent made {len(response['self_corrections'])} corrections")
+    for corr in response["self_corrections"]:
+        print(f"  - {corr['section_id']}: {corr['reason']}")
+```
+
+### Document Analysis with RLM
+
+```python
+# Large document analysis
+legal_contract = open("50_page_contract.txt").read()  # >10K chars
+
+response = discussion.chat(
+    user_message=f"""Analyze this contract for:
+    1. Liability clauses
+    2. Termination conditions
+    3. Payment terms
+    
+    {legal_contract}""",  # RLM auto-activates
+    
+    tools={
+        "python_exec": {...},  # RLM requires these
+        "llm_query": {...}
+    },
+    
+    max_reasoning_steps=20  # Allow deep analysis
+)
+```
+
+### Simplified Chat vs. Full Agentic
+
+```python
+# Simple: direct LLM response, no tools
+response = discussion.simplified_chat(
+    "What is 2+2?",
+    personality=agent
+)
+
+# Full: intent detection, tools, scratchpad, composable answer
+response = discussion.chat(
+    "Research and compare top 3 AI frameworks...",
+    personality=agent,
+    tools=tools,
+    max_reasoning_steps=10
+)
+```
+
+---
+
+## Migration from Legacy MCP
+
+| Old (MCP) | New (Unified Tools) |
+|-----------|---------------------|
+| `active_mcps=["search"]` | `tools={"search": {...}}` |
+| `mcp_binding_name="local_mcp"` | Tools passed directly to `chat()` |
+| `max_llm_iterations=5` | `max_reasoning_steps=5` |
+| Fixed MCP registry | Inline tool definitions |
+
+---
+
+## Best Practices
+
+1. **Start simple**: Use `simplified_chat()` for straightforward queries
+2. **Add tools gradually**: Introduce one tool, test, then expand
+3. **Monitor scratchpad**: Check `response["scratchpad"]` for reasoning quality
+4. **Limit steps**: Set `max_reasoning_steps` based on task complexity (5-20 typical)
+5. **Temperature tuning**: Lower for decisions (0.2-0.3), higher for synthesis (0.7-0.9)
+6. **Use RLM sparingly**: Only for truly large inputs; adds overhead
+
+]]>
+    </content>
+</skill>

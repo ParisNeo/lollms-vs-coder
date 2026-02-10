@@ -208,5 +208,11 @@ export const dom = {
 
     get historyModal() { return document.getElementById('history-modal') as HTMLDivElement; },
     get historyList() { return document.getElementById('history-list') as HTMLDivElement; },
-    get historyCloseBtn() { return document.getElementById('history-close-btn') as HTMLButtonElement; }
+    get historyCloseBtn() { return document.getElementById('history-close-btn') as HTMLButtonElement; },
+
+    // New Skills Modal Elements
+    get skillsModal() { return document.getElementById('skills-modal') as HTMLDivElement; },
+    get skillsTreeContainer() { return document.getElementById('skills-tree-container') as HTMLDivElement; },
+    get skillsImportBtn() { return document.getElementById('skills-import-btn') as HTMLButtonElement; },
+    get skillsCloseBtn() { return document.getElementById('skills-close-btn') as HTMLSpanElement; }
 };

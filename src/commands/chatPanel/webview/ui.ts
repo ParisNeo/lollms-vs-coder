@@ -316,3 +316,80 @@ export function updateBadges() {
         };
     }
 }
+
+export function renderSkillsTree(container: HTMLElement, node: any) {
+    if (!node.children || node.children.length === 0) return;
+
+    // Sort: Folders first, then files
+    node.children.sort((a: any, b: any) => {
+        if (a.isSkill === b.isSkill) return a.label.localeCompare(b.label);
+        return a.isSkill ? 1 : -1;
+    });
+
+    const ul = document.createElement('ul');
+    ul.className = 'skills-tree-list';
+
+    node.children.forEach((child: any) => {
+        const li = document.createElement('li');
+        li.className = 'skills-tree-item';
+        
+        if (child.isSkill) {
+            // Leaf Node
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.className = 'skill-checkbox';
+            checkbox.value = child.id;
+            checkbox.id = `skill-${child.id}`;
+
+            const label = document.createElement('label');
+            label.htmlFor = `skill-${child.id}`;
+            label.innerHTML = `<span class="codicon codicon-file-code"></span> ${child.label}`;
+            label.title = child.description || '';
+            
+            const div = document.createElement('div');
+            div.className = 'skill-node';
+            div.appendChild(checkbox);
+            div.appendChild(label);
+            li.appendChild(div);
+        } else {
+            // Bundle Node (Folder)
+            const details = document.createElement('details');
+            details.open = true; // Default open?
+            
+            const summary = document.createElement('summary');
+            summary.className = 'skill-summary';
+            
+            // Checkbox for the bundle
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.className = 'bundle-checkbox';
+            checkbox.dataset.path = child.id;
+            
+            // Handle bundle checking (cascade)
+            checkbox.addEventListener('change', (e) => {
+                const checked = (e.target as HTMLInputElement).checked;
+                const childCheckboxes = li.querySelectorAll('input[type="checkbox"]');
+                childCheckboxes.forEach((cb: any) => cb.checked = checked);
+            });
+
+            const labelSpan = document.createElement('span');
+            labelSpan.innerHTML = `<span class="codicon codicon-folder"></span> ${child.label}`;
+            
+            summary.appendChild(checkbox);
+            summary.appendChild(labelSpan);
+            
+            details.appendChild(summary);
+            
+            // Recursion
+            const childrenContainer = document.createElement('div');
+            childrenContainer.className = 'skill-children';
+            renderSkillsTree(childrenContainer, child);
+            details.appendChild(childrenContainer);
+            
+            li.appendChild(details);
+        }
+        ul.appendChild(li);
+    });
+
+    container.appendChild(ul);
+}

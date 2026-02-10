@@ -1,0 +1,439 @@
+<skill id="pipmaster-advanced">
+    <name>PipMaster Advanced</name>
+    <description>Advanced package management: virtual environments, uv backend, portable Python, and custom configurations.</description>
+    <category>python/pipmaster/advanced</category>
+    <language>markdown</language>
+    <timestamp>1738425600000</timestamp>
+    <content>
+        <![CDATA[
+# PipMaster Advanced
+
+Enterprise-grade package management: isolated environments, fast backends, and portable deployments.
+
+---
+
+## Virtual Environment Management
+
+### Create & Use Environments
+
+```python
+from pipmaster import get_uv_manager  # uv required for venv ops
+import os
+import shutil
+
+env_path = "./project_venv"
+
+# Clean slate
+if os.path.exists(env_path):
+    shutil.rmtree(env_path)
+
+# Create environment
+uv = get_uv_manager()
+if uv.create_env(path=env_path):
+    print(f"✓ Created: {env_path}")
+    
+    # Install into this specific environment
+    uv.install_multiple(
+        ["fastapi", "uvicorn", "sqlalchemy"],
+        env_path=env_path,
+        verbose=True
+    )
+    
+    # Run tool via uvx (ephemeral, no install)
+    uv.run_with_uvx(
+        ["black", "--version"],
+        verbose=True
+    )
+```
+
+### Portable Python
+
+```python
+from pipmaster import get_async_pip_manager_for_version
+import asyncio
+
+async def setup_portable():
+    """Get specific Python version, isolated from system."""
+    
+    # Python 3.12 in ./portable_venv
+    pm = await get_async_pip_manager_for_version("3.12", "./portable_venv")
+    
+    # Install packages in this Python
+    await pm.install("rich", verbose=True)
+    
+    # Check installation
+    loop = asyncio.get_running_loop()
+    installed = await loop.run_in_executor(
+        None, pm.is_installed, "rich"
+    )
+    print(f"rich installed: {installed}")
+
+asyncio.run(setup_portable())
+```
+
+---
+
+## UV Backend (Experimental)
+
+Faster, Rust-based package manager.
+
+```python
+from pipmaster import get_uv_manager, ensure_packages
+
+# UV manager instance
+uv = get_uv_manager()
+
+# UV operations
+uv.install("requests", verbose=True)
+uv.upgrade("requests")
+uv.uninstall("requests")
+
+# Use UV via standard API
+ensure_packages("numpy", backend="uv", verbose=True)
+
+# UV-specific: run without installing
+uv.run_with_uvx(["ruff", "check", "."], verbose=True)  # One-shot linter
+uv.run_with_uvx(["http", "GET", "httpbin.org/get"])    # One-shot HTTP client
+```
+
+---
+
+## Custom Package Indexes
+
+### Private PyPI / DevPI
+
+```python
+import pipmaster as pm
+
+company_packages = {
+    "internal-lib": {
+        "specifier": ">=2.0.0",
+        "index_url": "https://pypi.mycompany.com/simple",
+        "trusted_host": "pypi.mycompany.com"  # For self-signed certs
+    },
+    "another-internal": {
+        "specifier": ">=1.5.0",
+        "index_url": "https://devpi.company.net/user/dev/+simple"
+    }
+}
+
+pm.ensure_packages(company_packages, verbose=True)
+```
+
+### Multiple Indexes (Fallback)
+
+```python
+# Primary: PyTorch CUDA index
+# Fallback: standard PyPI
+pm.ensure_packages({
+    "torch": {
+        "specifier": ">=2.0.0",
+        "index_url": "https://download.pytorch.org/whl/cu121",
+        "extra_index_urls": ["https://pypi.org/simple"]  # Fallback
+    }
+})
+```
+
+---
+
+## VCS & Source Installation
+
+### Git Repositories
+
+```python
+import pipmaster as pm
+
+# Direct from GitHub
+pm.ensure_packages({
+    "some-package": "git+https://github.com/user/repo.git"
+})
+
+# Specific branch/tag/commit
+pm.ensure_packages({
+    "some-package": "git+https://github.com/user/repo.git@develop"
+})
+
+# With version condition (install only if outdated)
+conditional = {
+    "name": "diffusers",
+    "vcs": "git+https://github.com/huggingface/diffusers.git",
+    "condition": ">=0.25.0"  # Only if installed < 0.25.0
+}
+pm.ensure_packages([conditional], verbose=True)
+```
+
+### Local Editable Install
+
+```python
+pm.install("-e /path/to/my/package", verbose=True)
+```
+
+---
+
+## Complex Dependency Scenarios
+
+### Extras & Options
+
+```python
+pm.ensure_packages({
+    "fastapi": {
+        "specifier": ">=0.100.0",
+        "extras": ["all"]  # Installs fastapi[all]
+    },
+    "uvicorn": {
+        "specifier": ">=0.23.0",
+        "extras": ["standard", "watchfiles"]
+    }
+})
+```
+
+### Platform-Specific Wheels
+
+```python
+import sys
+import platform
+
+deps = {
+    "common-package": ">=1.0.0",
+}
+
+# Windows-specific
+if sys.platform == "win32":
+    deps["pywin32"] = ">=300"
+    deps["wmi"] = ">=1.5.1"
+
+# macOS-specific
+elif sys.platform == "darwin":
+    deps["pyobjc"] = ">=9.0"
+
+# Linux-specific
+else:
+    deps["systemd-python"] = ">=234"
+
+pm.ensure_packages(deps, verbose=True)
+```
+
+### Python Version Constraints
+
+```python
+import sys
+
+deps = {}
+
+# 3.9+ features
+if sys.version_info >= (3, 9):
+    deps["zoneinfo"] = None  # Built-in, no install needed
+else:
+    deps["backports.zoneinfo"] = ">=0.2.1"
+
+# 3.11+ asyncio improvements
+if sys.version_info >= (3, 11):
+    deps["asyncio"] = None  # Use built-in
+else:
+    deps["async-timeout"] = ">=4.0.0"
+
+pm.ensure_packages(deps)
+```
+
+---
+
+## Enterprise Patterns
+
+### Air-Gapped / Offline Install
+
+```python
+import pipmaster as pm
+import os
+
+# Pre-downloaded wheels directory
+WHEELHOUSE = "/mnt/shared/wheels"
+
+def offline_ensure(package_name, specifier):
+    """Install from local wheelhouse."""
+    
+    wheel_pattern = f"{package_name}-{specifier.replace('>=', '').replace('==', '')}*.whl"
+    wheels = list(Path(WHEELHOUSE).glob(wheel_pattern))
+    
+    if wheels:
+        # Install from wheel
+        pm.install(str(wheels[0]), verbose=True)
+    else:
+        raise RuntimeError(f"No wheel found for {package_name}")
+
+# Or use index
+pm.ensure_packages(
+    {"internal-package": ">=1.0.0"},
+    index_url=f"file://{WHEELHOUSE}",  # Local file index
+    no_index=True,  # Don't check PyPI
+    find_links=WHEELHOUSE  # Fallback search
+)
+```
+
+### Dependency Locking
+
+```python
+import pipmaster as pm
+import subprocess
+import json
+
+def freeze_environment():
+    """Generate lock file with exact versions."""
+    
+    # Get installed with pipmaster
+    installed = {}
+    for pkg in ["requests", "pandas", "numpy"]:  # Your deps
+        version = pm.get_installed_version(pkg)
+        installed[pkg] = f"=={version}"
+    
+    # Save lock
+    with open("requirements.lock", "w") as f:
+        json.dump(installed, f, indent=2)
+    
+    return installed
+
+def install_from_lock():
+    """Reproducible install from lock file."""
+    
+    with open("requirements.lock") as f:
+        locked = json.load(f)
+    
+    pm.ensure_packages(locked, verbose=True)
+```
+
+### Health Check & Repair
+
+```python
+import pipmaster as pm
+
+def health_check():
+    """Verify and repair environment."""
+    
+    required = {
+        "fastapi": ">=0.100.0",
+        "pydantic": ">=2.0.0",
+        "sqlalchemy": ">=2.0.0"
+    }
+    
+    issues = []
+    
+    for pkg, spec in required.items():
+        if not pm.is_installed(pkg):
+            issues.append(f"{pkg}: not installed")
+        else:
+            # Version check would need parsing
+            pass
+    
+    # Vulnerability scan
+    vuln_found, vuln_report = pm.check_vulnerabilities()
+    if vuln_found:
+        issues.append(f"{len(vuln_report)} vulnerable packages")
+    
+    if issues:
+        print("Issues found:", issues)
+        print("Attempting repair...")
+        
+        # Re-ensure all packages
+        pm.ensure_packages(required, upgrade=True, verbose=True)
+        
+        # Re-check
+        if all(pm.is_installed(p) for p in required):
+            print("✓ Environment repaired")
+            return True
+    
+    return len(issues) == 0
+```
+
+---
+
+## Complete Application Bootstrap
+
+```python
+#!/usr/bin/env python3
+"""
+Self-bootstrapping application with pipmaster.
+"""
+
+import sys
+import os
+
+# Add bundled pipmaster if available
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "vendor"))
+
+def bootstrap():
+    """Ensure environment before main import."""
+    
+    try:
+        import pipmaster as pm
+    except ImportError:
+        # Fallback: install pipmaster itself
+        import subprocess
+        subprocess.check_call([
+            sys.executable, "-m", "pip", "install", "pipmaster"
+        ])
+        import pipmaster as pm
+    
+    # Core dependencies
+    CORE_DEPS = {
+        "fastapi": {"specifier": ">=0.104.0", "extras": ["all"]},
+        "uvicorn": {"specifier": ">=0.24.0", "extras": ["standard"]},
+        "pydantic": ">=2.5.0",
+        "pydantic-settings": ">=2.1.0",
+        "sqlalchemy": ">=2.0.0",
+        "alembic": ">=1.12.0",
+        "httpx": ">=0.25.0",
+        "rich": ">=13.0.0",
+    }
+    
+    # Platform extras
+    if sys.platform == "win32":
+        CORE_DEPS["pywin32"] = ">=300"
+        CORE_DEPS["waitress"] = ">=2.1.2"  # Windows server
+    
+    # Ensure with progress
+    print("🔧 Checking dependencies...")
+    success = pm.ensure_packages(CORE_DEPS, verbose=True, backend="uv")
+    
+    if not success:
+        print("❌ Failed to install dependencies")
+        sys.exit(1)
+    
+    # Security check
+    print("🔒 Security scan...")
+    vuln_found, report = pm.check_vulnerabilities()
+    if vuln_found:
+        print(f"⚠️  {len(report)} vulnerabilities found, auto-patching...")
+        pm.upgrade([v["package"] for v in report])
+    
+    print("✅ Environment ready")
+    return True
+
+if __name__ == "__main__":
+    bootstrap()
+    
+    # Now safe to import heavy deps
+    from fastapi import FastAPI
+    from rich.console import Console
+    
+    app = FastAPI()
+    console = Console()
+    
+    console.print("[green]Application started![/green]")
+```
+
+---
+
+## API Reference: Advanced Functions
+
+| Function | Purpose |
+|----------|---------|
+| `get_uv_manager()` | UV backend instance |
+| `get_async_pip_manager_for_version(py_version, venv_path)` | Portable Python setup |
+| `create_env(path, python_version=None)` | Virtual environment |
+| `run_with_uvx(args, verbose=False)` | Ephemeral tool execution |
+| `check_vulnerabilities()` | Security audit with pip-audit |
+| `is_installed(package)` | Check without importing |
+| `get_installed_version(package)` | Version string or None |
+
+]]>
+    </content>
+</skill>

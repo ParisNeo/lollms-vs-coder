@@ -1,0 +1,129 @@
+<skill id="ascii-colors-basics">
+    <name>ASCIIColors Basics</name>
+    <description>Quick reference for terminal colors, styles, and output with ASCIIColors.</description>
+    <category>python/ascii_colors/basics</category>
+    <language>markdown</language>
+    <timestamp>1738425600000</timestamp>
+    <content>
+        <![CDATA[
+# ASCIIColors Quick Start
+
+## What is it?
+
+ASCIIColors is a unified Python library for terminal styling — colors, styles, progress bars, interactive menus, and logging in one toolkit.
+
+```bash
+pip install ascii_colors
+```
+
+---
+
+## Core Pattern
+
+```python
+from ascii_colors import ASCIIColors
+
+# Print with color
+ASCIIColors.red("Error message")
+ASCIIColors.green("Success!")
+ASCIIColors.yellow("Warning", style=ASCIIColors.style_bold)
+
+# Full control
+ASCIIColors.print(
+    "Text",
+    color=ASCIIColors.color_cyan,
+    background=ASCIIColors.color_bg_white,
+    style=ASCIIColors.style_underline
+)
+```
+
+---
+
+## Color Reference
+
+| Foreground | Background | Bright Foreground | Bright Background |
+|-----------|-----------|-------------------|-------------------|
+| `color_black` | `color_bg_black` | `color_bright_black` | `color_bg_bright_black` |
+| `color_red` | `color_bg_red` | `color_bright_red` | `color_bg_bright_red` |
+| `color_green` | `color_bg_green` | `color_bright_green` | `color_bg_bright_green` |
+| `color_yellow` | `color_bg_yellow` | `color_bright_yellow` | `color_bg_bright_yellow` |
+| `color_blue` | `color_bg_blue` | `color_bright_blue` | `color_bg_bright_blue` |
+| `color_magenta` | `color_bg_magenta` | `color_bright_magenta` | `color_bg_bright_magenta` |
+| `color_cyan` | `color_bg_cyan` | `color_bright_cyan` | `color_bg_bright_cyan` |
+| `color_white` | `color_bg_white` | `color_bright_white` | `color_bg_bright_white` |
+| `color_orange` | `color_bg_orange` | — | — |
+
+---
+
+## Style Modifiers
+
+| Style | Effect |
+|-------|--------|
+| `style_bold` | Bold/Bright |
+| `style_dim` | Dim/Faint |
+| `style_italic` | Italic |
+| `style_underline` | Underline |
+| `style_blink` | Slow blink |
+| `style_reverse` | Reverse video |
+| `style_hidden` | Hidden text |
+| `style_strikethrough` | Strikethrough |
+
+Combine: `ASCIIColors.style_bold + ASCIIColors.style_underline`
+
+---
+
+## Common Patterns
+
+```python
+from ascii_colors import ASCIIColors
+
+# Status indicators
+ASCIIColors.green("✓ Success")
+ASCIIColors.red("✗ Failed")
+ASCIIColors.yellow("⚠ Warning")
+ASCIIColors.blue("ℹ Info")
+
+# Multicolor line
+ASCIIColors.multicolor(
+    ["Status: ", "ACTIVE", " | Load: ", "85%"],
+    [ASCIIColors.color_white, ASCIIColors.color_green,
+     ASCIIColors.color_white, ASCIIColors.color_yellow]
+)
+
+# Highlight patterns in text
+ASCIIColors.highlight(
+    "ERROR: Connection failed at line 42",
+    subtext=["ERROR", "failed"],
+    highlight_color=ASCIIColors.color_bright_red
+)
+
+# Conditional coloring
+status_color = ASCIIColors.color_green if success else ASCIIColors.color_red
+ASCIIColors.print(f"Result: {result}", color=status_color)
+
+# Compose without printing
+styled = ASCIIColors.red("Error: ", emit=False, end="")
+styled += ASCIIColors.bold("Critical", emit=False)
+print(styled)
+```
+
+---
+
+## Quick Components
+
+| Need | Use |
+|------|-----|
+| Simple colored print | `ASCIIColors.red("text")` |
+| Full styling control | `ASCIIColors.print(..., color=, background=, style=)` |
+| Inline color changes | `ASCIIColors.multicolor()` |
+| Pattern highlighting | `ASCIIColors.highlight()` |
+| Progress bars | `ProgressBar()` |
+| Interactive menus | `Menu()` |
+| User prompts | `questionary` module |
+| Structured logging | `import ascii_colors as logging` |
+
+> 📚 **For advanced features** (progress bars, menus, prompts, logging), load the dedicated skill: `python/ascii_colors/advanced`
+
+]]>
+    </content>
+</skill>

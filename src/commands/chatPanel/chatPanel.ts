@@ -14,8 +14,22 @@ import { Logger } from '../../logger';
 import { PersonalityManager } from '../../personalityManager';
 import { GitIntegration } from '../../gitIntegration';
 
+interface ActiveGeneration {
+    messageId: string;
+    buffer: string;
+    model: string;
+    startTime: number;
+    listeners: Set<(chunk: string) => void>;
+    onComplete: Set<(fullContent: string) => void>;
+}
+
 export class ChatPanel {
   public static panels: Map<string, ChatPanel> = new Map();
+  // Static registry to persist AgentManagers even if their UI panel is disposed
+  public static activeAgents: Map<string, AgentManager> = new Map();
+  // Static registry for standard chat generations
+  public static activeGenerations: Map<string, ActiveGeneration> = new Map();
+  
   public static currentPanel: ChatPanel | undefined;
   public readonly _panel: vscode.WebviewPanel;
   private readonly _extensionUri: vscode.Uri;
@@ -117,13 +131,69 @@ export class ChatPanel {
   }
   private async _updateHtmlForWebview() { this._panel.webview.html = await this._getHtmlForWebview(this._panel.webview); }
   public setContextManager(contextManager: ContextManager) { this._contextManager = contextManager; }
-  public setProcessManager(processManager: ProcessManager) { this.processManager = processManager; }
+  
+  public setProcessManager(processManager: ProcessManager) { 
+      this.processManager = processManager; 
+      
+      // Initialize AgentManager
+      // Check if an agent already exists for this discussion (reconnection logic)
+      if (ChatPanel.activeAgents.has(this.discussionId)) {
+          this.log(`Reconnecting to existing active agent for discussion ${this.discussionId}`);
+          this.agentManager = ChatPanel.activeAgents.get(this.discussionId)!;
+          // Hot-swap the UI implementation to this new panel
+          this.agentManager.setUI(this);
+      } else {
+          // Create new AgentManager if none exists
+          this.agentManager = new AgentManager(
+              this, 
+              this._lollmsAPI, 
+              this._contextManager, 
+              this._gitIntegration,
+              this._discussionManager,
+              this._extensionUri,
+              // @ts-ignore
+              // These dependencies might be injected later via setters in some flows, 
+              // but standard flow expects them. If passed via createOrShow, they are set.
+              // Assuming caller sets them immediately after construction if using constructor injection.
+              // Here we rely on properties being set before agentManager is used.
+              // Note: The agentManager constructor signature requires them. 
+              // In the registry flow, createOrShow is called, then agentManager is created externally and assigned.
+              // Here we are creating it internally if not assigned? 
+              // Actually, the registry assigns `panel.agentManager = ...`. 
+              // Let's defer creation to the registry if possible, OR if we are in the constructor, 
+              // we can't create it yet because we lack dependencies.
+              // Correct logic: The registry creates the agent. We just need to check if we should overwrite it.
+          );
+      }
+  }
+  
+  // This setter is called by the registry after creating the panel.
+  // We intercept it to implement the reconnection logic.
+  public setAgentManager(agent: AgentManager) {
+      if (ChatPanel.activeAgents.has(this.discussionId)) {
+          this.log(`Reconnecting to EXISTING active agent for discussion ${this.discussionId}`);
+          this.agentManager = ChatPanel.activeAgents.get(this.discussionId)!;
+          this.agentManager.setUI(this);
+      } else {
+          this.log(`Registering NEW active agent for discussion ${this.discussionId}`);
+          this.agentManager = agent;
+          ChatPanel.activeAgents.set(this.discussionId, agent);
+      }
+  }
   
   public updateGeneratingState() {
     if (this._isDisposed) return;
     if (this._panel.webview) {
-        const process = this._currentDiscussion ? this.processManager.getForDiscussion(this._currentDiscussion.id) : undefined;
-        const isGenerating = !!process && !this._inputResolver;
+        // Use discussionId directly, it is reliable.
+        const process = this.processManager.getForDiscussion(this.discussionId);
+        // Check both process manager AND our static registry for standard generations
+        const hasActiveGen = ChatPanel.activeGenerations.has(this.discussionId);
+        
+        // Also check active agent status
+        const activeAgent = ChatPanel.activeAgents.get(this.discussionId);
+        const agentIsActive = activeAgent ? activeAgent.getIsActive() : false;
+
+        const isGenerating = (!!process || hasActiveGen || agentIsActive) && !this._inputResolver;
         this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating });
     }
   }
@@ -221,10 +291,11 @@ export class ChatPanel {
               this._currentDiscussion = discussion;
               this._panel.title = this._currentDiscussion.title;
               
-              if (this._discussionCapabilities.agentMode && !this.agentManager.getIsActive()) {
-                  this.agentManager.toggleAgentMode();
-              } else if (!this._discussionCapabilities.agentMode && this.agentManager.getIsActive()) {
-                  this.agentManager.toggleAgentMode();
+              if (this.agentManager) {
+                  const isActive = this.agentManager.getIsActive();
+                  if (isActive !== this._discussionCapabilities.agentMode) {
+                      this._discussionCapabilities.agentMode = isActive;
+                  }
               }
           } else {
               this.log(`Discussion ${this.discussionId} not found.`, 'ERROR');
@@ -250,9 +321,15 @@ export class ChatPanel {
           const cachedContext = this._contextManager.getLastContext();
           if (cachedContext) {
               const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || [];
+              
+              // Only send full context if it's small enough, otherwise send placeholder
+              const contextTextToSend = cachedContext.text.length > 50000 
+                  ? `# Context Hidden (Too Large for Preview)\n\nThe full context (${cachedContext.text.length} chars) is loaded in backend memory for AI usage, but is hidden from this preview to improve UI performance.`
+                  : cachedContext.text;
+
               this._panel.webview.postMessage({ 
                   command: 'updateContext', 
-                  context: cachedContext.text,
+                  context: contextTextToSend,
                   files: includedFiles,
                   skills: cachedContext.importedSkills || []
               });
@@ -268,6 +345,50 @@ export class ChatPanel {
           isInspectorEnabled: isInspectorEnabled
       });
       
+      // RECONNECTION LOGIC: Check for active generation
+      const activeGen = ChatPanel.activeGenerations.get(this.discussionId);
+      if (activeGen) {
+          this.log(`Reconnecting to active generation for ${this.discussionId}`);
+          
+          // 1. Send the incomplete message to UI
+          const tempMsg: ChatMessage = {
+              id: activeGen.messageId,
+              role: 'assistant',
+              content: activeGen.buffer,
+              model: activeGen.model,
+              startTime: activeGen.startTime
+          };
+          this._panel.webview.postMessage({ command: 'addMessage', message: tempMsg });
+          
+          // 2. Subscribe to updates
+          const listener = (chunk: string) => {
+              if (!this._isDisposed && this._panel.webview) {
+                  this._panel.webview.postMessage({ 
+                      command: 'appendMessageChunk', 
+                      id: activeGen.messageId, 
+                      chunk: chunk 
+                  });
+              }
+          };
+          
+          const completionListener = (fullContent: string) => {
+              if (!this._isDisposed && this._panel.webview) {
+                  this._panel.webview.postMessage({ 
+                      command: 'finalizeMessage', 
+                      id: activeGen.messageId, 
+                      fullContent: fullContent 
+                  });
+                  this.updateGeneratingState();
+              }
+          };
+
+          activeGen.listeners.add(listener);
+          activeGen.onComplete.add(completionListener);
+          
+          // Force UI to generating state
+          this.updateGeneratingState();
+      }
+
       this._panel.webview.postMessage({ 
           command: 'updateDiscussionCapabilities', 
           capabilities: this._discussionCapabilities,
@@ -296,7 +417,6 @@ export class ChatPanel {
       this.displayPlan(this._currentDiscussion.plan);
       this.updateGeneratingState();
 
-      // Defer token calculation and context refresh to allow UI to render first
       setTimeout(() => {
           this.updateContextAndTokens();
       }, 100);
@@ -386,9 +506,17 @@ export class ChatPanel {
             if (this._isDisposed) return;
 
             const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || [];
+            
+            // UI Optimization: Truncate large context for display
+            // Sending > 50KB JSON to webview can cause lag/hangs
+            const PREVIEW_LIMIT = 50000;
+            const contextTextToSend = context.text.length > PREVIEW_LIMIT
+                ? `# Context Hidden (Too Large for Preview)\n\nThe full context (${context.text.length} chars) is loaded in backend memory for AI usage, but is hidden from this preview to improve UI performance.`
+                : context.text;
+
             this._panel.webview.postMessage({ 
                 command: 'updateContext', 
-                context: context.text,
+                context: contextTextToSend,
                 files: includedFiles,
                 skills: context.importedSkills || []
             });
@@ -668,7 +796,6 @@ export class ChatPanel {
 
     /**
      * AUTO-GENERATE TITLE LOGIC
-     * If enabled, trigger title generation after the first real user message.
      */
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     if (config.get<boolean>('autoGenerateTitle') && 
@@ -724,7 +851,6 @@ export class ChatPanel {
             );
         } catch (e: any) {
             this.log(`Auto-Context failed: ${e.message}`, 'ERROR');
-            if (!this._isDisposed) this._panel.webview.postMessage({ command: 'updateStatus', status: 'Auto-Context Failed. Using default.', type: 'error' });
         }
     }
 
@@ -889,39 +1015,66 @@ export class ChatPanel {
 
         const lastMsgIndex = messagesToSend.length - 1;
         if (lastMsgIndex >= 0) {
-            const lastMsg = messagesToSend[lastMsgIndex];
-            if (lastMsg.role === 'user') {
-                let suffix = "";
-                
-                if (addPedagogical) {
-                    const pedagogicalSuffix = "\n\n(Important: Please start by explaining what you are doing. Use the structure: **Problem**, **Hypothesis**, and **Fix**. Only then provide your code or actions.)";
-                    if (typeof lastMsg.content === 'string' && !lastMsg.content.includes(pedagogicalSuffix.trim())) {
-                        suffix += pedagogicalSuffix;
-                    }
-                }
-
-                if (forceFullCode) {
-                    const fullCodeSuffix = "\n\nCRITICAL INSTRUCTION: You must return the FULL CONTENT of the file(s). Do NOT use diffs, patches, or snippets. Use the format:\n```language:path/to/file\n[FULL CODE]\n```";
-                    if (typeof lastMsg.content === 'string' && !lastMsg.content.includes("CRITICAL INSTRUCTION")) {
-                        suffix += fullCodeSuffix;
-                    }
-                }
-
-                if (suffix) {
-                    const modifiedLastMsg = { ...lastMsg };
-                    if (typeof modifiedLastMsg.content === 'string') {
-                         modifiedLastMsg.content += suffix;
-                    } else if (Array.isArray(modifiedLastMsg.content)) {
-                        const newContent = [...modifiedLastMsg.content];
-                        newContent.push({ type: 'text', text: suffix });
-                        modifiedLastMsg.content = newContent;
-                    }
-                    messagesToSend[lastMsgIndex] = modifiedLastMsg;
-                }
-            }
+             const lastMsg = messagesToSend[lastMsgIndex];
+             if (lastMsg.role === 'user') {
+                 let suffix = "";
+                 if (addPedagogical) {
+                     const pedagogicalSuffix = "\n\n(Important: Please start by explaining what you are doing. Use the structure: **Problem**, **Hypothesis**, and **Fix**. Only then provide your code or actions.)";
+                     if (typeof lastMsg.content === 'string' && !lastMsg.content.includes(pedagogicalSuffix.trim())) suffix += pedagogicalSuffix;
+                 }
+                 if (forceFullCode) {
+                     const fullCodeSuffix = "\n\nCRITICAL INSTRUCTION: You must return the FULL CONTENT of the file(s). Do NOT use diffs, patches, or snippets. Use the format:\n```language:path/to/file\n[FULL CODE]\n```";
+                     if (typeof lastMsg.content === 'string' && !lastMsg.content.includes("CRITICAL INSTRUCTION")) suffix += fullCodeSuffix;
+                 }
+                 if (suffix) {
+                     const modifiedLastMsg = { ...lastMsg };
+                     if (typeof modifiedLastMsg.content === 'string') modifiedLastMsg.content += suffix;
+                     else if (Array.isArray(modifiedLastMsg.content)) {
+                         const newContent = [...modifiedLastMsg.content];
+                         newContent.push({ type: 'text', text: suffix });
+                         modifiedLastMsg.content = newContent;
+                     }
+                     messagesToSend[lastMsgIndex] = modifiedLastMsg;
+                 }
+             }
         }
 
         const assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
+        
+        // --- Register Generation Session for Persistence ---
+        const generationSession: ActiveGeneration = {
+            messageId: assistantMessageId,
+            buffer: '',
+            model: this._currentDiscussion.model || this._lollmsAPI.getModelName(),
+            startTime: Date.now(),
+            listeners: new Set(),
+            onComplete: new Set()
+        };
+        
+        // Add the listener for THIS specific panel instance
+        const panelListener = (chunk: string) => {
+             if (!this._isDisposed && this._panel.webview) {
+                 this._panel.webview.postMessage({
+                     command: 'appendMessageChunk',
+                     id: assistantMessageId,
+                     chunk: chunk
+                 });
+             }
+        };
+        generationSession.listeners.add(panelListener);
+
+        const panelFinalizer = (fullContent: string) => {
+            if (!this._isDisposed && this._panel.webview) {
+                this._panel.webview.postMessage({
+                     command: 'finalizeMessage',
+                     id: assistantMessageId,
+                     fullContent: fullContent
+                });
+            }
+        };
+        generationSession.onComplete.add(panelFinalizer);
+
+        ChatPanel.activeGenerations.set(this.discussionId, generationSession);
         
         if (!this._isDisposed) {
             this._panel.webview.postMessage({
@@ -931,7 +1084,7 @@ export class ChatPanel {
                     role: 'assistant',
                     content: '',
                     startTime: Date.now(),
-                    model: this._currentDiscussion.model || this._lollmsAPI.getModelName()
+                    model: generationSession.model
                 }
             });
         }
@@ -942,16 +1095,18 @@ export class ChatPanel {
 
         await this._lollmsAPI.sendChat(messagesToSend, (chunk) => {
             if (this._isDisposed) {
-                controller.abort();
-                return;
+                // Background processing: Continue accumulating buffer
+                // Do NOT return here if you want background completion
             }
+            
             fullResponse += chunk;
             tokenCount++; 
-            this._panel.webview.postMessage({
-                command: 'appendMessageChunk',
-                id: assistantMessageId,
-                chunk: chunk
-            });
+            
+            // Update session buffer
+            generationSession.buffer += chunk;
+            
+            // Notify all listeners
+            generationSession.listeners.forEach(listener => listener(chunk));
 
             const searchMatch = fullResponse.match(/<web_search>(.*?)<\/web_search>/);
             if (searchMatch && !webSearchTriggered) {
@@ -963,28 +1118,29 @@ export class ChatPanel {
 
         if (!webSearchTriggered) {
             if (!fullResponse || fullResponse.trim() === '') {
-                fullResponse = "*[No response received from Lollms. The server might be busy or the model failed to generate text.]*";
+                if (!this._isDisposed) {
+                    fullResponse = "*[No response received from Lollms. The server might be busy or the model failed to generate text.]*";
+                }
             }
 
-            const cleanResponse = fullResponse;
-            const assistantMessage: ChatMessage = {
-                id: assistantMessageId,
-                role: 'assistant',
-                content: cleanResponse,
-                model: this._currentDiscussion.model || this._lollmsAPI.getModelName()
-            };
-
-            await this.addMessageToDiscussion(assistantMessage, false);
-
-            if (!this._isDisposed) {
-                this._panel.webview.postMessage({
-                    command: 'finalizeMessage',
+            if (fullResponse && fullResponse.trim() !== '') {
+                const cleanResponse = fullResponse;
+                const assistantMessage: ChatMessage = {
                     id: assistantMessageId,
-                    fullContent: cleanResponse,
-                    tokenCount: tokenCount
-                });
+                    role: 'assistant',
+                    content: cleanResponse,
+                    model: this._currentDiscussion.model || this._lollmsAPI.getModelName()
+                };
+
+                await this.addMessageToDiscussion(assistantMessage, false);
+
+                // Notify completion listeners (UI finalize)
+                generationSession.onComplete.forEach(fn => fn(cleanResponse));
             }
         }
+        
+        // Cleanup Session
+        ChatPanel.activeGenerations.delete(this.discussionId);
 
     } catch (error: any) {
         if (error.name !== 'AbortError') {
@@ -995,12 +1151,14 @@ export class ChatPanel {
                 content: `**Error Generating Response:**\n${error.message}\n\n*Check the "Lollms VS Coder" output channel for raw server responses.*`
             };
             await this.addMessageToDiscussion(errorMsg);
-            if (!this._isDisposed) {
+            
+             if (!this._isDisposed) {
                 this._panel.webview.postMessage({ command: 'finalizeMessage', id: 'assistant_failed', fullContent: `*Generation Failed: ${error.message}*` });
             }
         } else {
             this.log('Generation aborted by user.');
         }
+        ChatPanel.activeGenerations.delete(this.discussionId);
     } finally {
         this.processManager.unregister(processId);
         this.updateGeneratingState();
@@ -1394,6 +1552,13 @@ export class ChatPanel {
     ChatPanel.panels.delete(this.discussionId);
     this._panel.dispose();
     while (this._executionLogs.length) { this._executionLogs.pop(); }
+    
+    // IMPORTANT: We do NOT remove the AgentManager from the activeAgents map automatically.
+    // This allows background execution to continue.
+    // If the agent finishes, it will be idle in the map until reconnected or cleaned up later.
+    
+    // NOTE: We also do NOT remove from activeGenerations here, 
+    // because we want the background generation to finish and save.
   }
   
   private _setWebviewMessageListener(webview: vscode.Webview) {

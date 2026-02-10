@@ -1,0 +1,38 @@
+<skill id="lollms-code-gen">
+    <name>Code Operations</name>
+    <description>Generating and editing code using the Text Processor.</description>
+    <category>python/lollms_client/generation</category>
+    <language>markdown</language>
+    <timestamp>1738425600000</timestamp>
+    <content>
+        <![CDATA[
+# Code Operations
+
+## Generate Code
+```python
+code = lc.llm.tp.generate_code(
+    prompt="Write a Python function to sort a list",
+    language="python"
+)
+```
+
+## Edit Code
+```python
+original = "def add(a,b): return a+b"
+edited = lc.llm.tp.edit_code(
+    original_code=original,
+    edit_instruction="Add type hints",
+    language="python"
+)
+```
+
+## Multi-file Generation
+```python
+files = lc.llm.tp.generate_codes(
+    prompt="Create a React component with css file"
+)
+# Returns dict: {'Comp.jsx': '...', 'Comp.css': '...'}
+```
+]]>
+    </content>
+</skill>

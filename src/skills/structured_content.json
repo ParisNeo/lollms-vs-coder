@@ -1,8 +1,0 @@
-{
-  "id": "lollms-structured",
-  "name": "Structured Output (JSON)",
-  "description": "Generating validated JSON outputs.",
-  "category": "python/lollms_client/generation",
-  "language": "markdown",
-  "content": "# Structured Output\n\n## Using JSON Schema\n```python\nschema = {\n    \"type\": \"object\",\n    \"properties\": {\n        \"title\": {\"type\": \"string\"},\n        \"tags\": {\"type\": \"array\", \"items\": {\"type\": \"string\"}}\n    }\n}\n\ndata = lc.generate_structured_content(\n    prompt=\"Suggest a blog post about AI.\",\n    schema=schema\n)\n# data is a python dict\n```\n\n## Using Text Processor (Pydantic)\n```python\nfrom pydantic import BaseModel\n\nclass BlogPost(BaseModel):\n    title: str\n    tags: list[str]\n\npost = lc.llm.tp.generate_structured_content_pydantic(\n    prompt=\"Suggest a blog post about AI.\",\n    pydantic_model=BlogPost\n)\n# post is an instance of BlogPost\n```\n"
-}

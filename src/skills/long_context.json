@@ -1,8 +1,0 @@
-{
-  "id": "lollms-long-context",
-  "name": "Long Context Processing",
-  "description": "Summarizing and extracting from large documents.",
-  "category": "python/lollms_client/context",
-  "language": "markdown",
-  "content": "# Long Context Processing\n\nProcess texts larger than the context window.\n\n## Text Generation\n```python\nsummary = lc.long_context_processing(\n    text_to_process=very_long_text,\n    contextual_prompt=\"Summarize the main points.\",\n    chunk_size_tokens=4000\n)\n```\n\n## Structured Extraction (TP)\n```python\nresult = lc.llm.tp.long_context_processing(\n    text_to_process=book_text,\n    contextual_prompt=\"Extract all character names.\",\n    processing_type=\"structured\",\n    schema={\"type\": \"object\", \"properties\": {\"names\": {\"type\": \"array\"}}}\n)\n```\n"
-}

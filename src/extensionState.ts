@@ -72,7 +72,9 @@ export async function runCommandInTerminal(
     return new Promise(async (resolve) => {
         const outputDir = path.join(cwd, '.lollms');
         if (!fs.existsSync(outputDir)) {
-            fs.mkdirSync(outputDir, { recursive: true });
+            try { fs.mkdirSync(outputDir, { recursive: true }); } catch (e) {
+                return resolve({ success: false, output: `Failed to create output directory .lollms: ${e}` });
+            }
         }
 
         const outputFile = path.join(outputDir, 'last_output.txt');
@@ -146,39 +148,43 @@ $LASTEXITCODE | Out-File -FilePath '${safeExitCodeFile}' -Encoding utf8
             clear: true
         };
 
-        const executionTask = await vscode.tasks.executeTask(task);
-        const disposable = vscode.tasks.onDidEndTaskProcess(e => {
-            if (e.execution === executionTask) {
-                disposable.dispose();
-                setTimeout(() => {
-                    let output = "";
-                    let success = true;
-                    try {
-                        if (fs.existsSync(outputFile)) {
-                            // Read as UTF-8 and strip BOM if present
-                            output = fs.readFileSync(outputFile, 'utf8').replace(/^\uFEFF/, '');
+        try {
+            const executionTask = await vscode.tasks.executeTask(task);
+            const disposable = vscode.tasks.onDidEndTaskProcess(e => {
+                if (e.execution === executionTask) {
+                    disposable.dispose();
+                    setTimeout(() => {
+                        let output = "";
+                        let success = true;
+                        try {
+                            if (fs.existsSync(outputFile)) {
+                                // Read as UTF-8 and strip BOM if present
+                                output = fs.readFileSync(outputFile, 'utf8').replace(/^\uFEFF/, '');
+                            }
+                            if (fs.existsSync(exitCodeFile)) {
+                                const code = fs.readFileSync(exitCodeFile, 'utf8').trim().replace(/^\uFEFF/, '');
+                                success = code === '0';
+                            } else {
+                                success = e.exitCode === 0;
+                            }
+                        } catch (err) {
+                            output = `Error reading task results: ${err}`;
+                            success = false;
                         }
-                        if (fs.existsSync(exitCodeFile)) {
-                            const code = fs.readFileSync(exitCodeFile, 'utf8').trim().replace(/^\uFEFF/, '');
-                            success = code === '0';
-                        } else {
-                            success = e.exitCode === 0;
-                        }
-                    } catch (err) {
-                        output = `Error reading task results: ${err}`;
-                        success = false;
-                    }
-                    resolve({ success, output });
-                }, 500);
-            }
-        });
-
-        if (signal) {
-            signal.addEventListener('abort', () => {
-                executionTask.terminate();
-                disposable.dispose();
-                resolve({ success: false, output: "Execution cancelled." });
+                        resolve({ success, output });
+                    }, 500);
+                }
             });
+
+            if (signal) {
+                signal.addEventListener('abort', () => {
+                    executionTask.terminate();
+                    disposable.dispose();
+                    resolve({ success: false, output: "Execution cancelled." });
+                });
+            }
+        } catch (err: any) {
+            resolve({ success: false, output: `Task execution failed: ${err.message}` });
         }
     });
 }

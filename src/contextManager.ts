@@ -509,14 +509,20 @@ You have access to the project structure and the list of currently selected file
     const signal = options?.signal;
     const skillProtocol = `
 ### SKILL CREATION PROTOCOL
-If the user asks to "save this as a skill", "remember this", or "learn how to do X", wrap the resulting documentation/code in a <skill> tag.
-Format:
-<skill title="Skill Name">
-Description of what this teaches or provides.
-\`\`\`language
-code or instructions
-\`\`\`
-</skill>
+If the user asks to "save this as a skill", "remember this", or "learn how to do X", wrap the resulting documentation/code in a 
+    <div class="skill-creation-block">
+        <div class="skill-header"><span class="codicon codicon-lightbulb"></span> Skill Generated: New Skill</div>
+        <div class="skill-preview markdown-body"><p> tag.<br>Format:<br><br>Description of what this teaches or provides.<br>\`\`\`language<br>code or instructions<br>\`\`\`</p>
+</div>
+        <div class="skill-actions">
+            <button class="code-action-btn" onclick="saveSkill('%20tag.%0D%0AFormat%3A%0D%0A%3Cskill%20title%3D%22Skill%20Name%22%3E%0D%0ADescription%20of%20what%20this%20teaches%20or%20provides.%0D%0A%5C%60%5C%60%5C%60language%0D%0Acode%20or%20instructions%0D%0A%5C%60%5C%60%5C%60%0D%0A', 'local', 'New%20Skill')">
+                <span class="codicon codicon-save"></span> Save to Project
+            </button>
+            <button class="code-action-btn" onclick="saveSkill('%20tag.%0D%0AFormat%3A%0D%0A%3Cskill%20title%3D%22Skill%20Name%22%3E%0D%0ADescription%20of%20what%20this%20teaches%20or%20provides.%0D%0A%5C%60%5C%60%5C%60language%0D%0Acode%20or%20instructions%0D%0A%5C%60%5C%60%5C%60%0D%0A', 'global', 'New%20Skill')">
+                <span class="codicon codicon-globe"></span> Save Global
+            </button>
+        </div>
+    </div>
 `;
     if (!this.contextStateProvider) {
       result.text = this.getNoWorkspaceMessage();
@@ -760,6 +766,7 @@ Based on the objective and the file tree, which files are the most relevant? Ret
       return '## Project Structure\n\n*No project structure available - no workspace folder found.*\n';
     }
 
+    // Pass the signal to get visible files (which already yields)
     const allVisibleFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
     if (signal?.aborted) throw new Error("Operation cancelled");
 
@@ -775,15 +782,25 @@ Based on the objective and the file tree, which files are the most relevant? Ret
       return tree;
     }
 
+    // --- SAFETY CHECK: Truncate very large file lists to prevent freeze/OOM ---
+    const FILE_LIMIT = 2000;
+    let effectiveFiles = allVisibleFiles;
+    let warningMsg = '';
+
+    if (allVisibleFiles.length > FILE_LIMIT) {
+        effectiveFiles = allVisibleFiles.slice(0, FILE_LIMIT);
+        warningMsg = `\n*(Tree truncated: ${allVisibleFiles.length - FILE_LIMIT} additional files hidden to save memory. Use context exclusions to hide irrelevant folders.)*\n`;
+    }
+
     tree += '```text\n';
     
     const fileTree: { [key: string]: any } = {};
     
     // Performance Optimization: Process file list in chunks to avoid blocking the event loop
-    for (let i = 0; i < allVisibleFiles.length; i++) {
+    for (let i = 0; i < effectiveFiles.length; i++) {
         if (i % 200 === 0) await new Promise(resolve => setTimeout(resolve, 0));
         
-        const filePath = allVisibleFiles[i];
+        const filePath = effectiveFiles[i];
         const parts = filePath.split(path.sep).filter(part => part.length > 0);
         let current = fileTree;
         
@@ -839,7 +856,7 @@ Based on the objective and the file tree, which files are the most relevant? Ret
     };
 
     tree += generateTreeString(fileTree);
-    tree += '```\n';
+    tree += '```\n' + warningMsg;
 
     return tree;
   }

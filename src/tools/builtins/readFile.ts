@@ -17,13 +17,16 @@ export const readFileTool: ToolDefinition = {
         if (!env.workspaceRoot) {
             return { success: false, output: "Error: No active workspace folder." };
         }
+        
+        let filePath = params.path.trim();
+        if (filePath.startsWith('/') || filePath.startsWith('\\')) filePath = filePath.substring(1);
 
         try {
-            const fileUri = vscode.Uri.joinPath(env.workspaceRoot.uri, params.path);
+            const fileUri = vscode.Uri.joinPath(env.workspaceRoot.uri, filePath);
             const fileContent = await vscode.workspace.fs.readFile(fileUri);
             return { success: true, output: Buffer.from(fileContent).toString('utf8') };
         } catch (error: any) {
-            return { success: false, output: `Error reading file ${params.path}: ${error.message}` };
+            return { success: false, output: `Error reading file ${filePath}: ${error.message}` };
         }
     }
 };

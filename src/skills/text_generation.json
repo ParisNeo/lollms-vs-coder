@@ -1,8 +1,0 @@
-{
-  "id": "lollms-text-gen",
-  "name": "Text Generation",
-  "description": "Generating text and streaming responses.",
-  "category": "python/lollms_client/generation",
-  "language": "markdown",
-  "content": "# Text Generation\n\n## Basic Generation\n```python\nfrom lollms_client import LollmsClient\nlc = LollmsClient(...)\n\nresponse = lc.generate_text(\n    prompt=\"Why is the sky blue?\",\n    n_predict=512,\n    temperature=0.7\n)\nprint(response)\n```\n\n## Streaming\n```python\nfrom lollms_client import MSG_TYPE\n\ndef callback(chunk, type, **kwargs):\n    if type == MSG_TYPE.MSG_TYPE_CHUNK:\n        print(chunk, end=\"\", flush=True)\n    return True\n\nlc.generate_text(\n    prompt=\"Tell me a story\",\n    stream=True,\n    streaming_callback=callback\n)\n```\n\n## Chat Generation (Messages)\n```python\nmessages = [\n    {\"role\": \"system\", \"content\": \"You are a helpful assistant.\"},\n    {\"role\": \"user\", \"content\": \"Hello!\"}\n]\nresponse = lc.generate_from_messages(messages)\n```\n"
-}

@@ -1,8 +1,0 @@
-{
-  "id": "lollms-instantiation",
-  "name": "Client Setup & Bindings",
-  "description": "Initializing LollmsClient with different backends (Ollama, OpenAI, LoLLMs, etc.).",
-  "category": "python/lollms_client/setup",
-  "language": "markdown",
-  "content": "# LoLLMs Client Setup\n\n## 1. Basic Setup (LoLLMs Server)\n```python\nfrom lollms_client import LollmsClient\n\nlc = LollmsClient(\n    llm_binding_name=\"lollms\",\n    llm_binding_config={\"host_address\": \"http://localhost:9642\"}\n)\n```\n\n## 2. Ollama Binding\n```python\nlc = LollmsClient(\n    llm_binding_name=\"ollama\",\n    llm_binding_config={\n        \"model_name\": \"llama3\",\n        \"host_address\": \"http://localhost:11434\"\n    }\n)\n```\n\n## 3. OpenAI Binding\n```python\nimport os\nlc = LollmsClient(\n    llm_binding_name=\"openai\",\n    llm_binding_config={\n        \"model_name\": \"gpt-4o\",\n        \"service_key\": os.getenv(\"OPENAI_API_KEY\")\n    }\n)\n```\n\n## 4. Local GGUF (PythonLlamaCpp)\n```python\nlc = LollmsClient(\n    llm_binding_name=\"pythonllamacpp\",\n    llm_binding_config={\n        \"model_path\": \"/path/to/model.gguf\",\n        \"n_gpu_layers\": -1,\n        \"n_ctx\": 4096\n    }\n)\n```\n"
-}

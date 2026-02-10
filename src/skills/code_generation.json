@@ -1,8 +1,0 @@
-{
-  "id": "lollms-code-gen",
-  "name": "Code Operations",
-  "description": "Generating and editing code using the Text Processor.",
-  "category": "python/lollms_client/generation",
-  "language": "markdown",
-  "content": "# Code Operations\n\n## Generate Code\n```python\ncode = lc.llm.tp.generate_code(\n    prompt=\"Write a Python function to sort a list\",\n    language=\"python\"\n)\n```\n\n## Edit Code\n```python\noriginal = \"def add(a,b): return a+b\"\nedited = lc.llm.tp.edit_code(\n    original_code=original,\n    edit_instruction=\"Add type hints\",\n    language=\"python\"\n)\n```\n\n## Multi-file Generation\n```python\nfiles = lc.llm.tp.generate_codes(\n    prompt=\"Create a React component with css file\"\n)\n# Returns dict: {'Comp.jsx': '...', 'Comp.css': '...'}\n```\n"
-}

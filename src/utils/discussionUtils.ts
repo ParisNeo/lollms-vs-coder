@@ -25,13 +25,22 @@ export async function startDiscussionWithInitialPrompt(
         services.skillsManager
     );
     
-    panel.agentManager = new AgentManager(
-        panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
-        services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
-        services.rlmDb // Passed here
-    );
+    // Check if agent exists first
+    if (ChatPanel.activeAgents.has(discussion.id)) {
+        // Reconnect existing agent
+        const agent = ChatPanel.activeAgents.get(discussion.id)!;
+        panel.setAgentManager(agent);
+    } else {
+        const agent = new AgentManager(
+            panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
+            services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
+            services.rlmDb 
+        );
+        agent.setProcessManager(services.processManager);
+        panel.setAgentManager(agent);
+    }
+
     panel.setProcessManager(services.processManager);
-    panel.agentManager.setProcessManager(services.processManager);
     panel.setContextManager(services.contextManager);
     panel.setPersonalityManager(services.personalityManager);
     panel.setHerdManager(services.herdManager);

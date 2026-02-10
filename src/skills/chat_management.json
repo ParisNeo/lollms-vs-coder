@@ -1,8 +1,0 @@
-{
-  "id": "lollms-chat-mgmt",
-  "name": "Discussions & Context",
-  "description": "Managing conversation state, memory, and context zones.",
-  "category": "python/lollms_client/context",
-  "language": "markdown",
-  "content": "# Discussion Management\n\n## Persistent Chat\n```python\nfrom lollms_client import LollmsDiscussion, LollmsDataManager\n\ndb = LollmsDataManager(\"sqlite:///my_chat.db\")\ndiscussion = LollmsDiscussion.create_new(lc, db_manager=db)\n\ndiscussion.chat(\"My name is Alice.\")\ndiscussion.memorize() # Extracts facts to long-term memory\n```\n\n## Context Zones\nManipulate what the AI sees:\n```python\ndiscussion.user_data_zone = \"User Level: Expert\"\ndiscussion.system_prompt = \"You are a Linux terminal.\"\n\nstatus = discussion.get_context_status()\nprint(status['current_tokens'])\n```\n"
-}

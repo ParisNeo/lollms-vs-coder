@@ -21,13 +21,16 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
         await services.discussionManager.saveDiscussion(discussion);
         const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussion.id, services.gitIntegration, services.skillsManager);
         
-        panel.agentManager = new AgentManager(
+        // Use the setAgentManager which handles reconnection logic internally
+        const agent = new AgentManager(
             panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
             services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
-            services.rlmDb // Passed from services
+            services.rlmDb 
         );
+        agent.setProcessManager(services.processManager);
+        panel.setAgentManager(agent);
+
         panel.setProcessManager(services.processManager);
-        panel.agentManager.setProcessManager(services.processManager);
         panel.setContextManager(services.contextManager);
         panel.setPersonalityManager(services.personalityManager);
         panel.setHerdManager(services.herdManager); 
@@ -36,8 +39,6 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
         services.treeProviders.discussion?.refresh();
     }));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newTempDiscussion', async () => {
-        // Generate a temporary ID. The ChatPanel and DiscussionManager logic 
-        // uses the 'temp-' prefix to avoid auto-saving to disk.
         const tempId = 'temp-' + Date.now().toString() + Math.random().toString(36).substring(2);
         
         const panel = ChatPanel.createOrShow(
@@ -49,18 +50,19 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
             services.skillsManager
         );
         
-        panel.agentManager = new (require('../agentManager').AgentManager)(
+        const agent = new AgentManager(
             panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
             services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager
         );
+        agent.setProcessManager(services.processManager);
+        panel.setAgentManager(agent);
+
         panel.setProcessManager(services.processManager);
-        panel.agentManager.setProcessManager(services.processManager);
         panel.setContextManager(services.contextManager);
         panel.setPersonalityManager(services.personalityManager);
         panel.setHerdManager(services.herdManager); 
         
         await panel.loadDiscussion();
-        // Note: We don't refresh the tree because temp discussions don't appear in the sidebar
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussionFromClipboard', async () => {
@@ -78,6 +80,10 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
         if (confirm?.id === 'delete') {
             const panel = ChatPanel.panels.get(item.discussion.id);
             panel?.dispose(); 
+            // Also cleanup any active agents
+            if (ChatPanel.activeAgents.has(item.discussion.id)) {
+                ChatPanel.activeAgents.delete(item.discussion.id);
+            }
             await services.discussionManager.deleteDiscussion(item.discussion.id);
             services.treeProviders.discussion?.refresh();
         }
@@ -93,7 +99,6 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
             item.discussion.title = newTitle.trim();
             await services.discussionManager.saveDiscussion(item.discussion);
             
-            // Update open panel title if it exists
             const panel = ChatPanel.panels.get(item.discussion.id);
             if (panel) {
                 panel._panel.title = item.discussion.title;
@@ -125,7 +130,6 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
                     vscode.window.showErrorMessage("Failed to generate a title: The AI returned an empty response.");
                 }
             } catch (error: any) {
-                // Show actual API error to user (e.g. Connection refused, model not found)
                 vscode.window.showErrorMessage(`Title Generation Error: ${error.message}`);
             }
         });
@@ -133,13 +137,24 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.switchDiscussion', async (discussionId: string) => {
         const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussionId, services.gitIntegration, services.skillsManager);
-        panel.agentManager = new AgentManager(
-            panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
-            services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
-            services.rlmDb // Passed from services
-        );
+        
+        // Check if agent exists first
+        if (ChatPanel.activeAgents.has(discussionId)) {
+            // Reconnect existing agent
+            const agent = ChatPanel.activeAgents.get(discussionId)!;
+            // setAgentManager handles setUI internally
+            panel.setAgentManager(agent);
+        } else {
+            const agent = new AgentManager(
+                panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
+                services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
+                services.rlmDb 
+            );
+            agent.setProcessManager(services.processManager);
+            panel.setAgentManager(agent);
+        }
+
         panel.setProcessManager(services.processManager);
-        panel.agentManager.setProcessManager(services.processManager);
         panel.setContextManager(services.contextManager);
         panel.setPersonalityManager(services.personalityManager);
         panel.setHerdManager(services.herdManager); 

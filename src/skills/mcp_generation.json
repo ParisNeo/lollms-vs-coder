@@ -1,8 +1,0 @@
-{
-  "id": "lollms-agentic",
-  "name": "Agents & Tools (MCP)",
-  "description": "Creating agents with personalities and tools.",
-  "category": "python/lollms_client/agents",
-  "language": "markdown",
-  "content": "# Agentic Workflows\n\n## Defining an Agent\n\n```python\nfrom lollms_client import LollmsPersonality\n\nagent = LollmsPersonality(\n    name=\"Researcher\",\n    system_prompt=\"You research topics using tools.\",\n    active_mcps=[\"search_web\", \"scrape_website\"] # Enable tools\n)\n```\n\n## Running the Agent\n\n```python\n# Initialize with MCP binding\nlc = LollmsClient(..., mcp_binding_name=\"local_mcp\")\ndiscussion = LollmsDiscussion.create_new(lc)\n\n# Chat with the specific personality\nresponse = discussion.chat(\n    user_message=\"Find the latest news on AI.\",\n    personality=agent,\n    max_llm_iterations=5 # Allow multiple tool calls\n)\n```\n"
-}

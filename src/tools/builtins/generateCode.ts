@@ -16,7 +16,7 @@ If the context contains a **Skill** (like Moltbook), you MUST treat that documen
 
 **CRITICAL INSTRUCTIONS:**
 1.  **CODE ONLY:** Your entire response MUST be a single markdown code block containing the complete file content.
-2.  **NO EXTRA TEXT:** Do not add any explanations, comments, or conversational text outside of the code block.
+2.  **NO EXTRA TEXT:** Do not add any explanations, comments, or conversational text outside the code block.
 3.  **COMPLETE FILE:** Your output must be the full and complete code for the file, not just the changed parts.
 4.  **NO PLACEHOLDERS:** Do not use placeholders like "...".
 5.  **NO PATCHES:** You are strictly forbidden from generating git patches or diffs.
@@ -52,6 +52,12 @@ export const generateCodeTool: ToolDefinition = {
         if (!params.file_path) {
             return { success: false, output: "Error: 'file_path' parameter is required." };
         }
+        
+        // Sanitize path (remove leading slash)
+        let filePath = params.file_path.trim();
+        if (filePath.startsWith('/') || filePath.startsWith('\\')) {
+            filePath = filePath.substring(1);
+        }
 
         const currentDiscussion = env.agentManager?.getCurrentDiscussion();
         const modelOverride = currentDiscussion?.model;
@@ -71,14 +77,14 @@ export const generateCodeTool: ToolDefinition = {
                 if (allFiles.length > 0) {
                     const selectionSystemPrompt: ChatMessage = {
                         role: 'system',
-                        content: `You are a dependency analyzer for file: "${params.file_path}".
+                        content: `You are a dependency analyzer for file: "${filePath}".
 Identify which *other* existing files in the project are crucial to read (type definitions, utility functions, signatures, base classes, or CLI structures) to ensure correct implementation.
 Select up to 10 relevant files. Return ONLY a valid JSON array of strings. Do NOT select the target file itself.`
                     };
 
                     const selectionUserPrompt: ChatMessage = {
                         role: 'user',
-                        content: `**Target File:** ${params.file_path}\n**Instruction:** ${params.user_prompt}\n**File List:**\n${fileListString}`
+                        content: `**Target File:** ${filePath}\n**Instruction:** ${params.user_prompt}\n**File List:**\n${fileListString}`
                     };
 
                     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
@@ -111,14 +117,14 @@ Select up to 10 relevant files. Return ONLY a valid JSON array of strings. Do NO
         contextData.files = baseContext.selectedFilesContent + contextData.files; 
         contextData.skills = baseContext.skillsContent;
 
-        let userPromptContent = params.user_prompt || `Generate code for ${params.file_path}`;
+        let userPromptContent = params.user_prompt || `Generate code for ${filePath}`;
 
         if (env.workspaceRoot) {
             try {
-                const fileUri = vscode.Uri.joinPath(env.workspaceRoot.uri, params.file_path);
+                const fileUri = vscode.Uri.joinPath(env.workspaceRoot.uri, filePath);
                 const fileContentBytes = await vscode.workspace.fs.readFile(fileUri);
                 const existingContent = Buffer.from(fileContentBytes).toString('utf8');
-                userPromptContent = `I am working on the file \`${params.file_path}\`. Current content:\n\n\`\`\`\n${existingContent}\n\`\`\`\n\nInstruction: ${userPromptContent}`;
+                userPromptContent = `I am working on the file \`${filePath}\`. Current content:\n\n\`\`\`\n${existingContent}\n\`\`\`\n\nInstruction: ${userPromptContent}`;
             } catch (error) { }
         }
 
@@ -144,11 +150,11 @@ Select up to 10 relevant files. Return ONLY a valid JSON array of strings. Do NO
         }
 
         try {
-            const fileUri = vscode.Uri.joinPath(env.workspaceRoot.uri, params.file_path);
+            const fileUri = vscode.Uri.joinPath(env.workspaceRoot.uri, filePath);
             const parentUri = vscode.Uri.joinPath(fileUri, '..');
             await vscode.workspace.fs.createDirectory(parentUri);
             await vscode.workspace.fs.writeFile(fileUri, Buffer.from(generatedCode, 'utf8'));
-            return { success: true, output: `Successfully generated and wrote code to file: ${params.file_path}` };
+            return { success: true, output: `Successfully generated and wrote code to file: ${filePath}` };
         } catch (error: any) {
             return { success: false, output: `Error writing generated code: ${error.message}` };
         }

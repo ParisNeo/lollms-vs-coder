@@ -1,8 +1,0 @@
-{
-  "id": "lollms-tp-utils",
-  "name": "Text Processor Utilities",
-  "description": "Helper functions for parsing and logic.",
-  "category": "python/lollms_client/utilities",
-  "language": "markdown",
-  "content": "# Text Processor Utilities\n\nAccess via `lc.llm.tp`.\n\n```python\n# Yes/No Logic\nis_spam = lc.llm.tp.yes_no(\"Is this spam?\", context=email_text)\n\n# Summarization\nsummary = lc.llm.tp.summerize_text(text)\n\n# Extract Code Blocks\nblocks = lc.llm.tp.extract_code_blocks(response_text)\n\n# Clean Reasoning\nclean = lc.llm.tp.remove_thinking_blocks(response_text)\n```\n"
-}

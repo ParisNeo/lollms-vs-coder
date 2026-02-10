@@ -12,6 +12,94 @@ export interface Skill {
     scope: 'global' | 'local'; // Added scope
 }
 
+// --- XML Helpers ---
+
+function escapeXml(unsafe: string): string {
+    if (!unsafe) return '';
+    return unsafe.replace(/[<>&'"]/g, (c) => {
+        switch (c) {
+            case '<': return '&lt;';
+            case '>': return '&gt;';
+            case '&': return '&amp;';
+            case '\'': return '&apos;';
+            case '"': return '&quot;';
+        }
+        return c;
+    });
+}
+
+function unescapeXml(safe: string): string {
+    if (!safe) return '';
+    return safe.replace(/&(lt|gt|amp|apos|quot);/g, (match, entity) => {
+        switch (entity) {
+            case 'lt': return '<';
+            case 'gt': return '>';
+            case 'amp': return '&';
+            case 'apos': return '\'';
+            case 'quot': return '"';
+        }
+        return match;
+    });
+}
+
+function wrapCData(content: string): string {
+    if (content.includes(']]>')) {
+        // Fallback for content containing CDATA end sequence: escape it or just use XML escaping without CDATA
+        // Simplest strategy: split the CDATA or just raw escape. 
+        // For simplicity, if ]]> exists, we rely on standard escaping instead of CDATA
+        return escapeXml(content);
+    }
+    return `<![CDATA[\n${content}\n]]>`;
+}
+
+function extractTag(xml: string, tag: string): string {
+    const regex = new RegExp(`<${tag}>(.*?)<\/${tag}>`, 's');
+    const match = xml.match(regex);
+    return match ? unescapeXml(match[1].trim()) : '';
+}
+
+function extractContentTag(xml: string): string {
+    // Try CDATA
+    const cdataRegex = /<content>\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*<\/content>/;
+    const cdataMatch = xml.match(cdataRegex);
+    if (cdataMatch) return cdataMatch[1].trim();
+
+    // Fallback to normal escaping
+    const regex = /<content>([\s\S]*?)<\/content>/;
+    const match = xml.match(regex);
+    return match ? unescapeXml(match[1].trim()) : '';
+}
+
+function skillToXml(skill: Skill): string {
+    // Indentation for content handled by wrapCData adding newlines
+    return `<skill id="${skill.id}">
+    <name>${escapeXml(skill.name)}</name>
+    <description>${escapeXml(skill.description)}</description>
+    <category>${escapeXml(skill.category || '')}</category>
+    <language>${escapeXml(skill.language || '')}</language>
+    <timestamp>${skill.timestamp}</timestamp>
+    <content>
+        ${wrapCData(skill.content)}
+    </content>
+</skill>`;
+}
+
+function xmlToSkill(xml: string, forcedScope?: 'global' | 'local'): Skill {
+    const idMatch = xml.match(/<skill id="([^"]+)">/);
+    const id = idMatch ? idMatch[1] : 'unknown-' + Date.now();
+    
+    return {
+        id,
+        name: extractTag(xml, 'name'),
+        description: extractTag(xml, 'description'),
+        category: extractTag(xml, 'category'),
+        language: extractTag(xml, 'language'),
+        timestamp: parseInt(extractTag(xml, 'timestamp')) || Date.now(),
+        content: extractContentTag(xml),
+        scope: forcedScope || 'global'
+    };
+}
+
 export class SkillsManager {
     private globalSkillsDir: vscode.Uri;
     private localSkillsDir: vscode.Uri | undefined;
@@ -44,22 +132,18 @@ export class SkillsManager {
     private async ensureBootstrapSkills() {
         if (!this.extensionUri) return;
 
-        /**
-         * FIX: Point to 'out/skills' instead of 'src/skills'.
-         * The 'src' directory is excluded from the final package via .vscodeignore,
-         * but the 'copy-assets' script places the JSON files in 'out/skills'.
-         */
+        // Use 'out/skills' and look for .xml files
         const bootstrapDir = vscode.Uri.joinPath(this.extensionUri, 'out', 'skills');
         try {
             const entries = await vscode.workspace.fs.readDirectory(bootstrapDir);
             const currentGlobalSkills = await this.getGlobalSkills();
 
             for (const [name, type] of entries) {
-                if (type === vscode.FileType.File && name.endsWith('.json')) {
+                if (type === vscode.FileType.File && name.endsWith('.xml')) {
                     const fileUri = vscode.Uri.joinPath(bootstrapDir, name);
                     const content = await vscode.workspace.fs.readFile(fileUri);
-                    const bootstrapSkill = JSON.parse(content.toString()) as Skill;
-                    bootstrapSkill.scope = 'global'; // Force scope
+                    const xmlStr = content.toString();
+                    const bootstrapSkill = xmlToSkill(xmlStr, 'global');
 
                     // Only add if not exists in Global
                     if (!currentGlobalSkills.some(s => s.id === bootstrapSkill.id)) {
@@ -73,7 +157,7 @@ export class SkillsManager {
     }
 
     private async writeSkillToFile(skill: Skill): Promise<void> {
-        const fileName = `${skill.id}.json`;
+        const fileName = `${skill.id}.xml`;
         let targetDir = skill.scope === 'global' ? this.globalSkillsDir : this.localSkillsDir;
 
         if (!targetDir) {
@@ -90,8 +174,8 @@ export class SkillsManager {
         }
 
         const filePath = vscode.Uri.joinPath(targetDir, fileName);
-        const content = Buffer.from(JSON.stringify(skill, null, 2), 'utf8');
-        await vscode.workspace.fs.writeFile(filePath, content);
+        const xmlContent = skillToXml(skill);
+        await vscode.workspace.fs.writeFile(filePath, Buffer.from(xmlContent, 'utf8'));
     }
 
     private async loadSkillsFromDir(dir: vscode.Uri, scope: 'global' | 'local'): Promise<Skill[]> {
@@ -104,11 +188,10 @@ export class SkillsManager {
                 const entryUri = vscode.Uri.joinPath(uri, name);
                 if (type === vscode.FileType.Directory) {
                     await walk(entryUri);
-                } else if (type === vscode.FileType.File && name.endsWith('.json')) {
+                } else if (type === vscode.FileType.File && name.endsWith('.xml')) {
                     try {
                         const content = await vscode.workspace.fs.readFile(entryUri);
-                        const skill = JSON.parse(content.toString()) as Skill;
-                        skill.scope = scope; // Ensure scope is set correctly based on location
+                        const skill = xmlToSkill(content.toString(), scope);
                         skills.push(skill);
                     } catch (e) {}
                 }
@@ -117,6 +200,7 @@ export class SkillsManager {
         await walk(dir);
         return skills;
     }
+
     /**
      * Adds multiple skills at once to the library.
      */
@@ -133,29 +217,38 @@ export class SkillsManager {
         return addedSkills;
     }
 
-    // Refactored importSkills to return the skills so they can be immediately used by the UI
     public async importSkills(): Promise<Skill[]> {
         const uris = await vscode.window.showOpenDialog({
-            title: "Import Skill Pack (JSON)",
-            filters: { "JSON": ["json"] },
-            canSelectMany: false
+            title: "Import Skill Pack (XML)",
+            filters: { "XML": ["xml"] },
+            canSelectMany: true
         });
 
         if (!uris || uris.length === 0) return [];
 
+        const addedSkills: Skill[] = [];
         try {
-            const content = await vscode.workspace.fs.readFile(uris[0]);
-            const imported = JSON.parse(content.toString());
-            const skillDatas = Array.isArray(imported) ? imported : [imported];
-
-            const added = await this.addSkills(skillDatas);
-            vscode.window.showInformationMessage(`Imported ${added.length} skills successfully.`);
-            return added;
+            for (const uri of uris) {
+                const content = await vscode.workspace.fs.readFile(uri);
+                const xmlStr = content.toString();
+                // Simple heuristic: check if it's a single skill or list?
+                // For now assuming single file = single skill per file or handle simple concat
+                // But generally users might want to import one skill file at a time or select multiple.
+                const skill = xmlToSkill(xmlStr, 'global'); // Default to global for import?
+                if (skill.id) {
+                    // Ask scope? Defaulting to global for now as per previous logic
+                    await this.writeSkillToFile(skill);
+                    addedSkills.push(skill);
+                }
+            }
+            vscode.window.showInformationMessage(`Imported ${addedSkills.length} skills successfully.`);
+            return addedSkills;
         } catch (e: any) {
             vscode.window.showErrorMessage(`Failed to import skills: ${e.message}`);
             return [];
         }
     }
+
     public async getGlobalSkills(): Promise<Skill[]> {
         return this.loadSkillsFromDir(this.globalSkillsDir, 'global');
     }
@@ -198,7 +291,7 @@ export class SkillsManager {
                 const entryUri = vscode.Uri.joinPath(uri, name);
                 if (type === vscode.FileType.Directory) {
                     if (await walkAndDelete(entryUri)) return true;
-                } else if (type === vscode.FileType.File && name === `${skillId}.json`) {
+                } else if (type === vscode.FileType.File && name === `${skillId}.xml`) {
                     await vscode.workspace.fs.delete(entryUri);
                     return true;
                 }
@@ -208,9 +301,7 @@ export class SkillsManager {
 
         await walkAndDelete(targetRoot);
     }
-    /**
-     * Retrieves all skills that belong to a specific category or its subcategories.
-     */
+
     public async getSkillsInBundle(categoryPath: string): Promise<Skill[]> {
         const allSkills = await this.getSkills();
         const normalizedPath = categoryPath.replace(/\\/g, '/');
@@ -233,17 +324,21 @@ export class SkillsManager {
             return;
         }
 
-        const fileUri = await vscode.window.showSaveDialog({
-            title: "Export Skills Library",
-            filters: { "JSON": ["json"] },
-            defaultUri: vscode.Uri.file("lollms_skills_library.json")
+        const folderUri = await vscode.window.showOpenDialog({
+            title: "Select Folder to Export Skills",
+            canSelectFiles: false,
+            canSelectFolders: true,
+            canSelectMany: false
         });
 
-        if (fileUri) {
-            const content = Buffer.from(JSON.stringify(toExport, null, 2), 'utf8');
-            await vscode.workspace.fs.writeFile(fileUri, content);
-            vscode.window.showInformationMessage(`Exported ${toExport.length} skills to ${path.basename(fileUri.fsPath)}`);
+        if (folderUri && folderUri[0]) {
+            for (const skill of toExport) {
+                const fileName = `${skill.id}.xml`;
+                const fileUri = vscode.Uri.joinPath(folderUri[0], fileName);
+                const xmlContent = skillToXml(skill);
+                await vscode.workspace.fs.writeFile(fileUri, Buffer.from(xmlContent, 'utf8'));
+            }
+            vscode.window.showInformationMessage(`Exported ${toExport.length} skills to ${folderUri[0].fsPath}`);
         }
     }
-
 }

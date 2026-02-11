@@ -169,19 +169,26 @@ export class ChatPanel {
       }
   }
   
-  public updateGeneratingState() {
-    if (this._isDisposed) return;
-    if (this._panel.webview) {
-        const process = this.processManager.getForDiscussion(this.discussionId);
-        const hasActiveGen = ChatPanel.activeGenerations.has(this.discussionId);
-        
-        const activeAgent = ChatPanel.activeAgents.get(this.discussionId);
-        const agentIsActive = activeAgent ? activeAgent.getIsActive() : false;
 
-        const isGenerating = (!!process || hasActiveGen || agentIsActive) && !this._inputResolver;
-        this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating });
+    public updateGeneratingState() {
+        if (this._isDisposed) return;
+        
+        // ADD THIS GUARD CLAUSE HERE:
+        if (!this.processManager) {
+            return; 
+        }
+
+        if (this._panel.webview) {
+            const process = this.processManager.getForDiscussion(this.discussionId);
+            const hasActiveGen = ChatPanel.activeGenerations.has(this.discussionId);
+            
+            const activeAgent = ChatPanel.activeAgents.get(this.discussionId);
+            const agentIsActive = activeAgent ? activeAgent.getIsActive() : false;
+
+            const isGenerating = (!!process || hasActiveGen || agentIsActive) && !this._inputResolver;
+            this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating });
+        }
     }
-  }
   
   public updateAgentMode(isActive: boolean) {
     if (this._isDisposed) return;
@@ -643,7 +650,8 @@ export class ChatPanel {
   }
 
   public async handleManualAutoContext(userPrompt: string) {
-      if (this._isDisposed) return;
+      if (this._isDisposed || !this.processManager) return; // Add !this.processManager guard
+    
       const { id: processId, controller } = this.processManager.register(this.discussionId, 'Running Auto-Context...');
       this.updateGeneratingState();
       try {
@@ -1976,6 +1984,24 @@ Task:
                     }
                 }
                 break;
+
+            case 'internetHelpSearch':
+                if (!this.agentManager.getIsActive()) {
+                    this.agentManager.toggleAgentMode();
+                }
+                const query = message.query;
+                const searchObjective = `Find a solution for the following problem using Wikipedia and Stack Overflow: "${query}"
+                
+                Steps:
+                1. Search Wikipedia for concepts related to the problem.
+                2. Search Stack Overflow for technical solutions or similar errors.
+                3. Scrape the content of the most relevant results.
+                4. Provide a summarized help guide for the user.`;
+
+                if (vscode.workspace.workspaceFolders?.[0]) {
+                    this.agentManager.run(searchObjective, this._currentDiscussion!, vscode.workspace.workspaceFolders[0]);
+                }
+                break;                
         }
     });
   }
@@ -2078,6 +2104,8 @@ Task:
                 <div class="input-area-wrapper">
                     <div id="more-actions-menu">
                         <div class="menu-view" id="menu-main">
+                            <button class="menu-item" id="internetHelpButton"><i class="codicon codicon-globe"></i><span>Search Internet Help</span></button>
+
                             <div class="menu-item has-submenu" data-target="menu-modes">
                                 <i class="codicon codicon-settings-gear"></i>
                                 <span>Discussion Modes</span>

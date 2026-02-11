@@ -46,6 +46,8 @@ export interface DiscussionCapabilities {
     fileReset: boolean;
     imageGen: boolean;
     webSearch: boolean;
+    wikipediaSearch: boolean; // Add this
+    stackoverflowSearch: boolean; // Add this
     arxivSearch: boolean;
     gitWorkflow: boolean;
     gitCommit?: boolean;

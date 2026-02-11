@@ -41,6 +41,8 @@ import { moveFileTool } from './moveFile';
 import { storeKnowledgeTool } from './storeKnowledge';
 import { extractYoutubeTranscriptTool } from './extractYoutubeTranscript';
 import { summarizeTextTool } from './summarizeText';
+import { searchWikipediaTool } from './searchWikipedia';
+import { searchStackOverflowTool } from './searchStackOverflow';
 
 export const allTools: ToolDefinition[] = [
     autoSelectContextFilesTool,
@@ -85,5 +87,7 @@ export const allTools: ToolDefinition[] = [
     moltbookActionTool,
     storeKnowledgeTool,
     extractYoutubeTranscriptTool,
-    summarizeTextTool
+    summarizeTextTool,
+    searchWikipediaTool,
+    searchStackOverflowTool,    
 ];

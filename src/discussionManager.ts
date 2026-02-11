@@ -81,6 +81,8 @@ export class DiscussionManager {
             fileReset: true,
             imageGen: true,
             webSearch: false,
+            wikipediaSearch: true, // Enabled by default as it's free
+            stackoverflowSearch: true, // Enabled by default
             arxivSearch: false,
             // Removed specific thinkingMode and funMode, now handled by profile
             herdMode: false,

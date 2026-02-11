@@ -64,9 +64,6 @@ export interface DiscussionCapabilities {
     };
 }
 
-/**
- * Detects available shells on the current system (Windows, Linux, macOS).
- */
 export async function getAvailableShells(): Promise<string[]> {
     const shells: string[] = [];
     const platform = os.platform();
@@ -77,7 +74,6 @@ export async function getAvailableShells(): Promise<string[]> {
         try { execSync('bash --version', { stdio: 'ignore' }); shells.push('bash'); } catch {}
         try { execSync('wsl --list', { stdio: 'ignore' }); shells.push('wsl'); } catch {}
     } else {
-        // Unix-like (Linux, macOS/Darwin)
         shells.push('sh');
         try { execSync('bash --version', { stdio: 'ignore' }); shells.push('bash'); } catch {}
         try { execSync('zsh --version', { stdio: 'ignore' }); shells.push('zsh'); } catch {}
@@ -89,9 +85,105 @@ export async function getAvailableShells(): Promise<string[]> {
 }
 
 /**
- * Parses and applies a unified diff patch to a file using context matching.
- * Robust against LLMs providing incorrect line numbers or malformed hunk headers.
+ * Applies a Search/Replace (Aider-style) block to content.
  */
+export function applySearchReplace(content: string, searchBlock: string, replaceBlock: string): { success: boolean, result: string, error?: string } {
+    const normalizedContent = content.replace(/\r\n/g, '\n');
+    const normalizedSearch = searchBlock.trim().replace(/\r\n/g, '\n');
+    const normalizedReplace = replaceBlock.trim().replace(/\r\n/g, '\n');
+
+    // Attempt direct match
+    if (normalizedContent.includes(normalizedSearch)) {
+        return { success: true, result: normalizedContent.replace(normalizedSearch, normalizedReplace) };
+    }
+
+    // Attempt fuzzy match (ignoring leading/trailing whitespace per line)
+    const contentLines = normalizedContent.split('\n');
+    const searchLines = normalizedSearch.split('\n');
+    
+    for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
+        let match = true;
+        for (let j = 0; j < searchLines.length; j++) {
+            if (contentLines[i + j].trim() !== searchLines[j].trim()) {
+                match = false;
+                break;
+            }
+        }
+        if (match) {
+            const resultLines = [...contentLines];
+            resultLines.splice(i, searchLines.length, normalizedReplace);
+            return { success: true, result: resultLines.join('\n') };
+        }
+    }
+
+    return { success: false, result: content, error: "Could not find exact match for SEARCH block." };
+}
+
+/**
+ * Parses and applies a unified diff patch to a string.
+ */
+export function applyDiffToString(originalContent: string, diffContent: string): { success: boolean, result: string, error?: string } {
+    const docLines = originalContent.replace(/\r\n/g, '\n').split('\n');
+    const diffLines = diffContent.replace(/\r\n/g, '\n').split('\n');
+    
+    interface Hunk {
+        searchLines: string[];
+        replaceLines: string[];
+    }
+    const hunks: Hunk[] = [];
+    let currentHunk: Hunk | null = null;
+
+    for (const line of diffLines) {
+        if (line.startsWith('@@')) {
+            if (currentHunk) hunks.push(currentHunk);
+            currentHunk = { searchLines: [], replaceLines: [] };
+        } else if (currentHunk) {
+            if (line.startsWith('-')) {
+                currentHunk.searchLines.push(line.substring(1));
+            } else if (line.startsWith('+')) {
+                currentHunk.replaceLines.push(line.substring(1));
+            } else if (line.startsWith(' ') || line === "") {
+                const content = line.startsWith(' ') ? line.substring(1) : line;
+                currentHunk.searchLines.push(content);
+                currentHunk.replaceLines.push(content);
+            }
+        }
+    }
+    if (currentHunk) hunks.push(currentHunk);
+
+    if (hunks.length === 0) return { success: false, result: originalContent, error: "No valid diff hunks found." };
+
+    let workingLines = [...docLines];
+    
+    for (const hunk of hunks) {
+        if (hunk.searchLines.length === 0) continue; 
+
+        // Find hunk match
+        let matchIndex = -1;
+        for (let i = 0; i <= workingLines.length - hunk.searchLines.length; i++) {
+            let match = true;
+            for (let j = 0; j < hunk.searchLines.length; j++) {
+                if (workingLines[i + j].trim() !== hunk.searchLines[j].trim()) {
+                    match = false;
+                    break;
+                }
+            }
+            if (match) {
+                matchIndex = i;
+                break;
+            }
+        }
+
+        if (matchIndex === -1) {
+            return { success: false, result: originalContent, error: `Match failed for hunk starting with: "${hunk.searchLines[0]}"` };
+        }
+
+        workingLines.splice(matchIndex, hunk.searchLines.length, ...hunk.replaceLines);
+    }
+
+    return { success: true, result: workingLines.join('\n') };
+}
+
 export async function applyDiff(diffContent: string, targetFilePath?: string) {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders) throw new Error('No workspace folder open.');
@@ -111,47 +203,11 @@ export async function applyDiff(diffContent: string, targetFilePath?: string) {
 
     const fileUri = vscode.Uri.joinPath(workspaceRoot, relativePath);
     const document = await vscode.workspace.openTextDocument(fileUri);
-    const docLines = document.getText().split(/\r?\n/);
+    const originalText = document.getText();
     
-    const diffLines = diffContent.split(/\r?\n/);
-    interface Hunk {
-        searchLines: string[];
-        replaceLines: string[];
-    }
-    const hunks: Hunk[] = [];
-    let currentHunk: Hunk | null = null;
-
-    for (const line of diffLines) {
-        if (line.startsWith('@@')) {
-            if (currentHunk) hunks.push(currentHunk);
-            currentHunk = { searchLines: [], replaceLines: [] };
-        } else if (currentHunk) {
-            if (line.startsWith('-')) {
-                currentHunk.searchLines.push(line.substring(1));
-            } else if (line.startsWith('+')) {
-                currentHunk.replaceLines.push(line.substring(1));
-            } else if (line.startsWith(' ')) {
-                const content = line.substring(1);
-                currentHunk.searchLines.push(content);
-                currentHunk.replaceLines.push(content);
-            }
-        }
-    }
-    if (currentHunk) hunks.push(currentHunk);
-
-    if (hunks.length === 0) throw new Error('No valid diff hunks found in content.');
-
-    let finalLines = [...docLines];
-    
-    for (const hunk of hunks) {
-        if (hunk.searchLines.length === 0) continue; 
-
-        const matchIndex = findHunkMatch(finalLines, hunk.searchLines);
-        if (matchIndex === -1) {
-            throw new Error(`Could not locate the code block to patch in '${relativePath}'. Match failed for block starting with: "${hunk.searchLines[0].substring(0, 40)}..."`);
-        }
-
-        finalLines.splice(matchIndex, hunk.searchLines.length, ...hunk.replaceLines);
+    const patchResult = applyDiffToString(originalText, diffContent);
+    if (!patchResult.success) {
+        throw new Error(patchResult.error);
     }
 
     const edit = new vscode.WorkspaceEdit();
@@ -159,24 +215,8 @@ export async function applyDiff(diffContent: string, targetFilePath?: string) {
         new vscode.Position(0, 0),
         document.lineAt(document.lineCount - 1).range.end
     );
-    edit.replace(fileUri, fullRange, finalLines.join(document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n'));
-    
+    edit.replace(fileUri, fullRange, patchResult.result);
     await vscode.workspace.applyEdit(edit);
-}
-
-function findHunkMatch(docLines: string[], searchLines: string[]): number {
-    if (searchLines.length === 0) return -1;
-    for (let i = 0; i <= docLines.length - searchLines.length; i++) {
-        let match = true;
-        for (let j = 0; j < searchLines.length; j++) {
-            if (docLines[i + j].trim() !== searchLines[j].trim()) {
-                match = false;
-                break;
-            }
-        }
-        if (match) return i;
-    }
-    return -1;
 }
 
 export async function getProcessedSystemPrompt(

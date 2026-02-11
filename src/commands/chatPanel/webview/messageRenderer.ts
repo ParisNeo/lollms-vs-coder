@@ -697,56 +697,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
             if (headerMatch && headerMatch[1]) {
                 diffFilePath = headerMatch[1].trim();
             }
-        } else if (!isReplace && codeText.includes("<<<<<<< SEARCH")) {
-            const lines = codeText.split('\n');
-            if (lines[0].includes("<<<<<<< SEARCH")) {
-                isReplace = true;
-            }
-        }
-
-        if (isFileBlock && !isDiff && looksLikeDiff(codeText)) {
-            const warningDiv = document.createElement('div');
-            warningDiv.style.backgroundColor = 'var(--vscode-inputValidation-warningBackground)';
-            warningDiv.style.border = '1px solid var(--vscode-inputValidation-warningBorder)';
-            warningDiv.style.padding = '4px 8px';
-            warningDiv.style.fontSize = '11px';
-            warningDiv.style.marginBottom = '4px';
-            warningDiv.innerHTML = `<span class="codicon codicon-warning"></span> This block looks like a diff. Apply as patch instead?`;
-            pre.parentNode?.insertBefore(warningDiv, pre);
-            
-            isDiff = true;
-            diffFilePath = filePath;
-            isFileBlock = false;
-        }
-
-        const prevEl = pre.previousElementSibling as HTMLElement;
-        if (prevEl && (prevEl.tagName === 'P' || prevEl.tagName === 'DIV')) {
-             const text = prevEl.textContent || "";
-             if ((isFileBlock && /File/i.test(text)) || 
-                 (isDiff && /Diff/i.test(text)) || 
-                 (isInsert && /Insert/i.test(text)) ||
-                 (isReplace && /Replace/i.test(text)) ||
-                 (isDeleteCode && /DeleteCode/i.test(text))) {
-                 prevEl.style.display = 'none';
-             }
-        }
-
-        if (language === 'image_prompt') {
-             const genBlock = createGenerationBlock('Image', filePath, codeText);
-             if (pre.parentNode) pre.parentNode.replaceChild(genBlock, pre);
-             return;
-        } 
-        
-        if (language === 'search_web') {
-             const searchBlock = createSearchBlock('Web Search', codeText);
-             if (pre.parentNode) pre.parentNode.replaceChild(searchBlock, pre);
-             return;
-        } 
-        
-        if (language === 'search_arxiv') {
-             const searchBlock = createSearchBlock('ArXiv Search', codeText);
-             if (pre.parentNode) pre.parentNode.replaceChild(searchBlock, pre);
-             return;
         }
 
         const details = document.createElement('details');
@@ -793,28 +743,22 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
         if (isFileBlock && filePath) {
             actionableBlockCount++;
             langLabel.textContent = `${language} : ${filePath}`;
-            
             const applyBtn = createButton('Apply to File', 'codicon-tools', () => {
                 vscode.postMessage({ command: 'applyFileContent', filePath: filePath, content: codeText });
             }, 'code-action-btn apply-btn');
             applyBtn.disabled = isDisabled;
-            
             if (actions.firstChild) actions.insertBefore(applyBtn, actions.firstChild);
             else actions.appendChild(applyBtn);
-
         } else if (isDiff) {
             actionableBlockCount++;
             const path = diffFilePath || filePath || 'patch';
             langLabel.textContent = `${language} : Diff: ${path}`;
-            
             const applyPatchBtn = createButton('Apply Patch', 'codicon-tools', () => {
                 vscode.postMessage({ command: 'applyPatchContent', filePath: path, content: codeText });
             }, 'code-action-btn apply-btn');
             applyPatchBtn.disabled = isDisabled;
-            
             if (actions.firstChild) actions.insertBefore(applyPatchBtn, actions.firstChild);
             else actions.appendChild(applyPatchBtn);
-
         } else if (isInsert) {
             actionableBlockCount++;
             langLabel.textContent = `Insert into ${filePath}`;
@@ -822,10 +766,8 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
                 vscode.postMessage({ command: 'insertCode', filePath: filePath, content: codeText });
             }, 'code-action-btn apply-btn');
             insertBtn.disabled = isDisabled;
-            
             if (actions.firstChild) actions.insertBefore(insertBtn, actions.firstChild);
             else actions.appendChild(insertBtn);
-
         } else if (isReplace) {
             actionableBlockCount++;
             langLabel.textContent = `Replace in ${filePath}`;
@@ -833,85 +775,8 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
                 vscode.postMessage({ command: 'replaceCode', filePath: filePath, content: codeText });
             }, 'code-action-btn apply-btn');
             replaceBtn.disabled = isDisabled;
-            
             if (actions.firstChild) actions.insertBefore(replaceBtn, actions.firstChild);
             else actions.appendChild(replaceBtn);
-
-        } else if (isDeleteCode) {
-            actionableBlockCount++;
-            langLabel.textContent = `Delete from ${filePath}`;
-            const deleteCodeBtn = createButton('Delete Code', 'codicon-trash', () => {
-                vscode.postMessage({ command: 'deleteCodeBlock', filePath: filePath, content: codeText });
-            }, 'code-action-btn delete-btn');
-            deleteCodeBtn.disabled = isDisabled;
-            
-            if (actions.firstChild) actions.insertBefore(deleteCodeBtn, actions.firstChild);
-            else actions.appendChild(deleteCodeBtn);
-
-        } else if (language === 'rename' || (info && info.type === 'rename')) {
-            const renameBtn = createButton('Move/Rename', 'codicon-git-compare', () => {
-                const lines = codeText.trim().split('\n');
-                lines.forEach(line => {
-                    const parts = line.split('->');
-                    if(parts.length === 2) {
-                        vscode.postMessage({ command: 'renameFile', originalPath: parts[0].trim(), newPath: parts[1].trim() });
-                    }
-                });
-            }, 'code-action-btn apply-btn');
-            renameBtn.disabled = isDisabled;
-            if (actions.firstChild) actions.insertBefore(renameBtn, actions.firstChild);
-            else actions.appendChild(renameBtn);
-
-        } else if (language === 'delete' || (info && info.type === 'delete') || isFileDelete) {
-            const deleteBtn = createButton('Delete Files', 'codicon-trash', () => {
-                vscode.postMessage({ command: 'deleteFile', filePaths: codeText });
-            }, 'code-action-btn delete-btn');
-            deleteBtn.disabled = isDisabled;
-            if (actions.firstChild) actions.insertBefore(deleteBtn, actions.firstChild);
-            else actions.appendChild(deleteBtn);
-
-        } else if (language === 'select' || (info && info.type === 'select')) {
-            const selectBtn = createButton('Add to Context', 'codicon-add', () => {
-                selectBtn.innerHTML = `<span class="codicon codicon-sync spin"></span> Adding...`;
-                selectBtn.disabled = true;
-                
-                const files = codeText.trim().split('\n').map(f => f.trim()).filter(f => f);
-                vscode.postMessage({ 
-                    command: 'addFilesToContext', 
-                    files: files,
-                    blockId: blockId 
-                });
-            });
-            selectBtn.id = `btn-${blockId}`;
-            selectBtn.disabled = isDisabled;
-            
-            if (actions.firstChild) actions.insertBefore(selectBtn, actions.firstChild);
-            else actions.appendChild(selectBtn);
-
-        } else if (language === 'context_reset' || language === 'reset_context') {
-            const resetBtn = createButton('Reset Context', 'codicon-clear-all', () => {
-                vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'resetContext', params: {} } });
-            }, 'code-action-btn delete-btn');
-            resetBtn.disabled = isDisabled;
-            if (actions.firstChild) actions.insertBefore(resetBtn, actions.firstChild);
-            else actions.appendChild(resetBtn);
-
-        } else if (language === 'skill') {
-            langLabel.textContent = `New Skill`;
-            const saveSkillBtn = createButton('Save Skill', 'codicon-lightbulb', () => {
-                vscode.postMessage({ command: 'saveSkill', content: codeText });
-            }, 'code-action-btn apply-btn');
-            saveSkillBtn.disabled = isDisabled;
-            if (actions.firstChild) actions.insertBefore(saveSkillBtn, actions.firstChild);
-            else actions.appendChild(saveSkillBtn);
-        } else if (language === 'git_commit') {
-            langLabel.textContent = "Git Commit Message";
-            const commitBtn = createButton('Git Commit', 'codicon-git-commit', () => {
-                vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'gitCommit', params: { message: codeText } } });
-            }, 'code-action-btn apply-btn');
-            commitBtn.disabled = isDisabled;
-            if (actions.firstChild) actions.insertBefore(commitBtn, actions.firstChild);
-            else actions.appendChild(commitBtn);
         } else {
              const runnableLanguages = ['python', 'py', 'javascript', 'js', 'typescript', 'ts', 'bash', 'sh', 'shell', 'powershell', 'pwsh', 'batch', 'cmd', 'bat'];
              if (runnableLanguages.includes(language.toLowerCase())) {
@@ -919,7 +784,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
                      vscode.postMessage({ command: 'runScript', code: codeText, language: language });
                  }, 'code-action-btn apply-btn');
                  executeBtn.disabled = isDisabled;
-                 
                  if (actions.firstChild) actions.insertBefore(executeBtn, actions.firstChild);
                  else actions.appendChild(executeBtn);
              }
@@ -952,7 +816,6 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
             btn.style.fontSize = '12px';
             btn.style.fontWeight = '600';
             btn.disabled = !isFinal; 
-            
             btn.onclick = () => {
                 const changes: any[] = [];
                 const pres = container.querySelectorAll('pre');
@@ -961,28 +824,17 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
                     if (!code) return;
                     const info = codeBlockInfos[index];
                     if (info && info.path && ['file', 'diff', 'insert', 'replace', 'delete', 'file_delete'].includes(info.type || '')) {
-                        let typeToPush = info.type;
-                        changes.push({
-                            type: typeToPush,
-                            path: info.path,
-                            content: code.innerText
-                        });
+                        changes.push({ type: info.type, path: info.path, content: code.innerText });
                     }
                 });
-                
                 if(changes.length > 0) {
                     vscode.postMessage({ command: 'applyAllChanges', changes });
-                    
                     const originalContent = btn.innerHTML;
                     btn.innerHTML = '<span class="codicon codicon-sync spin"></span> Applying...';
                     btn.disabled = true;
-                    
                     setTimeout(() => {
                         btn.innerHTML = '<span class="codicon codicon-check"></span> Applied';
-                        setTimeout(() => {
-                            btn.innerHTML = originalContent;
-                            btn.disabled = false;
-                        }, 3000);
+                        setTimeout(() => { btn.innerHTML = originalContent; btn.disabled = false; }, 3000);
                     }, 1000);
                 }
             };
@@ -990,6 +842,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
         }
     }
 }
+
 
 function enhanceWithCommandButtons(container: HTMLElement) {
     const content = container.querySelector('.message-content');
@@ -1223,6 +1076,7 @@ function addChatMessage(message: any, isFinal: boolean = true) {
     if (role === 'user') {
         avatarDiv.innerHTML = '<span class="codicon codicon-account"></span>';
     } else if (role === 'assistant') {
+        // Avatar is handled by CSS background-image
     } else {
         avatarDiv.innerHTML = '<span class="codicon codicon-gear"></span>';
     }
@@ -1233,13 +1087,13 @@ function addChatMessage(message: any, isFinal: boolean = true) {
     bodyDiv.className = 'message-body';
     messageDiv.appendChild(bodyDiv);
 
-    // -- CHANGED: Insert Actions inside Body to enable Sticky/Float behavior --
+    // BUBBLE TOOLBAR
     const actions = document.createElement('div');
     actions.className = 'message-actions';
     
     const isMultipart = Array.isArray(rawContent);
     const textForClipboard = isMultipart 
-        ? (rawContent.find(p => p.type === 'text')?.text || '') 
+        ? (rawContent.find((p: any) => p.type === 'text')?.text || '') 
         : (typeof rawContent === 'string' ? rawContent : '');
 
     if (role !== 'system') {
@@ -1265,7 +1119,7 @@ function addChatMessage(message: any, isFinal: boolean = true) {
     
     actions.appendChild(createButton('', 'codicon-trash', () => vscode.postMessage({ command: 'requestDeleteMessage', messageId: id }), 'msg-action-btn', 'Delete Message'));
 
-    // Insert actions at start of body so it can be sticky at top right
+    // Insert actions before content
     bodyDiv.appendChild(actions);
 
     const headerDiv = document.createElement('div');
@@ -1303,6 +1157,8 @@ function addChatMessage(message: any, isFinal: boolean = true) {
         renderMessageContent(id, rawContent, isFinal);
     }
 }
+
+
 
 export function updateContext(contextText: string, files: string[] = [], skills: any[] = []) {
     if(!dom.contextContainer) return;

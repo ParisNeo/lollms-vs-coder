@@ -706,6 +706,7 @@ export class ChatPanel {
   }
 
   // --- REPLACED: NEW HIERARCHICAL IMPORT LOGIC ---
+
   private async handleImportSkills() {
     const allSkills = await this._skillsManager.getSkills();
     if (allSkills.length === 0) {
@@ -745,6 +746,114 @@ export class ChatPanel {
     });
 
     this._panel.webview.postMessage({ command: 'showSkillsModal', skillsTree: root });
+  }
+
+  /**
+   * Code verification and Self-Correction Loop.
+   * Scans a finished message for partial blocks (Diff/SearchReplace),
+   * verifies them against the actual file on disk, and asks AI to fix if broken.
+   */
+  private async verifyAndProcessCodeBlocks(messageId: string, fullContent: string, signal: AbortSignal): Promise<string> {
+    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+    const maxRetries = config.get<number>('agentMaxRetries') || 2;
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) return fullContent;
+
+    let currentContent = fullContent;
+    
+    // Detect all partial blocks (diff:path or language:path containing Aider markers)
+    const blockRegex = /```(\w+):([^\n\s]+)\n([\s\S]+?)\n```/g;
+    let match;
+    const blocksToVerify: { type: string, path: string, content: string, originalMatch: string }[] = [];
+
+    while ((match = blockRegex.exec(fullContent)) !== null) {
+        const type = match[1].toLowerCase();
+        const path = match[2];
+        const content = match[3];
+        if (type === 'diff' || content.includes('<<<<<<< SEARCH')) {
+            blocksToVerify.push({ type, path, content, originalMatch: match[0] });
+        }
+    }
+
+    if (blocksToVerify.length === 0) return fullContent;
+
+    this.log(`Verifying ${blocksToVerify.length} partial code blocks...`);
+
+    for (const block of blocksToVerify) {
+        let verifiedFullCode = "";
+        let success = false;
+        let retryCount = 0;
+        let lastError = "";
+
+        const fileUri = vscode.Uri.joinPath(workspaceFolder.uri, block.path);
+        let originalFileText = "";
+        try {
+            const bytes = await vscode.workspace.fs.readFile(fileUri);
+            originalFileText = Buffer.from(bytes).toString('utf8');
+        } catch (e) {
+            this.log(`Verification failed: Could not read ${block.path}`, 'WARN');
+            continue; 
+        }
+
+        while (!success && retryCount <= maxRetries) {
+            if (signal.aborted) break;
+
+            let result: { success: boolean, result: string, error?: string };
+            if (block.type === 'diff') {
+                result = applyDiffToString(originalFileText, block.content);
+            } else {
+                const aiderMatch = block.content.match(/<<<<<<< SEARCH([\s\S]*?)=======([\s\S]*?)>>>>>>> REPLACE/);
+                if (aiderMatch) {
+                    result = applySearchReplace(originalFileText, aiderMatch[1], aiderMatch[2]);
+                } else {
+                    result = { success: false, result: originalFileText, error: "Invalid Search/Replace block format." };
+                }
+            }
+
+            if (result.success) {
+                verifiedFullCode = result.result;
+                success = true;
+            } else {
+                retryCount++;
+                lastError = result.error || "Unknown error.";
+                if (retryCount > maxRetries) break;
+
+                const repairPrompt = `The following code update failed to apply to \`${block.path}\`.
+**Error:** ${lastError}
+**Original File:**
+\`\`\`
+${originalFileText}
+\`\`\`
+**Your Attempt:**
+\`\`\`${block.type}
+${block.content}
+\`\`\`
+Please provide the **FULL CONTENT** of the file instead using the format:
+\`\`\`language:${block.path}
+[FULL CODE]
+\`\`\``;
+
+                try {
+                    const repairResponse = await this._lollmsAPI.sendChat([
+                        { role: 'system', content: "You are a code repair assistant." },
+                        { role: 'user', content: repairPrompt }
+                    ], null, signal, this._currentDiscussion?.model);
+                    const repairMatch = repairResponse.match(/```(\w+):[^\n]*\n([\s\S]+?)\n```/);
+                    if (repairMatch) {
+                        verifiedFullCode = repairMatch[2].trim();
+                        success = true;
+                    }
+                } catch (e) { break; }
+            }
+        }
+
+        if (success && verifiedFullCode) {
+            const lang = path.extname(block.path).substring(1) || 'plaintext';
+            const newBlock = `Verified Full Code for ${block.path}:\n\`\`\`${lang}:${block.path}\n${verifiedFullCode}\n\`\`\``;
+            currentContent = currentContent.replace(block.originalMatch, newBlock);
+        }
+    }
+    return currentContent;
   }
 
   private async copyFullPromptToClipboard(draftMessage: string) {
@@ -880,6 +989,7 @@ export class ChatPanel {
       });
   }
 
+
   public async sendMessage(message: ChatMessage, autoContextMode: boolean = false) {
     if (this._isDisposed) return;
     if (!this._currentDiscussion) {
@@ -896,7 +1006,6 @@ export class ChatPanel {
         const text = (typeof message.content === 'string') ? message.content : "User provided input.";
         const resolver = this._inputResolver;
         this._inputResolver = null;
-        
         await this.addMessageToDiscussion(message);
         resolver(text);
         return;
@@ -910,7 +1019,6 @@ export class ChatPanel {
 
     if (this.agentManager && this.agentManager.getIsActive()) {
         await this.addMessageToDiscussion(message); 
-        
         if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
              await this.agentManager.handleUserMessage(
                  typeof message.content === 'string' ? message.content : "User Input", 
@@ -953,42 +1061,20 @@ export class ChatPanel {
         this.log("Auto-Context mode active. Starting agent loop.");
         const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
         const userPromptText = (typeof message.content === 'string') ? message.content : "User request with attachments";
-        
         const contextAgentMsgId = 'ctx_agent_' + Date.now();
         await this.addMessageToDiscussion({
-            id: contextAgentMsgId,
-            role: 'system',
-            content: `**🧠 Auto-Context Agent**\n*Analyzing project structure and selecting files...*\n\n`,
-            skipInPrompt: true 
+            id: contextAgentMsgId, role: 'system', content: `**🧠 Auto-Context Agent**\n*Analyzing project structure...*\n\n`, skipInPrompt: true 
         });
-
         try {
-            await this._contextManager.runContextAgent(
-                userPromptText, 
-                model, 
-                controller.signal,
-                (newContent) => {
-                    if (!this._isDisposed) {
-                        this._panel.webview.postMessage({ 
-                            command: 'updateMessage', 
-                            messageId: contextAgentMsgId, 
-                            newContent: newContent 
-                        });
-                    }
-                }
-            );
-        } catch (e: any) {
-            this.log(`Auto-Context failed: ${e.message}`, 'ERROR');
-        }
+            await this._contextManager.runContextAgent(userPromptText, model, controller.signal, (newContent) => {
+                if (!this._isDisposed) this._panel.webview.postMessage({ command: 'updateMessage', messageId: contextAgentMsgId, newContent });
+            });
+        } catch (e: any) { this.log(`Auto-Context failed: ${e.message}`, 'ERROR'); }
     }
 
     const importedIds = this._currentDiscussion?.importedSkills || [];
     const contextData = await this._contextManager.getContextContent({ importedSkillIds: importedIds });
-    const context = {
-        tree: contextData.projectTree,
-        files: contextData.selectedFilesContent,
-        skills: contextData.skillsContent
-    };
+    const context = { tree: contextData.projectTree, files: contextData.selectedFilesContent, skills: contextData.skillsContent };
 
     if (this._discussionCapabilities.herdMode && this.herdManager) {
         let preParticipants = this._discussionCapabilities.herdPreAnswerParticipants;
@@ -1000,289 +1086,89 @@ export class ChatPanel {
              const modelPool = config.get<any[]>('herdDynamicModelPool') || [];
              if (modelPool.length > 0) {
                  const herdMessageId = 'herd_plan_' + Date.now();
-                 await this.addMessageToDiscussion({
-                    id: herdMessageId,
-                    role: 'system',
-                    content: `### 🐂  Dynamic Herd: Recruiting Agents...\n\n`,
-                    skipInPrompt: true
-                 });
-
-                 const plan = await this.herdManager.planDynamicHerd(
-                     typeof message.content === 'string' ? message.content : "Complex task",
-                     modelPool,
-                     leaderModel,
-                     controller.signal
-                 );
-
+                 await this.addMessageToDiscussion({ id: herdMessageId, role: 'system', content: `### 🐂  Recruiting Agents...\n\n`, skipInPrompt: true });
+                 const plan = await this.herdManager.planDynamicHerd(typeof message.content === 'string' ? message.content : "Task", modelPool, leaderModel, controller.signal);
                  if (plan) {
                      preParticipants = plan.pre;
                      postParticipants = plan.post;
-                     await this.updateMessageContent(herdMessageId, `### ✨  Dynamic Herd Assembled\n\n**Pre-Code Team:** ${plan.pre.map(p => p.name).join(', ')}\n**Post-Code Team:** ${plan.post.map(p => p.name).join(', ')}`);
-                 } else {
-                     await this.updateMessageContent(herdMessageId, `📉  Dynamic planning failed. Falling back to static configuration.`);
+                     await this.updateMessageContent(herdMessageId, `### ✨  Herd Assembled\n\n**Pre-Code:** ${plan.pre.map(p => p.name).join(', ')}\n**Post-Code:** ${plan.post.map(p => p.name).join(', ')}`);
                  }
-             } else {
-                 await this.addMessageToDiscussion({ role: 'system', content: "🦬 Dynamic Herd Mode enabled but Model Pool is empty. Using static configuration.", skipInPrompt: true });
              }
         }
 
-        if ((!preParticipants || preParticipants.length === 0) && (!postParticipants || postParticipants.length === 0)) {
-            this.addMessageToDiscussion({role: 'system', content: "Herd Mode enabled but no Pre-Code or Post-Code participants configured. Please check Settings."});
-            this.processManager.unregister(processId);
-            this.updateGeneratingState();
-            return;
-        }
-
         try {
-            const promptText = typeof message.content === 'string' ? message.content : 'User provided rich content.';
-
+            const promptText = typeof message.content === 'string' ? message.content : 'User rich content.';
             const herdMessageId = 'herd_log_' + Date.now();
-            await this.addMessageToDiscussion({
-                id: herdMessageId,
-                role: 'system',
-                content: `### 🐂 Herd Mode Initializing...\n\n`,
-                skipInPrompt: true 
-            });
-
-            const synthesisResult = await this.herdManager.run(
-                promptText,
-                preParticipants,
-                postParticipants,
-                this._discussionCapabilities.herdRounds || 2,
-                leaderModel,
-                contextData.text, 
-                (status) => {
-                    this._panel.webview.postMessage({ command: 'updateStatus', status });
-                },
-                async (newContent) => {
-                    await this.updateMessageContent(herdMessageId, newContent);
-                },
-                controller.signal,
-                this._currentDiscussion.messages 
-            );
+            await this.addMessageToDiscussion({ id: herdMessageId, role: 'system', content: `### 🐂 Herd Mode Initializing...\n\n`, skipInPrompt: true });
+            const synthesisResult = await this.herdManager.run(promptText, preParticipants, postParticipants, this._discussionCapabilities.herdRounds || 2, leaderModel, contextData.text, (status) => {
+                this._panel.webview.postMessage({ command: 'updateStatus', status });
+            }, async (newContent) => { await this.updateMessageContent(herdMessageId, newContent); }, controller.signal, this._currentDiscussion.messages );
 
             if (!controller.signal.aborted && synthesisResult) {
-                const synthesisPrompt: ChatMessage = {
-                    role: 'user',
-                    content: synthesisResult 
-                };
-                
                 const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities);
-                const systemMessage: ChatMessage = { role: 'system', content: systemPrompt };
-                
-                const history = this._currentDiscussion.messages.filter(m => !m.skipInPrompt);
-                
-                const messagesToSend = [systemMessage, ...history, synthesisPrompt];
-                
                 const assistantMessageId = 'assistant_' + Date.now().toString();
-                this._panel.webview.postMessage({
-                    command: 'addMessage',
-                    message: { id: assistantMessageId, role: 'assistant', content: '', startTime: Date.now(), model: leaderModel }
-                });
-
+                this._panel.webview.postMessage({ command: 'addMessage', message: { id: assistantMessageId, role: 'assistant', content: '', startTime: Date.now(), model: leaderModel } });
                 let fullResponse = '';
-                await this._lollmsAPI.sendChat(messagesToSend, (chunk) => {
+                await this._lollmsAPI.sendChat([{ role: 'system', content: systemPrompt }, ...this._currentDiscussion.messages.filter(m => !m.skipInPrompt), { role: 'user', content: synthesisResult }], (chunk) => {
                     fullResponse += chunk;
                     this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk });
                 }, controller.signal, leaderModel);
-
-                const finalMsg: ChatMessage = {
-                    id: assistantMessageId,
-                    role: 'assistant',
-                    content: fullResponse,
-                    model: leaderModel
-                };
-                await this.addMessageToDiscussion(finalMsg, false);
+                await this.addMessageToDiscussion({ id: assistantMessageId, role: 'assistant', content: fullResponse, model: leaderModel }, false);
                 this._panel.webview.postMessage({ command: 'finalizeMessage', id: assistantMessageId, fullContent: fullResponse });
             }
-
-        } catch (error: any) {
-            if (error.name !== 'AbortError') {
-                this.log(`Herd error: ${error.message}`, 'ERROR');
-                this.addMessageToDiscussion({ role: 'system', content: `Herd Error: ${error.message}` });
-            }
-        } finally {
-            this.processManager.unregister(processId);
-            this.updateGeneratingState();
-            this.updateContextAndTokens();
-        }
+        } catch (error: any) { if (error.name !== 'AbortError') this.addMessageToDiscussion({ role: 'system', content: `Herd Error: ${error.message}` }); }
+        finally { this.processManager.unregister(processId); this.updateGeneratingState(); this.updateContextAndTokens(); }
         return; 
     }
 
     try {
         const personaContent = this.getCurrentPersonaSystemPrompt();
         const forceFullCode = config.get<boolean>('forceFullCodePath') || false;
+        const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, forceFullCode, context);
         
-        const systemPrompt = await getProcessedSystemPrompt(
-            'chat', 
-            this._discussionCapabilities, 
-            personaContent, 
-            undefined, 
-            forceFullCode,
-            context
-        );
-        
-        const systemMessage: ChatMessage = { role: 'system', content: systemPrompt };
-        
-        let messagesToSend: ChatMessage[] = [systemMessage];
-        
-        if (contextData.images.length > 0) {
-            const imageContent = contextData.images.map(img => ({
-                type: 'image_url',
-                image_url: { url: `data:image/jpeg;base64,${img.data}` }
-            }));
-            if (imageContent.length > 0) {
-                messagesToSend.push({ role: 'user', content: imageContent as any });
-            }
-        }
+        const profiles = config.get<ResponseProfile[]>('responseProfiles') || [];
+        const activeProfileId = this._discussionCapabilities.responseProfileId || config.get<string>('defaultResponseProfileId') || 'balanced';
+        const activeProfile = profiles.find(p => p.id === activeProfileId) || profiles[0];
 
+        let messagesToSend: ChatMessage[] = [{ role: 'system', content: systemPrompt }];
         const history = this._currentDiscussion.messages.filter(m => !m.skipInPrompt);
-        messagesToSend = [...messagesToSend, ...history];
-
-        const addPedagogical = config.get<boolean>('addPedagogicalInstruction');
-
-        const lastMsgIndex = messagesToSend.length - 1;
-        if (lastMsgIndex >= 0) {
-             const lastMsg = messagesToSend[lastMsgIndex];
-             if (lastMsg.role === 'user') {
-                 let suffix = "";
-                 if (addPedagogical) {
-                     const pedagogicalSuffix = "\n\n(Important: Please start by explaining what you are doing. Use the structure: **Problem**, **Hypothesis**, and **Fix**. Only then provide your code or actions.)";
-                     if (typeof lastMsg.content === 'string' && !lastMsg.content.includes(pedagogicalSuffix.trim())) suffix += pedagogicalSuffix;
-                 }
-                 if (forceFullCode) {
-                     const fullCodeSuffix = "\n\nCRITICAL INSTRUCTION: You must return the FULL CONTENT of the file(s). Do NOT use diffs, patches, or snippets. Use the format:\n```language:path/to/file\n[FULL CODE]\n```";
-                     if (typeof lastMsg.content === 'string' && !lastMsg.content.includes("CRITICAL INSTRUCTION")) suffix += fullCodeSuffix;
-                 }
-                 if (suffix) {
-                     const modifiedLastMsg = { ...lastMsg };
-                     if (typeof modifiedLastMsg.content === 'string') modifiedLastMsg.content += suffix;
-                     else if (Array.isArray(modifiedLastMsg.content)) {
-                         const newContent = [...modifiedLastMsg.content];
-                         newContent.push({ type: 'text', text: suffix });
-                         modifiedLastMsg.content = newContent;
-                     }
-                     messagesToSend[lastMsgIndex] = modifiedLastMsg;
-                 }
-             }
+        
+        //Turn reinforcement
+        if (history.length > 0 && activeProfile && activeProfile.id !== 'silent') {
+            const lastUserMsg = history[history.length - 1];
+            if (lastUserMsg.role === 'user' && typeof lastUserMsg.content === 'string') {
+                lastUserMsg.content += `\n\n(Reminder: Please follow the ${activeProfile.name} response style precisely.)`;
+            }
         }
 
+        messagesToSend = [...messagesToSend, ...history];
         const assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
-        
         const generationSession: ActiveGeneration = {
-            messageId: assistantMessageId,
-            buffer: '',
-            model: this._currentDiscussion.model || this._lollmsAPI.getModelName(),
-            startTime: Date.now(),
-            listeners: new Set(),
-            onComplete: new Set()
+            messageId: assistantMessageId, buffer: '', model: this._currentDiscussion.model || this._lollmsAPI.getModelName(),
+            startTime: Date.now(), listeners: new Set(), onComplete: new Set()
         };
         
-        const panelListener = (chunk: string) => {
-             if (!this._isDisposed && this._panel.webview) {
-                 this._panel.webview.postMessage({
-                     command: 'appendMessageChunk',
-                     id: assistantMessageId,
-                     chunk: chunk
-                 });
-             }
-        };
+        const panelListener = (chunk: string) => { if (!this._isDisposed && this._panel.webview) this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk }); };
         generationSession.listeners.add(panelListener);
-
-        const panelFinalizer = (fullContent: string) => {
-            if (!this._isDisposed && this._panel.webview) {
-                this._panel.webview.postMessage({
-                     command: 'finalizeMessage',
-                     id: assistantMessageId,
-                     fullContent: fullContent
-                });
-            }
-        };
-        generationSession.onComplete.add(panelFinalizer);
-
         ChatPanel.activeGenerations.set(this.discussionId, generationSession);
         
-        if (!this._isDisposed) {
-            this._panel.webview.postMessage({
-                command: 'addMessage',
-                message: {
-                    id: assistantMessageId,
-                    role: 'assistant',
-                    content: '',
-                    startTime: Date.now(),
-                    model: generationSession.model
-                }
-            });
-        }
+        if (!this._isDisposed) this._panel.webview.postMessage({ command: 'addMessage', message: { id: assistantMessageId, role: 'assistant', content: '', startTime: Date.now(), model: generationSession.model } });
 
         let fullResponse = '';
-        let tokenCount = 0;
-        let webSearchTriggered = false;
-
         await this._lollmsAPI.sendChat(messagesToSend, (chunk) => {
-            if (this._isDisposed) {
-                // Background processing
-            }
-            
             fullResponse += chunk;
-            tokenCount++; 
-            
             generationSession.buffer += chunk;
             generationSession.listeners.forEach(listener => listener(chunk));
-
-            const searchMatch = fullResponse.match(/<web_search>(.*?)<\/web_search>/);
-            if (searchMatch && !webSearchTriggered) {
-                webSearchTriggered = true;
-                controller.abort(); 
-                this.handleAutomatedSearch(searchMatch[1], assistantMessageId);
-            }
         }, controller.signal, this._currentDiscussion.model);
 
-        if (!webSearchTriggered) {
-            if (!fullResponse || fullResponse.trim() === '') {
-                if (!this._isDisposed) {
-                    fullResponse = "*[No response received from Lollms. The server might be busy or the model failed to generate text.]*";
-                }
-            }
+        const processedResponse = await this.verifyAndProcessCodeBlocks(assistantMessageId, fullResponse, controller.signal);
 
-            if (fullResponse && fullResponse.trim() !== '') {
-                const cleanResponse = fullResponse;
-                const assistantMessage: ChatMessage = {
-                    id: assistantMessageId,
-                    role: 'assistant',
-                    content: cleanResponse,
-                    model: this._currentDiscussion.model || this._lollmsAPI.getModelName()
-                };
+        const assistantMessage: ChatMessage = { id: assistantMessageId, role: 'assistant', content: processedResponse, model: generationSession.model };
+        await this.addMessageToDiscussion(assistantMessage, false);
+        if (!this._isDisposed) this._panel.webview.postMessage({ command: 'finalizeMessage', id: assistantMessageId, fullContent: processedResponse });
 
-                await this.addMessageToDiscussion(assistantMessage, false);
-                generationSession.onComplete.forEach(fn => fn(cleanResponse));
-            }
-        }
-        
-        ChatPanel.activeGenerations.delete(this.discussionId);
-
-    } catch (error: any) {
-        if (error.name !== 'AbortError') {
-            this.log(`Error generating response: ${error.message}`, 'ERROR');
-            const errorMsg: ChatMessage = {
-                id: 'error_' + Date.now(),
-                role: 'system',
-                content: `**Error Generating Response:**\n${error.message}\n\n*Check the "Lollms VS Coder" output channel for raw server responses.*`
-            };
-            await this.addMessageToDiscussion(errorMsg);
-            
-             if (!this._isDisposed) {
-                this._panel.webview.postMessage({ command: 'finalizeMessage', id: 'assistant_failed', fullContent: `*Generation Failed: ${error.message}*` });
-            }
-        } else {
-            this.log('Generation aborted by user.');
-        }
-        ChatPanel.activeGenerations.delete(this.discussionId);
-    } finally {
-        this.processManager.unregister(processId);
-        this.updateGeneratingState();
-        this.updateContextAndTokens();
-    }
+    } catch (error: any) { if (error.name !== 'AbortError') this.addMessageToDiscussion({ role: 'system', content: `**Error:** ${error.message}` }); }
+    finally { ChatPanel.activeGenerations.delete(this.discussionId); this.processManager.unregister(processId); this.updateGeneratingState(); this.updateContextAndTokens(); }
   }
 
   private async handleAutomatedSearch(query: string, messageId: string) {

@@ -1,0 +1,694 @@
+<skill id="lollms-discussion-management">
+    <name>Discussion & Data Zones</name>
+    <description>Master LollmsDiscussion: persistent conversations, memory systems, data zones, and context management.</description>
+    <category>python/lollms_client/discussion</category>
+    <language>markdown</language>
+    <timestamp>1738425600000</timestamp>
+    <content>
+        <![CDATA[
+# LollmsDiscussion & Data Zone Management
+
+## Overview
+
+`LollmsDiscussion` is the **conversational state manager** for LoLLMs. Beyond simple message history, it provides:
+
+| Feature | Purpose |
+|---------|---------|
+| **Persistent Storage** | SQLite-backed conversations with branching |
+| **Data Zones** | Layered context injection (user, discussion, personality, memory) |
+| **Long-Term Memory** | Structured memorization with `memorize()` |
+| **Context Pruning** | Non-destructive summarization for long conversations |
+| **Multimodal** | Image activation/deactivation per message |
+| **Artefacts** | Document versioning and context loading |
+
+---
+
+## Core Concepts
+
+### Data Zones (Context Layers)
+
+```
+┌─────────────────────────────────────────┐
+│  SYSTEM PROMPT (personality identity)   │  ← Base persona
+├─────────────────────────────────────────┤
+│  MEMORY (long-term, persistent)         │  ← Learned facts
+├─────────────────────────────────────────┤
+│  USER DATA ZONE (session user state)    │  ← Current user context
+├─────────────────────────────────────────┤
+│  DISCUSSION DATA ZONE (task state)      │  ← Conversation metadata
+├─────────────────────────────────────────┤
+│  PERSONALITY DATA ZONE (RAG/knowledge)  │  ← Temporary tool results
+├─────────────────────────────────────────┤
+│  PRUNING SUMMARY (oldest messages)      │  ← Condensed history
+├─────────────────────────────────────────┤
+│  MESSAGE HISTORY (recent turns)         │  ← Full recent context
+└─────────────────────────────────────────┘
+         ↓
+    Combined into LLM prompt
+```
+
+---
+
+## Creating Discussions
+
+### In-Memory (Temporary)
+
+```python
+from lollms_client import LollmsClient, LollmsDiscussion
+
+lc = LollmsClient("llama_cpp_server", {"model_name": "model.gguf"})
+
+# Ephemeral discussion (no database)
+discussion = LollmsDiscussion(
+    lollmsClient=lc,
+    discussion_id="temp_session_001"  # Optional ID
+)
+
+# Or simplest form
+discussion = LollmsDiscussion.create_new(lollms_client=lc)
+```
+
+### Persistent (Database-Backed)
+
+```python
+from lollms_client import LollmsDataManager
+
+# Initialize database
+db = LollmsDataManager("sqlite:///conversations.db")
+
+# Create persistent discussion
+discussion = LollmsDiscussion.create_new(
+    lollms_client=lc,
+    db_manager=db,
+    id="project_alpha_2024",
+    autosave=True  # Auto-commit on changes
+)
+
+# Later: reload existing
+discussion = db.get_discussion(lc, "project_alpha_2024")
+```
+
+### From Existing Messages
+
+```python
+from lollms_client import LollmsDataManager, LollmsMessage
+
+# Build from message list
+messages = [
+    LollmsMessage.new_message(
+        sender="user",
+        content="Let's analyze Q3 sales data",
+        sender_type="user"
+    ),
+    LollmsMessage.new_message(
+        sender="Analyst",
+        content="I'll help analyze Q3 sales. What specific metrics?",
+        sender_type="assistant"
+    ),
+    LollmsMessage.new_message(
+        sender="user",
+        content="Focus on regional breakdown and YoY growth",
+        sender_type="user"
+    )
+]
+
+discussion = LollmsDiscussion.from_messages(
+    messages=messages,
+    lollms_client=lc,
+    db_manager=db,
+    autosave=True
+)
+```
+
+---
+
+## Data Zone Management
+
+### System Prompt (Identity)
+
+```python
+# Set once, defines AI personality
+discussion.system_prompt = """You are a senior data analyst specializing in 
+retail analytics. Provide insights with specific numbers, trends, and 
+actionable recommendations."""
+
+# Access
+print(discussion.system_prompt)
+```
+
+### Memory (Long-Term Facts)
+
+```python
+# Manual memory management
+discussion.set_memory("""
+Key Facts About User:
+- Name: Dr. Sarah Chen
+- Role: VP of Retail Operations
+- Preferred analysis style: Executive summary with drill-down details
+- Key KPIs: Same-store sales, inventory turnover, customer LTV
+""")
+
+# Or auto-generate from conversation
+discussion.memorize()  # LLM extracts essence, creates structured memory
+
+# Memory is automatically included in all future prompts
+```
+
+### User Data Zone (Session Context)
+
+```python
+# Current user state
+discussion.user_data_zone = """
+Current Focus: Q3 2024 Analysis
+Working File: sales_q3_final.xlsx
+Last Query: Regional breakdown requested
+Pending: YoY growth comparison
+"""
+
+# Update as session progresses
+discussion.user_data_zone += "\nCompleted: Regional analysis\nNext: Trend forecasting"
+discussion.touch()  # Mark dirty for save
+```
+
+### Discussion Data Zone (Task State)
+
+```python
+# Conversation-level metadata
+discussion.discussion_data_zone = """
+Analysis Progress:
+1. ✓ Data loaded (15,432 transactions)
+2. ✓ Regional breakdown complete
+3. → YoY growth calculation (in progress)
+4. ○ Trend forecasting (pending)
+
+Key Findings So Far:
+- West region: +12% vs Q3 2023
+- South region: -3% (weather impact)
+- Online channel: +34% growth
+"""
+```
+
+### Personality Data Zone (Temporary RAG)
+
+```python
+# Tool results, search results, temporary knowledge
+# Auto-cleared between turns unless preserved
+
+response = discussion.chat(
+    user_message="What were the top products?",
+    tools={
+        "query_database": {
+            "callable": lambda q: {"results": [...], "sources": [...]},
+            ...
+        }
+    }
+)
+
+# Tool results automatically populate personality_data_zone
+# Include citation instructions:
+discussion.personality_data_zone += """
+IMPORTANT: Cite sources as [1], [2], [3] based on retrieved data above.
+"""
+```
+
+---
+
+## Context Assembly
+
+### View Full Context
+
+```python
+# See exactly what goes to LLM
+status = discussion.get_context_status()
+
+print(f"Total tokens: {status['current_tokens']} / {status['max_tokens']}")
+
+for zone_name, zone_info in status['zones'].items():
+    print(f"\n{zone_name}: {zone_info['tokens']} tokens")
+    if 'breakdown' in zone_info:
+        for component, details in zone_info['breakdown'].items():
+            print(f"  - {component}: {details.get('tokens', '?')} tokens")
+```
+
+### Manual Context Export
+
+```python
+# Get prompt as LLM sees it
+prompt_text = discussion.export(
+    format_type="lollms_text",  # or "openai_chat", "markdown"
+    max_allowed_tokens=32000,
+    suppress_system_prompt=False,
+    suppress_images=False
+)
+
+print(prompt_text[:2000])  # Preview
+```
+
+---
+
+## Conversation Flow
+
+### Basic Chat
+
+```python
+# Simple turn
+response = discussion.chat(
+    user_message="Show me the West region details",
+    streaming_callback=lambda chunk, t, m: print(chunk, end="")
+)
+
+# Response contains both messages
+user_msg = response['user_message']      # Added to history
+ai_msg = response['ai_message']          # Generated response
+
+print(f"AI said: {ai_msg.content}")
+print(f"Tokens: {ai_msg.tokens}")
+print(f"Speed: {ai_msg.generation_speed:.1f} tok/s")
+```
+
+### With Personality
+
+```python
+from lollms_client import LollmsPersonality
+
+analyst = LollmsPersonality(
+    name="RetailAnalyst",
+    system_prompt="You analyze retail data with precision.",
+    data_source=open("retail_knowledge_base.txt").read()  # Static knowledge
+)
+
+response = discussion.chat(
+    user_message="Explain inventory turnover",
+    personality=analyst,  # Injects system_prompt + data_source
+    tools=analytics_tools
+)
+```
+
+### Regeneration (Branching)
+
+```python
+# Not happy with response? Regenerate
+new_response = discussion.regenerate_branch(
+    branch_tip_id=ai_msg.id,  # Regenerate this AI response
+    temperature=0.8  # Different randomness
+)
+
+# Creates new branch, preserves original
+# Switch between branches:
+discussion.switch_to_branch(original_ai_msg.id)
+discussion.switch_to_branch(new_ai_msg.id)
+```
+
+---
+
+## Memory & Memorization
+
+### Structured Memory Creation
+
+```python
+# After solving a complex problem
+discussion.memorize()
+
+# LLM automatically creates:
+# {
+#   "title": "Q3 Sales Analysis Methodology",
+#   "content": "Used cohort analysis with 90-day windows. 
+#              Key finding: West region growth driven by 
+#              new store openings, not same-store sales."
+# }
+
+# Memory stored in discussion.memory
+print(discussion.memory)
+```
+
+### Manual Memory Management
+
+```python
+# Direct manipulation
+discussion.memory = """
+-- Analysis History --
+2024-01-15: Customer segmentation (RFM analysis)
+2024-02-20: Pricing elasticity study
+2024-03-10: Q4 forecast model (ARIMA-based)
+
+-- Established Facts --
+- Customer LTV strongly correlated with first 30-day engagement
+- Price sensitivity varies 3x by region
+- Seasonal peak: November 15-30
+"""
+
+# Clear
+discussion.memory = ""
+```
+
+---
+
+## Context Pruning (Long Conversations)
+
+### Automatic Pruning
+
+```python
+# Set limit, auto-summarize oldest messages
+discussion = LollmsDiscussion.create_new(
+    lollms_client=lc,
+    db_manager=db,
+    max_context_size=16000  # Token budget
+)
+
+# When exceeded, oldest messages → pruning_summary
+# Recent messages kept in full
+```
+
+### Manual Pruning
+
+```python
+# Force summarize now
+discussion.summarize_and_prune(
+    max_tokens=12000,
+    preserve_last_n=6  # Keep last 6 messages in full
+)
+
+# View pruning status
+print(f"Pruning point: {discussion.pruning_point_id}")
+print(f"Summary: {discussion.pruning_summary[:500]}...")
+```
+
+---
+
+## Multimodal: Image Management
+
+### Adding Images to Messages
+
+```python
+import base64
+
+# Load image
+image_bytes = Path("chart.png").read_bytes()
+image_b64 = base64.b64encode(image_bytes).decode()
+
+# Add with message
+msg = discussion.add_message(
+    sender="user",
+    content="What does this chart show?",
+    images=[image_b64]  # Can add multiple
+)
+
+# Images auto-active by default
+```
+
+### Selective Image Activation
+
+```python
+# Toggle specific images
+msg.toggle_image_activation(index=0, active=False)  # Deactivate first
+msg.toggle_image_activation(index=1, active=True)   # Activate second
+
+# Or by pack (grouped images)
+msg.toggle_image_pack_activation(index=0, active=False)
+
+# Check active images
+active = msg.get_active_images()  # List of base64 strings
+all_images = msg.get_all_images()  # With activation status
+```
+
+### Discussion-Level Images
+
+```python
+# Images attached to discussion (not specific message)
+discussion.add_discussion_image(
+    image_b64=logo_b64,
+    source="company_logo",
+    active=True
+)
+
+# Toggle
+discussion.toggle_discussion_image_activation(0, active=False)
+
+# Get all active across discussion + messages
+all_active = discussion.get_active_images()
+```
+
+---
+
+## Artefacts (Document Versioning)
+
+### Creating Artefacts
+
+```python
+# Save analysis result as versioned artefact
+discussion.add_artefact(
+    title="Q3_Sales_Analysis",
+    content=full_analysis_report,
+    version=1,
+    images=[chart1_b64, chart2_b64]
+)
+
+# Update creates new version
+discussion.update_artefact(
+    title="Q3_Sales_Analysis",
+    new_content=updated_report_with_forecast,
+    new_images=[chart1_b64, chart2_b64, forecast_chart_b64]
+)  # Now version 2
+```
+
+### Loading into Context
+
+```python
+# Bring artefact into active discussion
+discussion.load_artefact_into_data_zone(
+    title="Q3_Sales_Analysis",
+    version=2  # or None for latest
+)
+
+# Content appears in discussion_data_zone
+# Images added to discussion images
+
+# Unload when done
+discussion.unload_artefact_from_data_zone("Q3_Sales_Analysis")
+```
+
+### Listing & Checking
+
+```python
+# All artefacts
+artefacts = discussion.list_artefacts()
+for art in artefacts:
+    print(f"{art['title']} v{art['version']} - Loaded: {art['is_loaded']}")
+
+# Specific artefact
+q3 = discussion.get_artefact("Q3_Sales_Analysis", version=1)
+
+# Check if loaded
+if discussion.is_artefact_loaded("Q3_Sales_Analysis"):
+    print("Currently in context")
+```
+
+---
+
+## Advanced Patterns
+
+### Clone Discussion (Fresh Start, Same Context)
+
+```python
+# New conversation with same setup, no message history
+fresh_discussion = discussion.clone_without_messages()
+
+# Same: system_prompt, data zones, memory, images
+# Different: empty message history, new ID
+```
+
+### Export/Import
+
+```python
+# Serialize complete state
+json_str = discussion.export_to_json_str()
+
+# Save, transfer, backup
+Path("discussion_backup.json").write_text(json_str)
+
+# Restore elsewhere
+restored = LollmsDiscussion.import_from_json_str(
+    json_str=json_str,
+    lollms_client=lc,
+    db_manager=db
+)
+```
+
+### Multi-Discussion Coordination
+
+```python
+# Specialized discussions for different tasks
+research_db = LollmsDataManager("sqlite:///research.db")
+
+# Discussion 1: Literature review
+lit_review = LollmsDiscussion.create_new(lc, research_db, id="lit_review")
+lit_review.system_prompt = "You are a research assistant..."
+
+# Discussion 2: Methodology design  
+methods = LollmsDiscussion.create_new(lc, research_db, id="methods")
+methods.system_prompt = "You are a methodology expert..."
+
+# Share findings between them
+methods.discussion_data_zone = f"""
+Literature Review Findings:
+{lit_review.memorize()['content']}
+"""
+```
+
+---
+
+## Complete Example: Persistent Research Assistant
+
+```python
+#!/usr/bin/env python3
+"""
+Persistent Research Assistant with full state management
+"""
+
+from lollms_client import (
+    LollmsClient, LollmsDiscussion, LollmsDataManager,
+    LollmsPersonality, MSG_TYPE
+)
+from pathlib import Path
+import json
+
+class ResearchAssistant:
+    def __init__(self, db_path: str = "research.db"):
+        self.lc = LollmsClient(
+            "llama_cpp_server",
+            {"model_name": "mixtral-8x7b.Q4_K_M.gguf"}
+        )
+        self.db = LollmsDataManager(f"sqlite:///{db_path}")
+        
+        # Load or create main discussion
+        self.discussion = self.db.get_discussion(self.lc, "main_research")
+        if not self.discussion:
+            self.discussion = LollmsDiscussion.create_new(
+                lollms_client=self.lc,
+                db_manager=self.db,
+                id="main_research",
+                autosave=True
+            )
+            self._initialize_discussion()
+    
+    def _initialize_discussion(self):
+        """Set up initial state."""
+        self.discussion.system_prompt = """You are a research methodology expert.
+Provide structured, evidence-based guidance. Cite sources when possible."""
+        
+        self.discussion.memory = """
+Researcher Profile:
+- Discipline: Computational Biology
+- Experience: Post-doc level
+- Preferred methods: Statistical + ML hybrid approaches
+- Tools: Python, R, specialized bioinformatics pipelines
+"""
+        
+        self.discussion.user_data_zone = """
+Current Project: Protein folding stability prediction
+Phase: Literature review and baseline establishment
+Deadline: 6 months
+"""
+        
+        self.discussion.commit()
+    
+    def research_query(self, question: str, 
+                       context_files: list = None) -> dict:
+        """Execute research query with full context management."""
+        
+        # Load context files as artefacts if provided
+        if context_files:
+            for path in context_files:
+                content = Path(path).read_text()
+                self.discussion.add_artefact(
+                    title=Path(path).stem,
+                    content=content,
+                    source="user_upload"
+                )
+                self.discussion.load_artefact_into_data_zone(
+                    title=Path(path).stem
+                )
+        
+        # Update working state
+        self.discussion.discussion_data_zone += f"\nCurrent query: {question}"
+        
+        # Execute with research personality
+        researcher = LollmsPersonality(
+            name="ResearchAdvisor",
+            system_prompt=self.discussion.system_prompt,
+            data_source=self._load_methodology_kb()
+        )
+        
+        response = self.discussion.chat(
+            user_message=question,
+            personality=researcher,
+            max_reasoning_steps=8
+        )
+        
+        # Memorize key findings
+        self.discussion.memorize()
+        self.discussion.commit()
+        
+        return {
+            'answer': response['ai_message'].content,
+            'sources_used': response['ai_message'].metadata.get('sources', []),
+            'memory_updated': True
+        }
+    
+    def _load_methodology_kb(self) -> str:
+        """Load methodology knowledge base."""
+        kb_path = Path("methodology_kb.txt")
+        return kb_path.read_text() if kb_path.exists() else ""
+    
+    def get_status(self):
+        """Full context status."""
+        return self.discussion.get_context_status()
+    
+    def export_session(self, path: str):
+        """Backup complete session."""
+        json_str = self.discussion.export_to_json_str()
+        Path(path).write_text(json_str)
+        return path
+
+# Usage
+assistant = ResearchAssistant("my_research.db")
+
+# Query with automatic context management
+result = assistant.research_query(
+    "What are state-of-the-art approaches for protein stability prediction?",
+    context_files=["recent_paper.pdf.txt", "dataset_description.txt"]
+)
+
+print(result['answer'])
+
+# Check context usage
+status = assistant.get_status()
+print(f"Context: {status['current_tokens']}/{status['max_tokens']} tokens")
+
+# Backup
+assistant.export_session("session_backup_2024.json")
+```
+
+---
+
+## API Quick Reference
+
+| Property/Method | Purpose |
+|-----------------|---------|
+| `system_prompt` | AI identity/instructions |
+| `memory` | Long-term structured facts |
+| `user_data_zone` | Session user state |
+| `discussion_data_zone` | Task/conversation metadata |
+| `personality_data_zone` | Temporary tool/RAG results |
+| `add_message()` | Append to history |
+| `chat()` | Generate with full context |
+| `memorize()` | Auto-extract and store memory |
+| `get_context_status()` | Token breakdown |
+| `export()` | Format as prompt |
+| `add_artefact()` / `load_artefact_into_data_zone()` | Document versioning |
+| `clone_without_messages()` | Fresh start, same config |
+| `export_to_json_str()` / `import_from_json_str()` | Serialize/restore |
+
+]]>
+    </content>
+</skill>

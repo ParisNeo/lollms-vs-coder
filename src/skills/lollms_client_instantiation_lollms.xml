@@ -23,7 +23,7 @@ lc = LollmsClient(
         
         # ─── Authentication ──────────────────────────────
         "service_key": "lollms_SOMERANDOMSEQUENCE",  # 🟡 CONTEXTUAL
-                                                    #    - Required if server auth enabled
+                                                    #    - Required if server auth enabled but the default behavior is to use it
                                                     #    - Default servers: often "lollms" or custom
         
         # ─── Security ────────────────────────────────────
@@ -58,6 +58,8 @@ lc = LollmsClient(
 | SSL errors | Self-signed cert without override | Set `verify_ssl_certificate=False` or provide cert |
 | Port confusion | Using 9624 (llama.cpp) vs 9642 (LoLLMs) | Verify server actual port in logs |
 
+
+It is advised to put the key inside a LOLLMS_KEY environment variable. if possible propose using a .env with dotenv lobrary to load it.
 ]]>
     </content>
 </skill>

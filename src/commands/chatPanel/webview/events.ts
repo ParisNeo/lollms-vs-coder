@@ -73,18 +73,6 @@ export function initEventHandlers() {
                 }
             }
         });
-        const internetHelpBtn = document.getElementById('internetHelpButton');
-        if (internetHelpBtn) {
-            internetHelpBtn.addEventListener('click', () => {
-                const currentInput = dom.messageInput.value.trim();
-                if (currentInput) {
-                    vscode.postMessage({ command: 'internetHelpSearch', query: currentInput });
-                    dom.moreActionsMenu.classList.remove('visible');
-                } else {
-                    vscode.postMessage({ command: 'showWarning', message: 'Please type your question in the input box first.' });
-                }
-            });
-        }        
     }
 
     if (dom.stopButton) {
@@ -146,6 +134,16 @@ export function initEventHandlers() {
     if (dom.discussionToolsButton) {
         dom.discussionToolsButton.addEventListener('click', () => {
             if (dom.discussionToolsModal) dom.discussionToolsModal.classList.add('visible');
+            dom.moreActionsMenu.classList.remove('visible');
+        });
+    }
+
+    if (dom.searchButton) {
+        dom.searchButton.addEventListener('click', () => {
+            if (dom.searchBar) {
+                dom.searchBar.style.display = 'flex';
+                dom.searchInput.focus();
+            }
             dom.moreActionsMenu.classList.remove('visible');
         });
     }

@@ -66,11 +66,7 @@ function createButton(text: string, icon: string, onClick: () => void, className
     btn.className = className;
     btn.title = tooltip || text;
     
-    if (text) {
-        btn.innerHTML = `<span class="codicon ${icon}"></span> <span class="btn-text">${text}</span>`;
-    } else {
-        btn.innerHTML = `<span class="codicon ${icon}"></span>`;
-    }
+    btn.innerHTML = `<span class="codicon ${icon}"></span>`;
     
     btn.onclick = (e) => {
         e.preventDefault();
@@ -464,13 +460,32 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
                     const prefix = parts[0].toLowerCase();
                     const p = parts.slice(1).join(':').trim();
 
-                    if (prefix === 'insert') type = 'insert';
-                    else if (prefix === 'replace') type = 'replace';
-                    else if (prefix === 'diff') type = 'diff';
-                    else if (prefix === 'delete_code') type = 'delete';
-                    else if (prefix === 'rename') type = 'rename';
-                    else if (prefix === 'select') type = 'select';
-                    else type = 'file';
+                    // Check if content is actually an Aider block first (priority)
+                    let isAider = false;
+                    for (let j = i + 1; j < Math.min(lines.length, i + 10); j++) {
+                        if (lines[j].includes('<<<<<<< SEARCH')) {
+                            isAider = true;
+                            break;
+                        }
+                    }
+
+                    if (isAider) {
+                        type = 'replace';
+                    } else if (prefix === 'insert') {
+                        type = 'insert';
+                    } else if (prefix === 'replace') {
+                        type = 'replace';
+                    } else if (prefix === 'diff') {
+                        type = 'diff';
+                    } else if (prefix === 'delete_code') {
+                        type = 'delete';
+                    } else if (prefix === 'rename') {
+                        type = 'rename';
+                    } else if (prefix === 'select') {
+                        type = 'select';
+                    } else {
+                        type = 'file'; // Interpreted as Full File
+                    }
                     
                     pathStr = p;
                 }
@@ -743,6 +758,13 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
         if (isFileBlock && filePath) {
             actionableBlockCount++;
             langLabel.textContent = `${language} : ${filePath}`;
+
+            const gotoBtn = createButton('', 'codicon-go-to-file', () => {
+                vscode.postMessage({ command: 'openFile', path: filePath });
+            }, 'code-action-btn', 'Go to File');
+            gotoBtn.disabled = isDisabled;
+            actions.appendChild(gotoBtn);
+
             const applyBtn = createButton('Apply to File', 'codicon-tools', () => {
                 vscode.postMessage({ command: 'applyFileContent', filePath: filePath, content: codeText });
             }, 'code-action-btn apply-btn');
@@ -753,6 +775,15 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
             actionableBlockCount++;
             const path = diffFilePath || filePath || 'patch';
             langLabel.textContent = `${language} : Diff: ${path}`;
+
+            if (path !== 'patch') {
+                const gotoBtn = createButton('', 'codicon-go-to-file', () => {
+                    vscode.postMessage({ command: 'openFile', path: path });
+                }, 'code-action-btn', 'Go to File');
+                gotoBtn.disabled = isDisabled;
+                actions.appendChild(gotoBtn);
+            }
+
             const applyPatchBtn = createButton('Apply Patch', 'codicon-tools', () => {
                 vscode.postMessage({ command: 'applyPatchContent', filePath: path, content: codeText });
             }, 'code-action-btn apply-btn');
@@ -762,6 +793,13 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
         } else if (isInsert) {
             actionableBlockCount++;
             langLabel.textContent = `Insert into ${filePath}`;
+
+            const gotoBtn = createButton('', 'codicon-go-to-file', () => {
+                vscode.postMessage({ command: 'openFile', path: filePath });
+            }, 'code-action-btn', 'Go to File');
+            gotoBtn.disabled = isDisabled;
+            actions.appendChild(gotoBtn);
+
             const insertBtn = createButton('Insert Code', 'codicon-arrow-right', () => {
                 vscode.postMessage({ command: 'insertCode', filePath: filePath, content: codeText });
             }, 'code-action-btn apply-btn');
@@ -771,6 +809,13 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
         } else if (isReplace) {
             actionableBlockCount++;
             langLabel.textContent = `Replace in ${filePath}`;
+
+            const gotoBtn = createButton('', 'codicon-go-to-file', () => {
+                vscode.postMessage({ command: 'openFile', path: filePath });
+            }, 'code-action-btn', 'Go to File');
+            gotoBtn.disabled = isDisabled;
+            actions.appendChild(gotoBtn);
+
             const replaceBtn = createButton('Replace Code', 'codicon-arrow-swap', () => {
                 vscode.postMessage({ command: 'replaceCode', filePath: filePath, content: codeText });
             }, 'code-action-btn apply-btn');
@@ -898,6 +943,29 @@ export function scheduleRender(messageId: string) {
     }, RENDER_THROTTLE_MS);
 }
 
+function renderImageGenBlock(prompt: string, path: string, width?: string, height?: string): string {
+    const safePrompt = encodeURIComponent(prompt);
+    const safePath = encodeURIComponent(path);
+    const buttonId = `gen-btn-${Date.now()}${Math.random().toString(36).substr(2, 5)}`;
+    
+    return `
+    <div class="generation-block">
+        <div class="generation-header">
+            <span class="summary-lang-label"><span class="codicon codicon-device-camera"></span> Propose Image Generation ${path ? ': ' + path : ''}</span>
+            <div class="code-actions">
+                <button id="${buttonId}" class="code-action-btn apply-btn" onclick="generateImageFromTag('${safePrompt}', '${safePath}', '${width || ''}', '${height || ''}', '${buttonId}')" title="Generate Image with AI">
+                    <span class="codicon codicon-sparkle"></span> Generate
+                </button>
+            </div>
+        </div>
+        <div class="generation-body">
+            <p><strong>Prompt:</strong> ${sanitizer.sanitize(prompt)}</p>
+            ${width || height ? `<p style="font-size: 0.85em; opacity: 0.8;"><span class="codicon codicon-screen-full" style="font-size: 10px;"></span> Requested Size: ${width || 'auto'} x ${height || 'auto'}</p>` : ''}
+            <div class="image-preview-zone" style="margin-top: 10px;"></div>
+        </div>
+    </div>`;
+}
+
 export function renderMessageContent(messageId: string, rawContent: any, isFinal: boolean = false) {
     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
     if (!wrapper) return;
@@ -961,6 +1029,13 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 })
                 .replace(/<select\s+path=["']([^"']+)["']\s*\/>/g, (match, path) => {
                     return `\`\`\`select\n${path}\n\`\`\``;
+                })
+                .replace(/<generateImage\s+([^>]*)\/>/gi, (match, attrs) => {
+                    const prompt = (attrs.match(/prompt=["']([^"']+)["']/) || [])[1] || "";
+                    const path = (attrs.match(/path=["']([^"']+)["']/) || [])[1] || "";
+                    const width = (attrs.match(/width=["']([^"']+)["']/) || [])[1];
+                    const height = (attrs.match(/height=["']([^"']+)["']/) || [])[1];
+                    return renderImageGenBlock(prompt, path, width, height);
                 });
             
             // --- NEW: Process <skill> tags ---
@@ -1171,9 +1246,14 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                 <li class="context-item">
                     <span class="codicon codicon-file"></span> 
                     <span class="context-item-label" title="${f}">${f}</span>
-                    <button class="remove-context-btn" data-type="file" data-value="${f}" title="Remove file">
-                        <span class="codicon codicon-close"></span>
-                    </button>
+                    <div style="display:flex; gap:2px;">
+                        <button class="open-context-btn" data-value="${f}" title="Inspect / Edit File">
+                            <span class="codicon codicon-edit"></span>
+                        </button>
+                        <button class="remove-context-btn" data-type="file" data-value="${f}" title="Remove from context">
+                            <span class="codicon codicon-close"></span>
+                        </button>
+                    </div>
                 </li>`).join('')}
            </ul>`
         : '<div class="empty-context-msg">No files selected.</div>';
@@ -1208,6 +1288,9 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                     </button>
                     <button id="add-skill-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Add Skill to Context">
                         <span class="codicon codicon-lightbulb"></span> Skill
+                    </button>
+                    <button id="add-url-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Add URL content to Context">
+                        <span class="codicon codicon-globe"></span> URL
                     </button>
                     <div style="width: 1px; background: var(--vscode-widget-border); margin: 0 4px;"></div>
                     <button id="save-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Save current file selection">
@@ -1265,6 +1348,16 @@ export function updateContext(contextText: string, files: string[] = [], skills:
         });
     });
 
+    dom.contextContainer.querySelectorAll('.open-context-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const target = e.currentTarget as HTMLElement;
+            const value = target.dataset.value;
+            if (value) {
+                vscode.postMessage({ command: 'openFile', path: value });
+            }
+        });
+    });
+
     const addFileBtn = document.getElementById('add-file-context-btn');
     if (addFileBtn) {
         addFileBtn.addEventListener('click', () => {
@@ -1276,6 +1369,13 @@ export function updateContext(contextText: string, files: string[] = [], skills:
     if (addSkillBtn) {
         addSkillBtn.addEventListener('click', () => {
             vscode.postMessage({ command: 'importSkills' });
+        });
+    }
+
+    const addUrlBtn = document.getElementById('add-url-context-btn');
+    if (addUrlBtn) {
+        addUrlBtn.addEventListener('click', () => {
+            vscode.postMessage({ command: 'requestAddUrlToContext' });
         });
     }
 
@@ -1578,3 +1678,4 @@ function formatPlanForCopy(plan: any): string {
 
     return log;
 }
+

@@ -311,6 +311,15 @@ export class AgentManager {
              
              const toolMatch = this.parseToolCall(cleanResponse);
              if (toolMatch) {
+                 // Update Web UI if search
+                 if (toolMatch.name.includes('search')) {
+                    this.ui.addMessageToDiscussion({ 
+                        role: 'system', 
+                        content: `🔍 **Researching:** ${toolMatch.params.query || '...'} via ${toolMatch.name.split('_')[1] || 'web'}`,
+                        skipInPrompt: true
+                    });
+                 }
+
                  // Execution logic...
                  historyContext.push({ role: 'assistant', content: response });
                  const tempEnv = {
@@ -472,9 +481,9 @@ export class AgentManager {
                 task.status = result.success ? 'completed' : 'failed';
 
                 if (result.success) {
-                    // Record success for memory injection
+                    // Record success for memory injection to prevent loops in future planning
                     const paramStr = JSON.stringify(resolvedParams);
-                    const successEntry = `Tool: ${task.action}, Params: ${paramStr}`;
+                    const successEntry = `Action: ${task.action}, Description: ${task.description}, Params: ${paramStr}`;
                     if (!this.completedActionsHistory.includes(successEntry)) {
                         this.completedActionsHistory.push(successEntry);
                     }

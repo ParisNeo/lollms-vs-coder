@@ -258,35 +258,47 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         const activeWorkspace = getActiveWorkspace();
         if (!activeWorkspace) return;
 
-        const match = content.match(/<<<<<<< SEARCH([\s\S]*?)=======\s*([\s\S]*?)(?:>>>>>>> REPLACE|$)/);
-        if (!match) {
-             vscode.window.showErrorMessage("Invalid replace block format.");
+        // More flexible regex to capture Aider blocks
+        const aiderRegex = /<<<<<<< SEARCH([\s\S]*?)=======([\s\S]*?)>>>>>>> REPLACE/g;
+        const matches = [...content.matchAll(aiderRegex)];
+        
+        if (matches.length === 0) {
+             vscode.window.showErrorMessage("No valid Search/Replace blocks found.");
              return;
         }
         
-        const searchCode = match[1].trim(); 
-        const replaceCode = match[2].trim();
         const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
         
         try {
-            let document = await vscode.workspace.openTextDocument(fileUri);
-            const originalContent = document.getText();
-            const range = findBlockRange(document, searchCode);
+            const document = await vscode.workspace.openTextDocument(fileUri);
+            let currentContent = document.getText();
+            const originalContent = currentContent;
             
-            if (!range) {
-                vscode.window.showErrorMessage(`Could not locate search block in ${filePath}. Exact match required.`);
-                return;
+            let applyCount = 0;
+            const { applySearchReplace } = require('../utils');
+
+            for (const match of matches) {
+                const searchCode = match[1];
+                const replaceCode = match[2];
+                
+                const result = applySearchReplace(currentContent, searchCode, replaceCode);
+
+                if (result.success) {
+                    currentContent = result.result;
+                    applyCount++;
+                } else {
+                    vscode.window.showWarningMessage(`Could not apply search/replace block in ${filePath}: ${result.error}`);
+                }
             }
-            
-            const before = originalContent.substring(0, range.start);
-            const after = originalContent.substring(range.end);
-            const newFullContent = before + replaceCode + after;
 
-            const edit = new vscode.WorkspaceEdit();
-            edit.replace(fileUri, new vscode.Range(new vscode.Position(0, 0), document.lineAt(document.lineCount - 1).range.end), newFullContent);
-            await vscode.workspace.applyEdit(edit);
-
-            await openDiffView(fileUri, originalContent);
+            if (applyCount > 0) {
+                const edit = new vscode.WorkspaceEdit();
+                const fullRange = new vscode.Range(new vscode.Position(0, 0), document.lineAt(document.lineCount - 1).range.end);
+                edit.replace(fileUri, fullRange, currentContent);
+                await vscode.workspace.applyEdit(edit);
+                await openDiffView(fileUri, originalContent);
+                vscode.window.showInformationMessage(`Applied ${applyCount} change(s) to ${filePath}.`);
+            }
 
         } catch(e: any) {
             vscode.window.showErrorMessage(`Error accessing file ${filePath}: ${e.message}`);

@@ -14,10 +14,15 @@ export function clearSearch() {
 
 export function performSearch() {
     const query = dom.searchInput.value.trim();
-    clearSearch();
     if (!query) {
+        clearSearch();
         return;
     }
+
+    // Save query to detect changes
+    dom.searchInput.dataset.lastQuery = query;
+
+    clearSearch();
 
     const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const regex = new RegExp(`(${escapedQuery})`, 'gi');

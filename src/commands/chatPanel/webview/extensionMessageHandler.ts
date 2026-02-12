@@ -54,6 +54,20 @@ export function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'updateMessage':
                 {
+                    if (typeof message.newContent === 'string' && message.newContent.startsWith('LOG_UPDATE:')) {
+                        try {
+                            const logData = JSON.parse(message.newContent.substring(11));
+                            const logContainer = document.getElementById('web-search-log');
+                            if (logContainer) {
+                                const entry = document.createElement('div');
+                                entry.className = 'search-entry';
+                                entry.innerHTML = `<span class="engine">[${logData.engine}]</span> <span class="query">${logData.query}</span>`;
+                                logContainer.appendChild(entry);
+                            }
+                        } catch (e) {}
+                        return; // Don't render log updates as chat messages
+                    }
+
                     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
                     if (wrapper) {
                         const msgDiv = wrapper.querySelector('.message') as HTMLElement;

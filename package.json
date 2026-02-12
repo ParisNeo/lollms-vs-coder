@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.95",
+  "version": "0.5.98",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -462,6 +462,11 @@
         "icon": "$(cloud-upload)"
       },
       {
+        "command": "lollms-vs-coder.deleteAllSkills",
+        "title": "Lollms: Delete All Skills",
+        "icon": "$(trash)"
+      },
+      {
         "command": "lollms-vs-coder.editMemory",
         "title": "Lollms: Edit AI Memory",
         "icon": "$(book)"
@@ -666,15 +671,23 @@
           "type": "object",
           "default": {
             "fullFile": true,
-            "diff": false,
-            "aider": false
+            "partialFormat": "aider"
           },
           "description": "Preferred formats for code generation.",
           "properties": {
-            "fullFile": { "type": "boolean", "default": true, "description": "Generate full file content" },
-            "diff": { "type": "boolean", "default": false, "description": "Generate unified diffs" },
-            "aider": { "type": "boolean", "default": false, "description": "Generate Search/Replace blocks (Aider style)" }
+            "fullFile": { "type": "boolean", "default": true, "description": "Allow using full file content for new files or major changes." },
+            "partialFormat": { 
+                "type": "string", 
+                "default": "aider", 
+                "enum": ["aider", "diff"],
+                "description": "Preferred format for small, localized changes."
+            }
           }
+        },
+        "lollmsVsCoder.forceFullCode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Force the AI to provide full code for every modification, regardless of change size."
         },
         "lollmsVsCoder.explainCode": {
           "type": "boolean",

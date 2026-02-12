@@ -229,7 +229,7 @@ details[open] > .code-summary::before { transform: rotate(0deg); }
 details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 .summary-lang-label { font-weight: 600; }
 .code-actions { display: flex; gap: 8px; align-items: center; }
-.code-action-btn { background-color: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: 1px solid transparent; border-radius: 3px; padding: 2px 10px; font-family: var(--vscode-font-family); font-size: 11px; cursor: pointer; display: flex; align-items: center; gap: 6px; height: 24px; transition: background-color 0.1s; }
+.code-action-btn { background-color: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: 1px solid transparent; border-radius: 3px; padding: 2px; font-family: var(--vscode-font-family); font-size: 11px; cursor: pointer; display: flex; align-items: center; justify-content: center; width: 26px; height: 24px; transition: background-color 0.1s; }
 .code-action-btn:hover { background-color: var(--vscode-button-secondaryHoverBackground); }
 .code-action-btn:disabled { opacity: 0.5; cursor: not-allowed; pointer-events: none; filter: grayscale(100%); }
 .code-action-btn.success { background-color: var(--vscode-charts-green) !important; color: white !important; border-color: transparent; transition: all 0.2s ease; }
@@ -815,6 +815,23 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
     color: var(--vscode-input-foreground); padding: 4px 8px; border-radius: 4px;
 }
 
+mark {
+    background-color: var(--vscode-editor-findMatchHighlightBackground);
+    color: inherit;
+}
+
+mark.current-match {
+    background-color: var(--vscode-editor-findMatchBackground);
+    outline: 1px solid var(--vscode-editor-findMatchBorder);
+}
+
+#search-results-count {
+    font-size: 11px;
+    opacity: 0.8;
+    min-width: 40px;
+    text-align: center;
+}
+
 .edit-overlay { display: flex; flex-direction: column; gap: 10px; width: 100%; margin-top: 8px; }
 .edit-textarea {
     width: 100%; min-height: 100px; max-height: 600px;
@@ -917,7 +934,42 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
     font-size: 11px;
     font-weight: 600;
     margin-right: 8px;
-    animation: pulse-border-blue 2s infinite;
+    cursor: pointer;
+    transition: filter 0.2s;
+}
+
+.websearch-indicator:hover {
+    filter: brightness(1.1);
+}
+
+.websearch-log {
+    font-size: 11px;
+    background: var(--vscode-editorWidget-background);
+    border: 1px solid var(--vscode-widget-border);
+    border-radius: 4px;
+    margin-top: 8px;
+    padding: 8px;
+    display: none;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 150px;
+    overflow-y: auto;
+}
+
+.websearch-log.visible {
+    display: flex;
+}
+
+.search-entry {
+    display: flex;
+    justify-content: space-between;
+    opacity: 0.9;
+}
+
+.search-entry .engine {
+    font-weight: bold;
+    color: var(--vscode-textLink-foreground);
+    min-width: 80px;
 }
 
 @keyframes pulse-border {
@@ -1148,7 +1200,7 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
     font-size: 0.9em;
 }
 
-.remove-context-btn {
+.remove-context-btn, .open-context-btn {
     background: transparent;
     border: none;
     color: var(--vscode-icon-foreground);
@@ -1162,10 +1214,17 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
     min-width: 20px;
 }
 
-.remove-context-btn:hover {
+.remove-context-btn:hover, .open-context-btn:hover {
     opacity: 1;
     background-color: var(--vscode-toolbar-hoverBackground);
+}
+
+.remove-context-btn:hover {
     color: var(--vscode-errorForeground);
+}
+
+.open-context-btn:hover {
+    color: var(--vscode-textLink-foreground);
 }
 
 .empty-context-msg {

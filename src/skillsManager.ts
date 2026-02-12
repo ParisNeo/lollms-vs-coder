@@ -302,6 +302,23 @@ export class SkillsManager {
         await walkAndDelete(targetRoot);
     }
 
+    public async deleteAllSkills(): Promise<void> {
+        // Delete all from Global
+        if (this.globalSkillsDir) {
+            try {
+                await vscode.workspace.fs.delete(this.globalSkillsDir, { recursive: true, useTrash: false });
+                await vscode.workspace.fs.createDirectory(this.globalSkillsDir);
+            } catch {}
+        }
+        // Delete all from Local
+        if (this.localSkillsDir) {
+            try {
+                await vscode.workspace.fs.delete(this.localSkillsDir, { recursive: true, useTrash: false });
+                await vscode.workspace.fs.createDirectory(this.localSkillsDir);
+            } catch {}
+        }
+    }
+
     public async getSkillsInBundle(categoryPath: string): Promise<Skill[]> {
         const allSkills = await this.getSkills();
         const normalizedPath = categoryPath.replace(/\\/g, '/');

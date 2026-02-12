@@ -54,10 +54,25 @@ export const scrapeWebsiteTool: ToolDefinition = {
             // 4. Normalize whitespace
             text = text.replace(/\s+/g, " ").trim();
 
-            // 5. Truncate if too long (to save context)
-            const maxLength = 12000;
-            if (text.length > maxLength) {
-                text = text.substring(0, maxLength) + "\n... (Content truncated)";
+            // 5. Token Limit Management (30,000 tokens ~ 120,000 characters)
+            const maxChars = 120000; 
+            if (text.length > maxChars) {
+                const summarizeTool = env.agentManager?.getTools().find(t => t.name === 'summarize_text');
+                if (summarizeTool) {
+                    const summaryResult = await summarizeTool.execute({ 
+                        text: text, 
+                        objective: `Extract key information from this large web page: ${params.url}` 
+                    }, env, signal);
+                    
+                    if (summaryResult.success) {
+                        return { 
+                            success: true, 
+                            output: `[LARGE PAGE SUMMARIZED]\nURL: ${params.url}\n\n${summaryResult.output}` 
+                        };
+                    }
+                }
+                // Fallback if summarizer fails or not found
+                text = text.substring(0, maxChars) + "\n\n... (Content heavily truncated due to 30k token limit)";
             }
 
             if (text.length < 50) {

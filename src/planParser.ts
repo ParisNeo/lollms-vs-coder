@@ -60,7 +60,7 @@ ${memoryBlock}
 **INSTRUCTION**:
 1. Analyze the failure.
 2. Generate a *Revised Plan* that picks up where we left off.
-3. **CRITICAL**: Do NOT include steps listed in "COMPLETED ACTIONS" above. Start the plan from the next logical step.
+3. **CRITICAL**: Do NOT include steps listed in "COMPLETED ACTIONS" above. Start the plan from the next logical step. Do not repeat work that is already [DONE].
 `;
                 messages.push({ role: 'user', content: failureContext });
             } else {
@@ -152,37 +152,47 @@ ${memoryBlock}
     }
 
     public extractJson(text: string): string | null {
-        // 1. Try Markdown Code Block
-        const markdownMatch = text.match(/```json\s*([\s\S]+?)\s*```/);
+        // 1. Clean common LLM hallucination prefixes/suffixes
+        let cleaned = text.trim();
+        
+        // 2. Try Markdown Code Block
+        const markdownMatch = cleaned.match(/```json\s*([\s\S]+?)\s*```/);
         if (markdownMatch) {
-            const potentialJson = markdownMatch[1].trim();
-            // Validate if it looks like a plan (has "tasks" or "objective")
-            if (potentialJson.includes('"tasks"') || potentialJson.includes('"steps"')) {
-                return potentialJson;
-            }
+            return markdownMatch[1].trim();
         }
 
-        // 2. Scan for balanced braces to find embedded JSON objects
-        const jsonObjects: string[] = [];
+        // 3. Scan for balanced braces to find embedded JSON objects (Resilient version)
         let braceCount = 0;
         let startIndex = -1;
+        let result = null;
         
-        for (let i = 0; i < text.length; i++) {
-            if (text[i] === '{') {
+        for (let i = 0; i < cleaned.length; i++) {
+            if (cleaned[i] === '{') {
                 if (braceCount === 0) startIndex = i;
                 braceCount++;
-            } else if (text[i] === '}') {
+            } else if (cleaned[i] === '}') {
                 braceCount--;
                 if (braceCount === 0 && startIndex !== -1) {
-                    jsonObjects.push(text.substring(startIndex, i + 1));
-                    startIndex = -1;
+                    const potential = cleaned.substring(startIndex, i + 1);
+                    // Check if it's likely a tool call or plan
+                    if (potential.includes('"tool"') || potential.includes('"tasks"') || potential.includes('"action"')) {
+                        result = potential;
+                        break; // Take the first valid structural object
+                    }
                 }
             }
         }
 
-        // 3. Find the object that looks like a Plan
-        const planJson = jsonObjects.find(j => j.includes('"tasks"') || j.includes('"steps"'));
-        return planJson || null;
+        // 4. Final attempt: If LLM cut off the closing braces, try to append them
+        if (!result && startIndex !== -1 && braceCount > 0) {
+            let attempt = cleaned.substring(startIndex) + "}".repeat(braceCount);
+            try {
+                JSON.parse(attempt);
+                result = attempt;
+            } catch (e) {}
+        }
+
+        return result;
     }
 
     public async getArchitectSystemPrompt(allowedTools: ToolDefinition[]): Promise<ChatMessage> {

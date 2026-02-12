@@ -8,10 +8,11 @@ export const extractYoutubeTranscriptTool: ToolDefinition = {
     isDefault: true,
     parameters: [
         { name: "url", type: "string", description: "The full URL of the YouTube video or Short.", required: true },
+        { name: "language", type: "string", description: "ISO 639-1 language code (e.g., 'en', 'fr'). Defaults to 'en'.", required: false },
         { name: "force_format", type: "string", description: "Force 'xml' or 'json3' if one fails.", required: false },
         { name: "use_whisper", type: "boolean", description: "Placeholder for audio-based transcription (Agentic fallback).", required: false }
     ],
-    async execute(params: { url: string, force_format?: 'xml' | 'json3', use_whisper?: boolean }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
+    async execute(params: { url: string, language?: string, force_format?: 'xml' | 'json3', use_whisper?: boolean }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
         if (!params.url) return { success: false, output: "Error: URL is required." };
 
         // Agent requested a fallback we don't handle natively in this JS tool
@@ -51,9 +52,12 @@ export const extractYoutubeTranscriptTool: ToolDefinition = {
                 return { success: false, output: "AVAILABILITY ERROR: No caption tracks found. This video might not have transcripts." };
             }
 
-            // 3. Prioritize English
-            captions.sort((a: any, b: any) => (a.languageCode === 'en' ? -1 : 1));
-            const track = captions[0];
+            // 3. Find requested language or fallback to first available
+            const requestedLang = params.language || 'en';
+            let track = captions.find((t: any) => t.languageCode === requestedLang);
+            if (!track) {
+                track = captions[0];
+            }
             const baseUrl = track.baseUrl;
 
             // 4. Try JSON3 format first (cleanest)

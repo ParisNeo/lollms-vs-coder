@@ -439,19 +439,23 @@ export class LollmsAPI {
     return data.text || '';
   }
 
-  public async generateImage(prompt: string, token?: vscode.CancellationToken): Promise<string> {
+public async generateImage(prompt: string, options?: { size?: string, quality?: 'standard' | 'hd' }, token?: vscode.CancellationToken): Promise<string> {
     if (!this.baseUrl) {
       throw new Error("Lollms API URL is not configured correctly.");
     }
-    
-    const imageUrl = `${this.baseUrl}/v1/images/generations`;
-    const isHttps = imageUrl.startsWith('https');
-    
-    const requestBody: ImageGenerationRequest = {
-        prompt: prompt,
-        n: 1,
-        response_format: 'b64_json',
-    };
+
+
+
+const imageUrl = `${this.baseUrl}/v1/images/generations`;
+const isHttps = imageUrl.startsWith('https');
+
+const requestBody: ImageGenerationRequest = {
+    prompt: prompt,
+    n: 1,
+    response_format: 'b64_json',
+    size: options?.size,
+    quality: options?.quality
+};
 
     const controller = new AbortController();
     const timeoutDuration = vscode.workspace.getConfiguration('lollmsVsCoder').get<number>('requestTimeout') || 600000;

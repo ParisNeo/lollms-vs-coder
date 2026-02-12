@@ -4,7 +4,7 @@ import { ContextManager, ContextResult } from '../../contextManager';
 import { Discussion, DiscussionManager } from '../../discussionManager';
 import { AgentManager } from '../../agentManager';
 import { HerdManager } from '../../herdManager';
-import { getProcessedSystemPrompt, stripThinkingTags, DiscussionCapabilities } from '../../utils';
+import { getProcessedSystemPrompt, stripThinkingTags, DiscussionCapabilities, ResponseProfile } from '../../utils';
 import * as path from 'path';
 import { InfoPanel } from '../infoPanel';
 import { ProcessManager } from '../../processManager';
@@ -13,6 +13,7 @@ import { SkillsManager } from '../../skillsManager';
 import { Logger } from '../../logger';
 import { PersonalityManager } from '../../personalityManager';
 import { GitIntegration } from '../../gitIntegration';
+import { applyDiffToString, applySearchReplace } from '../../utils';
 
 interface ActiveGeneration {
     messageId: string;
@@ -1080,6 +1081,33 @@ Please provide the **FULL CONTENT** of the file instead using the format:
         } catch (e: any) { this.log(`Auto-Context failed: ${e.message}`, 'ERROR'); }
     }
 
+    // --- WEB RESEARCH AGENT ---
+    if (this._discussionCapabilities.webSearch) {
+        this.log("Web Search active. Starting research agent.");
+        const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
+        const userPromptText = (typeof message.content === 'string') ? message.content : "User request";
+        const webAgentMsgId = 'web_agent_' + Date.now();
+        
+        await this.addMessageToDiscussion({
+            id: webAgentMsgId, 
+            role: 'system', 
+            content: `**🌍 Web Research Agent**\n*Checking if external info is needed...*\n\n`, 
+            skipInPrompt: true 
+        });
+
+        try {
+            await this._contextManager.runWebResearchAgent(userPromptText, model, controller.signal, (newContent) => {
+                if (!this._isDisposed) this._panel.webview.postMessage({ command: 'updateMessage', messageId: webAgentMsgId, newContent });
+            });
+            
+            // Refresh tokens/context after files might have been added
+            this.updateContextAndTokens();
+            
+        } catch (e: any) { 
+            this.log(`Web Research failed: ${e.message}`, 'ERROR');
+        }
+    }
+
     const importedIds = this._currentDiscussion?.importedSkills || [];
     const contextData = await this._contextManager.getContextContent({ importedSkillIds: importedIds });
     const context = { tree: contextData.projectTree, files: contextData.selectedFilesContent, skills: contextData.skillsContent };
@@ -1146,6 +1174,14 @@ Please provide the **FULL CONTENT** of the file instead using the format:
             const lastUserMsg = history[history.length - 1];
             if (lastUserMsg.role === 'user' && typeof lastUserMsg.content === 'string') {
                 lastUserMsg.content += `\n\n(Reminder: Please follow the ${activeProfile.name} response style precisely.)`;
+            }
+        }
+
+        // Reinforce Response Style for long conversations to prevent persona drift
+        if (history.length > 2 && activeProfile && activeProfile.id !== 'silent') {
+            const lastUserMsg = history[history.length - 1];
+            if (lastUserMsg.role === 'user' && typeof lastUserMsg.content === 'string') {
+                lastUserMsg.content += `\n\n(Style Reminder: You are currently in ${activeProfile.name} mode. Please ensure your response follows the required structure and tone.)`;
             }
         }
 
@@ -1502,6 +1538,42 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                     this.updateContextAndTokens();
                 }
                 break;
+            case 'requestAddUrlToContext':
+                const url = await vscode.window.showInputBox({ 
+                    prompt: "Enter URL to scrape and add to context",
+                    placeHolder: "https://example.com/article" 
+                });
+                if (url) {
+                    let language = 'en';
+                    if (url.includes('youtube.com') || url.includes('youtu.be')) {
+                        const langChoice = await vscode.window.showInputBox({
+                            prompt: "YouTube detected. Enter transcript language code (e.g. 'en', 'fr', 'es')",
+                            value: "en"
+                        });
+                        if (langChoice === undefined) return; // User cancelled
+                        language = langChoice || 'en';
+                    }
+
+                    try {
+                        const loadingMsgId = 'system_url_loading_' + Date.now();
+                        await this.addMessageToDiscussion({
+                             id: loadingMsgId,
+                             role: 'system', 
+                             content: `🌐 Scraping content from: ${url}...`
+                        });
+                        
+                        // We use the context manager to process and save the URL content
+                        const result = await this._contextManager.processUrl(url, language);
+                        
+                        await this.updateMessageContent(loadingMsgId, `✅ **URL Added to Context:** ${url}\nSaved as: \`${result.filename}\`\n\nPreview:\n> ${result.summary}`);
+                        
+                        // It automatically adds to context, so we refresh tokens
+                        this.updateContextAndTokens();
+                    } catch (e: any) {
+                        vscode.window.showErrorMessage(`Failed to add URL: ${e.message}`);
+                    }
+                }
+                break;
             case 'removeFileFromContext':
                 if (this._contextManager && vscode.workspace.workspaceFolders) {
                     const uri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, message.path);
@@ -1509,9 +1581,24 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                     this.updateContextAndTokens();
                 }
                 break;
+            case 'openFile':
+                if (vscode.workspace.workspaceFolders) {
+                    const uri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, message.path);
+                    try {
+                        const doc = await vscode.workspace.openTextDocument(uri);
+                        await vscode.window.showTextDocument(doc);
+                    } catch (e: any) {
+                        vscode.window.showErrorMessage(`Could not open file: ${e.message}`);
+                    }
+                }
+                break;
             case 'removeSkillFromContext':
                 if (this._currentDiscussion && this._currentDiscussion.importedSkills) {
                     this._currentDiscussion.importedSkills = this._currentDiscussion.importedSkills.filter(id => id !== message.skillId);
+                    
+                    // Also remove from project if it was added globally
+                    await this._contextManager.removeSkillFromProject(message.skillId);
+
                     if (!this._currentDiscussion.id.startsWith('temp-')) {
                         await this._discussionManager.saveDiscussion(this._currentDiscussion);
                     }
@@ -1696,7 +1783,8 @@ Task:
                     cancellable: true
                 }, async (progress, token) => {
                     try {
-                        const b64_json = await this._lollmsAPI.generateImage(message.prompt, token);
+                        const size = (message.width && message.height) ? `${message.width}x${message.height}` : undefined;
+                        const b64_json = await this._lollmsAPI.generateImage(message.prompt, { size }, token);
                         if (token.isCancellationRequested) {
                             webview.postMessage({ command: 'imageGenerationResult', buttonId: message.buttonId, success: false });
                             return;
@@ -1811,6 +1899,17 @@ Task:
                             this.agentManager.toggleAgentMode();
                         } else if (!partial.agentMode && this.agentManager.getIsActive()) {
                             this.agentManager.toggleAgentMode();
+                        }
+                    }
+                    
+                    // If Web Search is enabled, ensure relevant tools are enabled if Agent is active
+                    if (partial.webSearch !== undefined && this.agentManager) {
+                        if (partial.webSearch) {
+                            // Enable default search tools
+                            const tools = this.agentManager.getEnabledTools().map(t => t.name);
+                            if (!tools.includes('search_web')) tools.push('search_web');
+                            if (!tools.includes('search_wikipedia')) tools.push('search_wikipedia');
+                            this.agentManager.setEnabledTools(tools);
                         }
                     }
 
@@ -1984,22 +2083,38 @@ Task:
                     }
                 }
                 break;
-
             case 'internetHelpSearch':
-                if (!this.agentManager.getIsActive()) {
-                    this.agentManager.toggleAgentMode();
-                }
-                const query = message.query;
-                const searchObjective = `Find a solution for the following problem using Wikipedia and Stack Overflow: "${query}"
-                
-                Steps:
-                1. Search Wikipedia for concepts related to the problem.
-                2. Search Stack Overflow for technical solutions or similar errors.
-                3. Scrape the content of the most relevant results.
-                4. Provide a summarized help guide for the user.`;
+                // Execute ONLY the web research agent loop. 
+                // This populates the project context with external info without generating a chat reply.
+                if (this._isDisposed || !this.processManager) { break; }
+                const { id: webProcId, controller: webCtrl } = this.processManager.register(this.discussionId, 'Running Web Research...');
+                this.updateGeneratingState();
+                try {
+                    const model = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+                    const query = message.query || "Latest information related to current context";
+                    const webAgentMsgId = 'web_agent_manual_' + Date.now();
+                    
+                    await this.addMessageToDiscussion({
+                        id: webAgentMsgId, 
+                        role: 'system', 
+                        content: `**🌍 Web Research Agent (Manual)**\n*Researching: "${query}"...*\n\n`, 
+                        skipInPrompt: true 
+                    });
 
-                if (vscode.workspace.workspaceFolders?.[0]) {
-                    this.agentManager.run(searchObjective, this._currentDiscussion!, vscode.workspace.workspaceFolders[0]);
+                    await this._contextManager.runWebResearchAgent(query, model, webCtrl.signal, (newContent) => {
+                        if (!this._isDisposed) {
+                            this._panel.webview.postMessage({ command: 'updateMessage', messageId: webAgentMsgId, newContent });
+                        }
+                    });
+                    
+                    this.updateContextAndTokens();
+                } catch (e: any) {
+                    if (e.name !== 'AbortError') {
+                        this.log(`Web Research failed: ${e.message}`, 'ERROR');
+                    }
+                } finally {
+                    this.processManager.unregister(webProcId);
+                    this.updateGeneratingState();
                 }
                 break;                
         }
@@ -2057,7 +2172,7 @@ Task:
                         <input type="text" id="searchInput" placeholder="Search discussion...">
                         <span id="search-results-count"></span>
                         <button id="search-prev" title="Previous match"><i class="codicon codicon-arrow-up"></i></button>
-                        <button id="search-prev" title="Next match"><i class="codicon codicon-arrow-down"></i></button>
+                        <button id="search-next" title="Next match"><i class="codicon codicon-arrow-down"></i></button>
                         <button id="search-close" title="Close search"><i class="codicon codicon-close"></i></button>
                     </div>
                     
@@ -2104,8 +2219,6 @@ Task:
                 <div class="input-area-wrapper">
                     <div id="more-actions-menu">
                         <div class="menu-view" id="menu-main">
-                            <button class="menu-item" id="internetHelpButton"><i class="codicon codicon-globe"></i><span>Search Internet Help</span></button>
-
                             <div class="menu-item has-submenu" data-target="menu-modes">
                                 <i class="codicon codicon-settings-gear"></i>
                                 <span>Discussion Modes</span>

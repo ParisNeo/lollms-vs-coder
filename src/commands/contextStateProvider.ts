@@ -457,8 +457,8 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         const newState: { [key: string]: ContextState } = {};
 
         for (const [key, state] of Object.entries(workspaceState)) {
-            // Keep exclusions and collapsed folders
-            // We strip 'included' and 'definitions-only', reverting them to default (tree-only)
+            // Keep exclusions and collapsed folders.
+            // Revert 'included' and 'definitions-only' to default (tree-only).
             if (state === 'fully-excluded' || state === 'collapsed') {
                 newState[key] = state;
             }

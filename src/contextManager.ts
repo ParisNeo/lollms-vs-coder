@@ -10,6 +10,8 @@ import { stripThinkingTags } from './utils';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import * as os from 'os';
+import fetch from 'node-fetch';
+import { URL } from 'url';
 
 const execAsync = promisify(exec);
 
@@ -227,6 +229,421 @@ export class ContextManager {
         }
     }
     return combinedResults;
+  }
+
+  private extractVideoId(url: string): string | null {
+      const patterns = [
+          /(?:v=|\/shorts\/|\/embed\/|youtu\.be\/)([^#&?]*)/,
+          /[?&]v=([^#&?]*)/
+      ];
+      for (const p of patterns) {
+          const match = url.match(p);
+          if (match && match[1] && match[1].length === 11) return match[1];
+      }
+      return null;
+  }
+
+  private async fetchYoutubeTranscript(videoId: string, languageCode: string = 'en'): Promise<string> {
+      try {
+        const headers = { 
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' 
+        };
+        const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, { headers });
+        const html = await pageRes.text();
+        
+        const jsonMatch = html.match(/ytInitialPlayerResponse\s*=\s*({.+?});/);
+        if (!jsonMatch) return "Could not retrieve video metadata (Video may be restricted).";
+        
+        const playerResponse = JSON.parse(jsonMatch[1]);
+        const captions = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+        
+        if (!captions || captions.length === 0) return "No captions/transcripts found for this video.";
+        
+        // Find requested language or fallback to first available
+        let track = captions.find((t: any) => t.languageCode === languageCode);
+        if (!track) {
+            track = captions[0];
+        }
+        
+        const transcriptRes = await fetch(track.baseUrl);
+        const xml = await transcriptRes.text();
+        
+        // Simple XML clean up
+        const parts: string[] = [];
+        const regex = /<text[^>]*>([\s\S]*?)<\/text>/g;
+        let m;
+        while ((m = regex.exec(xml)) !== null) {
+            parts.push(m[1]
+                .replace(/&amp;/g, '&')
+                .replace(/&lt;/g, '<')
+                .replace(/&gt;/g, '>')
+                .replace(/&#39;/g, "'")
+                .replace(/&quot;/g, '"'));
+        }
+        return parts.join(' ').replace(/\s+/g, ' ').trim();
+      } catch(e: any) {
+          return `Error fetching transcript: ${e.message}`;
+      }
+  }
+
+  // --- URL Processing ---
+  public async processUrl(url: string, languageCode: string = 'en'): Promise<{ filename: string, content: string, summary: string }> {
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      if (!workspaceFolder) throw new Error("No workspace folder open.");
+      
+      const cacheDir = vscode.Uri.joinPath(workspaceFolder.uri, '.lollms', 'web_cache');
+      try { await vscode.workspace.fs.createDirectory(cacheDir); } catch(e) {}
+      
+      // Basic Detection
+      const isYoutube = url.includes('youtube.com') || url.includes('youtu.be');
+      const isArxiv = url.includes('arxiv.org');
+      const isWiki = url.includes('wikipedia.org');
+      
+      let rawContent = "";
+      
+      // Use existing tools logic by importing tools dynamically to avoid circular deps or re-implement basic fetch
+      // Re-implementing simplified versions here to keep ContextManager independent
+      
+      if (isYoutube) {
+          try {
+             const videoId = this.extractVideoId(url);
+             if (videoId) {
+                 const transcript = await this.fetchYoutubeTranscript(videoId, languageCode);
+                 rawContent = `[YouTube Video] ${url}\nVideo ID: ${videoId}\n\n### TRANSCRIPT:\n${transcript}`;
+             } else {
+                 rawContent = `Invalid YouTube URL: ${url}`;
+             }
+          } catch(e) {
+              rawContent = `Failed to load YouTube content: ${e}`;
+          }
+      } else if (isArxiv) {
+          // Arxiv API
+          try {
+              const idMatch = url.match(/abs\/([0-9.]+)/) || url.match(/pdf\/([0-9.]+)/);
+              if (idMatch) {
+                  const id = idMatch[1];
+                  const res = await fetch(`http://export.arxiv.org/api/query?id_list=${id}`);
+                  const xml = await res.text();
+                  // Extract Title and Summary from XML
+                  const titleMatch = xml.match(/<title>([\s\S]*?)<\/title>/);
+                  const summaryMatch = xml.match(/<summary>([\s\S]*?)<\/summary>/);
+                  
+                  const title = titleMatch ? titleMatch[1].trim() : "Unknown Title";
+                  const summary = summaryMatch ? summaryMatch[1].trim() : "No summary available.";
+                  
+                  rawContent = `[ArXiv Paper] ${url}\n\nTitle: ${title}\n\n### Abstract:\n${summary}`;
+              } else {
+                  rawContent = `Could not parse ArXiv ID from ${url}`;
+              }
+          } catch(e) { rawContent = `ArXiv fetch error: ${e}`; }
+      } else if (isWiki) {
+          try {
+              // Extract title from URL (e.g. https://en.wikipedia.org/wiki/Artificial_intelligence)
+              const titlePart = url.split('/wiki/')[1] || url.split('/').pop() || "";
+              const api = `https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exlimit=1&titles=${titlePart}&explaintext=1&format=json`;
+              
+              const res = await fetch(api);
+              const json: any = await res.json();
+              const pages = json.query?.pages;
+              const pageId = Object.keys(pages)[0];
+              
+              if (pageId && pageId !== "-1") {
+                  const pageTitle = pages[pageId].title;
+                  const extract = pages[pageId].extract;
+                  rawContent = `[Wikipedia] ${pageTitle}\nSource: ${url}\n\n${extract}`;
+              } else {
+                   // Fallback to scrape
+                   throw new Error("Page not found in API");
+              }
+          } catch(e) { 
+              // Continue to generic scrape if API fails
+          }
+      } 
+      
+      if (!rawContent) {
+          // General Web Scrape
+          try {
+              const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 (Lollms VS Coder)' } });
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+              const html = await res.text();
+              // Strip tags
+              rawContent = html.replace(/<script\b[^>]*>([\s\S]*?)<\/script>/gim, "")
+                               .replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gim, "")
+                               .replace(/<[^>]+>/g, " ")
+                               .replace(/\s+/g, " ")
+                               .trim();
+          } catch (e: any) {
+              throw new Error(`Failed to scrape ${url}: ${e.message}`);
+          }
+      }
+      
+      // Create a clean filename
+      const urlObj = new URL(url);
+      const safeName = (urlObj.hostname + urlObj.pathname).replace(/[^a-zA-Z0-9]/g, '_').substring(0, 50);
+      const filename = `web_${safeName}.md`;
+      
+      // Token Limit Logic (30k tokens ~ 120k chars)
+      const maxChars = 120000;
+      let finalContent = rawContent;
+      if (rawContent.length > maxChars) {
+          finalContent = `[DATA TOO LARGE - TRUNCATED]\n\n${rawContent.substring(0, maxChars)}\n\n... (30,000 token limit reached)`;
+      }
+
+      const fileContent = `# Source: ${url}\n# Date: ${new Date().toISOString()}\n\n${finalContent}`;
+      const fileUri = vscode.Uri.joinPath(cacheDir, filename);
+      
+      await vscode.workspace.fs.writeFile(fileUri, Buffer.from(fileContent, 'utf8'));
+      
+      // Add to context
+      const relativePath = path.join('.lollms', 'web_cache', filename);
+      await this.contextStateProvider?.addFilesToContext([relativePath]);
+      
+      return { 
+          filename: relativePath, 
+          content: rawContent, 
+          summary: rawContent.substring(0, 200) + "..." 
+      };
+  }
+
+  // --- WEB RESEARCH AGENT ---
+  public async runWebResearchAgent(
+      userPrompt: string,
+      model: string,
+      signal: AbortSignal,
+      onUpdate: (content: string) => void
+  ): Promise<void> {
+    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+    const searchProvider = config.get<string>('searchProvider') || 'google_custom_search';
+    const apiKey = config.get<string>('searchApiKey');
+    const cx = config.get<string>('searchCx');
+    
+    // Check if configuration exists for Google
+    const canGoogle = searchProvider === 'google_custom_search' && !!apiKey && !!cx;
+
+    const systemPrompt = `You are a Web Research Librarian. 
+Your goal is to check if the user's request requires external knowledge (documentation, libraries, recent events).
+If yes, you must plan searches, execute them, review results, and add valuable content to the context.
+
+**AVAILABLE TOOLS:**
+1. \`plan_searches(queries=[{"provider": "google|arxiv|wikipedia|stackoverflow", "q": "query string"}])\`: Execute searches in parallel.
+   - Use 'google' for general docs/info (Only if available).
+   - Use 'stackoverflow' for specific coding errors.
+   - Use 'arxiv' for research papers.
+   - Use 'wikipedia' for general concepts.
+2. \`read_and_add(urls=["url1", "url2"])\`: Scrape these URLs and add their content to the project context as files.
+3. \`done()\`: Finish research.
+
+**RULES:**
+- Don't search if the request is purely about existing code (e.g. "refactor this function"). Call \`done()\` immediately.
+- Minimise noise. Only add high-quality documentation or solutions.
+- **OUTPUT JSON ONLY**: Reply with a valid JSON object.
+
+**JSON FORMAT:**
+\`\`\`json
+{
+  "tool": "tool_name",
+  "params": { ... }
+}
+\`\`\`
+`;
+
+    const actionLog: string[] = [];
+    const foundResults: { url: string, title: string, provider: string }[] = [];
+    const addedSources: { url: string, title: string }[] = [];
+    const chatHistory: ChatMessage[] = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: `Request: "${userPrompt}"\n\nGoogle Available: ${canGoogle}` }
+    ];
+
+    const renderUpdate = (status: string, finished: boolean = false) => {
+        const logHtml = actionLog.map(l => `<div class="agent-log-item" style="font-size:0.85em; margin-bottom:2px;">${l}</div>`).join('');
+        const logSection = actionLog.length > 0
+                ? `<details ${finished ? '' : 'open'} style="margin-top:10px;"><summary>🌍 Research Activity</summary><div class="agent-log-container" style="padding: 8px; background: var(--vscode-editor-inactiveSelectionBackground); border-radius: 4px; max-height: 150px; overflow-y: auto;">${logHtml}</div></details>`
+                : '';
+        
+        let foundHtml = '';
+        if (foundResults.length > 0) {
+            const items = foundResults.map(r => 
+                `<div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 0.9em; margin-bottom: 4px;">
+                    <span style="opacity:0.7; font-size:0.8em; width: 80px; display: inline-block;">[${r.provider}]</span>
+                    <a href="${r.url}" title="${r.title}">${r.url}</a>
+                </div>`
+            ).join('');
+            foundHtml = `<details open style="margin-top:10px;"><summary>🔍 Found Links (${foundResults.length})</summary><div style="padding: 8px; border: 1px solid var(--vscode-widget-border); border-radius: 4px;">${items}</div></details>`;
+        }
+
+        let sourcesHtml = '';
+        if (addedSources.length > 0) {
+            const listItems = addedSources.map(s => 
+                `<li style="margin-bottom:6px;">📑 <span style="font-weight:600;">${s.title}</span><br><span style="font-size:0.8em; opacity:0.7;">${s.url}</span></li>`
+            ).join('');
+            sourcesHtml = `<details open style="margin-top:10px;"><summary>📚 <strong>Added to Context (${addedSources.length})</strong></summary><ul class="file-list-tree" style="list-style:none; padding-left:5px;">${listItems}</ul></details>`;
+        }
+        
+        let spinnerHtml = '';
+        if (!finished) {
+            spinnerHtml = `<div class="status-line" style="display:flex; align-items:center; gap:8px;"><div class="spinner"></div> <span style="font-weight:600;">${status}</span></div>`;
+        } else {
+            spinnerHtml = `<div class="status-line" style="display:flex; align-items:center; gap:8px;"><span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span> <span style="font-weight:600;">Research Complete</span></div>`;
+        }
+        
+        const fullMessage = `**🌍 Web Research Agent**\n\n${spinnerHtml}\n\n${foundHtml}\n\n${sourcesHtml}\n\n${logSection}`;
+        onUpdate(fullMessage);
+    };
+
+    renderUpdate("Analyzing request...");
+
+    let steps = 0;
+    const MAX_STEPS = 5;
+
+    while (steps < MAX_STEPS) {
+        if (signal.aborted) break;
+        steps++;
+
+        let response = "";
+        try {
+            response = await this.lollmsAPI.sendChat(chatHistory, null, signal, model);
+        } catch (e: any) {
+            actionLog.push(`❌ LLM Error: ${e.message}`);
+            renderUpdate("Error", true);
+            break;
+        }
+
+        chatHistory.push({ role: 'assistant', content: response });
+        const cleanResponse = stripThinkingTags(response);
+        let jsonMatch = cleanResponse.match(/```json\s*([\s\S]+?)\s*```/) || cleanResponse.match(/\{[\s\S]*\}/);
+
+        if (!jsonMatch) {
+            actionLog.push("🛑 output format invalid, stopping.");
+            break;
+        }
+
+        try {
+            const toolCall = JSON.parse(jsonMatch[1] || jsonMatch[0]);
+            const toolName = toolCall.tool;
+            const params = toolCall.params || {};
+
+            if (toolName === 'done') {
+                renderUpdate("Finished", true);
+                break;
+            }
+
+            if (toolName === 'plan_searches') {
+                const queries = params.queries || [];
+                if (!Array.isArray(queries) || queries.length === 0) {
+                    actionLog.push("⚠️ No queries provided.");
+                    continue;
+                }
+
+                const providersText = Array.from(new Set(queries.map((q: any) => q.provider))).join(', ');
+                actionLog.push(`🔍 Searching via: **${providersText}**`);
+                renderUpdate("Searching...");
+
+                const searchPromises = queries.map(async (q: any) => {
+                    const provider = q.provider;
+                    const query = q.q;
+                    
+                    // Update Webview Search Log
+                    if (!signal.aborted) {
+                        onUpdate(`LOG_UPDATE:{"engine":"${provider}","query":"${query}"}`);
+                    }
+
+                    try {
+                        let result = "";
+                        if (provider === 'google') {
+                             if (!canGoogle) return `[Google Skipped - No Key]`;
+                             const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cx}&q=${encodeURIComponent(query)}`;
+                             const res = await fetch(url);
+                             const data: any = await res.json();
+                             if (data.items) {
+                                 result = data.items.map((i:any) => {
+                                     foundResults.push({ url: i.link, title: i.title, provider: 'Google' });
+                                     return `[${i.title}](${i.link}): ${i.snippet}`;
+                                 }).join('\n');
+                             } else {
+                                 result = "No results.";
+                             }
+                        } else if (provider === 'arxiv') {
+                             const url = `http://export.arxiv.org/api/query?search_query=${encodeURIComponent(query)}&start=0&max_results=3`;
+                             const res = await fetch(url);
+                             const txt = await res.text();
+                             const titles = [...txt.matchAll(/<title>([\s\S]*?)<\/title>/g)].map(m => m[1].trim()).slice(1);
+                             const ids = [...txt.matchAll(/<id>([\s\S]*?)<\/id>/g)].map(m => m[1].trim()).slice(1);
+                             const summaries = [...txt.matchAll(/<summary>([\s\S]*?)<\/summary>/g)].map(m => m[1].trim().substring(0, 200));
+                             result = titles.map((t, i) => {
+                                 foundResults.push({ url: ids[i], title: t, provider: 'ArXiv' });
+                                 return `[${t}](${ids[i]}): ${summaries[i]}...`;
+                             }).join('\n');
+                        } else if (provider === 'wikipedia') {
+                             const url = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json`;
+                             const res = await fetch(url);
+                             const data: any = await res.json();
+                             if (data.query?.search) {
+                                 result = data.query.search.map((i:any) => {
+                                     const wUrl = `https://en.wikipedia.org/wiki/${encodeURIComponent(i.title)}`;
+                                     foundResults.push({ url: wUrl, title: i.title, provider: 'Wikipedia' });
+                                     return `[${i.title}](${wUrl}): ${i.snippet.replace(/<[^>]+>/g, '')}`;
+                                 }).join('\n');
+                             }
+                        } else if (provider === 'stackoverflow') {
+                            const url = `https://api.stackexchange.com/2.3/search/advanced?order=desc&sort=relevance&q=${encodeURIComponent(query)}&site=stackoverflow`;
+                            const res = await fetch(url);
+                            const data: any = await res.json();
+                            if (data.items) {
+                                result = data.items.map((i:any) => {
+                                    foundResults.push({ url: i.link, title: i.title, provider: 'StackOverflow' });
+                                    return `[${i.title}](${i.link}) (Answered: ${i.is_answered})`;
+                                }).join('\n');
+                            }
+                        }
+                        
+                        return `### Results for ${provider}: "${query}"\n${result}`;
+                    } catch (e: any) {
+                        return `Error searching ${provider}: ${e.message}`;
+                    }
+                });
+
+                const results = await Promise.all(searchPromises);
+                const combinedResults = results.join('\n\n');
+                
+                chatHistory.push({ 
+                    role: 'system', 
+                    content: `SEARCH RESULTS:\n${combinedResults}\n\nNow decide to 'read_and_add' useful links or 'done'.` 
+                });
+                actionLog.push(`✅ Found ${foundResults.length} potential sources.`);
+
+            } else if (toolName === 'read_and_add') {
+                const urls = params.urls || [];
+                if (urls.length === 0) continue;
+                
+                actionLog.push(`📥 Scraping ${urls.length} selected pages...`);
+                renderUpdate("Reading content...");
+
+                const readPromises = urls.map(async (url: string) => {
+                    try {
+                        const res = await this.processUrl(url);
+                        const fileName = res.filename.split(/[\\/]/).pop() || 'Document';
+                        addedSources.push({ url, title: fileName });
+                        return `📖 Added: ${res.filename} (${res.content.length} chars)`;
+                    } catch (e: any) {
+                        return `❌ Failed to read ${url}: ${e.message}`;
+                    }
+                });
+
+                const results = await Promise.all(readPromises);
+                actionLog.push(results.join('\n'));
+                
+                chatHistory.push({ role: 'system', content: `Operation results:\n${results.join('\n')}` });
+            } else {
+                 actionLog.push(`❓ Unknown tool: ${toolName}`);
+            }
+
+        } catch (e: any) {
+             actionLog.push(`JSON Parse Error: ${e.message}`);
+        }
+    }
+    
+    renderUpdate("Research Complete", true);
   }
 
   public async runContextAgent(
@@ -515,11 +932,11 @@ If the user asks to "save this as a skill", "remember this", or "learn how to do
         <div class="skill-preview markdown-body"><p> tag.<br>Format:<br><br>Description of what this teaches or provides.<br>\`\`\`language<br>code or instructions<br>\`\`\`</p>
 </div>
         <div class="skill-actions">
-            <button class="code-action-btn" onclick="saveSkill('%20tag.%0D%0AFormat%3A%0D%0A%3Cskill%20title%3D%22Skill%20Name%22%3E%0D%0ADescription%20of%20what%20this%20teaches%20or%20provides.%0D%0A%5C%60%5C%60%5C%60language%0D%0Acode%20or%20instructions%0D%0A%5C%60%5C%60%5C%60%0D%0A', 'local', 'New%20Skill')">
-                <span class="codicon codicon-save"></span> Save to Project
+            <button class="code-action-btn" onclick="saveSkill('%20tag.%0D%0AFormat%3A%0D%0A%3Cskill%20title%3D%22Skill%20Name%22%3E%0D%0ADescription%20of%20what%20this%20teaches%20or%20provides.%0D%0A%5C%60%5C%60%5C%60language%0D%0Acode%20or%20instructions%0D%0A%5C%60%5C%60%5C%60%0D%0A', 'local', 'New%20Skill')" title="Save to Project">
+                <span class="codicon codicon-save"></span>
             </button>
-            <button class="code-action-btn" onclick="saveSkill('%20tag.%0D%0AFormat%3A%0D%0A%3Cskill%20title%3D%22Skill%20Name%22%3E%0D%0ADescription%20of%20what%20this%20teaches%20or%20provides.%0D%0A%5C%60%5C%60%5C%60language%0D%0Acode%20or%20instructions%0D%0A%5C%60%5C%60%5C%60%0D%0A', 'global', 'New%20Skill')">
-                <span class="codicon codicon-globe"></span> Save Global
+            <button class="code-action-btn" onclick="saveSkill('%20tag.%0D%0AFormat%3A%0D%0A%3Cskill%20title%3D%22Skill%20Name%22%3E%0D%0ADescription%20of%20what%20this%20teaches%20or%20provides.%0D%0A%5C%60%5C%60%5C%60language%0D%0Acode%20or%20instructions%0D%0A%5C%60%5C%60%5C%60%0D%0A', 'global', 'New%20Skill')" title="Save Global">
+                <span class="codicon codicon-globe"></span>
             </button>
         </div>
     </div>
@@ -894,3 +1311,4 @@ Currently operating without project context.
   }
 
 }
+

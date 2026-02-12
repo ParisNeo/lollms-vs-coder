@@ -68,11 +68,11 @@ export class DiscussionManager {
         const defaultProfileId = config.get<string>('defaultResponseProfileId') || 'balanced';
 
         const defaults: DiscussionCapabilities = {
-            responseProfileId: defaultProfileId, // New field replacing old modes
+            responseProfileId: defaultProfileId,
+            forceFullCode: config.get<boolean>('forceFullCode') || false,
             generationFormats: {
-                fullFile: true,
-                diff: false,
-                aider: false
+                fullFile: config.get<any>('generationFormats')?.fullFile ?? true,
+                partialFormat: config.get<any>('generationFormats')?.partialFormat ?? 'aider'
             },
             allowedFormats: allowedFormats,
             fileRename: true,

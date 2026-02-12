@@ -113,6 +113,22 @@ import { handleExtensionMessage } from './extensionMessageHandler.js';
     });
 };
 
+(window as any).generateImageFromTag = (prompt: string, path: string, w: string, h: string, btnId: string) => {
+    const btn = document.getElementById(btnId) as HTMLButtonElement;
+    if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<div class="spinner"></div> Generating...';
+    }
+    vscode.postMessage({
+        command: 'generateImage',
+        prompt: decodeURIComponent(prompt),
+        filePath: decodeURIComponent(path),
+        width: w,
+        height: h,
+        buttonId: btnId
+    });
+};
+
 
 // --- Initialization ---
 (function() {

@@ -47,8 +47,21 @@ export function registerSkillsCommands(context: vscode.ExtensionContext, service
         );
 
         if (confirm === "Delete") {
-            await services.skillsManager.deleteSkill(skill.id);
+            await services.skillsManager.deleteSkill(skill.id, skill.scope);
             vscode.commands.executeCommand('lollms-vs-coder.refreshSkills');
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deleteAllSkills', async () => {
+        const confirm = await vscode.window.showWarningMessage(
+            "Are you sure you want to delete ALL skills (Global and Local)? This cannot be undone.", 
+            { modal: true }, 
+            "Delete All"
+        );
+        if (confirm === "Delete All") {
+            await services.skillsManager.deleteAllSkills();
+            vscode.commands.executeCommand('lollms-vs-coder.refreshSkills');
+            vscode.window.showInformationMessage("All skills deleted.");
         }
     }));
 

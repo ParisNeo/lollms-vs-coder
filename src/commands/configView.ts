@@ -41,9 +41,9 @@ export class SettingsPanel {
     
     generationFormats: {
         fullFile: true,
-        diff: false,
-        aider: false
+        partialFormat: 'aider'
     },
+    forceFullCode: false,
     explainCode: true,
     allowedFileFormats: {
         fullFile: true,
@@ -157,7 +157,8 @@ export class SettingsPanel {
     this._pendingConfig.responseProfiles = config.get<ResponseProfile[]>('responseProfiles') || [];
     this._pendingConfig.defaultResponseProfileId = config.get<string>('defaultResponseProfileId') || 'balanced';
 
-    this._pendingConfig.generationFormats = config.get<any>('generationFormats') || { fullFile: true, diff: false, aider: false };
+    this._pendingConfig.generationFormats = config.get<any>('generationFormats') || { fullFile: false, diff: false, aider: true };
+    this._pendingConfig.forceFullCode = config.get<boolean>('forceFullCode') || false;
     this._pendingConfig.explainCode = config.get<boolean>('explainCode') ?? true;
 
     this._pendingConfig.allowedFileFormats = config.get<any>('allowedFileFormats') || { fullFile: true, insert: false, replace: false, delete: false };
@@ -578,7 +579,7 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, architectModelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, generationFormats, explainCode, allowedFileFormats, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, forceFullCodePath, clipboardInsertRole, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle, enableCodeActions, enableInlineSuggestions, mcpServers, herdParticipants, herdPreAnswerParticipants, herdPostAnswerParticipants, herdRounds, herdDynamicMode, herdDynamicModelPool, deleteBranchAfterMerge, unstagedChangesBehavior, showOs, showIp, showShells, systemCustomInfo, agentShellExecution, agentFilesystemWrite, agentFilesystemRead, agentInternetAccess, agentUseRLM, moltbookEnable, moltbookApiKey, moltbookBotName, moltbookBotPurpose, remoteServerPort, remoteDiscordEnabled, remoteDiscordToken, remoteSlackEnabled, remoteSlackToken, remoteSlackSigningSecret, remoteAllowedUsers, remoteAdminUsers, remoteAllowedChannels } = config;
+    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, architectModelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, generationFormats, forceFullCode, explainCode, allowedFileFormats, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, forceFullCodePath, clipboardInsertRole, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle, enableCodeActions, enableInlineSuggestions, mcpServers, herdParticipants, herdPreAnswerParticipants, herdPostAnswerParticipants, herdRounds, herdDynamicMode, herdDynamicModelPool, deleteBranchAfterMerge, unstagedChangesBehavior, showOs, showIp, showShells, systemCustomInfo, agentShellExecution, agentFilesystemWrite, agentFilesystemRead, agentInternetAccess, agentUseRLM, moltbookEnable, moltbookApiKey, moltbookBotName, moltbookBotPurpose, remoteServerPort, remoteDiscordEnabled, remoteDiscordToken, remoteSlackEnabled, remoteSlackToken, remoteSlackSigningSecret, remoteAllowedUsers, remoteAdminUsers, remoteAllowedChannels } = config;
 
     const t = (key: string, def: string) => vscode.l10n.t({ message: def, key: key });
     
@@ -785,12 +786,24 @@ export class SettingsPanel {
             <div id="TabContext" class="tab-content">
               <h2>${t('config.section.contextAndFile', 'Context & File Strategy')}</h2>
               
-              <h3>Code Generation Formats</h3>
-              <p class="help-text">Select which formats the AI can use. If multiple are selected, they will be prioritized (Aider > Diff > Full File).</p>
-              <div class="grid-2">
-                  <div class="checkbox-container"><input type="checkbox" id="gen-full" ${generationFormats.fullFile ? 'checked' : ''}><label for="gen-full">Full File Content</label></div>
-                  <div class="checkbox-container"><input type="checkbox" id="gen-diff" ${generationFormats.diff ? 'checked' : ''}><label for="gen-diff">Unified Diff</label></div>
-                  <div class="checkbox-container"><input type="checkbox" id="gen-aider" ${generationFormats.aider ? 'checked' : ''}><label for="gen-aider">Aider Search/Replace</label></div>
+              <h3>Code Generation Strategy</h3>
+              <div class="checkbox-container">
+                  <input type="checkbox" id="forceFullCode" ${forceFullCode ? 'checked' : ''}>
+                  <label for="forceFullCode"><strong>Force Full Code</strong> (Disable partial updates entirely)</label>
+              </div>
+
+              <div id="partial-strategy-zone" style="display: ${forceFullCode ? 'none' : 'block'}; margin-top: 10px;">
+                <label for="partialFormat">Preferred Partial Update Format</label>
+                <select id="partialFormat">
+                    <option value="aider" ${generationFormats.partialFormat === 'aider' ? 'selected' : ''}>Aider (Search/Replace Blocks)</option>
+                    <option value="diff" ${generationFormats.partialFormat === 'diff' ? 'selected' : ''}>Unified Diff (.patch style)</option>
+                </select>
+                <p class="help-text">Aider is recommended for most models as it is more robust to indentation shifts.</p>
+                
+                <div class="checkbox-container">
+                    <input type="checkbox" id="gen-full" ${generationFormats.fullFile ? 'checked' : ''}>
+                    <label for="gen-full">Allow Full File fallback for substantial changes</label>
+                </div>
               </div>
 
               <h3>Response Behavior</h3>
@@ -1386,12 +1399,20 @@ export class SettingsPanel {
                 postTempUpdate('git.unstagedChangesBehavior', e.target.value);
             });
 
-            ['gen-full', 'gen-diff', 'gen-aider'].forEach(k => {
-                safeListen(k, 'change', (e) => {
-                    const key = k.replace('gen-', '');
-                    const map = { 'full': 'fullFile', 'diff': 'diff', 'aider': 'aider' };
-                    vscode.postMessage({ command: 'updateGenerationFormat', key: map[key], value: e.target.checked });
-                });
+            safeListen('forceFullCode', 'change', (e) => {
+                const val = e.target.checked;
+                document.getElementById('partial-strategy-zone').style.display = val ? 'none' : 'block';
+                postTempUpdate('forceFullCode', val);
+            });
+
+            safeListen('partialFormat', 'change', (e) => {
+                const fmt = e.target.value;
+                config.generationFormats.partialFormat = fmt;
+                vscode.postMessage({ command: 'updateGenerationFormat', key: 'partialFormat', value: fmt });
+            });
+
+            safeListen('gen-full', 'change', (e) => {
+                vscode.postMessage({ command: 'updateGenerationFormat', key: 'fullFile', value: e.target.checked });
             });
 
             ['fullFile','insert','replace','delete'].forEach(k => {

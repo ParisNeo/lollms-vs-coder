@@ -159,7 +159,7 @@ export function updateBadges() {
     if (!state.capabilities) return;
     
     const caps = state.capabilities;
-    const guiState = caps.guiState || { agentBadge: true, autoContextBadge: true, herdBadge: true };
+    const guiState = caps.guiState || { agentBadge: true, autoContextBadge: true, herdBadge: true, webSearchBadge: true };
 
     // Response Profile Badge (Mode)
     const currentProfileId = caps.responseProfileId || 'balanced';
@@ -246,6 +246,37 @@ export function updateBadges() {
         vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { herdMode: !caps.herdMode } });
     });
     if (herdBadge) container.appendChild(herdBadge);
+
+    // NEW: Web Search Toggle Badge with Activity Log
+    const webBadge = createToggleBadge(
+        '🌍 Web', 'web', 
+        guiState.webSearchBadge !== false, 
+        caps.webSearch, 
+        () => {
+            vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { webSearch: !caps.webSearch } });
+        },
+        () => {
+            const text = dom.messageInput.value.trim();
+            vscode.postMessage({ command: 'internetHelpSearch', query: text });
+            dom.messageInput.value = '';
+            dom.messageInput.style.height = 'auto';
+        }
+    );
+    
+    if (webBadge) {
+        webBadge.classList.add('websearch-indicator');
+        const logContainer = document.createElement('div');
+        logContainer.id = 'web-search-log';
+        logContainer.className = 'websearch-log';
+        
+        webBadge.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            logContainer.classList.toggle('visible');
+        });
+        
+        container.appendChild(webBadge);
+        container.appendChild(logContainer);
+    }
 
     if (caps.gitWorkflow) {
         const branchName = state.currentBranch || 'git-workflow';

@@ -48,6 +48,8 @@ export interface DiscussionCapabilities {
     fileReset: boolean;
     imageGen: boolean;
     webSearch: boolean;
+    wikipediaSearch: boolean;
+    stackoverflowSearch: boolean;
     arxivSearch: boolean;
     gitWorkflow: boolean;
     herdMode: boolean;
@@ -62,6 +64,7 @@ export interface DiscussionCapabilities {
         agentBadge: boolean;
         autoContextBadge: boolean;
         herdBadge: boolean;
+        webSearchBadge?: boolean;
     };
 }
 
@@ -86,7 +89,7 @@ export const state: {
     currentBranch: '',
     currentPersonalityId: 'default_coder',
     personalities: [],
-    profiles: [] // Properly initialized to prevent forEach on undefined
+    profiles: [] 
 };
 
 export const dom = {
@@ -133,6 +136,7 @@ export const dom = {
     get contextStatusContainer() { return document.getElementById('context-status-container') as HTMLDivElement; },
     get contextLoadingSpinner() { return document.getElementById('context-loading-spinner') as HTMLDivElement; },
     get searchBar() { return document.getElementById('search-bar') as HTMLDivElement; },
+    get searchButton() { return document.getElementById('searchButton') as HTMLButtonElement; },
     get searchInput() { return document.getElementById('searchInput') as HTMLInputElement; },
     get searchResultsCount() { return document.getElementById('search-results-count') as HTMLSpanElement; },
     get searchPrevBtn() { return document.getElementById('search-prev') as HTMLButtonElement; },
@@ -210,9 +214,12 @@ export const dom = {
     get historyList() { return document.getElementById('history-list') as HTMLDivElement; },
     get historyCloseBtn() { return document.getElementById('history-close-btn') as HTMLButtonElement; },
 
-    // New Skills Modal Elements
+    // Skills Modal Elements
     get skillsModal() { return document.getElementById('skills-modal') as HTMLDivElement; },
     get skillsTreeContainer() { return document.getElementById('skills-tree-container') as HTMLDivElement; },
     get skillsImportBtn() { return document.getElementById('skills-import-btn') as HTMLButtonElement; },
-    get skillsCloseBtn() { return document.getElementById('skills-close-btn') as HTMLSpanElement; }
+    get skillsCloseBtn() { return document.getElementById('skills-close-btn') as HTMLSpanElement; },
+
+    // Context URL Button
+    get addUrlContextBtn() { return document.getElementById('add-url-context-btn') as HTMLButtonElement; }
 };

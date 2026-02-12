@@ -40,7 +40,8 @@ export const searchArxivTool: ToolDefinition = {
 
                 const title = getTag('title').replace(/\s+/g, ' ').trim();
                 const summary = getTag('summary').replace(/\s+/g, ' ').trim();
-                const id = getTag('id');
+                const id = getTag('id'); // e.g. http://arxiv.org/abs/2401.00001
+                const pdfUrl = id.replace('/abs/', '/pdf/') + ".pdf";
                 const published = getTag('published');
                 
                 const authorRegex = /<author>\s*<name>(.*?)<\/name>\s*<\/author>/g;
@@ -50,7 +51,7 @@ export const searchArxivTool: ToolDefinition = {
                     authors.push(authorMatch[1]);
                 }
 
-                entries.push(`**Title:** ${title}\n**ID:** ${id}\n**Published:** ${published}\n**Authors:** ${authors.join(', ')}\n**Summary:** ${summary}`);
+                entries.push(`**Title:** ${title}\n**ID:** ${id}\n**PDF Link:** ${pdfUrl}\n**Published:** ${published}\n**Authors:** ${authors.join(', ')}\n**Abstract:** ${summary}\n\n*HINT: If you need the full text of this paper, use the \`scrape_website\` tool with the PDF Link.*`);
             }
 
             if (entries.length === 0) {

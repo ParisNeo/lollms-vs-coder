@@ -4,52 +4,43 @@ import { DiscussionCapabilities, getAvailableShells, ResponseProfile } from './u
 
 export class PromptTemplates {
     
-    private static getFormatInstructions(capabilities?: DiscussionCapabilities, forceFullCode?: boolean): string {
+    private static getFormatInstructions(capabilities?: DiscussionCapabilities, forceFullCodeSetting?: boolean): string {
         const useFull = capabilities?.generationFormats?.fullFile ?? true;
-        const useDiff = capabilities?.generationFormats?.diff ?? false;
-        const useAider = capabilities?.generationFormats?.aider ?? false;
+        const partialFormat = capabilities?.generationFormats?.partialFormat ?? 'aider';
+        const forceFull = forceFullCodeSetting || capabilities?.forceFullCode || false;
 
         let sections = [];
 
         sections.push(`
 ### 🚦 CODE GENERATION DECISION LOGIC
 1. **NEW FILE**: You MUST use the **FULL FILE** format.
-2. **MULTIPLE CHANGES**: If you need to change code in different parts of the same file, you MUST use the **FULL FILE** format.
-3. **SINGLE CHANGE**: If the change is small and localized to one specific area, you MAY use **SEARCH/REPLACE** or **DIFF**.
-4. **COLLISION PREVENTION**: Never provide more than one partial block (Diff or Search/Replace) for the same file in a single response.
+2. **SUBSTANTIAL MODIFICATIONS**: For major refactors or changes affecting many parts of a file, you MUST use the **FULL FILE** format.
+3. **SMALL CHANGES**: For surgical, localized edits, you MAY use the ${partialFormat.toUpperCase()} format.
+4. **MULTIPLE BLOCKS**: You may provide multiple ${partialFormat.toUpperCase()} blocks for the same file if the changes are in different parts of the file.
 `);
 
-        if (forceFullCode || (useFull && !useDiff && !useAider)) {
+        if (forceFull) {
             sections.push(`
 ### 📄 FORMAT: FULL FILE CONTENT (ENFORCED)
-**Rule**: You must output the entire file from line 1 to the end. No placeholders.
+**CRITICAL**: You must always provide the complete file content. Partial updates are currently disabled.
+**Rule**: Output the entire file from line 1 to the end. No placeholders.
 **Example**:
 \`\`\`python:src/utils.py
-import os
-
-def get_env():
-    return os.environ.get("MODE", "dev")
-
-if __name__ == "__main__":
-    print(get_env())
+[FULL CODE HERE]
 \`\`\`
 `);
-        } else {
-            if (useFull) {
+        }
+        if (partialFormat === 'aider') {
                 sections.push(`
-### 📄 FORMAT: FULL FILE CONTENT
-**Use for**: New files, major refactors, or multiple changes in one file.
-**Example**:
-\`\`\`python:src/utils.py
-[Full file content...]
-\`\`\`
-`);
-            }
-            if (useAider) {
-                sections.push(`
-### ⚡ FORMAT: SEARCH/REPLACE (Aider Style)
-**Use for**: Precise, single-point surgical edits.
-**Rule**: The SEARCH block must match the existing code EXACTLY.
+### ⚡ FORMAT: SEARCH/REPLACE (AIDER STYLE)
+**Use for**: Small, surgical edits (preferred when less than 70% of the file changes).
+**Format**: \`\`\`language:path/to/file
+**Rule**:
+1. The \`<<<<<<< SEARCH\` block must match the existing file content character-for-character (including exact indentation).
+2. The replacement code goes between the \`=======\` and \`>>>>>>> REPLACE\` markers.
+3. Do *not* include line numbers.
+4. Provide only one block per file unless changes are far apart.
+
 **Example**:
 \`\`\`javascript:src/index.js
 <<<<<<< SEARCH
@@ -63,8 +54,10 @@ function greet(name = "User") {
 >>>>>>> REPLACE
 \`\`\`
 `);
-            }
-            if (useDiff) {
+    }
+    else
+        if (partialFormat === 'diff')
+    {
                 sections.push(`
 ### 🛠️ FORMAT: UNIFIED DIFF
 **Use for**: Standard patch applications.
@@ -80,14 +73,32 @@ function greet(name = "User") {
  }
 \`\`\`
 `);
-            }
-        }
-
-        sections.push(`
+    }
+    sections.push(`
 ### 🚫 FORBIDDEN BEHAVIORS
 - **NO SNIPPETS**: Never output code without a path or a patch format.
 - **NO PLACEHOLDERS**: Never use \`# ... rest of code stays same\`.
 - **NO MULTIPLE PATCHES**: Do not provide two separate diffs/aider blocks for the same path.
+
+### 🎨 INTEGRATED UI COMPONENTS
+You can trigger specialized UI blocks by using these XML-like tags:
+
+1. **Image Generation**: Propose generating an asset (UI button appears).
+   Format: <generateImage prompt="detailed description" path="relative/path/to/save.png" width="1024" height="1024" />
+   
+2. **Skill Building**: Propose a reusable pattern or knowledge block.
+   Format: 
+   <skill title="Skill Name">
+   [Brief description of the pattern]
+   \`\`\`language
+   [Code or instructions]
+   \`\`\`
+   </skill>
+
+3. **File Operations**: Propose moving, renaming or deleting files (UI buttons appear).
+   Formats:
+   - Rename/Move: <rename old="path/to/old_file.ext" new="path/to/new_file.ext" />
+   - Delete: <delete path="path/to/file_to_remove.ext" />
 `);
 
         return sections.join('\n');

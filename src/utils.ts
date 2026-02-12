@@ -29,9 +29,9 @@ export interface ResponseProfile {
 export interface DiscussionCapabilities {
     generationFormats: {
         fullFile: boolean;
-        diff: boolean;
-        aider: boolean; 
+        partialFormat: 'aider' | 'diff';
     };
+    forceFullCode: boolean;
     allowedFormats: {
         fullFile: boolean;
         insert: boolean;
@@ -46,8 +46,8 @@ export interface DiscussionCapabilities {
     fileReset: boolean;
     imageGen: boolean;
     webSearch: boolean;
-    wikipediaSearch: boolean; // Add this
-    stackoverflowSearch: boolean; // Add this
+    wikipediaSearch: boolean; 
+    stackoverflowSearch: boolean; 
     arxivSearch: boolean;
     gitWorkflow: boolean;
     gitCommit?: boolean;
@@ -63,6 +63,7 @@ export interface DiscussionCapabilities {
         agentBadge: boolean;
         autoContextBadge: boolean;
         herdBadge: boolean;
+        webSearchBadge?: boolean;
     };
 }
 
@@ -86,39 +87,154 @@ export async function getAvailableShells(): Promise<string[]> {
     return shells;
 }
 
+function levenshtein(a: string, b: string): number {
+    if (a.length === 0) return b.length;
+    if (b.length === 0) return a.length;
+
+    const matrix = [];
+
+    // increment along the first column of each row
+    for (let i = 0; i <= b.length; i++) {
+        matrix[i] = [i];
+    }
+
+    // increment each column in the first row
+    for (let j = 0; j <= a.length; j++) {
+        matrix[0][j] = j;
+    }
+
+    // Fill in the rest of the matrix
+    for (let i = 1; i <= b.length; i++) {
+        for (let j = 1; j <= a.length; j++) {
+            if (b.charAt(i - 1) == a.charAt(j - 1)) {
+                matrix[i][j] = matrix[i - 1][j - 1];
+            } else {
+                matrix[i][j] = Math.min(matrix[i - 1][j - 1] + 1, // substitution
+                    Math.min(matrix[i][j - 1] + 1, // insertion
+                        matrix[i - 1][j] + 1)); // deletion
+            }
+        }
+    }
+
+    return matrix[b.length][a.length];
+}
+
+function calculateLineSimilarity(line1: string, line2: string): number {
+    const l1 = line1.trim();
+    const l2 = line2.trim();
+    if (l1 === l2) return 1.0;
+    if (l1 === "" && l2 === "") return 1.0;
+    if (l1 === "" || l2 === "") return 0.0; // One empty, one not
+    
+    // Quick length check optimization
+    if (Math.abs(l1.length - l2.length) / Math.max(l1.length, l2.length) > 0.5) return 0.2; 
+    
+    const dist = levenshtein(l1, l2);
+    const maxLen = Math.max(l1.length, l2.length);
+    return 1.0 - (dist / maxLen);
+}
+
 /**
  * Applies a Search/Replace (Aider-style) block to content.
+ * Includes indentation detection and automatic correction.
  */
 export function applySearchReplace(content: string, searchBlock: string, replaceBlock: string): { success: boolean, result: string, error?: string } {
     const normalizedContent = content.replace(/\r\n/g, '\n');
-    const normalizedSearch = searchBlock.trim().replace(/\r\n/g, '\n');
-    const normalizedReplace = replaceBlock.trim().replace(/\r\n/g, '\n');
+    let normalizedSearch = searchBlock.replace(/\r\n/g, '\n');
+    let normalizedReplace = replaceBlock.replace(/\r\n/g, '\n');
 
-    // Attempt direct match
+    // 1. Direct match attempt
     if (normalizedContent.includes(normalizedSearch)) {
         return { success: true, result: normalizedContent.replace(normalizedSearch, normalizedReplace) };
     }
 
-    // Attempt fuzzy match (ignoring leading/trailing whitespace per line)
+    // 2. Indentation Fixer: Detect if the model added or removed consistent leading whitespace
     const contentLines = normalizedContent.split('\n');
     const searchLines = normalizedSearch.split('\n');
-    
-    for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
-        let match = true;
-        for (let j = 0; j < searchLines.length; j++) {
-            if (contentLines[i + j].trim() !== searchLines[j].trim()) {
-                match = false;
-                break;
+    const replaceLines = normalizedReplace.split('\n');
+
+    // Detect indentation shift on the first non-empty line of search block vs content
+    const firstNonEmptySearchIdx = searchLines.findIndex(l => l.trim().length > 0);
+    if (firstNonEmptySearchIdx !== -1) {
+        const searchLine = searchLines[firstNonEmptySearchIdx];
+        const trimmedSearch = searchLine.trim();
+        
+        for (let i = 0; i < contentLines.length; i++) {
+            if (contentLines[i].trim() === trimmedSearch) {
+                // Potential match at line i. Check indentation diff.
+                const contentIndent = contentLines[i].match(/^\s*/)?.[0] || "";
+                const searchIndent = searchLine.match(/^\s*/)?.[0] || "";
+                
+                if (contentIndent !== searchIndent) {
+                    // Try to re-indent the search block to match the content's current indentation
+                    const reindentedSearchLines = searchLines.map(line => {
+                        if (line.trim().length === 0) return line;
+                        const lineIndent = line.match(/^\s*/)?.[0] || "";
+                        if (lineIndent.startsWith(searchIndent)) {
+                            return contentIndent + line.substring(searchIndent.length);
+                        }
+                        return line;
+                    });
+                    
+                    const reindentedSearch = reindentedSearchLines.join('\n');
+                    
+                    if (normalizedContent.includes(reindentedSearch)) {
+                        // Success! Apply the same shift to the replace block
+                        const reindentedReplaceLines = replaceLines.map(line => {
+                            if (line.trim().length === 0) return line;
+                            const lineIndent = line.match(/^\s*/)?.[0] || "";
+                            if (lineIndent.startsWith(searchIndent)) {
+                                return contentIndent + line.substring(searchIndent.length);
+                            }
+                            return line;
+                        });
+                        return { success: true, result: normalizedContent.replace(reindentedSearch, reindentedReplaceLines.join('\n')) };
+                    }
+                }
             }
-        }
-        if (match) {
-            const resultLines = [...contentLines];
-            resultLines.splice(i, searchLines.length, normalizedReplace);
-            return { success: true, result: resultLines.join('\n') };
         }
     }
 
-    return { success: false, result: content, error: "Could not find exact match for SEARCH block." };
+    // 3. Fuzzy matching fallback for minor typos or non-consistent whitespace
+    let bestScore = 0;
+    let bestMatchIndex = -1;
+    const THRESHOLD = 0.85; 
+
+    for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
+        let currentBlockScore = 0;
+        let possible = true;
+
+        if (calculateLineSimilarity(contentLines[i], searchLines[0]) < 0.5) continue; 
+
+        for (let j = 0; j < searchLines.length; j++) {
+            const score = calculateLineSimilarity(contentLines[i + j], searchLines[j]);
+            if (score < 0.4) { 
+                possible = false;
+                break; 
+            }
+            currentBlockScore += score;
+        }
+
+        if (possible) {
+            const averageScore = currentBlockScore / searchLines.length;
+            if (averageScore > bestScore) {
+                bestScore = averageScore;
+                bestMatchIndex = i;
+            }
+        }
+    }
+
+    if (bestScore >= THRESHOLD && bestMatchIndex !== -1) {
+        const resultLines = [...contentLines];
+        resultLines.splice(bestMatchIndex, searchLines.length, normalizedReplace);
+        return { success: true, result: resultLines.join('\n') };
+    }
+
+    return { 
+        success: false, 
+        result: content, 
+        error: `Could not find match for SEARCH block (Best similarity: ${(bestScore*100).toFixed(1)}%). Check indentation and content.` 
+    };
 }
 
 /**

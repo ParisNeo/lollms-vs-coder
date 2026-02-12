@@ -1,0 +1,329 @@
+<skill id="lollms-rag-document-system">
+    <name>Lollms Apps building</name>
+    <description></description>
+    <category>python/lollms_client/app</category>
+    <language>markdown</language>
+    <timestamp>1738425600000</timestamp>
+    <content>
+        <![CDATA[
+# 🎓 How *You* Build a Lollms‑Compliant FastAPI + Tailwind App (with Icon)
+
+> **TL;DR**: Create the folder layout, generate `icon.png` with the LLM, fill in the files shown below, then launch the server with  
+> `python server.py --port 8000`. Lollms will automatically list the app thanks to `description.yaml`.
+
+---  
+
+## 1️⃣ Project Layout  
+
+```
+my_lollms_app/
+├── backend/
+│   ├── models/
+│   │   └── user.py
+│   ├── routes/
+│   │   └── user_routes.py
+│   └── code/
+│       └── utils.py
+├── frontend/
+│   ├── templates/
+│   │   └── index.html
+│   └── static/
+├── description.yaml
+├── icon.png
+└── server.py
+```  
+
+*💡 Tip*: Keep the folder names **exactly** as shown – Lollms expects `backend/` and `frontend/`.
+
+---  
+
+## 2️⃣ `description.yaml` – Lollms Metadata  
+
+```yaml
+author: Your Name
+category: Web / AI Tools
+creation_date: '2025-01-08T14:52:55.975379'   # ISO‑8601 format
+description: |
+  A FastAPI backend with a TailwindCSS frontend, structured exactly
+  as I (the author) use for all Lollms‑compatible projects.
+disclaimer: |
+  No sensitive data is stored on the server. All user data is
+  transient and cleared on shutdown.
+last_update_date: '2025-06-03T02:22:55.975379'
+model: gpt‑4o‑mini
+name: My Lollms Tailwind App
+version: '1.3'
+```  
+
+> **🛠️ How Lollms uses this**  
+> When the Lollms client scans a directory, it looks for a `description.yaml`. If found, the app appears in the UI with the name, version, author, etc.
+
+---  
+
+## 3️⃣ Generate **`icon.png`** with the LLM  
+
+The icon is a small (e.g., 128 × 128 px) image that will appear at the top of the UI. Use the built‑in image generation command:
+
+```createGenerationBlock:path/to/file.png
+Create a 128 × 128 pixel PNG icon for a web app called *My Lollms Tailwind App*. Use a simple, flat design with a teal background and a white rocket emoji 🚀 in the centre.
+```  
+
+Now the icon is ready to be served by FastAPI’s static mount.
+
+---  
+
+## 4️⃣ `server.py` – FastAPI Entry Point (CLI‑compatible)  
+
+```python
+# server.py
+import argparse
+import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+
+# Import routers from the backend
+from backend.routes.user_routes import router as user_router
+
+app = FastAPI(
+    title="My Lollms Tailwind App",
+    description="FastAPI + Tailwind UI, built the way I work."
+)
+
+# ---------- Static & Templates ----------
+app.mount(
+    "/static",
+    StaticFiles(directory="frontend/static"),
+    name="static"
+)
+templates = Jinja2Templates(directory="frontend/templates")
+
+# ---------- API Routers ----------
+app.include_router(user_router, prefix="/api")   # e.g. /api/users
+
+# ---------- UI Endpoint ----------
+@app.get("/", response_class=HTMLResponse)
+async def read_root(request: Request):
+    """
+    Render the main page. Tailwind is loaded via CDN inside the template.
+    """
+    return templates.TemplateResponse("index.html", {"request": request})
+
+
+# ---------- CLI entry point ----------
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run the Lollms Tailwind FastAPI server.")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port number to listen on (default: 8000)"
+    )
+    args = parser.parse_args()
+    uvicorn.run(
+        "server:app",
+        host="0.0.0.0",
+        port=args.port,
+        reload=True
+    )
+
+if __name__ == "__main__":
+    main()
+```  
+
+### How to launch  
+
+```bash
+# Install required packages first (once)
+pip install fastapi uvicorn jinja2
+
+# Then start the server on any port you like, e.g. 8000
+python server.py --port 8000
+```  
+
+Open `http://localhost:8000` in a browser.
+
+---  
+
+## 5️⃣ Backend Details  
+
+### 5.1 `backend/models/user.py` – Simple Pydantic Model  
+
+```python
+# backend/models/user.py
+from pydantic import BaseModel, EmailStr, Field
+
+class User(BaseModel):
+    id: int = Field(..., example=1)
+    name: str = Field(..., example="Alice")
+    email: EmailStr = Field(..., example="alice@example.com")
+```  
+
+### 5.2 `backend/code/utils.py` – Helper Functions  
+
+```python
+# backend/code/utils.py
+from typing import List
+from backend.models.user import User
+
+# In‑memory “database” for demo purposes
+_FAKE_DB: List[User] = []
+
+def add_user(user: User) -> User:
+    """Add a user to the fake DB and return it."""
+    _FAKE_DB.append(user)
+    return user
+
+def list_users() -> List[User]:
+    return _FAKE_DB
+```  
+
+### 5.3 `backend/routes/user_routes.py` – API Endpoints  
+
+```python
+# backend/routes/user_routes.py
+from fastapi import APIRouter, HTTPException
+from backend.models.user import User
+from backend.code.utils import add_user, list_users
+
+router = APIRouter()
+
+@router.get("/users", response_model=list[User])
+async def get_users():
+    """Return all users."""
+    return list_users()
+
+@router.post("/users", response_model=User, status_code=201)
+async def create_user(user: User):
+    """Create a new user."""
+    if any(u.email == user.email for u in list_users()):
+        raise HTTPException(status_code=400, detail="Email already exists")
+    return add_user(user)
+```  
+
+---  
+
+## 6️⃣ Frontend – Tailwind‑Powered UI (with the Icon)  
+
+### 6.1 `frontend/templates/index.html`  
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>🚀 My Lollms Tailwind App</title>
+    <!-- Tailwind via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Optional: custom Tailwind config (colors, etc.) -->
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              primary: '#ff6b6b',   /* coral */
+              secondary: '#4ecdc4', /* teal */
+              accent: '#ffe66d',    /* sunshine */
+            }
+          }
+        }
+      }
+    </script>
+</head>
+<body class="bg-gray-100 text-gray-800 font-sans">
+
+    <!-- Icon (important!) -->
+    <div class="flex justify-center mt-6">
+        <img src="/static/icon.png" alt="App Icon" class="w-24 h-24 rounded-full shadow-lg">
+    </div>
+
+    <!-- Header -->
+    <header class="bg-primary text-white text-center py-8 mt-4">
+        <h1 class="text-4xl font-bold mb-2">🌈 Welcome to My App</h1>
+        <p class="italic opacity-90">FastAPI + Tailwind – the way I build Lollms apps</p>
+    </header>
+
+    <!-- Main Content -->
+    <main class="max-w-2xl mx-auto p-6">
+        <section class="bg-white rounded-xl shadow-lg p-6">
+            <h2 class="text-2xl font-semibold mb-4">💡 What does this demo do?</h2>
+            <p class="mb-4">
+                It shows a tiny user‑management API. Open the browser console and try:
+            </p>
+            <pre class="bg-gray-50 p-3 rounded"><code>
+fetch('/api/users')
+  .then(r => r.json())
+  .then(console.log);
+            </code></pre>
+            <p class="mt-4">
+                Feel free to add more routes, models, or UI components – the structure stays the same.
+            </p>
+        </section>
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-accent text-center py-4 text-sm">
+        <p>© 2025 Your Name – All rights reserved.</p>
+    </footer>
+
+</body>
+</html>
+```  
+
+### 6.2 `frontend/static/` (optional extra assets)  
+
+- After generating `icon.png`, place it **exactly** at `frontend/static/icon.png`.  
+- Any other static files (fonts, extra images, etc.) belong here and are served under the `/static/` URL prefix.
+
+---  
+
+## 7️⃣ Running & Registering the App  
+
+1. **Install dependencies**  
+
+```bash
+pip install fastapi uvicorn jinja2
+```  
+
+2. **Start the server** (pick any free port, e.g., 8000)  
+
+```bash
+python server.py --port 8000
+```  
+
+   - Visit `http://localhost:8000` → you should see the generated icon at the top, followed by the Tailwind UI.  
+   - Test the API: `curl http://localhost:8000/api/users`  
+
+3. **Lollms discovery**  
+
+   - Ensure `description.yaml` sits at the project root (`my_lollms_app/`).  
+   - When the Lollms client scans the directory, it will list **“My Lollms Tailwind App – version 1.3”** with the author, description, and a **Launch** button that points to the port you chose (`http://localhost:8000`).  
+
+---  
+
+## 8️⃣ Recap (Why This Works)  
+
+| Piece | Why it matters for Lollms |
+|------|---------------------------|
+| **`description.yaml`** | Supplies the metadata Lollms needs to show the app in its catalogue. |
+| **FastAPI (`server.py`) with CLI** | Allows the required `python server.py --port <n>` launch pattern. |
+| **`frontend/templates` + Tailwind** | Gives a modern, responsive UI without a build step. |
+| **Backend sub‑folders** | Clean separation of models, routes, and helper code. |
+| **`frontend/static/icon.png`** | The *important* visual identifier, generated by the LLM and served via FastAPI. |
+| **Static mount** | Guarantees the icon (and any other assets) are reachable at `/static/…`. |
+| **`uvicorn.reload=True`** | Fast development loop; Lollms does not need to restart the server for code changes. |
+
+---  
+
+## 🎉 Final Thoughts  
+
+- Stick to this folder convention for **every** Lollms‑compatible project – it becomes second nature.  
+- The **icon generation step** demonstrates how LLM‑produced assets can be seamlessly integrated.  
+- Feel free to expand the project (database, auth, more routes) while preserving the same structure and the CLI‑compatible entry point.  
+
+Now you have a **complete, copy‑paste‑ready tutorial** that meets Lollms’s requirement to run with `python server.py --port …` and includes the crucial `icon.png`. Happy coding! 🚀🌈✨
+
+]]>
+    </content>
+</skill>

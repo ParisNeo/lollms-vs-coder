@@ -69,12 +69,17 @@ export class DiscussionManager {
 
         const defaults: DiscussionCapabilities = {
             responseProfileId: defaultProfileId,
-            forceFullCode: config.get<boolean>('forceFullCode') || false,
+            forceFullCode: false,
             generationFormats: {
-                fullFile: config.get<any>('generationFormats')?.fullFile ?? true,
-                partialFormat: config.get<any>('generationFormats')?.partialFormat ?? 'aider'
+                fullFile: true,
+                partialFormat: 'aider'
             },
-            allowedFormats: allowedFormats,
+            allowedFormats: {
+                fullFile: true,
+                insert: true,
+                replace: true,
+                delete: true
+            },
             fileRename: true,
             fileDelete: true,
             fileSelect: true,
@@ -92,7 +97,6 @@ export class DiscussionManager {
                 youtube: true,
                 github: false
             },
-            // Removed specific thinkingMode and funMode, now handled by profile
             herdMode: false,
             herdDynamicMode: herdDynamicMode,
             herdParticipants: [], 
@@ -103,6 +107,8 @@ export class DiscussionManager {
             autoContextMode: false,
             gitWorkflow: false,
             explainCode: true,
+            addPedagogicalInstruction: false,
+            forceFullCodePath: false,
             guiState: {
                 agentBadge: true,
                 autoContextBadge: true,

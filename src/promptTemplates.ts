@@ -5,7 +5,6 @@ import { DiscussionCapabilities, getAvailableShells, ResponseProfile } from './u
 export class PromptTemplates {
     
     private static getFormatInstructions(capabilities?: DiscussionCapabilities, forceFullCodeSetting?: boolean): string {
-        const useFull = capabilities?.generationFormats?.fullFile ?? true;
         const partialFormat = capabilities?.generationFormats?.partialFormat ?? 'aider';
         const forceFull = forceFullCodeSetting || capabilities?.forceFullCode || false;
 

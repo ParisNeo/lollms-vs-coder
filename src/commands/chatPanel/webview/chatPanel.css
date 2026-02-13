@@ -731,11 +731,30 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
 
 .active-badges {
     display: flex;
-    gap: 6px;
+    gap: 12px;
     align-items: center;
     margin-right: 10px;
     position: relative; 
     overflow: visible;
+}
+
+.badge-group {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 4px;
+    background: var(--vscode-editor-inactiveSelectionBackground);
+    border-radius: 16px;
+    border: 1px solid var(--vscode-widget-border);
+}
+
+.badge-group-label {
+    font-size: 9px;
+    text-transform: uppercase;
+    font-weight: 800;
+    opacity: 0.5;
+    margin: 0 4px;
+    user-select: none;
 }
 
 .mode-badge {
@@ -755,6 +774,7 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
 .mode-badge.active.agent { background-color: var(--vscode-charts-orange); color: white; }
 .mode-badge.active.herd { background-color: var(--vscode-charts-purple); color: white; }
 .mode-badge.active.autocontext { background-color: var(--vscode-charts-blue); color: white; }
+.mode-badge.active.autoskill { background-color: var(--vscode-charts-green); color: white; }
 .mode-badge.model { background-color: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); padding-left: 8px; }
 .mode-badge.personality { background-color: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border-color: var(--vscode-button-secondaryBackground); border-style: dashed; padding-left: 6px; }
 
@@ -1347,6 +1367,89 @@ mark.current-match {
     font-size: 0.85em;
     white-space: pre-wrap;
     overflow-x: auto;
+    border-top: 1px solid var(--vscode-widget-border);
+}
+
+/* File Operation Blocks (Rename/Delete) */
+.file-operation-block {
+    background-color: var(--vscode-editor-inactiveSelectionBackground);
+    border: 1px solid var(--vscode-widget-border);
+    border-radius: 8px;
+    margin: 12px 0;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.file-operation-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    font-size: 13px;
+}
+
+.file-operation-details {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px;
+    background: var(--vscode-textCodeBlock-background);
+    border-radius: 4px;
+    font-family: var(--vscode-editor-font-family);
+    font-size: 12px;
+    overflow-x: auto;
+}
+
+.file-operation-arrow {
+    opacity: 0.6;
+}
+
+.file-operation-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+/* Skill Creation Sub-Bubble */
+.skill-creation-block {
+    background-color: var(--vscode-notifications-background, var(--vscode-editorWidget-background));
+    border: 1px solid var(--vscode-widget-border);
+    border-radius: 12px;
+    margin: 16px 8px;
+    padding: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+
+.skill-header {
+    background-color: var(--vscode-editorWidget-background);
+    padding: 8px 16px;
+    font-weight: 600;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 1px solid var(--vscode-widget-border);
+}
+
+.skill-preview {
+    padding: 12px 16px;
+    font-size: 13px;
+    max-height: 250px;
+    overflow-y: auto;
+    background: var(--vscode-editor-background);
+}
+
+.skill-actions {
+    padding: 8px 16px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    background-color: var(--vscode-editorWidget-background);
     border-top: 1px solid var(--vscode-widget-border);
 }
 

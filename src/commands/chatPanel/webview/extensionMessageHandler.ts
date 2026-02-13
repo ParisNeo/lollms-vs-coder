@@ -132,21 +132,22 @@ export function handleExtensionMessage(event: MessageEvent) {
                         state.profiles = [];
                     }
 
-                    if (caps.generationFormats) {
-                        if (dom.checkGenFull) dom.checkGenFull.checked = caps.generationFormats.fullFile;
-                        if (dom.checkGenDiff) dom.checkGenDiff.checked = caps.generationFormats.diff;
-                        if (dom.checkGenAider) dom.checkGenAider.checked = caps.generationFormats.aider;
-                    }
+                    if (dom.capForceFullCode) dom.capForceFullCode.checked = !!caps.forceFullCode;
+                    if (dom.capAllowFullFallback) dom.capAllowFullFallback.checked = caps.generationFormats?.fullFile !== false;
+                    if (dom.capExplainCode) dom.capExplainCode.checked = caps.explainCode !== false;
+                    if (dom.capAddPedagogicalInstruction) dom.capAddPedagogicalInstruction.checked = !!caps.addPedagogicalInstruction;
+                    if (dom.capForceFullCodePath) dom.capForceFullCodePath.checked = !!caps.forceFullCodePath;
 
-                    if (dom.checkBehaviorExplain) {
-                        dom.checkBehaviorExplain.checked = caps.explainCode !== false;
+                    if (caps.generationFormats?.partialFormat) {
+                        const radio = document.querySelector(`input[name="cap-partialFormat"][value="${caps.generationFormats.partialFormat}"]`) as HTMLInputElement;
+                        if (radio) radio.checked = true;
                     }
 
                     if (dom.allowedFormats) {
-                        if (dom.fmtFullFile) dom.fmtFullFile.checked = caps.allowedFormats.fullFile;
-                        if (dom.fmtInsert) dom.fmtInsert.checked = caps.allowedFormats.insert;
-                        if (dom.fmtReplace) dom.fmtReplace.checked = caps.allowedFormats.replace;
-                        if (dom.fmtDelete) dom.fmtDelete.checked = caps.allowedFormats.delete;
+                        if (dom.fmtFullFile) dom.fmtFullFile.checked = caps.allowedFormats.fullFile !== false;
+                        if (dom.fmtInsert) dom.fmtInsert.checked = caps.allowedFormats.insert !== false;
+                        if (dom.fmtReplace) dom.fmtReplace.checked = caps.allowedFormats.replace !== false;
+                        if (dom.fmtDelete) dom.fmtDelete.checked = caps.allowedFormats.delete !== false;
                     }
 
                     if(dom.capFileRename) dom.capFileRename.checked = caps.fileRename;

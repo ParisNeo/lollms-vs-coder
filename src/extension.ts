@@ -113,6 +113,19 @@ export async function activate(context: vscode.ExtensionContext) {
     // Register Commands
     registerCommands(context, services, getActiveWorkspace);
 
+    // Register Workspace Switcher Command
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.selectActiveWorkspace', async () => {
+        const folders = vscode.workspace.workspaceFolders;
+        if (!folders || folders.length <= 1) { return; }
+        const selected = await vscode.window.showQuickPick(
+            folders.map(f => ({ label: f.name, folder: f })),
+            { placeHolder: 'Select active Lollms workspace' }
+        );
+        if (selected) {
+            switchActiveWorkspace(selected.folder);
+        }
+    }));
+
     let recreateClientDisposable = vscode.commands.registerCommand('lollmsApi.recreateClient', async () => {
         console.log('[INFO] Recreating Lollms API Client...');
         try {

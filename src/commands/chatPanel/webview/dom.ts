@@ -68,11 +68,13 @@ export interface DiscussionCapabilities {
     herdRounds: number;
     agentMode: boolean;
     autoContextMode: boolean;
+    autoSkillMode: boolean;
     guiState?: {
         agentBadge: boolean;
         autoContextBadge: boolean;
         herdBadge: boolean;
         webSearchBadge?: boolean;
+        autoSkillBadge?: boolean;
     };
 }
 
@@ -124,6 +126,7 @@ export const dom = {
     
     get agentModeCheckbox() { return document.getElementById('agentModeCheckbox') as HTMLInputElement; },
     get autoContextCheckbox() { return document.getElementById('autoContextCheckbox') as HTMLInputElement; },
+    get autoSkillCheckbox() { return document.getElementById('autoSkillCheckbox') as HTMLInputElement; },
     get herdModeCheckbox() { return document.getElementById('herdModeCheckbox') as HTMLInputElement; },
     get activeBadges() { return document.getElementById('active-badges') as HTMLDivElement; },
     
@@ -172,10 +175,11 @@ export const dom = {
     get generatingOverlay() { return document.getElementById('generating-overlay') as HTMLDivElement; },
     get activeToolsIndicator() { return document.getElementById('active-tools-indicator') as HTMLDivElement; },
     
-    get checkGenFull() { return document.getElementById('check-gen-full') as HTMLInputElement; },
-    get checkGenDiff() { return document.getElementById('check-gen-diff') as HTMLInputElement; },
-    get checkGenAider() { return document.getElementById('check-gen-aider') as HTMLInputElement; },
-    get checkBehaviorExplain() { return document.getElementById('check-behavior-explain') as HTMLInputElement; },
+    get capForceFullCode() { return document.getElementById('cap-forceFullCode') as HTMLInputElement; },
+    get capAllowFullFallback() { return document.getElementById('cap-allowFullFallback') as HTMLInputElement; },
+    get capExplainCode() { return document.getElementById('cap-explainCode') as HTMLInputElement; },
+    get capAddPedagogicalInstruction() { return document.getElementById('cap-addPedagogicalInstruction') as HTMLInputElement; },
+    get capForceFullCodePath() { return document.getElementById('cap-forceFullCodePath') as HTMLInputElement; },
 
     get fmtFullFile() { return document.getElementById('fmt-fullFile') as HTMLInputElement; },
     get fmtInsert() { return document.getElementById('fmt-insert') as HTMLInputElement; },

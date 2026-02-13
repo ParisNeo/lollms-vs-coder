@@ -55,6 +55,11 @@ export class LollmsStatusBar implements vscode.Disposable {
         // Initial Check
         this.checkConnection();
 
+        // Register check connection command
+        this.disposables.push(vscode.commands.registerCommand('lollms-vs-coder.checkConnection', () => {
+            this.checkConnection();
+        }));
+
         // Listen for configuration changes to update the model name in status bar
         this.disposables.push(vscode.workspace.onDidChangeConfiguration(e => {
             if (e.affectsConfiguration('lollmsVsCoder.modelName')) {

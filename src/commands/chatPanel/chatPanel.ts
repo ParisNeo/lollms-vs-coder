@@ -772,7 +772,8 @@ export class ChatPanel {
     let currentContent = fullContent;
     
     // Detect all partial blocks (diff:path or language:path containing Aider markers)
-    const blockRegex = /```(\w+):([^\n\s]+)\n([\s\S]+?)\n```/g;
+    // Support both \n and \r\n after the language:path header
+    const blockRegex = /```(\w+):([^\n\s]+)[\r\n]+([\s\S]+?)[\r\n]+```/g;
     let match;
     const blocksToVerify: { type: string, path: string, content: string, originalMatch: string }[] = [];
 
@@ -874,8 +875,12 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                 } catch (e) { break; }
             }
         }
-
-        if (success && verifiedFullCode) {
+        // Only replace the block in the chat UI with the full verified content if:
+        // 1. We actually had to perform a repair (retryCount > 0)
+        // 2. It was a 'diff' block (converts messy diffs to clean full files for easier applying)
+        // 3. It was NOT an Aider/Search-Replace block (we want to keep successful Aider blocks as-is)
+        const isAider = block.content.includes('<<<<<<< SEARCH');
+        if (success && verifiedFullCode && (retryCount > 0 || block.type === 'diff' || !isAider)) {
             const lang = path.extname(block.path).substring(1) || 'plaintext';
             const newBlock = `Verified Full Code for ${block.path}:\n\`\`\`${lang}:${block.path}\n${verifiedFullCode}\n\`\`\``;
             currentContent = currentContent.replace(block.originalMatch, newBlock);
@@ -1084,6 +1089,49 @@ Please provide the **FULL CONTENT** of the file instead using the format:
     this.updateGeneratingState();
 
     const isAutoContext = this._discussionCapabilities.autoContextMode || autoContextMode;
+
+    // --- AUTO SKILL SELECTION ---
+    if (this._discussionCapabilities.autoSkillMode) {
+        const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
+        const userPromptText = (typeof message.content === 'string') ? message.content : "User request";
+        const autoSkillMsgId = 'auto_skill_agent_' + Date.now();
+
+        try {
+            await this.addMessageToDiscussion({
+                id: autoSkillMsgId,
+                role: 'system',
+                content: `**💡 Auto-Skill Agent**\n*Analyzing relevant skills...*\n\n`,
+                skipInPrompt: true 
+            });
+
+            const newSkills = await this._contextManager.runSkillSelectionAgent(
+                userPromptText, 
+                model, 
+                controller.signal, 
+                this._currentDiscussion.importedSkills || [],
+                (log) => {
+                    if (!this._isDisposed) {
+                        this._panel.webview.postMessage({ command: 'updateMessage', messageId: autoSkillMsgId, newContent: log });
+                    }
+                }
+            );
+            
+            if (this._currentDiscussion && JSON.stringify(newSkills) !== JSON.stringify(this._currentDiscussion.importedSkills)) {
+                this._currentDiscussion.importedSkills = newSkills;
+                if (!this._currentDiscussion.id.startsWith('temp-')) {
+                    await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                }
+                this.updateContextAndTokens();
+                await this.updateMessageContent(autoSkillMsgId, `**💡 Auto-Skill Agent**\n*Optimized context with ${newSkills.length} active skills.*`);
+            } else {
+                // If no changes, we can either keep the log or update it to be very subtle
+                await this.updateMessageContent(autoSkillMsgId, `**💡 Auto-Skill Agent**\n*Current skills are already optimal for this request.*`);
+            }
+        } catch (e) {
+            this.log("Auto-skill failed", 'WARN');
+            await this.updateMessageContent(autoSkillMsgId, `**💡 Auto-Skill Agent**\n*Analysis skipped or failed.*`);
+        }
+    }
 
     if (isAutoContext) {
         this.log("Auto-Context mode active. Starting agent loop.");
@@ -2160,7 +2208,54 @@ Task:
                     this.processManager.unregister(webProcId);
                     this.updateGeneratingState();
                 }
-                break;                
+                break;
+            case 'runAutoSkill':
+                if (this._isDisposed || !this.processManager) { break; }
+                const { id: skillProcId, controller: skillCtrl } = this.processManager.register(this.discussionId, 'Optimizing Skills...');
+                this.updateGeneratingState();
+                try {
+                    const model = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+                    const prompt = message.prompt || "Update skills for current discussion";
+                    const skillLogId = 'skill_refresh_' + Date.now();
+                    
+                    await this.addMessageToDiscussion({
+                        id: skillLogId, 
+                        role: 'system', 
+                        content: `**💡 Auto-Skill Agent (Manual)**\n*Analyzing relevant skills...*\n\n`, 
+                        skipInPrompt: true 
+                    });
+
+                    const newSkills = await this._contextManager.runSkillSelectionAgent(
+                        prompt, 
+                        model, 
+                        skillCtrl.signal, 
+                        this._currentDiscussion?.importedSkills || [],
+                        (log) => {
+                            if (!this._isDisposed) {
+                                this._panel.webview.postMessage({ command: 'updateMessage', messageId: skillLogId, newContent: log });
+                            }
+                        }
+                    );
+                    
+                    if (this._currentDiscussion && JSON.stringify(newSkills) !== JSON.stringify(this._currentDiscussion.importedSkills)) {
+                        this._currentDiscussion.importedSkills = newSkills;
+                        if (!this._currentDiscussion.id.startsWith('temp-')) {
+                            await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                        }
+                        this.updateContextAndTokens();
+                        await this.updateMessageContent(skillLogId, `**💡 Auto-Skill Agent (Manual)**\n*Update complete. ${newSkills.length} skills active.*`);
+                    } else {
+                        await this.updateMessageContent(skillLogId, `**💡 Auto-Skill Agent (Manual)**\n*No changes needed. Context is optimal.*`);
+                    }
+                } catch (e: any) {
+                    if (e.name !== 'AbortError') {
+                        this.log(`Auto-Skill refresh failed: ${e.message}`, 'ERROR');
+                    }
+                } finally {
+                    this.processManager.unregister(skillProcId);
+                    this.updateGeneratingState();
+                }
+                break;
         }
     });
   }
@@ -2403,11 +2498,6 @@ Task:
                                 <span>AI Configuration</span>
                                 <span class="menu-arrow">›</span>
                             </div>
-                            <div class="menu-item has-submenu" data-target="menu-response-style">
-                                <i class="codicon codicon-quote"></i>
-                                <span>Response Style</span>
-                                <span class="menu-arrow">›</span>
-                            </div>
                             <div class="menu-separator"></div>
                             <button class="menu-item" id="discussionToolsButton"><i class="codicon codicon-tools"></i><span>Advanced Tools</span></button>
                             <button class="menu-item" id="agentToolsButton"><i class="codicon codicon-briefcase"></i><span>Agent Tools List</span></button>
@@ -2435,6 +2525,10 @@ Task:
                                 <label class="switch"><input type="checkbox" id="autoContextCheckbox"><span class="slider"></span></label>
                             </div>
                             <div class="menu-item-toggle">
+                                <span>💡 Auto Skill</span>
+                                <label class="switch"><input type="checkbox" id="autoSkillCheckbox"><span class="slider"></span></label>
+                            </div>
+                            <div class="menu-item-toggle">
                                 <span>🐂 Herd Mode</span>
                                 <label class="switch"><input type="checkbox" id="herdModeCheckbox"><span class="slider"></span></label>
                             </div>
@@ -2456,21 +2550,6 @@ Task:
                             </div>
                         </div>
 
-                        <div class="menu-view hidden" id="menu-response-style">
-                            <div class="menu-header">
-                                <button class="back-btn"><i class="codicon codicon-arrow-left"></i></button>
-                                <span>Response Style</span>
-                            </div>
-                            <div class="menu-item-radio">
-                                <label><input type="radio" name="respMode" value="silent"> 🤐 Silent (Code Only)</label>
-                            </div>
-                            <div class="menu-item-radio">
-                                <label><input type="radio" name="respMode" value="balanced"> ⚖️ Balanced</label>
-                            </div>
-                            <div class="menu-item-radio">
-                                <label><input type="radio" name="respMode" value="pedagogical"> 🎓 Pedagogical</label>
-                            </div>
-                        </div>
                     </div>
 
                     <div class="top-controls">
@@ -2628,14 +2707,60 @@ Task:
 
                     <div class="modal-section">
                         <h3>Code Generation Strategy</h3>
-                        <div class="radio-group" style="margin-bottom:12px;">
-                            <label class="radio-option"><input type="radio" name="codeGenType" value="full" checked> Full File Preferred</label>
-                            <label class="radio-option"><input type="radio" name="codeGenType" value="diff"> Search/Replace Diffs Preferred</label>
-                            <label class="radio-option"><input type="radio" name="codeGenType" value="none"> None (Chat Only)</label>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-forceFullCode"><span class="slider"></span></label>
+                            <label for="cap-forceFullCode"><strong>Force Full Code</strong> (Disable partial updates)</label>
+                        </div>
+                        
+                        <div id="partial-strategy-container" style="margin-top:12px; padding-left: 10px; border-left: 2px solid var(--vscode-widget-border);">
+                            <label style="font-size:11px; font-weight:bold; display:block; margin-bottom:4px;">Preferred Partial Update Format</label>
+                            <div class="radio-group">
+                                <label class="radio-option"><input type="radio" name="cap-partialFormat" value="aider" checked> Aider (Robust Search/Replace)</label>
+                                <label class="radio-option"><input type="radio" name="cap-partialFormat" value="diff"> Unified Diff (.patch)</label>
+                            </div>
+                            <div class="checkbox-container" style="border:none; background:transparent; padding:0; margin-top:8px;">
+                                <label class="switch" style="width:24px; height:14px;"><input type="checkbox" id="cap-allowFullFallback" checked><span class="slider"></span></label>
+                                <label for="cap-allowFullFallback" style="font-size:11px; opacity:0.8;">Allow full-file fallback for large changes</label>
+                            </div>
+                        </div>
+
+                        <div class="checkbox-container" style="margin-top:12px;">
+                            <label class="switch"><input type="checkbox" id="cap-explainCode" checked><span class="slider"></span></label>
+                            <label for="cap-explainCode">AI explains changes (Problem/Hypothesis/Fix)</label>
+                        </div>
+                    </div>
+
+                    <div class="modal-section">
+                        <h3>Response Instructions</h3>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-addPedagogicalInstruction"><span class="slider"></span></label>
+                            <label for="cap-addPedagogicalInstruction">Add Pedagogical Context</label>
                         </div>
                         <div class="checkbox-container">
-                            <label class="switch"><input type="checkbox" id="check-behavior-explain" checked><span class="slider"></span></label>
-                            <label for="check-behavior-explain">AI explains changes (Problem/Hypothesis/Fix)</label>
+                            <label class="switch"><input type="checkbox" id="cap-forceFullCodePath"><span class="slider"></span></label>
+                            <label for="cap-forceFullCodePath">Strict <code>\`\`\`lang:path</code> blocks</label>
+                        </div>
+                    </div>
+
+                    <div class="modal-section">
+                        <h3>Allowed UI Actions</h3>
+                        <div class="checkbox-grid">
+                            <div class="checkbox-container">
+                                <label class="switch"><input type="checkbox" id="fmt-fullFile" checked><span class="slider"></span></label>
+                                <label for="fmt-fullFile">Full File (Apply)</label>
+                            </div>
+                            <div class="checkbox-container">
+                                <label class="switch"><input type="checkbox" id="fmt-insert" checked><span class="slider"></span></label>
+                                <label for="fmt-insert">Insert Snippet</label>
+                            </div>
+                            <div class="checkbox-container">
+                                <label class="switch"><input type="checkbox" id="fmt-replace" checked><span class="slider"></span></label>
+                                <label for="fmt-replace">Replace Snippet</label>
+                            </div>
+                            <div class="checkbox-container">
+                                <label class="switch"><input type="checkbox" id="fmt-delete" checked><span class="slider"></span></label>
+                                <label for="fmt-delete">Delete Code</label>
+                            </div>
                         </div>
                     </div>
 

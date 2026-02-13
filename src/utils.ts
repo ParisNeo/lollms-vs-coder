@@ -39,8 +39,11 @@ export interface DiscussionCapabilities {
         delete: boolean;
     };
     responseProfileId: string;
-    explainCode: boolean; 
+    explainCode: boolean;
+    addPedagogicalInstruction: boolean;
+    forceFullCodePath: boolean;
     fileRename: boolean;
+    fileDelete: boolean;
     fileDelete: boolean;
     fileSelect: boolean;
     fileReset: boolean;
@@ -67,11 +70,13 @@ export interface DiscussionCapabilities {
     herdRounds: number;
     agentMode: boolean;
     autoContextMode: boolean;
+    autoSkillMode: boolean;
     guiState?: {
         agentBadge: boolean;
         autoContextBadge: boolean;
         herdBadge: boolean;
         webSearchBadge?: boolean;
+        autoSkillBadge?: boolean;
     };
 }
 
@@ -147,9 +152,11 @@ function calculateLineSimilarity(line1: string, line2: string): number {
  * Includes indentation detection and automatic correction.
  */
 export function applySearchReplace(content: string, searchBlock: string, replaceBlock: string): { success: boolean, result: string, error?: string } {
+    // Normalize line endings to \n for internal processing
     const normalizedContent = content.replace(/\r\n/g, '\n');
-    let normalizedSearch = searchBlock.replace(/\r\n/g, '\n');
-    let normalizedReplace = replaceBlock.replace(/\r\n/g, '\n');
+    // Also trim leading/trailing empty lines from the blocks which sometimes happens during LLM output
+    let normalizedSearch = searchBlock.replace(/\r\n/g, '\n').replace(/^\n+|\n+$/g, '');
+    let normalizedReplace = replaceBlock.replace(/\r\n/g, '\n').replace(/^\n+|\n+$/g, '');
 
     // 1. Direct match attempt
     if (normalizedContent.includes(normalizedSearch)) {
@@ -288,6 +295,7 @@ export function applySearchReplace(content: string, searchBlock: string, replace
 
 /**
  * Parses and applies a unified diff patch to a string.
+ * Supports standard and simplified (missing line numbers) formats.
  */
 export function applyDiffToString(originalContent: string, diffContent: string): { success: boolean, result: string, error?: string } {
     const docLines = originalContent.replace(/\r\n/g, '\n').split('\n');
@@ -301,8 +309,17 @@ export function applyDiffToString(originalContent: string, diffContent: string):
     let currentHunk: Hunk | null = null;
 
     for (const line of diffLines) {
+        // Skip unified diff headers
+        if (line.startsWith('---') || line.startsWith('+++') || line.startsWith('diff ') || line.startsWith('Index:')) {
+            continue;
+        }
+
+        // Any line starting with @@ marks the start of a new hunk, 
+        // regardless of whether it has numbers.
         if (line.startsWith('@@')) {
-            if (currentHunk) hunks.push(currentHunk);
+            if (currentHunk && (currentHunk.searchLines.length > 0 || currentHunk.replaceLines.length > 0)) {
+                hunks.push(currentHunk);
+            }
             currentHunk = { searchLines: [], replaceLines: [] };
         } else if (currentHunk) {
             if (line.startsWith('-')) {
@@ -314,22 +331,35 @@ export function applyDiffToString(originalContent: string, diffContent: string):
                 currentHunk.searchLines.push(content);
                 currentHunk.replaceLines.push(content);
             }
+        } else {
+            // If we find +/- before the first @@, assume the first hunk starts implicitly
+            if (line.startsWith('-') || line.startsWith('+')) {
+                currentHunk = { searchLines: [], replaceLines: [] };
+                if (line.startsWith('-')) currentHunk.searchLines.push(line.substring(1));
+                else currentHunk.replaceLines.push(line.substring(1));
+            }
         }
     }
-    if (currentHunk) hunks.push(currentHunk);
+
+    if (currentHunk && (currentHunk.searchLines.length > 0 || currentHunk.replaceLines.length > 0)) {
+        hunks.push(currentHunk);
+    }
 
     if (hunks.length === 0) return { success: false, result: originalContent, error: "No valid diff hunks found." };
 
     let workingLines = [...docLines];
     
     for (const hunk of hunks) {
-        if (hunk.searchLines.length === 0) continue; 
+        if (hunk.searchLines.length === 0) {
+            continue; 
+        }
 
-        // Find hunk match
+        // Find hunk match in the document
         let matchIndex = -1;
         for (let i = 0; i <= workingLines.length - hunk.searchLines.length; i++) {
             let match = true;
             for (let j = 0; j < hunk.searchLines.length; j++) {
+                // Use trimmed comparison for robustness against minor indentation shifts
                 if (workingLines[i + j].trim() !== hunk.searchLines[j].trim()) {
                     match = false;
                     break;
@@ -342,9 +372,11 @@ export function applyDiffToString(originalContent: string, diffContent: string):
         }
 
         if (matchIndex === -1) {
-            return { success: false, result: originalContent, error: `Match failed for hunk starting with: "${hunk.searchLines[0]}"` };
+            const preview = hunk.searchLines.length > 0 ? hunk.searchLines[0].substring(0, 40) : "empty hunk";
+            return { success: false, result: originalContent, error: `Match failed for hunk starting with: "${preview}..."` };
         }
 
+        // Apply replacement: remove search lines, insert replace lines
         workingLines.splice(matchIndex, hunk.searchLines.length, ...hunk.replaceLines);
     }
 
@@ -361,6 +393,10 @@ export async function applyDiff(diffContent: string, targetFilePath?: string) {
         const fileMatch = diffContent.match(/^(?:--- a\/|\+\+\+ b\/|---\s|\+\+\+\s)(.*)$/m);
         if (fileMatch) {
             relativePath = fileMatch[1].trim();
+            // Strip a/ or b/ if present
+            if (relativePath.startsWith('a/') || relativePath.startsWith('b/')) {
+                relativePath = relativePath.substring(2);
+            }
         }
     }
 

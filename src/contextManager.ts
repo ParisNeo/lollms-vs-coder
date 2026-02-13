@@ -495,6 +495,84 @@ ${content.substring(0, 20000)}
     }
   }
 
+  // --- AUTO-SKILL SELECTION AGENT ---
+  public async runSkillSelectionAgent(
+    userPrompt: string,
+    model: string,
+    signal: AbortSignal,
+    currentSkillIds: string[],
+    onUpdate: (content: string) => void
+  ): Promise<string[]> {
+    if (!this.skillsManager) return currentSkillIds;
+
+    const allSkills = await this.skillsManager.getSkills();
+    if (allSkills.length === 0) return currentSkillIds;
+
+    // Create a lean list of skills for the LLM to analyze
+    const skillCatalog = allSkills.map(s => ({
+        id: s.id,
+        name: s.name,
+        description: s.description,
+        category: s.category
+    }));
+
+    const systemPrompt = `You are a Librarian Agent. Your task is to select the most relevant "Skills" from a library to help an AI answer a user request.
+Skills provide specialized knowledge, API documentation, or coding patterns.
+
+**RULES:**
+1. Analyze the user request.
+2. Select skills that are DIRECTLY relevant.
+3. If a currently active skill is no longer relevant, suggest removing it.
+4. Do not select more than 5 skills to avoid context bloat.
+5. **OUTPUT JSON ONLY**.
+
+**JSON FORMAT:**
+\`\`\`json
+{
+  "add": ["skill_id_1", "skill_id_2"],
+  "remove": ["skill_id_3"]
+}
+\`\`\``;
+
+    const userContent = `**User Request:** "${userPrompt}"
+**Currently Active Skill IDs:** ${JSON.stringify(currentSkillIds)}
+**Available Skill Catalog:**
+${JSON.stringify(skillCatalog, null, 2)}`;
+
+    try {
+        const response = await this.lollmsAPI.sendChat([
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userContent }
+        ], null, signal, model);
+
+        const cleanResponse = stripThinkingTags(response);
+        const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
+        
+        if (jsonMatch) {
+            const decision = JSON.parse(jsonMatch[0]);
+            const toAdd = decision.add || [];
+            const toRemove = decision.remove || [];
+
+            let updated = currentSkillIds.filter(id => !toRemove.includes(id));
+            updated = Array.from(new Set([...updated, ...toAdd]));
+
+            // Filter against actual existence
+            const finalIds = updated.filter(id => allSkills.some(s => s.id === id));
+
+            if (toAdd.length > 0 || toRemove.length > 0) {
+                const addedNames = allSkills.filter(s => toAdd.includes(s.id)).map(s => s.name);
+                onUpdate(`LOG_UPDATE:{"type":"skill","added":${JSON.stringify(addedNames)},"removed":${toRemove.length}}`);
+            }
+
+            return finalIds;
+        }
+    } catch (e) {
+        console.error("Auto-Skill failed", e);
+    }
+
+    return currentSkillIds;
+  }
+
   // --- WEB RESEARCH AGENT ---
   public async runWebResearchAgent(
       userPrompt: string,

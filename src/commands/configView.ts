@@ -39,18 +39,6 @@ export class SettingsPanel {
     responseProfiles: [] as ResponseProfile[],
     defaultResponseProfileId: 'balanced',
     
-    generationFormats: {
-        fullFile: true,
-        partialFormat: 'aider'
-    },
-    forceFullCode: false,
-    explainCode: true,
-    allowedFileFormats: {
-        fullFile: true,
-        insert: false,
-        replace: false,
-        delete: false
-    },
     reasoningLevel: 'none',
     failsafeContextSize: 8192,
     searchProvider: 'google_custom_search',
@@ -58,9 +46,7 @@ export class SettingsPanel {
     searchCx: '',
     autoUpdateChangelog: false,
     autoGenerateTitle: true,
-    addPedagogicalInstruction: false,
-    forceFullCodePath: false,
-    clipboardInsertRole: 'user', 
+    clipboardInsertRole: 'user',
     companionEnableWebSearch: false,
     companionEnableArxivSearch: false,
     userInfoName: '',
@@ -419,9 +405,6 @@ export class SettingsPanel {
                   ['responseProfiles', this._pendingConfig.responseProfiles],
                   ['defaultResponseProfileId', this._pendingConfig.defaultResponseProfileId],
 
-                  ['generationFormats', this._pendingConfig.generationFormats],
-                  ['explainCode', this._pendingConfig.explainCode],
-                  ['allowedFileFormats', this._pendingConfig.allowedFileFormats],
                   ['reasoningLevel', this._pendingConfig.reasoningLevel],
                   ['failsafeContextSize', this._pendingConfig.failsafeContextSize],
                   ['searchProvider', this._pendingConfig.searchProvider],
@@ -429,8 +412,6 @@ export class SettingsPanel {
                   ['searchCx', this._pendingConfig.searchCx],
                   ['autoUpdateChangelog', this._pendingConfig.autoUpdateChangelog],
                   ['autoGenerateTitle', this._pendingConfig.autoGenerateTitle],
-                  ['addPedagogicalInstruction', this._pendingConfig.addPedagogicalInstruction],
-                  ['forceFullCodePath', this._pendingConfig.forceFullCodePath],
                   ['clipboardInsertRole', this._pendingConfig.clipboardInsertRole],
                   ['companion.enableWebSearch', this._pendingConfig.companionEnableWebSearch],
                   ['companion.enableArxivSearch', this._pendingConfig.companionEnableArxivSearch],
@@ -676,7 +657,6 @@ export class SettingsPanel {
             <div class="tabs">
               <button class="tab-link active" onclick="openTab(event, 'TabApi')">🔌 API & Model</button>
               <button class="tab-link" onclick="openTab(event, 'TabGeneral')">⚡ General</button>
-              <button class="tab-link" onclick="openTab(event, 'TabContext')">📦 Context</button>
               <button class="tab-link" onclick="openTab(event, 'TabAgent')">🤖 Agent & Tools</button>
               <button class="tab-link" onclick="openTab(event, 'TabRemote')">📡 Remote</button>
               <button class="tab-link" onclick="openTab(event, 'TabGit')">🐙 Git</button>
@@ -798,41 +778,8 @@ export class SettingsPanel {
               <div class="checkbox-container"><input type="checkbox" id="forceFullCodePath" ${forceFullCodePath ? 'checked' : ''}><label for="forceFullCodePath">Force Full Code Path Syntax</label></div>
             </div>
 
-            <!-- TabContext -->
             <div id="TabContext" class="tab-content">
-              <h2>${t('config.section.contextAndFile', 'Context & File Strategy')}</h2>
-              
-              <h3>Code Generation Strategy</h3>
-              <div class="checkbox-container">
-                  <input type="checkbox" id="forceFullCode" ${forceFullCode ? 'checked' : ''}>
-                  <label for="forceFullCode"><strong>Force Full Code</strong> (Disable partial updates entirely)</label>
-              </div>
-
-              <div id="partial-strategy-zone" style="display: ${forceFullCode ? 'none' : 'block'}; margin-top: 10px;">
-                <label for="partialFormat">Preferred Partial Update Format</label>
-                <select id="partialFormat">
-                    <option value="aider" ${generationFormats.partialFormat === 'aider' ? 'selected' : ''}>Aider (Search/Replace Blocks)</option>
-                    <option value="diff" ${generationFormats.partialFormat === 'diff' ? 'selected' : ''}>Unified Diff (.patch style)</option>
-                </select>
-                <p class="help-text">Aider is recommended for most models as it is more robust to indentation shifts.</p>
-                
-                <div class="checkbox-container">
-                    <input type="checkbox" id="gen-full" ${generationFormats.fullFile ? 'checked' : ''}>
-                    <label for="gen-full">Allow Full File fallback for substantial changes</label>
-                </div>
-              </div>
-
-              <h3>Response Behavior</h3>
-              <div class="checkbox-container"><input type="checkbox" id="explainCode" ${explainCode ? 'checked' : ''}><label for="explainCode">Explain Output (Uncheck for Code-Only mode)</label></div>
-
-              <h3>Allowed File Operations</h3>
-              <div class="grid-2">
-                  <div class="checkbox-container"><input type="checkbox" id="fmt-fullFile" ${allowedFileFormats.fullFile ? 'checked' : ''}><label for="fmt-fullFile">Full File (File:)</label></div>
-                  <div class="checkbox-container"><input type="checkbox" id="fmt-insert" ${allowedFileFormats.insert ? 'checked' : ''}><label for="fmt-insert">Insert Snippet</label></div>
-                  <div class="checkbox-container"><input type="checkbox" id="fmt-replace" ${allowedFileFormats.replace ? 'checked' : ''}><label for="fmt-replace">Replace Snippet</label></div>
-                  <div class="checkbox-container"><input type="checkbox" id="fmt-delete" ${allowedFileFormats.delete ? 'checked' : ''}><label for="fmt-delete">Delete Code</label></div>
-              </div>
-
+              <h2>Environment & Exceptions</h2>
               <h3 style="margin-top:20px;">Size Limits & Exceptions</h3>
               <label for="failsafeContextSize">${t('config.failsafeContextSize.label', 'Failsafe Context Size')}</label>
               <input type="number" id="failsafeContextSize" value="${failsafeContextSize}" min="1024" step="1024" />

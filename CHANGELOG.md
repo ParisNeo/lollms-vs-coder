@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-02-13 16:07]
+
+- feat: bump version to 0.6.0 and revamp chat panel UI/logic
+
 ## [2026-02-13 09:26]
 
 - refactor: overhaul lollms_apps skill XML

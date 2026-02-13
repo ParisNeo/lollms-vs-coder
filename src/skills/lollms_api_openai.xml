@@ -1,0 +1,21 @@
+<skill id="lollms-api-openai">
+    <name>LoLLMs OpenAI Compatible API</name>
+    <description>Using LoLLMs as a drop-in replacement for OpenAI V1 API.</description>
+    <category>lollms/api/openai</category>
+    <language>markdown</language>
+    <timestamp>1739455500000</timestamp>
+    <content>
+        <![CDATA[
+# 🟢 Service 1: OpenAI Compatible API
+**Base URL Path:** `/v1`
+
+LoLLMs implements the standard OpenAI V1 specification, allowing it to function as a drop-in replacement for any tool supporting OpenAI (AutoGPT, LangChain, etc.).
+
+### Endpoints:
+*   **`GET /v1/models`**: Lists all available models across active LLM bindings.
+*   **`POST /v1/chat/completions`**: Standard chat completion endpoint. Supports streaming, tool calls (function calling), and vision.
+*   **`POST /v1/embeddings`**: Generates vector embeddings for input strings.
+*   **`POST /v1/images/generations`**: Generates images using the platform's active Text-to-Image (TTI) engine.
+]]>
+    </content>
+</skill>

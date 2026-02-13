@@ -92,6 +92,11 @@ export function updateBadges() {
     
     container.innerHTML = '';
 
+    // --- INFRASTRUCTURE GROUP (Always Visible) ---
+    const infraGroup = document.createElement('div');
+    infraGroup.className = 'badge-group';
+    container.appendChild(infraGroup);
+
     // Model Badge
     if (dom.modelSelector && dom.modelSelector.value) {
         const model = dom.modelSelector.value;
@@ -99,7 +104,7 @@ export function updateBadges() {
         span.className = 'mode-badge model';
         span.title = 'Current Model';
         span.textContent = model;
-        container.appendChild(span);
+        infraGroup.appendChild(span);
     }
 
     // Personality Badge
@@ -152,7 +157,7 @@ export function updateBadges() {
 
             wrapper.appendChild(pBadge);
             wrapper.appendChild(menu);
-            container.appendChild(wrapper);
+            infraGroup.appendChild(wrapper);
         }
     }
 
@@ -219,63 +224,94 @@ export function updateBadges() {
 
         wrapper.appendChild(modeBadge);
         wrapper.appendChild(menu);
-        container.appendChild(wrapper);
+        infraGroup.appendChild(wrapper);
     }
 
-    const agentBadge = createToggleBadge('🤖 Agent', 'agent', guiState.agentBadge, caps.agentMode, () => {
-        vscode.postMessage({ command: 'toggleAgentMode' });
-    });
-    if (agentBadge) container.appendChild(agentBadge);
+    // --- THEME: TASK & TEAM ---
+    if (guiState.agentBadge || caps.herdMode) {
+        const taskGroup = document.createElement('div');
+        taskGroup.className = 'badge-group';
+        taskGroup.innerHTML = '<span class="badge-group-label">Task</span>';
+        container.appendChild(taskGroup);
 
-    const ctxBadge = createToggleBadge(
-        '🧠 AutoCtx', 
-        'autocontext', 
-        guiState.autoContextBadge, 
-        caps.autoContextMode, 
-        () => {
-            vscode.postMessage({ command: 'toggleAutoContext', enabled: !caps.autoContextMode });
-        },
-        () => {
-            const prompt = dom.messageInput ? dom.messageInput.value : "";
-            vscode.postMessage({ command: 'runAutoContext', prompt: prompt });
-        }
-    );
-    if (ctxBadge) container.appendChild(ctxBadge);
-
-    const herdBadge = createToggleBadge('🐂 Herd', 'herd', guiState.herdBadge, caps.herdMode, () => {
-        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { herdMode: !caps.herdMode } });
-    });
-    if (herdBadge) container.appendChild(herdBadge);
-
-    // Enhanced Web Search Toggle Badge with Activity Log
-    const webBadge = createToggleBadge(
-        '🌍 Web Search', 'web', 
-        guiState.webSearchBadge !== false, 
-        caps.webSearch, 
-        () => {
-            vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { webSearch: !caps.webSearch } });
-        },
-        () => {
-            const text = dom.messageInput.value.trim();
-            vscode.postMessage({ command: 'internetHelpSearch', query: text });
-            dom.messageInput.value = '';
-            dom.messageInput.style.height = 'auto';
-        }
-    );
-    
-    if (webBadge) {
-        webBadge.classList.add('websearch-indicator');
-        const logContainer = document.createElement('div');
-        logContainer.id = 'web-search-log';
-        logContainer.className = 'websearch-log';
-        
-        webBadge.addEventListener('contextmenu', (e) => {
-            e.preventDefault();
-            logContainer.classList.toggle('visible');
+        const agentBadge = createToggleBadge('🤖 Agent', 'agent', guiState.agentBadge, caps.agentMode, () => {
+            vscode.postMessage({ command: 'toggleAgentMode' });
         });
+        if (agentBadge) taskGroup.appendChild(agentBadge);
+
+        const herdBadge = createToggleBadge('🐂 Herd', 'herd', guiState.herdBadge, caps.herdMode, () => {
+            vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { herdMode: !caps.herdMode } });
+        });
+        if (herdBadge) taskGroup.appendChild(herdBadge);
+    }
+
+    // --- THEME: KNOWLEDGE & RESEARCH ---
+    if (guiState.autoContextBadge || guiState.autoSkillBadge !== false || guiState.webSearchBadge !== false) {
+        const knowledgeGroup = document.createElement('div');
+        knowledgeGroup.className = 'badge-group';
+        knowledgeGroup.innerHTML = '<span class="badge-group-label">Knowledge</span>';
+        container.appendChild(knowledgeGroup);
+
+        const ctxBadge = createToggleBadge(
+            '🧠 AutoCtx',
+            'autocontext', 
+            guiState.autoContextBadge, 
+            caps.autoContextMode, 
+            () => {
+                vscode.postMessage({ command: 'toggleAutoContext', enabled: !caps.autoContextMode });
+            },
+            () => {
+                const prompt = dom.messageInput ? dom.messageInput.value : "";
+                vscode.postMessage({ command: 'runAutoContext', prompt: prompt });
+            }
+        );
+        if (ctxBadge) knowledgeGroup.appendChild(ctxBadge);
+
+        const skillBadge = createToggleBadge(
+            '💡 AutoSkill',
+            'autoskill',
+            guiState.autoSkillBadge !== false,
+            caps.autoSkillMode,
+            () => {
+                vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { autoSkillMode: !caps.autoSkillMode } });
+            },
+            () => {
+                const prompt = dom.messageInput ? dom.messageInput.value : "";
+                vscode.postMessage({ command: 'runAutoSkill', prompt: prompt });
+            }
+        );
+        if (skillBadge) knowledgeGroup.appendChild(skillBadge);
+
+        // Enhanced Web Search Toggle Badge with Activity Log
+        const webBadge = createToggleBadge(
+            '🌍 Web Search', 'web', 
+            guiState.webSearchBadge !== false, 
+            caps.webSearch, 
+            () => {
+                vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { webSearch: !caps.webSearch } });
+            },
+            () => {
+                const text = dom.messageInput.value.trim();
+                vscode.postMessage({ command: 'internetHelpSearch', query: text });
+                dom.messageInput.value = '';
+                dom.messageInput.style.height = 'auto';
+            }
+        );
         
-        container.appendChild(webBadge);
-        container.appendChild(logContainer);
+        if (webBadge) {
+            webBadge.classList.add('websearch-indicator');
+            const logContainer = document.createElement('div');
+            logContainer.id = 'web-search-log';
+            logContainer.className = 'websearch-log';
+            
+            webBadge.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                logContainer.classList.toggle('visible');
+            });
+            
+            knowledgeGroup.appendChild(webBadge);
+            knowledgeGroup.appendChild(logContainer);
+        }
     }
 
     if (caps.gitWorkflow) {

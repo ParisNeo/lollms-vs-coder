@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.99",
+  "version": "0.6.0",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -650,49 +650,6 @@
           "type": "boolean",
           "default": false,
           "description": "Enable Recursive Language Model (RLM) mode for agents. This allows the agent to execute python code recursively to solve problems."
-        },
-        "lollmsVsCoder.allowedFileFormats": {
-          "type": "object",
-          "default": {
-            "fullFile": true,
-            "insert": false,
-            "replace": false,
-            "delete": false
-          },
-          "description": "Allowed file modification formats for the AI to use.",
-          "properties": {
-            "fullFile": { "type": "boolean", "default": true, "description": "Allow 'File:' format (Full File Content)" },
-            "insert": { "type": "boolean", "default": false, "description": "Allow 'Insert:' format (Add code snippet)" },
-            "replace": { "type": "boolean", "default": false, "description": "Allow 'Replace:' format (Modify small snippet)" },
-            "delete": { "type": "boolean", "default": false, "description": "Allow 'DeleteCode:' format (Remove snippet)" }
-          }
-        },
-        "lollmsVsCoder.generationFormats": {
-          "type": "object",
-          "default": {
-            "fullFile": true,
-            "partialFormat": "aider"
-          },
-          "description": "Preferred formats for code generation.",
-          "properties": {
-            "fullFile": { "type": "boolean", "default": true, "description": "Allow using full file content for new files or major changes." },
-            "partialFormat": { 
-                "type": "string", 
-                "default": "aider", 
-                "enum": ["aider", "diff"],
-                "description": "Preferred format for small, localized changes."
-            }
-          }
-        },
-        "lollmsVsCoder.forceFullCode": {
-          "type": "boolean",
-          "default": false,
-          "description": "Force the AI to provide full code for every modification, regardless of change size."
-        },
-        "lollmsVsCoder.explainCode": {
-          "type": "boolean",
-          "default": true,
-          "description": "If true, the AI will explain its code generation using a structured Problem/Hypothesis/Fix format. If false, it will minimize conversational text."
         },
         "lollmsVsCoder.searchProvider": {
           "type": "string",

@@ -1,0 +1,30 @@
+<skill id="lollms-api-auth">
+    <name>LoLLMs API Authentication</name>
+    <description>How to generate and use API keys for authenticating with LoLLMs services.</description>
+    <category>lollms/api/auth</category>
+    <language>markdown</language>
+    <timestamp>1739455500000</timestamp>
+    <content>
+        <![CDATA[
+# 🔑 LoLLMs API Authentication
+
+To interact with LoLLMs services programmatically, you must provide a valid API key in the HTTP headers.
+
+## Generating Your API Key
+1. **Log in** to your LoLLMs WebUI account.
+2. Navigate to **Settings** (bottom left or via User Profile).
+3. Select the **API Keys** tab.
+4. Enter an **Alias** for your key (e.g., "VS Code Extension").
+5. Click **Create New Key**.
+6. **CRITICAL:** Copy the key immediately. It is only displayed once for security reasons.
+
+## Usage in Headers
+Pass the key in the HTTP Authorization header for all requests:
+```http
+Authorization: Bearer YOUR_API_KEY
+```
+
+If the administrator has disabled the requirement for keys, this header may be omitted.
+]]>
+    </content>
+</skill>

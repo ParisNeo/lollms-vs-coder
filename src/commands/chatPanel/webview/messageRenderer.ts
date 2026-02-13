@@ -236,13 +236,16 @@ function renderSkillBlock(content: string, titleAttr: string | undefined, messag
 
     return `
     <div class="skill-creation-block">
-        <div class="skill-header"><span class="codicon codicon-lightbulb"></span> Skill Generated: ${title}</div>
+        <div class="skill-header">
+            <span class="codicon codicon-lightbulb" style="color:var(--vscode-charts-yellow)"></span> 
+            <span>Propose New Skill: <strong>${title}</strong></span>
+        </div>
         <div class="skill-preview markdown-body">${sanitizer.sanitize(marked.parse(content))}</div>
         <div class="skill-actions">
-            <button class="code-action-btn" onclick="saveSkill('${safeContent}', 'local', '${safeTitle}')">
+            <button class="code-action-btn apply-btn" onclick="saveSkill('${safeContent}', 'local', '${safeTitle}')">
                 <span class="codicon codicon-save"></span> Save to Project
             </button>
-            <button class="code-action-btn" onclick="saveSkill('${safeContent}', 'global', '${safeTitle}')">
+            <button class="code-action-btn apply-btn" onclick="saveSkill('${safeContent}', 'global', '${safeTitle}')">
                 <span class="codicon codicon-globe"></span> Save Global
             </button>
         </div>
@@ -602,15 +605,22 @@ function looksLikeDiff(text: string): boolean {
     
     for (let i = 0; i < Math.min(lines.length, 20); i++) {
         const line = lines[i].trim();
+        // Standard unified diff headers
         if (line.startsWith('--- ') || line.startsWith('+++ ')) {
             headerLines++;
         }
+        // Check for hunk markers. We are lenient here to support simplified 
+        // formats like "@@" or "@@ -1,1 +1,1 @@"
         if (line.startsWith('@@')) {
             chunkMarkers++;
         }
     }
     
-    return headerLines >= 2 || chunkMarkers >= 1;
+    // It's a diff if we have the file headers OR at least one hunk marker 
+    // combined with common diff line prefixes (+/-)
+    const hasDiffMarkers = text.includes('\n+') || text.includes('\n-');
+    
+    return (headerLines >= 2) || (chunkMarkers >= 1 && hasDiffMarkers);
 }
 
 function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal: boolean = false) {
@@ -645,7 +655,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
     pres.forEach((pre, index) => {
         const code = pre.querySelector('code');
         if (!code) return;
-        if (pre.parentElement?.classList.contains('code-collapsible')) return;
+        if (pre.parentElement?.classList.contains('code-collapsible') || pre.parentElement?.classList.contains('file-operation-block')) return;
 
         const langMatch = code.className.match(/language-(\S+)/);
         let language = langMatch ? langMatch[1] : 'plaintext';
@@ -686,13 +696,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
         const info = codeBlockInfos[index];
 
         if (info) {
-            // Reset flags derived from basic header parsing, as 'info' comes from deeper analysis (extractFilePaths)
-            isFileBlock = false;
-            isDiff = false;
-            isInsert = false;
-            isReplace = false;
-            isDeleteCode = false;
-            isFileDelete = false;
+            isFileBlock = false; isDiff = false; isInsert = false; isReplace = false; isDeleteCode = false; isFileDelete = false;
 
             if (info.type === 'file') {
                 filePath = info.path;
@@ -723,6 +727,66 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
             }
         } 
         
+        // --- SPECIALIZED UI FOR RENAME/DELETE ---
+        if (info && info.type === 'rename') {
+            const parts = info.path.split(' -> ');
+            const oldPath = parts[0];
+            const newPath = parts[1] || '';
+
+            const opBlock = document.createElement('div');
+            opBlock.className = 'file-operation-block';
+            opBlock.innerHTML = `
+                <div class="file-operation-header">
+                    <span class="codicon codicon-edit"></span> 
+                    <span>Proposed File Rename</span>
+                </div>
+                <div class="file-operation-details">
+                    <span class="path-old" title="${oldPath}">${oldPath}</span>
+                    <span class="codicon codicon-arrow-right file-operation-arrow"></span>
+                    <span class="path-new" title="${newPath}">${newPath}</span>
+                </div>
+                <div class="file-operation-actions">
+                     <button class="code-action-btn apply-btn" id="apply-rename-${blockId}">Apply Rename</button>
+                </div>
+            `;
+            
+            pre.replaceWith(opBlock);
+            const applyBtn = opBlock.querySelector(`#apply-rename-${blockId}`) as HTMLButtonElement;
+            applyBtn.onclick = () => {
+                vscode.postMessage({ command: 'renameFile', originalPath: oldPath, newPath: newPath });
+                applyBtn.disabled = true;
+                applyBtn.innerHTML = '<span class="codicon codicon-check"></span> Applied';
+            };
+            return;
+        }
+
+        if (info && (info.type === 'file_delete' || language === 'delete')) {
+            const pathToDelete = info.path || codeText.trim();
+            const opBlock = document.createElement('div');
+            opBlock.className = 'file-operation-block';
+            opBlock.innerHTML = `
+                <div class="file-operation-header">
+                    <span class="codicon codicon-trash" style="color:var(--vscode-errorForeground)"></span> 
+                    <span>Proposed File Deletion</span>
+                </div>
+                <div class="file-operation-details">
+                    <span class="path-target" title="${pathToDelete}">${pathToDelete}</span>
+                </div>
+                <div class="file-operation-actions">
+                     <button class="code-action-btn delete-btn" id="apply-delete-${blockId}">Delete File</button>
+                </div>
+            `;
+            
+            pre.replaceWith(opBlock);
+            const delBtn = opBlock.querySelector(`#apply-delete-${blockId}`) as HTMLButtonElement;
+            delBtn.onclick = () => {
+                vscode.postMessage({ command: 'deleteFile', filePaths: pathToDelete });
+                delBtn.disabled = true;
+                delBtn.innerHTML = '<span class="codicon codicon-check"></span> Deleted';
+            };
+            return;
+        }
+
         if (!isDiff && (language === 'diff' || looksLikeDiff(codeText))) {
             isDiff = true;
             const headerMatch = codeText.match(/(?:---|\+\+)\s+(?:[ab]\/)?([^\s\n\r]+)/);

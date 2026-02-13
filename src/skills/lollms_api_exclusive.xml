@@ -1,0 +1,39 @@
+<skill id="lollms-api-exclusive">
+    <name>LoLLMs Exclusive API Services</name>
+    <description>Advanced features unique to LoLLMs: Tokenizer, TTS, Long Context, RAG, and Image Editing.</description>
+    <category>lollms/api/exclusive</category>
+    <language>markdown</language>
+    <timestamp>1739455500000</timestamp>
+    <content>
+        <![CDATA[
+# 🔵 Service 3: LoLLMs Exclusive Services
+**Base URL Path:** `/lollms/v1`
+
+These endpoints provide access to features unique to LoLLMs that are not covered by standard specs.
+
+### 🧩 Tokenizer & Utilities
+*   **`POST /lollms/v1/tokenize`**: Returns integer token IDs.
+    *   `{"model": "binding/model", "text": "..."}`
+*   **`POST /lollms/v1/detokenize`**: Converts token IDs back into text.
+    *   `{"model": "binding/model", "tokens": [1, 2, 3]}`
+
+### 🎙️ Text-to-Speech (TTS)
+*   **`POST /lollms/v1/audio/speech`**: Generates audio from text (OpenAI compatible).
+    *   `{"input": "text", "voice": "alloy", "model": "...", "response_format": "mp3"}`
+*   **`GET /lollms/v1/audio/voices`**: Lists all available voices.
+
+### 📄 Long Context Processing
+*   **`POST /lollms/v1/long_context_process`**: Automatically chunks, summarizes, and synthesizes text that exceeds the model's context window.
+    *   `{"text": "...", "prompt": "Summarize this 500-page doc", "max_generation_tokens": 4096}`
+
+### 🗄️ RAG (Retrieval Augmented Generation)
+*   **`GET /lollms/v1/rag/databases`**: Lists all RAG datastores (private and public).
+*   **`POST /lollms/v1/rag/query`**: Query a private Data Store for semantic similarity chunks.
+    *   `{"datastore_id": "uuid", "query": "...", "top_k": 5}`
+
+### 🎨 Advanced Image Editing
+*   **`POST /lollms/v1/images/edit`**: Image-to-Image (ITI) service for AI-driven edits or in-painting.
+    *   `{"image": "base64", "prompt": "Change cat to tiger", "mask": "optional_base64"}`
+]]>
+    </content>
+</skill>

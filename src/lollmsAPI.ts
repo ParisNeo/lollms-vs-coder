@@ -398,22 +398,25 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
       throw new Error("Lollms API URL is not configured correctly.");
     }
 
+    const imageUrl = `${this.baseUrl}/v1/images/generations`;
+    const isHttps = imageUrl.startsWith('https');
 
-
-const imageUrl = `${this.baseUrl}/v1/images/generations`;
-const isHttps = imageUrl.startsWith('https');
-
-const requestBody: ImageGenerationRequest = {
-    prompt: prompt,
-    n: 1,
-    response_format: 'b64_json',
-    size: options?.size,
-    quality: options?.quality
-};
+    const requestBody: ImageGenerationRequest = {
+        prompt: prompt,
+        n: 1,
+        response_format: 'b64_json',
+        size: options?.size,
+        quality: options?.quality
+    };
 
     const controller = new AbortController();
     const timeoutDuration = vscode.workspace.getConfiguration('lollmsVsCoder').get<number>('requestTimeout') || 600000;
-    const timeout = setTimeout(() => controller.abort(), timeoutDuration);
+    
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+    }, timeoutDuration);
 
     if (token) {
         token.onCancellationRequested(() => controller.abort());
@@ -452,13 +455,12 @@ const requestBody: ImageGenerationRequest = {
 
     } catch (error: any) {
         if (error.name === 'AbortError') {
-            if (token?.isCancellationRequested) {
-              throw error; 
-            } else {
+            if (timedOut) {
               throw new Error(`Image generation request timed out.`);
             }
-          }
-          throw error;
+            throw error; 
+        }
+        throw error;
     } finally {
         clearTimeout(timeout);
     }
@@ -522,7 +524,13 @@ const requestBody: ImageGenerationRequest = {
 
     const controller = new AbortController();
     const timeoutDuration = vscode.workspace.getConfiguration('lollmsVsCoder').get<number>('requestTimeout') || 600000;
-    const timeout = setTimeout(() => controller.abort(), timeoutDuration);
+    
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+    }, timeoutDuration);
+
     if (signal) signal.onabort = () => controller.abort();
 
     try {

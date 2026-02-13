@@ -216,20 +216,24 @@ export function initEventHandlers() {
     
     if (dom.saveDiscussionToolsBtn) {
         dom.saveDiscussionToolsBtn.addEventListener('click', () => {
+            const partialFormat = (document.querySelector('input[name="cap-partialFormat"]:checked') as HTMLInputElement)?.value || 'aider';
+            
             const caps = {
                 generationFormats: {
-                    fullFile: dom.checkGenFull?.checked ?? true,
-                    diff: dom.checkGenDiff?.checked ?? false,
-                    aider: dom.checkGenAider?.checked ?? false
+                    fullFile: dom.capAllowFullFallback?.checked ?? true,
+                    partialFormat: partialFormat
                 },
+                forceFullCode: dom.capForceFullCode?.checked ?? false,
                 allowedFormats: {
                     fullFile: dom.fmtFullFile?.checked ?? true,
-                    insert: dom.fmtInsert?.checked ?? false,
-                    replace: dom.fmtReplace?.checked ?? false,
-                    delete: dom.fmtDelete?.checked ?? false
+                    insert: dom.fmtInsert?.checked ?? true,
+                    replace: dom.fmtReplace?.checked ?? true,
+                    delete: dom.fmtDelete?.checked ?? true
                 },
-                responseProfileId: state.capabilities?.responseProfileId || 'balanced', // Persist current profile
-                explainCode: dom.checkBehaviorExplain?.checked ?? true,
+                responseProfileId: state.capabilities?.responseProfileId || 'balanced', 
+                explainCode: dom.capExplainCode?.checked ?? true,
+                addPedagogicalInstruction: dom.capAddPedagogicalInstruction?.checked ?? false,
+                forceFullCodePath: dom.capForceFullCodePath?.checked ?? false,
                 fileRename: dom.capFileRename?.checked ?? true,
                 fileDelete: dom.capFileDelete?.checked ?? true,
                 fileSelect: dom.capFileSelect?.checked ?? true,

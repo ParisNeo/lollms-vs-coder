@@ -81,9 +81,17 @@ export class DiscussionManager {
             fileReset: true,
             imageGen: true,
             webSearch: false,
-            wikipediaSearch: true, // Enabled by default as it's free
-            stackoverflowSearch: true, // Enabled by default
-            arxivSearch: false,
+            distillWebResults: config.get<boolean>('distillWebResults') ?? true,
+            antiPromptInjection: config.get<boolean>('antiPromptInjection') ?? true,
+            searchInCacheFirst: config.get<boolean>('searchInCacheFirst') ?? true,
+            searchSources: {
+                google: true,
+                arxiv: true,
+                wikipedia: true,
+                stackoverflow: true,
+                youtube: true,
+                github: false
+            },
             // Removed specific thinkingMode and funMode, now handled by profile
             herdMode: false,
             herdDynamicMode: herdDynamicMode,

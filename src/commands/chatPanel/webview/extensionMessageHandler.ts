@@ -156,7 +156,17 @@ export function handleExtensionMessage(event: MessageEvent) {
 
                     if(dom.capImageGen) dom.capImageGen.checked = caps.imageGen;
                     if(dom.capWebSearch) dom.capWebSearch.checked = caps.webSearch;
-                    if(dom.capArxivSearch) dom.capArxivSearch.checked = caps.arxivSearch;
+                    if(dom.capDistillWebResults) dom.capDistillWebResults.checked = caps.distillWebResults;
+                    if(dom.capAntiPromptInjection) dom.capAntiPromptInjection.checked = caps.antiPromptInjection;
+                    if(dom.capSearchInCacheFirst) dom.capSearchInCacheFirst.checked = caps.searchInCacheFirst;
+                    
+                    if (caps.searchSources) {
+                        const sources = ['google', 'arxiv', 'wikipedia', 'stackoverflow', 'youtube', 'github'];
+                        sources.forEach(s => {
+                            const el = document.getElementById(`src-${s}`) as HTMLInputElement;
+                            if (el) el.checked = !!caps.searchSources[s];
+                        });
+                    }
                     
                     if(dom.capGitWorkflow) dom.capGitWorkflow.checked = caps.gitWorkflow;
                     

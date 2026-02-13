@@ -504,17 +504,24 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
                         else if (prefix === 'delete_code') type = 'delete';
                         else type = 'file';
                     } else if (!nextLine.startsWith('#!')) {
-                        const pathLineRegex = /^((?:\/\/|#|<!--|;|\/\*|\*)\s*)?([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+)(\s*\S*)?$/;
+                        // Matches a path in a comment, supporting standard extensions or paths with slashes
+                        const pathLineRegex = /^((?:\/\/|#|<!--|;|\/\*|\*)\s*)?([a-zA-Z0-9_\-./\\]+)(\s*\S*)?$/;
                         const matchPath = nextLine.match(pathLineRegex);
                         
                         if (matchPath) {
                             const commentPrefix = matchPath[1];
                             const potentialPath = matchPath[2];
                             
-                            if (potentialPath.includes('/') || potentialPath.includes('\\') || (commentPrefix && potentialPath.includes('.'))) {
-                                pathStr = potentialPath;
-                                stripFirstLine = true;
-                                type = 'file';
+                            // Consider it a path if it has slashes or dots (extensions)
+                            const isPath = potentialPath.includes('/') || potentialPath.includes('\\') || potentialPath.includes('.');
+
+                            if (isPath || commentPrefix) { // If comment prefix exists, be more lenient or strict? 
+                                // To be safe, ensure it looks like a path or file
+                                if (isPath) {
+                                    pathStr = potentialPath;
+                                    stripFirstLine = true;
+                                    type = 'file';
+                                }
                             }
                         }
                     }
@@ -532,7 +539,8 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
                         const replaceMatch = prevLine.match(/^(?:(?:\*\*|__)?Replace(?:\*\*|__)?[:\s])\s*(.+)$/i);
                         const deleteMatch = prevLine.match(/^(?:(?:\*\*|__)?DeleteCode(?:\*\*|__)?[:\s])\s*(.+)$/i);
                         
-                        const looksLikePath = /^[\w-./\\]+\.\w+$/.test(prevLine);
+                        // Relaxed check: allows paths without extension if they have slashes (e.g. dir/file)
+                        const looksLikePath = /^[\w-./\\]+$/.test(prevLine) && (prevLine.includes('/') || prevLine.includes('\\') || prevLine.includes('.'));
 
                         if (fileMatch) {
                             type = 'file';
@@ -568,7 +576,8 @@ function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' |
                     pathStr = pathStr.replace(/^`|`$/g, '');
                     pathStr = pathStr.replace(/^\*\*|\*\*$/g, '');
                     pathStr = pathStr.replace(/^\*|\*$/g, '');
-                    pathStr = pathStr.replace(/[.:]+$/, ''); 
+                    pathStr = pathStr.replace(/[.:]+$/, '');
+                    pathStr = pathStr.replace(/[/\\]+$/, ''); // Remove trailing slash
                 }
 
                 infos.push({ type, path: pathStr, stripFirstLine, isClosed: false });
@@ -677,6 +686,14 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
         const info = codeBlockInfos[index];
 
         if (info) {
+            // Reset flags derived from basic header parsing, as 'info' comes from deeper analysis (extractFilePaths)
+            isFileBlock = false;
+            isDiff = false;
+            isInsert = false;
+            isReplace = false;
+            isDeleteCode = false;
+            isFileDelete = false;
+
             if (info.type === 'file') {
                 filePath = info.path;
                 isFileBlock = true;
@@ -852,14 +869,8 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
         const contentDiv = container.querySelector('.message-content');
         if (contentDiv && !contentDiv.querySelector('.apply-all-btn')) {
             const btn = document.createElement('button');
-            btn.className = 'code-action-btn apply-btn apply-all-btn';
+            btn.className = 'apply-all-btn';
             btn.innerHTML = '<span class="codicon codicon-check-all"></span> Apply All Changes';
-            btn.style.marginTop = '12px';
-            btn.style.width = '100%';
-            btn.style.justifyContent = 'center';
-            btn.style.padding = '6px';
-            btn.style.fontSize = '12px';
-            btn.style.fontWeight = '600';
             btn.disabled = !isFinal; 
             btn.onclick = () => {
                 const changes: any[] = [];
@@ -1102,13 +1113,22 @@ function addAttachment(message: any) {
             <span class="codicon codicon-file-text"></span> 
             <span>${fileName}</span>
         </div>
-        <button class="remove-attachment-btn" title="Remove Attachment"><i class="codicon codicon-trash"></i></button>
+        <div class="attachment-controls">
+            <button class="view-attachment-btn" title="View Content"><i class="codicon codicon-eye"></i></button>
+            <button class="remove-attachment-btn" title="Remove Attachment"><i class="codicon codicon-trash"></i></button>
+        </div>
     `;
     
     (summaryEl.querySelector('.remove-attachment-btn') as HTMLElement).addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
         vscode.postMessage({ command: 'requestDeleteMessage', messageId: message.id });
+    });
+
+    (summaryEl.querySelector('.view-attachment-btn') as HTMLElement).addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        details.open = !details.open;
     });
     
     details.appendChild(summaryEl);
@@ -1240,13 +1260,22 @@ export function updateContext(contextText: string, files: string[] = [], skills:
     
     const renderedMarkdown = sanitizer.sanitize(marked.parse(contextText) as string, SANITIZE_CONFIG);
 
-    const filesList = files && files.length > 0 
-        ? `<ul class="context-file-list">
-            ${files.map(f => `
+    const isExternal = (f: string) => f.includes('.lollms/web_cache') || f.includes('.lollms/temp_scripts') || f.startsWith('http');
+    const externalFiles = files.filter(isExternal);
+    const projectFiles = files.filter(f => !isExternal(f));
+
+    const renderFileList = (list: string[], emptyMsg: string, allowSummarize: boolean = false) => {
+        if (!list || list.length === 0) return `<div class="empty-context-msg">${emptyMsg}</div>`;
+        return `<ul class="context-file-list">
+            ${list.map(f => `
                 <li class="context-item">
                     <span class="codicon codicon-file"></span> 
                     <span class="context-item-label" title="${f}">${f}</span>
                     <div style="display:flex; gap:2px;">
+                        ${allowSummarize ? `
+                        <button class="summarize-context-btn" data-value="${f}" title="Synthesize / Clean / Summarize">
+                            <span class="codicon codicon-wand"></span>
+                        </button>` : ''}
                         <button class="open-context-btn" data-value="${f}" title="Inspect / Edit File">
                             <span class="codicon codicon-edit"></span>
                         </button>
@@ -1255,8 +1284,8 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                         </button>
                     </div>
                 </li>`).join('')}
-           </ul>`
-        : '<div class="empty-context-msg">No files selected.</div>';
+           </ul>`;
+    };
 
     const skillsList = skills && skills.length > 0
         ? `<div class="context-skill-list">
@@ -1283,6 +1312,10 @@ export function updateContext(contextText: string, files: string[] = [], skills:
             <div class="message-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 10px;">
                 <span class="role-name">Project Context</span>
                 <div style="display: flex; gap: 5px;">
+                    <button id="view-full-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="View Full Context and Structure">
+                        <span class="codicon codicon-book"></span> View
+                    </button>
+                    <div style="width: 1px; background: var(--vscode-widget-border); margin: 0 4px;"></div>
                     <button id="add-file-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Add File to Context">
                         <span class="codicon codicon-add"></span> File
                     </button>
@@ -1308,19 +1341,36 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                 <details class="info-collapsible" style="margin-bottom: 6px;">
                     <summary>Selected Files (${files.length})</summary>
                     <div class="collapsible-content" style="padding-top: 8px;">
-                        ${filesList}
+                        <h4 style="margin: 0 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase;">Project Files</h4>
+                        ${renderFileList(projectFiles, "No project files selected.", false)}
+                        
+                        <h4 style="margin: 12px 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
+                            <span>External & Research</span>
+                            ${externalFiles.length > 0 ? `
+                            <div style="display: flex; gap: 4px;">
+                                <button id="bulk-process-external-btn" class="section-bulk-btn">
+                                    <span class="codicon codicon-wand"></span> Process
+                                </button>
+                                <button id="bulk-delete-external-btn" class="section-bulk-btn delete">
+                                    <span class="codicon codicon-trash"></span> Delete
+                                </button>
+                            </div>` : ''}
+                        </h4>
+                        ${renderFileList(externalFiles, "No search results or external data in context.", true)}
                     </div>
                 </details>
                 <details class="info-collapsible">
-                    <summary>Active Skills (${skills.length})</summary>
+                    <summary>
+                        <div style="display: inline-flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
+                            <span>Active Skills (${skills.length})</span>
+                            ${skills.length > 0 ? `
+                            <button id="bulk-delete-skills-btn" class="section-bulk-btn delete" style="margin-right: 5px;">
+                                <span class="codicon codicon-trash"></span> Bulk Remove
+                            </button>` : ''}
+                        </div>
+                    </summary>
                     <div class="collapsible-content">
                         ${skillsList}
-                    </div>
-                </details>
-                <details class="info-collapsible">
-                    <summary>View Loaded Content & Tree</summary>
-                    <div class="collapsible-content markdown-context-view" style="max-height: 400px; overflow-y: auto; padding: 10px; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px; font-size: 0.95em;">
-                        ${renderedMarkdown}
                     </div>
                 </details>
             </div>
@@ -1358,6 +1408,30 @@ export function updateContext(contextText: string, files: string[] = [], skills:
         });
     });
 
+    dom.contextContainer.querySelectorAll('.summarize-context-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const target = e.currentTarget as HTMLElement;
+            const value = target.dataset.value;
+            if (value) {
+                vscode.postMessage({ command: 'summarizeContextFile', path: value });
+            }
+        });
+    });
+
+    const bulkBtn = document.getElementById('bulk-process-external-btn');
+    if (bulkBtn) {
+        bulkBtn.addEventListener('click', () => {
+            showBulkProcessModal(externalFiles);
+        });
+    }
+
+    const bulkDeleteBtn = document.getElementById('bulk-delete-external-btn');
+    if (bulkDeleteBtn) {
+        bulkDeleteBtn.addEventListener('click', () => {
+            showBulkDeleteModal(externalFiles);
+        });
+    }
+
     const addFileBtn = document.getElementById('add-file-context-btn');
     if (addFileBtn) {
         addFileBtn.addEventListener('click', () => {
@@ -1393,14 +1467,141 @@ export function updateContext(contextText: string, files: string[] = [], skills:
         });
     }
 
+    const viewFullBtn = document.getElementById('view-full-context-btn');
+    if (viewFullBtn) {
+        viewFullBtn.addEventListener('click', () => {
+            vscode.postMessage({ command: 'requestViewFullContext' });
+        });
+    }
+
     const resetBtn = document.getElementById('reset-context-bubble-btn');
     if (resetBtn) {
         resetBtn.addEventListener('click', () => {
             vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'resetContext', params: {} } });
         });
     }
+
+    const bulkDeleteSkillsBtn = document.getElementById('bulk-delete-skills-btn');
+    if (bulkDeleteSkillsBtn) {
+        bulkDeleteSkillsBtn.addEventListener('click', () => {
+            showBulkDeleteSkillsModal(skills);
+        });
+    }
 }
 
+function showBulkDeleteSkillsModal(skills: any[]) {
+    const modal = document.getElementById('bulk-delete-skills-modal');
+    const list = document.getElementById('bulk-delete-skills-list');
+    const master = document.getElementById('bulk-skills-select-all') as HTMLInputElement;
+    const closeBtn = document.getElementById('bulk-delete-skills-close-btn');
+    const runBtn = document.getElementById('bulk-delete-skills-run-btn');
+
+    if (!modal || !list) return;
+
+    list.innerHTML = skills.map(s => `
+        <div class="checkbox-container" style="margin-bottom: 4px;">
+            <input type="checkbox" class="bulk-skill-check" value="${s.id}" id="bulk-skill-check-${s.id}" checked>
+            <label for="bulk-skill-check-${s.id}" style="font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;">${s.name}</label>
+        </div>
+    `).join('');
+
+    if (master) {
+        master.checked = true;
+        master.onchange = () => {
+            list.querySelectorAll('.bulk-skill-check').forEach((cb: any) => cb.checked = master.checked);
+        };
+    }
+
+    modal.classList.add('visible');
+
+    const close = () => modal.classList.remove('visible');
+    closeBtn!.onclick = close;
+
+    runBtn!.onclick = () => {
+        const selected = Array.from(document.querySelectorAll('.bulk-skill-check:checked')).map((el: any) => el.value);
+        if (selected.length > 0) {
+            vscode.postMessage({ command: 'bulkRemoveSkills', skillIds: selected });
+            close();
+        }
+    };
+}
+
+function showBulkDeleteModal(files: string[]) {
+    const modal = document.getElementById('bulk-delete-modal');
+    const list = document.getElementById('bulk-delete-files-list');
+    const master = document.getElementById('bulk-delete-select-all') as HTMLInputElement;
+    const closeBtn = document.getElementById('bulk-delete-close-btn');
+    const runBtn = document.getElementById('bulk-delete-run-btn');
+
+    if (!modal || !list) return;
+
+    list.innerHTML = files.map(f => `
+        <div class="checkbox-container" style="margin-bottom: 4px;">
+            <input type="checkbox" class="bulk-delete-file-check" value="${f}" id="bulk-del-check-${f}" checked>
+            <label for="bulk-del-check-${f}" style="font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;">${f}</label>
+        </div>
+    `).join('');
+
+    if (master) {
+        master.checked = true;
+        master.onchange = () => {
+            list.querySelectorAll('.bulk-delete-file-check').forEach((cb: any) => cb.checked = master.checked);
+        };
+    }
+
+    modal.classList.add('visible');
+
+    const close = () => modal.classList.remove('visible');
+    closeBtn!.onclick = close;
+
+    runBtn!.onclick = () => {
+        const selected = Array.from(document.querySelectorAll('.bulk-delete-file-check:checked')).map((el: any) => el.value);
+        if (selected.length > 0) {
+            vscode.postMessage({ command: 'bulkDeleteContextFiles', files: selected });
+            close();
+        }
+    };
+}
+
+function showBulkProcessModal(files: string[]) {
+    const modal = document.getElementById('bulk-process-modal');
+    const list = document.getElementById('bulk-files-list');
+    const master = document.getElementById('bulk-process-select-all') as HTMLInputElement;
+    const promptArea = document.getElementById('bulk-process-prompt') as HTMLTextAreaElement;
+    const closeBtn = document.getElementById('bulk-process-close-btn');
+    const runBtn = document.getElementById('bulk-process-run-btn');
+
+    if (!modal || !list || !promptArea) return;
+
+    list.innerHTML = files.map(f => `
+        <div class="checkbox-container" style="margin-bottom: 4px;">
+            <input type="checkbox" class="bulk-file-check" value="${f}" id="bulk-check-${f}" checked>
+            <label for="bulk-check-${f}" style="font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;">${f}</label>
+        </div>
+    `).join('');
+
+    if (master) {
+        master.checked = true;
+        master.onchange = () => {
+            list.querySelectorAll('.bulk-file-check').forEach((cb: any) => cb.checked = master.checked);
+        };
+    }
+
+    promptArea.value = "Summarize this document and extract key insights.";
+    modal.classList.add('visible');
+
+    const close = () => modal.classList.remove('visible');
+    closeBtn!.onclick = close;
+
+    runBtn!.onclick = () => {
+        const selected = Array.from(document.querySelectorAll('.bulk-file-check:checked')).map((el: any) => el.value);
+        const instruction = promptArea.value.trim();
+        if (selected.length > 0 && instruction) {
+            vscode.postMessage({ command: 'bulkSummarizeContextFiles', files: selected, instruction });
+            close();
+        }
+    };
+}
 /**
  * Renders a single plan structure.
  */

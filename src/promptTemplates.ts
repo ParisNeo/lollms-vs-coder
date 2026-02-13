@@ -14,8 +14,8 @@ export class PromptTemplates {
         sections.push(`
 ### 🚦 CODE GENERATION DECISION LOGIC
 1. **NEW FILE**: You MUST use the **FULL FILE** format.
-2. **SUBSTANTIAL MODIFICATIONS**: For major refactors or changes affecting many parts of a file, you MUST use the **FULL FILE** format.
-3. **SMALL CHANGES**: For surgical, localized edits, you MAY use the ${partialFormat.toUpperCase()} format.
+2. **HUGE CHANGES (>50%)**: If you are changing more than 50% of the file, use the **FULL FILE** format.
+3. **STANDARD EDITS (<50%)**: For most edits, you MUST use the ${partialFormat.toUpperCase()} format. Do NOT output the full file for small changes.
 4. **MULTIPLE BLOCKS**: You may provide multiple ${partialFormat.toUpperCase()} blocks for the same file if the changes are in different parts of the file.
 `);
 
@@ -24,35 +24,33 @@ export class PromptTemplates {
 ### 📄 FORMAT: FULL FILE CONTENT (ENFORCED)
 **CRITICAL**: You must always provide the complete file content. Partial updates are currently disabled.
 **Rule**: Output the entire file from line 1 to the end. No placeholders.
-**Example**:
+**Structure**:
 \`\`\`python:src/utils.py
 [FULL CODE HERE]
 \`\`\`
+**Replace [FULL CODE HERE] with the actual code **
 `);
         }
         if (partialFormat === 'aider') {
                 sections.push(`
 ### ⚡ FORMAT: SEARCH/REPLACE (AIDER STYLE)
-**Use for**: Small, surgical edits (preferred when less than 70% of the file changes).
+**Use for**: Standard edits (less than 50% of file changed).
 **Format**: \`\`\`language:path/to/file
-**Rule**:
-1. The \`<<<<<<< SEARCH\` block must match the existing file content character-for-character (including exact indentation).
-2. The replacement code goes between the \`=======\` and \`>>>>>>> REPLACE\` markers.
-3. Do *not* include line numbers.
-4. Provide only one block per file unless changes are far apart.
-
-**Example**:
-\`\`\`javascript:src/index.js
 <<<<<<< SEARCH
-function greet() {
-    console.log("Hello World");
-}
+[EXACT content to find including context]
 =======
-function greet(name = "User") {
-    console.log(\`Hello \${name}\`);
-}
+[NEW content to replace with including context]
 >>>>>>> REPLACE
 \`\`\`
+
+**RULES:**
+1. **SEARCH BLOCK**: Must contain *exact* lines from the file (including indentation). If it doesn't match, the edit fails.
+2. **REPLACE BLOCK**: Must contain the *entire* replacement code, including the surrounding context lines you matched.
+3. **CONTEXT**: Include 3-4 lines of unchanged context before and after the modification in BOTH blocks.
+4. **CONTAINMENT**: All code changes must be *inside* the \`=======\` and \`>>>>>>> REPLACE\` markers. Content outside is ignored.
+5. **NO ELLIPSIS**: Do not use "..." to skip code in the SEARCH block.
+6. **NO LINE NUMBERS**: Do not include line numbers.
+7. **SMALL CHUNKS**: Prefer multiple small SEARCH/REPLACE blocks over one large block. Large blocks are prone to matching errors.
 `);
     }
     else

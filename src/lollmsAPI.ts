@@ -11,7 +11,7 @@ export interface LollmsConfig {
   modelName: string;
   disableSslVerification: boolean;
   sslCertPath?: string;
-  backendType: 'lollms' | 'openai' | 'ollama';
+  backendType: 'lollms' | 'openai' | 'ollama' | 'anthropic' | 'google' | 'groq' | 'grok' | 'novitai' | 'openwebui' | 'openrouter';
   useLollmsExtensions: boolean;
 }
 
@@ -192,7 +192,6 @@ export class LollmsAPI {
     Logger.info(`[getModels] Called. URL: ${this.baseUrl}, Force: ${forceRefresh}`);
 
     if (this._cachedModels && this._cachedModels.length > 0 && !forceRefresh) {
-        Logger.info(`[getModels] Returning ${this._cachedModels.length} cached models.`);
         return this._cachedModels;
     }
 
@@ -200,87 +199,53 @@ export class LollmsAPI {
         const storedModels = this.globalState.get<Array<{ id: string }>>('lollms_models_cache');
         if (storedModels && storedModels.length > 0) {
             this._cachedModels = storedModels;
-            Logger.info(`[getModels] Returning ${storedModels.length} models from global state.`);
             return storedModels;
         }
     }
 
-    if (!this.baseUrl) {
-        Logger.error("[getModels] No Base URL.");
-        throw new Error("Invalid API URL. Please check settings.");
+    const backend = this.config.backendType;
+
+    // Anthropic does not provide a models list API
+    if (backend === 'anthropic') {
+        const models = [{ id: 'claude-3-5-sonnet-latest' }, { id: 'claude-3-opus-latest' }, { id: 'claude-3-haiku-20240307' }];
+        this._cachedModels = models;
+        return models;
     }
 
-    let endpoint = '';
-    if (this.config.backendType === 'ollama') {
-        endpoint = '/api/tags';
+    let url = this.baseUrl;
+    let headers: any = { 'Authorization': `Bearer ${this.config.apiKey}` };
+
+    if (backend === 'ollama') {
+        url += '/api/tags';
+    } else if (backend === 'google') {
+        url = `https://generativelanguage.googleapis.com/v1beta/models?key=${this.config.apiKey}`;
+        headers = {};
     } else {
-        endpoint = '/v1/models';
+        url += '/v1/models';
     }
-
-    const primaryUrl = `${this.baseUrl}${endpoint}`;
-    Logger.info(`[getModels] Requesting: ${primaryUrl}`);
 
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 15000); 
-
-    const options: RequestInit = {
-        method: 'GET',
-        headers: { 'Authorization': `Bearer ${this.config.apiKey}` },
-        signal: controller.signal
-    };
-
-    if (primaryUrl.startsWith('https')) {
-        options.agent = this.httpsAgent;
-    }
+    const timeout = setTimeout(() => controller.abort(), 15000);
 
     try {
-        let response: any;
-        try {
-            response = await fetch(primaryUrl, options);
-            Logger.info(`[getModels] Primary response: ${response.status}`);
-        } catch (fetchErr: any) {
-            Logger.warn(`[getModels] Primary fetch failed: ${fetchErr.message}`);
-             if (fetchErr.name !== 'AbortError') {
-                 const fallbackEndpoint = this.config.backendType === 'ollama' ? '/v1/models' : '/api/tags';
-                 const fallbackUrl = `${this.baseUrl}${fallbackEndpoint}`;
-                 Logger.info(`[getModels] Trying fallback: ${fallbackUrl}`);
-                 response = await fetch(fallbackUrl, options);
-                 Logger.info(`[getModels] Fallback response: ${response.status}`);
-             } else {
-                 throw fetchErr;
-             }
-        }
+        const response = await fetch(url, {
+            method: 'GET',
+            headers,
+            signal: controller.signal,
+            agent: url.startsWith('https') ? this.httpsAgent : undefined
+        });
 
-        if (!response.ok) {
-            if (response.status === 404) {
-                 const fallbackEndpoint = this.config.backendType === 'ollama' ? '/v1/models' : '/api/tags';
-                 const fallbackUrl = `${this.baseUrl}${fallbackEndpoint}`;
-                 Logger.info(`[getModels] 404 on primary. Trying fallback: ${fallbackUrl}`);
-                 response = await fetch(fallbackUrl, options);
-            }
-        }
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-        if (!response.ok) {
-            const txt = await response.text();
-            Logger.error(`[getModels] HTTP Error: ${response.status} - ${txt}`);
-            throw new Error(`HTTP ${response.status}: ${txt}`);
-        }
+        const data = await response.json();
+        let rawList: any[] = [];
 
-        const rawText = await response.text();
-        Logger.debug(`[getModels] Raw body length: ${rawText.length}`);
-        
-        let data;
-        try {
-            data = JSON.parse(rawText);
-        } catch (e) {
-            Logger.error(`[getModels] JSON parse error. Raw: ${rawText.substring(0, 200)}`);
-            throw new Error(`Invalid JSON from server.`);
-        }
-
-        const rawList = this.findModelArray(data);
-        if (!rawList) {
-            Logger.warn('[getModels] No model array found in response object:', JSON.stringify(data));
-            throw new Error('Response JSON does not contain a recognized list of models.');
+        if (backend === 'ollama') {
+            rawList = data.models || [];
+        } else if (backend === 'google') {
+            rawList = data.models || [];
+        } else {
+            rawList = this.findModelArray(data) || [];
         }
 
         const models = rawList.map((m: any) => {
@@ -292,21 +257,10 @@ export class LollmsAPI {
         if (this.globalState) {
             this.globalState.update('lollms_models_cache', models);
         }
-        
-        Logger.info(`[getModels] Success. Parsed ${models.length} models.`);
         return models;
 
     } catch (error: any) {
-        Logger.error(`[getModels] Final Error: ${error.message}`);
-        
-        if (this.globalState) {
-            const storedModels = this.globalState.get<Array<{ id: string }>>('lollms_models_cache');
-            if (storedModels && storedModels.length > 0) {
-                Logger.warn("[getModels] Using stale cache due to error.");
-                this._cachedModels = storedModels;
-                return storedModels;
-            }
-        }
+        Logger.error(`[getModels] Error: ${error.message}`);
         throw error;
     } finally {
         clearTimeout(timeout);
@@ -314,7 +268,7 @@ export class LollmsAPI {
   }
 
   public async tokenize(text: string, model?: string): Promise<TokenizeResponse> {
-    const useExtensions = this.config.useLollmsExtensions;
+    const useExtensions = this.config.useLollmsExtensions && this.config.backendType === 'lollms';
     
     if (!useExtensions) {
         return { count: Math.ceil(text.length / 4), tokens: [], isEstimation: true };
@@ -361,7 +315,7 @@ export class LollmsAPI {
   }
 
   public async getContextSize(model?: string): Promise<ContextSizeResponse> {
-    const useExtensions = this.config.useLollmsExtensions;
+    const useExtensions = this.config.useLollmsExtensions && this.config.backendType === 'lollms';
     const defaultSize = 4096;
 
     if (!useExtensions) {
@@ -516,155 +470,127 @@ const requestBody: ImageGenerationRequest = {
     signal?: AbortSignal,
     modelOverride?: string
   ): Promise<string> {
-    if (!this.baseUrl) {
-      throw new Error("Lollms API URL is not configured correctly.");
-    }
-
-    const modelToSend = modelOverride || this.config.modelName;
+    const backend = this.config.backendType;
+    const model = modelOverride || this.config.modelName;
     const stream = !!onChunk;
-    let chatUrl = '';
+    
+    let url = this.baseUrl;
+    let headers: any = { 
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.config.apiKey}` 
+    };
     let body: any = {};
 
-    const filteredMessages = messages.filter(m => !m.skipInPrompt);
-
-    const sanitizedMessages = filteredMessages.map(m => ({
-        role: m.role,
+    const sanitizedMessages = messages.filter(m => !m.skipInPrompt).map(m => ({
+        role: m.role === 'system' && (backend === 'anthropic' || backend === 'google') ? 'user' : m.role,
         content: m.content
     }));
 
-    if (this.config.backendType === 'ollama') {
-        chatUrl = `${this.baseUrl}/api/chat`;
+    if (backend === 'ollama') {
+        url += '/api/chat';
+        body = { model, messages: sanitizedMessages, stream };
+    } else if (backend === 'anthropic') {
+        url = 'https://api.anthropic.com/v1/messages';
+        headers = {
+            'Content-Type': 'application/json',
+            'x-api-key': this.config.apiKey,
+            'anthropic-version': '2023-06-01'
+        };
+        // Anthropic requires a specific system prompt field, not a message
+        const systemMsg = messages.find(m => m.role === 'system');
         body = {
-            model: modelToSend,
-            messages: sanitizedMessages,
-            stream: stream
+            model,
+            messages: sanitizedMessages.filter(m => m.role !== 'system'),
+            system: systemMsg ? systemMsg.content : undefined,
+            max_tokens: 4096,
+            stream
+        };
+    } else if (backend === 'google') {
+        const method = stream ? 'streamGenerateContent' : 'generateContent';
+        url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:${method}?key=${this.config.apiKey}`;
+        headers = { 'Content-Type': 'application/json' };
+        body = {
+            contents: sanitizedMessages.map(m => ({
+                role: m.role === 'assistant' ? 'model' : 'user',
+                parts: [{ text: m.content }]
+            }))
         };
     } else {
-        chatUrl = `${this.baseUrl}/v1/chat/completions`;
-        body = {
-            model: modelToSend,
-            messages: sanitizedMessages,
-            stream: stream
-        };
+        url += '/v1/chat/completions';
+        body = { model, messages: sanitizedMessages, stream };
     }
 
-    const isHttps = chatUrl.startsWith('https');
     const controller = new AbortController();
     const timeoutDuration = vscode.workspace.getConfiguration('lollmsVsCoder').get<number>('requestTimeout') || 600000;
-    let timedOut = false;
-    const timeout = setTimeout(() => {
-        timedOut = true;
-        controller.abort();
-    }, timeoutDuration);
-
-    if (signal) {
-      signal.onabort = () => controller.abort();
-    }
+    const timeout = setTimeout(() => controller.abort(), timeoutDuration);
+    if (signal) signal.onabort = () => controller.abort();
 
     try {
-      const options: RequestInit = {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.config.apiKey}`
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      };
+        const response = await fetch(url, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(body),
+            signal: controller.signal,
+            agent: url.startsWith('https') ? this.httpsAgent : undefined
+        });
 
-      if (isHttps) {
-        options.agent = this.httpsAgent;
-      }
+        if (!response.ok) {
+            const err = await response.text();
+            throw new Error(`API Error ${response.status}: ${err}`);
+        }
 
-      Logger.debug("Sending chat request", { url: chatUrl, model: modelToSend, stream });
-
-      const response = await fetch(chatUrl, options);
-
-      if (!response.ok) {
-        const errorBody = await response.text();
-        Logger.error('API Error:', errorBody);
-        throw new Error(`API error: ${response.status} ${response.statusText} - ${errorBody}`);
-      }
-      
-      if (stream && onChunk && response.body) {
-        let fullResponse = '';
-        let buffer = '';
-        const decoder = new TextDecoder();
-        
-        try {
+        if (stream && onChunk && response.body) {
+            let fullResponse = '';
+            let buffer = '';
+            const decoder = new TextDecoder();
+            
             for await (const chunk of response.body) {
-                if(controller.signal.aborted) {
-                    if ((response.body as any).destroy) {
-                        (response.body as any).destroy();
-                    }
-                    throw new Error('AbortError');
-                }
-
-                const chunkText = decoder.decode(chunk as any, { stream: true });
-
-                buffer += chunkText;
+                buffer += decoder.decode(chunk as any, { stream: true });
                 const lines = buffer.split('\n');
                 buffer = lines.pop() || '';
 
                 for (const line of lines) {
-                    const trimmedLine = line.trim();
-                    if (trimmedLine === '') continue;
+                    const trimmed = line.trim();
+                    if (!trimmed) continue;
 
-                    if (this.config.backendType === 'ollama') {
-                        try {
-                            const parsed = JSON.parse(trimmedLine);
-                            if (parsed.message && parsed.message.content) {
-                                fullResponse += parsed.message.content;
-                                onChunk(parsed.message.content);
+                    let content = '';
+                    try {
+                        if (backend === 'ollama') {
+                            const data = JSON.parse(trimmed);
+                            content = data.message?.content || '';
+                        } else if (backend === 'anthropic') {
+                            if (trimmed.startsWith('data: ')) {
+                                const data = JSON.parse(trimmed.substring(6));
+                                if (data.type === 'content_block_delta') content = data.delta?.text || '';
                             }
-                            if (parsed.done) {
-                                return fullResponse;
+                        } else if (backend === 'google') {
+                            // Google returns a JSON array or objects in chunks
+                            const data = JSON.parse(trimmed.startsWith('[') ? trimmed.substring(1) : trimmed);
+                            content = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                        } else {
+                            if (trimmed.startsWith('data: ')) {
+                                const raw = trimmed.substring(6);
+                                if (raw === '[DONE]') continue;
+                                const data = JSON.parse(raw);
+                                content = data.choices?.[0]?.delta?.content || '';
                             }
-                        } catch (e) { }
-                    } else {
-                        if (trimmedLine.startsWith('data: ')) {
-                            const data = trimmedLine.substring(6).trim();
-                            if (data === '[DONE]') return fullResponse;
-                            try {
-                                const parsed = JSON.parse(data);
-                                let content = parsed.choices?.[0]?.delta?.content;
-                                if (!content) content = parsed.content; 
-                                if (!content) content = parsed.message?.content;
-                                if (content) {
-                                    fullResponse += content;
-                                    onChunk(content);
-                                }
-                            } catch (e) {
-                                Logger.error('Error parsing stream data line:', data);
-                            }
-                        } else if (trimmedLine.startsWith('{')) {
-                            try {
-                                const parsed = JSON.parse(trimmedLine);
-                                let content = parsed.choices?.[0]?.delta?.content;
-                                if (!content) content = parsed.content;
-                                if (!content) content = parsed.message?.content;
-                                if (content) {
-                                    fullResponse += content;
-                                    onChunk(content);
-                                }
-                            } catch (e) { }
                         }
+                    } catch (e) {}
+
+                    if (content) {
+                        fullResponse += content;
+                        onChunk(content);
                     }
                 }
             }
-        } catch (streamError: any) {
-             if (streamError.name === 'AbortError' || streamError.message === 'AbortError') throw streamError;
-             throw streamError;
+            return fullResponse;
+        } else {
+            const data = await response.json();
+            if (backend === 'ollama') return data.message?.content || '';
+            if (backend === 'anthropic') return data.content?.[0]?.text || '';
+            if (backend === 'google') return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+            return data.choices?.[0]?.message?.content || '';
         }
-        return fullResponse;
-
-      } else {
-        const data = await response.json();
-        if (this.config.backendType === 'ollama') {
-            return data.message?.content || '';
-        }
-        return data.choices?.[0]?.message?.content || '';
-      }
     } catch (error: any) {
         if (error.name === 'AbortError' || error.message === 'AbortError') {
             if (timedOut) {

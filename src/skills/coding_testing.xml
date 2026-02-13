@@ -1,0 +1,28 @@
+<skill id="coding-testing">
+    <name>Software Testing Specialist</name>
+    <description>Expertise in Unit, Integration, and E2E testing using modern frameworks (Jest, Vitest, Playwright, Pytest).</description>
+    <category>coding/testing</category>
+    <language>markdown</language>
+    <timestamp>1739433600000</timestamp>
+    <content>
+        <![CDATA[
+# Software Testing & Quality Assurance
+
+## Testing Pyramid
+- **Unit Tests**: Test individual functions/components in isolation. Fast and numerous.
+- **Integration Tests**: Verify that different modules or services work together correctly.
+- **E2E Tests**: Test the entire application flow from the user's perspective.
+
+## Best Practices
+1. **AAA Pattern**: Structure tests into **Arrange** (setup), **Act** (execute), and **Assert** (verify).
+2. **Deterministic Tests**: Tests must be reliable. Mock external dependencies (APIs, Databases, Time) to avoid flakiness.
+3. **Descriptive Naming**: Test names should describe the requirement (e.g., `should_return_error_when_email_is_invalid`).
+4. **Code Coverage**: Aim for high branch coverage, but prioritize testing critical paths over reaching 100% coverage.
+5. **TDD (Test Driven Development)**: Red (Fail) -> Green (Pass) -> Refactor cycle.
+
+## Frameworks
+- **JavaScript/TypeScript**: Jest, Vitest, Playwright, Cypress.
+- **Python**: Pytest, Unittest, Robot Framework.
+]]>
+    </content>
+</skill>

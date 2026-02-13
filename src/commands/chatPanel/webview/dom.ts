@@ -48,9 +48,17 @@ export interface DiscussionCapabilities {
     fileReset: boolean;
     imageGen: boolean;
     webSearch: boolean;
-    wikipediaSearch: boolean;
-    stackoverflowSearch: boolean;
-    arxivSearch: boolean;
+    distillWebResults: boolean;
+    antiPromptInjection: boolean;
+    searchInCacheFirst: boolean;
+    searchSources: {
+        google: boolean;
+        arxiv: boolean;
+        wikipedia: boolean;
+        stackoverflow: boolean;
+        youtube: boolean;
+        github: boolean;
+    };
     gitWorkflow: boolean;
     herdMode: boolean;
     herdDynamicMode: boolean;
@@ -181,6 +189,9 @@ export const dom = {
 
     get capImageGen() { return document.getElementById('cap-imageGen') as HTMLInputElement; },
     get capWebSearch() { return document.getElementById('cap-webSearch') as HTMLInputElement; },
+    get capDistillWebResults() { return document.getElementById('cap-distillWebResults') as HTMLInputElement; },
+    get capAntiPromptInjection() { return document.getElementById('cap-antiPromptInjection') as HTMLInputElement; },
+    get capSearchInCacheFirst() { return document.getElementById('cap-searchInCacheFirst') as HTMLInputElement; },
     get capArxivSearch() { return document.getElementById('cap-arxivSearch') as HTMLInputElement; },
     get capGitWorkflow() { return document.getElementById('cap-gitWorkflow') as HTMLInputElement; },
     get capGitWorkflowContainer() { return document.getElementById('cap-gitWorkflowContainer') as HTMLDivElement; },

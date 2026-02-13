@@ -14,6 +14,7 @@ import { Logger } from '../../logger';
 import { PersonalityManager } from '../../personalityManager';
 import { GitIntegration } from '../../gitIntegration';
 import { applyDiffToString, applySearchReplace } from '../../utils';
+import { BigDataProcessor } from '../../bigDataProcessing';
 
 interface ActiveGeneration {
     messageId: string;
@@ -811,9 +812,26 @@ export class ChatPanel {
             if (block.type === 'diff') {
                 result = applyDiffToString(originalFileText, block.content);
             } else {
-                const aiderMatch = block.content.match(/<<<<<<< SEARCH([\s\S]*?)=======([\s\S]*?)>>>>>>> REPLACE/);
-                if (aiderMatch) {
-                    result = applySearchReplace(originalFileText, aiderMatch[1], aiderMatch[2]);
+                // Handle multiple SEARCH/REPLACE blocks within the same content
+                const aiderRegex = /<<<<<<< SEARCH([\s\S]*?)=======([\s\S]*?)>>>>>>> REPLACE/g;
+                const matches = [...block.content.matchAll(aiderRegex)];
+                
+                if (matches.length > 0) {
+                    let currentContent = originalFileText;
+                    let allSuccess = true;
+                    let firstError = "";
+
+                    for (const match of matches) {
+                        const srResult = applySearchReplace(currentContent, match[1], match[2]);
+                        if (srResult.success) {
+                            currentContent = srResult.result;
+                        } else {
+                            allSuccess = false;
+                            firstError = srResult.error || "Search block match failed.";
+                            break;
+                        }
+                    }
+                    result = { success: allSuccess, result: currentContent, error: firstError };
                 } else {
                     result = { success: false, result: originalFileText, error: "Invalid Search/Replace block format." };
                 }
@@ -840,7 +858,8 @@ ${block.content}
 Please provide the **FULL CONTENT** of the file instead using the format:
 \`\`\`language:${block.path}
 [FULL CODE]
-\`\`\``;
+\`\`\`
+`;
 
                 try {
                     const repairResponse = await this._lollmsAPI.sendChat([
@@ -1167,9 +1186,12 @@ Please provide the **FULL CONTENT** of the file instead using the format:
         const activeProfile = profiles.find(p => p.id === activeProfileId) || profiles[0];
 
         let messagesToSend: ChatMessage[] = [{ role: 'system', content: systemPrompt }];
-        const history = this._currentDiscussion.messages.filter(m => !m.skipInPrompt);
+        // Create a shallow copy of the history to avoid mutating the original discussion messages
+        const history = this._currentDiscussion.messages
+            .filter(m => !m.skipInPrompt)
+            .map(m => ({ ...m }));
         
-        //Turn reinforcement
+        // Turn reinforcement (Added only to the copy sent to API)
         if (history.length > 0 && activeProfile && activeProfile.id !== 'silent') {
             const lastUserMsg = history[history.length - 1];
             if (lastUserMsg.role === 'user' && typeof lastUserMsg.content === 'string') {
@@ -1177,7 +1199,7 @@ Please provide the **FULL CONTENT** of the file instead using the format:
             }
         }
 
-        // Reinforce Response Style for long conversations to prevent persona drift
+        // Reinforce Response Style for long conversations to prevent persona drift (Added only to the copy sent to API)
         if (history.length > 2 && activeProfile && activeProfile.id !== 'silent') {
             const lastUserMsg = history[history.length - 1];
             if (lastUserMsg.role === 'user' && typeof lastUserMsg.content === 'string') {
@@ -1604,6 +1626,18 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                     }
                     this.updateContextAndTokens();
                 }
+                break;
+            case 'summarizeContextFile':
+                await this.handleSummarizeContextFile(message.path);
+                break;
+            case 'bulkSummarizeContextFiles':
+                await this.handleBulkSummarizeContextFiles(message.files, message.instruction);
+                break;
+            case 'bulkDeleteContextFiles':
+                await this.handleBulkDeleteContextFiles(message.files);
+                break;
+            case 'bulkRemoveSkills':
+                await this.handleBulkRemoveSkills(message.skillIds);
                 break;
             case 'showWarning':
                 vscode.window.showWarningMessage(message.message);
@@ -2083,6 +2117,16 @@ Task:
                     }
                 }
                 break;
+            case 'requestViewFullContext':
+                if (this._contextManager) {
+                    const ctx = this._contextManager.getLastContext();
+                    if (ctx && ctx.text) {
+                        InfoPanel.createOrShow(this._extensionUri, "Current AI Context", ctx.text);
+                    } else {
+                        vscode.window.showInformationMessage("No context loaded yet.");
+                    }
+                }
+                break;
             case 'internetHelpSearch':
                 // Execute ONLY the web research agent loop. 
                 // This populates the project context with external info without generating a chat reply.
@@ -2121,6 +2165,136 @@ Task:
     });
   }
   
+  public async handleBulkSummarizeContextFiles(files: string[], instruction: string) {
+      if (!vscode.workspace.workspaceFolders || files.length === 0) return;
+      
+      const processor = new BigDataProcessor(this._lollmsAPI);
+      const workspaceFolder = vscode.workspace.workspaceFolders[0];
+
+      await vscode.window.withProgress({
+          location: vscode.ProgressLocation.Notification,
+          title: `Bulk processing files...`,
+          cancellable: true
+      }, async (progress, token) => {
+          let processedCount = 0;
+          for (let i = 0; i < files.length; i++) {
+              if (token.isCancellationRequested) break;
+              
+              const relativePath = files[i];
+              const uri = vscode.Uri.joinPath(workspaceFolder.uri, relativePath);
+              
+              progress.report({ 
+                  message: `Processing (${i + 1}/${files.length}): ${path.basename(relativePath)}`
+              });
+
+              try {
+                  const result = await processor.processFile(uri, instruction, undefined, token);
+                  if (result) {
+                      await vscode.workspace.fs.writeFile(uri, Buffer.from(result, 'utf8'));
+                      processedCount++;
+                  }
+              } catch (e: any) {
+                  console.error(`Failed to process ${relativePath}: ${e.message}`);
+                  vscode.window.showWarningMessage(`Failed to process ${relativePath}: ${e.message}`);
+              }
+          }
+          
+          this.updateContextAndTokens();
+          if (processedCount > 0) {
+              vscode.window.showInformationMessage(`Bulk processing complete. Updated ${processedCount} files.`);
+          }
+      });
+  }
+
+  public async handleBulkRemoveSkills(skillIds: string[]) {
+      if (!this._currentDiscussion || !skillIds || skillIds.length === 0) return;
+
+      const confirm = await vscode.window.showWarningMessage(
+          `Remove ${skillIds.length} skills from this discussion?`,
+          { modal: true },
+          "Remove All"
+      );
+
+      if (confirm === "Remove All") {
+          this._currentDiscussion.importedSkills = (this._currentDiscussion.importedSkills || [])
+              .filter(id => !skillIds.includes(id));
+
+          // Also remove from project global context if applicable
+          for (const id of skillIds) {
+              await this._contextManager.removeSkillFromProject(id);
+          }
+
+          if (!this._currentDiscussion.id.startsWith('temp-')) {
+              await this._discussionManager.saveDiscussion(this._currentDiscussion);
+          }
+          
+          this.updateContextAndTokens();
+          vscode.window.showInformationMessage(`Removed ${skillIds.length} skills.`);
+      }
+  }
+
+  public async handleBulkDeleteContextFiles(files: string[]) {
+      if (!vscode.workspace.workspaceFolders || files.length === 0) return;
+      const workspaceFolder = vscode.workspace.workspaceFolders[0];
+
+      const confirm = await vscode.window.showWarningMessage(
+          `Are you sure you want to delete ${files.length} files? This cannot be undone.`,
+          { modal: true },
+          "Delete All"
+      );
+
+      if (confirm === "Delete All") {
+          try {
+              for (const relativePath of files) {
+                  const uri = vscode.Uri.joinPath(workspaceFolder.uri, relativePath);
+                  await vscode.workspace.fs.delete(uri, { recursive: true, useTrash: true });
+              }
+              vscode.window.showInformationMessage(`Successfully deleted ${files.length} files.`);
+              this.updateContextAndTokens();
+          } catch (e: any) {
+              vscode.window.showErrorMessage(`Bulk deletion failed: ${e.message}`);
+          }
+      }
+  }
+
+  public async handleSummarizeContextFile(relativePath: string) {
+      if (!vscode.workspace.workspaceFolders) return;
+      const workspaceFolder = vscode.workspace.workspaceFolders[0];
+      const uri = vscode.Uri.joinPath(workspaceFolder.uri, relativePath);
+
+      const instruction = await vscode.window.showInputBox({
+          prompt: `How should I process ${relativePath}?`,
+          value: "Summarize this document and extract key insights.",
+          placeHolder: "e.g., Clean up this transcript, Summarize into bullet points, Extract JSON data..."
+      });
+
+      if (!instruction) return;
+
+      const processor = new BigDataProcessor(this._lollmsAPI);
+      
+      await vscode.window.withProgress({
+          location: vscode.ProgressLocation.Notification,
+          title: `Processing ${path.basename(relativePath)}...`,
+          cancellable: true
+      }, async (progress, token) => {
+          try {
+              const result = await processor.processFile(uri, instruction, progress, token);
+              if (result) {
+                  // Replace file content
+                  await vscode.workspace.fs.writeFile(uri, Buffer.from(result, 'utf8'));
+                  vscode.window.showInformationMessage(`Successfully processed ${relativePath}. Content updated.`);
+                  
+                  // Refresh context
+                  this.updateContextAndTokens();
+              }
+          } catch (e: any) {
+              if (!token.isCancellationRequested) {
+                  vscode.window.showErrorMessage(`Processing failed: ${e.message}`);
+              }
+          }
+      });
+  }
+
   private async _getHtmlForWebview(webview: vscode.Webview): Promise<string> {
     const nonce = getNonce();
 
@@ -2202,8 +2376,8 @@ Task:
 
                     <div id="chat-messages-container">
                         <div id="message-insertion-controls">
-                            <button class="code-action-btn" id="add-user-message-btn"><i class="codicon codicon-add"></i> Add User Message</button>
-                            <button class="code-action-btn" id="add-ai-message-btn"><i class="codicon codicon-add"></i> Add AI Message</button>
+                            <button id="add-user-message-btn"><i class="codicon codicon-add"></i> Add User Message</button>
+                            <button id="add-ai-message-btn"><i class="codicon codicon-add"></i> Add AI Message</button>
                         </div>
                     </div>
                 </div>
@@ -2424,27 +2598,16 @@ Task:
         <div id="discussion-tools-modal" class="modal">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2>Discussion Tools</h2>
+                    <h2>Advanced Discussion Tools</h2>
                     <span class="close-btn" id="close-discussion-tools-modal">&times;</span>
                 </div>
                 <div class="modal-body">
+                    
                     <div class="modal-section">
-                        <h3>Herd Mode 🐂</h3>
-                        <div class="checkbox-container">
-                            <label class="switch"><input type="checkbox" id="cap-herdMode"><span class="slider"></span></label>
-                            <label for="cap-herdMode">Enable Herd Mode</label>
-                        </div>
-                        <div id="herd-config-section" style="display:none; margin-top:10px; padding-left:15px; border-left:2px solid var(--vscode-textLink-foreground);">
-                            <label>Rounds: <input type="number" id="cap-herdRounds" min="1" max="10" style="width:50px;"></label>
-                            <p style="font-size:0.85em; opacity:0.8;">Use settings to configure participants.</p>
-                        </div>
-                    </div>
-
-                    <div class="modal-section">
-                        <h3>Thinking Process</h3>
+                        <h3>Logic & Reasoning</h3>
                         <div class="form-group">
-                            <label for="cap-thinkingMode" style="display:block; margin-bottom:5px; font-weight:600; color:var(--vscode-descriptionForeground);">Reasoning Strategy</label>
-                            <select id="cap-thinkingMode" style="width: 100%; padding: 6px; background: var(--vscode-dropdown-background); color: var(--vscode-dropdown-foreground); border: 1px solid var(--vscode-dropdown-border); border-radius: 2px;">
+                            <label for="cap-thinkingMode">Reasoning Strategy</label>
+                            <select id="cap-thinkingMode" class="menu-select" style="width: 100%; margin: 0;">
                                 <option value="none">None (Standard)</option>
                                 <option value="chain_of_thought">Chain of Thought</option>
                                 <option value="chain_of_verification">Chain of Verification</option>
@@ -2453,47 +2616,92 @@ Task:
                                 <option value="no_think">No Think (Force Disable)</option>
                             </select>
                         </div>
+                        
+                        <div class="checkbox-container" style="margin-top:12px;">
+                            <label class="switch"><input type="checkbox" id="cap-herdMode"><span class="slider"></span></label>
+                            <label for="cap-herdMode"><strong>🐂 Herd Mode:</strong> Multiple agents brainstorm the answer.</label>
+                        </div>
+                        <div id="herd-config-section" style="display:none; margin: 8px 0 0 40px;">
+                            <label style="font-size:11px;">Debate Rounds: <input type="number" id="cap-herdRounds" min="1" max="10" style="width:40px; padding:2px;"></label>
+                        </div>
                     </div>
 
                     <div class="modal-section">
-                        <h3>Allowed File Formats</h3>
+                        <h3>Code Generation Strategy</h3>
+                        <div class="radio-group" style="margin-bottom:12px;">
+                            <label class="radio-option"><input type="radio" name="codeGenType" value="full" checked> Full File Preferred</label>
+                            <label class="radio-option"><input type="radio" name="codeGenType" value="diff"> Search/Replace Diffs Preferred</label>
+                            <label class="radio-option"><input type="radio" name="codeGenType" value="none"> None (Chat Only)</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="check-behavior-explain" checked><span class="slider"></span></label>
+                            <label for="check-behavior-explain">AI explains changes (Problem/Hypothesis/Fix)</label>
+                        </div>
+                    </div>
+
+                    <div class="modal-section">
+                        <h3>Search & Web Tools</h3>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-webSearch"><span class="slider"></span></label>
+                            <label for="cap-webSearch"><strong>Enable Web Search Agent</strong></label>
+                        </div>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-searchInCacheFirst"><span class="slider"></span></label>
+                            <label for="cap-searchInCacheFirst">Search in local cache first (.lollms)</label>
+                        </div>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-distillWebResults"><span class="slider"></span></label>
+                            <label for="cap-distillWebResults">Distill/Refactor web results using AI</label>
+                        </div>
+                        <div class="checkbox-container" style="margin-bottom: 10px; border-bottom: 1px solid var(--vscode-widget-border); padding-bottom: 10px;">
+                            <label class="switch"><input type="checkbox" id="cap-antiPromptInjection"><span class="slider"></span></label>
+                            <label for="cap-antiPromptInjection">Anti-Prompt Injection cleaning</label>
+                        </div>
+                        <div style="font-size: 11px; margin-bottom: 8px; opacity: 0.8;">Active Sources:</div>
+                        <div class="checkbox-grid" id="search-sources-grid">
+                            <div class="checkbox-container">
+                                <input type="checkbox" id="src-google" data-source="google">
+                                <label for="src-google">Google (Custom)</label>
+                            </div>
+                            <div class="checkbox-container">
+                                <input type="checkbox" id="src-arxiv" data-source="arxiv">
+                                <label for="src-arxiv">ArXiv (Papers)</label>
+                            </div>
+                            <div class="checkbox-container">
+                                <input type="checkbox" id="src-wikipedia" data-source="wikipedia">
+                                <label for="src-wikipedia">Wikipedia</label>
+                            </div>
+                            <div class="checkbox-container">
+                                <input type="checkbox" id="src-stackoverflow" data-source="stackoverflow">
+                                <label for="src-stackoverflow">StackOverflow</label>
+                            </div>
+                            <div class="checkbox-container">
+                                <input type="checkbox" id="src-youtube" data-source="youtube">
+                                <label for="src-youtube">YouTube (Transcripts)</label>
+                            </div>
+                            <div class="checkbox-container">
+                                <input type="checkbox" id="src-github" data-source="github">
+                                <label for="src-github">GitHub (Search)</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="modal-section">
+                        <h3>Agent Permissions</h3>
                         <div class="checkbox-grid">
                             <div class="checkbox-container">
-                                <label class="switch"><input type="checkbox" id="fmt-fullFile" checked><span class="slider"></span></label>
-                                <label for="fmt-fullFile">Full File </label>
+                                <label class="switch"><input type="checkbox" id="cap-imageGen" checked><span class="slider"></span></label>
+                                <label for="cap-imageGen">Image Gen</label>
                             </div>
-                            <div class="checkbox-container">
-                                <label class="switch"><input type="checkbox" id="fmt-insert"><span class="slider"></span></label>
-                                <label for="fmt-insert">Insert</label>
-                            </div>
-                            <div class="checkbox-container">
-                                <label class="switch"><input type="checkbox" id="fmt-replace"><span class="slider"></span></label>
-                                <label for="fmt-replace">Replace</label>
-                            </div>
-                            <div class="checkbox-container">
-                                <label class="switch"><input type="checkbox" id="fmt-delete"><span class="slider"></span></label>
-                                <label for="fmt-delete">Delete Code</label>
+                            <div class="checkbox-container" id="cap-gitWorkflowContainer">
+                                <label class="switch"><input type="checkbox" id="cap-gitWorkflow"><span class="slider"></span></label>
+                                <label for="cap-gitWorkflow">Git Workflow</label>
                             </div>
                         </div>
                     </div>
 
                     <div class="modal-section">
-                        <h3>Code Generation Mode</h3>
-                        <div class="radio-group">
-                            <label class="radio-option">
-                                <input type="radio" name="codeGenType" value="full" checked> Full Content Preferred
-                            </label>
-                            <label class="radio-option">
-                                <input type="radio" name="codeGenType" value="diff"> Diffs Preferred
-                            </label>
-                            <label class="radio-option">
-                                <input type="radio" name="codeGenType" value="none"> None (Chat Only)
-                            </label>
-                        </div>
-                    </div>
-
-                    <div class="modal-section">
-                        <h3>File Capabilities</h3>
+                        <h3>File Operations</h3>
                         <div class="checkbox-grid">
                             <div class="checkbox-container">
                                 <label class="switch"><input type="checkbox" id="cap-fileRename" checked><span class="slider"></span></label>
@@ -2505,51 +2713,25 @@ Task:
                             </div>
                             <div class="checkbox-container">
                                 <label class="switch"><input type="checkbox" id="cap-fileSelect" checked><span class="slider"></span></label>
-                                <label for="cap-fileSelect">Select (Add Context)</label>
+                                <label for="cap-fileSelect">Context Selection</label>
                             </div>
                             <div class="checkbox-container">
                                 <label class="switch"><input type="checkbox" id="cap-fileReset" checked><span class="slider"></span></label>
-                                <label for="cap-fileReset">Reset (Clear Context)</label>
+                                <label for="cap-fileReset">Context Reset</label>
                             </div>
-                        </div>
-                    </div>
-
-                    <div class="modal-section">
-                        <h3>External Tools</h3>
-                        <div class="checkbox-container">
-                            <label class="switch"><input type="checkbox" id="cap-imageGen" checked><span class="slider"></span></label>
-                            <label for="cap-imageGen">Image Generation</label>
-                        </div>
-                        <div class="checkbox-container">
-                            <label class="switch"><input type="checkbox" id="cap-webSearch"><span class="slider"></span></label>
-                            <label for="cap-webSearch">Web Search (Google)</label>
-                        </div>
-                        <div class="checkbox-container">
-                            <label class="switch"><input type="checkbox" id="cap-arxivSearch"><span class="slider"></span></label>
-                            <label for="cap-arxivSearch">ArXiv Search</label>
-                        </div>
-                        <div class="checkbox-container">
-                            <label class="switch"><input type="checkbox" id="cap-gitCommit" checked><span class="slider"></span></label>
-                            <label for="cap-gitCommit">Git Commit</label>
-                        </div>
-                        <div class="checkbox-container" id="cap-gitWorkflowContainer" title="Requires Git Repository">
-                            <label class="switch"><input type="checkbox" id="cap-gitWorkflow"><span class="slider"></span></label>
-                            <label for="cap-gitWorkflow">Git Workflow (Auto-Branching)</label>
                         </div>
                     </div>
 
                     <div class="modal-section" style="border:none;">
-                        <h3>Modes</h3>
-                        <div class="checkbox-grid">
-                            <div class="checkbox-container">
-                                <label class="switch"><input type="checkbox" id="mode-funMode"><span class="slider"></span></label>
-                                <label for="mode-funMode">Fun Mode 🤪</label>
-                            </div>
+                        <h3>Misc</h3>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="mode-funMode"><span class="slider"></span></label>
+                            <label for="mode-funMode">Fun Mode 🤪</label>
                         </div>
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button id="save-discussion-tools-btn">Apply</button>
+                    <button id="save-discussion-tools-btn" class="code-action-btn apply-btn" style="width:100px; justify-content:center;">Apply</button>
                 </div>
             </div>
         </div>
@@ -2557,6 +2739,74 @@ Task:
         <div id="token-counting-overlay" class="token-counting-overlay" style="display: none;">
             <div class="spinner"></div>
             <span>Counting tokens...</span>
+        </div>
+
+        <div id="bulk-process-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Bulk Big Data Processing</h2>
+                    <span class="close-btn" id="bulk-process-close-btn">&times;</span>
+                </div>
+                <div class="modal-body">
+                    <p style="font-size: 12px; opacity: 0.8; margin-bottom: 12px;">Select files to process and enter your instructions. Each file will be processed and updated.</p>
+                    <div class="checkbox-container" style="margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--vscode-widget-border);">
+                        <input type="checkbox" id="bulk-process-select-all" checked>
+                        <label for="bulk-process-select-all" style="font-weight: bold; font-size: 11px; cursor: pointer;">Select / Deselect All</label>
+                    </div>
+                    <div id="bulk-files-list" style="max-height: 200px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px; margin-bottom: 15px;">
+                        <!-- List of checkboxes injected here -->
+                    </div>
+                    <label for="bulk-process-prompt">Instructions</label>
+                    <textarea id="bulk-process-prompt" class="commit-textarea" style="height: 100px;" placeholder="e.g. Summarize this document and extract key insights."></textarea>
+                </div>
+                <div class="modal-footer">
+                    <button id="bulk-process-run-btn" class="code-action-btn apply-btn" style="width: 100%; justify-content: center;">Start Bulk Processing</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="bulk-delete-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Bulk Delete Files</h2>
+                    <span class="close-btn" id="bulk-delete-close-btn">&times;</span>
+                </div>
+                <div class="modal-body">
+                    <p style="font-size: 12px; opacity: 0.8; margin-bottom: 12px; color: var(--vscode-errorForeground);">Warning: This will permanently delete the selected files from your workspace.</p>
+                    <div class="checkbox-container" style="margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--vscode-widget-border);">
+                        <input type="checkbox" id="bulk-delete-select-all" checked>
+                        <label for="bulk-delete-select-all" style="font-weight: bold; font-size: 11px; cursor: pointer;">Select / Deselect All</label>
+                    </div>
+                    <div id="bulk-delete-files-list" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px; margin-bottom: 15px;">
+                        <!-- List of checkboxes injected here -->
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="bulk-delete-run-btn" class="code-action-btn delete-btn" style="width: 100%; justify-content: center;">Delete Selected Files</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="bulk-delete-skills-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Bulk Remove Skills</h2>
+                    <span class="close-btn" id="bulk-delete-skills-close-btn">&times;</span>
+                </div>
+                <div class="modal-body">
+                    <p style="font-size: 12px; opacity: 0.8; margin-bottom: 12px;">Select skills to remove from the current context.</p>
+                    <div class="checkbox-container" style="margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--vscode-widget-border);">
+                        <input type="checkbox" id="bulk-skills-select-all" checked>
+                        <label for="bulk-skills-select-all" style="font-weight: bold; font-size: 11px; cursor: pointer;">Select / Deselect All</label>
+                    </div>
+                    <div id="bulk-delete-skills-list" style="max-height: 250px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px; margin-bottom: 15px;">
+                        <!-- List of checkboxes injected here -->
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="bulk-delete-skills-run-btn" class="code-action-btn delete-btn" style="width: 100%; justify-content: center;">Remove Selected Skills</button>
+                </div>
+            </div>
         </div>
     </div>
 

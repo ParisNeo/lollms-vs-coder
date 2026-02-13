@@ -286,8 +286,56 @@ export class ContextManager {
       }
   }
 
+  /**
+   * Cleans content from potential prompt injection strings.
+   */
+  private sanitizeContent(text: string): string {
+    const injectionPatterns = [
+        /ignore (all )?previous instructions/gi,
+        /system prompt/gi,
+        /you are now a/gi,
+        /new role:/gi,
+        /stop what you are doing/gi,
+        /strictly follow/gi
+    ];
+    let cleaned = text;
+    for (const pattern of injectionPatterns) {
+        cleaned = cleaned.replace(pattern, "[REDACTED_POTENTIAL_INJECTION]");
+    }
+    return cleaned;
+  }
+
+  /**
+   * Uses the LLM to distill/refactor raw web text based on the user's prompt.
+   */
+  private async distillContent(content: string, url: string, userPrompt: string, signal?: AbortSignal): Promise<string> {
+    const distillationPrompt = `You are an Information Distiller. 
+I have scraped content from: ${url}
+The user is currently asking: "${userPrompt.substring(0, 500)}"
+
+**TASK:**
+1. Extract ONLY the information from the text that is useful for answering the user's request.
+2. Refactor the text into a clean, concise markdown format.
+3. Remove ads, navigation menus, and irrelevant boilerplate.
+4. If the text contains code documentation or snippets relevant to the prompt, preserve them accurately.
+
+**CONTENT TO DISTILL:**
+${content.substring(0, 20000)}
+`;
+
+    try {
+        const result = await this.lollmsAPI.sendChat([
+            { role: 'system', content: "You are a precise data distillation expert. Output only the distilled content." },
+            { role: 'user', content: distillationPrompt }
+        ], null, signal);
+        return result;
+    } catch (e) {
+        return content; // Fallback to raw if distillation fails
+    }
+  }
+
   // --- URL Processing ---
-  public async processUrl(url: string, languageCode: string = 'en'): Promise<{ filename: string, content: string, summary: string }> {
+  public async processUrl(url: string, languageCode: string = 'en', userPrompt?: string, signal?: AbortSignal): Promise<{ filename: string, content: string, summary: string }> {
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
       if (!workspaceFolder) throw new Error("No workspace folder open.");
       
@@ -377,6 +425,21 @@ export class ContextManager {
           }
       }
       
+      // --- NEW: Distillation & Injection Protection ---
+      const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+      const shouldDistill = config.get<boolean>('distillWebResults') ?? true;
+      const antiInjection = config.get<boolean>('antiPromptInjection') ?? true;
+
+      let processedContent = rawContent;
+
+      if (antiInjection) {
+          processedContent = this.sanitizeContent(processedContent);
+      }
+
+      if (shouldDistill && userPrompt) {
+          processedContent = await this.distillContent(processedContent, url, userPrompt, signal);
+      }
+
       // Create a clean filename
       const urlObj = new URL(url);
       const safeName = (urlObj.hostname + urlObj.pathname).replace(/[^a-zA-Z0-9]/g, '_').substring(0, 50);
@@ -384,9 +447,9 @@ export class ContextManager {
       
       // Token Limit Logic (30k tokens ~ 120k chars)
       const maxChars = 120000;
-      let finalContent = rawContent;
-      if (rawContent.length > maxChars) {
-          finalContent = `[DATA TOO LARGE - TRUNCATED]\n\n${rawContent.substring(0, maxChars)}\n\n... (30,000 token limit reached)`;
+      let finalContent = processedContent;
+      if (processedContent.length > maxChars) {
+          finalContent = `[DATA TOO LARGE - TRUNCATED]\n\n${processedContent.substring(0, maxChars)}\n\n... (30,000 token limit reached)`;
       }
 
       const fileContent = `# Source: ${url}\n# Date: ${new Date().toISOString()}\n\n${finalContent}`;
@@ -405,6 +468,33 @@ export class ContextManager {
       };
   }
 
+  private async searchLocalCache(query: string, signal?: AbortSignal): Promise<string> {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) return "";
+
+    const cacheDir = vscode.Uri.joinPath(workspaceFolder.uri, '.lollms', 'web_cache');
+    try {
+        const entries = await vscode.workspace.fs.readDirectory(cacheDir);
+        let combined = "";
+        const keywords = query.toLowerCase().split(' ').filter(k => k.length > 3);
+
+        for (const [name, type] of entries) {
+            if (type === vscode.FileType.File && name.endsWith('.md')) {
+                const contentBytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(cacheDir, name));
+                const content = Buffer.from(contentBytes).toString('utf8').toLowerCase();
+                
+                // Simple keyword check for cache hit
+                if (keywords.some(k => content.includes(k))) {
+                    combined += `\n--- Cached Result (${name}) ---\n${content.substring(0, 2000)}...\n`;
+                }
+            }
+        }
+        return combined;
+    } catch {
+        return "";
+    }
+  }
+
   // --- WEB RESEARCH AGENT ---
   public async runWebResearchAgent(
       userPrompt: string,
@@ -413,6 +503,7 @@ export class ContextManager {
       onUpdate: (content: string) => void
   ): Promise<void> {
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+    const searchInCache = config.get<boolean>('searchInCacheFirst') ?? true;
     const searchProvider = config.get<string>('searchProvider') || 'google_custom_search';
     const apiKey = config.get<string>('searchApiKey');
     const cx = config.get<string>('searchCx');
@@ -530,6 +621,15 @@ If yes, you must plan searches, execute them, review results, and add valuable c
 
             if (toolName === 'plan_searches') {
                 const queries = params.queries || [];
+
+                if (searchInCache) {
+                    renderUpdate("Checking local cache...");
+                    const cacheHits = await this.searchLocalCache(userPrompt, signal);
+                    if (cacheHits) {
+                        actionLog.push(`📦 Found relevant data in local .lollms cache.`);
+                        chatHistory.push({ role: 'system', content: `LOCAL CACHE HITS:\n${cacheHits}\n\nReview this data. If it answers the prompt, you can 'done'. Otherwise proceed with external searches.` });
+                    }
+                }
                 if (!Array.isArray(queries) || queries.length === 0) {
                     actionLog.push("⚠️ No queries provided.");
                     continue;
@@ -537,6 +637,9 @@ If yes, you must plan searches, execute them, review results, and add valuable c
 
                 const providersText = Array.from(new Set(queries.map((q: any) => q.provider))).join(', ');
                 actionLog.push(`🔍 Searching via: **${providersText}**`);
+                queries.forEach((q: any) => {
+                    actionLog.push(`&nbsp;&nbsp;• [${q.provider}] ${q.q}`);
+                });
                 renderUpdate("Searching...");
 
                 const searchPromises = queries.map(async (q: any) => {
@@ -621,7 +724,7 @@ If yes, you must plan searches, execute them, review results, and add valuable c
 
                 const readPromises = urls.map(async (url: string) => {
                     try {
-                        const res = await this.processUrl(url);
+                        const res = await this.processUrl(url, 'en', userPrompt, signal);
                         const fileName = res.filename.split(/[\\/]/).pop() || 'Document';
                         addedSources.push({ url, title: fileName });
                         return `📖 Added: ${res.filename} (${res.content.length} chars)`;

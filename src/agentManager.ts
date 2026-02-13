@@ -467,6 +467,13 @@ export class AgentManager {
                             output: `LOOP PREVENTED: You are trying an identical call that already failed. You must REPLAN with a different approach.` 
                         };
                     } else {
+                        if (task.action.includes('search')) {
+                            this.ui.addMessageToDiscussion({
+                                role: 'system',
+                                content: `🔍 **Researching:** ${resolvedParams.query || '...'} via ${task.action.split('_')[1] || 'web'}`,
+                                skipInPrompt: true
+                            });
+                        }
                         try {
                             result = await this.executeTask(task.action, resolvedParams, signal);
                         } catch (error: any) {

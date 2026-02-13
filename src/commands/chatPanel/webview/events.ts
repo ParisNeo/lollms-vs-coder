@@ -58,6 +58,8 @@ export function initEventHandlers() {
         dom.messageInput.addEventListener('paste', (e: ClipboardEvent) => {
             const items = e.clipboardData?.items;
             if (!items) return;
+
+            // 1. Handle Images
             for (const item of items) {
                 if (item.type.indexOf('image') !== -1) {
                     const blob = item.getAsFile();
@@ -69,9 +71,12 @@ export function initEventHandlers() {
                         };
                         reader.readAsDataURL(blob);
                         e.preventDefault();
+                        return;
                     }
                 }
             }
+
+            
         });
     }
 
@@ -231,7 +236,14 @@ export function initEventHandlers() {
                 fileReset: dom.capFileReset?.checked ?? true,
                 imageGen: dom.capImageGen?.checked ?? true,
                 webSearch: dom.capWebSearch?.checked ?? false,
-                arxivSearch: dom.capArxivSearch?.checked ?? false,
+                searchSources: {
+                    google: (document.getElementById('src-google') as HTMLInputElement)?.checked ?? true,
+                    arxiv: (document.getElementById('src-arxiv') as HTMLInputElement)?.checked ?? true,
+                    wikipedia: (document.getElementById('src-wikipedia') as HTMLInputElement)?.checked ?? true,
+                    stackoverflow: (document.getElementById('src-stackoverflow') as HTMLInputElement)?.checked ?? true,
+                    youtube: (document.getElementById('src-youtube') as HTMLInputElement)?.checked ?? true,
+                    github: (document.getElementById('src-github') as HTMLInputElement)?.checked ?? false
+                },
                 gitWorkflow: dom.capGitWorkflow?.checked ?? false,
                 herdMode: dom.capHerdMode?.checked ?? false,
                 herdRounds: parseInt(dom.capHerdRounds?.value || "2", 10)

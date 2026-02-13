@@ -46,9 +46,17 @@ export interface DiscussionCapabilities {
     fileReset: boolean;
     imageGen: boolean;
     webSearch: boolean;
-    wikipediaSearch: boolean; 
-    stackoverflowSearch: boolean; 
-    arxivSearch: boolean;
+    distillWebResults: boolean;
+    antiPromptInjection: boolean;
+    searchInCacheFirst: boolean;
+    searchSources: {
+        google: boolean;
+        arxiv: boolean;
+        wikipedia: boolean;
+        stackoverflow: boolean;
+        youtube: boolean;
+        github: boolean;
+    };
     gitWorkflow: boolean;
     gitCommit?: boolean;
     herdMode: boolean;
@@ -148,48 +156,89 @@ export function applySearchReplace(content: string, searchBlock: string, replace
         return { success: true, result: normalizedContent.replace(normalizedSearch, normalizedReplace) };
     }
 
-    // 2. Indentation Fixer: Detect if the model added or removed consistent leading whitespace
+    // 2. Indentation Fixer & Fuzzy Indent Matching
+    // Detect if the model added or removed consistent leading whitespace OR if we can find the block by trimmed lines.
     const contentLines = normalizedContent.split('\n');
     const searchLines = normalizedSearch.split('\n');
     const replaceLines = normalizedReplace.split('\n');
 
-    // Detect indentation shift on the first non-empty line of search block vs content
     const firstNonEmptySearchIdx = searchLines.findIndex(l => l.trim().length > 0);
+    
     if (firstNonEmptySearchIdx !== -1) {
         const searchLine = searchLines[firstNonEmptySearchIdx];
         const trimmedSearch = searchLine.trim();
         
+        // Scan through content to find a line that matches the first non-empty search line (trimmed)
         for (let i = 0; i < contentLines.length; i++) {
             if (contentLines[i].trim() === trimmedSearch) {
-                // Potential match at line i. Check indentation diff.
-                const contentIndent = contentLines[i].match(/^\s*/)?.[0] || "";
-                const searchIndent = searchLine.match(/^\s*/)?.[0] || "";
+                // Found a potential start anchor.
+                // Verify the rest of the search block matches (trimmed)
+                let matchFound = true;
                 
-                if (contentIndent !== searchIndent) {
-                    // Try to re-indent the search block to match the content's current indentation
-                    const reindentedSearchLines = searchLines.map(line => {
-                        if (line.trim().length === 0) return line;
+                // We need to account for the empty lines before the first non-empty line in searchLines
+                const startContentIdx = i - firstNonEmptySearchIdx;
+                if (startContentIdx < 0) continue; 
+
+                // Check all search lines
+                for (let j = 0; j < searchLines.length; j++) {
+                    if (startContentIdx + j >= contentLines.length) {
+                        matchFound = false;
+                        break;
+                    }
+                    if (searchLines[j].trim() !== contentLines[startContentIdx + j].trim()) {
+                        matchFound = false;
+                        break;
+                    }
+                }
+
+                if (matchFound) {
+                    // We found the block location at lines [startContentIdx ... startContentIdx + searchLines.length]
+                    // Now we need to construct the replacement.
+                    // We must apply the indentation delta to the replace block.
+                    
+                    // Calculate indentation delta based on the first non-empty line
+                    const contentIndent = contentLines[i].match(/^\s*/)?.[0] || "";
+                    const searchIndent = searchLine.match(/^\s*/)?.[0] || "";
+                    
+                    const adjustedReplaceLines = replaceLines.map(line => {
+                        if (line.trim().length === 0) return ""; // Normalize empty lines
+                        
                         const lineIndent = line.match(/^\s*/)?.[0] || "";
+                        
+                        // If the replace line starts with the same base indent as the search block had,
+                        // we can safely swap it for the content's base indent.
                         if (lineIndent.startsWith(searchIndent)) {
                             return contentIndent + line.substring(searchIndent.length);
+                        } 
+                        
+                        // If searchIndent was shorter or different? 
+                        // E.g. searchIndent was 2 spaces, contentIndent is 4 spaces.
+                        // Replace line has 2 spaces. We want 4 spaces.
+                        // Delta is +2 spaces (or +1 tab etc).
+                        // Hard to do robustly with mixed tabs/spaces, but let's try simple prefix replacement
+                        // if contentIndent starts with searchIndent (unlikely if lengths differ)
+                        
+                        // Simple robust approach: If contentIndent is longer, prepend difference.
+                        if (contentIndent.length > searchIndent.length && contentIndent.startsWith(searchIndent)) {
+                             return contentIndent.substring(searchIndent.length) + line;
                         }
+                        
+                        // If contentIndent is shorter (dedented), try to remove prefix
+                        if (searchIndent.length > contentIndent.length && searchIndent.startsWith(contentIndent)) {
+                             if (line.startsWith(searchIndent.substring(contentIndent.length))) {
+                                 return line.substring(searchIndent.length - contentIndent.length);
+                             }
+                        }
+
+                        // Fallback: just return line if we can't calculate shift
                         return line;
                     });
                     
-                    const reindentedSearch = reindentedSearchLines.join('\n');
+                    // Reconstruct
+                    const before = contentLines.slice(0, startContentIdx);
+                    const after = contentLines.slice(startContentIdx + searchLines.length);
                     
-                    if (normalizedContent.includes(reindentedSearch)) {
-                        // Success! Apply the same shift to the replace block
-                        const reindentedReplaceLines = replaceLines.map(line => {
-                            if (line.trim().length === 0) return line;
-                            const lineIndent = line.match(/^\s*/)?.[0] || "";
-                            if (lineIndent.startsWith(searchIndent)) {
-                                return contentIndent + line.substring(searchIndent.length);
-                            }
-                            return line;
-                        });
-                        return { success: true, result: normalizedContent.replace(reindentedSearch, reindentedReplaceLines.join('\n')) };
-                    }
+                    return { success: true, result: [...before, ...adjustedReplaceLines, ...after].join('\n') };
                 }
             }
         }

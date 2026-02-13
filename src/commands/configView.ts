@@ -87,6 +87,9 @@ export class SettingsPanel {
     agentFilesystemRead: true,
     agentInternetAccess: true,
     agentUseRLM: false,
+    distillWebResults: true,
+    antiPromptInjection: true,
+    searchInCacheFirst: true,
     moltbookEnable: false,
     moltbookApiKey: '',
     moltbookBotName: 'Lollms-VS-Bot',
@@ -209,6 +212,9 @@ export class SettingsPanel {
     this._pendingConfig.agentFilesystemRead = agentPerms.filesystemRead !== false;
     this._pendingConfig.agentInternetAccess = agentPerms.internetAccess !== false;
     this._pendingConfig.agentUseRLM = config.get<boolean>('agent.useRLM') || false;
+    this._pendingConfig.distillWebResults = config.get<boolean>('distillWebResults') ?? true;
+    this._pendingConfig.antiPromptInjection = config.get<boolean>('antiPromptInjection') ?? true;
+    this._pendingConfig.searchInCacheFirst = config.get<boolean>('searchInCacheFirst') ?? true;
 
     this._pendingConfig.moltbookEnable = config.get<boolean>('moltbook.enable') || false;
     this._pendingConfig.moltbookApiKey = config.get<string>('moltbook.apiKey') || '';
@@ -454,6 +460,9 @@ export class SettingsPanel {
                       internetAccess: this._pendingConfig.agentInternetAccess
                   }],
                   ['agent.useRLM', this._pendingConfig.agentUseRLM],
+                  ['distillWebResults', this._pendingConfig.distillWebResults],
+                  ['antiPromptInjection', this._pendingConfig.antiPromptInjection],
+                  ['searchInCacheFirst', this._pendingConfig.searchInCacheFirst],
                   ['moltbook.enable', this._pendingConfig.moltbookEnable],
                   ['moltbook.apiKey', this._pendingConfig.moltbookApiKey],
                   ['moltbook.botName', this._pendingConfig.moltbookBotName],
@@ -685,6 +694,13 @@ export class SettingsPanel {
                     <option value="lollms" ${backendType === 'lollms' ? 'selected' : ''}>Lollms Server</option>
                     <option value="openai" ${backendType === 'openai' ? 'selected' : ''}>OpenAI Compatible</option>
                     <option value="ollama" ${backendType === 'ollama' ? 'selected' : ''}>Ollama</option>
+                    <option value="anthropic" ${backendType === 'anthropic' ? 'selected' : ''}>Anthropic Claude</option>
+                    <option value="google" ${backendType === 'google' ? 'selected' : ''}>Google Gemini</option>
+                    <option value="groq" ${backendType === 'groq' ? 'selected' : ''}>Groq</option>
+                    <option value="grok" ${backendType === 'grok' ? 'selected' : ''}>xAI Grok</option>
+                    <option value="novitai" ${backendType === 'novitai' ? 'selected' : ''}>Novita AI</option>
+                    <option value="openwebui" ${backendType === 'openwebui' ? 'selected' : ''}>Open WebUI</option>
+                    <option value="openrouter" ${backendType === 'openrouter' ? 'selected' : ''}>OpenRouter</option>
                 </select>
                 <div class="checkbox-container">
                     <input type="checkbox" id="useLollmsExtensions" ${useLollmsExtensions ? 'checked' : ''}>

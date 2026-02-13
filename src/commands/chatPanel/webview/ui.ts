@@ -247,9 +247,9 @@ export function updateBadges() {
     });
     if (herdBadge) container.appendChild(herdBadge);
 
-    // NEW: Web Search Toggle Badge with Activity Log
+    // Enhanced Web Search Toggle Badge with Activity Log
     const webBadge = createToggleBadge(
-        '🌍 Web', 'web', 
+        '🌍 Web Search', 'web', 
         guiState.webSearchBadge !== false, 
         caps.webSearch, 
         () => {

@@ -1,0 +1,29 @@
+<skill id="coding-backend">
+    <name>Backend Architect</name>
+    <description>Expertise in API design, microservices, security, and scalable server-side logic.</description>
+    <category>coding/backend</category>
+    <language>markdown</language>
+    <timestamp>1739433600000</timestamp>
+    <content>
+        <![CDATA[
+# Backend Architecture & Development
+
+## API Design Standards
+- **RESTful**: Proper use of HTTP verbs (GET, POST, PUT, PATCH, DELETE), status codes, and JSON nesting.
+- **Documentation**: Use OpenAPI (Swagger) for clear, interactive API docs.
+- **Versioning**: Prefix routes with `/v1/`, `/v2/` etc., or use header-based versioning.
+
+## Security
+- **Authentication**: JWT, OAuth2, or session-based auth. Always use HttpOnly cookies for tokens.
+- **Authorization**: Role-Based Access Control (RBAC) or Attribute-Based Access Control (ABAC).
+- **Validation**: Strict schema validation (Pydantic, Zod, Joi) for every incoming request.
+
+## Backend Best Practices
+1. **Statelessness**: Ensure horizontal scalability by keeping the application state in databases/caches, not in-memory.
+2. **Layered Architecture**: Separate concerns: Controllers (Routes) -> Services (Logic) -> Repositories (Data Access).
+3. **Error Handling**: Use global exception handlers to return consistent error structures (code, message, details).
+4. **Logging & Monitoring**: Structured JSON logging. Track performance metrics and health checks.
+5. **Database Optimization**: Use ORMs wisely but optimize slow queries with raw SQL and proper indexing.
+]]>
+    </content>
+</skill>

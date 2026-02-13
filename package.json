@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.5.98",
+  "version": "0.5.99",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -799,12 +799,26 @@
           "enum": [
             "lollms",
             "openai",
-            "ollama"
+            "ollama",
+            "anthropic",
+            "google",
+            "groq",
+            "grok",
+            "novitai",
+            "openwebui",
+            "openrouter"
           ],
           "enumDescriptions": [
             "Lollms Server (OpenAI Compatible + Extensions)",
             "Generic OpenAI Compatible Server",
-            "Ollama Server (Native API)"
+            "Ollama Server (Native API)",
+            "Anthropic Claude API",
+            "Google Gemini API",
+            "Groq Cloud API",
+            "xAI Grok API",
+            "Novita AI API",
+            "Open WebUI",
+            "OpenRouter API"
           ]
         },
         "lollmsVsCoder.useLollmsExtensions": {
@@ -1031,6 +1045,21 @@
           "type": "string",
           "default": "",
           "description": "Provide additional environment context for the AI (e.g. 'I am using Git Bash on Windows', 'My Python version is 3.12')."
+        },
+        "lollmsVsCoder.distillWebResults": {
+          "type": "boolean",
+          "default": true,
+          "description": "When scraping URLs, use the AI to distill/refactor the content based on your prompt before adding it to context."
+        },
+        "lollmsVsCoder.antiPromptInjection": {
+          "type": "boolean",
+          "default": true,
+          "description": "Scans and removes potential hidden prompt injections from scraped web content."
+        },
+        "lollmsVsCoder.searchInCacheFirst": {
+          "type": "boolean",
+          "default": true,
+          "description": "When doing a web search, check the .lollms cache first to avoid redownloading known information."
         }
       }
     },

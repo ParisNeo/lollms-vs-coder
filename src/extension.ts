@@ -10,6 +10,7 @@ import { PromptManager } from './promptManager';
 import { AgentManager } from './agentManager';
 import { ProcessManager } from './processManager';
 import { LollmsNotebookCellActionProvider, NotebookManager } from './notebookTools';
+import { LollmsCodeActionProvider } from './commands/codeActions';
 import { SkillsManager } from './skillsManager';
 import { CodeGraphManager } from './codeGraphManager';
 import { DebugCodeLensProvider } from './commands/debugCodeLensProvider';
@@ -31,6 +32,8 @@ import { DiffCodeLensProvider } from './commands/diffCodeLensProvider';
 import { HerdManager } from './herdManager';
 import { LollmsDebugAdapterTrackerFactory } from './debugAdapterTracker';
 import { CodeExplorerPanel } from './commands/codeExplorerView';
+import { SelectionCodeLensProvider } from './commands/selectionCodeLensProvider';
+import { SelectionDecorator, SelectionHoverProvider } from './ui/selectionDecorator';
 
 // RLM Database Imports
 import { RLMDatabaseManager } from './rlmDatabaseManager';
@@ -163,12 +166,20 @@ export async function activate(context: vscode.ExtensionContext) {
     }));
 
     // Register Providers
+    try {
+        const caProvider = new LollmsCodeActionProvider(promptManager);
+        context.subscriptions.push(
+            vscode.languages.registerCodeActionsProvider({ scheme: 'file' }, caProvider, {
+                providedCodeActionKinds: LollmsCodeActionProvider.providedCodeActionKinds
+            })
+        );
+    } catch (e) {
+        Logger.error("Failed to register CodeActionProvider", e);
+    }
+
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, new DebugCodeLensProvider(debugErrorManager)));
-    context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, inlineDiffProvider));
-    context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'untitled' }, inlineDiffProvider));
+    context.subscriptions.push(vscode.languages.registerCodeLensProvider({ pattern: '**' }, inlineDiffProvider));
     context.subscriptions.push(vscode.notebooks.registerNotebookCellStatusBarItemProvider('jupyter-notebook', new LollmsNotebookCellActionProvider()));
-    
-    context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file', pattern: '**/.lollms/diffs/**' }, new DiffCodeLensProvider(diffManager)));
     context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(DiffManager.SCHEME, diffManager));
 
     context.subscriptions.push(vscode.debug.registerDebugAdapterTrackerFactory('*', new LollmsDebugAdapterTrackerFactory()));
@@ -199,7 +210,7 @@ export async function activate(context: vscode.ExtensionContext) {
         }
     }));
 
-    // Context & Decorators
+    // Context
     let contextStateProvider: ContextStateProvider | undefined;
     const fileDecorationProvider = new FileDecorationProvider(undefined);
     context.subscriptions.push(vscode.window.registerFileDecorationProvider(fileDecorationProvider));

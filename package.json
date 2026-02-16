@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.6.0",
+  "version": "0.6.2",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -23,7 +23,8 @@
   "main": "./out/extension.js",
   "activationEvents": [
     "onStartupFinished",
-    "onDebug"
+    "onDebug",
+    "onCommand:lollms-vs-coder.triggerCodeAction"
   ],
   "contributes": {
     "commands": [
@@ -77,6 +78,10 @@
       {
         "command": "lollms-vs-coder.triggerCodeAction",
         "title": "%command.triggerCodeAction.title%"
+      },
+      {
+        "command": "lollms-vs-coder.showSelectionMenu",
+        "title": "Lollms: Show Selection Actions"
       },
       {
         "command": "lollms-vs-coder.triggerInlineSuggestion",

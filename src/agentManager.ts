@@ -63,7 +63,10 @@ export class AgentManager {
 
     private failureMemory: FailureMemory = new FailureMemory();
     
-    // NEW: Explicitly track completed actions for prompt injection
+    /**
+     * Explicitly track completed actions for prompt injection to prevent
+     * the Architect from planning steps it has already finished.
+     */
     private completedActionsHistory: string[] = [];
 
     public rlmDb?: RLMDatabaseManager;
@@ -461,12 +464,21 @@ export class AgentManager {
                 try {
                     resolvedParams = this.resolveParameters(task);
                     
+                    // 1. Check for failure loops
                     if (this.failureMemory.hasFailedBefore(task.action, resolvedParams)) {
                         result = { 
                             success: false, 
                             output: `LOOP PREVENTED: You are trying an identical call that already failed. You must REPLAN with a different approach.` 
                         };
-                    } else {
+                    } 
+                    // 2. Check for success loops (Doing same thing again unnecessarily)
+                    else if (this.completedActionsHistory.includes(`Action: ${task.action}, Params: ${JSON.stringify(resolvedParams)}`)) {
+                         result = {
+                             success: true,
+                             output: `SKIPPED: This exact action was already performed successfully earlier in the session.`
+                         };
+                    }
+                    else {
                         if (task.action.includes('search')) {
                             this.ui.addMessageToDiscussion({
                                 role: 'system',

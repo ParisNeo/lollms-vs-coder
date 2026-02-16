@@ -21,14 +21,14 @@ export class DiffCodeLensProvider implements vscode.CodeLensProvider {
         const range = new vscode.Range(0, 0, 0, 0);
         
         const acceptCmd: vscode.Command = {
-            title: '$(check) Accept Changes',
+            title: '✅ Accept Changes',
             command: 'lollms-vs-coder.acceptDiff',
             arguments: [document.uri],
             tooltip: 'Apply these changes to the original file on disk'
         };
 
         const rejectCmd: vscode.Command = {
-            title: '$(close) Reject',
+            title: '❌ Reject',
             command: 'lollms-vs-coder.rejectDiff',
             arguments: [document.uri],
             tooltip: 'Discard these changes'

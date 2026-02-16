@@ -4,6 +4,7 @@ import { LollmsServices } from '../lollmsContext';
 import { applyDiff } from '../utils';
 import { normalizeToDocument } from '../utils/promptUtils';
 import { Logger } from '../logger';
+import { ChatPanel } from '../commands/chatPanel/chatPanel';
 
 export function registerFileCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
 
@@ -254,11 +255,20 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         await services.inlineDiffProvider.refine(sessionId);
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.triggerInlineDiff', async (editor: vscode.TextEditor, selection: vscode.Selection, text: string) => {
+        await services.inlineDiffProvider.startSession(
+            editor,
+            selection,
+            text,
+            [],
+            text
+        );
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string) => {
         const activeWorkspace = getActiveWorkspace();
         if (!activeWorkspace) return;
 
-        // More flexible regex to capture Aider blocks
         const aiderRegex = /<<<<<<< SEARCH([\s\S]*?)=======([\s\S]*?)>>>>>>> REPLACE/g;
         const matches = [...content.matchAll(aiderRegex)];
         
@@ -280,14 +290,28 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             for (const match of matches) {
                 const searchCode = match[1];
                 const replaceCode = match[2];
-                
                 const result = applySearchReplace(currentContent, searchCode, replaceCode);
 
                 if (result.success) {
                     currentContent = result.result;
                     applyCount++;
                 } else {
-                    vscode.window.showWarningMessage(`Could not apply search/replace block in ${filePath}: ${result.error}`);
+                    const fixBtn = "Fix with AI";
+                    const selection = await vscode.window.showErrorMessage(
+                        `Could not apply search/replace block in ${filePath}: ${result.error}`,
+                        fixBtn, "Cancel"
+                    );
+
+                    if (selection === fixBtn && ChatPanel.currentPanel) {
+                        const repairPrompt = `The following Search/Replace update failed to apply to \`${filePath}\`.\n\n` +
+                            `**Error:** ${result.error}\n\n` +
+                            `**Original File Content:**\n\`\`\`\n${originalContent}\n\`\`\`\n\n` +
+                            `**Your failing attempt:**\n\`\`\`\n${match[0]}\n\`\`\`\n\n` +
+                            `Please fix your code. Verify indentations and ensure the text in the SEARCH block exactly matches the original file text.`;
+                        
+                        await ChatPanel.currentPanel.sendMessage({ role: 'user', content: repairPrompt });
+                        return; // Stop processing further blocks if one fails
+                    }
                 }
             }
 
@@ -433,15 +457,32 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
              const doc = await vscode.workspace.openTextDocument(fileUri);
              const originalContent = doc.getText();
 
-             // Apply the context-aware diff logic
-             await applyDiff(patchContent, filePath); 
+             try {
+                await applyDiff(patchContent, filePath); 
+             } catch (diffErr: any) {
+                const fixBtn = "Fix with AI";
+                const selection = await vscode.window.showErrorMessage(
+                    `Failed to apply patch to ${filePath}: ${diffErr.message}`,
+                    fixBtn, "Cancel"
+                );
+
+                if (selection === fixBtn && ChatPanel.currentPanel) {
+                    const repairPrompt = `The following unified diff failed to apply to \`${filePath}\`.\n\n` +
+                        `**Error:** ${diffErr.message}\n\n` +
+                        `**Original File Content:**\n\`\`\`\n${originalContent}\n\`\`\`\n\n` +
+                        `**Your failing patch:**\n\`\`\`diff\n${patchContent}\n\`\`\`\n\n` +
+                        `Please fix your code. Verify that the context lines in your diff exactly match the original file.`;
+                    
+                    await ChatPanel.currentPanel.sendMessage({ role: 'user', content: repairPrompt });
+                    return;
+                }
+                throw diffErr;
+             }
              
-             // Open the diff editor to show what happened
              await openDiffView(fileUri, originalContent);
-             
              vscode.window.showInformationMessage(`Patch applied successfully to ${filePath}. Review changes.`);
          } catch (e: any) {
-             vscode.window.showErrorMessage(`Failed to apply patch: ${e.message}`);
+             // Error already handled or ignored
          }
     }));
 

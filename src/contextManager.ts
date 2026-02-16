@@ -1135,20 +1135,6 @@ If the user asks to "save this as a skill", "remember this", or "learn how to do
     }
 
     const contextFiles = this.contextStateProvider.getIncludedFiles();
-    
-    if (this.skillsManager) {
-        const skills = await this.skillsManager.getSkills();
-        const allowedIds = options?.importedSkillIds;
-
-        if (skills.length > 0 && allowedIds && allowedIds.length > 0) {
-            for (const skill of skills) {
-                if (allowedIds.includes(skill.id)) {
-                    result.importedSkills.push(skill);
-                    result.skillsContent += `### Skill: ${skill.name}\n\`\`\`${skill.language || 'text'}\n${skill.content}\n\`\`\`\n\n`;
-                }
-            }
-        }
-    }
 
     if (includeTree) {
         if (signal?.aborted) throw new Error("Operation cancelled");
@@ -1246,6 +1232,7 @@ If the user asks to "save this as a skill", "remember this", or "learn how to do
     
     const allSkillIds = Array.from(new Set([...discussionSkillIds, ...projectSkillIds]));
 
+    result.skillsContent = skillProtocol + "\n";
     if (this.skillsManager && allSkillIds.length > 0) {
         const skills = await this.skillsManager.getSkills();
         for (const skill of skills) {
@@ -1256,19 +1243,6 @@ If the user asks to "save this as a skill", "remember this", or "learn how to do
             }
         }
     }
-    if (this.skillsManager && allSkillIds.length > 0) {
-        result.skillsContent += skillProtocol + "\n"; 
-        const skills = await this.skillsManager.getSkills();
-        for (const skill of skills) {
-            if (allSkillIds.includes(skill.id)) {
-                result.importedSkills.push(skill);
-                const scopeLabel = skill.scope === 'global' ? 'GLOBAL' : 'PROJECT';
-                result.skillsContent += `### Skill (${scopeLabel}): ${skill.name}\n> ${skill.description}\n\`\`\`${skill.language || 'text'}\n${skill.content}\n\`\`\`\n\n`;
-            }
-        }
-    } else {
-        result.skillsContent = skillProtocol;
-    }    
     result.text = `# Project Context\n\n**Workspace:** ${path.basename(workspaceFolder.uri.fsPath)}\n\n`;
     if (result.skillsContent) {
         result.text += `## Active Skills & Protocols\n${result.skillsContent}---\n\n`;

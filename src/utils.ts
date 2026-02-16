@@ -177,6 +177,7 @@ export function applySearchReplace(content: string, searchBlock: string, replace
         
         // Scan through content to find a line that matches the first non-empty search line (trimmed)
         for (let i = 0; i < contentLines.length; i++) {
+            // Robust match: ignore leading/trailing whitespace when finding the anchor line
             if (contentLines[i].trim() === trimmedSearch) {
                 // Found a potential start anchor.
                 // Verify the rest of the search block matches (trimmed)
@@ -192,6 +193,7 @@ export function applySearchReplace(content: string, searchBlock: string, replace
                         matchFound = false;
                         break;
                     }
+                    // Crucial: compare trimmed lines to be resilient to indentation shifts
                     if (searchLines[j].trim() !== contentLines[startContentIdx + j].trim()) {
                         matchFound = false;
                         break;

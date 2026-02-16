@@ -58,7 +58,7 @@ try {
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
 const SANITIZE_CONFIG = {
     ADD_TAGS: ['iframe', 'script', 'style'],
-    ADD_ATTR: ['target', 'allow', 'allowfullscreen', 'frameborder', 'scrolling']
+    ADD_ATTR: ['target', 'allow', 'allowfullscreen', 'frameborder', 'scrolling', 'onclick', 'data-value', 'data-type', 'data-message-id', 'data-pid']
 };
 
 function createButton(text: string, icon: string, onClick: () => void, className = 'code-action-btn', tooltip?: string): HTMLButtonElement {
@@ -73,6 +73,16 @@ function createButton(text: string, icon: string, onClick: () => void, className
         e.stopPropagation();
         try {
             onClick();
+            // Mark as applied and collapse block if it's an apply button
+            if (className.includes('apply-btn') || text.toLowerCase().includes('apply')) {
+                btn.classList.add('applied');
+                
+                // Find parent code block and collapse it
+                const codeBlock = btn.closest('details.code-collapsible');
+                if (codeBlock instanceof HTMLDetailsElement) {
+                    codeBlock.open = false;
+                }
+            }
         } catch (err) {
             console.error(`Error executing action for ${text || tooltip}:`, err);
             vscode.postMessage({ command: 'showError', message: `Action failed: ${err}` });
@@ -221,26 +231,38 @@ function enablePanZoom(container: HTMLElement) {
     window.addEventListener('mouseup', stopDrag);
 }
 // Helper to render skill creation blocks
-function renderSkillBlock(content: string, titleAttr: string | undefined, messageId: string): string {
+function renderSkillBlock(rawContent: string, titleAttr: string | undefined, messageId: string): string {
     let title = titleAttr || "New Skill";
-    
-    // If no attribute, try extraction (legacy fallback)
-    if (!titleAttr) {
-        const lines = content.split('\n');
+    let description = "";
+    let finalContent = rawContent;
+
+    // Check if the content is structured (contains <name>, <description>, <content>)
+    const nameMatch = rawContent.match(/<name>(.*?)<\/name>/s);
+    const descMatch = rawContent.match(/<description>(.*?)<\/description>/s);
+    const contentTagMatch = rawContent.match(/<content>\s*(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?\s*<\/content>/s);
+
+    if (nameMatch) title = nameMatch[1].trim();
+    if (descMatch) description = descMatch[1].trim();
+    if (contentTagMatch) finalContent = contentTagMatch[1].trim();
+
+    // If no structured tags, try legacy extraction from headers
+    if (!nameMatch && !titleAttr) {
+        const lines = finalContent.split('\n');
         const titleLine = lines.find(l => l.startsWith('#'));
         if (titleLine) title = titleLine.replace(/^#+\s*/, '').trim();
     }
     
-    const safeContent = encodeURIComponent(content);
+    const safeContent = encodeURIComponent(finalContent);
     const safeTitle = encodeURIComponent(title);
 
     return `
     <div class="skill-creation-block">
         <div class="skill-header">
             <span class="codicon codicon-lightbulb" style="color:var(--vscode-charts-yellow)"></span> 
-            <span>Propose New Skill: <strong>${title}</strong></span>
+            <span>Propose New Skill: <strong>${sanitizer.sanitize(title)}</strong></span>
         </div>
-        <div class="skill-preview markdown-body">${sanitizer.sanitize(marked.parse(content))}</div>
+        ${description ? `<div style="padding: 8px 16px; font-size: 0.9em; opacity: 0.8; border-bottom: 1px solid var(--vscode-widget-border);">${sanitizer.sanitize(description)}</div>` : ''}
+        <div class="skill-preview markdown-body">${sanitizer.sanitize(marked.parse(finalContent))}</div>
         <div class="skill-actions">
             <button class="code-action-btn apply-btn" onclick="saveSkill('${safeContent}', 'local', '${safeTitle}')">
                 <span class="codicon codicon-save"></span> Save to Project
@@ -655,7 +677,12 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
     pres.forEach((pre, index) => {
         const code = pre.querySelector('code');
         if (!code) return;
-        if (pre.parentElement?.classList.contains('code-collapsible') || pre.parentElement?.classList.contains('file-operation-block')) return;
+        // Ignore code blocks that are already wrapped or are part of a skill preview
+        if (pre.parentElement?.classList.contains('code-collapsible') || 
+            pre.parentElement?.classList.contains('file-operation-block') ||
+            pre.closest('.skill-preview')) {
+            return;
+        }
 
         const langMatch = code.className.match(/language-(\S+)/);
         let language = langMatch ? langMatch[1] : 'plaintext';
@@ -836,6 +863,32 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
             actions.appendChild(inspectBtn);
         }
 
+        if (isReplace && filePath) {
+            // Aider style Search/Replace block
+            const aiderRegex = /<<<<<<< SEARCH([\s\S]*?)=======([\s\S]*?)>>>>>>> REPLACE/;
+            const match = codeText.match(aiderRegex);
+            if (match) {
+                const searchPart = match[1].trim();
+                const replacePart = match[2].trim();
+
+                const copySearchBtn = createButton('Copy Search', 'codicon-copy', () => {
+                    vscode.postMessage({ command: 'copyToClipboard', text: searchPart });
+                    copySearchBtn.innerHTML = '<span class="codicon codicon-check"></span>';
+                    setTimeout(() => { copySearchBtn.innerHTML = '<span class="codicon codicon-copy"></span>'; }, 2000);
+                }, 'code-action-btn', 'Copy text to search for');
+                copySearchBtn.disabled = isDisabled;
+                actions.appendChild(copySearchBtn);
+
+                const copyReplaceBtn = createButton('Copy Replace', 'codicon-copy', () => {
+                    vscode.postMessage({ command: 'copyToClipboard', text: replacePart });
+                    copyReplaceBtn.innerHTML = '<span class="codicon codicon-check"></span>';
+                    setTimeout(() => { copyReplaceBtn.innerHTML = '<span class="codicon codicon-copy"></span>'; }, 2000);
+                }, 'code-action-btn', 'Copy text to replace with');
+                copyReplaceBtn.disabled = isDisabled;
+                actions.appendChild(copyReplaceBtn);
+            }
+        }
+
         if (isFileBlock && filePath) {
             actionableBlockCount++;
             langLabel.textContent = `${language} : ${filePath}`;
@@ -954,6 +1007,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
                     btn.disabled = true;
                     setTimeout(() => {
                         btn.innerHTML = '<span class="codicon codicon-check"></span> Applied';
+                        btn.classList.add('applied');
                         setTimeout(() => { btn.innerHTML = originalContent; btn.disabled = false; }, 3000);
                     }, 1000);
                 }
@@ -1113,19 +1167,17 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     return renderImageGenBlock(prompt, path, width, height);
                 });
             
-            // --- NEW: Process <skill> tags ---
-            let finalHtml = xmlProcessedContent;
-            
-            // Regex captures optional title attribute
-            const skillRegex = /<skill(?:\s+title=["']([^"']*)["'])?>([\s\S]*?)<\/skill>/g;
-            
-            // Replace <skill> blocks with HTML UI
+            // Parse Markdown first
+            let finalHtml = marked.parse(xmlProcessedContent) as string;
+
+            // Process <skill> tags AFTER markdown to prevent double-parsing and escaping
+            const skillRegex = /<skill(?:\s+[^>]*?title=["']([^"']*)["'])?[^>]*?>([\s\S]*?)<\/skill>/g;
             finalHtml = finalHtml.replace(skillRegex, (match, title, skillContent) => {
                 return renderSkillBlock(skillContent, title, messageId);
             });
 
-            // Parse Markdown for the rest
-            finalHtml = sanitizer.sanitize(marked.parse(finalHtml) as string, SANITIZE_CONFIG);
+            // Sanitize at the very end
+            finalHtml = sanitizer.sanitize(finalHtml, SANITIZE_CONFIG);
 
             contentDiv.innerHTML = finalHtml;
         }

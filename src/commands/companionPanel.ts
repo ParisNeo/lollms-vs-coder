@@ -304,13 +304,9 @@ export class CompanionPanel {
     private async replaceSelection(text: string) {
         const editor = this.getActiveEditor();
         if (editor) {
-            await editor.edit(editBuilder => {
-                editBuilder.replace(editor.selection, text);
-            });
-            vscode.window.showTextDocument(editor.document, {
-                viewColumn: editor.viewColumn,
-                preserveFocus: false
-            });
+            // Trigger the inline diff session instead of immediate replacement
+            // This allows the user to review (Accept/Reject) the changes from the companion panel.
+            await vscode.commands.executeCommand('lollms-vs-coder.triggerInlineDiff', editor, editor.selection, text);
         } else {
             vscode.window.showWarningMessage('No active text editor found. Please click inside a file to activate it.');
         }

@@ -29,12 +29,33 @@ export class LollmsCodeActionProvider implements vscode.CodeActionProvider {
             codeActions.push(action);
         }
 
-        // 2. Existing Prompt Actions (Refactor, etc.) - Only when there is a selection
+        // 2. Main Lollms Menu Action
         if (!range.isEmpty) {
-            const prompts = await this.promptManager.getCodeActionPrompts();
+            const mainAction = new vscode.CodeAction('👑 Lollms Actions...', vscode.CodeActionKind.Refactor);
+            mainAction.command = {
+                command: 'lollms-vs-coder.showSelectionMenu',
+                title: 'Show Lollms Menu'
+            };
+            mainAction.isPreferred = true;
+            codeActions.push(mainAction);
 
+            const quickModify = new vscode.CodeAction('📝 Modify with Lollms...', vscode.CodeActionKind.Refactor);
+            quickModify.command = {
+                command: 'lollms-vs-coder.showSelectionMenu', 
+                title: 'Modify with AI'
+            };
+            codeActions.push(quickModify);
+
+            // Directly expose refactoring prompts for quick access
+            const prompts = await this.promptManager.getCodeActionPrompts();
             prompts.forEach(prompt => {
-                const action = new vscode.CodeAction(`Lollms: ${prompt.title}`, vscode.CodeActionKind.Refactor);
+                // Use Emojis for icons as $(icon) syntax is not supported in CodeAction labels
+                let emoji = '✨';
+                if (prompt.title.toLowerCase().includes('bug')) emoji = '🔍';
+                if (prompt.title.toLowerCase().includes('doc')) emoji = '📖';
+                if (prompt.title.toLowerCase().includes('refactor')) emoji = '🛠️';
+                
+                const action = new vscode.CodeAction(`${emoji} ${prompt.title}`, vscode.CodeActionKind.Refactor);
                 action.command = {
                     command: 'lollms-vs-coder.triggerCodeAction',
                     title: prompt.title,
@@ -42,14 +63,6 @@ export class LollmsCodeActionProvider implements vscode.CodeActionProvider {
                 };
                 codeActions.push(action);
             });
-
-            const customAction = new vscode.CodeAction('Lollms: Custom Action...', vscode.CodeActionKind.Refactor);
-            customAction.command = {
-                command: 'lollms-vs-coder.triggerCodeAction',
-                title: 'Lollms Custom Action',
-                arguments: [{ isCustom: true }]
-            };
-            codeActions.push(customAction);
         }
         
         return codeActions;

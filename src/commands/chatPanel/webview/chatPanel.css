@@ -256,6 +256,7 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 .code-action-btn:hover { background-color: var(--vscode-button-secondaryHoverBackground); }
 .code-action-btn:disabled { opacity: 0.5; cursor: not-allowed; pointer-events: none; filter: grayscale(100%); }
 .code-action-btn.success { background-color: var(--vscode-charts-green) !important; color: white !important; border-color: transparent; transition: all 0.2s ease; }
+.code-action-btn.applied, .apply-all-btn.applied { background-color: var(--vscode-charts-red) !important; color: white !important; border-color: transparent; transition: all 0.2s ease; }
 .apply-btn { background-color: var(--vscode-button-background); color: var(--vscode-button-foreground); }
 .apply-btn:hover { background-color: var(--vscode-button-hoverBackground); }
 

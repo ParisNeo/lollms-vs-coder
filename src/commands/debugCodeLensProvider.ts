@@ -32,6 +32,12 @@ export class DebugCodeLensProvider implements vscode.CodeLensProvider {
     public provideCodeLenses(document: vscode.TextDocument, token: vscode.CancellationToken): vscode.CodeLens[] | Thenable<vscode.CodeLens[]> {
         const lenses: vscode.CodeLens[] = [];
 
+        // Ignore documents in the diffs directory or markers to avoid UI clutter
+        const fsPath = document.uri.fsPath;
+        if (fsPath.includes('.lollms') && (fsPath.includes('diffs') || fsPath.includes('temp_scripts'))) {
+            return [];
+        }
+
         // 1. Runtime Debug Errors (from Debug Session)
         const error = this.debugErrorManager.lastError;
         if (error && error.filePath && error.filePath.fsPath === document.uri.fsPath && error.line) {

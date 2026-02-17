@@ -21,6 +21,7 @@ interface ActiveGeneration {
     buffer: string;
     model: string;
     startTime: number;
+    tokenCount: number; // Added to track metrics
     listeners: Set<(chunk: string) => void>;
     onComplete: Set<(fullContent: string) => void>;
 }
@@ -173,22 +174,29 @@ export class ChatPanel {
   
 
     public updateGeneratingState() {
-        if (this._isDisposed) return;
-        
-        // ADD THIS GUARD CLAUSE HERE:
-        if (!this.processManager) {
-            return; 
-        }
+        if (this._isDisposed || !this.processManager) return;
 
         if (this._panel.webview) {
             const process = this.processManager.getForDiscussion(this.discussionId);
-            const hasActiveGen = ChatPanel.activeGenerations.has(this.discussionId);
-            
+            const activeGen = ChatPanel.activeGenerations.get(this.discussionId);
             const activeAgent = ChatPanel.activeAgents.get(this.discussionId);
             const agentIsActive = activeAgent ? activeAgent.getIsActive() : false;
 
-            const isGenerating = (!!process || hasActiveGen || agentIsActive) && !this._inputResolver;
-            this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating });
+            const isGenerating = (!!process || !!activeGen || agentIsActive) && !this._inputResolver;
+            
+            // Extract descriptive status
+            let statusText = vscode.l10n.t("Generating...");
+            if (process) {
+                statusText = process.description;
+            } else if (agentIsActive) {
+                statusText = vscode.l10n.t("Agent Thinking...");
+            }
+
+            this._panel.webview.postMessage({ 
+                command: 'setGeneratingState', 
+                isGenerating,
+                statusText
+            });
         }
     }
   
@@ -248,38 +256,34 @@ export class ChatPanel {
           }
 
           if (discussion) {
-              let needsSave = false;
+              // Ensure critical fields exist in memory but DO NOT save immediately
+              // Saving during load is a destructive race condition
               if (!discussion.messages || !Array.isArray(discussion.messages)) {
                   discussion.messages = [];
-                  needsSave = true;
               }
+              
               discussion.messages.forEach(msg => {
                   if (!msg.id) {
                       msg.id = Date.now().toString() + Math.random().toString(36).substring(2);
-                      needsSave = true;
                   }
               });
+
               if (!('plan' in discussion)) {
                   discussion.plan = null;
-                  needsSave = true;
               }
+
               if (discussion.capabilities) {
                   this._discussionCapabilities = discussion.capabilities;
               } else {
                   discussion.capabilities = this._discussionCapabilities;
-                  needsSave = true;
-              }
-              if (!discussion.personalityId) {
-                  discussion.personalityId = 'default_coder';
-                  needsSave = true;
-              }
-              if (!discussion.importedSkills) {
-                  discussion.importedSkills = [];
-                  needsSave = true;
               }
 
-              if (needsSave && !discussion.id.startsWith('temp-')) {
-                  await this._discussionManager.saveDiscussion(discussion);
+              if (!discussion.personalityId) {
+                  discussion.personalityId = 'default_coder';
+              }
+
+              if (!discussion.importedSkills) {
+                  discussion.importedSkills = [];
               }
 
               this._currentDiscussion = discussion;
@@ -1060,8 +1064,50 @@ Please provide the **FULL CONTENT** of the file instead using the format:
         this.agentManager.toggleAgentMode();
     }
 
+    await this.addMessageToDiscussion(message);
+
+    // --- AUTO TITLE GENERATION ---
+    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+    const isUntitled = !this._currentDiscussion?.title || 
+                       this._currentDiscussion.title === 'New Discussion' || 
+                       this._currentDiscussion.title.toLocaleLowerCase().startsWith('new discussion') ||
+                       this._currentDiscussion.title.toLocaleLowerCase().startsWith('nouvelle discussion');
+
+    if (config.get<boolean>('autoGenerateTitle') && 
+        this._currentDiscussion && 
+        !this._currentDiscussion.id.startsWith('temp-') && 
+        isUntitled) {
+        
+        const userMessages = this._currentDiscussion.messages.filter(m => m.role === 'user');
+        // Only generate title on the first user message to avoid redundant API calls
+        if (userMessages.length === 1) {
+            setTimeout(() => {
+                if (this._isDisposed || !this._currentDiscussion || !this.processManager) return;
+                
+                // Register title generation as a process for the UI overlay
+                const { id: titleProcId } = this.processManager.register(this.discussionId, vscode.l10n.t("Generating discussion title..."));
+                this.updateGeneratingState();
+
+                this._discussionManager.generateDiscussionTitle(this._currentDiscussion).then(newTitle => {
+                    this.processManager.unregister(titleProcId);
+                    this.updateGeneratingState();
+
+                    if (newTitle && this._currentDiscussion && !this._isDisposed) {
+                        this._currentDiscussion.title = newTitle;
+                        this._panel.title = newTitle;
+                        this._discussionManager.saveDiscussion(this._currentDiscussion);
+                        
+                        // Internal refresh of the data provider
+                        vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
+                        // Force VS Code to repaint the specific tree view
+                        vscode.commands.executeCommand('workbench.action.refreshTreeView', 'lollmsDiscussionsView');
+                    }
+                }).catch(e => this.log(`Auto-title generation failed: ${e.message}`, 'WARN'));
+            }, 2000); 
+        }
+    }
+
     if (this.agentManager && this.agentManager.getIsActive()) {
-        await this.addMessageToDiscussion(message); 
         if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
              await this.agentManager.handleUserMessage(
                  typeof message.content === 'string' ? message.content : "User Input", 
@@ -1072,27 +1118,6 @@ Please provide the **FULL CONTENT** of the file instead using the format:
              this.addMessageToDiscussion({ role: 'system', content: "Agent requires an active workspace folder." });
         }
         return;
-    }
-
-    await this.addMessageToDiscussion(message);
-
-    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-    if (config.get<boolean>('autoGenerateTitle') && 
-        this._currentDiscussion && 
-        !this._currentDiscussion.id.startsWith('temp-') &&
-        (this._currentDiscussion.title === 'New Discussion' || !this._currentDiscussion.title)) {
-        
-        const userMessages = this._currentDiscussion.messages.filter(m => m.role === 'user');
-        if (userMessages.length === 1) {
-            this._discussionManager.generateDiscussionTitle(this._currentDiscussion).then(newTitle => {
-                if (newTitle && this._currentDiscussion && !this._isDisposed) {
-                    this._currentDiscussion.title = newTitle;
-                    this._panel.title = newTitle;
-                    this._discussionManager.saveDiscussion(this._currentDiscussion);
-                    vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
-                }
-            }).catch(e => this.log(`Auto-title generation failed: ${e.message}`, 'WARN'));
-        }
     }
 
     const { id: processId, controller } = this.processManager.register(this.discussionId, 'Generating response...');
@@ -1173,9 +1198,20 @@ Please provide the **FULL CONTENT** of the file instead using the format:
         });
 
         try {
-            await this._contextManager.runWebResearchAgent(userPromptText, model, controller.signal, (newContent) => {
-                if (!this._isDisposed) this._panel.webview.postMessage({ command: 'updateMessage', messageId: webAgentMsgId, newContent });
-            });
+            await this._contextManager.runWebResearchAgent(
+                userPromptText, 
+                model, 
+                controller.signal, 
+                (newContent) => {
+                    if (!this._isDisposed) this._panel.webview.postMessage({ command: 'updateMessage', messageId: webAgentMsgId, newContent });
+                },
+                (overlayStatus) => {
+                    if (!this._isDisposed && this.processManager) {
+                        this.processManager.updateDescription(processId, overlayStatus);
+                        this.updateGeneratingState();
+                    }
+                }
+            );
             
             // Refresh tokens/context after files might have been added
             this.updateContextAndTokens();
@@ -1268,8 +1304,13 @@ Please provide the **FULL CONTENT** of the file instead using the format:
         messagesToSend = [...messagesToSend, ...history];
         const assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
         const generationSession: ActiveGeneration = {
-            messageId: assistantMessageId, buffer: '', model: this._currentDiscussion.model || this._lollmsAPI.getModelName(),
-            startTime: Date.now(), listeners: new Set(), onComplete: new Set()
+            messageId: assistantMessageId, 
+            buffer: '', 
+            model: this._currentDiscussion.model || this._lollmsAPI.getModelName(),
+            startTime: Date.now(), 
+            tokenCount: 0, // Explicit initialization
+            listeners: new Set(), 
+            onComplete: new Set()
         };
         
         const panelListener = (chunk: string) => { if (!this._isDisposed && this._panel.webview) this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk }); };
@@ -1282,14 +1323,36 @@ Please provide the **FULL CONTENT** of the file instead using the format:
         await this._lollmsAPI.sendChat(messagesToSend, (chunk) => {
             fullResponse += chunk;
             generationSession.buffer += chunk;
+            generationSession.tokenCount++;
+            
+            // Update metrics in real-time
+            const elapsed = (Date.now() - generationSession.startTime) / 1000;
+            const tps = (generationSession.tokenCount / elapsed).toFixed(1);
+            
+            this._panel.webview.postMessage({
+                command: 'updateGenerationMetrics',
+                tps: tps,
+                count: generationSession.tokenCount
+            });
+
             generationSession.listeners.forEach(listener => listener(chunk));
         }, controller.signal, this._currentDiscussion.model);
 
         const processedResponse = await this.verifyAndProcessCodeBlocks(assistantMessageId, fullResponse, controller.signal);
 
+        const elapsed = (Date.now() - generationSession.startTime) / 1000;
+        const finalTps = (generationSession.tokenCount / elapsed).toFixed(1);
+
         const assistantMessage: ChatMessage = { id: assistantMessageId, role: 'assistant', content: processedResponse, model: generationSession.model };
         await this.addMessageToDiscussion(assistantMessage, false);
-        if (!this._isDisposed) this._panel.webview.postMessage({ command: 'finalizeMessage', id: assistantMessageId, fullContent: processedResponse });
+        if (!this._isDisposed) {
+            this._panel.webview.postMessage({ 
+                command: 'finalizeMessage', 
+                id: assistantMessageId, 
+                fullContent: processedResponse,
+                tps: finalTps
+            });
+        }
 
     } catch (error: any) { if (error.name !== 'AbortError') this.addMessageToDiscussion({ role: 'system', content: `**Error:** ${error.message}` }); }
     finally { ChatPanel.activeGenerations.delete(this.discussionId); this.processManager.unregister(processId); this.updateGeneratingState(); this.updateContextAndTokens(); }
@@ -1560,7 +1623,7 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                 vscode.commands.executeCommand('lollms-vs-coder.insertCode', message.filePath, message.content);
                 break;
             case 'replaceCode':
-                vscode.commands.executeCommand('lollms-vs-coder.replaceCode', message.filePath, message.content);
+                vscode.commands.executeCommand('lollms-vs-coder.replaceCode', message.filePath, message.content, this, message.messageId);
                 break;
             case 'deleteCodeBlock':
                 vscode.commands.executeCommand('lollms-vs-coder.deleteCodeBlock', message.filePath, message.content);
@@ -1911,15 +1974,20 @@ Task:
                 await this.handleSaveSkill(message.content);
                 break;
             case 'saveGeneratedSkill':
-                const { name, description, content, scope } = message.skillData;
+                const { name, description, content, category, scope } = message.skillData;
+                // Generate a unique ID based on the name and timestamp
+                const id = (name || 'skill').toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') + '-' + Date.now();
+                
                 await this._skillsManager.addSkill({
+                    id,
                     name, 
                     description, 
                     content,
+                    category: category || '',
                     language: 'markdown',
                     scope: scope 
                 });
-                vscode.window.showInformationMessage(`Skill '${name}' saved to ${scope} library.`);
+                vscode.window.showInformationMessage(vscode.l10n.t("Skill '{0}' saved to {1} library.", name, scope));
                 vscode.commands.executeCommand('lollms-vs-coder.refreshSkills'); 
                 break;
             case 'importSkills':
@@ -2335,12 +2403,12 @@ Task:
       if (!this._currentDiscussion || !skillIds || skillIds.length === 0) return;
 
       const confirm = await vscode.window.showWarningMessage(
-          `Remove ${skillIds.length} skills from this discussion?`,
+          vscode.l10n.t("prompt.confirmBulkRemoveSkills", skillIds.length),
           { modal: true },
-          "Remove All"
+          vscode.l10n.t("label.removeAll")
       );
 
-      if (confirm === "Remove All") {
+      if (confirm === vscode.l10n.t("label.removeAll")) {
           this._currentDiscussion.importedSkills = (this._currentDiscussion.importedSkills || [])
               .filter(id => !skillIds.includes(id));
 
@@ -2354,7 +2422,7 @@ Task:
           }
           
           this.updateContextAndTokens();
-          vscode.window.showInformationMessage(`Removed ${skillIds.length} skills.`);
+          vscode.window.showInformationMessage(vscode.l10n.t("info.bulkRemoveSkillsSuccess", skillIds.length));
       }
   }
 
@@ -2363,21 +2431,21 @@ Task:
       const workspaceFolder = vscode.workspace.workspaceFolders[0];
 
       const confirm = await vscode.window.showWarningMessage(
-          `Are you sure you want to delete ${files.length} files? This cannot be undone.`,
+          vscode.l10n.t("prompt.confirmBulkDeleteFiles", files.length),
           { modal: true },
-          "Delete All"
+          vscode.l10n.t("label.deleteAll")
       );
 
-      if (confirm === "Delete All") {
+      if (confirm === vscode.l10n.t("label.deleteAll")) {
           try {
               for (const relativePath of files) {
                   const uri = vscode.Uri.joinPath(workspaceFolder.uri, relativePath);
                   await vscode.workspace.fs.delete(uri, { recursive: true, useTrash: true });
               }
-              vscode.window.showInformationMessage(`Successfully deleted ${files.length} files.`);
+              vscode.window.showInformationMessage(vscode.l10n.t("info.bulkDeleteFilesSuccess", files.length));
               this.updateContextAndTokens();
           } catch (e: any) {
-              vscode.window.showErrorMessage(`Bulk deletion failed: ${e.message}`);
+              vscode.window.showErrorMessage(vscode.l10n.t("error.bulkDeleteFailed", e.message));
           }
       }
   }
@@ -2436,7 +2504,10 @@ Task:
         welcomeItem3: vscode.l10n.t("welcome.item3"),
         welcomeItem4: vscode.l10n.t("welcome.item4"),
         progressLoadingFiles: vscode.l10n.t("progress.loadingFiles"),
-        tooltipRefreshContext: vscode.l10n.t("tooltip.refreshContext")
+        tooltipRefreshContext: vscode.l10n.t("tooltip.refreshContext"),
+        labelApply: vscode.l10n.t("label.apply"),
+        labelCancel: vscode.l10n.t("label.cancel"),
+        labelSave: vscode.l10n.t("label.save")
     };
 
     return `<!DOCTYPE html>
@@ -2510,7 +2581,12 @@ Task:
                 <div id="generating-overlay" class="generating-overlay" style="display: none;">
                     <div class="generating-content">
                         <div class="spinner"></div>
-                        <span>Generating...</span>
+                        <div class="generating-details">
+                            <span id="generating-status-text">Generating...</span>
+                            <div id="generating-metrics" class="generating-metrics" style="display: none;">
+                                <span id="metrics-tps">0.0</span> tokens/sec
+                            </div>
+                        </div>
                     </div>
                     <button id="stopButton" class="stop-btn-red">Stop Generation</button>
                 </div>
@@ -2598,31 +2674,30 @@ Task:
                         
                         <div id="active-tools-indicator" class="active-tools-indicator"></div>
                         
-                        <div class="token-progress">
-                            <div class="token-progress-container">
-                                <div class="token-progress-bar" id="token-progress-bar"></div>
-                            </div>
-                            <div id="context-status-container" style="display: flex; align-items: center; gap: 8px;">
-                                <span id="token-count-label"></span>
-                                <button id="cancel-tokens-btn" class="icon-btn" title="Stop Token Calculation" style="display: none;"><i class="codicon codicon-debug-stop"></i></button>
-                                <button id="refresh-context-btn" class="icon-btn" title="Refresh Context"><i class="codicon codicon-refresh"></i></button>
-                            </div>
-                        </div>
-                        
                         <div id="context-loading-spinner" style="display: none; align-items: center; gap: 8px; font-size: 0.9em; color: var(--vscode-descriptionForeground);">
                             <div class="spinner"></div>
                             <span id="loading-files-text"></span>
                         </div>
                     </div>
-                    <div class="input-area">
-                        <div class="control-buttons">
-                            <button id="moreActionsButton" title="Menu"><i class="codicon codicon-menu"></i></button>
+                    <div class="input-area-container">
+                        <div class="rich-input-toolbar">
+                            <button class="toolbar-tool" data-wrap-type="python" title="Wrap in Python Block"><i class="codicon codicon-symbol-method"></i><span>Python</span></button>
+                            <button class="toolbar-tool" data-wrap-type="code" title="Wrap in Code Block"><i class="codicon codicon-code"></i><span>Code</span></button>
+                            <button class="toolbar-tool" data-wrap-type="text" title="Wrap in Plain Text"><i class="codicon codicon-text-size"></i><span>Text</span></button>
+                            <div class="toolbar-separator"></div>
+                            <button class="toolbar-tool" data-wrap-type="bold" title="Bold"><i class="codicon codicon-bold"></i></button>
+                            <button class="toolbar-tool" data-wrap-type="italic" title="Italic"><i class="codicon codicon-italic"></i></button>
                         </div>
-                        
-                        <textarea id="messageInput" placeholder="Enter your message (Shift+Enter for new line)..."></textarea>
+                        <div class="input-area">
+                            <div class="control-buttons">
+                                <button id="moreActionsButton" title="Menu"><i class="codicon codicon-menu"></i></button>
+                            </div>
+                            
+                            <textarea id="messageInput" placeholder="Enter your message (Shift+Enter for new line)..."></textarea>
 
-                        <div class="control-buttons">
-                            <button id="sendButton" title="Send Message"><i class="codicon codicon-send"></i></button>
+                            <div class="control-buttons">
+                                <button id="sendButton" title="Send Message"><i class="codicon codicon-send"></i></button>
+                            </div>
                         </div>
                     </div>
                 </div>

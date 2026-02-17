@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -1038,13 +1038,11 @@
       "lollms": [
         {
           "id": "lollmsActionsView",
-          "name": "%view.actions.name%",
-          "when": "workspaceFolderCount > 0"
+          "name": "%view.actions.name%"
         },
         {
           "id": "lollmsDiscussionsView",
-          "name": "%view.discussions.name%",
-          "when": "workspaceFolderCount > 0"
+          "name": "%view.discussions.name%"
         },
         {
           "id": "lollmsSkillsView",
@@ -1067,8 +1065,7 @@
         },
         {
           "id": "lollmsPersonalitiesView",
-          "name": "Personalities",
-          "when": "workspaceFolderCount > 0"
+          "name": "Personalities"
         },
         {
           "id": "lollmsCodeExplorerView",
@@ -1097,6 +1094,12 @@
         {
           "submenu": "lollms-vs-coder.setContextSubmenu",
           "group": "1_modification@0"
+        }
+      ],
+      "search/context": [
+        {
+          "submenu": "lollms-vs-coder.setContextSubmenu",
+          "group": "1_modification"
         },
         {
           "command": "lollms-vs-coder.inspectFile",

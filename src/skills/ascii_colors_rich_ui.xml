@@ -6,92 +6,66 @@
     <timestamp>1739462400000</timestamp>
     <content>
         <![CDATA[
-# ASCIIColors Rich UI Components
-
-ASCIIColors unifies high-level UI components into a single interface.
-
-## Panels
-Used for grouping content or highlighting alerts.
-
-```python
-from ascii_colors import ASCIIColors
-
-# Simple panel
-ASCIIColors.panel("Deployment successful!", title="Success", border_style="green")
-
-# Highly customized panel
-ASCIIColors.panel(
-    "[bold red]This is a critical warning.[/bold red]",
-    title="[bold yellow]⚠ Warning[/bold yellow]",
-    border_style="bold yellow",
-    box="round",           # "square", "round", "double", "minimal"
-    padding=(1, 2)         # (vertical, horizontal)
-)
-```
-
-## Tables
-Structured data display with column headers and automatic sizing.
-
-```python
-from ascii_colors import ASCIIColors
-
-ASCIIColors.table(
-    "Service", "Status", "Latency",
-    rows=[
-        ["API Gateway", "[green]● Healthy[/green]", "12ms"],
-        ["Database", "[yellow]● Degraded[/yellow]", "120ms"],
-        ["Cache", "[red]● Offline[/red]", "0ms"]
-    ],
-    title="System Health",
-    box="round",
-    show_lines=True
-)
-```
-
-## Trees
-Visualizing hierarchical data like file systems or nested configurations.
+Master the complete suite of Rich-compatible terminal UI components provided by `ascii_colors`. This includes panels, tables, trees, syntax highlighting, markdown, and live dynamic updates.
 
 ```python
 from ascii_colors import ASCIIColors, rich
+import time
 
-root = ASCIIColors.tree("📁 project", style="bold cyan")
-src = root.add_node("📁 src")
-src.add("📄 main.py")
-src.add("📄 utils.py")
-root.add("📁 tests")
+# 1. STRUCTURAL COMPONENTS (Panels & Tables)
+# Panels highlight text with titles and customizable borders
+ASCIIColors.panel(
+    "Application initialization complete.", 
+    title="System Status", 
+    border_style="green",
+    box="round" # square, round, double, minimal
+)
+
+# Tables display structured data rows
+ASCIIColors.table(
+    "Feature", "Status", "Version",
+    rows=[
+        ["Colors", "[green]Enabled[/green]", "1.0.0"],
+        ["Logging", "[yellow]Warning[/yellow]", "1.2.0"],
+        ["UI", "[blue]Rich[/blue]", "2.0.0"]
+    ],
+    title="Library Metrics"
+)
+
+# 2. HIERARCHY & FORMATTING (Trees, Syntax, Markdown)
+# Trees for file structures or recursive data
+root = ASCIIColors.tree("📁 project", style="bold blue")
+root.add_node("📁 src").add("📄 main.py")
 root.add("📄 README.md")
-
 rich.print(root)
-```
 
-## Markdown & Syntax
-Render full markdown strings or syntax-highlighted code blocks.
+# Syntax highlighting for code snippets
+code = "def start(): print('Engine On')"
+ASCIIColors.syntax(code, language="python")
 
-```python
-from ascii_colors import ASCIIColors
+# Markdown rendering for formatted strings
+ASCIIColors.markdown("# Title\n- Item **Bold**\n- Item *Italic*")
 
-# Markdown
-md = """
-# Project Stats
-- Performance: **Optimal**
-- Status: `ready`
-"""
-ASCIIColors.markdown(md)
+# 3. DYNAMIC UI (Spinners & Live Updates)
+# Status spinners for blocking I/O tasks
+with ASCIIColors.status("Downloading...", spinner="dots") as status:
+    time.sleep(1)
+    status.update("Extracting...")
+    time.sleep(1)
 
-# Syntax Highlighting
-code = "def hello(): print('world')"
-ASCIIColors.syntax(code, language="python", line_numbers=True)
-```
+# Live displays for updating any UI element in-place
+with ASCIIColors.live("[bold cyan]Generating Report...[/bold cyan]") as live:
+    for i in range(1, 6):
+        time.sleep(0.5)
+        live.update(f"Step {i}/5: [blue]{'█' * i}[/blue]")
+    live.update("[bold green]✓ Done![/bold green]")
 
-## Columns
-Displaying items side-by-side.
+# 4. UTILITIES
+# Rules (Horizontal separators)
+ASCIIColors.rule("Config Section", align="center", style="yellow")
+# Columns layout
+ASCIIColors.columns("Left Panel", "Right Panel", equal=True)
 
-```python
-from ascii_colors import ASCIIColors
-
-items = ["Apples", "Oranges", "Bananas", "Grapes"]
-ASCIIColors.columns(*items, width=20)
-```
 ]]>
     </content>
 </skill>

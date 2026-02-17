@@ -2,5 +2,7 @@
 - Add RLM mode with REPL.
 - Fix the advanced tools ui to be aligned with the new formatting.
 - Remove the response style from the main discussion menu
+- upgrade ascii_colors skills
+- upgrade skill creation to handle description/category
 - Add skills for ScrapeMaster and safe_store
 - When generating a commit message block subsequent generations.

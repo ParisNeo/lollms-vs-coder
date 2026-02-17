@@ -34,21 +34,24 @@ export class ActionsTreeProvider implements vscode.TreeDataProvider<ActionItem> 
             return Promise.resolve([]);
         }
 
+        const hasWorkspace = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0;
+
         const actions: ActionItem[] = [
-            new ActionItem('Generate Educative Notebook', 'lollms-vs-coder.generateEducativeNotebookFromAction', 'book', 'Generate a comprehensive notebook from a prompt'),
             new ActionItem('Settings', 'lollms-vs-coder.showConfigView', 'gear', 'Open Lollms settings panel'),
             new ActionItem('Help', 'lollms-vs-coder.showHelp', 'question', 'Show the help panel'),
             new ActionItem('Show Debug Log', 'lollms-vs-coder.showLog', 'output', 'Show the debug log for the active chat'),
-            new ActionItem('Show Code Graph', 'lollms-vs-coder.showCodeGraphPanel', 'git-compare', 'Show the interactive code graph'),
-            new ActionItem('Auto-Select Context', 'lollms-vs-coder.autoSelectContextFiles', 'wand', 'Let the AI select relevant files for an objective'),
-            new ActionItem('Export Context', 'lollms-vs-coder.exportContextContent', 'clippy', 'Copy the full project context to the clipboard'),
-            new ActionItem('Save Context Selection', 'lollms-vs-coder.saveContextSelection', 'save', 'Save the current file selection to a .lollms-ctx file'),
-            new ActionItem('Load Context Selection', 'lollms-vs-coder.loadContextSelection', 'folder-opened', 'Load a file selection from a .lollms-ctx file'),
-            // Updated item for Soft Reset
-            new ActionItem('Reset Included Files', 'lollms-vs-coder.resetContextSelection', 'clear-all', 'Deselect all included files (keeps exclusions)'),
-            // New item for Full Reset
-            new ActionItem('Full Context Reset', 'lollms-vs-coder.fullResetContext', 'trash', 'Reset entire context state to defaults'),
         ];
+
+        if (hasWorkspace) {
+            actions.unshift(new ActionItem('Generate Educative Notebook', 'lollms-vs-coder.generateEducativeNotebookFromAction', 'book', 'Generate a comprehensive notebook from a prompt'));
+            actions.push(new ActionItem('Show Code Graph', 'lollms-vs-coder.showCodeGraphPanel', 'git-compare', 'Show the interactive code graph'));
+            actions.push(new ActionItem('Auto-Select Context', 'lollms-vs-coder.autoSelectContextFiles', 'wand', 'Let the AI select relevant files for an objective'));
+            actions.push(new ActionItem('Export Context', 'lollms-vs-coder.exportContextContent', 'clippy', 'Copy the full project context to the clipboard'));
+            actions.push(new ActionItem('Save Context Selection', 'lollms-vs-coder.saveContextSelection', 'save', 'Save the current file selection to a .lollms-ctx file'));
+            actions.push(new ActionItem('Load Context Selection', 'lollms-vs-coder.loadContextSelection', 'folder-opened', 'Load a file selection from a .lollms-ctx file'));
+            actions.push(new ActionItem('Reset Included Files', 'lollms-vs-coder.resetContextSelection', 'clear-all', 'Deselect all included files (keeps exclusions)'));
+            actions.push(new ActionItem('Full Context Reset', 'lollms-vs-coder.fullResetContext', 'trash', 'Reset entire context state to defaults'));
+        }
 
         return Promise.resolve(actions);
     }

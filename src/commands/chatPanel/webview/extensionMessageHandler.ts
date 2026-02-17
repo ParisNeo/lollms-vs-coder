@@ -49,6 +49,17 @@ export function handleExtensionMessage(event: MessageEvent) {
                         if (stream.timer) clearTimeout(stream.timer);
                         delete state.streamingMessages[message.id];
                     }
+                    
+                    // Update header with final TPS
+                    const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.id}']`) as HTMLElement;
+                    if (wrapper && message.tps) {
+                        const header = wrapper.querySelector('.message-header');
+                        const stats = header?.querySelector('.generation-stats');
+                        if (stats) {
+                            stats.textContent = stats.textContent?.replace(')', ` | TPS: ${message.tps} t/s)`);
+                        }
+                    }
+
                     renderMessageContent(message.id, message.fullContent, true);
                 }
                 break;
@@ -79,7 +90,15 @@ export function handleExtensionMessage(event: MessageEvent) {
                 }
                 break;
             case 'setGeneratingState':
-                setGeneratingState(message.isGenerating);
+                setGeneratingState(message.isGenerating, message.statusText);
+                break;
+            case 'updateGenerationMetrics':
+                const metricsEl = document.getElementById('generating-metrics');
+                const tpsEl = document.getElementById('metrics-tps');
+                if (metricsEl) metricsEl.style.display = 'block';
+                if (tpsEl && message.tps && !isNaN(parseFloat(message.tps))) {
+                    tpsEl.textContent = message.tps;
+                }
                 break;
             case 'updateContext':
                 updateContext(message.context, message.files, message.skills);
@@ -287,17 +306,25 @@ export function handleExtensionMessage(event: MessageEvent) {
                         
                         if (dom.tokenProgressBar) {
                             if (size > 0) {
-                                const percentage = Math.min((totalTokens / size) * 100, 100);
+                                const ratio = totalTokens / size;
+                                const percentage = Math.min(ratio * 100, 100);
                                 dom.tokenProgressBar.style.width = `${percentage}%`;
-                                dom.tokenProgressBar.classList.remove('green', 'yellow', 'red', 'approximate');
+                                dom.tokenProgressBar.classList.remove('green', 'orange', 'red', 'approximate');
+                                
                                 if (isApproximate) {
                                     dom.tokenProgressBar.classList.add('approximate');
-                                } else if (percentage > 90) {
+                                } else if (ratio > 1.0) {
                                     dom.tokenProgressBar.classList.add('red');
-                                } else if (percentage > 75) {
-                                    dom.tokenProgressBar.classList.add('yellow');
+                                } else if (ratio > 0.75) {
+                                    dom.tokenProgressBar.classList.add('orange');
                                 } else {
                                     dom.tokenProgressBar.classList.add('green');
+                                }
+
+                                // If overflowing, make the text label red as well
+                                if (dom.tokenCountLabel) {
+                                    dom.tokenCountLabel.style.color = ratio > 1.0 ? 'var(--vscode-charts-red)' : '';
+                                    dom.tokenCountLabel.style.fontWeight = ratio > 1.0 ? 'bold' : 'normal';
                                 }
                             } else {
                                 dom.tokenProgressBar.style.width = '0%';

@@ -299,12 +299,40 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     margin: 0;
     padding: 0;
     overflow-x: auto;
-    max-height: 500px;
+    max-height: 600px;
     overflow-y: auto;
     width: 100%;
-    /* Create a separate scroll context if desired, or keep it flowing */
+    max-width: 100%;
+    display: flex; /* Support line numbers side-by-side */
+    background-color: var(--vscode-editor-background);
+    box-sizing: border-box;
 }
-.code-collapsible > pre > code { display: block; padding: 12px; font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); white-space: pre; background-color: transparent; box-sizing: border-box; }
+
+.code-line-gutter {
+    text-align: right;
+    padding: 12px 8px;
+    color: var(--vscode-editorLineNumber-foreground);
+    background-color: var(--vscode-editorGutter-background);
+    user-select: none;
+    font-family: var(--vscode-editor-font-family);
+    font-size: var(--vscode-editor-font-size);
+    border-right: 1px solid var(--vscode-editorGroup-border);
+    min-width: 35px;
+    line-height: 1.5; /* Match Prism line height */
+}
+
+.code-collapsible > pre > code { 
+    flex: 1;
+    display: block; 
+    padding: 12px; 
+    font-family: var(--vscode-editor-font-family); 
+    font-size: var(--vscode-editor-font-size); 
+    white-space: pre; 
+    background-color: transparent; 
+    box-sizing: border-box;
+    overflow-x: visible; /* Let the parent pre handle the scroll */
+    line-height: 1.5;
+}
 .select-line-valid { color: var(--vscode-charts-green); font-weight: bold; display: block; padding: 2px 0; white-space: pre; }
 .select-line-valid::before { content: '✓ '; font-family: "codicon"; margin-right: 6px; font-weight: normal; }
 .select-line-invalid { color: var(--vscode-errorForeground); text-decoration: line-through; opacity: 0.8; display: block; padding: 2px 0; white-space: pre; }
@@ -550,12 +578,62 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 .tool-item { padding: 8px 0; border-bottom: 1px solid var(--vscode-widget-border); }
 .modal-footer { padding: 12px 16px; border-top: 1px solid var(--vscode-widget-border); text-align: right; }
 
+.input-area-container {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.rich-input-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 4px;
+    background-color: var(--vscode-editorWidget-background);
+    border: 1px solid var(--vscode-input-border);
+    border-bottom: none;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+}
+
+.toolbar-tool {
+    background: transparent;
+    border: none;
+    color: var(--vscode-input-foreground);
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    opacity: 0.8;
+    transition: background 0.2s, opacity 0.2s;
+}
+
+.toolbar-tool:hover {
+    background-color: var(--vscode-toolbar-hoverBackground);
+    opacity: 1;
+}
+
+.toolbar-tool i {
+    font-size: 14px;
+}
+
+.toolbar-separator {
+    width: 1px;
+    height: 16px;
+    background-color: var(--vscode-input-border);
+    margin: 0 4px;
+}
+
 .input-area {
     display: flex;
     gap: 8px;
     background-color: var(--vscode-input-background);
     border: 1px solid var(--vscode-input-border);
-    border-radius: 6px;
+    border-bottom-left-radius: 6px;
+    border-bottom-right-radius: 6px;
     padding: 8px;
     align-items: flex-end;
     position: relative;
@@ -650,14 +728,14 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 #sendButton { color: var(--vscode-button-background); }
 
 .top-controls {
-    display: flex; gap: 12px; margin-bottom: 12px; align-items: center; font-size: 12px;
+    display: flex; gap: 12px; margin-bottom: 8px; align-items: center; font-size: 12px;
 }
-.token-progress { flex: 1; display: flex; gap: 10px; align-items: center; color: var(--vscode-descriptionForeground); }
-.token-progress-container { flex: 1; height: 4px; background: var(--vscode-scrollbarSlider-background); border-radius: 2px; overflow: hidden; }
+.token-progress { display: flex; flex-direction: column; gap: 4px; color: var(--vscode-descriptionForeground); }
+.token-progress-container { width: 100%; height: 4px; background: var(--vscode-scrollbarSlider-background); border-radius: 2px; overflow: hidden; }
 .token-progress-bar { height: 100%; background: var(--vscode-progressBar-background); width: 0; transition: width 0.3s ease-out, background-color 0.3s ease-out; }
 
 .token-progress-bar.green { background-color: var(--vscode-charts-green); }
-.token-progress-bar.yellow { background-color: var(--vscode-charts-yellow); }
+.token-progress-bar.orange { background-color: var(--vscode-charts-orange); }
 .token-progress-bar.red { background-color: var(--vscode-charts-red); }
 .token-progress-bar.approximate {
     background-color: var(--vscode-charts-orange);
@@ -1121,9 +1199,12 @@ mark.current-match {
     margin: 16px;
     flex-shrink: 0;
 }
-.generating-content { display: flex; align-items: center; gap: 10px; font-weight: 600; color: var(--vscode-input-foreground); }
+.generating-content { display: flex; align-items: center; gap: 12px; color: var(--vscode-input-foreground); }
+.generating-details { display: flex; flex-direction: column; gap: 2px; }
+#generating-status-text { font-weight: 600; font-size: 13px; }
+.generating-metrics { font-size: 10px; opacity: 0.7; font-family: var(--vscode-editor-font-family); }
 
-.generating-content .spinner { width: 16px; height: 16px; border: 2px solid var(--vscode-textLink-foreground); border-bottom-color: transparent; border-radius: 50%; animation: lollms-rotation 1s linear infinite; }
+.generating-content .spinner { width: 18px; height: 18px; border: 2px solid var(--vscode-textLink-foreground); border-bottom-color: transparent; border-radius: 50%; animation: lollms-rotation 1s linear infinite; }
 .stop-btn-red { background-color: var(--vscode-charts-red); color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-family: var(--vscode-font-family); font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; transition: background-color 0.2s; }
 .stop-btn-red:hover { background-color: var(--vscode-errorForeground); opacity: 0.9; }
 

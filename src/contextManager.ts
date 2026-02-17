@@ -578,7 +578,8 @@ ${JSON.stringify(skillCatalog, null, 2)}`;
       userPrompt: string,
       model: string,
       signal: AbortSignal,
-      onUpdate: (content: string) => void
+      onUpdate: (content: string) => void,
+      onOverlayUpdate?: (status: string) => void
   ): Promise<void> {
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const searchInCache = config.get<boolean>('searchInCacheFirst') ?? true;
@@ -791,7 +792,9 @@ If yes, you must plan searches, execute them, review results, and add valuable c
                     role: 'system', 
                     content: `SEARCH RESULTS:\n${combinedResults}\n\nNow decide to 'read_and_add' useful links or 'done'.` 
                 });
-                actionLog.push(`✅ Found ${foundResults.length} potential sources.`);
+                const searchStatus = `Found ${foundResults.length} URLs, selecting relevant info...`;
+                actionLog.push(`✅ ${searchStatus}`);
+                if (onOverlayUpdate) onOverlayUpdate(`🔍 ${searchStatus}`);
 
             } else if (toolName === 'read_and_add') {
                 const urls = params.urls || [];
@@ -1106,21 +1109,17 @@ You have access to the project structure and the list of currently selected file
     const includeTree = options?.includeTree !== false; 
     const signal = options?.signal;
     const skillProtocol = `
-### SKILL CREATION PROTOCOL
-If the user asks to "save this as a skill", "remember this", or "learn how to do X", wrap the resulting documentation/code in a 
-    <div class="skill-creation-block">
-        <div class="skill-header"><span class="codicon codicon-lightbulb"></span> Skill Generated: New Skill</div>
-        <div class="skill-preview markdown-body"><p> tag.<br>Format:<br><br>Description of what this teaches or provides.<br>\`\`\`language<br>code or instructions<br>\`\`\`</p>
-</div>
-        <div class="skill-actions">
-            <button class="code-action-btn" onclick="saveSkill('%20tag.%0D%0AFormat%3A%0D%0A%3Cskill%20title%3D%22Skill%20Name%22%3E%0D%0ADescription%20of%20what%20this%20teaches%20or%20provides.%0D%0A%5C%60%5C%60%5C%60language%0D%0Acode%20or%20instructions%0D%0A%5C%60%5C%60%5C%60%0D%0A', 'local', 'New%20Skill')" title="Save to Project">
-                <span class="codicon codicon-save"></span>
-            </button>
-            <button class="code-action-btn" onclick="saveSkill('%20tag.%0D%0AFormat%3A%0D%0A%3Cskill%20title%3D%22Skill%20Name%22%3E%0D%0ADescription%20of%20what%20this%20teaches%20or%20provides.%0D%0A%5C%60%5C%60%5C%60language%0D%0Acode%20or%20instructions%0D%0A%5C%60%5C%60%5C%60%0D%0A', 'global', 'New%20Skill')" title="Save Global">
-                <span class="codicon codicon-globe"></span>
-            </button>
-        </div>
-    </div>
+### 💡 SKILL CREATION PROTOCOL
+If the user asks to "save this as a skill", "remember this", or "learn a new trick", wrap the content in a <skill> tag.
+Format:
+<skill title="Clear Name" description="What this teaches/provides" category="programming/language/feature">
+The detailed documentation or code pattern here in Markdown.
+</skill>
+
+Rules:
+1. **Title**: Concise and descriptive.
+2. **Category**: Use forward slashes for hierarchy (e.g., 'web/react/hooks').
+3. **Content**: Ensure it is high-quality, reusable info.
 `;
     if (!this.contextStateProvider) {
       result.text = this.getNoWorkspaceMessage();

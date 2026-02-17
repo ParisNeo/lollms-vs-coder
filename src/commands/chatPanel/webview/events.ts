@@ -44,6 +44,43 @@ export function initEventHandlers() {
         }
     });
 
+    const wrapText = (type: string) => {
+        const input = dom.messageInput;
+        const start = input.selectionStart;
+        const end = input.selectionEnd;
+        const text = input.value;
+        const selected = text.substring(start, end);
+
+        let before = "";
+        let after = "";
+
+        switch (type) {
+            case 'python': before = "```python\n"; after = "\n```"; break;
+            case 'code': before = "```\n"; after = "\n```"; break;
+            case 'text': before = "```text\n"; after = "\n```"; break;
+            case 'bold': before = "**"; after = "**"; break;
+            case 'italic': before = "*"; after = "*"; break;
+        }
+
+        const newText = text.substring(0, start) + before + selected + after + text.substring(end);
+        input.value = newText;
+        
+        // Restore focus and selection
+        input.focus();
+        const newCursorPos = start + before.length + selected.length + after.length;
+        input.setSelectionRange(newCursorPos, newCursorPos);
+        
+        // Trigger resize
+        input.dispatchEvent(new Event('input'));
+    };
+
+    document.querySelectorAll('.toolbar-tool').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const type = (btn as HTMLElement).dataset.wrapType;
+            if (type) wrapText(type);
+        });
+    });
+
     if (dom.messageInput) {
         dom.messageInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -361,10 +398,12 @@ export function initEventHandlers() {
                 const content = btn.dataset.content || '';
                 const scope = btn.dataset.scope as 'global' | 'local';
                 const title = btn.dataset.title || '';
+                const desc = btn.dataset.description || '';
+                const cat = btn.dataset.category || '';
                 
                 // Call the globally defined handler in main.ts
                 if (typeof (window as any).saveSkill === 'function') {
-                    (window as any).saveSkill(content, scope, title);
+                    (window as any).saveSkill(content, scope, title, desc, cat);
                     
                     // Provide immediate visual feedback
                     const originalHtml = btn.innerHTML;

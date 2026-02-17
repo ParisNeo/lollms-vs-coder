@@ -87,29 +87,21 @@ import { initEventHandlers } from './events.js';
 import { handleExtensionMessage } from './extensionMessageHandler.js';
 
 // Add to global scope
-(window as any).saveSkill = (encodedContent: string, scope: 'global' | 'local', encodedTitle?: string) => {
+(window as any).saveSkill = (encodedContent: string, scope: 'global' | 'local', encodedTitle?: string, encodedDesc?: string, encodedCat?: string) => {
     const content = decodeURIComponent(encodedContent);
-    let name = encodedTitle ? decodeURIComponent(encodedTitle) : "New Skill";
-    
-    // If name is still default and not provided in title, try regex
-    if (name === "New Skill" && !encodedTitle) {
-         const nameMatch = content.match(/^#\s+(.*)/m);
-         if (nameMatch) name = nameMatch[1].trim();
-    }
-    
-    // Try to extract description
-    const lines = content.split('\n');
-    let desc = "Generated skill";
-    // Find first non-empty line that isn't a header or code block fence
-    const descLine = lines.find((l) => {
-        const t = l.trim();
-        return t.length > 0 && !t.startsWith('```') && !t.startsWith('#');
-    });
-    if (descLine) desc = descLine.trim();
+    const name = encodedTitle ? decodeURIComponent(encodedTitle) : "New Skill";
+    const description = encodedDesc ? decodeURIComponent(encodedDesc) : "";
+    const category = encodedCat ? decodeURIComponent(encodedCat) : "";
 
     vscode.postMessage({ 
         command: 'saveGeneratedSkill', 
-        skillData: { name, description: desc, content, scope } 
+        skillData: { 
+            name, 
+            description, 
+            content, 
+            category,
+            scope 
+        } 
     });
 };
 
@@ -147,16 +139,16 @@ import { handleExtensionMessage } from './extensionMessageHandler.js';
                 if(title) title.innerHTML = l10n.welcomeTitle || "Welcome";
                 
                 const item1 = dom.welcomeMessage.querySelector('#welcome-item-1');
-                if(item1) item1.innerHTML = l10n.welcomeItem1 || "Item 1";
+                if(item1) item1.innerHTML = l10n.welcomeItem1 || "";
                 
                 const item2 = dom.welcomeMessage.querySelector('#welcome-item-2');
-                if(item2) item2.innerHTML = l10n.welcomeItem2 || "Item 2";
+                if(item2) item2.innerHTML = l10n.welcomeItem2 || "";
                 
                 const item3 = dom.welcomeMessage.querySelector('#welcome-item-3');
-                if(item3) item3.innerHTML = l10n.welcomeItem3 || "Item 3";
+                if(item3) item3.innerHTML = l10n.welcomeItem3 || "";
                 
                 const item4 = dom.welcomeMessage.querySelector('#welcome-item-4');
-                if(item4) item4.innerHTML = l10n.welcomeItem4 || "Item 4";
+                if(item4) item4.innerHTML = l10n.welcomeItem4 || "";
                 
                 if(dom.contextLoadingSpinner) {
                      const textSpan = dom.contextLoadingSpinner.querySelector('#loading-files-text');

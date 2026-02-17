@@ -1,7 +1,18 @@
 import { dom, state, vscode } from "./dom.js";
 import { isScrolledToBottom } from "./utils.js";
 
-export function setGeneratingState(isGenerating: boolean) {
+function getStatusEmoji(text: string): string {
+    const lower = text.toLowerCase();
+    if (lower.includes('search') || lower.includes('research')) return '🌍';
+    if (lower.includes('title')) return '🏷️';
+    if (lower.includes('skill')) return '💡';
+    if (lower.includes('context') || lower.includes('file')) return '🧠';
+    if (lower.includes('agent')) return '🤖';
+    if (lower.includes('analyz')) return '🔬';
+    return '✍️';
+}
+
+export function setGeneratingState(isGenerating: boolean, statusText?: string) {
     state.isGenerating = isGenerating;
 
     if (dom.messageInput) {
@@ -23,6 +34,17 @@ export function setGeneratingState(isGenerating: boolean) {
 
     if (dom.generatingOverlay) {
         dom.generatingOverlay.style.display = isGenerating ? 'flex' : 'none';
+        const statusEl = document.getElementById('generating-status-text');
+        if (statusEl && statusText) {
+            const emoji = getStatusEmoji(statusText);
+            statusEl.textContent = `${emoji} ${statusText}`;
+        }
+        // Hide metrics initially when starting a new process (e.g. searching)
+        // They will be shown by updateGenerationMetrics once streaming starts
+        const metricsEl = document.getElementById('generating-metrics');
+        if (metricsEl && !statusText?.includes('...')) {
+             metricsEl.style.display = 'none';
+        }
     }
 
     if (!isGenerating) {

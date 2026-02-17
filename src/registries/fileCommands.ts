@@ -265,7 +265,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         );
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string) => {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string, panel?: ChatPanel, messageId?: string) => {
         const activeWorkspace = getActiveWorkspace();
         if (!activeWorkspace) return;
 
@@ -302,15 +302,53 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                         fixBtn, "Cancel"
                     );
 
-                    if (selection === fixBtn && ChatPanel.currentPanel) {
-                        const repairPrompt = `The following Search/Replace update failed to apply to \`${filePath}\`.\n\n` +
-                            `**Error:** ${result.error}\n\n` +
-                            `**Original File Content:**\n\`\`\`\n${originalContent}\n\`\`\`\n\n` +
-                            `**Your failing attempt:**\n\`\`\`\n${match[0]}\n\`\`\`\n\n` +
-                            `Please fix your code. Verify indentations and ensure the text in the SEARCH block exactly matches the original file text.`;
-                        
-                        await ChatPanel.currentPanel.sendMessage({ role: 'user', content: repairPrompt });
-                        return; // Stop processing further blocks if one fails
+                    if (selection === fixBtn && panel && messageId) {
+                        // --- SILENT BACKGROUND REPAIR ---
+                        await vscode.window.withProgress({
+                            location: vscode.ProgressLocation.Notification,
+                            title: `Lollms: Repairing block for ${filePath}...`,
+                            cancellable: false
+                        }, async () => {
+                            const repairPrompt = `The following Search/Replace block failed to match in \`${filePath}\`.\n\n` +
+                                `**Error:** ${result.error}\n\n` +
+                                `**Current File Content:**\n\`\`\`\n${originalContent}\n\`\`\`\n\n` +
+                                `**Your failing attempt:**\n\`\`\`\n${match[0]}\n\`\`\`\n\n` +
+                                `Please provide the CORRECTED Search/Replace block. Ensure the SEARCH part matches the file content exactly, including whitespace and indentation.`;
+                            
+                            try {
+                                const response = await panel._lollmsAPI.sendChat([
+                                    { role: 'system', content: "You are a precise code repair assistant. Output ONLY the corrected block." },
+                                    { role: 'user', content: repairPrompt }
+                                ]);
+
+                                const fixedBlockMatch = response.match(/<<<<<<< SEARCH[\s\S]*?>>>>>>> REPLACE/);
+                                if (fixedBlockMatch) {
+                                    const fixedBlock = fixedBlockMatch[0];
+                                    
+                                    // 1. Update the message content in the UI
+                                    const currentDiscussion = panel.getCurrentDiscussion();
+                                    if (currentDiscussion) {
+                                        const msg = currentDiscussion.messages.find(m => m.id === messageId);
+                                        if (msg && typeof msg.content === 'string') {
+                                            const updatedContent = msg.content.replace(match[0], fixedBlock);
+                                            await panel.updateMessageContent(messageId, updatedContent);
+                                        }
+                                    }
+
+                                    // 2. Automatically retry applying the NEW content
+                                    vscode.window.showInformationMessage(vscode.l10n.t("Block repaired. Retrying apply..."));
+                                    await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, fixedBlock, panel, messageId);
+                                } else {
+                                    // NOTIFY USER OF FORMAT FAILURE
+                                    vscode.window.showWarningMessage(
+                                        vscode.l10n.t("Lollms: The AI suggested a fix but failed to follow the SEARCH/REPLACE format. Please fix it manually.")
+                                    );
+                                }
+                            } catch (err: any) {
+                                vscode.window.showErrorMessage(`Repair failed: ${err.message}`);
+                            }
+                        });
+                        return; 
                     }
                 }
             }

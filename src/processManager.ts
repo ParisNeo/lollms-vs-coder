@@ -30,6 +30,14 @@ export class ProcessManager {
         return process;
     }
 
+    public updateDescription(id: string, newDescription: string): void {
+        const process = this.processes.get(id);
+        if (process) {
+            process.description = newDescription;
+            this._onDidProcessChange.fire();
+        }
+    }
+
     public unregister(id: string): void {
         if (this.processes.has(id)) {
             this.processes.delete(id);

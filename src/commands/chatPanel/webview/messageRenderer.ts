@@ -231,43 +231,37 @@ function enablePanZoom(container: HTMLElement) {
     window.addEventListener('mouseup', stopDrag);
 }
 // Helper to render skill creation blocks
-function renderSkillBlock(rawContent: string, titleAttr: string | undefined, messageId: string): string {
-    let title = titleAttr || "New Skill";
-    let description = "";
+function renderSkillBlock(rawContent: string, attrs: { title?: string, description?: string, category?: string }, messageId: string): string {
+    let title = attrs.title || "New Skill";
+    let description = attrs.description || "";
+    let category = attrs.category || "";
     let finalContent = rawContent;
 
-    // Check if the content is structured (contains <name>, <description>, <content>)
-    const nameMatch = rawContent.match(/<name>(.*?)<\/name>/s);
-    const descMatch = rawContent.match(/<description>(.*?)<\/description>/s);
+    // Legacy CDATA/Tag extraction fallback
     const contentTagMatch = rawContent.match(/<content>\s*(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?\s*<\/content>/s);
-
-    if (nameMatch) title = nameMatch[1].trim();
-    if (descMatch) description = descMatch[1].trim();
     if (contentTagMatch) finalContent = contentTagMatch[1].trim();
-
-    // If no structured tags, try legacy extraction from headers
-    if (!nameMatch && !titleAttr) {
-        const lines = finalContent.split('\n');
-        const titleLine = lines.find(l => l.startsWith('#'));
-        if (titleLine) title = titleLine.replace(/^#+\s*/, '').trim();
-    }
     
     const safeContent = encodeURIComponent(finalContent);
     const safeTitle = encodeURIComponent(title);
+    const safeDesc = encodeURIComponent(description);
+    const safeCat = encodeURIComponent(category);
 
     return `
     <div class="skill-creation-block">
         <div class="skill-header">
             <span class="codicon codicon-lightbulb" style="color:var(--vscode-charts-yellow)"></span> 
-            <span>Propose New Skill: <strong>${sanitizer.sanitize(title)}</strong></span>
+            <div style="display:flex; flex-direction:column; gap:2px;">
+                <span style="font-size: 13px;">Propose New Skill: <strong>${sanitizer.sanitize(title)}</strong></span>
+                ${category ? `<span style="font-size: 10px; opacity: 0.7;">📁 ${sanitizer.sanitize(category)}</span>` : ''}
+            </div>
         </div>
-        ${description ? `<div style="padding: 8px 16px; font-size: 0.9em; opacity: 0.8; border-bottom: 1px solid var(--vscode-widget-border);">${sanitizer.sanitize(description)}</div>` : ''}
+        ${description ? `<div style="padding: 8px 16px; font-size: 12px; opacity: 0.9; border-bottom: 1px solid var(--vscode-widget-border); font-style: italic;">${sanitizer.sanitize(description)}</div>` : ''}
         <div class="skill-preview markdown-body">${sanitizer.sanitize(marked.parse(finalContent))}</div>
         <div class="skill-actions">
-            <button class="code-action-btn apply-btn save-skill-btn" data-content="${safeContent}" data-scope="local" data-title="${safeTitle}">
+            <button class="code-action-btn apply-btn save-skill-btn" data-content="${safeContent}" data-scope="local" data-title="${safeTitle}" data-description="${safeDesc}" data-category="${safeCat}">
                 <span class="codicon codicon-save"></span> Save to Project
             </button>
-            <button class="code-action-btn apply-btn save-skill-btn" data-content="${safeContent}" data-scope="global" data-title="${safeTitle}">
+            <button class="code-action-btn apply-btn save-skill-btn" data-content="${safeContent}" data-scope="global" data-title="${safeTitle}" data-description="${safeDesc}" data-category="${safeCat}">
                 <span class="codicon codicon-globe"></span> Save Global
             </button>
         </div>
@@ -432,190 +426,89 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     };
 }
 
-function extractFilePaths(content: string): { type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | 'file_delete' | null, path: string, stripFirstLine: boolean, isClosed: boolean }[] {
-    const infos: { type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | 'file_delete' | null, path: string, stripFirstLine: boolean, isClosed: boolean }[] = [];
+function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | 'file_delete' | null, path: string, stripFirstLine: boolean, isClosed: boolean, start: number, end: number })[] {
+    const infos: any[] = [];
     const lines = content.split('\n');
     let inBlock = false;
     let fenceLength = 0;
+    let depth = 0;
+    let currentOffset = 0;
+    let blockStartOffset = 0;
 
     for (let i = 0; i < lines.length; i++) {
-        const line = lines[i].trim(); 
-        
+        const lineWithNewline = lines[i] + (i < lines.length - 1 ? '\n' : '');
+        const line = lines[i].trim();
+        const match = line.match(/^(\s{0,3})(`{3,})/);
+
         if (!inBlock) {
+            // Check for XML operations outside blocks
             const xmlRename = line.match(/<rename\s+old=["']([^"']+)["']\s+new=["']([^"']+)["']\s*\/>/i);
             const xmlDelete = line.match(/<delete\s+path=["']([^"']+)["']\s*\/>/i);
-            const xmlRemove = line.match(/<remove\s+path=["']([^"']+)["']\s*\/>/i);
             const xmlSelect = line.match(/<select\s+path=["']([^"']+)["']\s*\/>/i);
             
-            if (xmlRename) {
-                infos.push({ type: 'rename', path: `${xmlRename[1]} -> ${xmlRename[2]}`, stripFirstLine: false, isClosed: true });
-                continue;
+            if (xmlRename || xmlDelete || xmlSelect) {
+                const type = xmlRename ? 'rename' : (xmlDelete ? 'file_delete' : 'select');
+                const path = xmlRename ? `${xmlRename[1]} -> ${xmlRename[2]}` : (xmlDelete ? xmlDelete[1] : xmlSelect![1]);
+                infos.push({ type, path, start: currentOffset, end: currentOffset + lineWithNewline.length, isClosed: true });
             }
-            if (xmlDelete) {
-                infos.push({ type: 'file_delete', path: xmlDelete[1], stripFirstLine: false, isClosed: true });
-                continue;
-            }
-            if (xmlRemove) {
-                infos.push({ type: 'file_delete', path: xmlRemove[1], stripFirstLine: false, isClosed: true });
-                continue;
-            }
-            if (xmlSelect) {
-                infos.push({ type: 'select', path: xmlSelect[1], stripFirstLine: false, isClosed: true });
-                continue;
-            }
-        }
 
-        const match = line.match(/^(\s{0,3})(`{3,})/); 
-
-        if (match) {
-            const currentFenceLength = match[2].length;
-
-            if (!inBlock) {
+            if (match) {
                 inBlock = true;
-                fenceLength = currentFenceLength;
-                
-                let type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | 'file_delete' | null = null;
+                fenceLength = match[2].length;
+                depth = 1;
+                blockStartOffset = currentOffset;
+
+                let type: any = null;
                 let pathStr = '';
                 let stripFirstLine = false;
+                const headerText = line.substring(match[0].length).trim();
 
-                const blockHeader = line.substring(match[0].length).trim();
-                
-                if (blockHeader.includes(':')) {
-                    const parts = blockHeader.split(':');
+                if (headerText.includes(':')) {
+                    const parts = headerText.split(':');
                     const prefix = parts[0].toLowerCase();
-                    const p = parts.slice(1).join(':').trim();
-
-                    // Check if content is actually an Aider block first (priority)
-                    let isAider = false;
-                    for (let j = i + 1; j < Math.min(lines.length, i + 10); j++) {
-                        if (lines[j].includes('<<<<<<< SEARCH')) {
-                            isAider = true;
-                            break;
-                        }
-                    }
-
-                    if (isAider) {
-                        type = 'replace';
-                    } else if (prefix === 'insert') {
-                        type = 'insert';
-                    } else if (prefix === 'replace') {
-                        type = 'replace';
-                    } else if (prefix === 'diff') {
-                        type = 'diff';
-                    } else if (prefix === 'delete_code') {
-                        type = 'delete';
-                    } else if (prefix === 'rename') {
-                        type = 'rename';
-                    } else if (prefix === 'select') {
-                        type = 'select';
-                    } else {
-                        type = 'file'; // Interpreted as Full File
-                    }
-                    
-                    pathStr = p;
+                    pathStr = parts.slice(1).join(':').trim();
+                    if (prefix === 'insert') type = 'insert';
+                    else if (prefix === 'replace') type = 'replace';
+                    else if (prefix === 'diff') type = 'diff';
+                    else if (prefix === 'delete_code') type = 'delete';
+                    else type = 'file';
                 }
 
-                if (!pathStr && i + 1 < lines.length) {
-                    const nextLine = lines[i+1].trim();
-                    const langPathMatch = nextLine.match(/^([a-zA-Z0-9_+-]+):([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+)$/);
-
-                    if (langPathMatch) {
-                        pathStr = langPathMatch[2];
-                        stripFirstLine = true;
-                        const prefix = langPathMatch[1].toLowerCase();
-                        if (prefix === 'diff') type = 'diff';
-                        else if (prefix === 'insert') type = 'insert';
-                        else if (prefix === 'replace') type = 'replace';
-                        else if (prefix === 'delete_code') type = 'delete';
-                        else type = 'file';
-                    } else if (!nextLine.startsWith('#!')) {
-                        // Matches a path in a comment, supporting standard extensions or paths with slashes
-                        const pathLineRegex = /^((?:\/\/|#|<!--|;|\/\*|\*)\s*)?([a-zA-Z0-9_\-./\\]+)(\s*\S*)?$/;
-                        const matchPath = nextLine.match(pathLineRegex);
-                        
-                        if (matchPath) {
-                            const commentPrefix = matchPath[1];
-                            const potentialPath = matchPath[2];
-                            
-                            // Consider it a path if it has slashes or dots (extensions)
-                            const isPath = potentialPath.includes('/') || potentialPath.includes('\\') || potentialPath.includes('.');
-
-                            if (isPath || commentPrefix) { // If comment prefix exists, be more lenient or strict? 
-                                // To be safe, ensure it looks like a path or file
-                                if (isPath) {
-                                    pathStr = potentialPath;
-                                    stripFirstLine = true;
-                                    type = 'file';
-                                }
-                            }
-                        }
-                    }
-                }
-
+                // Logic for finding path in previous lines
                 if (!pathStr) {
                     let j = i - 1;
-                    while (j >= 0 && lines[j].trim() === '') j--; 
-
+                    while (j >= 0 && lines[j].trim() === '') j--;
                     if (j >= 0) {
                         const prevLine = lines[j].trim();
-                        const fileMatch = prevLine.match(/^(?:(?:\*\*|__)?File(?:\*\*|__)?[:\s])\s*(.+)$/i);
-                        const diffMatch = prevLine.match(/^(?:(?:\*\*|__)?Diff(?:\*\*|__)?[:\s])\s*(.+)$/i);
-                        const insertMatch = prevLine.match(/^(?:(?:\*\*|__)?Insert(?:\*\*|__)?[:\s])\s*(.+)$/i);
-                        const replaceMatch = prevLine.match(/^(?:(?:\*\*|__)?Replace(?:\*\*|__)?[:\s])\s*(.+)$/i);
-                        const deleteMatch = prevLine.match(/^(?:(?:\*\*|__)?DeleteCode(?:\*\*|__)?[:\s])\s*(.+)$/i);
-                        
-                        // Relaxed check: allows paths without extension if they have slashes (e.g. dir/file)
-                        const looksLikePath = /^[\w-./\\]+$/.test(prevLine) && (prevLine.includes('/') || prevLine.includes('\\') || prevLine.includes('.'));
-
-                        if (fileMatch) {
-                            type = 'file';
-                            pathStr = fileMatch[1].trim();
-                        } else if (diffMatch) {
-                            type = 'diff';
-                            pathStr = diffMatch[1].trim();
-                        } else if (insertMatch) {
-                            type = 'insert';
-                            pathStr = insertMatch[1].trim();
-                        } else if (replaceMatch) {
-                            type = 'replace';
-                            pathStr = replaceMatch[1].trim();
-                        } else if (deleteMatch) {
-                            type = 'delete';
-                            pathStr = deleteMatch[1].trim();
-                        } else if (looksLikePath) {
-                            let k = i + 1;
-                            let contentPreview = "";
-                            while(k < lines.length && k < i + 5) { 
-                                contentPreview += lines[k] + "\n";
-                                k++;
-                            }
-                            if (contentPreview.includes("<<<<<<< SEARCH")) {
-                                type = 'replace'; 
-                                pathStr = prevLine.trim();
-                            }
+                        const m = prevLine.match(/^(?:(?:\*\*|__)?(File|Diff|Insert|Replace|DeleteCode)(?:\*\*|__)?[:\s])\s*(.+)$/i);
+                        if (m) {
+                            const map: any = { 'File': 'file', 'Diff': 'diff', 'Insert': 'insert', 'Replace': 'replace', 'DeleteCode': 'delete' };
+                            type = map[m[1]]; pathStr = m[2].trim();
                         }
                     }
                 }
-                
-                if (pathStr) {
-                    pathStr = pathStr.replace(/^`|`$/g, '');
-                    pathStr = pathStr.replace(/^\*\*|\*\*$/g, '');
-                    pathStr = pathStr.replace(/^\*|\*$/g, '');
-                    pathStr = pathStr.replace(/[.:]+$/, '');
-                    pathStr = pathStr.replace(/[/\\]+$/, ''); // Remove trailing slash
-                }
 
-                infos.push({ type, path: pathStr, stripFirstLine, isClosed: false });
-            } else {
-                if (currentFenceLength >= fenceLength) {
+                infos.push({ type, path: pathStr, stripFirstLine, start: blockStartOffset, isClosed: false });
+            }
+        } else {
+            // We are inside a block, check for Aider markers to auto-detect 'replace' type
+            if (line.includes('<<<<' + '<<< SEARCH')) {
+                infos[infos.length - 1].type = 'replace';
+            }
+
+            if (match && match[2].length >= fenceLength) {
+                const hasLabel = line.substring(match[0].length).trim().length > 0;
+                if (hasLabel) depth++;
+                else depth--;
+
+                if (depth === 0) {
                     inBlock = false;
-                    fenceLength = 0;
-                    if (infos.length > 0) {
-                        infos[infos.length - 1].isClosed = true;
-                    }
+                    infos[infos.length - 1].end = currentOffset + lineWithNewline.length;
+                    infos[infos.length - 1].isClosed = true;
                 }
             }
         }
+        currentOffset += lineWithNewline.length;
     }
     return infos;
 }
@@ -970,6 +863,15 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
 
         const parent = pre.parentNode;
         if (parent) {
+            // Add gutter to standard Prism blocks too
+            if (!pre.querySelector('.code-line-gutter')) {
+                const gutter = document.createElement('div');
+                gutter.className = 'code-line-gutter';
+                const lineCount = code.textContent?.split('\n').length || 1;
+                gutter.innerHTML = Array.from({ length: lineCount }, (_, i) => i + 1).join('<br>');
+                pre.insertBefore(gutter, pre.firstChild);
+            }
+
             details.appendChild(summary);
             parent.insertBefore(details, pre); 
             details.appendChild(pre); 
@@ -1106,95 +1008,176 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
     try {
         if (Array.isArray(rawContent)) {
-            let htmlContent = '';
-            rawContent.forEach(part => {
-                if (part.type === 'text') {
-                    htmlContent += `<div>${sanitizer.sanitize(marked.parse(part.text) as string, SANITIZE_CONFIG)}</div>`;
-                } else if (part.type === 'image_url') {
-                    htmlContent += `<img src="${part.image_url.url}" style="max-width: 100%; border-radius: 4px; margin-top: 8px;" />`;
-                }
+            // Handle Multipart
+            let html = '';
+            rawContent.forEach(p => {
+                if (p.type === 'text') html += `<div>${sanitizer.sanitize(marked.parse(p.text) as string)}</div>`;
+                else if (p.type === 'image_url') html += `<img src="${p.image_url.url}" style="max-width:100%; border-radius:4px; margin-top:8px;">`;
             });
-            contentDiv.innerHTML = htmlContent;
+            contentDiv.innerHTML = html;
         } else if (typeof rawContent === 'string') {
             const { thoughts, processedContent } = processThinkTags(rawContent);
             messageDiv.querySelectorAll('.plan-scratchpad').forEach(el => el.remove());
             
+            // Render Thoughts
             thoughts.forEach(thought => {
                 const thinkDiv = document.createElement('div');
                 thinkDiv.className = 'plan-scratchpad'; 
+                thinkDiv.innerHTML = `<details ${isFinal ? '' : 'open'}><summary class="scratchpad-header">AI Reasoning</summary><div class="scratchpad-content">${sanitizer.sanitize(marked.parse(thought.content) as string)}</div></details>`;
+                if (contentDiv.parentNode) contentDiv.parentNode.insertBefore(thinkDiv, contentDiv);
+            });
+
+            // SURGICAL RENDERING LOGIC
+            const blocks = extractFilePaths(processedContent);
+            let lastIndex = 0;
+            const fragment = document.createDocumentFragment();
+
+            blocks.forEach((block, idx) => {
+                // 1. Render text BEFORE the block
+                const textBefore = processedContent.substring(lastIndex, block.start);
+                if (textBefore.trim()) {
+                    const textDiv = document.createElement('div');
+                    textDiv.innerHTML = sanitizer.sanitize(marked.parse(textBefore) as string, SANITIZE_CONFIG);
+                    fragment.appendChild(textDiv);
+                }
+
+                // 2. Render the block itself (Manual bypass of marked to allow nesting)
+                const blockContent = processedContent.substring(block.start, block.end);
+                const lines = blockContent.split('\n');
+                const firstLine = lines[0];
+                const langMatch = firstLine.match(/```(\w+)/);
+                const language = langMatch ? langMatch[1] : 'plaintext';
+                const codeOnly = lines.slice(1, -1).join('\n');
+
+                const details = document.createElement('details');
+                details.className = 'code-collapsible';
+                details.open = true;
+
+                const summary = document.createElement('summary');
+                summary.className = 'code-summary';
                 
-                let title = "AI Reasoning Process";
-                let icon = "codicon-beaker";
+                const langLabel = document.createElement('span');
+                langLabel.className = 'summary-lang-label';
+                langLabel.textContent = `${language}${block.path ? ' : ' + block.path : ''}`;
+                
+                const actions = document.createElement('div');
+                actions.className = 'code-actions';
 
-                if (thought.tag === 'analysis') {
-                    title = "AI Analysis & Insights";
-                    icon = "codicon-search";
+                // --- ADD ACTION BUTTONS ---
+                
+                // 1. Standard Copy (Full Block)
+                const copyBtn = createButton('Copy All', 'codicon-copy', () => {
+                    vscode.postMessage({ command: 'copyToClipboard', text: codeOnly });
+                }, 'code-action-btn', 'Copy entire block content');
+                actions.appendChild(copyBtn);
+
+                // 2. Aider Detection for Specialized Buttons
+                const aiderRegex = new RegExp('<<<<' + '<<< SEARCH([\\s\\S]*?)===' + '====([\\s\\S]*?)>>>>' + '>>> REPLACE');
+                const aiderMatch = codeOnly.match(aiderRegex);
+                const isAider = !!aiderMatch;
+
+                if (isAider && aiderMatch) {
+                    const searchPart = aiderMatch[1].trim();
+                    const replacePart = aiderMatch[2].trim();
+
+                    // Different icon for Search (selection)
+                    const copySearchBtn = createButton('Copy Search', 'codicon-selection', () => {
+                        vscode.postMessage({ command: 'copyToClipboard', text: searchPart });
+                    }, 'code-action-btn', 'Copy the SEARCH block only');
+                    actions.appendChild(copySearchBtn);
+
+                    // Different icon for Replace (edit/replace)
+                    const copyReplaceBtn = createButton('Copy Replace', 'codicon-replace', () => {
+                        vscode.postMessage({ command: 'copyToClipboard', text: replacePart });
+                    }, 'code-action-btn', 'Copy the REPLACE block only');
+                    actions.appendChild(copyReplaceBtn);
                 }
 
-                thinkDiv.innerHTML = `
-                    <details ${isFinal ? '' : 'open'}>
-                        <summary class="scratchpad-header"><span class="codicon ${icon}"></span> ${title}</summary>
-                        <div class="scratchpad-content">${sanitizer.sanitize(marked.parse(thought.content) as string, SANITIZE_CONFIG)}</div>
-                    </details>`;
-                if (contentDiv.parentNode) {
-                    contentDiv.parentNode.insertBefore(thinkDiv, contentDiv);
+                // 3. Navigation: Go to File
+                if (block.path) {
+                    const gotoBtn = createButton('Go to File', 'codicon-go-to-file', () => {
+                        vscode.postMessage({ command: 'openFile', path: block.path });
+                    }, 'code-action-btn', 'Open this file in editor');
+                    actions.appendChild(gotoBtn);
                 }
-            });
-            
-            let cleanXml = processedContent.replace(/```(?:xml(?!!--)(?::\w+)?)?\s*((?:<(?!!--)(?:file|rename|delete|select|remove|insert|replace)\b[\s\S]*?>[\s\S]*?)+)\s*```/gi, '$1');
 
-            let xmlProcessedContent = cleanXml
-                .replace(/<file\s+path=["']([^"']+)["']>\s*([\s\S]*?)\s*<\/file>/g, (match, path, code) => {
-                    return `File: ${path}\n\`\`\`\n${code}\n\`\`\``;
-                })
-                .replace(/<rename\s+old=["']([^"']+)["']\s+new=["']([^"']+)["']\s*\/>/g, (match, old, n) => {
-                    return `\`\`\`rename\n${old} -> ${n}\n\`\`\``;
-                })
-                .replace(/<delete\s+path=["']([^"']+)["']\s*\/>/g, (match, path) => {
-                    return `\`\`\`delete\n${path}\n\`\`\``;
-                })
-                .replace(/<remove\s+path=["']([^"']+)["']\s*\/>/g, (match, path) => { 
-                    return `\`\`\`delete\n${path}\n\`\`\``;
-                })
-                .replace(/<select\s+path=["']([^"']+)["']\s*\/>/g, (match, path) => {
-                    return `\`\`\`select\n${path}\n\`\`\``;
-                })
-                .replace(/<generateImage\s+([^>]*)\/>/gi, (match, attrs) => {
-                    const prompt = (attrs.match(/prompt=["']([^"']+)["']/) || [])[1] || "";
-                    const path = (attrs.match(/path=["']([^"']+)["']/) || [])[1] || "";
-                    const width = (attrs.match(/width=["']([^"']+)["']/) || [])[1];
-                    const height = (attrs.match(/height=["']([^"']+)["']/) || [])[1];
-                    return renderImageGenBlock(prompt, path, width, height);
+                // 4. Apply Button (with dynamic logic)
+                if (block.path && (block.type === 'file' || block.type === 'replace' || block.type === 'insert' || block.type === 'diff')) {
+                    // Pre-calculate variables for the button configuration
+                    const effectiveType = isAider ? 'replace' : block.type;
+                    const isSurgical = effectiveType === 'replace' || effectiveType === 'insert' || effectiveType === 'diff';
+                    const iconClass = isSurgical ? 'codicon-arrow-swap' : 'codicon-tools';
+                    const tooltip = isSurgical ? 'Apply surgical update to file' : 'Overwrite entire file with this content';
+
+                    const applyBtn = createButton('Apply', iconClass, () => {
+                        const cmd = effectiveType === 'diff' ? 'applyPatchContent' : (effectiveType === 'replace' ? 'replaceCode' : 'applyFileContent');
+                        vscode.postMessage({ 
+                            command: cmd, 
+                            filePath: block.path, 
+                            content: codeOnly,
+                            messageId: messageId 
+                        });
+                    }, 'code-action-btn apply-btn', tooltip);
+                    actions.appendChild(applyBtn);
+                }
+
+                // 4. Save Button
+                const saveBtn = createButton('Save', 'codicon-save', () => {
+                    vscode.postMessage({ command: 'saveCodeToFile', content: codeOnly, language });
                 });
-            
-            // Parse Markdown first
-            let finalHtml = marked.parse(xmlProcessedContent) as string;
+                actions.appendChild(saveBtn);
 
-            // Process <skill> tags AFTER markdown to prevent double-parsing and escaping
-            const skillRegex = /<skill(?:\s+[^>]*?title=["']([^"']*)["'])?[^>]*?>([\s\S]*?)<\/skill>/g;
-            finalHtml = finalHtml.replace(skillRegex, (match, title, skillContent) => {
-                return renderSkillBlock(skillContent, title, messageId);
+                // 5. Inspect Button
+                if (state.isInspectorEnabled) {
+                    const inspectBtn = createButton('Inspect', 'codicon-search', () => {
+                        vscode.postMessage({ command: 'inspectCode', code: codeOnly, language });
+                    });
+                    actions.appendChild(inspectBtn);
+                }
+
+                summary.appendChild(langLabel);
+                summary.appendChild(actions);
+                details.appendChild(summary);
+
+                const pre = document.createElement('pre');
+                pre.className = `language-${language}`;
+                
+                // Add Line Numbers Gutter
+                const gutter = document.createElement('div');
+                gutter.className = 'code-line-gutter';
+                const lineCount = codeOnly.split('\n').length;
+                gutter.innerHTML = Array.from({ length: lineCount }, (_, i) => i + 1).join('<br>');
+                
+                const code = document.createElement('code');
+                code.className = `language-${language}`;
+                code.textContent = codeOnly;
+                
+                pre.appendChild(gutter);
+                pre.appendChild(code);
+                details.appendChild(pre);
+
+                fragment.appendChild(details);
+                Prism.highlightElement(code);
+
+                lastIndex = block.end;
             });
 
-            // Sanitize at the very end
-            finalHtml = sanitizer.sanitize(finalHtml, SANITIZE_CONFIG);
+            // 3. Render remaining text
+            const remaining = processedContent.substring(lastIndex);
+            if (remaining.trim()) {
+                const lastTextDiv = document.createElement('div');
+                lastTextDiv.innerHTML = sanitizer.sanitize(marked.parse(remaining) as string, SANITIZE_CONFIG);
+                fragment.appendChild(lastTextDiv);
+            }
 
-            contentDiv.innerHTML = finalHtml;
+            contentDiv.innerHTML = '';
+            contentDiv.appendChild(fragment);
         }
-
-        enhanceWithCommandButtons(wrapper as HTMLElement);
-        enhanceCodeBlocks(wrapper as HTMLElement, rawContent, isFinal);
-
     } catch (e) {
-        console.error("Error rendering message content:", e);
-        contentDiv.innerText = "Error rendering content: " + e;
+        contentDiv.innerText = "Rendering Error: " + e;
     }
 
-    if (shouldScroll && dom.messagesDiv) {
-        dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
-    } else if (dom.stopButton && dom.stopButton.style.display !== 'none' && dom.scrollToBottomBtn) {
-        dom.scrollToBottomBtn.style.display = 'flex';
-    }
+    if (shouldScroll && dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
 }
 
 export function addMessage(message: any, isFinal: boolean = true) {
@@ -1426,7 +1409,19 @@ export function updateContext(contextText: string, files: string[] = [], skills:
         </div>
         <div class="message-body">
             <div class="message-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 10px;">
-                <span class="role-name">Project Context</span>
+                <div style="display:flex; flex-direction:column; gap:4px; flex:1;">
+                    <span class="role-name">Project Context</span>
+                    <div class="token-progress" style="width: 200px; margin-top: 2px;">
+                        <div class="token-progress-container" style="height: 3px;">
+                            <div class="token-progress-bar" id="token-progress-bar"></div>
+                        </div>
+                        <div id="context-status-container" style="display: flex; align-items: center; gap: 4px; font-size: 10px; opacity: 0.8;">
+                            <span id="token-count-label"></span>
+                            <button id="cancel-tokens-btn" class="icon-btn" style="padding:0; font-size: 10px; display: none;" title="Stop"><i class="codicon codicon-debug-stop"></i></button>
+                            <button id="refresh-context-btn" class="icon-btn" style="padding:0; font-size: 10px;" title="Refresh"><i class="codicon codicon-refresh"></i></button>
+                        </div>
+                    </div>
+                </div>
                 <div style="display: flex; gap: 5px;">
                     <button id="view-full-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="View Full Context and Structure">
                         <span class="codicon codicon-book"></span> View
@@ -1594,6 +1589,20 @@ export function updateContext(contextText: string, files: string[] = [], skills:
     if (resetBtn) {
         resetBtn.addEventListener('click', () => {
             vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'resetContext', params: {} } });
+        });
+    }
+
+    const refreshCtxBtn = document.getElementById('refresh-context-btn');
+    if (refreshCtxBtn) {
+        refreshCtxBtn.addEventListener('click', () => {
+            vscode.postMessage({ command: 'calculateTokens' });
+        });
+    }
+
+    const cancelCtxBtn = document.getElementById('cancel-tokens-btn');
+    if (cancelCtxBtn) {
+        cancelCtxBtn.addEventListener('click', () => {
+            vscode.postMessage({ command: 'stopTokenCalculation' });
         });
     }
 

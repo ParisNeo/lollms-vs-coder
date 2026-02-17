@@ -7,9 +7,17 @@ import { AgentManager } from '../agentManager';
 
 export function registerChatCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
     
+    // Explicitly register the refresh command to avoid "command not found" errors
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refreshDiscussions', () => {
+        if (services.treeProviders.discussion) {
+            services.treeProviders.discussion.refresh();
+        }
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.startChat', () => {
         if (!getActiveWorkspace()) {
-            vscode.window.showInformationMessage(vscode.l10n.t("info.openFolderToUseChat"));
+            // No workspace: Start a temporary chat instead of showing error
+            vscode.commands.executeCommand('lollms-vs-coder.newTempDiscussion');
             return;
         }
         vscode.commands.executeCommand('lollms-vs-coder.newDiscussion');
@@ -136,13 +144,18 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.switchDiscussion', async (discussionId: string) => {
+        // 1. Create or show panel (sets internal discussionId)
         const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussionId, services.gitIntegration, services.skillsManager);
         
-        // Check if agent exists first
+        // 2. Inject dependencies BEFORE loading
+        panel.setProcessManager(services.processManager);
+        panel.setContextManager(services.contextManager);
+        panel.setPersonalityManager(services.personalityManager);
+        panel.setHerdManager(services.herdManager); 
+
+        // 3. Connect/Create Agent
         if (ChatPanel.activeAgents.has(discussionId)) {
-            // Reconnect existing agent
             const agent = ChatPanel.activeAgents.get(discussionId)!;
-            // setAgentManager handles setUI internally
             panel.setAgentManager(agent);
         } else {
             const agent = new AgentManager(
@@ -154,10 +167,7 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
             panel.setAgentManager(agent);
         }
 
-        panel.setProcessManager(services.processManager);
-        panel.setContextManager(services.contextManager);
-        panel.setPersonalityManager(services.personalityManager);
-        panel.setHerdManager(services.herdManager); 
+        // 4. Trigger the load
         await panel.loadDiscussion();
     }));
 

@@ -3,3 +3,4 @@
 - Fix the advanced tools ui to be aligned with the new formatting.
 - Remove the response style from the main discussion menu
 - Add skills for ScrapeMaster and safe_store
+- When generating a commit message block subsequent generations.

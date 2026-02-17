@@ -724,6 +724,11 @@ export class ChatPanel {
         return;
     }
 
+    // Get currently active skills to pre-select them
+    const projectSkills = await this._contextManager.getActiveProjectSkills();
+    const discussionSkills = this._currentDiscussion?.importedSkills || [];
+    const activeSkillIds = Array.from(new Set([...projectSkills, ...discussionSkills]));
+
     const root: any = { id: 'root', label: 'Skills Library', children: [], isSkill: false };
 
     allSkills.forEach(skill => {
@@ -755,7 +760,11 @@ export class ChatPanel {
         });
     });
 
-    this._panel.webview.postMessage({ command: 'showSkillsModal', skillsTree: root });
+    this._panel.webview.postMessage({ 
+        command: 'showSkillsModal', 
+        skillsTree: root,
+        activeSkillIds: activeSkillIds 
+    });
   }
 
   /**
@@ -915,11 +924,12 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                   fullText += `${m.role.toUpperCase()}: ${content}\n\n`;
               });
       }
-      if (draftMessage) {
-          fullText += `USER (Draft): ${draftMessage}\n`;
+      if (draftMessage && draftMessage.trim()) {
+          fullText += `--- CURRENT PROMPT ---\n`;
+          fullText += `USER: ${draftMessage}\n`;
       }
       await vscode.env.clipboard.writeText(fullText);
-      vscode.window.showInformationMessage("Full prompt context copied to clipboard.");
+      vscode.window.showInformationMessage("Full context and prompt copied to clipboard.");
   }
   
   private async deleteMessage(messageId: string) {
@@ -1917,40 +1927,60 @@ Task:
                 break;
             case 'importSelectedSkills':
                 const skillIds = message.skillIds;
-                if (!skillIds || skillIds.length === 0) {
-                    vscode.window.showInformationMessage("No skills selected.");
+                // Allow empty arrays to proceed so we can "uncheck" and remove everything
+                if (!Array.isArray(skillIds)) {
                     return;
                 }
                 
                 const allSkills = await this._skillsManager.getSkills();
-                const selectedSkills = allSkills.filter(s => skillIds.includes(s.id));
                 
                 const choice = await vscode.window.showQuickPick(
                     [
-                        { label: "Current Discussion Only", detail: "Active only for this chat window." },
-                        { label: "Entire Project (Persistent)", detail: "Active for all chats in this workspace." }
+                        { label: "Current Discussion Only", detail: "Synchronize skills for this chat. (Project-wide skills are unaffected)" },
+                        { label: "Entire Project (Persistent)", detail: "Synchronize skills for the whole workspace." }
                     ],
-                    { placeHolder: `Apply ${selectedSkills.length} skills to:` }
+                    { placeHolder: `Where should these skill changes be applied?` }
                 );
 
                 if (choice) {
-                    if (choice.label.startsWith("Entire")) {
-                        for (const skill of selectedSkills) {
-                            await this._contextManager.addSkillToProject(skill.id);
-                        }
-                        vscode.window.showInformationMessage(`Added ${selectedSkills.length} skills to Project Context.`);
-                    } else {
-                        if (this._currentDiscussion) {
-                            if (!this._currentDiscussion.importedSkills) this._currentDiscussion.importedSkills = [];
-                            selectedSkills.forEach(skill => {
-                                if (!this._currentDiscussion!.importedSkills!.includes(skill.id)) {
-                                    this._currentDiscussion!.importedSkills!.push(skill.id);
+                    const isProjectWide = choice.label.startsWith("Entire");
+                    
+                    // Collect all IDs that were present in the UI (so we know what was unchecked)
+                    const uiAvailableIds = allSkills.map(s => s.id);
+
+                    if (isProjectWide) {
+                        for (const skillId of uiAvailableIds) {
+                            if (skillIds.includes(skillId)) {
+                                await this._contextManager.addSkillToProject(skillId);
+                            } else {
+                                await this._contextManager.removeSkillFromProject(skillId);
+                                // Also remove from discussion if it was there
+                                if (this._currentDiscussion?.importedSkills) {
+                                    this._currentDiscussion.importedSkills = this._currentDiscussion.importedSkills.filter(id => id !== skillId);
                                 }
-                            });
-                            await this._discussionManager.saveDiscussion(this._currentDiscussion);
-                            vscode.window.showInformationMessage(`Added ${selectedSkills.length} skills to Discussion.`);
+                            }
+                        }
+                        vscode.window.showInformationMessage(`Project skills synchronized.`);
+                    } else {
+                        // Discussion Scope
+                        if (this._currentDiscussion) {
+                            this._currentDiscussion.importedSkills = skillIds;
+                            
+                            // CRITICAL: If it was unchecked in the modal, 
+                            // we MUST remove it from Project Context too, or it will remain active.
+                            for (const skillId of uiAvailableIds) {
+                                if (!skillIds.includes(skillId)) {
+                                    await this._contextManager.removeSkillFromProject(skillId);
+                                }
+                            }
+                            vscode.window.showInformationMessage(`Discussion skills synchronized.`);
                         }
                     }
+
+                    if (this._currentDiscussion && !this._currentDiscussion.id.startsWith('temp-')) {
+                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                    }
+                    
                     this.updateContextAndTokens();
                 }
                 break;
@@ -2662,14 +2692,14 @@ Task:
         <div id="skills-modal" class="modal">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2>Import Skills</h2>
+                    <h2>Apply Skills to Context</h2>
                     <span class="close-btn" id="skills-close-btn">&times;</span>
                 </div>
                 <div class="modal-body" id="skills-tree-container">
                     <!-- Tree generated dynamically -->
                 </div>
                 <div class="modal-footer">
-                    <button id="skills-import-btn">Import Selected</button>
+                    <button id="skills-import-btn">Apply Selected</button>
                 </div>
             </div>
         </div>

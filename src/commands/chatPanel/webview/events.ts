@@ -155,7 +155,18 @@ export function initEventHandlers() {
 
     bindClick(dom.attachButton, 'requestAddFileToContext'); 
     bindClick(dom.importSkillsButton, 'importSkills');
-    bindClick(dom.copyFullPromptButton, 'copyFullPrompt', { draftMessage: dom.messageInput ? dom.messageInput.value : '' });
+    
+    if (dom.copyFullPromptButton) {
+        dom.copyFullPromptButton.addEventListener('click', () => {
+            const draft = dom.messageInput ? dom.messageInput.value : '';
+            vscode.postMessage({ 
+                command: 'copyFullPrompt', 
+                draftMessage: draft 
+            });
+            dom.moreActionsMenu.classList.remove('visible');
+        });
+    }
+
     bindClick(dom.setEntryPointButton, 'setEntryPoint');
     bindClick(dom.executeButton, 'executeProject');
     bindClick(dom.debugRestartButton, 'debugRestart');
@@ -338,6 +349,35 @@ export function initEventHandlers() {
         dom.fileInput.addEventListener('change', async (e) => {
             const files = (e.target as HTMLInputElement).files;
             if (files && files.length > 0) {
+            }
+        });
+    }
+
+    // Handle Skill Save buttons via delegation
+    if (dom.messagesDiv) {
+        dom.messagesDiv.addEventListener('click', (e) => {
+            const btn = (e.target as HTMLElement).closest('.save-skill-btn') as HTMLButtonElement;
+            if (btn) {
+                const content = btn.dataset.content || '';
+                const scope = btn.dataset.scope as 'global' | 'local';
+                const title = btn.dataset.title || '';
+                
+                // Call the globally defined handler in main.ts
+                if (typeof (window as any).saveSkill === 'function') {
+                    (window as any).saveSkill(content, scope, title);
+                    
+                    // Provide immediate visual feedback
+                    const originalHtml = btn.innerHTML;
+                    btn.disabled = true;
+                    btn.classList.add('success');
+                    btn.innerHTML = '<span class="codicon codicon-check"></span> Saved';
+                    
+                    setTimeout(() => {
+                        btn.innerHTML = originalHtml;
+                        btn.classList.remove('success');
+                        btn.disabled = false;
+                    }, 2000);
+                }
             }
         });
     }

@@ -384,7 +384,7 @@ export function updateBadges() {
     }
 }
 
-export function renderSkillsTree(container: HTMLElement, node: any) {
+export function renderSkillsTree(container: HTMLElement, node: any, activeSkillIds: string[] = []) {
     if (!node.children || node.children.length === 0) return;
 
     // Sort: Folders first, then files
@@ -407,6 +407,8 @@ export function renderSkillsTree(container: HTMLElement, node: any) {
             checkbox.className = 'skill-checkbox';
             checkbox.value = child.id;
             checkbox.id = `skill-${child.id}`;
+            // FIX: Check if this specific skill is in the active list
+            checkbox.checked = activeSkillIds.includes(child.id);
 
             const label = document.createElement('label');
             label.htmlFor = `skill-${child.id}`;
@@ -421,12 +423,12 @@ export function renderSkillsTree(container: HTMLElement, node: any) {
         } else {
             // Bundle Node (Folder)
             const details = document.createElement('details');
-            details.open = true; // Default open?
+            // Packed by default: set to false
+            details.open = false; 
             
             const summary = document.createElement('summary');
             summary.className = 'skill-summary';
             
-            // Checkbox for the bundle
             const checkbox = document.createElement('input');
             checkbox.type = 'checkbox';
             checkbox.className = 'bundle-checkbox';
@@ -439,20 +441,40 @@ export function renderSkillsTree(container: HTMLElement, node: any) {
                 childCheckboxes.forEach((cb: any) => cb.checked = checked);
             });
 
+            const handle = document.createElement('span');
+            handle.className = 'folder-handle codicon';
+
             const labelSpan = document.createElement('span');
-            labelSpan.innerHTML = `<span class="codicon codicon-folder"></span> ${child.label}`;
+            labelSpan.className = 'skill-folder-label';
+            labelSpan.innerHTML = `
+                <span class="codicon codicon-folder"></span> 
+                ${child.label}
+            `;
             
-            summary.appendChild(checkbox);
-            summary.appendChild(labelSpan);
-            
+            summary.appendChild(handle); // Handle first
+            summary.appendChild(checkbox); // Checkbox second
+            summary.appendChild(labelSpan); // Label last
             details.appendChild(summary);
             
             // Recursion
             const childrenContainer = document.createElement('div');
             childrenContainer.className = 'skill-children';
-            renderSkillsTree(childrenContainer, child);
+            // CRITICAL FIX: Pass the activeSkillIds down to the next level of recursion
+            renderSkillsTree(childrenContainer, child, activeSkillIds);
             details.appendChild(childrenContainer);
             
+            // UI Improvement: If any child is checked, ensure parent shows state
+            // (Wait until after recursion so children checkboxes are created)
+            const leafCheckboxes = childrenContainer.querySelectorAll('.skill-checkbox') as NodeListOf<HTMLInputElement>;
+            const anyChecked = Array.from(leafCheckboxes).some(cb => cb.checked);
+            const allChecked = leafCheckboxes.length > 0 && Array.from(leafCheckboxes).every(cb => cb.checked);
+            
+            if (allChecked) {
+                checkbox.checked = true;
+            } else if (anyChecked) {
+                checkbox.indeterminate = true;
+            }
+
             li.appendChild(details);
         }
         ul.appendChild(li);

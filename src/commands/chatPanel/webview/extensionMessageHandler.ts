@@ -525,7 +525,7 @@ export function handleExtensionMessage(event: MessageEvent) {
             case 'showSkillsModal':
                 if (dom.skillsTreeContainer) {
                     dom.skillsTreeContainer.innerHTML = '';
-                    renderSkillsTree(dom.skillsTreeContainer, message.skillsTree);
+                    renderSkillsTree(dom.skillsTreeContainer, message.skillsTree, message.activeSkillIds);
                 }
                 if (dom.skillsModal) {
                     dom.skillsModal.classList.add('visible');

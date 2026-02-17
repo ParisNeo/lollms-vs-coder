@@ -2,4 +2,4 @@
 - Add RLM mode with REPL.
 - Fix the advanced tools ui to be aligned with the new formatting.
 - Remove the response style from the main discussion menu
-- When View Loaded Content & Tree is pressed, show a new modal with the whole context shown as it would be sent to the llm
+- Add skills for ScrapeMaster and safe_store

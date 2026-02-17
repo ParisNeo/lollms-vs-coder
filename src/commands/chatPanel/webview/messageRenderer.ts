@@ -264,10 +264,10 @@ function renderSkillBlock(rawContent: string, titleAttr: string | undefined, mes
         ${description ? `<div style="padding: 8px 16px; font-size: 0.9em; opacity: 0.8; border-bottom: 1px solid var(--vscode-widget-border);">${sanitizer.sanitize(description)}</div>` : ''}
         <div class="skill-preview markdown-body">${sanitizer.sanitize(marked.parse(finalContent))}</div>
         <div class="skill-actions">
-            <button class="code-action-btn apply-btn" onclick="saveSkill('${safeContent}', 'local', '${safeTitle}')">
+            <button class="code-action-btn apply-btn save-skill-btn" data-content="${safeContent}" data-scope="local" data-title="${safeTitle}">
                 <span class="codicon codicon-save"></span> Save to Project
             </button>
-            <button class="code-action-btn apply-btn" onclick="saveSkill('${safeContent}', 'global', '${safeTitle}')">
+            <button class="code-action-btn apply-btn save-skill-btn" data-content="${safeContent}" data-scope="global" data-title="${safeTitle}">
                 <span class="codicon codicon-globe"></span> Save Global
             </button>
         </div>

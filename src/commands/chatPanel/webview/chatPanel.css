@@ -1504,6 +1504,41 @@ mark.current-match {
 .skill-summary:hover {
     background-color: var(--vscode-list-hoverBackground);
 }
+
+.skill-folder-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 4px;
+}
+
+.skill-summary {
+    display: flex !important;
+    align-items: center;
+    padding: 2px 0;
+}
+
+/* Toggle Handle Logic: Plus when closed, Minus when open */
+.folder-handle {
+    width: 16px;
+    height: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    margin-right: 2px;
+}
+
+.folder-handle::before {
+    content: '\eab1'; /* codicon-add (Plus) */
+    font-size: 10px;
+    opacity: 0.5;
+}
+
+details[open] > summary .folder-handle::before {
+    content: '\eaa5'; /* codicon-dash (Minus) */
+}
+
 .info-collapsible summary, .skill-summary, .attachment-item-summary, .code-summary, .scratchpad-header {
     cursor: pointer;
 }

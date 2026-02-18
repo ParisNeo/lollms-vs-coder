@@ -146,11 +146,6 @@ export class SettingsPanel {
     this._pendingConfig.responseProfiles = config.get<ResponseProfile[]>('responseProfiles') || [];
     this._pendingConfig.defaultResponseProfileId = config.get<string>('defaultResponseProfileId') || 'balanced';
 
-    this._pendingConfig.generationFormats = config.get<any>('generationFormats') || { fullFile: false, diff: false, aider: true };
-    this._pendingConfig.forceFullCode = config.get<boolean>('forceFullCode') || false;
-    this._pendingConfig.explainCode = config.get<boolean>('explainCode') ?? true;
-
-    this._pendingConfig.allowedFileFormats = config.get<any>('allowedFileFormats') || { fullFile: true, insert: false, replace: false, delete: false };
 
     this._pendingConfig.reasoningLevel = config.get<string>('reasoningLevel') || 'none';
     this._pendingConfig.failsafeContextSize = config.get<number>('failsafeContextSize') || 4096;
@@ -160,8 +155,7 @@ export class SettingsPanel {
     this._pendingConfig.searchCx = config.get<string>('searchCx') || '';
     this._pendingConfig.autoUpdateChangelog = config.get<boolean>('autoUpdateChangelog') || false;
     this._pendingConfig.autoGenerateTitle = config.get<boolean>('autoGenerateTitle') ?? true;
-    this._pendingConfig.addPedagogicalInstruction = config.get<boolean>('addPedagogicalInstruction') ?? false;
-    this._pendingConfig.forceFullCodePath = config.get<boolean>('forceFullCodePath') ?? false;
+
     this._pendingConfig.clipboardInsertRole = config.get<string>('clipboardInsertRole') || 'user';
     
     this._pendingConfig.companionEnableWebSearch = config.get<boolean>('companion.enableWebSearch') || false;

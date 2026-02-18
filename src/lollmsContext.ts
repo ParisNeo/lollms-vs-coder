@@ -39,6 +39,7 @@ export interface LollmsServices {
     
     treeProviders: {
         discussion?: any;
+        discussionSearch?: any;
         chatPrompt?: any;
         codeAction?: any;
         codeExplorer?: any;

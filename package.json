@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.6.4",
+  "version": "0.6.5",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -222,6 +222,16 @@
         "command": "lollms-vs-coder.refreshDiscussions",
         "title": "%command.refresh.title%",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "lollms-vs-coder.searchDiscussions",
+        "title": "Search Discussions",
+        "icon": "$(search)"
+      },
+      {
+        "command": "lollms-vs-coder.clearDiscussionSearch",
+        "title": "Clear Search",
+        "icon": "$(close)"
       },
       {
         "command": "lollms-vs-coder.renameDiscussion",
@@ -1045,6 +1055,10 @@
           "name": "%view.discussions.name%"
         },
         {
+          "id": "lollmsDiscussionSearchView",
+          "name": "Search Discussions"
+        },
+        {
           "id": "lollmsSkillsView",
           "name": "%view.skills.name%",
           "when": "workspaceFolderCount > 0"
@@ -1094,17 +1108,23 @@
         {
           "submenu": "lollms-vs-coder.setContextSubmenu",
           "group": "1_modification@0"
-        }
-      ],
-      "search/context": [
-        {
-          "submenu": "lollms-vs-coder.setContextSubmenu",
-          "group": "1_modification"
         },
         {
           "command": "lollms-vs-coder.inspectFile",
           "group": "1_modification@1",
           "when": "!resourceIsFolder"
+        }
+      ],
+      "search/context": [
+        {
+          "submenu": "lollms-vs-coder.setContextSubmenu",
+          "group": "z_lollms",
+          "when": "viewItem == fileMatch"
+        },
+        {
+          "command": "lollms-vs-coder.inspectFile",
+          "group": "z_lollms",
+          "when": "viewItem == fileMatch"
         }
       ],
       "editor/context": [
@@ -1234,9 +1254,19 @@
           "group": "navigation@4"
         },
         {
-          "command": "lollms-vs-coder.refreshDiscussions",
+          "command": "lollms-vs-coder.searchDiscussions",
           "when": "view == lollmsDiscussionsView",
           "group": "navigation@5"
+        },
+        {
+          "command": "lollms-vs-coder.clearDiscussionSearch",
+          "when": "view == lollmsDiscussionSearchView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "lollms-vs-coder.refreshDiscussions",
+          "when": "view == lollmsDiscussionsView",
+          "group": "navigation@6"
         },
         {
           "command": "lollms-vs-coder.titleAllDiscussions",

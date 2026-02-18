@@ -7,7 +7,7 @@ import { CodeExplorerTreeProvider } from '../commands/codeExplorerTreeProvider';
 import { SkillsTreeProvider } from '../commands/skillsTreeProvider';
 import { PersonalitiesTreeProvider } from '../commands/personalitiesTreeProvider';
 import { WorkflowsTreeProvider } from '../commands/workflowsTreeProvider';
-import { DiscussionTreeProvider } from '../commands/discussionTreeProvider';
+import { DiscussionTreeProvider, DiscussionSearchProvider } from '../commands/discussionTreeProvider';
 import { ProcessTreeProvider } from '../commands/processTreeProvider';
 
 export function registerViews(context: vscode.ExtensionContext, services: LollmsServices) {
@@ -52,9 +52,13 @@ export function registerViews(context: vscode.ExtensionContext, services: Lollms
     const discussionTreeProvider = new DiscussionTreeProvider(services.discussionManager, services.extensionUri);
     services.treeProviders.discussion = discussionTreeProvider;
     
-    // Create view specifically for discussions to allow programmatic reveal
     const discussionView = vscode.window.createTreeView('lollmsDiscussionsView', { treeDataProvider: discussionTreeProvider });
     context.subscriptions.push(discussionView);
+
+    // Discussion Search
+    const discussionSearchProvider = new DiscussionSearchProvider(services.extensionUri);
+    services.treeProviders.discussionSearch = discussionSearchProvider;
+    context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsDiscussionSearchView', discussionSearchProvider));
     
     return discussionView;
 }

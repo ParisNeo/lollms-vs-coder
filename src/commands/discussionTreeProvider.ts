@@ -42,6 +42,48 @@ export class DiscussionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
     }
 }
 
+export class DiscussionSearchProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
+    private _onDidChangeTreeData: vscode.EventEmitter<vscode.TreeItem | undefined | null | void> = new vscode.EventEmitter<vscode.TreeItem | undefined | null | void>();
+    readonly onDidChangeTreeData: vscode.Event<vscode.TreeItem | undefined | null | void> = this._onDidChangeTreeData.event;
+
+    private searchResults: Discussion[] = [];
+    private isSearching = false;
+
+    constructor(private extensionUri: vscode.Uri) {}
+
+    setResults(results: Discussion[]) {
+        this.searchResults = results;
+        this.isSearching = true;
+        this._onDidChangeTreeData.fire();
+    }
+
+    clear() {
+        this.searchResults = [];
+        this.isSearching = false;
+        this._onDidChangeTreeData.fire();
+    }
+
+    getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
+        return element;
+    }
+
+    async getChildren(element?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
+        if (element) return [];
+
+        if (!this.isSearching) {
+            const item = new vscode.TreeItem("Search discussions to see results here.");
+            item.iconPath = new vscode.ThemeIcon('search');
+            return [item];
+        }
+
+        if (this.searchResults.length === 0) {
+            return [new vscode.TreeItem("No matching discussions found.", vscode.TreeItemCollapsibleState.None)];
+        }
+
+        return this.searchResults.map(d => new DiscussionItem(d, this.extensionUri));
+    }
+}
+
 
 export class DiscussionItem extends vscode.TreeItem {
     constructor(

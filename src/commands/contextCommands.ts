@@ -8,8 +8,23 @@ import { AgentManager } from '../agentManager';
 
 export function registerContextCommands(context: vscode.ExtensionContext, services: LollmsServices) {
     
-    const setContextState = async (uri: vscode.Uri, uris: vscode.Uri[], state: ContextState) => {
-        const targetUris = uris && uris.length > 0 ? uris : (uri ? [uri] : []);
+    const setContextState = async (uri: vscode.Uri | any, uris: vscode.Uri[] | any[], state: ContextState) => {
+        // Handle potential Search Result wrappers or plain JSON objects if passed by some views
+        let validUri: vscode.Uri | undefined;
+        if (uri instanceof vscode.Uri) validUri = uri;
+        else if (uri && typeof uri === 'object' && 'scheme' in uri && 'path' in uri) validUri = vscode.Uri.file(uri.path).with({ scheme: uri.scheme });
+        
+        let validUris: vscode.Uri[] = [];
+        if (Array.isArray(uris)) {
+            validUris = uris.map(u => {
+                if (u instanceof vscode.Uri) return u;
+                if (u && typeof u === 'object' && 'scheme' in u && 'path' in u) return vscode.Uri.file(u.path).with({ scheme: u.scheme });
+                return undefined;
+            }).filter((u): u is vscode.Uri => !!u);
+        }
+
+        const targetUris = validUris.length > 0 ? validUris : (validUri ? [validUri] : []);
+        
         Logger.info(`Command setContextState triggered for ${targetUris.length} files. State: ${state}`);
         if (targetUris.length > 0) {
             await services.contextManager.getContextStateProvider()?.setStateForUris(targetUris, state);
@@ -19,7 +34,7 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
                 ChatPanel.currentPanel.updateContextAndTokens();
             }
         } else {
-            Logger.warn("setContextState: No URIs provided.");
+            Logger.warn("setContextState: No valid URIs provided from command arguments.");
         }
     };
 

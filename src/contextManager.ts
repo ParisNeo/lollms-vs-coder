@@ -1143,7 +1143,13 @@ Rules:
     const includedFiles = contextFiles.filter(f => !f.path.endsWith(path.sep));
     
     if (includedFiles.length > 0) {
-      for (const fileEntry of includedFiles) {
+      for (let i = 0; i < includedFiles.length; i++) {
+        const fileEntry = includedFiles[i];
+
+        if (i % 10 === 0) {
+             await new Promise(resolve => setTimeout(resolve, 0));
+        }
+
         if (signal?.aborted) throw new Error("Operation cancelled");
 
         const filePath = fileEntry.path;

@@ -153,9 +153,24 @@ export class DiscussionManager {
 
     async saveDiscussion(discussion: Discussion): Promise<void> {
         if (discussion.id.startsWith('temp-')) return;
+        
         const filePath = vscode.Uri.joinPath(this.discussionsDir, `${discussion.id}.json`);
-        const content = Buffer.from(JSON.stringify(discussion, null, 2), 'utf8');
-        await vscode.workspace.fs.writeFile(filePath, content);
+        const tempPath = vscode.Uri.joinPath(this.discussionsDir, `${discussion.id}.tmp`);
+        
+        try {
+            const content = Buffer.from(JSON.stringify(discussion, null, 2), 'utf8');
+            
+            // Write to .tmp first
+            await vscode.workspace.fs.writeFile(tempPath, content);
+            
+            // Rename .tmp to .json (Atomic-like operation on most FS)
+            await vscode.workspace.fs.rename(tempPath, filePath, { overwrite: true });
+        } catch (e) {
+            console.error(`Failed to save discussion ${discussion.id}:`, e);
+            // Attempt to clean up temp file
+            try { await vscode.workspace.fs.delete(tempPath, { useTrash: false }); } catch {}
+            throw e;
+        }
     }
     
     async getDiscussion(id: string): Promise<Discussion | null> {

@@ -510,6 +510,12 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
         }
         currentOffset += lineWithNewline.length;
     }
+
+    // Fix: Ensure open blocks (streaming) have a valid 'end' so they don't cause duplication
+    if (inBlock && infos.length > 0) {
+        infos[infos.length - 1].end = currentOffset;
+    }
+
     return infos;
 }
 
@@ -1093,6 +1099,9 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     actions.appendChild(copyReplaceBtn);
                 }
 
+// Determine if buttons should be disabled (while generating this specific block)
+                const isBlockGenerating = !isFinal && !block.isClosed;
+
                 // 3. Navigation: Go to File
                 if (block.path) {
                     const gotoBtn = createButton('Go to File', 'codicon-go-to-file', () => {
@@ -1101,30 +1110,34 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     actions.appendChild(gotoBtn);
                 }
 
-                // 4. Apply Button (with dynamic logic)
+                // 4. Apply Button (with correct surgical icon)
                 if (block.path && (block.type === 'file' || block.type === 'replace' || block.type === 'insert' || block.type === 'diff')) {
-                    // Pre-calculate variables for the button configuration
                     const effectiveType = isAider ? 'replace' : block.type;
                     const isSurgical = effectiveType === 'replace' || effectiveType === 'insert' || effectiveType === 'diff';
-                    const iconClass = isSurgical ? 'codicon-arrow-swap' : 'codicon-tools';
-                    const tooltip = isSurgical ? 'Apply surgical update to file' : 'Overwrite entire file with this content';
-
-                    const applyBtn = createButton('Apply', iconClass, () => {
+                    const icon = isSurgical ? 'codicon-arrow-swap' : 'codicon-tools';
+                    
+                    const applyBtn = createButton('Apply', icon, () => {
                         const cmd = effectiveType === 'diff' ? 'applyPatchContent' : (effectiveType === 'replace' ? 'replaceCode' : 'applyFileContent');
-                        vscode.postMessage({ 
-                            command: cmd, 
-                            filePath: block.path, 
-                            content: codeOnly,
-                            messageId: messageId 
-                        });
-                    }, 'code-action-btn apply-btn', tooltip);
+                        vscode.postMessage({ command: cmd, filePath: block.path, content: codeOnly, messageId: messageId });
+                    }, 'code-action-btn apply-btn', isSurgical ? 'Apply surgical update to file' : 'Overwrite entire file with this content');
+                    
+                    if (isBlockGenerating) {
+                        applyBtn.disabled = true;
+                        applyBtn.title = "Generating code... please wait for block to close.";
+                    }
+
                     actions.appendChild(applyBtn);
                 }
 
-                // 4. Save Button
+                // 5. Save Button
                 const saveBtn = createButton('Save', 'codicon-save', () => {
                     vscode.postMessage({ command: 'saveCodeToFile', content: codeOnly, language });
                 });
+                
+                if (isBlockGenerating) {
+                    saveBtn.disabled = true;
+                }
+
                 actions.appendChild(saveBtn);
 
                 // 5. Inspect Button

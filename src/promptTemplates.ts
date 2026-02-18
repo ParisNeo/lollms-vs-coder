@@ -6,7 +6,7 @@ export class PromptTemplates {
     
     private static getFormatInstructions(capabilities?: DiscussionCapabilities, forceFullCodeSetting?: boolean): string {
         const partialFormat = capabilities?.generationFormats?.partialFormat ?? 'aider';
-        const forceFull = forceFullCodeSetting || capabilities?.forceFullCode || false;
+        const forceFull = forceFullCodeSetting || false;
 
         let sections = [];
 
@@ -29,6 +29,21 @@ export class PromptTemplates {
 \`\`\`
 **Replace [FULL CODE HERE] with the actual code **
 `);
+        }
+        else
+        {
+            if (capabilities?.forceFullCode){
+                sections.push(`
+### 📄 FORMAT: FULL FILE CONTENT (ONLY for Heavy modifications >60% of the original file)
+**CRITICAL**: You must always provide the complete file content. Partial updates are currently disabled.
+**Rule**: Output the entire file from line 1 to the end. No placeholders.
+**Structure**:
+\`\`\`python:src/utils.py
+[FULL CODE HERE]
+\`\`\`
+**Replace [FULL CODE HERE] with the actual code **
+`);            
+            }
         }
         if (partialFormat === 'aider') {
                 sections.push(`

@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.6.5",
+  "version": "0.6.8",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -525,37 +525,51 @@
           "default": [
             {
               "id": "balanced",
-              "name": "Balanced",
-              "description": "Standard helper with structured reasoning.",
-              "systemPrompt": "### RESPONSE STYLE: BALANCED\n- **STRUCTURED BREAKDOWN**: You MUST always start your response by explaining what you are doing using this structure:\n  1. **Problem**: Describe the issue or request.\n  2. **Hypothesis**: Explain your reasoning or approach.\n  3. **Fix**: Briefly outline the changes.\n- Provide clear descriptions to teach the user while staying concise.",
+              "name": "Balanced (Default)",
+              "description": "Natural technical flow: Brief explanation followed by implementation.",
+              "systemPrompt": "### RESPONSE STYLE: BALANCED\n- **Logic**: Briefly explain the technical approach or reasoning behind the solution first.\n- **Implementation**: Provide the code or perform the actions immediately after the explanation.\n- **Tone**: Professional, helpful, and direct.",
               "prefix": ""
             },
             {
-              "id": "silent",
-              "name": "Silent (Code Only)",
-              "description": "Output only code blocks. No conversation.",
-              "systemPrompt": "### RESPONSE STYLE: SILENT\n- **CRITICAL**: You must provide ONLY code blocks or tool executions.\n- **NO CONVERSATION**: Do not explain, apologize, or provide any text outside of the code blocks.\n- If answering a non-code question, use a markdown block.\n- Zero verbosity.",
+              "id": "structured",
+              "name": "Structured (Analytical)",
+              "description": "Formal Problem/Hypothesis/Fix breakdown.",
+              "systemPrompt": "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this three-part structure for every response:\n  1. **Problem**: Identify what is being asked or what issue was found.\n  2. **Hypothesis**: Describe the technical path chosen and why.\n  3. **Fix**: Provide the actual implementation or code.",
+              "prefix": ""
+            },
+            {
+              "id": "senior_coder",
+              "name": "Senior Coder",
+              "description": "Focus on best practices, performance, and clean naming.",
+              "systemPrompt": "### RESPONSE STYLE: SENIOR CODER\n- **Quality**: Prioritize DRY, KISS, and SOLID principles.\n- **Performance**: Optimize for execution speed and memory efficiency.\n- **Naming**: Use highly descriptive variable and function names.\n- **Notes**: Briefly mention which best practices were applied.",
+              "prefix": ""
+            },
+            {
+              "id": "architect",
+              "name": "Architect",
+              "description": "Focus on high-level design patterns and maintainability.",
+              "systemPrompt": "### RESPONSE STYLE: ARCHITECT\n- **Design**: Think in terms of components, scalability, and interfaces.\n- **Patterns**: Suggest design patterns (e.g. Factory, Observer) where applicable.\n- **Trade-offs**: Explain why one technical choice was made over another.",
+              "prefix": ""
+            },
+            {
+              "id": "minimalist",
+              "name": "Minimalist",
+              "description": "Just the answer/code. Zero fluff.",
+              "systemPrompt": "### RESPONSE STYLE: MINIMALIST\n- **Directness**: Do not include introductions, conclusions, or 'Here is your code'.\n- **Content**: Provide only the requested code block or the direct answer to the question.\n- **Brevity**: Extreme conciseness.",
               "prefix": ""
             },
             {
               "id": "pedagogical",
-              "name": "Pedagogical",
-              "description": "Deep explanations and teaching.",
-              "systemPrompt": "### RESPONSE STYLE: PEDAGOGICAL\n- **TEACHING MISSION**: You are a mentor. Ensure the user understands the concepts and the 'why' behind decisions.\n- **DEEP ANALYSIS**: Provide deep analysis before and after the solution.\n- Use analogies and clear documentation.",
-              "prefix": ""
-            },
-            {
-              "id": "chain_of_thought",
-              "name": "Chain of Thought",
-              "description": "Forces explicit reasoning steps.",
-              "systemPrompt": "### REASONING PROTOCOL\nThink step by step. Enclose your entire thinking process within a <thinking> XML block before outputting your final answer.",
+              "name": "Pedagogical (Teacher)",
+              "description": "Deep explanations and concepts coaching.",
+              "systemPrompt": "### RESPONSE STYLE: PEDAGOGICAL\n- **Teaching**: Act as a mentor. Explain concepts deeply so the user learns the 'how' and 'why'.\n- **Breakdown**: Use analogies and step-by-step walkthroughs.\n- **Resources**: Suggest areas for further study if relevant.",
               "prefix": ""
             },
             {
               "id": "no_think",
               "name": "Fast / No Think",
-              "description": "Forces disabling of internal reasoning models (DeepSeek-R1 style).",
-              "systemPrompt": "Disable internal reasoning for speed.",
+              "description": "Disable reasoning for speed (DeepSeek-R1 style).",
+              "systemPrompt": "Bypass internal reasoning steps to provide the fastest possible response.",
               "prefix": "/no_think"
             }
           ],
@@ -717,23 +731,7 @@
           "default": false,
           "description": "%config.forceFullCodePath.description%"
         },
-        "lollmsVsCoder.reasoningLevel": {
-          "type": "string",
-          "default": "none",
-          "description": "%config.reasoningLevel.description%",
-          "enum": [
-            "none",
-            "low",
-            "medium",
-            "high"
-          ],
-          "enumDescriptions": [
-            "%config.reasoningLevel.none.description%",
-            "%config.reasoningLevel.low.description%",
-            "%config.reasoningLevel.medium.description%",
-            "%config.reasoningLevel.high.description%"
-          ]
-        },
+
         "lollmsVsCoder.enableCodeActions": {
           "type": "boolean",
           "default": true,
@@ -1177,7 +1175,14 @@
       "scm/title": [
         {
           "command": "lollms-vs-coder.generateCommitMessage",
-          "when": "scmProvider == 'git'",
+          "when": "scmProvider == 'git' && !lollms:isGeneratingCommitMessage",
+          "group": "navigation"
+        },
+        {
+          "command": "lollms-vs-coder.showLog",
+          "title": "Generating Commit Message...",
+          "when": "scmProvider == 'git' && lollms:isGeneratingCommitMessage",
+          "icon": "$(sync~spin)",
           "group": "navigation"
         },
         {

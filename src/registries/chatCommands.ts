@@ -209,6 +209,68 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
         }
     }));
 
+    // --- GROUP MANAGEMENT ---
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.createDiscussionGroup', async () => {
+        const title = await vscode.window.showInputBox({ prompt: "Enter group name", placeHolder: "e.g. Research, Project X, Debugging" });
+        if (!title) return;
+
+        const groups = await services.discussionManager.getGroups();
+        const newGroup = {
+            id: 'group-' + Date.now().toString(),
+            title: title,
+            description: '',
+            timestamp: Date.now()
+        };
+
+        groups.push(newGroup);
+        await services.discussionManager.saveGroups(groups);
+        services.treeProviders.discussion?.refresh();
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.renameDiscussionGroup', async (item: DiscussionGroupItem) => {
+        const newTitle = await vscode.window.showInputBox({ prompt: "Enter new group name", value: item.group.title });
+        if (!newTitle) return;
+
+        const groups = await services.discussionManager.getGroups();
+        const group = groups.find(g => g.id === item.group.id);
+        if (group) {
+            group.title = newTitle;
+            await services.discussionManager.saveGroups(groups);
+            services.treeProviders.discussion?.refresh();
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deleteDiscussionGroup', async (item: DiscussionGroupItem) => {
+        const confirm = await vscode.window.showWarningMessage(
+            `Delete group "${item.group.title}"? Discussions inside will be moved to the root list.`,
+            { modal: true }, "Delete"
+        );
+        if (confirm === "Delete") {
+            await services.discussionManager.deleteGroup(item.group.id);
+            services.treeProviders.discussion?.refresh();
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.moveDiscussionToGroup', async (item: DiscussionItem) => {
+        const groups = await services.discussionManager.getGroups();
+        
+        const options = [
+            { label: "$(archive) (No Group)", id: null },
+            ...groups.map(g => ({ label: `$(folder) ${g.title}`, id: g.id }))
+        ];
+
+        const selected = await vscode.window.showQuickPick(options, { placeHolder: "Select destination group" });
+        if (selected !== undefined) {
+            const discussion = await services.discussionManager.getDiscussion(item.discussion.id);
+            if (discussion) {
+                discussion.groupId = selected.id;
+                await services.discussionManager.saveDiscussion(discussion);
+                services.treeProviders.discussion?.refresh();
+            }
+        }
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.runScript', async (code: string, language: string) => {
         const panel = ChatPanel.currentPanel;
         const workspaceFolder = getActiveWorkspace();

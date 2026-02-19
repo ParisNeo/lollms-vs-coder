@@ -1,49 +1,46 @@
 import * as vscode from 'vscode';
 import * as os from 'os';
-import { DiscussionCapabilities, getAvailableShells, ResponseProfile } from './utils';
+import { DiscussionCapabilities, getAvailableShells, ResponseProfile, SYSTEM_RESPONSE_PROFILES } from './utils';
 
 export class PromptTemplates {
     
     private static getFormatInstructions(capabilities?: DiscussionCapabilities, forceFullCodeSetting?: boolean): string {
         const partialFormat = capabilities?.generationFormats?.partialFormat ?? 'aider';
-        const forceFull = forceFullCodeSetting || false;
+        
+        // Priority: Discussion Capability > Global Setting
+        const isForced = (capabilities && capabilities.forceFullCode !== undefined) 
+            ? capabilities.forceFullCode 
+            : (forceFullCodeSetting || false);
 
         let sections = [];
 
-        sections.push(`
+        if (isForced) {
+            sections.push(`
+### 📄 FORMAT: FULL FILE CONTENT (ENFORCED)
+**CRITICAL**: You must always provide the complete file content. Partial updates are currently disabled for this session.
+**Rule**: Output the entire file from line 1 to the end. No placeholders.
+**Structure**:
+\`\`\`python:src/utils.py
+[FULL CODE HERE]
+\`\`\`
+`);
+        } else {
+            sections.push(`
 ### 🚦 CODE GENERATION DECISION LOGIC
 1. **NEW FILE**: You MUST use the **FULL FILE** format.
 2. **HUGE CHANGES (>50%)**: If you are changing more than 50% of the file, use the **FULL FILE** format.
 3. **STANDARD EDITS (<50%)**: For most edits, you MUST use the ${partialFormat.toUpperCase()} format. Do NOT output the full file for small changes.
-4. **MULTIPLE BLOCKS**: You may provide multiple ${partialFormat.toUpperCase()} blocks for the same file if the changes are in different parts of the file.
-`);
 
-        if (forceFull) {
-            sections.push(`
-### 📄 FORMAT: FULL FILE CONTENT (ENFORCED)
-**CRITICAL**: You must always provide the complete file content. Partial updates are currently disabled.
-**Rule**: Output the entire file from line 1 to the end. No placeholders.
-**Structure**:
+### ⚡ FORMAT: ${partialFormat.toUpperCase()} (For Standard Edits)
+Use this for modifications to existing files.
+[Specific ${partialFormat.toUpperCase()} rules will follow below]
+
+### 📄 FORMAT: FULL FILE CONTENT (For Heavy Modifications Only)
+If changes are extensive, use:
 \`\`\`python:src/utils.py
 [FULL CODE HERE]
 \`\`\`
-**Replace [FULL CODE HERE] with the actual code **
 `);
-        }
-        else
-        {
-            if (capabilities?.forceFullCode){
-                sections.push(`
-### 📄 FORMAT: FULL FILE CONTENT (ONLY for Heavy modifications >60% of the original file)
-**CRITICAL**: You must always provide the complete file content. Partial updates are currently disabled.
-**Rule**: Output the entire file from line 1 to the end. No placeholders.
-**Structure**:
-\`\`\`python:src/utils.py
-[FULL CODE HERE]
-\`\`\`
-**Replace [FULL CODE HERE] with the actual code **
-`);            
-            }
         }
         if (partialFormat === 'aider') {
                 sections.push(`
@@ -126,9 +123,23 @@ You can trigger specialized UI blocks by using these XML-like tags:
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const userName = config.get<string>('userInfo.name') || 'Developer';
         
-        const profiles = config.get<ResponseProfile[]>('responseProfiles') || [];
+        const configProfiles = config.get<ResponseProfile[]>('responseProfiles') || [];
         const activeProfileId = capabilities?.responseProfileId || config.get<string>('defaultResponseProfileId') || 'balanced';
-        const activeProfile = profiles.find(p => p.id === activeProfileId) || profiles[0];
+        
+        // 💡 CACHE BYPASS LOGIC:
+        // Check if the requested ID is a System Profile first. 
+        // If it is, use the code-defined prompt to ensure it's up-to-date.
+        let activeProfile = SYSTEM_RESPONSE_PROFILES.find(p => p.id === activeProfileId);
+        
+        // If not a system profile, check user's custom profiles in settings.json
+        if (!activeProfile) {
+            activeProfile = configProfiles.find(p => p.id === activeProfileId);
+        }
+
+        // Fallback to the first available
+        if (!activeProfile) {
+            activeProfile = SYSTEM_RESPONSE_PROFILES[0];
+        }
 
         let persona = customPersonaContent || config.get<string>(
             promptType === 'chat' ? 'chatPersona' :

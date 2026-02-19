@@ -15,6 +15,11 @@ function getStatusEmoji(text: string): string {
 export function setGeneratingState(isGenerating: boolean, statusText?: string) {
     state.isGenerating = isGenerating;
 
+    // Update the relocated status text if it's an agent/gen process
+    if (statusText && dom.statusText) {
+        dom.statusText.textContent = statusText;
+    }
+
     if (dom.messageInput) {
         dom.messageInput.disabled = isGenerating;
     }
@@ -107,6 +112,120 @@ function createToggleBadge(
     
     return span;
 }
+
+/**
+ * Renders the list of Response Profiles inside the Discussion Settings modal.
+ */
+export function renderProfilesInModal() {
+    const container = document.getElementById('modal-profiles-container');
+    const selector = document.getElementById('modal-default-profile-select') as HTMLSelectElement;
+    if (!container || !selector || !state.profiles) return;
+
+    container.innerHTML = '';
+    selector.innerHTML = '';
+
+    const currentProfileId = state.capabilities?.responseProfileId || 'balanced';
+
+    state.profiles.forEach((p, idx) => {
+        // 1. Update Selector
+        const opt = new Option(p.name + (p.id === currentProfileId ? " (Active)" : ""), p.id);
+        opt.selected = p.id === currentProfileId;
+        selector.appendChild(opt);
+
+        // 2. Create Profile Row
+        const item = document.createElement('div');
+        item.style.cssText = "display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--vscode-list-hoverBackground); border-radius: 4px; border: 1px solid var(--vscode-widget-border);";
+        
+        item.innerHTML = `
+            <div style="flex:1; min-width:0;">
+                <div style="font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${p.name}</div>
+                <div style="font-size: 10px; opacity: 0.7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${p.description}</div>
+            </div>
+            <button class="icon-btn edit-p-btn" data-idx="${idx}" title="Edit"><i class="codicon codicon-edit"></i></button>
+            <button class="icon-btn remove-p-btn" data-idx="${idx}" title="Delete" style="color: var(--vscode-errorForeground);"><i class="codicon codicon-trash"></i></button>
+        `;
+        
+        container.appendChild(item);
+    });
+
+    // Delegate Events
+    container.querySelectorAll('.edit-p-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const idx = parseInt((btn as HTMLElement).dataset.idx || '0', 10);
+            openProfileEditor(idx);
+        });
+    });
+
+    container.querySelectorAll('.remove-p-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const idx = parseInt((btn as HTMLElement).dataset.idx || '0', 10);
+            if (state.profiles[idx].id === 'balanced') {
+                 vscode.postMessage({ command: 'showError', message: 'Cannot delete the base balanced profile.' });
+                 return;
+            }
+            state.profiles.splice(idx, 1);
+            renderProfilesInModal();
+        });
+    });
+}
+
+let currentEditingProfileIdx = -1;
+
+function openProfileEditor(idx: number = -1) {
+    const editor = document.getElementById('modal-profile-editor');
+    const container = document.getElementById('modal-profiles-container');
+    if (!editor || !container) return;
+
+    currentEditingProfileIdx = idx;
+    const p = idx === -1 ? { name: '', description: '', systemPrompt: '', prefix: '' } : state.profiles[idx];
+
+    (document.getElementById('modal-p-name') as HTMLInputElement).value = p.name;
+    (document.getElementById('modal-p-desc') as HTMLInputElement).value = p.description;
+    (document.getElementById('modal-p-prefix') as HTMLInputElement).value = p.prefix || '';
+    (document.getElementById('modal-p-prompt') as HTMLTextAreaElement).value = p.systemPrompt;
+
+    editor.style.display = 'block';
+    container.style.display = 'none';
+}
+
+// Global exposure for events.ts
+(window as any).closeProfileEditor = () => {
+    const editor = document.getElementById('modal-profile-editor');
+    const container = document.getElementById('modal-profiles-container');
+    if (editor && container) {
+        editor.style.display = 'none';
+        container.style.display = 'flex';
+    }
+};
+
+(window as any).saveProfileFromModal = () => {
+    const name = (document.getElementById('modal-p-name') as HTMLInputElement).value;
+    const desc = (document.getElementById('modal-p-desc') as HTMLInputElement).value;
+    const prefix = (document.getElementById('modal-p-prefix') as HTMLInputElement).value;
+    const prompt = (document.getElementById('modal-p-prompt') as HTMLTextAreaElement).value;
+
+    if (!name || !prompt) {
+        vscode.postMessage({ command: 'showError', message: 'Name and System Instructions are required.' });
+        return;
+    }
+
+    const newProfile: ResponseProfile = {
+        id: currentEditingProfileIdx === -1 ? `custom_${Date.now()}` : state.profiles[currentEditingProfileIdx].id,
+        name,
+        description: desc,
+        prefix,
+        systemPrompt: prompt
+    };
+
+    if (currentEditingProfileIdx === -1) {
+        state.profiles.push(newProfile);
+    } else {
+        state.profiles[currentEditingProfileIdx] = newProfile;
+    }
+
+    (window as any).closeProfileEditor();
+    renderProfilesInModal();
+};
 
 export function updateBadges() {
     const container = dom.activeBadges;
@@ -228,10 +347,14 @@ export function updateBadges() {
         configItem.style.borderTop = '1px solid var(--vscode-menu-separatorBackground)';
         configItem.style.marginTop = '4px';
         configItem.style.paddingTop = '8px';
-        configItem.innerHTML = `<span class="codicon codicon-gear"></span> Configure Modes...`;
+        configItem.innerHTML = `<span class="codicon codicon-settings"></span> Configure Styles...`;
         configItem.onclick = (e) => {
             e.stopPropagation();
-            vscode.postMessage({ command: 'openSettings' });
+            // Open the Discussion Settings modal directly
+            if (dom.discussionToolsModal) {
+                dom.discussionToolsModal.classList.add('visible');
+                renderProfilesInModal(); // Refresh the list
+            }
             menu.classList.remove('visible');
         };
         menu.appendChild(configItem);
@@ -287,7 +410,48 @@ export function updateBadges() {
                 vscode.postMessage({ command: 'runAutoContext', prompt: prompt });
             }
         );
-        if (ctxBadge) knowledgeGroup.appendChild(ctxBadge);
+        if (ctxBadge) {
+            const label = ctxBadge.querySelector('.badge-label');
+            const toggle = ctxBadge.querySelector('.badge-toggle-btn');
+
+            if (caps.disableProjectContext) {
+                // PRIORITY 1: MUTED STATE (Red)
+                ctxBadge.classList.remove('inactive');
+                ctxBadge.classList.add('active');
+                ctxBadge.style.setProperty('background-color', 'var(--vscode-charts-red)', 'important');
+                ctxBadge.style.setProperty('color', 'white', 'important');
+                ctxBadge.title = "Context is currently MUTED. Files won't be sent to AI.";
+                if (label) label.textContent = '🧠 Context Muted';
+                if (toggle) {
+                    toggle.classList.remove('codicon-circle-large-outline', 'codicon-pass-filled');
+                    toggle.classList.add('codicon-mute');
+                }
+            } else {
+                // PRIORITY 2: NORMAL STATE (Respects toggle)
+                ctxBadge.style.backgroundColor = "";
+                ctxBadge.style.color = "";
+                
+                if (caps.autoContextMode) {
+                    ctxBadge.classList.remove('inactive');
+                    ctxBadge.classList.add('active');
+                    if (toggle) {
+                        toggle.classList.remove('codicon-circle-large-outline', 'codicon-mute');
+                        toggle.classList.add('codicon-pass-filled');
+                    }
+                } else {
+                    ctxBadge.classList.remove('active');
+                    ctxBadge.classList.add('inactive');
+                    if (toggle) {
+                        toggle.classList.remove('codicon-pass-filled', 'codicon-mute');
+                        toggle.classList.add('codicon-circle-large-outline');
+                    }
+                }
+
+                if (label) label.textContent = '🧠 AutoCtx';
+                ctxBadge.title = caps.autoContextMode ? "Auto-Context Active (Click to disable)" : "Auto-Context Inactive (Click to enable)";
+            }
+            knowledgeGroup.appendChild(ctxBadge);
+        }
 
         const skillBadge = createToggleBadge(
             '💡 AutoSkill',
@@ -321,7 +485,7 @@ export function updateBadges() {
         );
         
         if (webBadge) {
-            webBadge.classList.add('websearch-indicator');
+            webBadge.classList.add('webSearch-indicator');
             const logContainer = document.createElement('div');
             logContainer.id = 'web-search-log';
             logContainer.className = 'websearch-log';
@@ -405,6 +569,45 @@ export function updateBadges() {
         };
     }
 }
+
+// Global exposure for events.ts
+(window as any).closeProfileEditor = () => {
+    const editor = document.getElementById('modal-profile-editor');
+    const container = document.getElementById('modal-profiles-container');
+    if (editor && container) {
+        editor.style.display = 'none';
+        container.style.display = 'flex';
+    }
+};
+
+(window as any).saveProfileFromModal = () => {
+    const name = (document.getElementById('modal-p-name') as HTMLInputElement).value;
+    const desc = (document.getElementById('modal-p-desc') as HTMLInputElement).value;
+    const prefix = (document.getElementById('modal-p-prefix') as HTMLInputElement).value;
+    const prompt = (document.getElementById('modal-p-prompt') as HTMLTextAreaElement).value;
+
+    if (!name || !prompt) {
+        vscode.postMessage({ command: 'showError', message: 'Name and System Instructions are required.' });
+        return;
+    }
+
+    const newProfile: ResponseProfile = {
+        id: currentEditingProfileIdx === -1 ? `custom_${Date.now()}` : state.profiles[currentEditingProfileIdx].id,
+        name,
+        description: desc,
+        prefix,
+        systemPrompt: prompt
+    };
+
+    if (currentEditingProfileIdx === -1) {
+        state.profiles.push(newProfile);
+    } else {
+        state.profiles[currentEditingProfileIdx] = newProfile;
+    }
+
+    (window as any).closeProfileEditor();
+    renderProfilesInModal();
+};
 
 export function renderSkillsTree(container: HTMLElement, node: any, activeSkillIds: string[] = []) {
     if (!node.children || node.children.length === 0) return;

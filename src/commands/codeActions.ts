@@ -18,7 +18,8 @@ export class LollmsCodeActionProvider implements vscode.CodeActionProvider {
         if (context.diagnostics.length > 0) {
             // Focus on the first diagnostic at this position
             const diagnostic = context.diagnostics[0];
-            const action = new vscode.CodeAction(`$(sparkle) Fix with Lollms`, vscode.CodeActionKind.QuickFix);
+            // Use standard emoji ✨ instead of $(sparkle) because CodeAction titles don't support Codicons
+            const action = new vscode.CodeAction(`✨ Fix with Lollms`, vscode.CodeActionKind.QuickFix);
             action.command = {
                 command: 'lollms-vs-coder.fixDiagnostic',
                 title: 'Fix with Lollms',

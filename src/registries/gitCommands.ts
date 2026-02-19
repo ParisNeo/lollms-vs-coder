@@ -29,7 +29,11 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
         }
 
         try {
+            // Activate spinning icon in toolbar
+            await vscode.commands.executeCommand('setContext', 'lollms:isGeneratingCommitMessage', true);
+            
             const message = await services.gitIntegration.generateCommitMessage(folder);
+            
             if (message) {
                 const gitExtension = vscode.extensions.getExtension('vscode.git');
                 if (gitExtension) {
@@ -40,7 +44,9 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
                     }
                 }
             }
+            await vscode.commands.executeCommand('setContext', 'lollms:isGeneratingCommitMessage', false);
         } catch (error: any) {
+            await vscode.commands.executeCommand('setContext', 'lollms:isGeneratingCommitMessage', false);
             vscode.window.showErrorMessage(error.message);
         }
     }));

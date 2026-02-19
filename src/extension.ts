@@ -92,6 +92,7 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.window.registerTreeDataProvider('lollmsRLMView', rlmProvider);
 
     contextManager.setSkillsManager(skillsManager);
+    contextManager.setCodeGraphManager(codeGraphManager);
 
     // SETUP DIFF MANAGER
     diffManager.setup(context);

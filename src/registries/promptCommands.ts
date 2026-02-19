@@ -64,6 +64,7 @@ export function registerPromptCommands(context: vscode.ExtensionContext, service
             editor,
             services.extensionUri,
             services.contextManager,
+            services.lollmsAPI, // Pass API for smart dependency detection
             useContext
         );
 

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { ContextManager } from '../contextManager';
 import { PromptBuilderPanel, parsePlaceholders } from '../commands/promptBuilderPanel';
+import { ChatPanel } from '../commands/chatPanel/chatPanel';
 import { getProcessedSystemPrompt } from '../utils';
 
 /**
@@ -18,7 +19,9 @@ export async function buildCodeActionPrompt(
     editor: vscode.TextEditor, 
     extensionUri: vscode.Uri,
     contextManager: ContextManager,
-    useContext: boolean = false
+    lollmsApi: any,
+    useContext: boolean = false,
+    signal?: AbortSignal
 ): Promise<{ systemPrompt: string, userPrompt: string } | null> {
     const selection = editor.selection;
     const document = editor.document;
@@ -41,9 +44,63 @@ export async function buildCodeActionPrompt(
     
     let contextText = '';
     if (useContext) {
-        const contextResult = await contextManager.getContextContent();
-        if (contextResult && contextResult.text && !contextResult.text.includes("**No workspace folder is currently open.**")) {
-            contextText = `\n\n==== PROJECT CONTEXT ====\n${contextResult.text}\n=========================\n`;
+        const projectSkillIds = await contextManager.getActiveProjectSkills();
+        const activeDiscussion = ChatPanel.currentPanel?.getCurrentDiscussion();
+        const discussionSkillIds = activeDiscussion?.importedSkills || [];
+        const activeDiagramIds = activeDiscussion?.activeDiagrams || [];
+        const combinedSkillIds = Array.from(new Set([...projectSkillIds, ...discussionSkillIds]));
+
+        // 1. Fetch "Warm" Context (Skills, Diagrams, and ALREADY included files from Auto Context)
+        const contextResult = await contextManager.getContextContent({ 
+            includeTree: true,
+            importedSkillIds: combinedSkillIds,
+            activeDiagramIds: activeDiagramIds
+        });
+
+        contextText = contextResult.text;
+
+        // 2. SMART DEPENDENCY PEAK: If we have an API and a signal, find missing dependencies
+        if (lollmsApi && !signal?.aborted) {
+            try {
+                const allFiles = await contextManager.getWorkspaceFilePaths();
+                const currentIncluded = contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || [];
+                
+                const selectionSystemPrompt = {
+                    role: 'system',
+                    content: `You are a dependency analyzer. The user is refactoring a code snippet in "${fileName}".
+Identify which existing files in the project are crucial to read (types, base classes, or related logic) to avoid hallucinations.
+- PRIORITIZE files in the "ALREADY INCLUDED" list.
+- Select up to 5 additional relevant files.
+- Return ONLY a valid JSON array of strings.`
+                };
+
+                const selectionUserPrompt = {
+                    role: 'user',
+                    content: `**Selection in ${fileName}:**\n\`\`\`\n${selectedText}\n\`\`\`\n\n**Included Files:** ${JSON.stringify(currentIncluded)}\n\n**All Files:**\n${allFiles.join('\n')}`
+                };
+
+                const response = await lollmsApi.sendChat([selectionSystemPrompt, selectionUserPrompt], null, signal);
+                const jsonMatch = response.match(/\[.*\]/s);
+                if (jsonMatch) {
+                    const filesToPeek = JSON.parse(jsonMatch[0]).filter((f: string) => f !== relativePath);
+                    const peekedContent = await contextManager.readSpecificFiles(filesToPeek);
+                    if (peekedContent) {
+                        contextText += `\n\n## RELATED DEPENDENCIES (PEEKED)\n${peekedContent}`;
+                    }
+                }
+            } catch (e) {
+                console.warn("Smart context peek failed, proceeding with base context.", e);
+            }
+        }
+
+        if (contextText && !contextText.includes("**No workspace folder is currently open.**")) {
+            let diagramText = "";
+            if (contextResult.diagrams && contextResult.diagrams.length > 0) {
+                diagramText = "\n## ARCHITECTURE DIAGRAMS\n" + contextResult.diagrams.map(d => 
+                    `### ${d.type.toUpperCase()}\n\`\`\`mermaid\n${d.mermaid}\n\`\`\``
+                ).join('\n\n');
+            }
+            contextText = `\n\n==== PROJECT & SMART CONTEXT ====\n${contextText}${diagramText}\n==================================\n`;
         }
     }
 

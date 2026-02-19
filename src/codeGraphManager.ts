@@ -133,6 +133,8 @@ export class CodeGraphManager {
                 fileNodeMap.set(normalizedPath, fileNodeId);
             }
 
+            const libraryNodeMap = new Map<string, string>();
+
             // --- PASS 2: Parse Content ---
             // Process files in chunks to avoid blocking the event loop for too long
             for (let i = 0; i < files.length; i++) {
@@ -252,16 +254,35 @@ export class CodeGraphManager {
                     const rawImports = this.extractImports(cleanText, ext);
                     for (const importStr of rawImports) {
                         const targetPath = this.resolveImport(importStr, normalizedPath, fileNodeMap);
+                        
                         if (targetPath) {
+                            // Local File Import
                             const targetId = fileNodeMap.get(targetPath);
                             if (targetId && targetId !== fileNodeId) {
-                                edges.push({
-                                    id: `edge_${edgeId++}`,
-                                    source: fileNodeId,
-                                    target: targetId,
-                                    label: 'imports'
-                                });
+                                edges.push({ id: `edge_${edgeId++}`, source: fileNodeId, target: targetId, label: 'imports' });
                             }
+                        } else if (!importStr.startsWith('.')) {
+                            // External Library Detection
+                            // We treat non-relative imports that don't resolve to local files as libraries
+                            const libName = importStr.split('/')[0]; // Get base package name
+                            let libId = libraryNodeMap.get(libName);
+                            
+                            if (!libId) {
+                                libId = `lib_${nodeId++}`;
+                                nodes.push({
+                                    id: libId,
+                                    label: libName,
+                                    type: 'library'
+                                });
+                                libraryNodeMap.set(libName, libId);
+                            }
+                            
+                            edges.push({
+                                id: `edge_${edgeId++}`,
+                                source: fileNodeId,
+                                target: libId,
+                                label: 'imports'
+                            });
                         }
                     }
                 } catch (readError) {
@@ -484,7 +505,14 @@ export class CodeGraphManager {
                 const node = this.graph.nodes.find(n => n.id === nodeId);
                 if (node) {
                     const safeLabel = this.sanitizeMermaidLabel(node.label);
-                    out += `${this.sanitizeMermaidId(nodeId)}(["${safeLabel}"])\n`;
+                    const safeId = this.sanitizeMermaidId(nodeId);
+                    
+                    if (node.type === 'library') {
+                        out += `${safeId}{{"Library: ${safeLabel}"}}\n`; // Hexagon for libs
+                        out += `style ${safeId} fill:#f96,stroke:#333,stroke-width:2px\n`;
+                    } else {
+                        out += `${safeId}(["${safeLabel}"])\n`; // Rounded for files
+                    }
                     definedNodes.add(nodeId);
                 }
             }

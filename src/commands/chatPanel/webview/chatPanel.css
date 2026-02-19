@@ -137,6 +137,15 @@ body {
 .special-zone-message .message-avatar { background-color: transparent; border: 1px solid var(--vscode-focusBorder); color: var(--vscode-foreground); }
 .special-zone-message .message-header { font-weight: bold; color: var(--vscode-textLink-foreground); }
 
+.context-message.muted-bubble {
+    border: 2px solid var(--vscode-charts-red) !important;
+    box-shadow: 0 0 10px rgba(244, 71, 71, 0.2) !important;
+}
+
+.context-message.muted-bubble .role-name {
+    color: var(--vscode-charts-red) !important;
+}
+
 /* --- UPDATED MESSAGE BODY FOR STICKY TOOLBAR --- */
 .message-body {
     flex: 1;
@@ -587,28 +596,30 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 .rich-input-toolbar {
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 2px 4px;
+    gap: 2px;
+    padding: 2px;
     background-color: var(--vscode-editorWidget-background);
     border: 1px solid var(--vscode-input-border);
     border-bottom: none;
     border-top-left-radius: 6px;
     border-top-right-radius: 6px;
+    flex-wrap: wrap;
 }
 
 .toolbar-tool {
     background: transparent;
     border: none;
     color: var(--vscode-input-foreground);
-    padding: 4px 8px;
-    border-radius: 4px;
+    padding: 4px 6px;
+    border-radius: 3px;
     cursor: pointer;
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
     font-size: 11px;
     opacity: 0.8;
-    transition: background 0.2s, opacity 0.2s;
+    transition: background 0.1s;
+    font-weight: 600;
 }
 
 .toolbar-tool:hover {
@@ -1176,9 +1187,7 @@ mark.current-match {
 .retry-btn:hover { background-color: var(--vscode-button-secondaryHoverBackground); }
 
 .status-label {
-    font-size: 11px; font-weight: 600; margin-right: 12px; padding: 2px 8px;
-    border-radius: 4px; background-color: var(--vscode-badge-background); color: var(--vscode-badge-foreground);
-    display: none; align-items: center; gap: 6px; white-space: nowrap;
+    font-size: 10px; font-weight: 400; display: flex; align-items: center; gap: 6px; white-space: nowrap;
 }
 .status-label.visible { display: flex; }
 .status-label.error { background-color: var(--vscode-inputValidation-errorBackground); border: 1px solid var(--vscode-inputValidation-errorBorder); }

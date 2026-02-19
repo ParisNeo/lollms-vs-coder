@@ -24,7 +24,37 @@ export interface ResponseProfile {
     description: string;
     systemPrompt: string;
     prefix?: string;
+    isCustom?: boolean; // Flag to allow user overrides
 }
+
+/**
+ * 🚀 THE SOURCE OF TRUTH (Deactivates Cache)
+ * These prompts are defined in code. Even if settings.json has old versions,
+ * the extension logic will use these unless the user explicitly creates a custom profile.
+ */
+export const SYSTEM_RESPONSE_PROFILES: ResponseProfile[] = [
+    {
+        id: "balanced",
+        name: "Balanced (Default)",
+        description: "Natural technical flow: Brief explanation followed by implementation.",
+        systemPrompt: "### RESPONSE STYLE: BALANCED\n- **Logic**: Briefly explain the technical approach or reasoning behind your solution.\n- **Implementation**: Provide the code or perform the actions immediately after the explanation.\n- **Tone**: Professional, helpful, and direct. Avoid rigid headers like 'Problem' or 'Hypothesis' unless explicitly asked.",
+        prefix: ""
+    },
+    {
+        id: "structured",
+        name: "Structured (Analytical)",
+        description: "Formal Problem/Hypothesis/Fix breakdown.",
+        systemPrompt: "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this three-part structure for every response:\n  1. **Problem**: Identify what is being asked or what issue was found.\n  2. **Hypothesis**: Describe the technical path chosen and why.\n  3. **Fix**: Provide the actual implementation or code.",
+        prefix: ""
+    },
+    {
+        id: "minimalist",
+        name: "Minimalist",
+        description: "Just the answer/code. Zero fluff.",
+        systemPrompt: "### RESPONSE STYLE: MINIMALIST\n- **Directness**: Do not include introductions, conclusions, or 'Here is your code'.\n- **Content**: Provide only the requested code block or the direct answer to the question.\n- **Brevity**: Extreme conciseness.",
+        prefix: ""
+    }
+];
 
 export interface DiscussionCapabilities {
     generationFormats: {
@@ -71,6 +101,8 @@ export interface DiscussionCapabilities {
     agentMode: boolean;
     autoContextMode: boolean;
     autoSkillMode: boolean;
+    contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
+    disableProjectContext: boolean;
     guiState?: {
         agentBadge: boolean;
         autoContextBadge: boolean;
@@ -434,6 +466,11 @@ export async function getProcessedSystemPrompt(
 ): Promise<string> {
     const memory = memoryManager ? await memoryManager.getMemory() : "";
     return PromptTemplates.getSystemPrompt(promptType, capabilities, customPersonaContent, memory, forceFullCode, context);
+}
+
+export function stripAnsiCodes(text: string): string {
+    // eslint-disable-next-line no-control-regex
+    return text.replace(/[\u001b\u009b][[()#;?]*(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d\/#&.:=?%@~]*)*)?\u0007?/g, '');
 }
 
 export function stripThinkingTags(responseText: string): string {

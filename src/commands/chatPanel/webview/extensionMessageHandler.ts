@@ -1,6 +1,6 @@
 import { dom, vscode, state } from './dom.js';
 import { addMessage, renderMessageContent, updateContext, displayPlan, scheduleRender } from './messageRenderer.js';
-import { setGeneratingState, updateBadges, renderSkillsTree } from './ui.js';
+import { setGeneratingState, updateBadges, renderProfilesInModal, renderSkillsTree } from './ui.js';
 
 export function handleExtensionMessage(event: MessageEvent) {
     try {
@@ -90,18 +90,30 @@ export function handleExtensionMessage(event: MessageEvent) {
                 }
                 break;
             case 'setGeneratingState':
+                // If we are stopping, explicitly ensure overlays are hidden
+                if (!message.isGenerating) {
+                    const overlay = document.getElementById('generating-overlay');
+                    if (overlay) overlay.style.display = 'none';
+                    const input = document.querySelector('.input-area-wrapper') as HTMLElement;
+                    if (input) input.style.display = 'block';
+                }
                 setGeneratingState(message.isGenerating, message.statusText);
                 break;
             case 'updateGenerationMetrics':
                 const metricsEl = document.getElementById('generating-metrics');
                 const tpsEl = document.getElementById('metrics-tps');
+                if (message.reset) {
+                    if (metricsEl) metricsEl.style.display = 'none';
+                    if (tpsEl) tpsEl.textContent = '0.0';
+                    return;
+                }
                 if (metricsEl) metricsEl.style.display = 'block';
                 if (tpsEl && message.tps && !isNaN(parseFloat(message.tps))) {
                     tpsEl.textContent = message.tps;
                 }
                 break;
             case 'updateContext':
-                updateContext(message.context, message.files, message.skills);
+                updateContext(message.context, message.files, message.skills, message.diagrams);
                 break;
             case 'displayPlan':
                 displayPlan(message.plan);
@@ -147,6 +159,7 @@ export function handleExtensionMessage(event: MessageEvent) {
                     
                     if (message.profiles) {
                         state.profiles = message.profiles;
+                        renderProfilesInModal(); // Refresh the list in the modal
                     } else if (!state.profiles) {
                         state.profiles = [];
                     }
@@ -199,6 +212,7 @@ export function handleExtensionMessage(event: MessageEvent) {
                     
                     if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = caps.agentMode;
                     if (dom.autoContextCheckbox) dom.autoContextCheckbox.checked = caps.autoContextMode;
+                    if (dom.contextAggressionSelect) dom.contextAggressionSelect.value = caps.contextAggression || 'respect';
                     if (dom.herdModeCheckbox) dom.herdModeCheckbox.checked = caps.herdMode;
 
                     if (dom.herdConfigSection) {
@@ -212,11 +226,17 @@ export function handleExtensionMessage(event: MessageEvent) {
                         }
                     }
 
-                    if (dom.websearchIndicator) {
-                        dom.websearchIndicator.style.display = caps.webSearch ? 'flex' : 'none';
+                    if (dom.webSearchIndicator) {
+                        dom.webSearchIndicator.style.display = caps.webSearch ? 'flex' : 'none';
                     }
                     
                     updateBadges();
+                    renderProfilesInModal();
+
+                    // RE-RENDER Context Bubble border/buttons if context data exists
+                    if (state.lastContextData) {
+                        updateContext(state.lastContextData.context, state.lastContextData.files, state.lastContextData.skills);
+                    }
                 }
                 break;
             case 'updateGitRepoStatus':
@@ -345,6 +365,11 @@ export function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'error':
                 setGeneratingState(false);
+                // Also reset the git button if it was loading
+                if (dom.stagingNextBtn) {
+                    dom.stagingNextBtn.disabled = false;
+                    dom.stagingNextBtn.innerHTML = dom.stagingNextBtn.dataset.originalText || 'Next (Generate Message)';
+                }
                 addMessage({ id: 'error_' + Date.now(), role: 'system', content: '❌ Error: ' + message.content }, true);
                 break;
             case 'setInputText':
@@ -468,6 +493,16 @@ export function handleExtensionMessage(event: MessageEvent) {
                 break;
             }
             case 'setCommitMessage': {
+                // Reset the staging button state
+                if (dom.stagingNextBtn) {
+                    dom.stagingNextBtn.disabled = false;
+                    dom.stagingNextBtn.innerHTML = dom.stagingNextBtn.dataset.originalText || 'Next (Generate Message)';
+                }
+                // Close the staging modal now that we are moving to commit
+                if (dom.stagingModal) {
+                    dom.stagingModal.classList.remove('visible');
+                }
+
                 if (dom.commitMessageInput) {
                     dom.commitMessageInput.value = message.message;
                 }

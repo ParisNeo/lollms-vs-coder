@@ -141,6 +141,7 @@ function renderCytoscapeView(viewType: string) {
         if (n.type === 'file') cssClass = 'node-file';
         else if (n.type === 'class') cssClass = 'node-class';
         else if (n.type === 'function') cssClass = 'node-function';
+        else if (n.type === 'library') cssClass = 'node-library';
 
         elements.push({
             group: 'nodes',
@@ -238,6 +239,15 @@ function getCyStyle() {
                 'background-color': '#4d3b1e', // darker yellow/orange
                 'border-color': '#dcdcaa',
                 'shape': 'ellipse'
+            }
+        },
+        {
+            selector: '.node-library',
+            style: {
+                'background-color': '#6e3e1e', // brownish/orange
+                'border-color': '#f96',
+                'shape': 'hexagon',
+                'color': '#ffffff'
             }
         },
         {

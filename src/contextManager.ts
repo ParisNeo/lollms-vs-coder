@@ -4,6 +4,7 @@ import { ContextStateProvider } from './commands/contextStateProvider';
 import Jimp = require('jimp');
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
 import { SkillsManager, Skill } from './skillsManager';
+import { CodeGraphManager } from './codeGraphManager';
 import * as mammoth from 'mammoth';
 const pdfParse = require('pdf-parse');
 import { stripThinkingTags } from './utils';
@@ -22,11 +23,13 @@ export interface ContextResult {
   selectedFilesContent: string;
   skillsContent: string;
   importedSkills: Skill[];
+  diagrams?: { type: string; mermaid: string }[];
 }
 
 export class ContextManager {
   private contextStateProvider?: ContextStateProvider;
   private skillsManager?: SkillsManager;
+  private codeGraphManager?: CodeGraphManager;
   private context: vscode.ExtensionContext;
   private lollmsAPI: LollmsAPI;
   private imageExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp']);
@@ -112,6 +115,10 @@ export class ContextManager {
 
   public setSkillsManager(manager: SkillsManager) {
       this.skillsManager = manager;
+  }
+
+  public setCodeGraphManager(manager: CodeGraphManager) {
+      this.codeGraphManager = manager;
   }
 
   getContextStateProvider(): ContextStateProvider | undefined {
@@ -857,8 +864,36 @@ If yes, you must plan searches, execute them, review results, and add valuable c
 
       const fileTree = await this.generateProjectTree(signal);
       
+      // Get current aggression level from capabilities
+      const discussion = this.lollmsAPI.globalState?.get<any>(`discussion-${model}`); // Simplified lookup
+      const aggression = this.contextStateProvider.context.globalState.get<any>('lollms_last_capabilities')?.contextAggression || 'respect';
+
+      let aggressionInstruction = "";
+      switch(aggression) {
+          case 'minimal': 
+            aggressionInstruction = "STRICT BREVITY: Select the absolute minimum number of files. If you can answer with 1 file instead of 3, do it.";
+            break;
+          case 'none':
+            aggressionInstruction = "MAXIMUM CONTEXT: Recover as many potentially relevant files as possible to ensure the LLM has zero missing information.";
+            break;
+          case 'signatures':
+            aggressionInstruction = "SMART SIGNATURES: For files needed only for reference (API definitions, utilities), use the 'signatures' mode. Use 'full' only for files likely to be modified.";
+            break;
+          case 'respect':
+          default:
+            aggressionInstruction = "BALANCED: Aim to use about 75% of the available context window. Avoid over-filling but ensure core logic is present.";
+            break;
+      }
+
       const systemPrompt = `You are a Senior Context Librarian Agent.
 Your goal is to prepare the perfect context for an LLM to answer the user's request.
+${aggressionInstruction}
+
+Your goal is to fulfill the request while strictly adhering to the aggression policy above.
+
+**AVAILABLE TOOLS:**
+1. \`add_files(files=[{"path": "p1", "mode": "full|signatures"}])\`: Add files to context.
+=======
 You have access to the project structure and the list of currently selected files.
 
 **AVAILABLE TOOLS:**
@@ -986,15 +1021,20 @@ You have access to the project structure and the list of currently selected file
               stepsTaken++;
 
               if (toolName === 'add_files') {
-                  const files = params.files || params.paths;
+                  const files = params.files;
                   if (Array.isArray(files)) {
-                      const validFiles = files.filter(f => allFiles.includes(f));
-                      if (validFiles.length > 0) {
-                          validFiles.forEach(f => selectedFiles.add(f));
-                          await this.contextStateProvider.addFilesToContext(validFiles);
-                          actionLog.push(`➕ Added: ${validFiles.length} file(s).`);
-                          renderUpdate("Updating context...", false, step);
+                      for (const fileItem of files) {
+                          const fPath = typeof fileItem === 'string' ? fileItem : fileItem.path;
+                          const fMode = typeof fileItem === 'string' ? 'included' : (fileItem.mode === 'signatures' ? 'definitions-only' : 'included');
+                          
+                          if (allFiles.includes(fPath)) {
+                              selectedFiles.add(fPath);
+                              const uri = vscode.Uri.joinPath(workspaceFolder.uri, fPath);
+                              await this.contextStateProvider.setStateForUris([uri], fMode);
+                          }
                       }
+                      actionLog.push(`➕ Processed: ${files.length} file(s).`);
+                      renderUpdate("Updating context...", false, step);
                   }
               } else if (toolName === 'remove_files') {
                   const files = params.files || params.paths;
@@ -1102,7 +1142,7 @@ You have access to the project structure and the list of currently selected file
       }
   }
   
-  async getContextContent(options?: { includeTree?: boolean, signal?: AbortSignal, importedSkillIds?: string[] }): Promise<ContextResult> {
+  async getContextContent(options?: { includeTree?: boolean, signal?: AbortSignal, importedSkillIds?: string[], activeDiagramIds?: string[] }): Promise<ContextResult> {
     const result: ContextResult = { text: '', images: [], projectTree: '', selectedFilesContent: '', skillsContent: '', importedSkills: [] };
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const maxImageSize = config.get<number>('maxImageSize') || 1024;
@@ -1236,6 +1276,21 @@ Rules:
     const projectSkillIds = await this.getActiveProjectSkills();
     
     const allSkillIds = Array.from(new Set([...discussionSkillIds, ...projectSkillIds]));
+
+    // --- DIAGRAMS CONTEXT ---
+    const activeDiagramIds = options?.activeDiagramIds || [];
+    if (activeDiagramIds.length > 0 && this.codeGraphManager) {
+        // Ensure graph is built if it's currently empty
+        if (this.codeGraphManager.getGraphData().nodes.length === 0 && this.codeGraphManager.getBuildState() === 'idle') {
+            await this.codeGraphManager.buildGraph();
+        }
+
+        result.diagrams = [];
+        for (const diagType of activeDiagramIds) {
+            const mermaid = this.codeGraphManager.generateMermaid(diagType);
+            result.diagrams.push({ type: diagType, mermaid });
+        }
+    }
 
     result.skillsContent = skillProtocol + "\n";
     if (this.skillsManager && allSkillIds.length > 0) {

@@ -69,6 +69,7 @@ export interface DiscussionCapabilities {
     agentMode: boolean;
     autoContextMode: boolean;
     autoSkillMode: boolean;
+    disableProjectContext: boolean;
     guiState?: {
         agentBadge: boolean;
         autoContextBadge: boolean;
@@ -84,6 +85,7 @@ export const state: {
     isInspectorEnabled: boolean,
     streamingMessages: { [key: string]: { buffer: string, timer: any } },
     isGenerating: boolean,
+    lastContextData: { context: string, files: string[], skills: any[] } | null,
     capabilities: DiscussionCapabilities | null,
     currentBranch: string,
     currentPersonalityId: string,
@@ -109,6 +111,7 @@ export const dom = {
     get agentPlanZone() { return document.getElementById('agent-plan-zone') as HTMLDivElement; },
     get planResizer() { return document.getElementById('plan-resizer') as HTMLDivElement; },
     get chatContentWrapper() { return document.querySelector('.chat-content-wrapper') as HTMLDivElement; },
+    get thinkingIndicator() { return document.getElementById('thinking-indicator') as HTMLDivElement; },
     get webSearchIndicator() { return document.getElementById('websearch-indicator') as HTMLDivElement; },
     get messageInput() { return document.getElementById('messageInput') as HTMLTextAreaElement; },
     get sendButton() { return document.getElementById('sendButton') as HTMLButtonElement; },
@@ -127,6 +130,7 @@ export const dom = {
     get agentModeCheckbox() { return document.getElementById('agentModeCheckbox') as HTMLInputElement; },
     get autoContextCheckbox() { return document.getElementById('autoContextCheckbox') as HTMLInputElement; },
     get autoSkillCheckbox() { return document.getElementById('autoSkillCheckbox') as HTMLInputElement; },
+    get contextAggressionSelect() { return document.getElementById('modal-context-aggression') as HTMLSelectElement; },
     get herdModeCheckbox() { return document.getElementById('herdModeCheckbox') as HTMLInputElement; },
     get activeBadges() { return document.getElementById('active-badges') as HTMLDivElement; },
     

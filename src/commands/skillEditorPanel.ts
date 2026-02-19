@@ -25,6 +25,7 @@ export class SkillEditorPanel {
             column || vscode.ViewColumn.One,
             {
                 enableScripts: true,
+                retainContextWhenHidden: true, // Keep state when switching tabs
                 localResourceRoots: [vscode.Uri.joinPath(extensionUri, 'out', 'styles')]
             }
         );

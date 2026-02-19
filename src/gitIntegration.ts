@@ -347,7 +347,7 @@ export class GitIntegration {
 
     try {
       const rawMessage = await vscode.window.withProgress({
-        location: vscode.ProgressLocation.Notification,
+        location: vscode.ProgressLocation.SourceControl,
         title: "Lollms: Generating commit message...",
         cancellable: false
       }, async () => {

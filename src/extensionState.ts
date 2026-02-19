@@ -100,6 +100,9 @@ export async function runCommandInTerminal(
                 // Use Base64 encoding to avoid all quoting/escaping issues in PowerShell arguments.
                 // We also preserve newlines to support comments (#) and multi-line scripts.
                 const psScript = `
+$env:FORCE_COLOR = '1'
+$env:TERM = 'xterm-256color'
+$env:CLICOLOR_FORCE = '1'
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 & {
@@ -128,7 +131,7 @@ $LASTEXITCODE | Out-File -FilePath '${safeExitCodeFile}' -Encoding utf8
             }
         } else {
             const targetShell = options?.shell || 'bash';
-            const shCommand = `export LANG=en_US.UTF-8; (${sanitizedCommand}) 2>&1 | tee "${outputFile}"; echo $? > "${exitCodeFile}"`;
+            const shCommand = `export LANG=en_US.UTF-8; export FORCE_COLOR=1; export TERM=xterm-256color; export CLICOLOR_FORCE=1; (${sanitizedCommand}) 2>&1 | tee "${outputFile}"; echo $? > "${exitCodeFile}"`;
             execution = new vscode.ShellExecution(targetShell, ["-c", shCommand], { cwd });
         }
 

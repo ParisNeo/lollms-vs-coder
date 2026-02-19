@@ -17,6 +17,7 @@ export interface Discussion {
     personalityId?: string;
     gitState?: { originalBranch: string, tempBranch: string };
     importedSkills?: string[];
+    activeDiagrams?: string[]; // e.g., ['class_diagram', 'call_graph']
 }
 
 export interface DiscussionGroup {
@@ -104,7 +105,10 @@ export class DiscussionManager {
             herdPostAnswerParticipants: herdPostAnswerParticipants,
             herdRounds: herdRounds,
             agentMode: false,
-            autoContextMode: false,
+            autoContextMode: false, 
+            autoSkillMode: false,
+            contextAggression: 'respect',
+            disableProjectContext: false,
             gitWorkflow: false,
             explainCode: true,
             addPedagogicalInstruction: false,

@@ -184,10 +184,16 @@ Translate the provided ${fromLang} script into a ${toLang} script for the user's
     
     try {
         const result = await runCommandInTerminal(fullCommand, workspaceRoot, `Lollms Script: ${currentLang}`, undefined, { shell: targetShell });
-        const resultMessage = { role: 'system' as const, content: `**Execution Result (Success: ${result.success})**\n\n\`\`\`\n${result.output || '(No output)'}\n\`\`\`` };
+        
+        // Strip ANSI codes from the output before adding it to chat/context
+        const { stripAnsiCodes } = require('./utils');
+        const cleanOutput = stripAnsiCodes(result.output);
+
+        const resultMessage = { role: 'system' as const, content: `**Execution Result (Success: ${result.success})**\n\n\`\`\`\n${cleanOutput || '(No output)'}\n\`\`\`` };
         panel.addMessageToDiscussion(resultMessage);
-        if (result.output.trim().length > 0) {
-            panel.analyzeExecutionResult(originalCode, currentLang, result.output, result.success ? 0 : 1);
+        
+        if (cleanOutput.trim().length > 0) {
+            panel.analyzeExecutionResult(originalCode, currentLang, cleanOutput, result.success ? 0 : 1);
         }
     } catch (err: any) {
         panel.addMessageToDiscussion({ role: 'system', content: `❌ Terminal execution error: ${err.message}` });

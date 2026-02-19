@@ -1,8 +1,4 @@
 - Add a configuration setting for auto context so that we can select what level of agression we need in selecting file (respect context size :75% max, no restrictions: recover maximum potential files, Minimal: try to select the smallest set of files that is useful to this, signatures: select only signatures for files that shouldn't be modified but needed to understand the context and full file content for the files to be used), implement RLM with a REPL to enhance this.
 - Add RLM mode with REPL.
-- Fix the advanced tools ui to be aligned with the new formatting.
-- Remove the response style from the main discussion menu
 - upgrade ascii_colors skills
-- upgrade skill creation to handle description/category
 - Add skills for ScrapeMaster and safe_store
-- When generating a commit message block subsequent generations.

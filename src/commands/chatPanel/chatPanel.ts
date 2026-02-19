@@ -182,11 +182,15 @@ export class ChatPanel {
             const activeAgent = ChatPanel.activeAgents.get(this.discussionId);
             const agentIsActive = activeAgent ? activeAgent.getIsActive() : false;
 
-            const isGenerating = (!!process || !!activeGen || agentIsActive) && !this._inputResolver;
+            // 💡 IMPROVED FIX: Use more robust checks to ignore background/utility tasks
+            const desc = process?.description || "";
+            const isBackgroundProcess = desc.includes("title") || desc.includes("Counting") || desc.includes("Scanning");
+            
+            const isGenerating = ((process && !isBackgroundProcess) || !!activeGen || agentIsActive) && !this._inputResolver;
             
             // Extract descriptive status
             let statusText = vscode.l10n.t("Generating...");
-            if (process) {
+            if (process && !isBackgroundProcess) {
                 statusText = process.description;
             } else if (agentIsActive) {
                 statusText = vscode.l10n.t("Agent Thinking...");
@@ -324,12 +328,13 @@ export class ChatPanel {
                   ? `# Context Hidden (Too Large for Preview)\n\nThe full context (${cachedContext.text.length} chars) is loaded in backend memory for AI usage, but is hidden from this preview to improve UI performance.`
                   : cachedContext.text;
 
-              this._panel.webview.postMessage({ 
-                  command: 'updateContext', 
-                  context: contextTextToSend,
-                  files: includedFiles,
-                  skills: cachedContext.importedSkills || []
-              });
+            this._panel.webview.postMessage({ 
+                command: 'updateContext', 
+                context: contextTextToSend,
+                files: includedFiles,
+                skills: cachedContext.importedSkills || [],
+                diagrams: cachedContext.diagrams || [] // Send diagrams to UI
+            });
               this._panel.webview.postMessage({ command: 'updateImageContext', images: cachedContext.images });
           }
       }
@@ -382,10 +387,14 @@ export class ChatPanel {
           this.updateGeneratingState();
       }
 
+      // Merge System Profiles with User Profiles for the UI
+      const { SYSTEM_RESPONSE_PROFILES } = require('../../utils');
+      const allProfiles = [...SYSTEM_RESPONSE_PROFILES, ...profiles.filter((p: any) => !SYSTEM_RESPONSE_PROFILES.some((sp: any) => sp.id === p.id))];
+
       this._panel.webview.postMessage({ 
           command: 'updateDiscussionCapabilities', 
           capabilities: this._discussionCapabilities,
-          profiles: profiles
+          profiles: allProfiles
       });
       
       let isRepo = false;
@@ -487,7 +496,13 @@ export class ChatPanel {
         try {
             this.log("Fetching context content...");
             const importedIds = this._currentDiscussion?.importedSkills || [];
-            const context = await this._contextManager.getContextContent({ signal, importedSkillIds: importedIds });
+            const activeDiagrams = this._currentDiscussion?.activeDiagrams || [];
+            
+            const context = await this._contextManager.getContextContent({ 
+                signal, 
+                importedSkillIds: importedIds,
+                activeDiagramIds: activeDiagrams // Pass the IDs here
+            });
             
             if (signal.aborted) {
                 this.log("Token calculation aborted.");
@@ -509,7 +524,8 @@ export class ChatPanel {
                 command: 'updateContext', 
                 context: contextTextToSend,
                 files: includedFiles,
-                skills: context.importedSkills || []
+                skills: context.importedSkills || [],
+                diagrams: context.diagrams || [] // Send diagrams to UI
             });
             this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
             
@@ -647,16 +663,26 @@ export class ChatPanel {
       }
   }
 
-  private async saveCapabilities() {
+  private async saveCapabilities(isGlobalDefault: boolean = false) {
       if (this._currentDiscussion && !this._currentDiscussion.id.startsWith('temp-')) {
           this._currentDiscussion.capabilities = this._discussionCapabilities;
           await this._discussionManager.saveDiscussion(this._currentDiscussion);
       }
-      await this._discussionManager.saveLastCapabilities(this._discussionCapabilities);
+      
+      // ONLY update global defaults if explicitly requested (e.g. from Settings)
+      // Chat badges should only affect the CURRENT discussion.
+      if (isGlobalDefault) {
+          await this._discussionManager.saveLastCapabilities(this._discussionCapabilities);
+      }
   }
 
   public async handleManualAutoContext(userPrompt: string) {
-      if (this._isDisposed || !this.processManager) return; // Add !this.processManager guard
+      if (this._isDisposed || !this.processManager) return;
+      
+      if (this._discussionCapabilities.disableProjectContext) {
+          vscode.window.showWarningMessage("Auto-Context cannot run while Project Context is muted.");
+          return;
+      }
     
       const { id: processId, controller } = this.processManager.register(this.discussionId, 'Running Auto-Context...');
       this.updateGeneratingState();
@@ -1084,13 +1110,12 @@ Please provide the **FULL CONTENT** of the file instead using the format:
             setTimeout(() => {
                 if (this._isDisposed || !this._currentDiscussion || !this.processManager) return;
                 
-                // Register title generation as a process for the UI overlay
+                // Register title generation as a process
                 const { id: titleProcId } = this.processManager.register(this.discussionId, vscode.l10n.t("Generating discussion title..."));
-                this.updateGeneratingState();
+                // We DON'T call updateGeneratingState() here to avoid flickering the UI
 
                 this._discussionManager.generateDiscussionTitle(this._currentDiscussion).then(newTitle => {
                     this.processManager.unregister(titleProcId);
-                    this.updateGeneratingState();
 
                     if (newTitle && this._currentDiscussion && !this._isDisposed) {
                         this._currentDiscussion.title = newTitle;
@@ -1123,10 +1148,11 @@ Please provide the **FULL CONTENT** of the file instead using the format:
     const { id: processId, controller } = this.processManager.register(this.discussionId, 'Generating response...');
     this.updateGeneratingState();
 
-    const isAutoContext = this._discussionCapabilities.autoContextMode || autoContextMode;
+    // Strictly check if AutoContext is enabled AND not muted
+    const isAutoContext = !!this._discussionCapabilities.autoContextMode || autoContextMode;
 
     // --- AUTO SKILL SELECTION ---
-    if (this._discussionCapabilities.autoSkillMode) {
+    if (this._discussionCapabilities.autoSkillMode && !this._discussionCapabilities.disableProjectContext) {
         const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
         const userPromptText = (typeof message.content === 'string') ? message.content : "User request";
         const autoSkillMsgId = 'auto_skill_agent_' + Date.now();
@@ -1168,7 +1194,7 @@ Please provide the **FULL CONTENT** of the file instead using the format:
         }
     }
 
-    if (isAutoContext) {
+    if (isAutoContext && !this._discussionCapabilities.disableProjectContext) {
         this.log("Auto-Context mode active. Starting agent loop.");
         const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
         const userPromptText = (typeof message.content === 'string') ? message.content : "User request with attachments";
@@ -1222,8 +1248,36 @@ Please provide the **FULL CONTENT** of the file instead using the format:
     }
 
     const importedIds = this._currentDiscussion?.importedSkills || [];
-    const contextData = await this._contextManager.getContextContent({ importedSkillIds: importedIds });
-    const context = { tree: contextData.projectTree, files: contextData.selectedFilesContent, skills: contextData.skillsContent };
+
+    // Check if context is explicitly disabled for this turn
+    const isContextMuted = this._discussionCapabilities.disableProjectContext;
+
+    const activeDiagramIds = this._currentDiscussion?.activeDiagrams || [];
+    const diagrams: { type: string, mermaid: string }[] = [];
+    
+    for (const diagId of activeDiagramIds) {
+        const mermaidCode = this.agentManager.codeGraphManager.generateMermaid(diagId);
+        diagrams.push({ type: diagId, mermaid: mermaidCode });
+    }
+
+    const contextData = await this._contextManager.getContextContent({ 
+        importedSkillIds: importedIds,
+        includeTree: !isContextMuted 
+    });
+
+    // Append diagrams to the text sent to the AI
+    if (diagrams.length > 0) {
+        contextData.text += `\n## Project Architecture Diagrams\n`;
+        for (const d of diagrams) {
+            contextData.text += `### ${d.type.replace('_', ' ').toUpperCase()}\n\`\`\`mermaid\n${d.mermaid}\n\`\`\`\n\n`;
+        }
+    }
+
+    const context = { 
+        tree: isContextMuted ? "## Project Structure\n(Muted by user for this turn)" : contextData.projectTree, 
+        files: isContextMuted ? "## File Contents\n(Muted by user for this turn)" : contextData.selectedFilesContent, 
+        skills: contextData.skillsContent 
+    };
 
     if (this._discussionCapabilities.herdMode && this.herdManager) {
         let preParticipants = this._discussionCapabilities.herdPreAnswerParticipants;
@@ -1270,6 +1324,7 @@ Please provide the **FULL CONTENT** of the file instead using the format:
         return; 
     }
 
+    let assistantMessageId = '';
     try {
         const personaContent = this.getCurrentPersonaSystemPrompt();
         const forceFullCode = config.get<boolean>('forceFullCodePath') || false;
@@ -1302,7 +1357,8 @@ Please provide the **FULL CONTENT** of the file instead using the format:
         }
 
         messagesToSend = [...messagesToSend, ...history];
-        const assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
+        assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
+        
         const generationSession: ActiveGeneration = {
             messageId: assistantMessageId, 
             buffer: '', 
@@ -1354,8 +1410,34 @@ Please provide the **FULL CONTENT** of the file instead using the format:
             });
         }
 
-    } catch (error: any) { if (error.name !== 'AbortError') this.addMessageToDiscussion({ role: 'system', content: `**Error:** ${error.message}` }); }
-    finally { ChatPanel.activeGenerations.delete(this.discussionId); this.processManager.unregister(processId); this.updateGeneratingState(); this.updateContextAndTokens(); }
+    } catch (error: any) { 
+        if (error.name === 'AbortError' || error.message === 'AbortError') {
+            const session = ChatPanel.activeGenerations.get(this.discussionId);
+            // If the user stopped it but NO text was generated yet, remove the empty bubble
+            if (session && (!session.buffer || session.buffer.trim().length === 0)) {
+                await this.deleteMessage(assistantMessageId);
+            }
+        } else {
+            this.addMessageToDiscussion({ role: 'system', content: `**Error:** ${error.message}` }); 
+        }
+    }
+    finally { 
+        ChatPanel.activeGenerations.delete(this.discussionId); 
+        this.processManager.unregister(processId); 
+        
+        // Reset metrics in the UI
+        if (!this._isDisposed) {
+            this._panel.webview.postMessage({
+                command: 'updateGenerationMetrics',
+                tps: "0.0",
+                count: 0,
+                reset: true
+            });
+        }
+
+        this.updateGeneratingState(); 
+        this.updateContextAndTokens(); 
+    }
   }
 
   private async handleAutomatedSearch(query: string, messageId: string) {
@@ -1585,17 +1667,26 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                 await this.copyFullPromptToClipboard(message.draftMessage);
                 break;
             case 'applyAllChanges':
-                const changes = message.changes;
+                const changesBatch = message.changes;
                 await vscode.window.withProgress({
                     location: vscode.ProgressLocation.Notification,
-                    title: `Applying ${changes.length} changes...`,
+                    title: `Lollms: Sequential Apply (${changesBatch.length} steps)`,
                     cancellable: true
                 }, async (progress, token) => {
-                    for (const change of changes) {
+                    let count = 0;
+                    for (const change of changesBatch) {
                         if (token.isCancellationRequested) break;
-                        const progressMsg = `Applying ${change.type}: ${change.path}`;
-                        progress.report({ message: progressMsg });
+                        count++;
+                        
+                        progress.report({ 
+                            message: `(${count}/${changesBatch.length}) ${path.basename(change.path)}`,
+                            increment: (1 / changesBatch.length) * 100 
+                        });
+
                         try {
+                            // Use AWAIT on the commands to force sequential execution.
+                            // This prevents "file busy" or "context mismatch" if multiple SEARCH/REPLACE 
+                            // blocks target the same file in one message.
                             if (change.type === 'file') {
                                 await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', change.path, change.content);
                             } else if (change.type === 'diff') {
@@ -1603,12 +1694,19 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                             } else if (change.type === 'insert') {
                                 await vscode.commands.executeCommand('lollms-vs-coder.insertCode', change.path, change.content);
                             } else if (change.type === 'replace') {
-                                await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', change.path, change.content);
+                                // Pass 'this' and messageId if available for auto-repair logic
+                                await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', change.path, change.content, this, message.messageId);
                             } else if (change.type === 'delete') {
                                 await vscode.commands.executeCommand('lollms-vs-coder.deleteCodeBlock', change.path, change.content);
                             }
+                            
+                            // Small delay between operations to allow FS events to settle
+                            await new Promise(resolve => setTimeout(resolve, 100));
+
                         } catch (e: any) {
-                            vscode.window.showErrorMessage(`Failed to apply change to ${change.path}: ${e.message}`);
+                            Logger.error(`Apply All failed at step ${count} (${change.path}): ${e.message}`);
+                            vscode.window.showErrorMessage(`Failed at ${change.path}: ${e.message}`);
+                            // We continue with other files even if one fails
                         }
                     }
                 });
@@ -1679,6 +1777,22 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                     const paths = uris.map(u => vscode.workspace.asRelativePath(u));
                     await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', paths);
                     this.updateContextAndTokens();
+                }
+                break;
+            case 'requestAddDiagramToContext':
+                const diagType = await vscode.window.showQuickPick([
+                    { label: 'Class Diagram', id: 'class_diagram' },
+                    { label: 'Call Graph', id: 'call_graph' },
+                    { label: 'Import Graph', id: 'import_graph' }
+                ], { placeHolder: 'Select diagram type to include in AI context' });
+
+                if (diagType && this._currentDiscussion) {
+                    if (!this._currentDiscussion.activeDiagrams) this._currentDiscussion.activeDiagrams = [];
+                    if (!this._currentDiscussion.activeDiagrams.includes(diagType.id)) {
+                        this._currentDiscussion.activeDiagrams.push(diagType.id);
+                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                        this.updateContextAndTokens();
+                    }
                 }
                 break;
             case 'requestAddUrlToContext':
@@ -2057,21 +2171,22 @@ Task:
                 break;
             case 'updateDiscussionCapabilities':
                 this._discussionCapabilities = message.capabilities;
-                if (this._currentDiscussion) {
-                    this._currentDiscussion.capabilities = this._discussionCapabilities;
-                    if (!this._currentDiscussion.id.startsWith('temp-')) {
-                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
-                    }
-                }
-                await this._discussionManager.saveLastCapabilities(this._discussionCapabilities);
+                // Full settings update from modal: we treat this as a potential default update
+                await this.saveCapabilities(true);
                 
                 this.log(`Updated Discussion Capabilities: ${JSON.stringify(this._discussionCapabilities)}`);
-                this._panel.webview.postMessage({ command: 'updateThinkingMode', mode: this._discussionCapabilities.thinkingMode });
                 this._panel.webview.postMessage({ command: 'updateDiscussionCapabilities', capabilities: this._discussionCapabilities });
                 break;
             case 'updateDiscussionCapabilitiesPartial':
                 if (this._discussionCapabilities) {
                     const partial = message.partial;
+
+                    // Handle specific diagram removal
+                    if (partial.removeDiagram && this._currentDiscussion?.activeDiagrams) {
+                        this._currentDiscussion.activeDiagrams = this._currentDiscussion.activeDiagrams.filter(d => d !== partial.removeDiagram);
+                        delete partial.removeDiagram; // Don't save this key to capabilities
+                    }
+
                     this._discussionCapabilities = { ...this._discussionCapabilities, ...partial };
                     
                     if (partial.agentMode !== undefined) {
@@ -2082,10 +2197,8 @@ Task:
                         }
                     }
                     
-                    // If Web Search is enabled, ensure relevant tools are enabled if Agent is active
                     if (partial.webSearch !== undefined && this.agentManager) {
                         if (partial.webSearch) {
-                            // Enable default search tools
                             const tools = this.agentManager.getEnabledTools().map(t => t.name);
                             if (!tools.includes('search_web')) tools.push('search_web');
                             if (!tools.includes('search_wikipedia')) tools.push('search_wikipedia');
@@ -2099,7 +2212,12 @@ Task:
                             await this._discussionManager.saveDiscussion(this._currentDiscussion);
                         }
                     }
-                    await this._discussionManager.saveLastCapabilities(this._discussionCapabilities);
+
+                    // Only save to Global Defaults if it's NOT the ephemeral mute state
+                    if (partial.disableProjectContext === undefined) {
+                        await this._discussionManager.saveLastCapabilities(this._discussionCapabilities);
+                    }
+
                     this._panel.webview.postMessage({ command: 'updateDiscussionCapabilities', capabilities: this._discussionCapabilities });
                 }
                 break;
@@ -2605,7 +2723,7 @@ Task:
                                 <span class="menu-arrow">›</span>
                             </div>
                             <div class="menu-separator"></div>
-                            <button class="menu-item" id="discussionToolsButton"><i class="codicon codicon-tools"></i><span>Advanced Tools</span></button>
+                            <button class="menu-item" id="discussionToolsButton"><i class="codicon codicon-settings"></i><span>Discussion Settings</span></button>
                             <button class="menu-item" id="agentToolsButton"><i class="codicon codicon-briefcase"></i><span>Agent Tools List</span></button>
                             <div class="menu-separator"></div>
                             <button class="menu-item" id="attachButton"><i class="codicon codicon-add"></i><span>Attach Files</span></button>
@@ -2659,11 +2777,6 @@ Task:
                     </div>
 
                     <div class="top-controls">
-                        <div id="status-label" class="status-label">
-                            <div id="status-spinner" class="spinner"></div>
-                            <span id="status-text">Ready</span>
-                        </div>
-                        
                         <div class="active-badges" id="active-badges">
                         </div>
 
@@ -2681,10 +2794,14 @@ Task:
                     </div>
                     <div class="input-area-container">
                         <div class="rich-input-toolbar">
-                            <button class="toolbar-tool" data-wrap-type="python" title="Wrap in Python Block"><i class="codicon codicon-symbol-method"></i><span>Python</span></button>
-                            <button class="toolbar-tool" data-wrap-type="code" title="Wrap in Code Block"><i class="codicon codicon-code"></i><span>Code</span></button>
-                            <button class="toolbar-tool" data-wrap-type="text" title="Wrap in Plain Text"><i class="codicon codicon-text-size"></i><span>Text</span></button>
+                            <button class="toolbar-tool" data-wrap-type="python" title="Python Block"><i class="codicon codicon-symbol-method"></i><span>Python</span></button>
+                            <button class="toolbar-tool" data-wrap-type="code" title="Code Block"><i class="codicon codicon-code"></i><span>Code</span></button>
                             <div class="toolbar-separator"></div>
+                            <button class="toolbar-tool" data-wrap-type="h1" title="Heading 1"><span>H1</span></button>
+                            <button class="toolbar-tool" data-wrap-type="h2" title="Heading 2"><span>H2</span></button>
+                            <button class="toolbar-tool" data-wrap-type="h3" title="Heading 3"><span>H3</span></button>
+                            <div class="toolbar-separator"></div>
+                            <button class="toolbar-tool" data-wrap-type="list" title="Bullet List"><i class="codicon codicon-list-unordered"></i></button>
                             <button class="toolbar-tool" data-wrap-type="bold" title="Bold"><i class="codicon codicon-bold"></i></button>
                             <button class="toolbar-tool" data-wrap-type="italic" title="Italic"><i class="codicon codicon-italic"></i></button>
                         </div>
@@ -2782,26 +2899,65 @@ Task:
         <div id="discussion-tools-modal" class="modal">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2>Advanced Discussion Tools</h2>
+                    <h2>Discussion Settings</h2>
                     <span class="close-btn" id="close-discussion-tools-modal">&times;</span>
                 </div>
                 <div class="modal-body">
+
+                    <div class="modal-section">
+                        <h3>Response Style (Profile)</h3>
+                        <p style="font-size: 11px; opacity: 0.8; margin-bottom: 10px;">Customize how the AI talks and thinks.</p>
+                        
+                        <div style="display:flex; gap:10px; margin-bottom:10px;">
+                            <select id="modal-default-profile-select" class="menu-select" style="flex:1; margin:0;"></select>
+                            <button id="modal-add-profile-btn" class="code-action-btn apply-btn" style="margin:0; width: auto; height: 32px;"><i class="codicon codicon-add"></i> New</button>
+                        </div>
+
+                        <div id="modal-profiles-container" style="display:flex; flex-direction:column; gap:8px; max-height: 200px; overflow-y: auto; padding: 2px;">
+                            <!-- Profiles list injected here -->
+                        </div>
+
+                        <!-- Profile Editor (Hidden) -->
+                        <div id="modal-profile-editor" style="display:none; border: 1px solid var(--vscode-focusBorder); padding: 12px; border-radius: 4px; margin-top: 10px; background: var(--vscode-editor-inactiveSelectionBackground);">
+                            <h4 style="margin: 0 0 10px 0; font-size: 12px;">Edit Profile</h4>
+                            <div style="display:flex; flex-direction:column; gap:8px;">
+                                <div>
+                                    <label style="font-size: 11px; font-weight:bold;">Name</label>
+                                    <input type="text" id="modal-p-name" style="width:100%; padding:4px; margin-top:2px;">
+                                </div>
+                                <div>
+                                    <label style="font-size: 11px; font-weight:bold;">Description</label>
+                                    <input type="text" id="modal-p-desc" style="width:100%; padding:4px; margin-top:2px;">
+                                </div>
+                                <div>
+                                    <label style="font-size: 11px; font-weight:bold;">Prefix (Optional command)</label>
+                                    <input type="text" id="modal-p-prefix" placeholder="/no_think" style="width:100%; padding:4px; margin-top:2px;">
+                                </div>
+                                <div>
+                                    <label style="font-size: 11px; font-weight:bold;">System Instructions</label>
+                                    <textarea id="modal-p-prompt" rows="4" style="width:100%; padding:4px; margin-top:2px; font-family:var(--vscode-editor-font-family); font-size:11px;"></textarea>
+                                </div>
+                                <div style="display:flex; gap:8px; margin-top:10px; justify-content: flex-end;">
+                                    <button id="modal-p-cancel" class="code-action-btn" style="width: auto;">Cancel</button>
+                                    <button id="modal-p-save" class="code-action-btn apply-btn" style="width: auto;">Update</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                     
                     <div class="modal-section">
-                        <h3>Logic & Reasoning</h3>
-                        <div class="form-group">
-                            <label for="cap-thinkingMode">Reasoning Strategy</label>
-                            <select id="cap-thinkingMode" class="menu-select" style="width: 100%; margin: 0;">
-                                <option value="none">None (Standard)</option>
-                                <option value="chain_of_thought">Chain of Thought</option>
-                                <option value="chain_of_verification">Chain of Verification</option>
-                                <option value="plan_and_solve">Plan and Solve</option>
-                                <option value="self_critique">Self Critique</option>
-                                <option value="no_think">No Think (Force Disable)</option>
+                        <h3>Context Management</h3>
+                        <div class="form-group" style="margin-bottom: 12px;">
+                            <label style="font-size: 11px; font-weight: bold; display: block; margin-bottom: 4px;">Auto-Context Aggression</label>
+                            <select id="modal-context-aggression" class="menu-select" style="width: 100%; margin: 0;">
+                                <option value="respect">Respect Context (75% Max)</option>
+                                <option value="none">No Restrictions (Recover Max)</option>
+                                <option value="minimal">Minimal (Smallest useful set)</option>
+                                <option value="signatures">Smart Signatures (Full for Edit, Defs for Context)</option>
                             </select>
+                            <p style="font-size: 10px; opacity: 0.7; margin-top: 4px;">Controls how many files the Auto-Context agent tries to pack into the prompt.</p>
                         </div>
-                        
-                        <div class="checkbox-container" style="margin-top:12px;">
+                        <div class="checkbox-container">
                             <label class="switch"><input type="checkbox" id="cap-herdMode"><span class="slider"></span></label>
                             <label for="cap-herdMode"><strong>🐂 Herd Mode:</strong> Multiple agents brainstorm the answer.</label>
                         </div>
@@ -2948,6 +3104,41 @@ Task:
                             <div class="checkbox-container">
                                 <label class="switch"><input type="checkbox" id="cap-fileReset" checked><span class="slider"></span></label>
                                 <label for="cap-fileReset">Context Reset</label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="modal-section">
+                        <h3>Response Profiles</h3>
+                        <p style="font-size: 11px; opacity: 0.8; margin-bottom: 10px;">Select or modify response styles (e.g., Balanced, Minimalist, Pedagogical).</p>
+                        
+                        <div style="display:flex; gap:10px; margin-bottom:10px;">
+                            <select id="modal-default-profile-select" class="menu-select" style="flex:1; margin:0;"></select>
+                            <button id="modal-add-profile-btn" class="code-action-btn apply-btn" style="margin:0; width: auto; height: 32px;"><i class="codicon codicon-add"></i> New</button>
+                        </div>
+
+                        <div id="modal-profiles-container" style="display:flex; flex-direction:column; gap:8px; max-height: 200px; overflow-y: auto; padding: 2px;">
+                            <!-- Profiles injected here -->
+                        </div>
+
+                        <!-- Profile Editor Overlay (Hidden by default) -->
+                        <div id="modal-profile-editor" style="display:none; border: 1px solid var(--vscode-focusBorder); padding: 12px; border-radius: 4px; margin-top: 10px; background: var(--vscode-editor-inactiveSelectionBackground);">
+                            <h4 style="margin: 0 0 10px 0; font-size: 12px;">Edit Profile</h4>
+                            <div class="form-group">
+                                <label style="font-size: 11px;">Name</label>
+                                <input type="text" id="modal-p-name">
+                            </div>
+                            <div class="form-group">
+                                <label style="font-size: 11px;">Description</label>
+                                <input type="text" id="modal-p-desc">
+                            </div>
+                            <div class="form-group">
+                                <label style="font-size: 11px;">System Instructions</label>
+                                <textarea id="modal-p-prompt" rows="4" style="font-family: var(--vscode-editor-font-family); font-size: 11px;"></textarea>
+                            </div>
+                            <div style="display:flex; gap:8px; margin-top:10px; justify-content: flex-end;">
+                                <button id="modal-p-cancel" class="code-action-btn" style="width: auto;">Cancel</button>
+                                <button id="modal-p-save" class="code-action-btn apply-btn" style="width: auto;">Update</button>
                             </div>
                         </div>
                     </div>

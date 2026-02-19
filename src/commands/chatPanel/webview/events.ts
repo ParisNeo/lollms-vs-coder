@@ -44,15 +44,29 @@ export function initEventHandlers() {
         }
     });
 
-    const wrapText = (type: string) => {
-        const input = dom.messageInput;
-        const start = input.selectionStart;
-        const end = input.selectionEnd;
-        const text = input.value;
-        const selected = text.substring(start, end);
+    const wrapText = (type: string, target?: HTMLTextAreaElement | any) => {
+        // 1. Detect if target is CodeMirror (EditorView) or standard Textarea
+        const isCodeMirror = target && target.state && target.dispatch;
+        const input = target || dom.messageInput;
+        if (!input) return;
+
+        let start: number, end: number, text: string, selected: string;
+
+        if (isCodeMirror) {
+            const sel = input.state.selection.main;
+            start = sel.from;
+            end = sel.to;
+            selected = input.state.sliceDoc(start, end);
+        } else {
+            start = input.selectionStart;
+            end = input.selectionEnd;
+            text = input.value;
+            selected = text.substring(start, end);
+        }
 
         let before = "";
         let after = "";
+        let replacement = selected;
 
         switch (type) {
             case 'python': before = "```python\n"; after = "\n```"; break;
@@ -60,19 +74,34 @@ export function initEventHandlers() {
             case 'text': before = "```text\n"; after = "\n```"; break;
             case 'bold': before = "**"; after = "**"; break;
             case 'italic': before = "*"; after = "*"; break;
+            case 'h1': before = "# "; break;
+            case 'h2': before = "## "; break;
+            case 'h3': before = "### "; break;
+            case 'list': 
+                before = "- "; 
+                replacement = selected.split('\n').join('\n- ');
+                break;
         }
 
-        const newText = text.substring(0, start) + before + selected + after + text.substring(end);
-        input.value = newText;
-        
-        // Restore focus and selection
-        input.focus();
-        const newCursorPos = start + before.length + selected.length + after.length;
-        input.setSelectionRange(newCursorPos, newCursorPos);
-        
-        // Trigger resize
-        input.dispatchEvent(new Event('input'));
+        if (isCodeMirror) {
+            input.dispatch({
+                changes: { from: start, to: end, insert: before + replacement + after },
+                selection: { anchor: start + before.length + replacement.length + after.length },
+                scrollIntoView: true
+            });
+            input.focus();
+        } else {
+            const newText = input.value.substring(0, start) + before + replacement + after + input.value.substring(end);
+            input.value = newText;
+            input.focus();
+            const newCursorPos = start + before.length + replacement.length + after.length;
+            input.setSelectionRange(newCursorPos, newCursorPos);
+            input.dispatchEvent(new Event('input'));
+        }
     };
+
+    // Expose globally so messageRenderer can use it
+    (window as any).wrapText = wrapText;
 
     document.querySelectorAll('.toolbar-tool').forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -97,7 +126,7 @@ export function initEventHandlers() {
             if (!items) return;
 
             // 1. Handle Images
-            for (const item of items) {
+            for (const item of Array.from(items)) {
                 if (item.type.indexOf('image') !== -1) {
                     const blob = item.getAsFile();
                     if (blob) {
@@ -260,17 +289,90 @@ export function initEventHandlers() {
         dom.toolsModal.classList.remove('visible');
     });
 
-    if (dom.closeDiscussionToolsModal) dom.closeDiscussionToolsModal.addEventListener('click', () => dom.discussionToolsModal.classList.remove('visible'));
+    if (dom.closeDiscussionToolsModal) dom.closeDiscussionToolsModal.addEventListener('click', () => {
+        dom.discussionToolsModal.classList.remove('visible');
+        // Clean up profile editor state if it was open
+        const editor = document.getElementById('modal-profile-editor');
+        const container = document.getElementById('modal-profiles-container');
+        if (editor && container) {
+            editor.style.display = 'none';
+            container.style.display = 'flex';
+        }
+    });
+
+    // --- Discussion Settings (Profiles) Event Listeners ---
+    document.getElementById('modal-add-profile-btn')?.addEventListener('click', () => {
+        (document.getElementById('modal-profile-editor') as HTMLElement).style.display = 'block';
+        (document.getElementById('modal-profiles-container') as HTMLElement).style.display = 'none';
+        
+        // Reset fields for a new profile
+        const nameInp = document.getElementById('modal-p-name') as HTMLInputElement;
+        const descInp = document.getElementById('modal-p-desc') as HTMLInputElement;
+        const prefInp = document.getElementById('modal-p-prefix') as HTMLInputElement;
+        const promInp = document.getElementById('modal-p-prompt') as HTMLTextAreaElement;
+        
+        if (nameInp) nameInp.value = '';
+        if (descInp) descInp.value = '';
+        if (prefInp) prefInp.value = '';
+        if (promInp) promInp.value = '';
+        
+        (window as any).currentEditingProfileIdx = -1; 
+    });
+
+    document.getElementById('modal-p-cancel')?.addEventListener('click', () => {
+        if (typeof (window as any).closeProfileEditor === 'function') {
+            (window as any).closeProfileEditor();
+        }
+    });
+
+    document.getElementById('modal-p-save')?.addEventListener('click', () => {
+        if (typeof (window as any).saveProfileFromModal === 'function') {
+            (window as any).saveProfileFromModal();
+        }
+    });
+
+    const addProfileBtn = document.getElementById('modal-add-profile-btn');
+    if (addProfileBtn) {
+        addProfileBtn.addEventListener('click', () => {
+            // Defined in ui.ts via global exposure for simplicity in this port
+            (document.getElementById('modal-profile-editor') as any).style.display = 'block';
+            (document.getElementById('modal-profiles-container') as any).style.display = 'none';
+        });
+    }
+
+    const cancelPEBtn = document.getElementById('modal-p-cancel');
+    if (cancelPEBtn) {
+        cancelPEBtn.addEventListener('click', () => {
+            if (typeof (window as any).closeProfileEditor === 'function') (window as any).closeProfileEditor();
+        });
+    }
+
+    const savePEBtn = document.getElementById('modal-p-save');
+    if (savePEBtn) {
+        savePEBtn.addEventListener('click', () => {
+            if (typeof (window as any).saveProfileFromModal === 'function') (window as any).saveProfileFromModal();
+        });
+    }
     
     if (dom.saveDiscussionToolsBtn) {
         dom.saveDiscussionToolsBtn.addEventListener('click', () => {
             const partialFormat = (document.querySelector('input[name="cap-partialFormat"]:checked') as HTMLInputElement)?.value || 'aider';
-            
+            const selectedProfileId = (document.getElementById('modal-default-profile-select') as HTMLSelectElement)?.value;
+
+            // CRITICAL: Sync current list of profiles and the chosen default back to Global Settings
+            vscode.postMessage({ 
+                command: 'updateProfiles', 
+                profiles: state.profiles, 
+                defaultId: selectedProfileId 
+            });
+
             const caps = {
                 generationFormats: {
                     fullFile: dom.capAllowFullFallback?.checked ?? true,
                     partialFormat: partialFormat
                 },
+                responseProfileId: selectedProfileId,
+                contextAggression: dom.contextAggressionSelect?.value || 'respect',
                 forceFullCode: dom.capForceFullCode?.checked ?? false,
                 allowedFormats: {
                     fullFile: dom.fmtFullFile?.checked ?? true,
@@ -278,7 +380,6 @@ export function initEventHandlers() {
                     replace: dom.fmtReplace?.checked ?? true,
                     delete: dom.fmtDelete?.checked ?? true
                 },
-                responseProfileId: state.capabilities?.responseProfileId || 'balanced', 
                 explainCode: dom.capExplainCode?.checked ?? true,
                 addPedagogicalInstruction: dom.capAddPedagogicalInstruction?.checked ?? false,
                 forceFullCodePath: dom.capForceFullCodePath?.checked ?? false,
@@ -309,10 +410,20 @@ export function initEventHandlers() {
     if (dom.stagingNextBtn) dom.stagingNextBtn.addEventListener('click', () => {
         const checked = Array.from(dom.stagingList.querySelectorAll('input:checked')).map((el: any) => el.value);
         if (checked.length > 0) {
+            // Disable button and show loading state
+            dom.stagingNextBtn.disabled = true;
+            const originalText = dom.stagingNextBtn.innerHTML;
+            dom.stagingNextBtn.dataset.originalText = originalText;
+            // Use the CSS spinner class defined in your chatPanel.css
+            dom.stagingNextBtn.innerHTML = '<div class="spinner"></div> Generating...';
+
             vscode.postMessage({ command: 'stageAndGenerateMessage', files: checked });
-            dom.stagingModal.classList.remove('visible');
+            
+            // Note: We don't remove 'visible' here anymore because we want to see the 
+            // result before switching to the commit message modal. 
+            // The extension will trigger the next modal.
         } else {
-            vscode.postMessage({ command: 'showWarning', message: 'No files selected.' });
+            vscode.postMessage({ command: 'showError', message: 'No files selected.' });
         }
     });
 

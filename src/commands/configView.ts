@@ -39,7 +39,6 @@ export class SettingsPanel {
     responseProfiles: [] as ResponseProfile[],
     defaultResponseProfileId: 'balanced',
     
-    reasoningLevel: 'none',
     failsafeContextSize: 8192,
     searchProvider: 'google_custom_search',
     searchApiKey: '',
@@ -146,8 +145,6 @@ export class SettingsPanel {
     this._pendingConfig.responseProfiles = config.get<ResponseProfile[]>('responseProfiles') || [];
     this._pendingConfig.defaultResponseProfileId = config.get<string>('defaultResponseProfileId') || 'balanced';
 
-
-    this._pendingConfig.reasoningLevel = config.get<string>('reasoningLevel') || 'none';
     this._pendingConfig.failsafeContextSize = config.get<number>('failsafeContextSize') || 4096;
     
     this._pendingConfig.searchProvider = config.get<string>('searchProvider') || 'google_custom_search';
@@ -399,7 +396,6 @@ export class SettingsPanel {
                   ['responseProfiles', this._pendingConfig.responseProfiles],
                   ['defaultResponseProfileId', this._pendingConfig.defaultResponseProfileId],
 
-                  ['reasoningLevel', this._pendingConfig.reasoningLevel],
                   ['failsafeContextSize', this._pendingConfig.failsafeContextSize],
                   ['searchProvider', this._pendingConfig.searchProvider],
                   ['searchApiKey', this._pendingConfig.searchApiKey],
@@ -729,47 +725,12 @@ export class SettingsPanel {
                 <option value="ar" ${language === 'ar' ? 'selected' : ''}>Arabic</option>
               </select>
 
-              <h3>Response Profiles (Modes)</h3>
-              <p class="help-text">Configure how Lollms responds (Thinking modes, pedagogical styles, brevity, etc.).</p>
-              
-              <div style="display:flex; gap:10px; margin-bottom:10px;">
-                  <select id="defaultProfileSelect" style="flex:1"></select>
-                  <button id="addProfileBtn" class="secondary-button" style="margin:0"><i class="codicon codicon-add"></i> New</button>
-                  <button id="importProfileBtn" class="icon-btn" title="Import"><i class="codicon codicon-cloud-upload"></i></button>
-                  <button id="exportProfileBtn" class="icon-btn" title="Export"><i class="codicon codicon-cloud-download"></i></button>
-              </div>
-
-              <div id="profiles-container" style="display:flex; flex-direction:column; gap:10px;"></div>
-              
-              <!-- Editor Modal Overlay (Simple inline hidden div) -->
-              <div id="profile-editor" style="display:none; border:1px solid var(--primary-accent); padding:15px; margin-top:10px; background:var(--vscode-editor-inactiveSelectionBackground);">
-                  <h4>Edit Profile</h4>
-                  <label>ID (Unique)</label><input type="text" id="p_id">
-                  <label>Name</label><input type="text" id="p_name">
-                  <label>Description</label><input type="text" id="p_desc">
-                  <label>Prefix Command (e.g. /no_think)</label><input type="text" id="p_prefix">
-                  <label>System Instructions</label><textarea id="p_prompt" rows="5"></textarea>
-                  <div style="display:flex; gap:10px; margin-top:10px;">
-                      <button id="p_save" class="primary">Update</button>
-                      <button id="p_cancel" class="secondary-button">Cancel</button>
-                  </div>
-              </div>
-
               <h3>Editor Integration</h3>
               <div class="checkbox-container"><input type="checkbox" id="enableCodeActions" ${enableCodeActions ? 'checked' : ''}><label for="enableCodeActions">Enable Lollms Code Actions (CodeLens)</label></div>
               <div class="checkbox-container"><input type="checkbox" id="enableInlineSuggestions" ${enableInlineSuggestions ? 'checked' : ''}><label for="enableInlineSuggestions">Enable Inline Ghost Text Suggestions</label></div>
 
-              <label for="reasoningLevel">${t('config.reasoningLevel.label', 'Reasoning Level')}</label>
-              <select id="reasoningLevel">
-                <option value="none" ${reasoningLevel === 'none' ? 'selected' : ''}>None</option>
-                <option value="low" ${reasoningLevel === 'low' ? 'selected' : ''}>Low</option>
-                <option value="medium" ${reasoningLevel === 'medium' ? 'selected' : ''}>Medium</option>
-                <option value="high" ${reasoningLevel === 'high' ? 'selected' : ''}>High</option>
-              </select>
-              
               <div class="checkbox-container"><input type="checkbox" id="autoGenerateTitle" ${autoGenerateTitle ? 'checked' : ''}><label for="autoGenerateTitle">Auto-generate discussion titles</label></div>
               <div class="checkbox-container"><input type="checkbox" id="addPedagogicalInstruction" ${addPedagogicalInstruction ? 'checked' : ''}><label for="addPedagogicalInstruction">Add Pedagogical Instruction (Hidden)</label></div>
-              <div class="checkbox-container"><input type="checkbox" id="forceFullCodePath" ${forceFullCodePath ? 'checked' : ''}><label for="forceFullCodePath">Force Full Code Path Syntax</label></div>
             </div>
 
             <div id="TabContext" class="tab-content">
@@ -1136,10 +1097,8 @@ export class SettingsPanel {
                     safeSet('disableSsl', config.disableSslVerification, true);
                     safeSet('sslCertPath', config.sslCertPath);
                     safeSet('language', config.language);
-                    safeSet('reasoningLevel', config.reasoningLevel);
                     safeSet('autoGenerateTitle', config.autoGenerateTitle, true);
                     safeSet('addPedagogicalInstruction', config.addPedagogicalInstruction, true);
-                    safeSet('forceFullCodePath', config.forceFullCodePath, true);
                     safeSet('gen-full', config.generationFormats.fullFile, true);
                     safeSet('gen-diff', config.generationFormats.diff, true);
                     safeSet('gen-aider', config.generationFormats.aider, true);
@@ -1323,10 +1282,10 @@ export class SettingsPanel {
                     }
                 });
             };
-            ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','inspectorModelName','codeInspectorPersona','chatPersona','agentPersona','commitMessagePersona','language','reasoningLevel','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','clipboardInsertRole','herdRounds','mcpServers','unstagedChangesBehavior','systemCustomInfo','moltbookApiKey','moltbookBotName','moltbookBotPurpose',
+            ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','inspectorModelName','codeInspectorPersona','chatPersona','agentPersona','commitMessagePersona','language','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','clipboardInsertRole','herdRounds','mcpServers','unstagedChangesBehavior','systemCustomInfo','moltbookApiKey','moltbookBotName','moltbookBotPurpose',
             'remoteServerPort', 'remoteDiscordToken', 'remoteSlackToken', 'remoteSlackSigningSecret', 'remoteAllowedUsers', 'remoteAdminUsers', 'remoteAllowedChannels'].forEach(k => bind(k, k));
             
-            ['disableSsl','enableCodeInspector','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','forceFullCodePath','companionEnableWebSearch','companionEnableArxivSearch','herdDynamicMode','enableCodeActions','enableInlineSuggestions','deleteBranchAfterMerge','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','agentUseRLM','explainCode','moltbookEnable',
+            ['disableSsl','enableCodeInspector','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','companionEnableWebSearch','companionEnableArxivSearch','herdDynamicMode','enableCodeActions','enableInlineSuggestions','deleteBranchAfterMerge','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','agentUseRLM','explainCode','moltbookEnable',
             'remoteDiscordEnabled', 'remoteSlackEnabled'].forEach(id => {
                 const map = { 
                     'disableSsl': 'disableSslVerification', 'deleteBranchAfterMerge': 'git.deleteBranchAfterMerge', 

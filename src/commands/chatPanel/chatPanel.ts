@@ -1785,6 +1785,25 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                     });
                 }
                 break;
+            case 'requestFileSearch':
+                if (vscode.workspace.workspaceFolders) {
+                    const { minimatch } = require('minimatch');
+                    const query = message.query.trim();
+                    const allFiles = await this._contextManager.getWorkspaceFilePaths();
+                    
+                    let filtered: string[] = [];
+                    if (query.includes('*') || query.includes('?')) {
+                        // Wildcard Search
+                        filtered = allFiles.filter(f => minimatch(f, query, { dot: true, nocase: true }));
+                    } else {
+                        // Substring Search
+                        const lowerQuery = query.toLowerCase();
+                        filtered = allFiles.filter(f => f.toLowerCase().includes(lowerQuery));
+                    }
+                    
+                    webview.postMessage({ command: 'fileSearchResults', files: filtered.slice(0, 250) });
+                }
+                break;
             case 'requestAddFileToContext':
                 const uris = await vscode.window.showOpenDialog({
                     canSelectMany: true,
@@ -3234,6 +3253,54 @@ Task:
                 </div>
                 <div class="modal-footer">
                     <button id="bulk-delete-run-btn" class="code-action-btn delete-btn" style="width: 100%; justify-content: center;">Delete Selected Files</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="file-search-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Search & Add Files</h2>
+                    <span class="close-btn" id="file-search-close-btn">&times;</span>
+                </div>
+                <div class="modal-body">
+                    <div style="display:flex; gap:8px; margin-bottom:12px;">
+                        <input type="text" id="file-search-input" placeholder="Search files by name or path..." style="flex:1;">
+                    </div>
+                    <div class="checkbox-container" id="file-search-master-container" style="display:none; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--vscode-widget-border);">
+                        <input type="checkbox" id="file-search-select-all">
+                        <label for="file-search-select-all" style="font-weight: bold; font-size: 11px; cursor: pointer;">Select All Results</label>
+                    </div>
+                    <div id="file-search-results" style="max-height: 300px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px;">
+                        <div style="opacity:0.6; text-align:center; padding: 20px;">Type to start searching...</div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="file-search-add-btn" class="code-action-btn apply-btn" style="width: 100%; justify-content: center;">Add Selected Files</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="file-search-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Search & Add Files</h2>
+                    <span class="close-btn" id="file-search-close-btn">&times;</span>
+                </div>
+                <div class="modal-body">
+                    <div style="display:flex; gap:8px; margin-bottom:12px;">
+                        <input type="text" id="file-search-input" placeholder="Search files by name or path..." style="flex:1;">
+                    </div>
+                    <div class="checkbox-container" id="file-search-master-container" style="display:none; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--vscode-widget-border);">
+                        <input type="checkbox" id="file-search-select-all">
+                        <label for="file-search-select-all" style="font-weight: bold; font-size: 11px; cursor: pointer;">Select All Results</label>
+                    </div>
+                    <div id="file-search-results" style="max-height: 300px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px;">
+                        <div style="opacity:0.6; text-align:center; padding: 20px;">Type to start searching...</div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="file-search-add-btn" class="code-action-btn apply-btn" style="width: 100%; justify-content: center;">Add Selected Files</button>
                 </div>
             </div>
         </div>

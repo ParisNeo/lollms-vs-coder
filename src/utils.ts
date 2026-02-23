@@ -187,9 +187,17 @@ export function applySearchReplace(content: string, searchBlock: string, replace
     // Normalize line endings to \n for internal processing
     const normalizedContent = content.replace(/\r\n/g, '\n');
     
-    // Stricter normalization: remove potential marker artifacts but preserve intentional whitespace
+    // Stricter normalization: remove potential marker artifacts but preserve intentional whitespace.
+    // If replaceBlock is just whitespace/newlines, it means we want to delete code.
     let normalizedSearch = searchBlock.replace(/\r\n/g, '\n').replace(/^\n+|\n+$/g, '');
-    let normalizedReplace = replaceBlock.replace(/\r\n/g, '\n').replace(/^\n+|\n+$/g, '');
+    let normalizedReplace = replaceBlock.replace(/\r\n/g, '\n');
+    
+    // If the replacement is just whitespace or empty, trim it to truly represent removal
+    if (!normalizedReplace.trim()) {
+        normalizedReplace = "";
+    } else {
+        normalizedReplace = normalizedReplace.replace(/^\n+|\n+$/g, '');
+    }
 
     // 1. Direct match attempt (Fast Path)
     if (normalizedContent.includes(normalizedSearch)) {
@@ -238,49 +246,34 @@ export function applySearchReplace(content: string, searchBlock: string, replace
                 }
 
                 if (matchFound) {
-                    // We found the block location at lines [startContentIdx ... startContentIdx + searchLines.length]
-                    // Now we need to construct the replacement.
-                    // We must apply the indentation delta to the replace block.
-                    
-                    // Calculate indentation delta based on the first non-empty line
+                    // We found the block location
                     const contentIndent = contentLines[i].match(/^\s*/)?.[0] || "";
                     const searchIndent = searchLine.match(/^\s*/)?.[0] || "";
                     
-                    const adjustedReplaceLines = replaceLines.map(line => {
-                        if (line.trim().length === 0) return ""; // Normalize empty lines
-                        
-                        const lineIndent = line.match(/^\s*/)?.[0] || "";
-                        
-                        // If the replace line starts with the same base indent as the search block had,
-                        // we can safely swap it for the content's base indent.
-                        if (lineIndent.startsWith(searchIndent)) {
-                            return contentIndent + line.substring(searchIndent.length);
-                        } 
-                        
-                        // If searchIndent was shorter or different? 
-                        // E.g. searchIndent was 2 spaces, contentIndent is 4 spaces.
-                        // Replace line has 2 spaces. We want 4 spaces.
-                        // Delta is +2 spaces (or +1 tab etc).
-                        // Hard to do robustly with mixed tabs/spaces, but let's try simple prefix replacement
-                        // if contentIndent starts with searchIndent (unlikely if lengths differ)
-                        
-                        // Simple robust approach: If contentIndent is longer, prepend difference.
-                        if (contentIndent.length > searchIndent.length && contentIndent.startsWith(searchIndent)) {
-                             return contentIndent.substring(searchIndent.length) + line;
-                        }
-                        
-                        // If contentIndent is shorter (dedented), try to remove prefix
-                        if (searchIndent.length > contentIndent.length && searchIndent.startsWith(contentIndent)) {
-                             if (line.startsWith(searchIndent.substring(contentIndent.length))) {
-                                 return line.substring(searchIndent.length - contentIndent.length);
-                             }
-                        }
-
-                        // Fallback: just return line if we can't calculate shift
-                        return line;
-                    });
+                    let adjustedReplaceLines: string[] = [];
                     
-                    // Reconstruct
+                    if (normalizedReplace === "") {
+                        // Total removal
+                        adjustedReplaceLines = [];
+                    } else {
+                        adjustedReplaceLines = replaceLines.map(line => {
+                            if (line.trim().length === 0) return "";
+                            const lineIndent = line.match(/^\s*/)?.[0] || "";
+                            if (lineIndent.startsWith(searchIndent)) {
+                                return contentIndent + line.substring(searchIndent.length);
+                            } 
+                            if (contentIndent.length > searchIndent.length && contentIndent.startsWith(searchIndent)) {
+                                return contentIndent.substring(searchIndent.length) + line;
+                            }
+                            if (searchIndent.length > contentIndent.length && searchIndent.startsWith(contentIndent)) {
+                                if (line.startsWith(searchIndent.substring(contentIndent.length))) {
+                                    return line.substring(searchIndent.length - contentIndent.length);
+                                }
+                            }
+                            return line;
+                        });
+                    }
+                    
                     const before = contentLines.slice(0, startContentIdx);
                     const after = contentLines.slice(startContentIdx + searchLines.length);
                     
@@ -293,7 +286,7 @@ export function applySearchReplace(content: string, searchBlock: string, replace
     // 3. Fuzzy matching fallback for minor typos or non-consistent whitespace
     let bestScore = 0;
     let bestMatchIndex = -1;
-    const THRESHOLD = 0.85; 
+    const THRESHOLD = 0.85; // 85% similarity required to apply the change anyway
 
     for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
         let currentBlockScore = 0;

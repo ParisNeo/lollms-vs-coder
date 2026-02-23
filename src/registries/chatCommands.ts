@@ -16,21 +16,17 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.searchDiscussions', async () => {
         const query = await vscode.window.showInputBox({
-            prompt: "Search discussions by title...",
+            prompt: "Search discussions and message content...",
             placeHolder: "e.g. FastAPI, refactor, bug fix"
         });
         
-        if (query !== undefined && query.trim().length > 0) {
-            const all = await services.discussionManager.getAllDiscussions();
-            const filtered = all.filter(d => d.title.toLowerCase().includes(query.toLowerCase()));
-            
-            services.treeProviders.discussionSearch?.setResults(filtered);
-            vscode.commands.executeCommand('lollmsDiscussionSearchView.focus');
+        if (query !== undefined) {
+            services.treeProviders.discussion?.setFilter(query);
         }
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.clearDiscussionSearch', () => {
-        services.treeProviders.discussionSearch?.clear();
+        services.treeProviders.discussion?.setFilter(undefined);
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.startChat', () => {

@@ -233,6 +233,14 @@ export const dom = {
     get historyList() { return document.getElementById('history-list') as HTMLDivElement; },
     get historyCloseBtn() { return document.getElementById('history-close-btn') as HTMLButtonElement; },
 
+    // File Search Modal
+    get fileSearchModal() { return document.getElementById('file-search-modal') as HTMLDivElement; },
+    get fileSearchInput() { return document.getElementById('file-search-input') as HTMLInputElement; },
+    get fileSearchResults() { return document.getElementById('file-search-results') as HTMLDivElement; },
+    get fileSearchAddBtn() { return document.getElementById('file-search-add-btn') as HTMLButtonElement; },
+    get fileSearchCloseBtn() { return document.getElementById('file-search-close-btn') as HTMLSpanElement; },
+    get fileSearchSelectAll() { return document.getElementById('file-search-select-all') as HTMLInputElement; },
+
     // Skills Modal Elements
     get skillsModal() { return document.getElementById('skills-modal') as HTMLDivElement; },
     get skillsTreeContainer() { return document.getElementById('skills-tree-container') as HTMLDivElement; },

@@ -5,6 +5,8 @@ export class DiscussionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
     private _onDidChangeTreeData: vscode.EventEmitter<vscode.TreeItem | undefined | null | void> = new vscode.EventEmitter<vscode.TreeItem | undefined | null | void>();
     readonly onDidChangeTreeData: vscode.Event<vscode.TreeItem | undefined | null | void> = this._onDidChangeTreeData.event;
 
+    private filterQuery: string | undefined;
+
     constructor(
         private discussionManager: DiscussionManager,
         private extensionUri: vscode.Uri
@@ -14,24 +16,48 @@ export class DiscussionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
         this._onDidChangeTreeData.fire();
     }
 
+    setFilter(query: string | undefined) {
+        this.filterQuery = query?.trim().toLowerCase();
+        // Set a context key so we can show/hide the "Clear Search" button in the UI
+        vscode.commands.executeCommand('setContext', 'lollms:isSearchingDiscussions', !!this.filterQuery);
+        this.refresh();
+    }
+
     getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
+        if (this.filterQuery && element instanceof DiscussionItem) {
+            element.description = `[Match] ${element.description}`;
+        }
         return element;
     }
 
     async getChildren(element?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
         const allDiscussions = await this.discussionManager.getAllDiscussions();
 
+        // If we are searching, we flatten the view to show only matches
+        if (this.filterQuery) {
+            if (element) return []; // Searching is flat
+            const filtered = allDiscussions.filter(d => {
+                const titleMatch = (d.title || "Untitled").toLowerCase().includes(this.filterQuery!);
+                const contentMatch = d.messages.some(m => 
+                    typeof m.content === 'string' && m.content.toLowerCase().includes(this.filterQuery!)
+                );
+                return titleMatch || contentMatch;
+            });
+            
+            if (filtered.length === 0) {
+                return [new vscode.TreeItem("No matching discussions found.", vscode.TreeItemCollapsibleState.None)];
+            }
+            return filtered.map((d: Discussion) => new DiscussionItem(d, this.extensionUri));
+        }
+
         if (element instanceof DiscussionGroupItem) {
-            // Children of a group are the discussions in that group
             const discussionsInGroup = allDiscussions.filter(d => d.groupId === element.group.id);
             return discussionsInGroup.map((d: Discussion) => new DiscussionItem(d, this.extensionUri));
         }
 
         if (!element) {
-            // Root level: show groups and ungrouped discussions
             const groups = await this.discussionManager.getGroups();
             const groupItems = groups.map(g => new DiscussionGroupItem(g));
-
             const ungroupedDiscussions = allDiscussions.filter(d => !d.groupId || !groups.some(g => g.id === d.groupId));
             const discussionItems = ungroupedDiscussions.map((d: Discussion) => new DiscussionItem(d, this.extensionUri));
             
@@ -39,48 +65,6 @@ export class DiscussionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
         }
 
         return [];
-    }
-}
-
-export class DiscussionSearchProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
-    private _onDidChangeTreeData: vscode.EventEmitter<vscode.TreeItem | undefined | null | void> = new vscode.EventEmitter<vscode.TreeItem | undefined | null | void>();
-    readonly onDidChangeTreeData: vscode.Event<vscode.TreeItem | undefined | null | void> = this._onDidChangeTreeData.event;
-
-    private searchResults: Discussion[] = [];
-    private isSearching = false;
-
-    constructor(private extensionUri: vscode.Uri) {}
-
-    setResults(results: Discussion[]) {
-        this.searchResults = results;
-        this.isSearching = true;
-        this._onDidChangeTreeData.fire();
-    }
-
-    clear() {
-        this.searchResults = [];
-        this.isSearching = false;
-        this._onDidChangeTreeData.fire();
-    }
-
-    getTreeItem(element: vscode.TreeItem): vscode.TreeItem {
-        return element;
-    }
-
-    async getChildren(element?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
-        if (element) return [];
-
-        if (!this.isSearching) {
-            const item = new vscode.TreeItem("Search discussions to see results here.");
-            item.iconPath = new vscode.ThemeIcon('search');
-            return [item];
-        }
-
-        if (this.searchResults.length === 0) {
-            return [new vscode.TreeItem("No matching discussions found.", vscode.TreeItemCollapsibleState.None)];
-        }
-
-        return this.searchResults.map(d => new DiscussionItem(d, this.extensionUri));
     }
 }
 

@@ -109,11 +109,30 @@ body {
     display: block;
 }
 
-.messages { flex: 1; overflow-y: auto; padding: 0; display: flex; flex-direction: column; gap: 10px; padding-bottom: 20px; scroll-behavior: smooth; min-width: 300px; }
-.message-wrapper { width: 100%; padding: 4px 0; }
+.messages { 
+    flex: 1; 
+    overflow-y: auto; 
+    padding: 0; 
+    display: flex; 
+    flex-direction: column; 
+    align-items: stretch;
+    width: 100%;
+    max-width: 100%;
+    gap: 10px; 
+    padding-bottom: 20px; 
+    scroll-behavior: smooth; 
+    min-width: 0; 
+}
+.message-wrapper { 
+    width: 100%; 
+    padding: 4px 0; 
+    display: flex;
+}
 .message { 
     display: flex; 
     flex-direction: row; 
+    width: calc(100% - 24px); /* Full width minus side margins */
+    flex-grow: 1;
     gap: 12px; 
     padding: 16px 20px; 
     position: relative; 
@@ -123,7 +142,7 @@ body {
     margin: 0 12px; 
     box-sizing: border-box; 
     background-color: var(--vscode-editor-background);
-    /* CRITICAL: Allow toolbars to float outside if necessary and handle sticky children */
+    min-width: 0;
     overflow: visible !important; 
 }
 
@@ -336,7 +355,11 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     font-size: var(--vscode-editor-font-size);
     border-right: 1px solid var(--vscode-editorGroup-border);
     min-width: 35px;
-    line-height: 1.5; /* Match Prism line height */
+    line-height: 1.5;
+    flex-shrink: 0;
+    position: sticky;
+    left: 0;
+    z-index: 10;
 }
 
 /* Aider Surgical Diff Styling */
@@ -349,29 +372,19 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 }
 
 .aider-diff-marker {
-    width: 20px;
-    flex-shrink: 0;
-    text-align: center;
-    user-select: none;
-    opacity: 0.7;
-    font-weight: bold;
+    display: none;
 }
 
 .aider-diff-removed {
-    background-color: rgba(244, 71, 71, 0.15);
-    color: var(--vscode-editor-foreground);
-    text-decoration: line-through;
-    opacity: 0.8;
+    background-color: rgba(244, 71, 71, 0.1);
+    color: var(--vscode-charts-red);
+    opacity: 0.9;
 }
-
-.aider-diff-removed .aider-diff-marker { color: var(--vscode-charts-red); }
 
 .aider-diff-added {
-    background-color: rgba(15, 157, 88, 0.15);
-    color: var(--vscode-editor-foreground);
+    background-color: rgba(15, 157, 88, 0.1);
+    color: var(--vscode-charts-green);
 }
-
-.aider-diff-added .aider-diff-marker { color: var(--vscode-charts-green); }
 
 .aider-diff-unchanged {
     background-color: transparent;
@@ -407,6 +420,12 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     overflow: hidden;
     box-shadow: 0 2px 6px rgba(0,0,0,0.15);
     transition: transform 0.1s;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.aider-diff-container {
+    width: 100%;
 }
 
 .aider-hunk-bubble:hover {
@@ -1873,4 +1892,5 @@ details[open] > summary .folder-handle::before {
 .attachment-content pre {
     margin: 0;
     white-space: pre-wrap;
+}
 }

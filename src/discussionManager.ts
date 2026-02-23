@@ -181,22 +181,28 @@ export class DiscussionManager {
         const filePath = vscode.Uri.joinPath(this.discussionsDir, `${id}.json`);
         try {
             const content = await vscode.workspace.fs.readFile(filePath);
-            return JSON.parse(content.toString());
+            // Fix: Correctly convert Uint8Array to string using Buffer for reliable JSON parsing
+            return JSON.parse(Buffer.from(content).toString('utf8'));
         } catch (error) { return null; }
     }
 
     async getAllDiscussions(): Promise<Discussion[]> {
-        const discussions: Discussion[] = [];
         try {
             const entries = await vscode.workspace.fs.readDirectory(this.discussionsDir);
-            for (const [name, type] of entries) {
-                if (type === vscode.FileType.File && name.endsWith('.json')) {
-                    const discussion = await this.getDiscussion(path.parse(name).name);
-                    if (discussion) discussions.push(discussion);
-                }
-            }
-        } catch (error) {}
-        return discussions.sort((a, b) => b.timestamp - a.timestamp);
+            const jsonFiles = entries.filter(([name, type]) => type === vscode.FileType.File && name.endsWith('.json'));
+            
+            // Optimization: Load all discussions in parallel using Promise.all
+            const discussionPromises = jsonFiles.map(([name]) => 
+                this.getDiscussion(path.parse(name).name)
+            );
+            
+            const results = await Promise.all(discussionPromises);
+            return results
+                .filter((d): d is Discussion => d !== null)
+                .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        } catch (error) {
+            return [];
+        }
     }
 
     async deleteDiscussion(id: string): Promise<void> {
@@ -220,7 +226,8 @@ export class DiscussionManager {
     async getGroups(): Promise<DiscussionGroup[]> {
         try {
             const content = await vscode.workspace.fs.readFile(this.groupsFile);
-            return JSON.parse(content.toString());
+            // Fix: Correctly convert Uint8Array to string
+            return JSON.parse(Buffer.from(content).toString('utf8'));
         } catch (error) { return []; }
     }
 

@@ -220,6 +220,49 @@ export function initEventHandlers() {
     }
 
     bindClick(dom.attachButton, 'requestAddFileToContext'); 
+
+    if (dom.fileSearchInput) {
+        let searchTimeout: any;
+        dom.fileSearchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                const query = dom.fileSearchInput.value.trim();
+                if (query) {
+                    vscode.postMessage({ command: 'requestFileSearch', query });
+                }
+            }
+        });
+
+        dom.fileSearchInput.addEventListener('input', () => {
+            clearTimeout(searchTimeout);
+            const query = dom.fileSearchInput.value.trim();
+            // Real-time search for long queries, or wait for Enter for wildcards
+            if (query.length > 2 && !query.includes('*')) {
+                searchTimeout = setTimeout(() => {
+                    vscode.postMessage({ command: 'requestFileSearch', query });
+                }, 400);
+            }
+        });
+    }
+
+    if (dom.fileSearchAddBtn) {
+        dom.fileSearchAddBtn.addEventListener('click', () => {
+            const selected = Array.from(dom.fileSearchResults.querySelectorAll('input:checked')).map((el: any) => el.value);
+            if (selected.length > 0) {
+                vscode.postMessage({ command: 'addFilesToContext', files: selected });
+                dom.fileSearchModal.classList.remove('visible');
+            }
+        });
+    }
+
+    if (dom.fileSearchCloseBtn) dom.fileSearchCloseBtn.addEventListener('click', () => dom.fileSearchModal.classList.remove('visible'));
+
+    if (dom.fileSearchSelectAll) {
+        dom.fileSearchSelectAll.addEventListener('change', () => {
+            const checked = dom.fileSearchSelectAll.checked;
+            dom.fileSearchResults.querySelectorAll('input').forEach(i => i.checked = checked);
+        });
+    }
+
     bindClick(dom.importSkillsButton, 'importSkills');
     
     if (dom.copyFullPromptButton) {

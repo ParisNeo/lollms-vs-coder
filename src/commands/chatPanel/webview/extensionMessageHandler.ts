@@ -589,6 +589,24 @@ export function handleExtensionMessage(event: MessageEvent) {
                 }
                 updateBadges();
                 break;
+            case 'fileSearchResults':
+                if (dom.fileSearchResults) {
+                    const files = message.files as string[];
+                    const masterContainer = document.getElementById('file-search-master-container');
+                    if (masterContainer) masterContainer.style.display = files.length > 0 ? 'flex' : 'none';
+
+                    if (files.length === 0) {
+                        dom.fileSearchResults.innerHTML = '<div style="opacity:0.6; text-align:center; padding: 20px;">No files match your query.</div>';
+                    } else {
+                        dom.fileSearchResults.innerHTML = files.map(f => `
+                            <div class="checkbox-container" style="margin-bottom: 4px;">
+                                <input type="checkbox" value="${f}" id="search-f-${f}" class="file-search-check">
+                                <label for="search-f-${f}" style="font-size: 12px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${f}">${f}</label>
+                            </div>
+                        `).join('');
+                    }
+                }
+                break;
             case 'showSkillsModal':
                 if (dom.skillsTreeContainer) {
                     dom.skillsTreeContainer.innerHTML = '';

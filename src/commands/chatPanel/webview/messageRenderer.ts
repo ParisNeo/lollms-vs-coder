@@ -77,10 +77,13 @@ function createButton(text: string, icon: string, onClick: () => void, className
             if (className.includes('apply-btn') || text.toLowerCase().includes('apply')) {
                 btn.classList.add('applied');
                 
-                // Find parent code block and collapse it
-                const codeBlock = btn.closest('details.code-collapsible');
-                if (codeBlock instanceof HTMLDetailsElement) {
-                    codeBlock.open = false;
+                // Only collapse if this is the main block apply button, NOT a hunk button
+                const isHunkButton = btn.closest('.aider-hunk-actions');
+                if (!isHunkButton) {
+                    const codeBlock = btn.closest('details.code-collapsible');
+                    if (codeBlock instanceof HTMLDetailsElement) {
+                        codeBlock.open = false;
+                    }
                 }
             }
         } catch (err) {
@@ -1195,7 +1198,8 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 const language = langMatch ? langMatch[1] : 'plaintext';
                 const codeOnly = lines.length >= 2 ? lines.slice(1, -1).join('\n') : "";
 
-                const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
+                // Permit zero or one newline after SEARCH and before REPLACE markers
+                const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======[\r\n]*([\s\S]*?)[\r\n]*>>>>>>> REPLACE/gm;
                 const aiderMatches = [...codeOnly.matchAll(aiderRegex)];
                 const isAider = aiderMatches.length > 0;
 
@@ -1289,11 +1293,18 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 summary.appendChild(langLabel);
                 summary.appendChild(actions);
                 details.appendChild(summary);
-
+                
                 const pre = document.createElement('pre');
                 pre.className = `language-${language}`;
+                pre.style.width = '100%';
+                pre.style.display = 'block'; // Force block display
+                pre.style.maxHeight = 'none';
 
                 if (isAider) {
+                    // Clear pre to prevent raw text or old gutters from leaking into the Aider UI
+                    pre.innerHTML = '';
+                    pre.style.display = 'block'; 
+
                     const hunkGroup = document.createElement('div');
                     hunkGroup.className = 'aider-hunk-group';
                     
@@ -1309,7 +1320,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                         hunkActions.className = 'aider-hunk-actions';
 
                         const searchPart = match[1].trim();
-                        const replacePart = match[2].trim();
+                        const replacePart = match[2] ? match[2].trim() : "";
 
                         // Copy Search Button for this hunk
                         const copySearchBtn = createButton('Copy Search', 'codicon-copy', () => {
@@ -1358,8 +1369,9 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                         const diffContainer = document.createElement('div');
                         diffContainer.className = 'aider-diff-container';
 
-                        const sLines = match[1].split('\n');
-                        const rLines = match[2].split('\n');
+                        const sLines = (match[1] || "").split('\n');
+                        const rRaw = (match[2] || "").trim();
+                        const rLines = rRaw === "" ? [] : rRaw.split('\n');
 
                         let prefix = 0;
                         while (prefix < sLines.length && prefix < rLines.length && sLines[prefix] === rLines[prefix]) prefix++;
@@ -1368,9 +1380,13 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
                         const renderLine = (line: string, type: 'added' | 'removed' | 'unchanged') => {
                             const lDiv = document.createElement('div');
-                            const marker = type === 'added' ? '+' : (type === 'removed' ? '-' : ' ');
                             lDiv.className = `aider-diff-line aider-diff-${type}`;
-                            lDiv.innerHTML = `<span class="aider-diff-marker">${marker}</span><span class="aider-diff-code">${sanitizer.sanitize(line)}</span>`;
+
+                            const codeSpan = document.createElement('span');
+                            codeSpan.className = 'aider-diff-code';
+                            codeSpan.textContent = line; 
+
+                            lDiv.appendChild(codeSpan);
                             diffContainer.appendChild(lDiv);
                         };
 
@@ -1389,18 +1405,21 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     pre.style.background = 'transparent';
                     pre.style.border = 'none';
                 } else {
+                    pre.innerHTML = ''; 
+                    pre.style.display = 'flex';
+
                     const gutter = document.createElement('div');
                     gutter.className = 'code-line-gutter';
                     const lineCount = codeOnly.split('\n').length;
                     gutter.innerHTML = Array.from({ length: lineCount }, (_, i) => i + 1).join('<br>');
 
-                    const code = document.createElement('code');
-                    code.className = `language-${language}`;
-                    code.textContent = codeOnly;
+                    const codeElement = document.createElement('code');
+                    codeElement.className = `language-${language}`;
+                    codeElement.textContent = codeOnly;
 
                     pre.appendChild(gutter);
-                    pre.appendChild(code);
-                    Prism.highlightElement(code);
+                    pre.appendChild(codeElement);
+                    Prism.highlightElement(codeElement);
                 }
 
                 details.appendChild(pre);
@@ -1779,6 +1798,9 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                     <button id="add-diagram-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Add Architecture Diagram to Context">
                         <span class="codicon codicon-graph"></span> Diagram
                     </button>
+                    <button id="search-add-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Search and Add Files (supports wildcards)">
+                        <span class="codicon codicon-search"></span> Search
+                    </button>
                     <div style="width: 1px; background: var(--vscode-widget-border); margin: 0 4px;"></div>
                     <button id="mute-context-btn" class="code-action-btn ${isMuted ? 'applied' : 'apply-btn'}" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0; background-color: ${isMuted ? 'var(--vscode-charts-red)' : ''} !important; color: ${isMuted ? 'white' : ''} !important;" title="${isMuted ? 'Unmute Context' : 'Mute Context (Don\'t send project files to AI)'}">
                         <span class="codicon ${isMuted ? 'codicon-mute' : 'codicon-unmute'}"></span> ${isMuted ? 'Muted' : 'Mute'}
@@ -1948,6 +1970,16 @@ export function updateContext(contextText: string, files: string[] = [], skills:
     if (addDiagramBtn) {
         addDiagramBtn.addEventListener('click', () => {
             vscode.postMessage({ command: 'requestAddDiagramToContext' });
+        });
+    }
+
+    const searchAddBtn = document.getElementById('search-add-context-btn');
+    if (searchAddBtn) {
+        searchAddBtn.addEventListener('click', () => {
+            if (dom.fileSearchModal) {
+                dom.fileSearchModal.classList.add('visible');
+                dom.fileSearchInput.focus();
+            }
         });
     }
 

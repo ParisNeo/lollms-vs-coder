@@ -8,8 +8,30 @@ import { AgentManager } from '../agentManager';
 
 export function registerContextCommands(context: vscode.ExtensionContext, services: LollmsServices) {
     
-    const setContextState = async (uri: vscode.Uri, uris: vscode.Uri[], state: ContextState) => {
-        const targetUris = uris && uris.length > 0 ? uris : (uri ? [uri] : []);
+    const setContextState = async (uri: any, uris: any[], state: ContextState) => {
+        // Handle potential Search Result wrappers or plain JSON objects
+        let validUri: vscode.Uri | undefined;
+        if (uri instanceof vscode.Uri) validUri = uri;
+        else if (uri && typeof uri === 'object') {
+            if ('scheme' in uri && 'path' in uri) validUri = vscode.Uri.from(uri);
+            else if (uri.resourceUri instanceof vscode.Uri) validUri = uri.resourceUri;
+            else if (uri.resource instanceof vscode.Uri) validUri = uri.resource;
+        }
+        
+        let validUris: vscode.Uri[] = [];
+        if (Array.isArray(uris)) {
+            validUris = uris.map(u => {
+                if (u instanceof vscode.Uri) return u;
+                if (u && typeof u === 'object') {
+                    if ('scheme' in u && 'path' in u) return vscode.Uri.from(u);
+                    if (u.resourceUri instanceof vscode.Uri) return u.resourceUri;
+                    if (u.resource instanceof vscode.Uri) return u.resource;
+                }
+                return undefined;
+            }).filter((u): u is vscode.Uri => !!u);
+        }
+
+        const targetUris = validUris.length > 0 ? validUris : (validUri ? [validUri] : []);
         Logger.info(`Command setContextState triggered for ${targetUris.length} files. State: ${state}`);
         if (targetUris.length > 0) {
             await services.contextManager.getContextStateProvider()?.setStateForUris(targetUris, state);

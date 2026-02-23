@@ -55,10 +55,6 @@ export function registerViews(context: vscode.ExtensionContext, services: Lollms
     const discussionView = vscode.window.createTreeView('lollmsDiscussionsView', { treeDataProvider: discussionTreeProvider });
     context.subscriptions.push(discussionView);
 
-    // Discussion Search
-    const discussionSearchProvider = new DiscussionSearchProvider(services.extensionUri);
-    services.treeProviders.discussionSearch = discussionSearchProvider;
-    context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsDiscussionSearchView', discussionSearchProvider));
-    
+   
     return discussionView;
 }

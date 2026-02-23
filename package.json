@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.6.9",
+  "version": "0.6.12",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -22,10 +22,10 @@
   "l10n": "./l10n",
   "main": "./out/extension.js",
   "activationEvents": [
-    "onStartupFinished",
-    "onDebug",
-    "onCommand:lollms-vs-coder.triggerCodeAction"
-  ],
+  "onStartupFinished",
+  "onDebug",
+  "onCommand:lollms-vs-coder.triggerCodeAction"
+],
   "contributes": {
     "commands": [
       { 
@@ -165,6 +165,7 @@
         "command": "lollms-vs-coder.inspectFile",
         "title": "%command.inspectFile.title%"
       },
+
       {
         "command": "lollms-vs-coder.debugErrorWithAI",
         "title": "%command.debugErrorWithAI.title%",
@@ -226,6 +227,11 @@
       {
         "command": "lollms-vs-coder.searchDiscussions",
         "title": "Search Discussions",
+        "icon": "$(search)"
+      },
+      {
+        "command": "lollms-vs-coder.renameDiscussion",
+        "title": "Rename Discussions",
         "icon": "$(search)"
       },
       {
@@ -1053,10 +1059,6 @@
           "name": "%view.discussions.name%"
         },
         {
-          "id": "lollmsDiscussionSearchView",
-          "name": "Search Discussions"
-        },
-        {
           "id": "lollmsSkillsView",
           "name": "%view.skills.name%",
           "when": "workspaceFolderCount > 0"
@@ -1089,6 +1091,7 @@
           "name": "Workflows",
           "when": "workspaceFolderCount > 0"
         },
+
         {
           "id": "lollmsChatPromptsView",
           "name": "%view.chatPrompts.name%",
@@ -1113,18 +1116,7 @@
           "when": "!resourceIsFolder"
         }
       ],
-      "search/context": [
-        {
-          "submenu": "lollms-vs-coder.setContextSubmenu",
-          "group": "z_lollms",
-          "when": "viewItem == fileMatch"
-        },
-        {
-          "command": "lollms-vs-coder.inspectFile",
-          "group": "z_lollms",
-          "when": "viewItem == fileMatch"
-        }
-      ],
+
       "editor/context": [
         {
           "command": "lollms-vs-coder.learnSelectionAsSkill",
@@ -1262,6 +1254,16 @@
           "command": "lollms-vs-coder.searchDiscussions",
           "when": "view == lollmsDiscussionsView",
           "group": "navigation@5"
+        },
+        {
+          "command": "lollms-vs-coder.clearDiscussionSearch",
+          "when": "view == lollmsDiscussionsView && lollms:isSearchingDiscussions",
+          "group": "navigation@1"
+        },
+        {
+          "command": "lollms-vs-coder.refreshDiscussions",
+          "when": "view == lollmsDiscussionsView",
+          "group": "navigation@6"
         },
         {
           "command": "lollms-vs-coder.clearDiscussionSearch",

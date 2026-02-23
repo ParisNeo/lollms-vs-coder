@@ -112,7 +112,7 @@ export async function activate(context: vscode.ExtensionContext) {
     };
 
     // Register Views
-    const discussionView = registerViews(context, services);
+    registerViews(context, services);
 
     // Register Commands
     registerCommands(context, services, getActiveWorkspace);

@@ -186,13 +186,18 @@ function calculateLineSimilarity(line1: string, line2: string): number {
 export function applySearchReplace(content: string, searchBlock: string, replaceBlock: string): { success: boolean, result: string, error?: string } {
     // Normalize line endings to \n for internal processing
     const normalizedContent = content.replace(/\r\n/g, '\n');
-    // Also trim leading/trailing empty lines from the blocks which sometimes happens during LLM output
+    
+    // Stricter normalization: remove potential marker artifacts but preserve intentional whitespace
     let normalizedSearch = searchBlock.replace(/\r\n/g, '\n').replace(/^\n+|\n+$/g, '');
     let normalizedReplace = replaceBlock.replace(/\r\n/g, '\n').replace(/^\n+|\n+$/g, '');
 
-    // 1. Direct match attempt
+    // 1. Direct match attempt (Fast Path)
     if (normalizedContent.includes(normalizedSearch)) {
-        return { success: true, result: normalizedContent.replace(normalizedSearch, normalizedReplace) };
+        // Use split/join instead of replace to avoid regex special character issues in the search string
+        const parts = normalizedContent.split(normalizedSearch);
+        if (parts.length > 1) {
+            return { success: true, result: parts.join(normalizedReplace) };
+        }
     }
 
     // 2. Indentation Fixer & Fuzzy Indent Matching

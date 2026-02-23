@@ -1,0 +1,52 @@
+<skill id="safe-store-core">
+    <name>safe_store: Core Initialization & Configuration</name>
+    <description>Fundamental setup patterns for SafeStore with different database types, vectorizers, and configurations</description>
+    <category>python/safe_store/core</category>
+    <language>markdown</language>
+    <timestamp>1740265200000</timestamp>
+    <content>
+        <![CDATA[
+## SafeStore Initialization Patterns
+
+### 1. Basic File-Based Store
+```python
+from safe_store import SafeStore
+
+# Standard persistent database
+store = SafeStore(
+    db_path="my_knowledge_base.db",
+    vectorizer_name="st",
+    vectorizer_config={"model": "all-MiniLM-L6-v2"}
+)
+```
+
+### 2. In-Memory Store (Temporary)
+```python
+from safe_store import SafeStore, IN_MEMORY_DB_INDICATOR
+
+# For testing or ephemeral data - no persistence
+store = SafeStore(db_path=IN_MEMORY_DB_INDICATOR)
+```
+
+### 3. Temporary File Store
+```python
+from safe_store import SafeStore, TEMP_FILE_DB_INDICATOR
+
+# Auto-creates temp file, cleaned up on close
+store = SafeStore(db_path=TEMP_FILE_DB_INDICATOR)
+```
+
+### 4. Encrypted Store
+```python
+from safe_store import SafeStore
+
+store = SafeStore(
+    db_path="encrypted_store.db",
+    vectorizer_name="st",
+    vectorizer_config={"model": "all-MiniLM-L6-v2"},
+    encryption_key="my-secure-password-123"
+)
+```
+]]>
+    </content>
+</skill>

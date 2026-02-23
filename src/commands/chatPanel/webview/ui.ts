@@ -13,9 +13,12 @@ function getStatusEmoji(text: string): string {
 }
 
 export function setGeneratingState(isGenerating: boolean, statusText?: string) {
+    // Avoid redundant updates if the state and text haven't changed
+    if (state.isGenerating === isGenerating && !statusText) return;
+    
     state.isGenerating = isGenerating;
 
-    // Update the relocated status text if it's an agent/gen process
+    // Update the status text in the relocated footer and the overlay
     if (statusText && dom.statusText) {
         dom.statusText.textContent = statusText;
     }
@@ -53,13 +56,16 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string) {
     }
 
     if (!isGenerating) {
+        if (dom.generatingOverlay) dom.generatingOverlay.style.display = 'none';
+        if (dom.inputAreaWrapper) dom.inputAreaWrapper.style.display = 'block';
+
         if (dom.messagesDiv && !isScrolledToBottom(dom.messagesDiv)) {
             dom.scrollToBottomBtn.style.display = 'flex';
         } else {
             dom.scrollToBottomBtn.style.display = 'none';
         }
         
-        if (dom.messageInput && dom.inputAreaWrapper && dom.inputAreaWrapper.style.display !== 'none') {
+        if (dom.messageInput) {
             dom.messageInput.focus();
         }
     } else {

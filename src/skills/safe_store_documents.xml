@@ -1,0 +1,55 @@
+<skill id="safe-store-documents">
+    <name>safe_store: Document Ingestion & Management</name>
+    <description>Adding, updating, and managing documents with metadata and custom processing</description>
+    <category>python/safe_store/documents</category>
+    <language>markdown</language>
+    <timestamp>1740265200000</timestamp>
+    <content>
+        <![CDATA[
+## Document Management Patterns
+
+### 1. Basic Document Addition
+```python
+from safe_store import SafeStore
+from pathlib import Path
+
+store = SafeStore("docs.db")
+
+with store:
+    # Single file
+    result = store.add_document(
+        file_path="/path/to/document.pdf",
+        metadata={"source": "support_ticket", "priority": "high"}
+    )
+    print(f"Added {result['num_chunks_added']} chunks")
+```
+
+### 2. Adding Raw Text
+```python
+with store:
+    # Add arbitrary text with unique ID
+    store.add_text(
+        unique_id="customer_feedback_001",
+        text="The product exceeded my expectations...",
+        metadata={"type": "feedback", "rating": 5, "product": "Widget X"}
+    )
+```
+
+### 3. Chunk Processing Pipeline
+```python
+def enrich_chunk(chunk_text: str, metadata: dict) -> str:
+    """Prepend metadata to chunk for better vectorization"""
+    context = f"[{metadata.get('topic', 'General')}] "
+    return context + chunk_text
+
+with store:
+    store.add_document(
+        "report.pdf",
+        metadata={"topic": "Finance", "quarter": "Q3"},
+        chunk_processor=enrich_chunk,
+        vectorize_with_metadata=True
+    )
+```
+]]>
+    </content>
+</skill>

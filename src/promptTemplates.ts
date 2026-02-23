@@ -153,9 +153,15 @@ You can trigger specialized UI blocks by using these XML-like tags:
 
         const env = `
 ### ENVIRONMENT INFO
-- OS: ${os.platform()}
-- Date: ${new Date().toISOString().split('T')[0]}
+- OS Platform: ${os.platform()}
+- Preferred Shell: ${os.platform() === 'win32' ? 'PowerShell 7/5.1' : 'Bash'}
 - Available Shells: ${shells.join(', ')}
+- Current Date: ${new Date().toISOString().split('T')[0]}
+
+### 🐚 SHELL PROTOCOL
+1. **Windows**: Use PowerShell syntax. Use \`dir\` or \`ls\`, \`cp\`, \`mv\`. Use \`curl.exe\` for web requests. Use \`\\ \` for paths but remember that in JSON you must escape them as \`\\\\\`.
+2. **Linux/Mac**: Use standard POSIX Bash syntax.
+3. **Redirection**: You can use \`>\` and \`>>\` to create files.
 ${memory ? `\n### LONG-TERM MEMORY\n${memory}` : ''}`;
 
         // --- ENHANCED STYLE INSTRUCTIONS ---

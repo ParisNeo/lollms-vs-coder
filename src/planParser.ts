@@ -37,6 +37,7 @@ export class PlanParser {
             const systemPromptMessage = await this.getPlannerSystemPrompt(!!existingPlan, toolsToUse);
             messages.push(systemPromptMessage);
 
+
             // Construct the memory block
             let memoryBlock = "";
             if (completedActionsHistory && completedActionsHistory.length > 0) {
@@ -152,18 +153,17 @@ ${memoryBlock}
     }
 
     public extractJson(text: string): string | null {
-        // 1. Clean common LLM hallucination prefixes/suffixes
         let cleaned = text.trim();
         
-        // 2. Try Markdown Code Block
+        // 1. Strongest: Markdown block
         const markdownMatch = cleaned.match(/```json\s*([\s\S]+?)\s*```/);
-        if (markdownMatch) {
-            return markdownMatch[1].trim();
-        }
+        if (markdownMatch) return markdownMatch[1].trim();
 
-        // 3. Scan for balanced braces to find embedded JSON objects (Resilient version)
+        // 2. Robust: Find outermost braces
         let braceCount = 0;
-        let startIndex = -1;
+        let startIndex = cleaned.indexOf('{');
+        if (startIndex === -1) return null;
+
         let result = null;
         
         for (let i = 0; i < cleaned.length; i++) {
@@ -196,6 +196,10 @@ ${memoryBlock}
     }
 
     public async getArchitectSystemPrompt(allowedTools: ToolDefinition[]): Promise<ChatMessage> {
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const modelPool = config.get<any[]>('herdDynamicModelPool') || [];
+        const poolDesc = modelPool.map(m => `- \`${m.model}\`: ${m.description}`).join('\n');
+
         const baseSystemInfo = await getProcessedSystemPrompt('agent');
         const toolDescriptions = allowedTools.map(tool => {
             const params = tool.parameters.map(p => `"${p.name}" (${p.type}): ${p.description}`).join(', ');
@@ -204,23 +208,35 @@ ${memoryBlock}
 
         const content = `${baseSystemInfo}
 
-You are the **Architect Agent**. 
+You are the **Lead Architect**. You don't just call tools; you manage a team of specialist agents.
 
-### 🛡️ SECURITY & OBJECTIVE PROTOCOL
-1. **STRICT OBJECTIVE**: fulfill ONLY the user's specific request.
-2. **PLANNING**: Create a sequence of tasks to achieve the goal.
-3. **MEMORY**: Review "COMPLETED ACTIONS". Do not repeat them.
+### 👥 AVAILABLE SPECIALIST MODELS
+You can assign specific models to tasks based on their strengths:
+${poolDesc || "- No specific pool: Use default model for all tasks."}
 
-### Tools Available:
+### 🛡️ PROTOCOLS
+1. **DELEGATION**: For each task, you can optionally specify a \`model\` (from the pool) and an \`agent_persona\` (specialist instructions).
+2. **CONFLICT/BLAME**: If a previous task failed, analyze the specialist's "blame" in the failure log. Replan with a different model or tool.
+3. **UNDO**: If a path is wrong, use \`git_revert\` (if available) or replan to correct the state.
+4. **JSON ONLY**: You must output a valid JSON plan. If you fail to use JSON, the system fails.
+
+### TOOLS:
 ${toolDescriptions}
 
-### Final Plan Format:
+### PLAN FORMAT:
 \`\`\`json
 {
   "objective": "...",
-  "scratchpad": "...",
+  "scratchpad": "Architect's overall strategy...",
   "tasks": [
-    { "id": 1, "task_type": "simple_action", "action": "...", "description": "...", "parameters": {}, "save_as": "..." }
+    { 
+      "id": 1, 
+      "action": "tool_name", 
+      "description": "Why this specialist is doing this...",
+      "parameters": {},
+      "model": "optional_model_id",
+      "agent_persona": "Specialist instruction: 'You are an expert... Focus on...'"
+    }
   ]
 }
 \`\`\`

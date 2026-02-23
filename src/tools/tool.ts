@@ -5,13 +5,26 @@ import type { AgentManager } from '../agentManager';
 import type { CodeGraphManager } from '../codeGraphManager';
 import { SkillsManager } from '../skillsManager';
 
+export interface Task {
+    id: number;
+    description: string;
+    action: string;
+    parameters: { [key: string]: any };
+    model?: string; // Specific model for this specialist
+    agent_persona?: string; // Custom instructions for the specialist
+    status: 'pending' | 'in_progress' | 'completed' | 'failed';
+    result: string | null;
+    retries: number;
+    can_retry?: boolean;
+}
+
 export interface Plan {
     objective: string;
     scratchpad: string;
-    tasks: any[];
-    investigation?: any[]; // Stores architect investigation steps
-    attempts?: Plan[];     // Historical versions of the plan after replanning
-    status?: 'active' | 'stale' | 'failed'; 
+    tasks: Task[];
+    investigation?: any[]; 
+    attempts?: Plan[];     
+    status?: 'active' | 'stale' | 'failed';
 }
 
 export interface ToolExecutionEnv {

@@ -269,11 +269,12 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         const activeWorkspace = getActiveWorkspace();
         if (!activeWorkspace) return;
 
-        const aiderRegex = /<<<<<<< SEARCH([\s\S]*?)=======([\s\S]*?)>>>>>>> REPLACE/g;
+        // Use strict line-anchored regex to find all hunks
+        const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
         const matches = [...content.matchAll(aiderRegex)];
         
         if (matches.length === 0) {
-             vscode.window.showErrorMessage("No valid Search/Replace blocks found.");
+             vscode.window.showErrorMessage("No valid Search/Replace blocks found. Ensure markers start at the beginning of the line.");
              return;
         }
         

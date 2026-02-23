@@ -774,10 +774,22 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
         const isDisabled = !isFinal && (info ? !info.isClosed : false);
 
         const copyBtn = createButton('Copy', 'codicon-copy', () => {
-            vscode.postMessage({ command: 'copyToClipboard', text: codeText });
+            // Ensure we use the message passing interface
+            window.vscode.postMessage({ 
+                command: 'copyToClipboard', 
+                text: codeText 
+            });
+            
+            // Visual feedback
             const icon = copyBtn.querySelector('.codicon');
-            if(icon) icon.className = 'codicon codicon-check';
-            setTimeout(() => { if(icon) icon.className = 'codicon codicon-copy'; }, 2000);
+            if(icon) {
+                icon.classList.remove('codicon-copy');
+                icon.classList.add('codicon-check');
+                setTimeout(() => {
+                    icon.classList.remove('codicon-check');
+                    icon.classList.add('codicon-copy');
+                }, 2000);
+            }
         });
         copyBtn.disabled = isDisabled;
         actions.appendChild(copyBtn);
@@ -1096,7 +1108,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             contentDiv.innerHTML = html;
         } else if (typeof rawContent === 'string') {
             const { thoughts, processedContent: contentWithoutThoughts } = processThinkTags(rawContent);
-            
+
             // --- SKILL TAG PARSING ---
             const skills: { html: string, start: number, end: number }[] = [];
             const skillRegex = /<skill\s+([^>]*?)>([\s\S]*?)<\/skill>/gi;
@@ -1106,7 +1118,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             while ((skillMatch = skillRegex.exec(contentWithoutThoughts)) !== null) {
                 const attrStr = skillMatch[1];
                 const innerContent = skillMatch[2];
-                
+
                 // Parse attributes: title="...", description="...", category="..."
                 const attrs: any = {};
                 const attrRegex = /(\w+)=["']([^"']*)["']/g;
@@ -1120,58 +1132,72 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             }
 
             messageDiv.querySelectorAll('.plan-scratchpad, .skill-creation-block').forEach(el => el.remove());
-            
+
             // Render Thoughts
             thoughts.forEach(thought => {
                 const thinkDiv = document.createElement('div');
-                thinkDiv.className = 'plan-scratchpad'; 
+                thinkDiv.className = 'plan-scratchpad';
                 thinkDiv.innerHTML = `<details ${isFinal ? '' : 'open'}><summary class="scratchpad-header">AI Reasoning</summary><div class="scratchpad-content">${sanitizer.sanitize(marked.parse(thought.content) as string)}</div></details>`;
                 if (contentDiv.parentNode) contentDiv.parentNode.insertBefore(thinkDiv, contentDiv);
             });
 
             // SURGICAL RENDERING LOGIC
-            // We combine code blocks and skills into a sorted list of elements to render
+            // 1. Identify all potential UI elements
             const codeBlocks = extractFilePaths(processedContent);
-            const elements = [
+            const allCandidates = [
                 ...codeBlocks.map(b => ({ ...b, elementType: 'code' as const })),
                 ...skills.map(s => ({ start: s.start, end: s.end, html: s.html, elementType: 'skill' as const }))
             ].sort((a, b) => a.start - b.start);
 
+            // 2. Filter to keep only TOP-LEVEL elements
+            // This ensures that if a skill tag is inside a code block (or vice versa), 
+            // only the outer container is rendered as a UI component.
+            const elements = allCandidates.filter((el, idx) => {
+                return !allCandidates.some((other, oIdx) => {
+                    if (idx === oIdx) return false;
+                    // If the current element (el) is physically inside another element (other),
+                    // we skip it to prevent rendering a UI component inside literal code.
+                    return el.start >= other.start && el.end <= other.end;
+                });
+            });
+
             let lastIndex = 0;
             const fragment = document.createDocumentFragment();
 
+            // 3. Partitioned Rendering
             elements.forEach((el) => {
-                // 1. Render text BEFORE the element
+                // A. Render the Markdown chunk BEFORE the UI element
                 const textBefore = processedContent.substring(lastIndex, el.start);
-                if (textBefore.trim()) {
+                if (textBefore.length > 0) { // Don't use .trim() here to preserve spacing between blocks
                     const textDiv = document.createElement('div');
+                    // We only parse the text that is strictly outside of any UI elements
                     textDiv.innerHTML = sanitizer.sanitize(marked.parse(textBefore) as string, SANITIZE_CONFIG);
                     fragment.appendChild(textDiv);
                 }
 
+                // B. Render the UI element (Code Block or Skill)
                 if (el.elementType === 'skill') {
-                    // 2a. Render Skill UI Component
                     const skillDiv = document.createElement('div');
-                    skillDiv.innerHTML = el.html; // HTML already sanitized inside renderSkillBlock
+                    skillDiv.innerHTML = el.html;
                     fragment.appendChild(skillDiv);
                     lastIndex = el.end;
                     return;
                 }
 
-                // 2b. Render the block itself (Manual bypass of marked to allow nesting)
+                // 2b. Render code block
                 const block = el as any;
                 const blockContent = processedContent.substring(block.start, block.end);
-                
                 let lines = blockContent.split('\n');
-                // Handle potential trailing newline causing extra empty element from split
-                if (lines.length > 0 && lines[lines.length - 1].trim() === '') {
-                    lines.pop();
-                }
+                if (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
 
                 const firstLine = lines[0];
                 const langMatch = firstLine.match(/```(\w+)/);
                 const language = langMatch ? langMatch[1] : 'plaintext';
                 const codeOnly = lines.length >= 2 ? lines.slice(1, -1).join('\n') : "";
+
+                const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
+                const aiderMatches = [...codeOnly.matchAll(aiderRegex)];
+                const isAider = aiderMatches.length > 0;
 
                 const details = document.createElement('details');
                 details.className = 'code-collapsible';
@@ -1179,48 +1205,33 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
                 const summary = document.createElement('summary');
                 summary.className = 'code-summary';
-                
+
                 const langLabel = document.createElement('span');
                 langLabel.className = 'summary-lang-label';
                 langLabel.textContent = `${language}${block.path ? ' : ' + block.path : ''}`;
-                
+
                 const actions = document.createElement('div');
                 actions.className = 'code-actions';
 
-                // --- ADD ACTION BUTTONS ---
-                
-                // 1. Standard Copy (Full Block)
+                // Copy All button
                 const copyBtn = createButton('Copy All', 'codicon-copy', () => {
                     vscode.postMessage({ command: 'copyToClipboard', text: codeOnly });
                 }, 'code-action-btn', 'Copy entire block content');
                 actions.appendChild(copyBtn);
 
-                // 2. Aider Detection for Specialized Buttons
-                const aiderRegex = new RegExp('<<<<' + '<<< SEARCH([\\s\\S]*?)===' + '====([\\s\\S]*?)>>>>' + '>>> REPLACE');
-                const aiderMatch = codeOnly.match(aiderRegex);
-                const isAider = !!aiderMatch;
-
-                if (isAider && aiderMatch) {
-                    const searchPart = aiderMatch[1].trim();
-                    const replacePart = aiderMatch[2].trim();
-
-                    // Different icon for Search (selection)
-                    const copySearchBtn = createButton('Copy Search', 'codicon-selection', () => {
-                        vscode.postMessage({ command: 'copyToClipboard', text: searchPart });
-                    }, 'code-action-btn', 'Copy the SEARCH block only');
-                    actions.appendChild(copySearchBtn);
-
-                    // Different icon for Replace (edit/replace)
-                    const copyReplaceBtn = createButton('Copy Replace', 'codicon-replace', () => {
-                        vscode.postMessage({ command: 'copyToClipboard', text: replacePart });
-                    }, 'code-action-btn', 'Copy the REPLACE block only');
-                    actions.appendChild(copyReplaceBtn);
+                // Aider specific badge for multi-hunk blocks
+                if (isAider && aiderMatches.length > 1) {
+                    const countBadge = document.createElement('span');
+                    countBadge.className = 'summary-lang-label';
+                    countBadge.style.opacity = '0.7';
+                    countBadge.style.marginLeft = '8px';
+                    countBadge.textContent = `(${aiderMatches.length} hunks)`;
+                    langLabel.appendChild(countBadge);
                 }
 
-// Determine if buttons should be disabled (while generating this specific block)
                 const isBlockGenerating = !isFinal && !block.isClosed;
 
-                // 3. Navigation: Go to File
+                // Go to File button
                 if (block.path) {
                     const gotoBtn = createButton('Go to File', 'codicon-go-to-file', () => {
                         vscode.postMessage({ command: 'openFile', path: block.path });
@@ -1228,51 +1239,46 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     actions.appendChild(gotoBtn);
                 }
 
-                // 4. Apply Button (with correct surgical icon)
-                if (block.path && (block.type === 'file' || block.type === 'replace' || block.type === 'insert' || block.type === 'diff')) {
+                // Apply button
+                if (block.path && ['file', 'replace', 'insert', 'diff'].includes(block.type)) {
                     const effectiveType = isAider ? 'replace' : block.type;
-                    const isSurgical = effectiveType === 'replace' || effectiveType === 'insert' || effectiveType === 'diff';
+                    const isSurgical = ['replace', 'insert', 'diff'].includes(effectiveType);
                     const icon = isSurgical ? 'codicon-arrow-swap' : 'codicon-tools';
-                    
+
                     const applyBtn = createButton('Apply', icon, () => {
-                        const cmd = effectiveType === 'diff' ? 'applyPatchContent' : (effectiveType === 'replace' ? 'replaceCode' : 'applyFileContent');
-                        vscode.postMessage({ command: cmd, filePath: block.path, content: codeOnly, messageId: messageId });
+                        const cmd = effectiveType === 'diff' ? 'applyPatchContent' :
+                            (effectiveType === 'replace' ? 'replaceCode' : 'applyFileContent');
+                        vscode.postMessage({ command: cmd, filePath: block.path, content: codeOnly, messageId });
+                        // Mark block as applied
+                        applyBtn.classList.add('applied');
+                        applyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
                     }, 'code-action-btn apply-btn', isSurgical ? 'Apply surgical update to file' : 'Overwrite entire file with this content');
-                    
+
                     if (isBlockGenerating) {
                         applyBtn.disabled = true;
                         applyBtn.title = "Generating code... please wait for block to close.";
                     }
-
                     actions.appendChild(applyBtn);
                 }
 
-                // NEW: Execute Button
+                // Execute button for runnable languages
                 const runnableLanguages = ['python', 'py', 'javascript', 'js', 'typescript', 'ts', 'bash', 'sh', 'shell', 'powershell', 'pwsh', 'batch', 'cmd', 'bat'];
                 if (runnableLanguages.includes(language.toLowerCase())) {
-                     const executeBtn = createButton('Execute', 'codicon-play', () => {
-                         vscode.postMessage({ command: 'runScript', code: codeOnly, language: language });
-                     }, 'code-action-btn apply-btn', 'Run this code in terminal');
-                     
-                     if (isBlockGenerating) {
-                        executeBtn.disabled = true;
-                     }
-                     
-                     actions.appendChild(executeBtn);
+                    const execBtn = createButton('Execute', 'codicon-play', () => {
+                        vscode.postMessage({ command: 'runScript', code: codeOnly, language });
+                    }, 'code-action-btn apply-btn', 'Run this code in terminal');
+                    if (isBlockGenerating) execBtn.disabled = true;
+                    actions.appendChild(execBtn);
                 }
 
-                // 5. Save Button
+                // Save button
                 const saveBtn = createButton('Save', 'codicon-save', () => {
                     vscode.postMessage({ command: 'saveCodeToFile', content: codeOnly, language });
                 });
-                
-                if (isBlockGenerating) {
-                    saveBtn.disabled = true;
-                }
-
+                if (isBlockGenerating) saveBtn.disabled = true;
                 actions.appendChild(saveBtn);
 
-                // 5. Inspect Button
+                // Inspect button
                 if (state.isInspectorEnabled) {
                     const inspectBtn = createButton('Inspect', 'codicon-search', () => {
                         vscode.postMessage({ command: 'inspectCode', code: codeOnly, language });
@@ -1286,28 +1292,123 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
                 const pre = document.createElement('pre');
                 pre.className = `language-${language}`;
-                
-                // Add Line Numbers Gutter
-                const gutter = document.createElement('div');
-                gutter.className = 'code-line-gutter';
-                const lineCount = codeOnly.split('\n').length;
-                gutter.innerHTML = Array.from({ length: lineCount }, (_, i) => i + 1).join('<br>');
-                
-                const code = document.createElement('code');
-                code.className = `language-${language}`;
-                code.textContent = codeOnly;
-                
-                pre.appendChild(gutter);
-                pre.appendChild(code);
+
+                if (isAider) {
+                    const hunkGroup = document.createElement('div');
+                    hunkGroup.className = 'aider-hunk-group';
+                    
+                    aiderMatches.forEach((match, hIdx) => {
+                        const hunkBubble = document.createElement('div');
+                        hunkBubble.className = 'aider-hunk-bubble';
+                        
+                        const hunkHeader = document.createElement('div');
+                        hunkHeader.className = 'aider-hunk-header';
+                        hunkHeader.innerHTML = `<span>HUNK ${hIdx + 1} OF ${aiderMatches.length}</span>`;
+                        
+                        const hunkActions = document.createElement('div');
+                        hunkActions.className = 'aider-hunk-actions';
+
+                        const searchPart = match[1].trim();
+                        const replacePart = match[2].trim();
+
+                        // Copy Search Button for this hunk
+                        const copySearchBtn = createButton('Copy Search', 'codicon-copy', () => {
+                            vscode.postMessage({ command: 'copyToClipboard', text: searchPart });
+                            const icon = copySearchBtn.querySelector('.codicon');
+                            if (icon) icon.className = 'codicon codicon-check';
+                            setTimeout(() => { if (icon) icon.className = 'codicon codicon-copy'; }, 2000);
+                        }, 'code-action-btn', 'Copy the SEARCH block for this hunk');
+
+                        // Copy Replace Button for this hunk
+                        const copyReplaceBtn = createButton('Copy Replace', 'codicon-copy', () => {
+                            vscode.postMessage({ command: 'copyToClipboard', text: replacePart });
+                            const icon = copyReplaceBtn.querySelector('.codicon');
+                            if (icon) icon.className = 'codicon codicon-check';
+                            setTimeout(() => { if (icon) icon.className = 'codicon codicon-copy'; }, 2000);
+                        }, 'code-action-btn', 'Copy the REPLACE block for this hunk');
+                        
+                        // Apply Hunk Button
+                        const applyHunkBtn = createButton('Apply Hunk', 'codicon-tools', () => {
+                            vscode.postMessage({ 
+                                command: 'replaceCode', 
+                                filePath: block.path, 
+                                content: match[0], 
+                                messageId 
+                            });
+                            // Mark as applied to prevent double-clicks
+                            applyHunkBtn.classList.add('applied');
+                            applyHunkBtn.innerHTML = '<span class="codicon codicon-check"></span>';
+                        }, 'code-action-btn apply-btn', 'Apply only this modification');
+                        
+                        if (isBlockGenerating) {
+                            applyHunkBtn.disabled = true;
+                            copySearchBtn.disabled = true;
+                            copyReplaceBtn.disabled = true;
+                        }
+                        
+                        hunkActions.appendChild(copySearchBtn);
+                        hunkActions.appendChild(copyReplaceBtn);
+                        hunkActions.appendChild(applyHunkBtn);
+                        hunkHeader.appendChild(hunkActions);
+                        hunkBubble.appendChild(hunkHeader);
+                        
+                        const hunkContent = document.createElement('div');
+                        hunkContent.className = 'aider-hunk-content';
+                        
+                        const diffContainer = document.createElement('div');
+                        diffContainer.className = 'aider-diff-container';
+
+                        const sLines = match[1].split('\n');
+                        const rLines = match[2].split('\n');
+
+                        let prefix = 0;
+                        while (prefix < sLines.length && prefix < rLines.length && sLines[prefix] === rLines[prefix]) prefix++;
+                        let suffix = 0;
+                        while (suffix < (sLines.length - prefix) && suffix < (rLines.length - prefix) && sLines[sLines.length - 1 - suffix] === rLines[rLines.length - 1 - suffix]) suffix++;
+
+                        const renderLine = (line: string, type: 'added' | 'removed' | 'unchanged') => {
+                            const lDiv = document.createElement('div');
+                            const marker = type === 'added' ? '+' : (type === 'removed' ? '-' : ' ');
+                            lDiv.className = `aider-diff-line aider-diff-${type}`;
+                            lDiv.innerHTML = `<span class="aider-diff-marker">${marker}</span><span class="aider-diff-code">${sanitizer.sanitize(line)}</span>`;
+                            diffContainer.appendChild(lDiv);
+                        };
+
+                        for (let i = 0; i < prefix; i++) renderLine(sLines[i], 'unchanged');
+                        for (let i = prefix; i < sLines.length - suffix; i++) renderLine(sLines[i], 'removed');
+                        for (let i = prefix; i < rLines.length - suffix; i++) renderLine(rLines[i], 'added');
+                        for (let i = sLines.length - suffix; i < sLines.length; i++) renderLine(sLines[i], 'unchanged');
+
+                        hunkContent.appendChild(diffContainer);
+                        hunkBubble.appendChild(hunkContent);
+                        hunkGroup.appendChild(hunkBubble);
+                    });
+                    
+                    pre.appendChild(hunkGroup);
+                    // Hide the raw code text as we now have visual bubbles
+                    pre.style.background = 'transparent';
+                    pre.style.border = 'none';
+                } else {
+                    const gutter = document.createElement('div');
+                    gutter.className = 'code-line-gutter';
+                    const lineCount = codeOnly.split('\n').length;
+                    gutter.innerHTML = Array.from({ length: lineCount }, (_, i) => i + 1).join('<br>');
+
+                    const code = document.createElement('code');
+                    code.className = `language-${language}`;
+                    code.textContent = codeOnly;
+
+                    pre.appendChild(gutter);
+                    pre.appendChild(code);
+                    Prism.highlightElement(code);
+                }
+
                 details.appendChild(pre);
-
                 fragment.appendChild(details);
-                Prism.highlightElement(code);
-
                 lastIndex = block.end;
             });
 
-            // 3. Render remaining text
+            // Render remaining text
             const remaining = processedContent.substring(lastIndex);
             if (remaining.trim()) {
                 const lastTextDiv = document.createElement('div');
@@ -1318,10 +1419,8 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             contentDiv.innerHTML = '';
             contentDiv.appendChild(fragment);
 
-            // --- APPLY ALL LOGIC FOR SURGICAL RENDERER ---
-            // Fix: Use codeBlocks instead of undefined 'blocks'
+            // Apply All button logic
             const actionableBlocks = codeBlocks.filter(b => b.path && ['file', 'replace', 'insert', 'diff'].includes(b.type || ''));
-            
             if (actionableBlocks.length > 0) {
                 let wrapper = contentDiv.querySelector('.apply-all-wrapper') as HTMLElement;
                 let btn: HTMLButtonElement;
@@ -1334,20 +1433,19 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
                     btn = document.createElement('button');
                     btn.className = 'apply-all-btn';
-                    
+
                     resultsList = document.createElement('div');
                     resultsList.className = 'apply-results-list';
                     resultsList.style.cssText = 'display:none; margin-top:8px; font-size:11px; padding:8px; background:var(--vscode-editor-inactiveSelectionBackground); border-radius:4px; border:1px solid var(--vscode-widget-border);';
 
                     btn.onclick = () => {
-                        if (!isFinal) return; // Guard
+                        if (!isFinal) return;
                         btn.disabled = true;
                         btn.innerHTML = '<span class="codicon codicon-sync spin"></span> Applying Sequentially...';
                         resultsList.style.display = 'block';
                         resultsList.innerHTML = '<div style="opacity:0.7; margin-bottom:4px;">Processing file updates...</div>';
 
                         const changes = actionableBlocks.map(b => {
-                            // Fix: substring from processedContent using block boundaries
                             const blockContent = processedContent.substring(b.start, b.end);
                             const lines = blockContent.split('\n');
                             const codeOnly = lines.length >= 2 ? lines.slice(1, -1).join('\n') : "";
@@ -1383,12 +1481,9 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     resultsList = wrapper.querySelector('.apply-results-list') as HTMLElement;
                 }
 
-                // 💡 UPDATER: Ensure button state reflects current generation status
                 if (btn && !btn.classList.contains('applied')) {
                     btn.disabled = !isFinal;
                     btn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply All Modifications (${actionableBlocks.length})`;
-                    
-                    // Visual feedback: style as disabled while generating
                     if (!isFinal) {
                         btn.style.opacity = '0.5';
                         btn.style.cursor = 'not-allowed';
@@ -1528,9 +1623,16 @@ function addChatMessage(message: any, isFinal: boolean = true) {
     }
     
     const copyBtn = createButton('', 'codicon-copy', () => {
-        vscode.postMessage({ command: 'copyToClipboard', text: textForClipboard });
-        copyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
-        setTimeout(() => { copyBtn.innerHTML = '<span class="codicon codicon-copy"></span>'; }, 2000);
+        window.vscode.postMessage({ 
+            command: 'copyToClipboard', 
+            text: textForClipboard 
+        });
+        
+        const icon = copyBtn.querySelector('.codicon');
+        if(icon) {
+            icon.classList.replace('codicon-copy', 'codicon-check');
+            setTimeout(() => icon.classList.replace('codicon-check', 'codicon-copy'), 2000);
+        }
     }, 'msg-action-btn', 'Copy Message');
     actions.appendChild(copyBtn);
 
@@ -2090,6 +2192,21 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
             }
             
             let resultHtml = '';
+            
+            // Show Parameters for active/completed tasks
+            if (task.parameters && (task.status === 'in_progress' || task.status === 'completed' || task.status === 'failed')) {
+                resultHtml += `
+                    <div class="task-result" style="margin-bottom: 4px;">
+                        <details ${task.status === 'in_progress' ? 'open' : ''}>
+                            <summary class="task-result-summary" style="opacity:0.7;">Task Details (Parameters)</summary>
+                            <div class="task-result-box" style="border-style: dashed; opacity: 0.8;">
+                                <div style="font-size: 10px; font-weight: bold; color: var(--vscode-descriptionForeground); margin-bottom: 2px;">TOOL: ${task.action}</div>
+                                ${sanitizer.sanitize(JSON.stringify(task.parameters, null, 2))}
+                            </div>
+                        </details>
+                    </div>`;
+            }
+
             if (task.result) {
                 const isFailure = task.status === 'failed';
                 const label = isFailure ? 'Failure Details' : 'Output';

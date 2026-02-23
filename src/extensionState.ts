@@ -71,6 +71,7 @@ export async function runCommandInTerminal(
 ): Promise<{ success: boolean, output: string }> {
     return new Promise(async (resolve) => {
         const outputDir = path.join(cwd, '.lollms');
+        // Ensure the directory is clean and exists before every run
         if (!fs.existsSync(outputDir)) {
             try { fs.mkdirSync(outputDir, { recursive: true }); } catch (e) {
                 return resolve({ success: false, output: `Failed to create output directory .lollms: ${e}` });
@@ -88,35 +89,24 @@ export async function runCommandInTerminal(
         const shellType = options?.shell || (isWin ? 'powershell' : 'bash');
 
         let sanitizedCommand = command;
-        if (isWin && (sanitizedCommand.startsWith('curl ') || sanitizedCommand.includes(' curl '))) {
-            sanitizedCommand = sanitizedCommand.replace(/\bcurl\b/g, 'curl.exe');
+        // Fix Windows 'curl' alias (Invoke-WebRequest) which breaks standard curl usage
+        if (isWin) {
+            // Regex to find 'curl' but not 'curl.exe' or 'mycurl'
+            sanitizedCommand = sanitizedCommand.replace(/(?<![\w.-])curl(?![\w.-])/g, 'curl.exe');
         }
 
         if (isWin) {
             if (shellType === 'powershell') {
-                const safeOutputFile = outputFile.replace(/\\/g, '/');
-                const safeExitCodeFile = exitCodeFile.replace(/\\/g, '/');
+                // Ensure paths are quoted and escaped for PowerShell
+                const safeOutputFile = `"${outputFile.replace(/"/g, '`"')}"`;
+                const safeExitCodeFile = `"${exitCodeFile.replace(/"/g, '`"')}"`;
                 
-                // Use Base64 encoding to avoid all quoting/escaping issues in PowerShell arguments.
-                // We also preserve newlines to support comments (#) and multi-line scripts.
-                const psScript = `
-$env:FORCE_COLOR = '1'
-$env:TERM = 'xterm-256color'
-$env:CLICOLOR_FORCE = '1'
-$OutputEncoding = [System.Text.Encoding]::UTF8
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-& {
-${sanitizedCommand}
-} 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath '${safeOutputFile}'
-if ($LASTEXITCODE -eq $null) { $LASTEXITCODE = 0 }
-$LASTEXITCODE | Out-File -FilePath '${safeExitCodeFile}' -Encoding utf8
-`;
-                // PowerShell expects UTF-16LE for EncodedCommand
-                const encoded = Buffer.from(psScript, 'utf16le').toString('base64');
+                // Execute command and capture output manually to ensure we bypass terminal buffer limits
+                const psCommand = `& { ${sanitizedCommand} } > ${safeOutputFile} 2>&1; $LASTEXITCODE | Out-File -FilePath ${safeExitCodeFile} -Encoding utf8`;
 
                 execution = new vscode.ShellExecution(
                     "powershell.exe", 
-                    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded], 
+                    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psCommand], 
                     { cwd }
                 );
             } else if (shellType === 'cmd') {
@@ -144,49 +134,64 @@ $LASTEXITCODE | Out-File -FilePath '${safeExitCodeFile}' -Encoding utf8
         );
 
         task.presentationOptions = {
-            reveal: vscode.TaskRevealKind.Always,
-            focus: true,
+            reveal: vscode.TaskRevealKind.Always, // Ensure terminal is shown
+            focus: true,                         // Focus the terminal so user sees the command
             panel: vscode.TaskPanelKind.Dedicated,
             showReuseMessage: false,
-            clear: true
+            clear: true                          // Clear previous output for clarity
         };
 
-        try {
-            const executionTask = await vscode.tasks.executeTask(task);
-            const disposable = vscode.tasks.onDidEndTaskProcess(e => {
-                if (e.execution === executionTask) {
-                    disposable.dispose();
-                    setTimeout(() => {
-                        let output = "";
-                        let success = true;
-                        try {
-                            if (fs.existsSync(outputFile)) {
-                                // Read as UTF-8 and strip BOM if present
-                                output = fs.readFileSync(outputFile, 'utf8').replace(/^\uFEFF/, '');
-                            }
-                            if (fs.existsSync(exitCodeFile)) {
-                                const code = fs.readFileSync(exitCodeFile, 'utf8').trim().replace(/^\uFEFF/, '');
-                                success = code === '0';
-                            } else {
-                                success = e.exitCode === 0;
-                            }
-                        } catch (err) {
-                            output = `Error reading task results: ${err}`;
-                            success = false;
+        let executionTask: vscode.TaskExecution | undefined;
+        
+        // 1. Register listener BEFORE executing to ensure we don't miss fast processes
+        const disposable = vscode.tasks.onDidEndTaskProcess(e => {
+            if (executionTask && e.execution === executionTask) {
+                disposable.dispose();
+                // Delay reading to ensure the OS has flushed the file buffers to .lollms/
+                setTimeout(() => {
+                    let output = "";
+                    let success = e.exitCode === 0;
+                    try {
+                        if (fs.existsSync(outputFile)) {
+                            output = fs.readFileSync(outputFile, 'utf8').replace(/^\uFEFF/, '');
                         }
-                        resolve({ success, output });
-                    }, 500);
-                }
-            });
+                        if (fs.existsSync(exitCodeFile)) {
+                            const code = fs.readFileSync(exitCodeFile, 'utf8').trim().replace(/^\uFEFF/, '');
+                            success = code === '0';
+                        }
+                    } catch (err) {
+                        output = `[Extension Error] Failed to read terminal output: ${err}`;
+                        success = false;
+                    }
+                    // Strip ANSI codes before returning to the AI agent
+                    const { stripAnsiCodes } = require('./utils');
+                    resolve({ success, output: stripAnsiCodes(output) });
+                }, 800);
+            }
+        });
+
+        try {
+            executionTask = await vscode.tasks.executeTask(task);
 
             if (signal) {
                 signal.addEventListener('abort', () => {
-                    executionTask.terminate();
+                    executionTask?.terminate();
                     disposable.dispose();
-                    resolve({ success: false, output: "Execution cancelled." });
+                    resolve({ success: false, output: "Execution cancelled by user." });
                 });
             }
+
+            // 2. Safety Timeout: Kill process if it exceeds 2 minutes without finishing
+            setTimeout(() => {
+                if (executionTask) {
+                    executionTask.terminate();
+                    disposable.dispose();
+                    resolve({ success: false, output: "TIMEOUT: Command took longer than 120s and was terminated." });
+                }
+            }, 120000);
+
         } catch (err: any) {
+            disposable.dispose();
             resolve({ success: false, output: `Task execution failed: ${err.message}` });
         }
     });

@@ -21,17 +21,16 @@ export class FailureMemory {
         if (this.failures.length === 0) return "";
 
         return `
-# 🛑 CRITICAL: ACTIONS PREVIOUSLY FAILED
-You have already attempted the following actions and they FAILED. 
-The execution engine will AUTO-BLOCK any identical attempts.
-YOU MUST CHOOSE A DIFFERENT STRATEGY OR TOOL.
+# 🛑 CRITICAL: SPECIALIST FAILURE LOG (BLAME)
+The following specialists failed to execute their assigned tasks. 
+Analyze the errors below. You MUST change the model, the persona, or the tool parameters to fix this. 
 
 ${this.failures.map((f, i) => `
-[FAILURE #${i + 1}]
-- Tool: \`${f.toolName}\`
-- Used Parameters: \`${JSON.stringify(f.parameters)}\`
-- Error Result: "${f.errorOutput.substring(0, 300)}"
-- Action Required: Do NOT use this tool with these exact parameters again.
+[BLAME #${i + 1}]
+- Specialist Action: \`${f.toolName}\`
+- Failed Parameters: \`${JSON.stringify(f.parameters)}\`
+- Error Output: "${f.errorOutput.substring(0, 500)}"
+- Verdict: The previous strategy is BLOCKED. Spawn a different agent or use a different approach.
 `).join('\n')}
 `;
     }

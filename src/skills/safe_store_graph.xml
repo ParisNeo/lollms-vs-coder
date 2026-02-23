@@ -1,0 +1,43 @@
+<skill id="safe-store-graph">
+    <name>safe_store: Knowledge Graph Operations</name>
+    <description>Building, querying, and managing knowledge graphs with LLM extraction</description>
+    <category>python/safe_store/graph</category>
+    <language>markdown</language>
+    <timestamp>1740265200000</timestamp>
+    <content>
+        <![CDATA[
+## Knowledge Graph Patterns
+
+### 1. Graph Store Setup
+```python
+from safe_store import SafeStore, GraphStore
+
+store = SafeStore("graph_base.db")
+
+def llm_callback(prompt: str) -> str:
+    # Logic to call your LLM
+    return response_content
+
+graph = GraphStore(
+    store=store,
+    llm_executor_callback=llm_callback
+)
+```
+
+### 2. Building the Graph
+```python
+with store:
+    store.add_document("annual_report.pdf")
+    graph.build_graph_for_all_documents(batch_size_chunks=20)
+```
+
+### 3. Natural Language Graph Queries
+```python
+result = graph.query_graph(
+    "Who is the CEO of TechCorp and what products do they make?",
+    output_mode="full"
+)
+```
+]]>
+    </content>
+</skill>

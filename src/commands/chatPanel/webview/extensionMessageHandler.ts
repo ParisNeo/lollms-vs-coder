@@ -50,6 +50,11 @@ export function handleExtensionMessage(event: MessageEvent) {
                         delete state.streamingMessages[message.id];
                     }
                     
+                    // Safety: Force hide the spinner when a message is completed
+                    setGeneratingState(false);
+                    const metricsEl = document.getElementById('generating-metrics');
+                    if (metricsEl) metricsEl.style.display = 'none';
+
                     // Update header with final TPS
                     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.id}']`) as HTMLElement;
                     if (wrapper && message.tps) {

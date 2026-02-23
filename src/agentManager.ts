@@ -149,9 +149,12 @@ export class AgentManager {
             this.ui.addMessageToDiscussion({ role: 'system', content: `🤖 **Agent Mode Activated.** Architect is ready.` });
         } else {
             this.ui.addMessageToDiscussion({ role: 'system', content: '🤖 **Agent Mode Deactivated.**' });
+            this.currentPlan = null;
             this.displayAndSavePlan(null);
         }
         this.ui.updateAgentMode(this.isActive);
+        // CRITICAL: We NO LONGER call updateGeneratingState() here. 
+        // Simply toggling the mode should update badges, but not show the loading overlay.
     }
 
     private async displayAndSavePlan(plan: Plan | null) {
@@ -233,10 +236,11 @@ export class AgentManager {
             }
 
         } catch (error: any) {
-            if (error.name !== 'AbortError') {
+            if (error.name !== 'AbortError' && error.message !== 'AbortError') {
                 this.ui.addMessageToDiscussion({ role: 'system', content: `❌ **Critical Error:** ${error.message}` });
             }
         } finally {
+            this.isActive = false; // CRITICAL: Reset activity flag to dismiss overlay
             this.processManager.unregister(processId);
             this.ui.updateGeneratingState();
         }
@@ -439,101 +443,64 @@ export class AgentManager {
 
     private async executePlan(startIndex: number = 0, signal: AbortSignal, modelOverride?: string) {
         if (!this.currentPlan) return;
-    
         this.currentTaskIndex = startIndex;
-        
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const maxRetries = config.get<number>('agentMaxRetries') || 1;
+        const architectModel = config.get<string>('architectModelName') || modelOverride || this.currentDiscussion?.model;
+
         while (this.currentTaskIndex < this.currentPlan.tasks.length) {
             if (signal.aborted) return;
-            
             const task = this.currentPlan.tasks[this.currentTaskIndex];
-            const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-            const architectModel = config.get<string>('architectModelName') || modelOverride;
-    
+            const specialistModel = task.model || modelOverride || this.currentDiscussion?.model;
+
             if (task.status === 'pending') {
-                if (task.action === 'generate_code' || task.action === 'execute_command') {
-                    await this.performGitBackup(`Before task ${task.id} (${task.action})`);
+                // Only backup for actions that modify the local filesystem directly.
+                // execute_command is excluded by default as it might just be a network tool like curl.
+                if (['generate_code', 'delete_file', 'move_file'].includes(task.action)) {
+                    await this.performGitBackup(`Checkpoint: Task ${task.id} - ${task.description}`);
                 }
 
                 task.status = 'in_progress';
-                await this.displayAndSavePlan(this.currentPlan);
-                await new Promise(resolve => setTimeout(resolve, 50)); 
-    
-                let result: { success: boolean; output: string; };
+                let result: { success: boolean; output: string; } = { success: false, output: "" };
                 let resolvedParams: any = {};
 
                 try {
                     resolvedParams = this.resolveParameters(task);
-                    
-                    // 1. Check for failure loops
+                    task.parameters = resolvedParams; 
+                    await this.displayAndSavePlan(this.currentPlan); 
+
                     if (this.failureMemory.hasFailedBefore(task.action, resolvedParams)) {
                         result = { 
                             success: false, 
-                            output: `LOOP PREVENTED: You are trying an identical call that already failed. You must REPLAN with a different approach.` 
+                            output: `CRITICAL FAILURE: The Specialist detected a loop with these parameters. Strategy blocked.` 
                         };
-                    } 
-                    // 2. Check for success loops (Doing same thing again unnecessarily)
-                    else if (this.completedActionsHistory.includes(`Action: ${task.action}, Params: ${JSON.stringify(resolvedParams)}`)) {
-                         result = {
-                             success: true,
-                             output: `SKIPPED: This exact action was already performed successfully earlier in the session.`
-                         };
-                    }
-                    else {
-                        if (task.action.includes('search')) {
-                            this.ui.addMessageToDiscussion({
-                                role: 'system',
-                                content: `🔍 **Researching:** ${resolvedParams.query || '...'} via ${task.action.split('_')[1] || 'web'}`,
-                                skipInPrompt: true
-                            });
-                        }
-                        try {
-                            result = await this.executeTask(task.action, resolvedParams, signal);
-                        } catch (error: any) {
-                            result = { success: false, output: error.message };
-                        }
+                    } else {
+                        result = await this.executeTask(task.action, resolvedParams, signal, undefined, specialistModel, task.agent_persona);
                     }
                 } catch (error: any) {
-                    result = { success: false, output: error.message };
+                    result = { success: false, output: `Specialist Runtime Error: ${error.message}` };
                 }
     
                 task.result = result.output;
                 task.status = result.success ? 'completed' : 'failed';
 
-                if (result.success) {
-                    // Record success for memory injection to prevent loops in future planning
-                    const paramStr = JSON.stringify(resolvedParams);
-                    const successEntry = `Action: ${task.action}, Description: ${task.description}, Params: ${paramStr}`;
-                    if (!this.completedActionsHistory.includes(successEntry)) {
-                        this.completedActionsHistory.push(successEntry);
-                    }
-
-                    if (task.save_as) {
-                        let finalValue: any = result.output;
-                        try { finalValue = JSON.parse(result.output); } catch (e) { }
-                        this.sessionState.replVariables[task.save_as] = finalValue;
-                    }
-                }
-
-                await this.displayAndSavePlan(this.currentPlan);
-    
                 if (!result.success) {
                     this.failureMemory.recordFailure(task.action, resolvedParams, result.output);
 
-                    const currentFailCount = (this.consecutiveTaskFailures.get(this.currentTaskIndex) || 0) + 1;
-                    this.consecutiveTaskFailures.set(this.currentTaskIndex, currentFailCount);
-
-                    if (currentFailCount >= this.MAX_TASK_REVISIONS) {
+                    if (task.retries < maxRetries) {
                         this.ui.addMessageToDiscussion({ 
                             role: 'system', 
-                            content: `🛑 **Agent Giving Up:** Task index ${this.currentTaskIndex} (\`${task.action}\`) has failed ${currentFailCount} times. Stopping.` 
+                            content: `⚠️ **Task ${task.id} Failed.** Lead Architect is revising the strategy...`,
+                            skipInPrompt: true 
                         });
-                        return; 
-                    }
 
-                    const maxRetries = config.get<number>('agentMaxRetries') || 1;
-                    if (task.retries < maxRetries) {
                         const revisionSucceeded = await this.revisePlanForFailure(task, signal, architectModel);
-                        if (revisionSucceeded) continue;
+                        if (revisionSucceeded) {
+                            await this.displayAndSavePlan(this.currentPlan);
+                            // We stay at the same currentTaskIndex because the old failed task 
+                            // was removed and replaced by new tasks at this position.
+                            continue; 
+                        }
                     }
                     
                     task.can_retry = true;
@@ -741,7 +708,24 @@ export class AgentManager {
 
     public async runCommand(command: string, signal: AbortSignal): Promise<{ success: boolean, output: string }> {
         if (!this.currentWorkspaceFolder) return { success: false, output: "No workspace." };
-        return runCommandInTerminal(command, this.currentWorkspaceFolder.uri.fsPath, `Agent Task`, signal);
+        
+        let finalCommand = command;
+        const isWin = process.platform === 'win32';
+
+        // Automatically handle Python Environment if one is active in the session
+        if (this.sessionState.activeEnv && (command.startsWith('python') || command.startsWith('pip'))) {
+            const envPath = this.sessionState.activeEnv;
+            if (isWin) {
+                finalCommand = `& "${path.join(envPath, 'Scripts', 'Activate.ps1')}"; ${command}`;
+            } else {
+                finalCommand = `. "${path.join(envPath, 'bin', 'activate')}" && ${command}`;
+            }
+        }
+
+        // Use a descriptive task name so the user sees what is running in the status bar/terminal tab
+        const taskName = command.length > 30 ? command.substring(0, 27) + "..." : command;
+        
+        return runCommandInTerminal(finalCommand, this.currentWorkspaceFolder.uri.fsPath, `Lollms: ${taskName}`, signal);
     }
 
     public async requestUserInput(question: string, signal: AbortSignal): Promise<string> {

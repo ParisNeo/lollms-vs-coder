@@ -182,18 +182,27 @@ export class ChatPanel {
             const activeAgent = ChatPanel.activeAgents.get(this.discussionId);
             const agentIsActive = activeAgent ? activeAgent.getIsActive() : false;
 
-            // 💡 IMPROVED FIX: Use more robust checks to ignore background/utility tasks
+            // Identify processes that should not trigger the UI-blocking overlay
             const desc = process?.description || "";
-            const isBackgroundProcess = desc.includes("title") || desc.includes("Counting") || desc.includes("Scanning");
+            const isBackgroundProcess = 
+                desc.toLowerCase().includes("title") || 
+                desc.toLowerCase().includes("counting") || 
+                desc.toLowerCase().includes("scanning") ||
+                desc.toLowerCase().includes("analyz") ||
+                desc.toLowerCase().includes("research") ||
+                desc.toLowerCase().includes("optimiz") ||
+                desc.toLowerCase().includes("cleaning");
             
-            const isGenerating = ((process && !isBackgroundProcess) || !!activeGen || agentIsActive) && !this._inputResolver;
+            // Decouple "Agent Mode ON" from "Agent is currently running a process"
+            // We only show the overlay if there is a real process ID registered in the manager
+            const isGenerating = ((process && !isBackgroundProcess) || !!activeGen) && !this._inputResolver;
             
-            // Extract descriptive status
-            let statusText = vscode.l10n.t("Generating...");
-            if (process && !isBackgroundProcess) {
+            let statusText = vscode.l10n.t("Lollms is thinking...");
+            
+            if (activeGen) {
+                statusText = vscode.l10n.t("Generating response...");
+            } else if (process && !isBackgroundProcess) {
                 statusText = process.description;
-            } else if (agentIsActive) {
-                statusText = vscode.l10n.t("Agent Thinking...");
             }
 
             this._panel.webview.postMessage({ 
@@ -853,30 +862,33 @@ export class ChatPanel {
                 result = applyDiffToString(originalFileText, block.content);
             } else {
                 // Handle multiple SEARCH/REPLACE blocks within the same content
-                const aiderRegex = /<<<<<<< SEARCH([\s\S]*?)=======([\s\S]*?)>>>>>>> REPLACE/g;
+                // FIX: Use line-anchored markers to avoid confusion with code comments like # =============
+                const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
                 const matches = [...block.content.matchAll(aiderRegex)];
                 
                 if (matches.length > 0) {
-                    let currentContent = originalFileText;
+                    let currentFileState = originalFileText;
                     let allSuccess = true;
                     let firstError = "";
 
                     for (const match of matches) {
-                        const srResult = applySearchReplace(currentContent, match[1], match[2]);
+                        const searchPart = match[1];
+                        const replacePart = match[2];
+                        const srResult = applySearchReplace(currentFileState, searchPart, replacePart);
+                        
                         if (srResult.success) {
-                            currentContent = srResult.result;
+                            currentFileState = srResult.result;
                         } else {
                             allSuccess = false;
                             firstError = srResult.error || "Search block match failed.";
                             break;
                         }
                     }
-                    result = { success: allSuccess, result: currentContent, error: firstError };
+                    result = { success: allSuccess, result: currentFileState, error: firstError };
                 } else {
-                    result = { success: false, result: originalFileText, error: "Invalid Search/Replace block format." };
+                    result = { success: false, result: originalFileText, error: "Invalid Search/Replace block format or markers not at start of line." };
                 }
             }
-
             if (result.success) {
                 verifiedFullCode = result.result;
                 success = true;
@@ -963,14 +975,19 @@ Please provide the **FULL CONTENT** of the file instead using the format:
   }
   
   private async deleteMessage(messageId: string) {
-      if (this._currentDiscussion) {
-          this._currentDiscussion.messages = this._currentDiscussion.messages.filter(m => m.id !== messageId);
-          if (!this._currentDiscussion.id.startsWith('temp-')) {
-              await this._discussionManager.saveDiscussion(this._currentDiscussion);
-          }
-          await this.loadDiscussion(); 
-      }
-  }
+    if (this._currentDiscussion) {
+        // Stop any active generation first to be safe
+        this.processManager.cancelForDiscussion(this.discussionId);
+
+        this._currentDiscussion.messages = this._currentDiscussion.messages.filter(m => m.id !== messageId);
+        if (!this._currentDiscussion.id.startsWith('temp-')) {
+            await this._discussionManager.saveDiscussion(this._currentDiscussion);
+        }
+        // Reload without re-calculating tokens immediately to prevent UI flicker
+        await this.loadDiscussion(); 
+        this.updateGeneratingState();
+    }
+}
   
   private async regenerateFromMessage(messageId: string) {
       if (!this._currentDiscussion) return;
@@ -1898,7 +1915,11 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                 }
                 break;
             case 'copyToClipboard':
-                await vscode.env.clipboard.writeText(message.text);
+                if (message.text) {
+                    await vscode.env.clipboard.writeText(message.text);
+                    // Optional: Show a small status bar message to confirm
+                    vscode.window.setStatusBarMessage("Lollms: Copied to clipboard", 2000);
+                }
                 break;
             case 'executeLollmsCommand':
                 const { command, params } = message.details;
@@ -1944,10 +1965,19 @@ Task:
                 return;
             case 'stopGeneration':
                 if (this._currentDiscussion) {
-                    const process = this.processManager.getForDiscussion(this._currentDiscussion.id);
-                    if (process) {
-                        this.processManager.cancel(process.id);
+                    // 1. Force Deactivate Agent if running
+                    if (this.agentManager) {
+                        this.agentManager.toggleAgentMode(); // Set to inactive
                     }
+                    
+                    // 2. Cancel all backend processes for this discussion
+                    this.processManager.cancelForDiscussion(this.discussionId);
+                    
+                    // 3. Force UI overlay to hide immediately
+                    this._panel.webview.postMessage({ 
+                        command: 'setGeneratingState', 
+                        isGenerating: false 
+                    });
                 }
                 break;
             case 'toggleAgentMode':

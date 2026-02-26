@@ -2,4 +2,7 @@
 - Add RLM mode with REPL.
 - upgrade ascii_colors skills
 - Add skills for ScrapeMaster and safe_store
-- Webview error: updateProgressBar is not defined
+
+- Fix:
+  - Webview error: renderContextUsage is not defined
+  - Webview error: updateProgressBar is not defined

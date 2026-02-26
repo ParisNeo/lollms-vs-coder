@@ -6,3 +6,4 @@
 - Fix:
   - Webview error: renderContextUsage is not defined
   - Webview error: updateProgressBar is not defined
+  - Webview error: renderContextUsage is not defined

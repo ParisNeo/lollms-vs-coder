@@ -1,11 +1,4 @@
-<skill id="ascii-colors-basics">
-    <name>ASCIIColors Basics</name>
-    <description>Quick reference for terminal colors, styles, and output with ASCIIColors.</description>
-    <category>python/ascii_colors/basics</category>
-    <language>markdown</language>
-    <timestamp>1738425600000</timestamp>
-    <content>
-        <![CDATA[
+<skill title="ASCIIColors Basics" description="Quick reference for terminal colors, styles, and output with ASCIIColors." category="python/ascii_colors/basics">
 # ASCIIColors Quick Start
 
 ## What is it?
@@ -45,7 +38,7 @@ ASCIIColors.print(
 |-----------|-----------|-------------------|-------------------|
 | `color_black` | `color_bg_black` | `color_bright_black` | `color_bg_bright_black` |
 | `color_red` | `color_bg_red` | `color_bright_red` | `color_bg_bright_red` |
-| `color_green` | `color_bg_green` | `color_bright_green` | `color_bg_bright_green` |
+| `color_green" | `color_bg_green` | `color_bright_green` | `color_bg_bright_green` |
 | `color_yellow` | `color_bg_yellow` | `color_bright_yellow` | `color_bg_bright_yellow` |
 | `color_blue` | `color_bg_blue` | `color_bright_blue` | `color_bg_bright_blue` |
 | `color_magenta` | `color_bg_magenta` | `color_bright_magenta` | `color_bg_bright_magenta` |
@@ -123,7 +116,4 @@ print(styled)
 | Structured logging | `import ascii_colors as logging` |
 
 > 📚 **For advanced features** (progress bars, menus, prompts, logging), load the dedicated skill: `python/ascii_colors/advanced`
-
-]]>
-    </content>
 </skill>

@@ -23,7 +23,8 @@ export const rlmReplTool: ToolDefinition = {
         
         let contextInjection = "context = ''\n";
         if (params.inspect_context) {
-            const contextData = await env.contextManager.getContextContent();
+            const modelName = env.agentManager.getCurrentDiscussion()?.model || env.lollmsApi.getModelName();
+            const contextData = await env.contextManager.getContextContent({ modelName });
             // Using raw string literal for safety
             contextInjection = `context = r"""${contextData.text.replace(/"/g, '\\"')}"""\n`;
         }

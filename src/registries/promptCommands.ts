@@ -103,70 +103,34 @@ export function registerPromptCommands(context: vscode.ExtensionContext, service
                         cleanText = cleanText.replace(/^`{3,}.*[\r\n]+/, '').replace(/[\r\n]+`{3,}$/, '');
                     }
 
-                    // --- RELATIVE INDENTATION NORMALIZER ---
-                    // Detect original indentation of the line where the selection starts
+                    // --- ROBUST RELATIVE INDENTATION NORMALIZER ---
                     const originalFirstLine = editor.document.lineAt(editor.selection.start.line);
-                    const originalIndent = originalFirstLine.text.match(/^\s*/)?.[0] || "";
-                    
-                    const aiLines = cleanText.split(/\r?\n/);
-                    
-                    // Step 1: Filter out leading/trailing empty lines
-                    let firstContentIdx = aiLines.findIndex(l => l.trim().length > 0);
-                    let lastContentIdx = -1;
-                    for (let i = aiLines.length - 1; i >= 0; i--) {
-                        if (aiLines[i].trim().length > 0) {
-                            lastContentIdx = i;
-                            break;
-                        }
-                    }
+                    const targetIndent = originalFirstLine.text.match(/^\s*/)?.[0] || "";
+                    const aiLines = cleanText.split(/\r?\n/).filter((l, i, arr) => 
+                        !(i === 0 && l.trim() === "") && !(i === arr.length - 1 && l.trim() === "")
+                    );
 
-                    if (firstContentIdx !== -1 && lastContentIdx !== -1) {
-                        const trimmedAiLines = aiLines.slice(firstContentIdx, lastContentIdx + 1);
+                    if (aiLines.length > 0) {
+                        // 1. Determine common prefix to strip from AI output
+                        const nonPaddedLines = aiLines.filter(l => l.trim().length > 0);
+                        const aiMinIndentLen = Math.min(...nonPaddedLines.map(l => l.match(/^\s*/)?.[0].length || 0));
                         
-                        // Step 2: Calculate the minimum common base indentation for all non-empty lines
-                        let minAiIndent: string | null = null;
-                        for (const line of trimmedAiLines) {
-                            if (line.trim().length === 0) { continue; }
-                            const currentIndent = line.match(/^\s*/)?.[0] || "";
-                            if (minAiIndent === null || currentIndent.length < minAiIndent.length) {
-                                minAiIndent = currentIndent;
-                            }
-                        }
-                        const aiBaseIndent = minAiIndent || "";
-                        
-                        // Step 3: Strip the common base indentation to make the block "flat" relative to its first line content
-                        const normalizedLines = trimmedAiLines.map((line, idx) => {
-                            if (line.trim().length === 0) { return ""; }
-                            
-                            // For the very first line, we always trim all leading whitespace to ensure 
-                            // it aligns perfectly with the selection start (whether mid-line or at column 0).
-                            if (idx === 0) { return line.trimStart(); }
-
-                            if (line.startsWith(aiBaseIndent)) {
-                                return line.substring(aiBaseIndent.length);
-                            }
-                            return line.trimStart(); 
-                        });
-
-                        // Step 4: Map back to the user's editor indentation structure
                         const eol = editor.document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
-                        const startChar = editor.selection.start.character;
-                        
-                        const finalCode = normalizedLines
-                            .map((line, index) => {
-                                if (line.length === 0) { return ""; }
+                        const startInColumnZero = editor.selection.start.character === 0 || targetIndent.length === 0;
 
-                                // If selection starts > 0, 'before' text already contains the leading whitespace for the line.
-                                // We don't add originalIndent to the first line to avoid the "extra tab" bug.
-                                if (index === 0 && startChar > 0) {
-                                    return line;
-                                }
-                                // For all other cases, we re-apply the captured base indentation of the original selection.
-                                return originalIndent + line;
-                            })
-                            .join(eol);
-                        
-                        cleanText = finalCode;
+                        cleanText = aiLines.map((line, idx) => {
+                            if (line.trim().length === 0) return "";
+                            
+                            // Strip AI's arbitrary common indentation
+                            const stripped = line.substring(aiMinIndentLen);
+                            
+                            // If selection starts mid-line, the first line shouldn't be re-indented 
+                            // as the 'before' text already contains the leading space.
+                            if (idx === 0 && !startInColumnZero) return stripped;
+                            
+                            // Re-apply original file indentation
+                            return targetIndent + stripped;
+                        }).join(eol);
                     }
 
                     // --- DOCUMENT RECONSTRUCTION ---

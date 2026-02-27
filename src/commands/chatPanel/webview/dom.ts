@@ -85,6 +85,7 @@ export const state: {
     isInspectorEnabled: boolean,
     streamingMessages: { [key: string]: { buffer: string, timer: any } },
     isGenerating: boolean,
+    appliedState: Record<string, Record<number, number[]>>, // Persistent applied hunks
     lastContextData: { context: string, files: string[], skills: any[] } | null,
     capabilities: DiscussionCapabilities | null,
     currentBranch: string,
@@ -143,6 +144,10 @@ export const dom = {
     get attachmentsContainer() { return document.getElementById('attachments-container') as HTMLDivElement; },
     get welcomeMessage() { return document.getElementById('welcome-message') as HTMLDivElement; },
     get scrollToBottomBtn() { return document.getElementById('scrollToBottomBtn') as HTMLButtonElement; },
+    get usageModal() { return document.getElementById('usage-modal') as HTMLDivElement; },
+    get usageListContainer() { return document.getElementById('usage-list-container') as HTMLDivElement; },
+    get usageCloseBtn() { return document.getElementById('usage-close-btn') as HTMLSpanElement; },
+    get usageRefreshBtn() { return document.getElementById('usage-refresh-btn') as HTMLButtonElement; },
     get tokenProgressBar() { return document.getElementById('token-progress-bar') as HTMLDivElement; },
     get tokenProgressContainer() { return document.querySelector('.token-progress-container') as HTMLDivElement; },
     get tokenCountLabel() { return document.getElementById('token-count-label') as HTMLSpanElement; },
@@ -247,6 +252,24 @@ export const dom = {
     get skillsImportBtn() { return document.getElementById('skills-import-btn') as HTMLButtonElement; },
     get skillsCloseBtn() { return document.getElementById('skills-close-btn') as HTMLSpanElement; },
 
-    // Context URL Button
-    get addUrlContextBtn() { return document.getElementById('add-url-context-btn') as HTMLButtonElement; }
+    // Web Discovery
+    get webContextBtn() { return document.getElementById('web-context-btn') as HTMLButtonElement; },
+    get webModal() { return document.getElementById('web-modal') as HTMLDivElement; },
+    get webModalCloseBtn() { return document.getElementById('web-modal-close-btn') as HTMLSpanElement; },
+    get webTabBtns() { return document.querySelectorAll('.web-tab-btn'); },
+    get webTabContents() { return document.querySelectorAll('.web-tab-content'); },
+    get webSubmitBtns() { return document.querySelectorAll('.web-submit-btn'); },
+
+    // Global Discussion Search
+    get discussionSearchModal() { return document.getElementById('discussion-search-modal') as HTMLDivElement; },
+    get discussionSearchInput() { return document.getElementById('discussion-search-input') as HTMLInputElement; },
+    get discussionSearchRunBtn() { return document.getElementById('discussion-search-run-btn') as HTMLButtonElement; },
+    get discussionSearchResults() { return document.getElementById('discussion-search-results') as HTMLDivElement; },
+    get discussionSearchCloseBtn() { return document.getElementById('discussion-search-close-btn') as HTMLSpanElement; },
+
+    // Raw Code Preview
+    get rawCodeModal() { return document.getElementById('raw-code-modal') as HTMLDivElement; },
+    get rawCodeDisplay() { return document.getElementById('raw-code-display') as HTMLElement; },
+    get rawCodeCloseBtn() { return document.getElementById('raw-code-close-btn') as HTMLSpanElement; },
+    get copyRawBtn() { return document.getElementById('copy-raw-btn') as HTMLButtonElement; }
 };

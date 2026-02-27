@@ -304,29 +304,55 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                     );
 
                     if (selection === fixBtn && panel && messageId) {
-                        // --- SILENT BACKGROUND REPAIR ---
+                        // --- ENHANCED SILENT REPAIR ---
                         await vscode.window.withProgress({
                             location: vscode.ProgressLocation.Notification,
                             title: `Lollms: Repairing block for ${filePath}...`,
                             cancellable: false
                         }, async () => {
-                            const repairPrompt = `The following Search/Replace block failed to match in \`${filePath}\`.\n\n` +
-                                `**Error:** ${result.error}\n\n` +
-                                `**Current File Content:**\n\`\`\`\n${originalContent}\n\`\`\`\n\n` +
-                                `**Your failing attempt:**\n\`\`\`\n${match[0]}\n\`\`\`\n\n` +
-                                `Please provide the CORRECTED Search/Replace block. Ensure the SEARCH part matches the file content exactly, including whitespace and indentation.`;
+                            const repairPrompt = `### 🛑 SEARCH/REPLACE FAILURE REPORT
+The following block failed to apply to \`${filePath}\`.
+
+**CRITICAL ERROR:** 
+"${result.error}"
+
+**YOUR PREVIOUS ATTEMPT:**
+\`\`\`
+${match[0]}
+\`\`\`
+
+**ACTUAL FILE CONTENT (REFERENCE):**
+\`\`\`
+${originalContent}
+\`\`\`
+
+**INSTRUCTIONS FOR REPAIR:**
+1. Your SEARCH block was NOT a literal, character-for-character match of the file content.
+2. Check for **indentation differences** (spaces vs tabs) and **trailing whitespace**.
+3. Provide the CORRECTED block. Include 2-3 lines of unchanged context in the SEARCH section to ensure a unique match.
+4. Output **ONLY** the corrected \`<<<<<<< SEARCH ... >>>>>>> REPLACE\` block. Do not wrap it in other code blocks.
+`;
                             
                             try {
                                 const response = await panel._lollmsAPI.sendChat([
-                                    { role: 'system', content: "You are a precise code repair assistant. Output ONLY the corrected block." },
+                                    { role: 'system', content: "You are a surgical code repair engine. You only output valid Aider-style Search/Replace blocks." },
                                     { role: 'user', content: repairPrompt }
                                 ]);
 
-                                const fixedBlockMatch = response.match(/<<<<<<< SEARCH[\s\S]*?>>>>>>> REPLACE/);
-                                if (fixedBlockMatch) {
-                                    const fixedBlock = fixedBlockMatch[0];
-                                    
-                                    // 1. Update the message content in the UI
+                                // Robust Block Extraction: Find the markers regardless of surrounding text or markdown blocks
+                                let fixedBlock = "";
+                                const startTag = "<<<<<<< SEARCH";
+                                const endTag = ">>>>>>> REPLACE";
+                                
+                                const startIdx = response.indexOf(startTag);
+                                const endIdx = response.indexOf(endTag);
+
+                                if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+                                    fixedBlock = response.substring(startIdx, endIdx + endTag.length);
+                                }
+
+                                if (fixedBlock) {
+                                    // 1. Update the message content in the UI so the user sees the fix
                                     const currentDiscussion = panel.getCurrentDiscussion();
                                     if (currentDiscussion) {
                                         const msg = currentDiscussion.messages.find(m => m.id === messageId);
@@ -340,9 +366,8 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                                     vscode.window.showInformationMessage(vscode.l10n.t("Block repaired. Retrying apply..."));
                                     await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, fixedBlock, panel, messageId);
                                 } else {
-                                    // NOTIFY USER OF FORMAT FAILURE
                                     vscode.window.showWarningMessage(
-                                        vscode.l10n.t("Lollms: The AI suggested a fix but failed to follow the SEARCH/REPLACE format. Please fix it manually.")
+                                        vscode.l10n.t("Lollms: The AI suggested a fix but the response format was unrecognizable. Please fix the block manually.")
                                     );
                                 }
                             } catch (err: any) {

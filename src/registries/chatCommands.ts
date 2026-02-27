@@ -15,13 +15,18 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.searchDiscussions', async () => {
-        const query = await vscode.window.showInputBox({
-            prompt: "Search discussions and message content...",
-            placeHolder: "e.g. FastAPI, refactor, bug fix"
-        });
-        
-        if (query !== undefined) {
-            services.treeProviders.discussion?.setFilter(query);
+        const panel = ChatPanel.currentPanel;
+        if (panel) {
+            panel._panel.webview.postMessage({ command: 'showDiscussionSearchModal' }); 
+        } else {
+            // Fallback for when no chat is open
+            const query = await vscode.window.showInputBox({
+                prompt: "Search discussions (Wildcards supported: * and ?)",
+                placeHolder: "e.g. auth*, bug?"
+            });
+            if (query !== undefined) {
+                services.treeProviders.discussion?.setFilter(query);
+            }
         }
     }));
 

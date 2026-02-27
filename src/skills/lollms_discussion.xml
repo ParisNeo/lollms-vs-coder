@@ -1,11 +1,4 @@
-<skill id="lollms-discussion-management">
-    <name>Discussion & Data Zones</name>
-    <description>Master LollmsDiscussion: persistent conversations, memory systems, data zones, and context management.</description>
-    <category>python/lollms_client/discussion</category>
-    <language>markdown</language>
-    <timestamp>1738425600000</timestamp>
-    <content>
-        <![CDATA[
+<skill title="Discussion & Data Zones" description="Master LollmsDiscussion: persistent conversations, memory systems, data zones, and context management." category="python/lollms_client/discussion" id="lollms-discussion-management" language="markdown" timestamp="1738425600000">
 # LollmsDiscussion & Data Zone Management
 
 ## Overview
@@ -689,6 +682,4 @@ assistant.export_session("session_backup_2024.json")
 | `clone_without_messages()` | Fresh start, same config |
 | `export_to_json_str()` / `import_from_json_str()` | Serialize/restore |
 
-]]>
-    </content>
 </skill>

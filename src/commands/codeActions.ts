@@ -14,11 +14,8 @@ export class LollmsCodeActionProvider implements vscode.CodeActionProvider {
     public async provideCodeActions(document: vscode.TextDocument, range: vscode.Range | vscode.Selection, context: vscode.CodeActionContext, token: vscode.CancellationToken): Promise<vscode.CodeAction[]> {
         const codeActions: vscode.CodeAction[] = [];
 
-        // 1. Handle Diagnostics (Quick Fixes) - "Fix with Lollms"
-        if (context.diagnostics.length > 0) {
-            // Focus on the first diagnostic at this position
-            const diagnostic = context.diagnostics[0];
-            // Use standard emoji ✨ instead of $(sparkle) because CodeAction titles don't support Codicons
+        // 1. Handle Diagnostics (Quick Fixes) - Integrated into the hover panel
+        for (const diagnostic of context.diagnostics) {
             const action = new vscode.CodeAction(`✨ Fix with Lollms`, vscode.CodeActionKind.QuickFix);
             action.command = {
                 command: 'lollms-vs-coder.fixDiagnostic',
@@ -26,7 +23,7 @@ export class LollmsCodeActionProvider implements vscode.CodeActionProvider {
                 arguments: [document.uri, diagnostic]
             };
             action.diagnostics = [diagnostic];
-            action.isPreferred = true; // High priority in the hover/quick-fix menu
+            action.isPreferred = true; 
             codeActions.push(action);
         }
 

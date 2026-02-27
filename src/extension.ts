@@ -42,7 +42,15 @@ import { InfoPanel } from './commands/infoPanel';
 
 export async function activate(context: vscode.ExtensionContext) {
     Logger.initialize(context);
-    Logger.info('Lollms VS Coder is now active!');
+    
+    // Localization Diagnostic
+    const testTranslation = vscode.l10n.t("displayName");
+    const isLocalized = !testTranslation.includes("%") && testTranslation !== "displayName";
+    Logger.info(`Lollms VS Coder is now active! Locale: ${vscode.env.language}. L10n Status: ${isLocalized ? 'Active' : 'Using Keys (Check Cache)'}`);
+    
+    if (!isLocalized && vscode.env.language !== 'en') {
+        Logger.warn("Localization files found but not loaded by VS Code. Manifest strings may appear as %variables%.");
+    }
 
     let activeWorkspaceFolder: vscode.WorkspaceFolder | undefined;
     const getActiveWorkspace = () => activeWorkspaceFolder;

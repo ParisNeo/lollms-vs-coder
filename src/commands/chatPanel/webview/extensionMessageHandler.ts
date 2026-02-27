@@ -1,8 +1,19 @@
 import { dom, vscode, state } from './dom.js';
 import { addMessage, renderMessageContent, updateContext, displayPlan, scheduleRender } from './messageRenderer.js';
-import { setGeneratingState, updateBadges, renderProfilesInModal, renderSkillsTree } from './ui.js';
+import { 
+    setGeneratingState, 
+    updateBadges, 
+    renderProfilesInModal, 
+    renderSkillsTree, 
+    renderFileSearchTree, 
+    renderDiscussionSearchResults, 
+    renderFileSearchResults,
+    renderWebSearchResults,
+    renderContextUsage,
+    updateProgressBar
+} from './ui.js';
 
-export function handleExtensionMessage(event: MessageEvent) {
+export async function handleExtensionMessage(event: MessageEvent) {
     try {
         const message = event.data;
         switch (message.command) {
@@ -136,6 +147,7 @@ export function handleExtensionMessage(event: MessageEvent) {
                     if(message.isInspectorEnabled !== undefined) {
                         state.isInspectorEnabled = message.isInspectorEnabled;
                     }
+                    state.appliedState = message.appliedState || {};
                     let hasChatContent = false;
                     if (Array.isArray(message.messages)) {
                         message.messages.forEach((msg: any) => {
@@ -313,47 +325,28 @@ export function handleExtensionMessage(event: MessageEvent) {
                 if (dom.tokenCountLabel) dom.tokenCountLabel.style.opacity = '1';
                 break;
             case 'updateTokenProgress':
-                if(dom.tokenCountLabel) {
+                if (dom.tokenCountLabel) {
                     const { totalTokens, contextSize, error, isApproximate } = message;
-                     if (error) {
+
+                    if (error) {
                         dom.tokenCountLabel.textContent = `Tokens: ${error}`;
                         if (dom.tokenProgressBar) {
                             dom.tokenProgressBar.style.width = '100%';
-                            dom.tokenProgressBar.classList.add('red');
+                            dom.tokenProgressBar.className = 'token-progress-bar range-danger';
                         }
                     } else if (typeof totalTokens === 'number') {
-                        const size = (typeof contextSize === 'number' && contextSize > 0) ? contextSize : 0;
-                        const labelText = isApproximate 
-                            ? `Est. Tokens: ${totalTokens} / ${size} (Approx)` 
-                            : `Tokens: ${totalTokens} / ${size}`;
+                        const size = (contextSize > 0) ? contextSize : 4096;
+                        dom.tokenCountLabel.textContent = `${isApproximate ? 'Est. ' : ''}Tokens: ${totalTokens.toLocaleString()} / ${size.toLocaleString()}`;
                         
-                        dom.tokenCountLabel.textContent = labelText;
-                        
-                        if (dom.tokenProgressBar) {
-                            if (size > 0) {
-                                const ratio = totalTokens / size;
-                                const percentage = Math.min(ratio * 100, 100);
-                                dom.tokenProgressBar.style.width = `${percentage}%`;
-                                dom.tokenProgressBar.classList.remove('green', 'orange', 'red', 'approximate');
-                                
-                                if (isApproximate) {
-                                    dom.tokenProgressBar.classList.add('approximate');
-                                } else if (ratio > 1.0) {
-                                    dom.tokenProgressBar.classList.add('red');
-                                } else if (ratio > 0.75) {
-                                    dom.tokenProgressBar.classList.add('orange');
-                                } else {
-                                    dom.tokenProgressBar.classList.add('green');
-                                }
+                        updateProgressBar(dom.tokenProgressBar, totalTokens, size);
 
-                                // If overflowing, make the text label red as well
-                                if (dom.tokenCountLabel) {
-                                    dom.tokenCountLabel.style.color = ratio > 1.0 ? 'var(--vscode-charts-red)' : '';
-                                    dom.tokenCountLabel.style.fontWeight = ratio > 1.0 ? 'bold' : 'normal';
-                                }
-                            } else {
-                                dom.tokenProgressBar.style.width = '0%';
-                            }
+                        // Visual indicator on label for overflow
+                        if (totalTokens > size) {
+                            dom.tokenCountLabel.style.color = 'var(--vscode-charts-red)';
+                            dom.tokenCountLabel.style.fontWeight = 'bold';
+                        } else {
+                            dom.tokenCountLabel.style.color = '';
+                            dom.tokenCountLabel.style.fontWeight = 'normal';
                         }
                     }
                 }
@@ -591,21 +584,33 @@ export function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'fileSearchResults':
                 if (dom.fileSearchResults) {
-                    const files = message.files as string[];
                     const masterContainer = document.getElementById('file-search-master-container');
-                    if (masterContainer) masterContainer.style.display = files.length > 0 ? 'flex' : 'none';
-
-                    if (files.length === 0) {
-                        dom.fileSearchResults.innerHTML = '<div style="opacity:0.6; text-align:center; padding: 20px;">No files match your query.</div>';
-                    } else {
-                        dom.fileSearchResults.innerHTML = files.map(f => `
-                            <div class="checkbox-container" style="margin-bottom: 4px;">
-                                <input type="checkbox" value="${f}" id="search-f-${f}" class="file-search-check">
-                                <label for="search-f-${f}" style="font-size: 12px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${f}">${f}</label>
-                            </div>
-                        `).join('');
+                    if (masterContainer) {
+                        masterContainer.style.display = message.results.length > 0 ? 'flex' : 'none';
+                        const masterCheck = masterContainer.querySelector('input');
+                        if (masterCheck) masterCheck.checked = false;
                     }
+                    // REPLACED: Use updated list renderer with snippets
+                    renderFileSearchResults(dom.fileSearchResults, message.results, message.query);
                 }
+                break;
+            case 'showDiscussionSearchModal':
+                if (dom.discussionSearchModal) {
+                    dom.discussionSearchModal.classList.add('visible');
+                    dom.discussionSearchInput.focus();
+                }
+                break;
+            case 'discussionSearchResults':
+                renderDiscussionSearchResults(message.results, dom.discussionSearchInput.value);
+                break;
+            case 'contextUsageData':
+                renderContextUsage(message.usage);
+                break;
+            case 'updateContextFileUsage':
+                updateContextFileUsage(message.path, message.tokens);
+                break;
+            case 'webSearchResults':
+                renderWebSearchResults(message.action, message.results);
                 break;
             case 'showSkillsModal':
                 if (dom.skillsTreeContainer) {

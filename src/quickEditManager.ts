@@ -127,7 +127,9 @@ export class QuickEditManager {
             prompt += `Please respond with markdown. If you provide code, use code blocks.`;
 
             // --- ADD GLOBAL CONTEXT (Project Tree + Selected Files) ---
-            const globalContext = await this.contextManager.getContextContent();
+            const globalContext = await this.contextManager.getContextContent({
+                modelName: this.lollmsAPI.getModelName()
+            });
             
             const contextData = {
                 tree: globalContext.projectTree,

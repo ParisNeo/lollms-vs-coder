@@ -353,7 +353,8 @@ export class ChatPanel {
       await this._panel.webview.postMessage({ 
           command: 'loadDiscussion', 
           messages: this._currentDiscussion.messages,
-          isInspectorEnabled: isInspectorEnabled
+          isInspectorEnabled: isInspectorEnabled,
+          appliedState: this._currentDiscussion.appliedState || {}
       });
       
       const activeGen = ChatPanel.activeGenerations.get(this.discussionId);
@@ -507,10 +508,12 @@ export class ChatPanel {
             const importedIds = this._currentDiscussion?.importedSkills || [];
             const activeDiagrams = this._currentDiscussion?.activeDiagrams || [];
             
+            const modelForTokenization = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
             const context = await this._contextManager.getContextContent({ 
                 signal, 
                 importedSkillIds: importedIds,
-                activeDiagramIds: activeDiagrams // Pass the IDs here
+                activeDiagramIds: activeDiagrams, // Pass the IDs here
+                modelName: modelForTokenization
             });
             
             if (signal.aborted) {
@@ -550,7 +553,6 @@ export class ChatPanel {
             }).join('\n');
             
             const fullTextToTokenize = context.text + '\n' + discussionContent;
-            const modelForTokenization = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
 
             if (!modelForTokenization) {
                 this.log("No model selected for tokenization.", 'WARN');
@@ -945,7 +947,10 @@ Please provide the **FULL CONTENT** of the file instead using the format:
       const forceFullCode = config.get<boolean>('forceFullCodePath') || false;
 
       const importedIds = this._currentDiscussion?.importedSkills || [];
-      const contextData = await this._contextManager.getContextContent({ importedSkillIds: importedIds });
+      const contextData = await this._contextManager.getContextContent({ 
+          importedSkillIds: importedIds,
+          modelName: this._currentDiscussion?.model || this._lollmsAPI.getModelName()
+      });
       const context = {
           tree: contextData.projectTree,
           files: contextData.selectedFilesContent,
@@ -1279,7 +1284,8 @@ Please provide the **FULL CONTENT** of the file instead using the format:
 
     const contextData = await this._contextManager.getContextContent({ 
         importedSkillIds: importedIds,
-        includeTree: !isContextMuted 
+        includeTree: !isContextMuted,
+        modelName: this._currentDiscussion?.model || this._lollmsAPI.getModelName() 
     });
 
     // Append diagrams to the text sent to the AI
@@ -1538,7 +1544,10 @@ Please provide the **FULL CONTENT** of the file instead using the format:
       if (this._isDisposed) return;
 
       const importedIds = this._currentDiscussion?.importedSkills || [];
-      const contextData = await this._contextManager.getContextContent({ importedSkillIds: importedIds });
+      const contextData = await this._contextManager.getContextContent({ 
+          importedSkillIds: importedIds,
+          modelName: this._currentDiscussion?.model || this._lollmsAPI.getModelName()
+      });
       const context = {
           tree: contextData.projectTree,
           files: contextData.selectedFilesContent,
@@ -1632,7 +1641,18 @@ Please provide the **FULL CONTENT** of the file instead using the format:
       if (!name) return;
       const description = await vscode.window.showInputBox({ prompt: "Enter a brief description of the skill" });
       if (!description) return;
-      await this._skillsManager.addSkill({ name, description, content });
+      
+      const id = name.toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
+      
+      await this._skillsManager.addSkill({ 
+          id,
+          name, 
+          description, 
+          content,
+          scope: 'local',
+          language: 'markdown' 
+      });
+
       vscode.window.showInformationMessage(`Skill '${name}' saved successfully!`);
       vscode.commands.executeCommand('lollms-vs-coder.refreshSkills'); 
   }
@@ -1787,21 +1807,129 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                 break;
             case 'requestFileSearch':
                 if (vscode.workspace.workspaceFolders) {
-                    const { minimatch } = require('minimatch');
                     const query = message.query.trim();
                     const allFiles = await this._contextManager.getWorkspaceFilePaths();
+                    const workspaceRoot = vscode.workspace.workspaceFolders[0].uri;
                     
-                    let filtered: string[] = [];
-                    if (query.includes('*') || query.includes('?')) {
-                        // Wildcard Search
-                        filtered = allFiles.filter(f => minimatch(f, query, { dot: true, nocase: true }));
-                    } else {
-                        // Substring Search
-                        const lowerQuery = query.toLowerCase();
-                        filtered = allFiles.filter(f => f.toLowerCase().includes(lowerQuery));
+                    // Regex Conversion (Wildcards to Regex)
+                    let regex: RegExp;
+                    try {
+                        const regexStr = query.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+                                              .replace(/\*/g, '.*')
+                                              .replace(/\?/g, '.');
+                        regex = new RegExp(regexStr, 'gi');
+                    } catch (e) {
+                        regex = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+                    }
+
+                    const results: any[] = [];
+                    const binaryExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.zip', '.tar', '.gz', '.exe', '.dll', '.so', '.pyc']);
+
+                    // Deep Scan: Check path AND content
+                    for (const f of allFiles) {
+                        if (results.length >= 50) break; // Limit UI results for performance
+
+                        const ext = path.extname(f).toLowerCase();
+                        if (binaryExts.has(ext)) continue;
+
+                        try {
+                            const fileUri = vscode.Uri.joinPath(workspaceRoot, f);
+                            const bytes = await vscode.workspace.fs.readFile(fileUri);
+                            const content = Buffer.from(bytes).toString('utf8');
+                            
+                            let matchFound = false;
+                            let snippet = "";
+
+                            // 1. Check File Path
+                            if (f.match(regex)) {
+                                matchFound = true;
+                                snippet = content.substring(0, 150).replace(/\r?\n/g, ' ') + "...";
+                            } 
+                            
+                            // 2. Check File Content (if path didn't match or to get better snippet)
+                            const contentMatch = regex.exec(content);
+                            if (contentMatch) {
+                                matchFound = true;
+                                const start = Math.max(0, contentMatch.index - 50);
+                                snippet = (start > 0 ? "..." : "") + content.substring(start, start + 150).replace(/\r?\n/g, ' ') + "...";
+                            }
+
+                            if (matchFound) {
+                                results.push({ path: f, snippet });
+                            }
+                            
+                            // Reset regex index for the next file
+                            regex.lastIndex = 0;
+                        } catch (e) {
+                            // Skip files that can't be read
+                        }
                     }
                     
-                    webview.postMessage({ command: 'fileSearchResults', files: filtered.slice(0, 250) });
+                    webview.postMessage({ command: 'fileSearchResults', results, query });
+                }
+                break;
+            case 'performDeepDiscussionSearch':
+                const query = message.query.trim();
+                if (!query) return;
+
+                try {
+                    const allDiscussions = await this._discussionManager.getAllDiscussions();
+                    const results: any[] = [];
+                    
+                    // Conversion: treat query as regex if it contains special chars, 
+                    // otherwise convert standard wildcards.
+                    let regex: RegExp;
+                    try {
+                        const regexStr = query.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+                                              .replace(/\\\*/g, '.*') // Support escaped *
+                                              .replace(/\\\?/g, '.')  // Support escaped ?
+                                              .replace(/\*/g, '.*')
+                                              .replace(/\?/g, '.');
+                        regex = new RegExp(regexStr, 'gi');
+                    } catch (e) {
+                        // Fallback to literal search if regex is invalid
+                        regex = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+                    }
+
+                    for (const d of allDiscussions) {
+                        let matchFound = false;
+                        let snippet = "";
+                        
+                        // Check Title
+                        if (d.title && d.title.match(regex)) {
+                            matchFound = true;
+                            snippet = "Discussion Title Match";
+                        }
+
+                        // Check Messages
+                        if (!matchFound) {
+                            for (const msg of d.messages) {
+                                const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+                                const match = regex.exec(content);
+                                if (match) {
+                                    matchFound = true;
+                                    const start = Math.max(0, match.index - 50);
+                                    const end = Math.min(content.length, match.index + 150);
+                                    snippet = (start > 0 ? "..." : "") + content.substring(start, end).replace(/\r?\n/g, ' ') + (end < content.length ? "..." : "");
+                                    break; 
+                                }
+                                regex.lastIndex = 0; // Reset for next message
+                            }
+                        }
+
+                        if (matchFound) {
+                            results.push({
+                                id: d.id,
+                                title: d.title || "Untitled Discussion",
+                                snippet: snippet,
+                                timestamp: d.timestamp
+                            });
+                        }
+                    }
+
+                    webview.postMessage({ command: 'discussionSearchResults', results, query });
+                } catch (e: any) {
+                    vscode.window.showErrorMessage("Deep Search failed: " + e.message);
                 }
                 break;
             case 'requestAddFileToContext':
@@ -1829,6 +1957,52 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                         await this._discussionManager.saveDiscussion(this._currentDiscussion);
                         this.updateContextAndTokens();
                     }
+                }
+                break;
+            case 'requestWebAction':
+                {
+                    const { action, params } = message;
+                    try {
+                        const loadingMsgId = 'system_web_loading_' + Date.now();
+                        
+                        if (action === 'youtube' || action === 'scrape') {
+                            const targetUrl = params.url;
+                            const lang = params.language || 'en';
+                            const depth = params.depth || 0;
+
+                            await this.addMessageToDiscussion({
+                                id: loadingMsgId,
+                                role: 'system', 
+                                content: `🌐 Processing ${action}: ${targetUrl}...`
+                            });
+
+                            const result = await this._contextManager.processUrl(targetUrl, lang, undefined, undefined, depth);
+                            await this.updateMessageContent(loadingMsgId, `✅ **Web Content Added:** ${targetUrl}\nSaved as: \`${result.filename}\`\n\nPreview:\n> ${result.summary}`);
+                            this.updateContextAndTokens();
+                        } else if (['wiki', 'arxiv', 'google', 'ddg', 'so'].includes(action)) {
+                            const query = params.query;
+                            const results = await this._contextManager.searchWebInfo(action, query);
+                            webview.postMessage({ command: 'webSearchResults', action, results, query });
+                        }
+                    } catch (e: any) {
+                        vscode.window.showErrorMessage(`Web action failed: ${e.message}`);
+                        // CRITICAL: Tell the UI to stop spinning even on error
+                        if (['wiki', 'arxiv', 'google', 'ddg', 'so'].includes(action)) {
+                            webview.postMessage({ command: 'webSearchResults', action, results: [], query: params.query });
+                        }
+                    }
+                }
+                break;
+            case 'addWebPagesToContext':
+                try {
+                    const { urls } = message;
+                    for (const url of urls) {
+                        await this._contextManager.processUrl(url, 'en');
+                    }
+                    vscode.window.showInformationMessage(`Added ${urls.length} web pages to context.`);
+                    this.updateContextAndTokens();
+                } catch (e: any) {
+                    vscode.window.showErrorMessage(`Failed to add web pages: ${e.message}`);
                 }
                 break;
             case 'requestAddUrlToContext':
@@ -2060,6 +2234,32 @@ Task:
             case 'updateMessage':
                 await this.updateMessage(message.messageId, message.newContent);
                 break;
+            case 'markBlockApplied':
+                if (this._currentDiscussion) {
+                    if (!this._currentDiscussion.appliedState) this._currentDiscussion.appliedState = {};
+                    if (!this._currentDiscussion.appliedState[message.messageId]) this._currentDiscussion.appliedState[message.messageId] = {};
+                    
+                    const blockIdx = message.blockIndex;
+                    const hunkIdx = message.hunkIndex;
+
+                    if (!this._currentDiscussion.appliedState[message.messageId][blockIdx]) {
+                        this._currentDiscussion.appliedState[message.messageId][blockIdx] = [];
+                    }
+
+                    if (hunkIdx !== undefined) {
+                        if (!this._currentDiscussion.appliedState[message.messageId][blockIdx].includes(hunkIdx)) {
+                            this._currentDiscussion.appliedState[message.messageId][blockIdx].push(hunkIdx);
+                        }
+                    } else {
+                        // Mark whole block (all hunks or full file) as applied
+                        this._currentDiscussion.appliedState[message.messageId][blockIdx] = [-1]; 
+                    }
+
+                    if (!this._currentDiscussion.id.startsWith('temp-')) {
+                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                    }
+                }
+                break;
             case 'applyFileContent':
                 try {
                     await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', message.filePath, message.content);
@@ -2137,18 +2337,21 @@ Task:
                 await this.handleSaveSkill(message.content);
                 break;
             case 'saveGeneratedSkill':
-                const { name, description, content, category, scope } = message.skillData;
-                // Generate a unique ID based on the name and timestamp
-                const id = (name || 'skill').toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') + '-' + Date.now();
+                const { name: sName, description: sDesc, content: sContent, category: sCat, scope: sScope } = message.skillData;
+                
+                // Ensure a category exists before sending to the manager
+                const finalCategory = (sCat && sCat.trim() !== "") ? sCat : "general";
+
+                const sId = (sName || 'skill').toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') + '-' + Date.now();
                 
                 await this._skillsManager.addSkill({
-                    id,
-                    name, 
-                    description, 
-                    content,
-                    category: category || '',
+                    id: sId,
+                    name: sName, 
+                    description: sDesc, 
+                    content: sContent,
+                    category: finalCategory,
                     language: 'markdown',
-                    scope: scope 
+                    scope: sScope 
                 });
                 vscode.window.showInformationMessage(vscode.l10n.t("Skill '{0}' saved to {1} library.", name, scope));
                 vscode.commands.executeCommand('lollms-vs-coder.refreshSkills'); 
@@ -2431,14 +2634,8 @@ Task:
                 }
                 break;
             case 'requestViewFullContext':
-                if (this._contextManager) {
-                    const ctx = this._contextManager.getLastContext();
-                    if (ctx && ctx.text) {
-                        InfoPanel.createOrShow(this._extensionUri, "Current AI Context", ctx.text);
-                    } else {
-                        vscode.window.showInformationMessage("No context loaded yet.");
-                    }
-                }
+            case 'requestContextUsage':
+                await this.handleRequestContextUsage();
                 break;
             case 'internetHelpSearch':
                 // Execute ONLY the web research agent loop. 
@@ -2654,7 +2851,58 @@ Task:
           }
       });
   }
+  private async handleRequestContextUsage() {
+      if (this._isDisposed || !this._currentDiscussion || !this._contextManager) return;
+      const provider = this._contextManager.getContextStateProvider();
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      if (!provider || !workspaceFolder) return;
 
+      const includedFiles = provider.getIncludedFiles();
+      const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
+      const crypto = require('crypto');
+
+      // 1. Send initial list immediately so UI renders skeleton
+      const initialUsage = includedFiles.map(f => ({
+          path: f.path,
+          state: f.state,
+          tokens: -1, // Loading state
+          isExtra: f.path.includes('.lollms/') || f.path.startsWith('http')
+      }));
+
+      this._panel.webview.postMessage({ command: 'contextUsageData', usage: initialUsage });
+
+      // 2. Populate tokens incrementally
+      for (const file of includedFiles) {
+          try {
+              const uri = vscode.Uri.joinPath(workspaceFolder.uri, file.path);
+              const stats = await vscode.workspace.fs.stat(uri);
+              const fileContent = await vscode.workspace.fs.readFile(uri);
+              const hash = crypto.createHash('md5').update(fileContent).digest('hex');
+
+              let tokenCount = await this._contextManager.getCachedTokens(file.path, hash);
+
+              if (tokenCount === null) {
+                  let text = "";
+                  if (file.state === 'definitions-only') {
+                      text = await (this._contextManager as any).extractDefinitions(uri);
+                  } else {
+                      text = Buffer.from(fileContent).toString('utf8');
+                  }
+                  const tokenRes = await this._lollmsAPI.tokenize(text, model);
+                  tokenCount = tokenRes.count;
+                  await this._contextManager.setCachedTokens(file.path, hash, tokenCount);
+              }
+
+              this._panel.webview.postMessage({
+                  command: 'updateContextFileUsage',
+                  path: file.path,
+                  tokens: tokenCount
+              });
+          } catch (e) {
+              this._panel.webview.postMessage({ command: 'updateContextFileUsage', path: file.path, tokens: 0, error: true });
+          }
+      }
+  }
   private async _getHtmlForWebview(webview: vscode.Webview): Promise<string> {
     const nonce = getNonce();
 
@@ -3211,6 +3459,24 @@ Task:
             <span>Counting tokens...</span>
         </div>
 
+        <div id="usage-modal" class="modal">
+            <div class="modal-content" style="max-width: 800px; width: 90%;">
+                <div class="modal-header">
+                    <h2>Context Token Usage</h2>
+                    <span class="close-btn" id="usage-close-btn">&times;</span>
+                </div>
+                <div class="modal-body">
+                    <p style="font-size: 11px; opacity: 0.8; margin-bottom: 15px;">Detailed breakdown of tokens per file using the currently selected model.</p>
+                    <div id="usage-list-container" style="max-height: 400px; overflow-y: auto;">
+                        <div style="text-align:center; padding: 20px;"><div class="spinner"></div> Calculating...</div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="usage-refresh-btn" class="code-action-btn apply-btn" style="width:auto; height:32px;"><span class="codicon codicon-refresh"></span> Recalculate</button>
+                </div>
+            </div>
+        </div>
+
         <div id="bulk-process-modal" class="modal">
             <div class="modal-content">
                 <div class="modal-header">
@@ -3264,14 +3530,21 @@ Task:
                     <span class="close-btn" id="file-search-close-btn">&times;</span>
                 </div>
                 <div class="modal-body">
-                    <div style="display:flex; gap:8px; margin-bottom:12px;">
+                    <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:12px;">
                         <input type="text" id="file-search-input" placeholder="Search files by name or path..." style="flex:1;">
+                        <div style="font-size: 10px; opacity: 0.7; display: flex; gap: 10px; flex-wrap: wrap;">
+                            <span>Examples:</span>
+                            <code>*.ts</code>
+                            <code>src/**/*.py</code>
+                            <code>auth?_service</code>
+                            <code>config.json</code>
+                        </div>
                     </div>
-                    <div class="checkbox-container" id="file-search-master-container" style="display:none; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--vscode-widget-border);">
+                    <div class="checkbox-container" id="file-search-master-container" style="display:none; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid var(--vscode-widget-border);">
                         <input type="checkbox" id="file-search-select-all">
                         <label for="file-search-select-all" style="font-weight: bold; font-size: 11px; cursor: pointer;">Select All Results</label>
                     </div>
-                    <div id="file-search-results" style="max-height: 300px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px;">
+                    <div id="file-search-results" style="max-height: 350px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px;">
                         <div style="opacity:0.6; text-align:center; padding: 20px;">Type to start searching...</div>
                     </div>
                 </div>
@@ -3288,19 +3561,164 @@ Task:
                     <span class="close-btn" id="file-search-close-btn">&times;</span>
                 </div>
                 <div class="modal-body">
-                    <div style="display:flex; gap:8px; margin-bottom:12px;">
+                    <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:12px;">
                         <input type="text" id="file-search-input" placeholder="Search files by name or path..." style="flex:1;">
+                        <div style="font-size: 10px; opacity: 0.7; display: flex; gap: 10px; flex-wrap: wrap;">
+                            <span>Examples:</span>
+                            <code>*.ts</code>
+                            <code>src/**/*.py</code>
+                            <code>auth?_service</code>
+                            <code>config.json</code>
+                        </div>
                     </div>
-                    <div class="checkbox-container" id="file-search-master-container" style="display:none; margin-bottom: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--vscode-widget-border);">
+                    <div class="checkbox-container" id="file-search-master-container" style="display:none; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid var(--vscode-widget-border);">
                         <input type="checkbox" id="file-search-select-all">
                         <label for="file-search-select-all" style="font-weight: bold; font-size: 11px; cursor: pointer;">Select All Results</label>
                     </div>
-                    <div id="file-search-results" style="max-height: 300px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px;">
+                    <div id="file-search-results" style="max-height: 350px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px;">
                         <div style="opacity:0.6; text-align:center; padding: 20px;">Type to start searching...</div>
                     </div>
                 </div>
                 <div class="modal-footer">
                     <button id="file-search-add-btn" class="code-action-btn apply-btn" style="width: 100%; justify-content: center;">Add Selected Files</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Web Discovery Modal -->
+        <div id="web-modal" class="modal">
+            <div class="modal-content" style="max-width: 700px; width: 90%;">
+                <div class="modal-header">
+                    <h2>Web Discovery</h2>
+                    <span class="close-btn" id="web-modal-close-btn">&times;</span>
+                </div>
+                <div class="web-tabs-nav">
+                    <button class="web-tab-btn active" data-tab="tab-url">URL / Scrape</button>
+                    <button class="web-tab-btn" data-tab="tab-google">Google</button>
+                    <button class="web-tab-btn" data-tab="tab-ddg">DuckDuckGo</button>
+                    <button class="web-tab-btn" data-tab="tab-youtube">YouTube</button>
+                    <button class="web-tab-btn" data-tab="tab-wiki">Wikipedia</button>
+                    <button class="web-tab-btn" data-tab="tab-arxiv">ArXiv</button>
+                    <button class="web-tab-btn" data-tab="tab-so">StackOverflow</button>
+                    <button class="web-tab-btn" data-tab="tab-github">GitHub</button>
+                </div>
+                <div class="modal-body">
+                    <!-- URL Tab -->
+                    <div id="tab-url" class="web-tab-content active">
+                        <label>URL to Scrape</label>
+                        <input type="text" id="web-url-input" placeholder="https://example.com/docs">
+                        <label>Crawl Depth (0 = this page only)</label>
+                        <input type="number" id="web-url-depth" value="0" min="0" max="3">
+                        <p class="help-text">Depth 1+ will follow internal links found on the page.</p>
+                        <button class="code-action-btn apply-btn web-submit-btn" style="width:100%; margin-top:15px;" data-action="scrape">Scrape Content</button>
+                    </div>
+
+                    <!-- YouTube Tab -->
+                    <div id="tab-youtube" class="web-tab-content">
+                        <label>YouTube Video URL</label>
+                        <input type="text" id="web-yt-url" placeholder="https://youtube.com/watch?v=...">
+                        <label>Transcript Language</label>
+                        <input type="text" id="web-yt-lang" value="en" placeholder="en, fr, es...">
+                        <button class="code-action-btn apply-btn web-submit-btn" style="width:100%; margin-top:15px;" data-action="youtube">Extract Transcript</button>
+                    </div>
+
+                    <!-- Wikipedia Tab -->
+                    <div id="tab-wiki" class="web-tab-content">
+                        <label>Search Query or Page URL</label>
+                        <div style="display:flex; gap:8px;">
+                            <input type="text" id="web-wiki-input" placeholder="e.g. Quantum Computing" style="flex:1;">
+                            <button class="code-action-btn secondary-btn web-submit-btn" data-action="wiki">Search</button>
+                        </div>
+                        <div id="web-wiki-results" class="web-search-results"></div>
+                        <button class="code-action-btn apply-btn" id="web-wiki-add-btn" style="width:100%; margin-top:15px; display:none;">Add Selected Page</button>
+                    </div>
+
+                    <!-- ArXiv Tab -->
+                    <div id="tab-arxiv" class="web-tab-content">
+                        <label>Search Query or Article ID/Link</label>
+                        <div style="display:flex; gap:8px;">
+                            <input type="text" id="web-arxiv-input" placeholder="e.g. 2401.00001 or LLM Safety" style="flex:1;">
+                            <button class="code-action-btn secondary-btn web-submit-btn" data-action="arxiv">Search</button>
+                        </div>
+                        <div id="web-arxiv-results" class="web-search-results"></div>
+                        <div class="checkbox-container">
+                            <input type="radio" name="arxiv-mode" id="arxiv-abstract" value="abstract" checked>
+                            <label for="arxiv-abstract">Abstract Only</label>
+                            <input type="radio" name="arxiv-mode" id="arxiv-full" value="full">
+                            <label for="arxiv-full">Full Text (Experimental)</label>
+                        </div>
+                        <button class="code-action-btn apply-btn" id="web-arxiv-add-btn" style="width:100%; margin-top:15px; display:none;">Add Selected Article</button>
+                    </div>
+
+                    <!-- Google Tab -->
+                    <div id="tab-google" class="web-tab-content">
+                        <label>Google Search Query</label>
+                        <div style="display:flex; gap:8px; align-items: center;">
+                            <input type="text" id="web-google-input" placeholder="e.g. latest news on LoLLMs" style="flex:1;">
+                            <button class="code-action-btn apply-btn web-submit-btn" style="width: 100px;" data-action="google">Search</button>
+                        </div>
+                        <p class="help-text">Requires Google Custom Search API Key in Settings.</p>
+                    </div>
+
+                    <!-- DuckDuckGo Tab -->
+                    <div id="tab-ddg" class="web-tab-content">
+                        <label>DuckDuckGo Query</label>
+                        <div style="display:flex; gap:8px; align-items: center;">
+                            <input type="text" id="web-ddg-input" placeholder="e.g. rust programming best practices" style="flex:1;">
+                            <button class="code-action-btn apply-btn web-submit-btn" style="width: 100px;" data-action="ddg">Search</button>
+                        </div>
+                    </div>
+
+                    <!-- SO Tab -->
+                    <div id="tab-so" class="web-tab-content">
+                        <label>Search Query</label>
+                        <input type="text" id="web-so-input" placeholder="e.g. Python list comprehension performance">
+                        <button class="code-action-btn apply-btn web-submit-btn" style="width:100%; margin-top:15px;" data-action="so">Search & Add Results</button>
+                    </div>
+
+                    <!-- GitHub Tab -->
+                    <div id="tab-github" class="web-tab-content">
+                        <label>Repository URL or Search</label>
+                        <div style="display:flex; gap:8px;">
+                            <input type="text" id="web-github-input" placeholder="e.g. parisneo/lollms-webui" style="flex:1;">
+                            <button class="code-action-btn apply-btn web-submit-btn" data-action="github">Search</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Global Discussion Search Modal -->
+        <div id="discussion-search-modal" class="modal">
+            <div class="modal-content" style="max-width: 800px;">
+                <div class="modal-header">
+                    <h2>Advanced Discussion Search</h2>
+                    <span class="close-btn" id="discussion-search-close-btn">&times;</span>
+                </div>
+                <div class="modal-body">
+                    <div style="display:flex; gap:8px; margin-bottom:12px;">
+                        <input type="text" id="discussion-search-input" placeholder="Search across all discussions (supports * and ?)..." style="flex:1;">
+                        <button id="discussion-search-run-btn" class="code-action-btn apply-btn" style="width:auto; height: 32px;">Search</button>
+                    </div>
+                    <div id="discussion-search-results" style="max-height: 500px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px;">
+                        <div style="opacity:0.6; text-align:center; padding: 20px;">Enter keywords to search in titles and message history.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- NEW: Raw Code Preview Modal -->
+        <div id="raw-code-modal" class="modal">
+            <div class="modal-content" style="max-width: 90%; width: 800px;">
+                <div class="modal-header">
+                    <h2>Raw Aider Block</h2>
+                    <span class="close-btn" id="raw-code-close-btn">&times;</span>
+                </div>
+                <div class="modal-body">
+                    <pre id="raw-code-display" style="user-select: text; white-space: pre-wrap; word-break: break-all; background: var(--vscode-textCodeBlock-background); padding: 12px; border-radius: 4px; border: 1px solid var(--vscode-widget-border); max-height: 70vh; overflow-y: auto; font-family: var(--vscode-editor-font-family); font-size: 12px;"></pre>
+                </div>
+                <div class="modal-footer">
+                    <button id="copy-raw-btn" class="code-action-btn apply-btn" style="width: 100%; justify-content: center;"><span class="codicon codicon-copy"></span> Copy to Clipboard</button>
                 </div>
             </div>
         </div>

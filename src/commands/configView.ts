@@ -38,6 +38,18 @@ export class SettingsPanel {
     // REPLACED OLD MODES WITH PROFILES
     responseProfiles: [] as ResponseProfile[],
     defaultResponseProfileId: 'balanced',
+
+    generationFormats: {
+      fullFile: true,
+      diff: true,
+      aider: true
+    },
+    allowedFileFormats: {
+      fullFile: true,
+      insert: true,
+      replace: true,
+      delete: true
+    },
     
     failsafeContextSize: 8192,
     searchProvider: 'google_custom_search',
@@ -231,6 +243,109 @@ export class SettingsPanel {
     }
   }
 
+  private async handleImportConnection() {
+    const uris = await vscode.window.showOpenDialog({
+        canSelectMany: false,
+        filters: { 'Config Files': ['env', 'json', 'yaml', 'yml'] }
+    });
+
+    if (uris && uris[0]) {
+        const fileContent = (await vscode.workspace.fs.readFile(uris[0])).toString();
+        const ext = path.extname(uris[0].fsPath).toLowerCase();
+        let imported: any = {};
+
+        try {
+            if (ext === '.env') {
+                fileContent.split('\n').forEach(line => {
+                    const match = line.match(/^\s*([\w_]+)\s*=\s*(.*)\s*$/);
+                    if (match) {
+                        const key = match[1];
+                        let val = match[2].trim().replace(/^['"]|['"]$/g, '');
+                        if (key === 'LOLLMS_BINDING_NAME') imported.backendType = val;
+                        if (key === 'LOLLMS_HOST_ADDRESS') imported.apiUrl = val;
+                        if (key === 'LOLLMS_SERVICE_KEY') imported.apiKey = val;
+                        if (key === 'LOLLMS_MODEL_NAME') imported.modelName = val;
+                        if (key === 'LOLLMS_CERTIFICATE_FILE_PATH') imported.sslCertPath = val;
+                        if (key === 'LOLLMS_VERIFY_SSL_CERTIFICATE') {
+                            imported.disableSslVerification = !(['1', 'true', 'on'].includes(val.toLowerCase()));
+                        }
+                    }
+                });
+            } else if (ext === '.json') {
+                imported = JSON.parse(fileContent);
+            } else {
+                const yaml = require('js-yaml');
+                const rawYaml = yaml.load(fileContent);
+                const data = rawYaml.lollms_connection || rawYaml;
+                imported = {
+                    backendType: data.backend || data.backendType,
+                    apiUrl: data.host || data.apiUrl,
+                    apiKey: data.key || data.apiKey,
+                    modelName: data.model || data.modelName,
+                    sslCertPath: data.cert_path || data.sslCertPath,
+                    disableSslVerification: data.verify_ssl !== undefined ? !data.verify_ssl : data.disableSslVerification
+                };
+            }
+
+            Object.assign(this._pendingConfig, imported);
+            this._panel.webview.postMessage({ command: 'refreshForm', config: this._pendingConfig });
+            vscode.window.showInformationMessage("Connection settings imported successfully.");
+        } catch (e) {
+            vscode.window.showErrorMessage("Failed to parse config file.");
+        }
+    }
+  }
+
+  private async handleExportConnection() {
+    const format = await vscode.window.showQuickPick(['.env (Lollms Standard)', 'JSON', 'YAML'], { placeHolder: 'Select export format' });
+    if (!format) return;
+
+    let content = "";
+    let fileName = "lollms_config";
+    const cfg = this._pendingConfig;
+
+    if (format === '.env (Lollms Standard)') {
+        fileName += ".env";
+        content = [
+            `LOLLMS_BINDING_NAME=${cfg.backendType}`,
+            `LOLLMS_HOST_ADDRESS=${cfg.apiUrl}`,
+            `LOLLMS_SERVICE_KEY=${cfg.apiKey}`,
+            `LOLLMS_VERIFY_SSL_CERTIFICATE=${!cfg.disableSslVerification}`,
+            `LOLLMS_CERTIFICATE_FILE_PATH=${cfg.sslCertPath}`,
+            `LOLLMS_MODEL_NAME=${cfg.modelName}`
+        ].join('\n');
+    } else if (format === 'JSON') {
+        fileName += ".json";
+        content = JSON.stringify({
+            backendType: cfg.backendType,
+            apiUrl: cfg.apiUrl,
+            apiKey: cfg.apiKey,
+            disableSslVerification: cfg.disableSslVerification,
+            sslCertPath: cfg.sslCertPath,
+            modelName: cfg.modelName
+        }, null, 2);
+    } else {
+        fileName += ".yaml";
+        const jsYaml = require('js-yaml');
+        content = jsYaml.dump({
+            lollms_connection: {
+                backend: cfg.backendType,
+                host: cfg.apiUrl,
+                key: cfg.apiKey,
+                verify_ssl: !cfg.disableSslVerification,
+                cert_path: cfg.sslCertPath,
+                model: cfg.modelName
+            }
+        });
+    }
+
+    const uri = await vscode.window.showSaveDialog({ defaultUri: vscode.Uri.file(fileName) });
+    if (uri) {
+        await vscode.workspace.fs.writeFile(uri, Buffer.from(content, 'utf8'));
+        vscode.window.showInformationMessage(`Connection config exported to ${path.basename(uri.fsPath)}`);
+    }
+  }
+
   private _setWebviewMessageListener(webview: vscode.Webview) {
     webview.onDidReceiveMessage(
         async (message: { command: string; key?: string; value?: any; profiles?: any[]; defaultId?: string }) => {
@@ -239,6 +354,18 @@ export class SettingsPanel {
           switch (message.command) {
             case 'webviewReady':
                 Logger.info('[ConfigView] Webview reported ready.');
+                return;
+            case 'copyToClipboard':
+                if (message.value) {
+                    await vscode.env.clipboard.writeText(message.value);
+                    vscode.window.showInformationMessage("Copied to clipboard.");
+                }
+                return;
+            case 'exportConnectionConfig':
+                await this.handleExportConnection();
+                return;
+            case 'importConnectionConfig':
+                await this.handleImportConnection();
                 return;
             case 'closePanel':
               this.dispose();
@@ -584,53 +711,60 @@ export class SettingsPanel {
             <title>${t('config.title', 'Lollms VS Coder Configuration')}</title>
             <link href="${webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'codicon.css'))}" rel="stylesheet" />
             <style>
-              :root { --primary-accent: #007acc; --primary-accent-hover: #005a9e; --success-color: #4ec9b0; --warning-color: #ce9178; --error-color: #f48771; --border-radius: 8px; --border-radius-sm: 4px; --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.15); --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.2); --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
-              body, html { height: 100%; width:100%; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); font-size: 14px; line-height: 1.6; }
-              .container { padding: 16px 24px; height: 100%; box-sizing: border-box; display: flex; flex-direction: column; max-width: 100%; margin: 0; }
-              .header-row { display: flex; align-items: center; gap: 20px; margin-bottom: 24px; padding-bottom: 12px; border-bottom: 1px solid var(--vscode-panel-border); }
+              :root { 
+                --primary-accent: var(--vscode-button-background); 
+                --primary-accent-hover: var(--vscode-button-hoverBackground); 
+                --success-color: var(--vscode-charts-green); 
+                --warning-color: var(--vscode-charts-orange); 
+                --error-color: var(--vscode-charts-red); 
+                --border-radius: 6px; 
+                --border-radius-sm: 3px; 
+                --transition: all 0.2s ease; 
+              }
+              body, html { height: 100%; width:100%; margin: 0; padding: 0; font-family: var(--vscode-font-family); background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); font-size: 13px; line-height: 1.4; }
+              .container { padding: 20px; height: 100%; box-sizing: border-box; display: flex; flex-direction: column; max-width: 1000px; margin: 0 auto; }
+              .header-row { display: flex; align-items: center; gap: 20px; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid var(--vscode-panel-border); }
               .toolbar { display: flex; gap: 8px; }
-              .toolbar-btn { background: transparent; border: 1px solid var(--vscode-panel-border); border-radius: var(--border-radius-sm); width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--vscode-foreground); transition: var(--transition); padding: 0; }
+              .toolbar-btn { background: transparent; border: 1px solid var(--vscode-panel-border); border-radius: var(--border-radius-sm); width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--vscode-foreground); transition: var(--transition); padding: 0; }
               .toolbar-btn:hover { background: var(--vscode-toolbar-hoverBackground); border-color: var(--primary-accent); }
               .toolbar-btn.save:hover { color: var(--success-color); border-color: var(--success-color); }
               .toolbar-btn.reset:hover { color: var(--warning-color); border-color: var(--warning-color); }
               .toolbar-btn.close:hover { color: var(--error-color); border-color: var(--error-color); }
-              .toolbar-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-              h1 { font-weight: 600; margin: 0; font-size: 18px; flex-grow: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-              .tabs { display: flex; background: var(--vscode-editorWidget-background); border-radius: var(--border-radius); padding: 4px; margin-bottom: 20px; flex-wrap: wrap; gap: 4px; box-shadow: var(--shadow-sm); border: 1px solid var(--vscode-panel-border); }
-              .tab-link { background: transparent; border: none; outline: none; cursor: pointer; padding: 8px 14px; color: var(--vscode-foreground); font-size: 13px; font-weight: 500; opacity: 0.7; border-radius: var(--border-radius-sm); }
-              .tab-link:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground); }
-              .tab-link.active { opacity: 1; color: white; font-weight: 600; background: var(--primary-accent); }
-              .tab-content { display: none; flex-grow: 1; overflow-y: auto; padding: 20px; background: var(--vscode-editor-background); border-radius: var(--border-radius); box-shadow: var(--shadow-sm); border: 1px solid var(--vscode-panel-border); }
+              .toolbar-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+              h1 { font-weight: 600; margin: 0; font-size: 16px; flex-grow: 1; }
+              .tabs { display: flex; background: var(--vscode-sideBar-background); border-radius: var(--border-radius); padding: 4px; margin-bottom: 20px; flex-wrap: wrap; gap: 2px; border: 1px solid var(--vscode-panel-border); }
+              .tab-link { background: transparent; border: none; outline: none; cursor: pointer; padding: 6px 12px; color: var(--vscode-foreground); font-size: 12px; border-radius: var(--border-radius-sm); transition: var(--transition); }
+              .tab-link:hover { background: var(--vscode-toolbar-hoverBackground); }
+              .tab-link.active { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
+              .tab-content { display: none; flex-grow: 1; overflow-y: auto; padding: 24px; background: var(--vscode-editorWidget-background); border-radius: var(--border-radius); border: 1px solid var(--vscode-widget-border); }
               .tab-content.active { display: block; }
-              h2 { font-weight: 600; font-size: 18px; border-bottom: 1px solid var(--vscode-panel-border); padding-bottom: 8px; margin-top: 0; margin-bottom: 20px; color: var(--primary-accent); }
-              h3 { font-size: 15px; margin-top: 24px; margin-bottom: 12px; font-weight: 600; color: var(--success-color); }
-              label { display: block; margin-top: 16px; margin-bottom: 6px; font-weight: 600; font-size: 13px; color: var(--vscode-input-foreground); }
-              input[type="text"], input[type="number"], textarea, select { width: 100%; padding: 8px 12px; border: 1px solid var(--vscode-input-border); border-radius: var(--border-radius-sm); background: var(--vscode-input-background); color: var(--vscode-input-foreground); font-size: 13px; box-sizing: border-box; font-family: inherit; transition: var(--transition); }
-              input:focus, textarea:focus, select:focus { outline: none; border-color: var(--primary-accent); }
-              textarea { resize: vertical; min-height: 80px; font-family: 'Consolas', monospace; }
-              button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 10px 20px; font-size: 13px; font-weight: 600; border-radius: var(--border-radius-sm); cursor: pointer; transition: var(--transition); }
+              h2 { font-weight: 600; font-size: 16px; border-bottom: 1px solid var(--vscode-panel-border); padding-bottom: 8px; margin-top: 0; margin-bottom: 20px; color: var(--vscode-textLink-foreground); }
+              h3 { font-size: 14px; margin-top: 24px; margin-bottom: 12px; font-weight: 600; color: var(--vscode-foreground); border-left: 3px solid var(--primary-accent); padding-left: 10px; }
+              label { display: block; margin-top: 16px; margin-bottom: 6px; font-weight: 600; font-size: 12px; color: var(--vscode-foreground); opacity: 0.9; }
+              input[type="text"], input[type="password"], input[type="number"], textarea, select { width: 100%; padding: 6px 10px; border: 1px solid var(--vscode-input-border); border-radius: var(--border-radius-sm); background: var(--vscode-input-background); color: var(--vscode-input-foreground); font-size: 13px; box-sizing: border-box; font-family: inherit; }
+              input:focus, textarea:focus, select:focus { outline: 1px solid var(--vscode-focusBorder); border-color: transparent; }
+              textarea { resize: vertical; min-height: 80px; font-family: var(--vscode-editor-font-family); }
+              button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 8px 16px; font-size: 13px; font-weight: 600; border-radius: var(--border-radius-sm); cursor: pointer; }
               button.primary:hover { background: var(--vscode-button-hoverBackground); }
-              .secondary-button { margin-top: 10px; padding: 6px 12px; font-size: 12px; width: auto; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: 1px solid var(--vscode-panel-border); border-radius: 4px; cursor: pointer; }
+              .secondary-button { padding: 6px 12px; font-size: 12px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: none; border-radius: var(--border-radius-sm); cursor: pointer; }
               .secondary-button:hover { background: var(--vscode-button-secondaryHoverBackground); }
-              .icon-btn { width: auto; padding: 8px 12px; margin-top: 0; min-width: 40px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-foreground); border: 1px solid var(--vscode-panel-border); border-radius: 4px; cursor: pointer; }
-              .icon-btn:hover { background: var(--vscode-toolbar-hoverBackground); }
-              .checkbox-container { display: flex; align-items: center; margin-top: 12px; padding: 10px; background: var(--vscode-editorWidget-background); border-radius: var(--border-radius-sm); border: 1px solid var(--vscode-panel-border); }
-              .checkbox-container input { margin-right: 10px; width: 16px; height: 16px; cursor: pointer; }
-              .checkbox-container label { margin: 0; cursor: pointer; }
-              .input-group { display: flex; gap: 8px; }
-              .grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-top: 10px; }
-              .participant-row { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; background: var(--vscode-editorWidget-background); padding: 10px; border-radius: var(--border-radius-sm); border: 1px solid var(--vscode-widget-border); }
+              .icon-btn { padding: 6px 8px; background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: none; border-radius: var(--border-radius-sm); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+              .icon-btn:hover { background: var(--vscode-button-secondaryHoverBackground); }
+              .checkbox-container { display: flex; align-items: center; margin-top: 10px; gap: 10px; }
+              .checkbox-container input { width: 14px; height: 14px; cursor: pointer; margin: 0; }
+              .checkbox-container label { margin: 0; cursor: pointer; font-weight: normal; }
+              .input-group { display: flex; gap: 6px; align-items: stretch; }
+              .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+              .participant-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; padding: 8px; background: var(--vscode-editor-background); border-radius: var(--border-radius-sm); border: 1px solid var(--vscode-widget-border); }
               .participant-row select, .participant-row input { flex: 1; }
-              .remove-btn { width: auto; background: transparent; color: var(--error-color); border: 1px solid var(--error-color); padding: 6px 10px; }
-              .remove-btn:hover { background: var(--error-color); color: white; }
-              .help-text { font-size: 12px; color: var(--vscode-descriptionForeground); margin-top: 4px; font-style: italic; }
-              .persona-selector-row { display: flex; justify-content: space-between; align-items: center; margin: 6px 0; padding: 6px 10px; background: var(--vscode-editorWidget-background); border-radius: var(--border-radius-sm); border: 1px solid var(--vscode-panel-border); }
-              .persona-selector-row select { width: 60%; font-size: 12px; padding: 4px 8px; }
-              .log-container { background: var(--vscode-textCodeBlock-background); padding: 12px; border-radius: 4px; border: 1px solid var(--vscode-panel-border); font-family: monospace; font-size: 12px; white-space: pre-wrap; height: 100%; overflow: auto; }
-              .mcp-help-box { background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-panel-border); border-radius: var(--border-radius-sm); padding: 12px; margin-top: 10px; font-size: 12px; }
-              .mcp-example { background: var(--vscode-textCodeBlock-background); padding: 6px 10px; border-radius: 4px; margin: 4px 0 10px 0; font-family: monospace; color: var(--success-color); }
-              .security-warning { background: rgba(244, 135, 113, 0.1); border: 1px solid var(--error-color); border-radius: var(--border-radius-sm); padding: 12px; margin-top: 10px; color: var(--error-color); font-size: 12px; }
-              .security-warning strong { color: var(--error-color); display: block; margin-bottom: 4px; }
+              .remove-btn { color: var(--error-color); border: 1px solid var(--error-color); }
+              .remove-btn:hover { background: var(--error-color) !important; color: white !important; }
+              .help-text { font-size: 11px; color: var(--vscode-descriptionForeground); margin-top: 4px; }
+              .persona-selector-row { display: flex; gap: 10px; align-items: center; margin-top: 4px; }
+              .persona-selector-row select { flex: 1; font-size: 12px; }
+              .log-container { background: var(--vscode-editor-background); padding: 12px; border-radius: 4px; border: 1px solid var(--vscode-panel-border); font-family: var(--vscode-editor-font-family); font-size: 12px; white-space: pre-wrap; height: 300px; overflow: auto; }
+              .security-warning { background: rgba(244, 135, 113, 0.1); border: 1px solid var(--error-color); border-radius: var(--border-radius-sm); padding: 12px; margin-top: 15px; color: var(--error-color); }
+              .security-warning strong { display: block; margin-bottom: 4px; }
             </style>
         </head>
         <body>
@@ -647,6 +781,7 @@ export class SettingsPanel {
             <div class="tabs">
               <button class="tab-link active" onclick="openTab(event, 'TabApi')">🔌 API & Model</button>
               <button class="tab-link" onclick="openTab(event, 'TabGeneral')">⚡ General</button>
+              <button class="tab-link" onclick="openTab(event, 'TabContext')">🧠 Context</button>
               <button class="tab-link" onclick="openTab(event, 'TabAgent')">🤖 Agent & Tools</button>
               <button class="tab-link" onclick="openTab(event, 'TabRemote')">📡 Remote</button>
               <button class="tab-link" onclick="openTab(event, 'TabGit')">🐙 Git</button>
@@ -656,38 +791,52 @@ export class SettingsPanel {
               <button class="tab-link" onclick="openTab(event, 'TabLog')">📋 Log</button>
             </div>
 
-            <!-- TabApi Content -->
-            <div id="TabApi" class="tab-content active">
-                <h2>${t('config.section.apiAndModel', 'API & Model')}</h2>
-                <label for="backendType">Backend Type</label>
-                <select id="backendType">
-                    <option value="lollms" ${backendType === 'lollms' ? 'selected' : ''}>Lollms Server</option>
-                    <option value="openai" ${backendType === 'openai' ? 'selected' : ''}>OpenAI Compatible</option>
-                    <option value="ollama" ${backendType === 'ollama' ? 'selected' : ''}>Ollama</option>
-                    <option value="anthropic" ${backendType === 'anthropic' ? 'selected' : ''}>Anthropic Claude</option>
-                    <option value="google" ${backendType === 'google' ? 'selected' : ''}>Google Gemini</option>
-                    <option value="groq" ${backendType === 'groq' ? 'selected' : ''}>Groq</option>
-                    <option value="grok" ${backendType === 'grok' ? 'selected' : ''}>xAI Grok</option>
-                    <option value="novitai" ${backendType === 'novitai' ? 'selected' : ''}>Novita AI</option>
-                    <option value="openwebui" ${backendType === 'openwebui' ? 'selected' : ''}>Open WebUI</option>
-                    <option value="openrouter" ${backendType === 'openrouter' ? 'selected' : ''}>OpenRouter</option>
-                </select>
-                <div class="checkbox-container">
-                    <input type="checkbox" id="useLollmsExtensions" ${useLollmsExtensions ? 'checked' : ''}>
-                    <label for="useLollmsExtensions">Use Lollms Extensions</label>
-                </div>
-                <label for="apiUrl">${t('config.apiUrl.label', 'API Host')}</label>
+    <!-- TabApi Content -->
+    <div id="TabApi" class="tab-content active">
+        <div style="display:flex; justify-content: space-between; align-items: center;">
+            <h2 style="margin:0; border:none; padding:0;">${t('config.section.apiAndModel', 'API & Model')}</h2>
+            <div style="display:flex; gap:8px;">
+                <button id="importConfig" class="secondary-button" style="margin:0;"><i class="codicon codicon-cloud-upload"></i> Import</button>
+                <button id="exportConfig" class="secondary-button" style="margin:0;"><i class="codicon codicon-cloud-download"></i> Export</button>
+            </div>
+        </div>
+
+        <label for="backendType">Backend Type</label>
+        <select id="backendType">
+            <option value="lollms" ${backendType === 'lollms' ? 'selected' : ''}>Lollms Server</option>
+            <option value="openai" ${backendType === 'openai' ? 'selected' : ''}>OpenAI Compatible</option>
+            <option value="ollama" ${backendType === 'ollama' ? 'selected' : ''}>Ollama</option>
+            <option value="anthropic" ${backendType === 'anthropic' ? 'selected' : ''}>Anthropic Claude</option>
+            <option value="google" ${backendType === 'google' ? 'selected' : ''}>Google Gemini</option>
+            <option value="groq" ${backendType === 'groq' ? 'selected' : ''}>Groq</option>
+            <option value="grok" ${backendType === 'grok' ? 'selected' : ''}>xAI Grok</option>
+            <option value="novitai" ${backendType === 'novitai' ? 'selected' : ''}>Novita AI</option>
+            <option value="openwebui" ${backendType === 'openwebui' ? 'selected' : ''}>Open WebUI</option>
+            <option value="openrouter" ${backendType === 'openrouter' ? 'selected' : ''}>OpenRouter</option>
+        </select>
+        <div class="checkbox-container">
+            <input type="checkbox" id="useLollmsExtensions" ${useLollmsExtensions ? 'checked' : ''}>
+            <label for="useLollmsExtensions">Use Lollms Extensions</label>
+        </div>
+        <label for="apiUrl">${t('config.apiUrl.label', 'API Host')}</label>
+        <div class="input-group">
+            <input type="text" id="apiUrl" value="${apiUrl}" placeholder="http://localhost:9642" autocomplete="off" />
+            <button id="testConnection" type="button" class="icon-btn" title="Test Connection"><i class="codicon codicon-broadcast"></i></button>
+        </div>
+
+        <label for="apiKey">${t('config.apiKey.label', 'API Key')}</label>
                 <div class="input-group">
-                    <input type="text" id="apiUrl" value="${apiUrl}" placeholder="http://localhost:9642" autocomplete="off" />
-                    <button id="testConnection" type="button" class="icon-btn" title="Test Connection"><i class="codicon codicon-broadcast"></i></button>
+                    <input type="password" id="apiKey" value="${apiKey}" placeholder="Enter your API key" autocomplete="off" style="flex:1;" />
+                    <button id="toggleApiKey" type="button" class="icon-btn" title="Show/Hide"><i class="codicon codicon-eye"></i></button>
+                    <button id="copyApiKey" type="button" class="icon-btn" title="Copy Key"><i class="codicon codicon-copy"></i></button>
                 </div>
-                <label for="apiKey">${t('config.apiKey.label', 'API Key')}</label>
-                <input type="text" id="apiKey" value="${apiKey}" placeholder="Enter your API key" autocomplete="off" />
+
                 <label for="modelSelect">${t('config.modelName.label', 'Chat Model')}</label>
                 <div class="input-group">
-                    <select id="modelSelect" class="model-dropdown">
+                    <select id="modelSelect" class="model-dropdown" style="flex:1;">
                         <option value="">Loading Models...</option>
                     </select>
+                    <button id="copyModelName" type="button" class="icon-btn" title="Copy Model Name"><i class="codicon codicon-copy"></i></button>
                     <button id="refreshModels" type="button" class="icon-btn" title="${t('command.refresh.title', 'Refresh')}"><i class="codicon codicon-refresh"></i></button>
                 </div>
                 <label for="architectModelSelect">Architect/Planner Model (Agent Mode)</label>
@@ -731,6 +880,38 @@ export class SettingsPanel {
 
               <div class="checkbox-container"><input type="checkbox" id="autoGenerateTitle" ${autoGenerateTitle ? 'checked' : ''}><label for="autoGenerateTitle">Auto-generate discussion titles</label></div>
               <div class="checkbox-container"><input type="checkbox" id="addPedagogicalInstruction" ${addPedagogicalInstruction ? 'checked' : ''}><label for="addPedagogicalInstruction">Add Pedagogical Instruction (Hidden)</label></div>
+
+              <h3>Response Profiles</h3>
+              <p class="help-text">Define custom response styles (Problem/Hypothesis/Fix, Minimalist, etc.)</p>
+              <label for="defaultProfileSelect">Default Profile</label>
+              <select id="defaultProfileSelect"></select>
+
+              <div id="profiles-container" style="display:flex; flex-direction:column; gap:8px; margin-top:15px;"></div>
+              
+              <button id="addProfileBtn" class="secondary-button" style="margin-top:10px;"><i class="codicon codicon-add"></i> Add New Profile</button>
+              <div style="display:flex; gap:10px; margin-top:10px;">
+                  <button id="importProfileBtn" class="secondary-button"><i class="codicon codicon-cloud-upload"></i> Import</button>
+                  <button id="exportProfileBtn" class="secondary-button"><i class="codicon codicon-cloud-download"></i> Export</button>
+              </div>
+
+              <!-- Profile Editor (Hidden) -->
+              <div id="profile-editor" style="display:none; border: 1px solid var(--vscode-focusBorder); padding: 15px; border-radius: 4px; margin-top: 15px; background: var(--vscode-editor-inactiveSelectionBackground);">
+                  <h4 style="margin-top:0;">Edit Profile</h4>
+                  <label>Internal ID</label>
+                  <input type="text" id="p_id" placeholder="e.g. senior_coder">
+                  <label>Display Name</label>
+                  <input type="text" id="p_name">
+                  <label>Description</label>
+                  <input type="text" id="p_desc">
+                  <label>Command Prefix (Optional)</label>
+                  <input type="text" id="p_prefix" placeholder="/no_think">
+                  <label>System Prompt Instructions</label>
+                  <textarea id="p_prompt" rows="5"></textarea>
+                  <div style="display:flex; gap:10px; margin-top:15px; justify-content:flex-end;">
+                      <button id="p_cancel" class="secondary-button">Cancel</button>
+                      <button id="p_save" class="primary">Save Profile</button>
+                  </div>
+              </div>
             </div>
 
             <div id="TabContext" class="tab-content">
@@ -982,6 +1163,8 @@ export class SettingsPanel {
             function renderProfiles() {
                 const container = document.getElementById('profiles-container');
                 const selector = document.getElementById('defaultProfileSelect');
+                if (!container || !selector) return;
+                
                 container.innerHTML = '';
                 selector.innerHTML = '';
 
@@ -1099,16 +1282,25 @@ export class SettingsPanel {
                     safeSet('language', config.language);
                     safeSet('autoGenerateTitle', config.autoGenerateTitle, true);
                     safeSet('addPedagogicalInstruction', config.addPedagogicalInstruction, true);
-                    safeSet('gen-full', config.generationFormats.fullFile, true);
-                    safeSet('gen-diff', config.generationFormats.diff, true);
-                    safeSet('gen-aider', config.generationFormats.aider, true);
+                    
+                    if (config.generationFormats) {
+                        safeSet('gen-full', config.generationFormats.fullFile, true);
+                        safeSet('gen-diff', config.generationFormats.diff, true);
+                        safeSet('gen-aider', config.generationFormats.aider, true);
+                    }
+                    
                     safeSet('explainCode', config.explainCode, true);
-                    safeSet('fmt-fullFile', config.allowedFileFormats.fullFile, true);
-                    safeSet('fmt-insert', config.allowedFileFormats.insert, true);
-                    safeSet('fmt-replace', config.allowedFileFormats.replace, true);
-                    safeSet('fmt-delete', config.allowedFileFormats.delete, true);
+                    
+                    if (config.allowedFileFormats) {
+                        safeSet('fmt-fullFile', config.allowedFileFormats.fullFile, true);
+                        safeSet('fmt-insert', config.allowedFileFormats.insert, true);
+                        safeSet('fmt-replace', config.allowedFileFormats.replace, true);
+                        safeSet('fmt-delete', config.allowedFileFormats.delete, true);
+                    }
+                    
                     safeSet('failsafeContextSize', config.failsafeContextSize);
-                    if(document.getElementById('contextFileExceptions')) document.getElementById('contextFileExceptions').value = config.contextFileExceptions.join('\\n');
+                    if(document.getElementById('contextFileExceptions') && Array.isArray(config.contextFileExceptions)) 
+                        document.getElementById('contextFileExceptions').value = config.contextFileExceptions.join('\\n');
                     safeSet('showOs', config.showOs, true);
                     safeSet('showIp', config.showIp, true);
                     safeSet('showShells', config.showShells, true);
@@ -1150,9 +1342,12 @@ export class SettingsPanel {
                     safeSet('remoteSlackToken', config.remoteSlackToken);
                     safeSet('remoteSlackSigningSecret', config.remoteSlackSigningSecret);
                     
-                    if(document.getElementById('remoteAllowedUsers')) document.getElementById('remoteAllowedUsers').value = config.remoteAllowedUsers.join('\\n');
-                    if(document.getElementById('remoteAdminUsers')) document.getElementById('remoteAdminUsers').value = config.remoteAdminUsers.join('\\n');
-                    if(document.getElementById('remoteAllowedChannels')) document.getElementById('remoteAllowedChannels').value = config.remoteAllowedChannels.join('\\n');
+                    if(document.getElementById('remoteAllowedUsers') && Array.isArray(config.remoteAllowedUsers)) 
+                        document.getElementById('remoteAllowedUsers').value = config.remoteAllowedUsers.join('\\n');
+                    if(document.getElementById('remoteAdminUsers') && Array.isArray(config.remoteAdminUsers)) 
+                        document.getElementById('remoteAdminUsers').value = config.remoteAdminUsers.join('\\n');
+                    if(document.getElementById('remoteAllowedChannels') && Array.isArray(config.remoteAllowedChannels)) 
+                        document.getElementById('remoteAllowedChannels').value = config.remoteAllowedChannels.join('\\n');
 
                     const herdDynamic = document.getElementById('herdDynamicMode').checked;
                     document.getElementById('static-herd-config').style.display = herdDynamic ? 'none' : 'block';
@@ -1370,6 +1565,31 @@ export class SettingsPanel {
 
             safeListen('refreshModels', 'click', () => refreshModelsList(true));
             safeListen('refreshInspectorModels', 'click', () => refreshModelsList(true));
+
+            safeListen('toggleApiKey', 'click', () => {
+                const input = document.getElementById('apiKey');
+                const icon = document.querySelector('#toggleApiKey i');
+                if (input.type === 'password') {
+                    input.type = 'text';
+                    icon.classList.replace('codicon-eye', 'codicon-eye-closed');
+                } else {
+                    input.type = 'password';
+                    icon.classList.replace('codicon-eye-closed', 'codicon-eye');
+                }
+            });
+
+            safeListen('copyApiKey', 'click', () => {
+                const val = document.getElementById('apiKey').value;
+                vscode.postMessage({ command: 'copyToClipboard', value: val });
+            });
+
+            safeListen('copyModelName', 'click', () => {
+                const val = document.getElementById('modelSelect').value;
+                vscode.postMessage({ command: 'copyToClipboard', value: val });
+            });
+
+            safeListen('exportConfig', 'click', () => vscode.postMessage({ command: 'exportConnectionConfig' }));
+            safeListen('importConfig', 'click', () => vscode.postMessage({ command: 'importConnectionConfig' }));
             safeListen('saveToolbar', 'click', () => vscode.postMessage({ command: 'saveConfig' }));
             safeListen('resetToolbar', 'click', () => vscode.postMessage({ command: 'resetConfig' }));
             safeListen('closeToolbar', 'click', () => vscode.postMessage({ command: 'closePanel' }));
@@ -1391,6 +1611,12 @@ export class SettingsPanel {
                     populateModelDropdown(document.getElementById('modelSelect'), config.modelName, message.error);
                     populateModelDropdown(document.getElementById('architectModelSelect'), config.architectModelName, message.error);
                     populateModelDropdown(document.getElementById('inspectorModelName'), config.inspectorModelName, message.error);
+                } else if (message.command === 'refreshForm') {
+                    const newConfig = message.config;
+                    // Update the local script config object
+                    Object.assign(config, newConfig);
+                    // Re-initialize the UI fields
+                    initializeForm();
                 } else if (message.command === 'updateCertPath') {
                     document.getElementById('sslCertPath').value = message.path;
                     postTempUpdate('sslCertPath', message.path);

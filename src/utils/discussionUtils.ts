@@ -53,19 +53,21 @@ export async function startDiscussionWithInitialPrompt(
             role: 'user',
             content: prompt
         };
-        panel.sendMessage(userMessage); 
+        // The panel's sendMessage method handles adding and saving internally
+        await panel.sendMessage(userMessage); 
     } else {
         // Handle "Paste as Message" without execution
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-        const role = config.get<string>('clipboardInsertRole') || 'user'; // 'user' or 'assistant'
+        const role = config.get<string>('clipboardInsertRole') || 'user'; 
 
         const message: ChatMessage = {
             id: role + '_' + Date.now().toString() + Math.random().toString(36).substring(2),
             role: role as 'user' | 'assistant',
-            content: prompt
+            content: prompt,
+            timestamp: Date.now()
         };
 
-        // Add to UI and history directly without triggering generation
+        // Add to UI and CRITICAL: Wait for the save operation to finish
         await panel.addMessageToDiscussion(message);
 
         // If auto-title is enabled, generate title based on the draft content

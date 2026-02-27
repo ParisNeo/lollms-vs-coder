@@ -1,43 +1,53 @@
-<skill id="safe-store-graph">
-    <name>safe_store: Knowledge Graph Operations</name>
-    <description>Building, querying, and managing knowledge graphs with LLM extraction</description>
-    <category>python/safe_store/graph</category>
-    <language>markdown</language>
-    <timestamp>1740265200000</timestamp>
+<skill id="safe-store-graph" title="SafeStore Knowledge Graph" description="Extracting and querying structured entities and relationships from documents." category="python/safe_store/graph">
     <content>
         <![CDATA[
-## Knowledge Graph Patterns
+# 💎 SOURCE OF TRUTH: safe_store Knowledge Graph (GraphStore)
 
-### 1. Graph Store Setup
+The `GraphStore` uses an LLM to build a web of entities and relationships.
+
+## 📐 Ontology Definition
+You MUST define a schema before building the graph:
 ```python
-from safe_store import SafeStore, GraphStore
+ontology = {
+    "nodes": {
+        "EntityName": {
+            "description": "Definition",
+            "properties": {"prop_name": "type"} # string, boolean, number
+        }
+    },
+    "relationships": {
+        "REL_TYPE": {
+            "description": "How they connect",
+            "source": "SourceNode",
+            "target": "TargetNode"
+        }
+    }
+}
+```
 
-store = SafeStore("graph_base.db")
-
-def llm_callback(prompt: str) -> str:
-    # Logic to call your LLM
-    return response_content
+## 🛠️ GraphStore Usage
+```python
+from safe_store import GraphStore
 
 graph = GraphStore(
-    store=store,
-    llm_executor_callback=llm_callback
+    store=my_safe_store_instance,
+    llm_executor_callback=lollms_query_func,
+    ontology=ontology
 )
-```
 
-### 2. Building the Graph
-```python
-with store:
-    store.add_document("annual_report.pdf")
-    graph.build_graph_for_all_documents(batch_size_chunks=20)
-```
+# Build
+graph.build_graph_for_all_documents(batch_size_chunks=10)
 
-### 3. Natural Language Graph Queries
-```python
+# Query
 result = graph.query_graph(
-    "Who is the CEO of TechCorp and what products do they make?",
-    output_mode="full"
+    "How is Microservice A related to Database B?",
+    output_mode="full" # "full" or "summary"
 )
 ```
+
+## 💡 Extraction Tips
+- **Batch Size**: Reduce `batch_size_chunks` to avoid OOM on large documents.
+- **Retries**: Increase `llm_retries` in config for better JSON parsing from weak models.
 ]]>
     </content>
 </skill>

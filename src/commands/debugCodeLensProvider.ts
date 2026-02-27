@@ -61,25 +61,6 @@ export class DebugCodeLensProvider implements vscode.CodeLensProvider {
             }
         }
 
-        // 2. Static Diagnostics (Red Squiggles from Language Server)
-        const diagnostics = vscode.languages.getDiagnostics(document.uri);
-        for (const diagnostic of diagnostics) {
-            // Only show CodeLens for Errors to avoid cluttering warnings
-            if (diagnostic.severity === vscode.DiagnosticSeverity.Error) {
-                // Ensure the CodeLens is attached to the start of the error range
-                const range = new vscode.Range(diagnostic.range.start, diagnostic.range.end);
-                
-                const fixStaticCommand: vscode.Command = {
-                    title: `$(sparkle) Fix with Lollms`,
-                    command: 'lollms-vs-coder.fixDiagnostic',
-                    arguments: [document.uri, diagnostic],
-                    tooltip: `Ask Lollms to fix: ${diagnostic.message}`
-                };
-                
-                lenses.push(new vscode.CodeLens(range, fixStaticCommand));
-            }
-        }
-
         return lenses;
     }
 }

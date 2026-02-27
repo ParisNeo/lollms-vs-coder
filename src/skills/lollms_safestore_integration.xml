@@ -1,0 +1,76 @@
+<skill id="lollms-safestore-rag" title="Lollms + SafeStore RAG Integration" description="Building a complete Retrieval Augmented Generation pipeline combining SafeStore retrieval and LollmsClient generation." category="python/integration/rag">
+    <content>
+        <![CDATA[
+# 💎 SOURCE OF TRUTH: Lollms & SafeStore Integration
+
+Use this pattern to build a local, private RAG system.
+
+## 1. The Standard RAG Loop
+This pattern retrieves context from the store and generates an answer via the client.
+
+```python
+import safe_store
+from lollms_client import LollmsClient
+
+# 1. Initialize Retriever
+store = safe_store.SafeStore(db_path="knowledge.db")
+
+# 2. Initialize Generator
+lc = LollmsClient(
+    llm_binding_name="ollama", 
+    llm_binding_config={"model_name": "llama3"}
+)
+
+def ask_question(question):
+    # Retrieve relevant chunks
+    results = store.query(question, top_k=3)
+    
+    # Format context with citations
+    context = "\n\n".join([
+        f"--- Source: {r['document_title']} (Chunk {r['chunk_id']}) ---\n{r['chunk_text']}" 
+        for r in results
+    ])
+    
+    # Construct augmented prompt
+    prompt = f"""Answer the question based strictly on the provided context. 
+If the answer is not in the context, say you don't know. 
+Always cite the source name in your answer.
+
+### CONTEXT:
+{context}
+
+### QUESTION:
+{question}
+
+### ANSWER:"""
+
+    return lc.generate_text(prompt, n_predict=1024)
+```
+
+## 2. Agentic RAG (SafeStore as a Tool)
+Define the store as a tool so the AI can decide when to search.
+
+```python
+def document_search_tool(query: str):
+    """Searches the private document library for information."""
+    results = store.query(query, top_k=5)
+    return {"results": results, "success": True}
+
+tools = {
+    "search_docs": {
+        "name": "search_docs",
+        "description": "Search the local document knowledge base for specific facts or documentation.",
+        "parameters": [{"name": "query", "type": "str", "required": True}],
+        "callable": document_search_tool
+    }
+}
+
+# The agent will now use 'search_docs' automatically when it needs facts
+response = lc.generate_from_messages(
+    messages=[{"role": "user", "content": "What are the project requirements defined in our PDF files?"}],
+    tools=tools
+)
+```
+]]>
+    </content>
+</skill>

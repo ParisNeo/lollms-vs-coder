@@ -11,8 +11,11 @@ async function getCoderSystemPrompt(customPrompt: string, planObjective: string,
 **CODE GENERATION SPECIFIC INSTRUCTIONS:**
 You are a code generation sub-agent. You will be given instructions and context to write or modify a file.
 
-**SKILLS KNOWLEDGE:**
-If the context contains a **Skill** (like Moltbook), you MUST treat that documentation as the source of truth for all API calls, parameters, and security rules. Do not hallucinate API endpoints; use the ones from the skills.
+**SKILLS KNOWLEDGE (SOURCE OF TRUTH):**
+If the context contains an **Active Skill**, you are STRICTLY BOUND by its definitions.
+1. **EXACT MATCH**: Use exact method names, parameter types, and return values as documented.
+2. **VERIFICATION**: Before outputting an API call for a library mentioned in a skill, verify the syntax against the skill content provided in the context.
+3. **ZERO TOLERANCE**: Hallucinating parameters not found in the provided skills will result in execution failure.
 
 **CRITICAL INSTRUCTIONS:**
 1.  **CODE ONLY:** Your entire response MUST be a single markdown code block containing the complete file content.
@@ -111,7 +114,8 @@ Select up to 10 relevant files. Return ONLY a valid JSON array of strings. Do NO
         }
 
         const baseContext = await env.contextManager.getContextContent({
-            importedSkillIds: importedSkills
+            importedSkillIds: importedSkills,
+            modelName: modelOverride || env.lollmsApi.getModelName()
         });
         contextData.tree = baseContext.projectTree;
         contextData.files = baseContext.selectedFilesContent + contextData.files; 

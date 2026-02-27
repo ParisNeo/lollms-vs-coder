@@ -1,34 +1,46 @@
-<skill id="safe-store-rag">
-    <name>safe_store: Complete RAG Pipeline</name>
-    <description>End-to-end retrieval-augmented generation integration patterns</description>
-    <category>python/safe_store/rag</category>
-    <language>markdown</language>
-    <timestamp>1740265200000</timestamp>
+<skill id="safe-store-rag" title="SafeStore RAG & Hybrid Search" description="Techniques for hybrid semantic/keyword search and pre-processing document chunks." category="python/safe_store/rag">
     <content>
         <![CDATA[
-## RAG Pipeline Patterns
+# 💎 SOURCE OF TRUTH: safe_store RAG Patterns
 
-### 1. Basic RAG Loop
+## 🧪 Hybrid Query Pattern
+Combine semantic (meaning) and keyword (exact match) search for better recall.
+
 ```python
-from safe_store import SafeStore
-
-with store:
-    results = store.query(question, top_k=3)
-
-context = "\n\n".join([f"[Source: {r['file_path']}]\n{r['chunk_text']}" for r in results])
-prompt = f"Context:\n{context}\n\nQuestion: {question}\nAnswer:"
-
-# Generate with LLM...
+def hybrid_query(semantic_store, keyword_store, query_text, alpha=0.7):
+    # Retrieve from both
+    s_results = semantic_store.query(query_text, top_k=10)
+    k_results = keyword_store.query(query_text, top_k=10)
+    
+    combined = {}
+    for r in s_results:
+        combined[r['chunk_id']] = {'data': r, 'score': alpha * r['similarity']}
+    for r in k_results:
+        if r['chunk_id'] in combined:
+            combined[r['chunk_id']]['score'] += (1 - alpha) * r['similarity']
+        else:
+            combined[r['chunk_id']] = {'data': r, 'score': (1 - alpha) * r['similarity']}
+    
+    # Sort and return
+    return sorted(combined.values(), key=lambda x: x['score'], reverse=True)
 ```
 
-### 2. Cited RAG
-```python
-numbered_context = []
-for i, r in enumerate(results, 1):
-    numbered_context.append(f"[{i}] From {r['file_path']}:\n{r['chunk_text']}")
+## ⚙️ Chunk Pre-processing
+Use `chunk_processor` to transform text *before* it is vectorized.
 
-prompt = f"Use numbered sources to answer. Cite as [1], [2].\n\n{'\n\n'.join(numbered_context)}\n\nQuestion: {question}"
+```python
+def my_processor(chunk_text, metadata):
+    # Example: Prepend topic to guide the vectorizer
+    topic = metadata.get("topic", "general")
+    return f"[Topic: {topic}] {chunk_text}"
+
+store.add_document("file.txt", metadata={"topic": "Physics"}, chunk_processor=my_processor)
 ```
+
+## 📋 Best Practices
+- **Chunk Size**: Use 256-512 for precision; 1024-2048 for context-heavy prose.
+- **Code Strategy**: Always use `chunking_strategy="recursive"` for source code.
+- **Deduplication**: Use `store.export_point_cloud(output_format='dict')` and DBSCAN to find centroids of duplicate documents.
 ]]>
     </content>
 </skill>

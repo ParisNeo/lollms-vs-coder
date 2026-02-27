@@ -1168,7 +1168,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const fragment = document.createDocumentFragment();
 
             // 3. Partitioned Rendering
-            elements.forEach((el) => {
+            elements.forEach((el, idx) => {
                 // A. Render the Markdown chunk BEFORE the UI element
                 const textBefore = processedContent.substring(lastIndex, el.start);
                 if (textBefore.length > 0) { // Don't use .trim() here to preserve spacing between blocks
@@ -1189,6 +1189,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
                 // 2b. Render code block
                 const block = el as any;
+                const blockIdx = idx; // Use current iteration index as block identifier
                 const blockContent = processedContent.substring(block.start, block.end);
                 let lines = blockContent.split('\n');
                 if (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
@@ -1223,6 +1224,17 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 }, 'code-action-btn', 'Copy entire block content');
                 actions.appendChild(copyBtn);
 
+                // NEW: View Raw Button for Aider
+                if (isAider) {
+                    const rawBtn = createButton('Raw', 'codicon-source-control', () => {
+                        if (dom.rawCodeDisplay) {
+                            dom.rawCodeDisplay.textContent = codeOnly;
+                            dom.rawCodeModal.classList.add('visible');
+                        }
+                    }, 'code-action-btn', 'View raw SEARCH/REPLACE format');
+                    actions.appendChild(rawBtn);
+                }
+
                 // Aider specific badge for multi-hunk blocks
                 if (isAider && aiderMatches.length > 1) {
                     const countBadge = document.createElement('span');
@@ -1253,10 +1265,21 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                         const cmd = effectiveType === 'diff' ? 'applyPatchContent' :
                             (effectiveType === 'replace' ? 'replaceCode' : 'applyFileContent');
                         vscode.postMessage({ command: cmd, filePath: block.path, content: codeOnly, messageId });
-                        // Mark block as applied
+                        
+                        // Notify extension to persist
+                        vscode.postMessage({ command: 'markBlockApplied', messageId, blockIndex: blockIdx });
+
                         applyBtn.classList.add('applied');
                         applyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
                     }, 'code-action-btn apply-btn', isSurgical ? 'Apply surgical update to file' : 'Overwrite entire file with this content');
+
+                    // Restore state from persistence
+                    const isFullyApplied = state.appliedState?.[messageId]?.[blockIdx]?.includes(-1);
+                    if (isFullyApplied) {
+                        applyBtn.classList.add('applied');
+                        applyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
+                        details.open = false;
+                    }
 
                     if (isBlockGenerating) {
                         applyBtn.disabled = true;
@@ -1314,7 +1337,21 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                         
                         const hunkHeader = document.createElement('div');
                         hunkHeader.className = 'aider-hunk-header';
-                        hunkHeader.innerHTML = `<span>HUNK ${hIdx + 1} OF ${aiderMatches.length}</span>`;
+                        
+                        // Add toggle chevron and title
+                        hunkHeader.innerHTML = `
+                            <div style="display:flex; align-items:center;">
+                                <span class="codicon codicon-chevron-down hunk-toggle-icon"></span>
+                                <span>HUNK ${hIdx + 1} OF ${aiderMatches.length}</span>
+                            </div>
+                        `;
+
+                        // Collapse toggle logic
+                        hunkHeader.onclick = (e) => {
+                            // Don't toggle if a button inside the header was clicked
+                            if ((e.target as HTMLElement).closest('.code-action-btn')) return;
+                            hunkBubble.classList.toggle('collapsed');
+                        };
                         
                         const hunkActions = document.createElement('div');
                         hunkActions.className = 'aider-hunk-actions';
@@ -1337,6 +1374,14 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                             if (icon) icon.className = 'codicon codicon-check';
                             setTimeout(() => { if (icon) icon.className = 'codicon codicon-copy'; }, 2000);
                         }, 'code-action-btn', 'Copy the REPLACE block for this hunk');
+
+                        // NEW: View Raw button for this specific hunk
+                        const rawHunkBtn = createButton('Raw', 'codicon-code', () => {
+                            if (dom.rawCodeDisplay) {
+                                dom.rawCodeDisplay.textContent = match[0]; // match[0] is the full block string
+                                dom.rawCodeModal.classList.add('visible');
+                            }
+                        }, 'code-action-btn', 'View raw SEARCH/REPLACE for this hunk');
                         
                         // Apply Hunk Button
                         const applyHunkBtn = createButton('Apply Hunk', 'codicon-tools', () => {
@@ -1346,11 +1391,32 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                                 content: match[0], 
                                 messageId 
                             });
-                            // Mark as applied to prevent double-clicks
+                            
+                            // Notify extension to persist hunk
+                            vscode.postMessage({ command: 'markBlockApplied', messageId, blockIndex: blockIdx, hunkIndex: hIdx });
+
+                            // UI Update: Just collapse this hunk
                             applyHunkBtn.classList.add('applied');
                             applyHunkBtn.innerHTML = '<span class="codicon codicon-check"></span>';
+                            hunkBubble.classList.add('collapsed');
+
+                            // Logic to update parent "Apply All" button color
+                            const allHunkButtons = hunkGroup.querySelectorAll('.aider-hunk-actions .apply-btn');
+                            const appliedCount = hunkGroup.querySelectorAll('.aider-hunk-actions .apply-btn.applied').length;
+                            if (appliedCount === allHunkButtons.length) {
+                                applyBtn.classList.add('applied');
+                                applyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
+                            }
                         }, 'code-action-btn apply-btn', 'Apply only this modification');
                         
+                        // Restore hunk state from persistence
+                        const appliedHunks = state.appliedState?.[messageId]?.[blockIdx] || [];
+                        if (appliedHunks.includes(hIdx) || appliedHunks.includes(-1)) {
+                            applyHunkBtn.classList.add('applied');
+                            applyHunkBtn.innerHTML = '<span class="codicon codicon-check"></span>';
+                            hunkBubble.classList.add('collapsed');
+                        }
+
                         if (isBlockGenerating) {
                             applyHunkBtn.disabled = true;
                             copySearchBtn.disabled = true;
@@ -1359,6 +1425,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                         
                         hunkActions.appendChild(copySearchBtn);
                         hunkActions.appendChild(copyReplaceBtn);
+                        hunkActions.appendChild(rawHunkBtn);
                         hunkActions.appendChild(applyHunkBtn);
                         hunkHeader.appendChild(hunkActions);
                         hunkBubble.appendChild(hunkHeader);
@@ -1785,6 +1852,9 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                     <button id="view-full-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="View Full Context and Structure">
                         <span class="codicon codicon-book"></span> View
                     </button>
+                    <button id="view-usage-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="View per-file token usage">
+                        <span class="codicon codicon-dashboard"></span> Usage
+                    </button>
                     <div style="width: 1px; background: var(--vscode-widget-border); margin: 0 4px;"></div>
                     <button id="add-file-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Add File to Context">
                         <span class="codicon codicon-add"></span> File
@@ -1792,8 +1862,8 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                     <button id="add-skill-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Add Skill to Context">
                         <span class="codicon codicon-lightbulb"></span> Skill
                     </button>
-                    <button id="add-url-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Add URL content to Context">
-                        <span class="codicon codicon-globe"></span> URL
+                    <button id="web-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Web Discovery (URL, YouTube, Wiki, etc.)">
+                        <span class="codicon codicon-globe"></span> Web
                     </button>
                     <button id="add-diagram-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Add Architecture Diagram to Context">
                         <span class="codicon codicon-graph"></span> Diagram
@@ -1959,10 +2029,12 @@ export function updateContext(contextText: string, files: string[] = [], skills:
         });
     }
 
-    const addUrlBtn = document.getElementById('add-url-context-btn');
-    if (addUrlBtn) {
-        addUrlBtn.addEventListener('click', () => {
-            vscode.postMessage({ command: 'requestAddUrlToContext' });
+    const webBtn = document.getElementById('web-context-btn');
+    if (webBtn) {
+        webBtn.addEventListener('click', () => {
+            if (dom.webModal) {
+                dom.webModal.classList.add('visible');
+            }
         });
     }
 
@@ -2003,6 +2075,21 @@ export function updateContext(contextText: string, files: string[] = [], skills:
             vscode.postMessage({ command: 'requestViewFullContext' });
         });
     }
+
+    const usageBtn = document.getElementById('view-usage-context-btn');
+    if (usageBtn) {
+        usageBtn.addEventListener('click', () => {
+            dom.usageModal.classList.add('visible');
+            dom.usageListContainer.innerHTML = '<div style="text-align:center; padding: 20px;"><div class="spinner"></div> Calculating individual file tokens...</div>';
+            vscode.postMessage({ command: 'requestContextUsage' });
+        });
+    }
+
+    if (dom.usageCloseBtn) dom.usageCloseBtn.onclick = () => dom.usageModal.classList.remove('visible');
+    if (dom.usageRefreshBtn) dom.usageRefreshBtn.onclick = () => {
+        dom.usageListContainer.innerHTML = '<div style="text-align:center; padding: 20px;"><div class="spinner"></div> Recalculating...</div>';
+        vscode.postMessage({ command: 'requestContextUsage' });
+    };
 
     const resetBtn = document.getElementById('reset-context-bubble-btn');
     if (resetBtn) {

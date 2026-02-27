@@ -18,6 +18,7 @@ export interface Discussion {
     gitState?: { originalBranch: string, tempBranch: string };
     importedSkills?: string[];
     activeDiagrams?: string[]; // e.g., ['class_diagram', 'call_graph']
+    appliedState?: Record<string, Record<number, number[]>>;    
 }
 
 export interface DiscussionGroup {
@@ -181,9 +182,13 @@ export class DiscussionManager {
         const filePath = vscode.Uri.joinPath(this.discussionsDir, `${id}.json`);
         try {
             const content = await vscode.workspace.fs.readFile(filePath);
-            // Fix: Correctly convert Uint8Array to string using Buffer for reliable JSON parsing
-            return JSON.parse(Buffer.from(content).toString('utf8'));
-        } catch (error) { return null; }
+            // Use Buffer.from to ensure the Uint8Array is correctly interpreted as a UTF-8 string
+            const jsonString = Buffer.from(content).toString('utf8');
+            return JSON.parse(jsonString);
+        } catch (error) { 
+            console.error(`[DiscussionManager] Failed to read discussion ${id}:`, error);
+            return null; 
+        }
     }
 
     async getAllDiscussions(): Promise<Discussion[]> {
@@ -191,7 +196,6 @@ export class DiscussionManager {
             const entries = await vscode.workspace.fs.readDirectory(this.discussionsDir);
             const jsonFiles = entries.filter(([name, type]) => type === vscode.FileType.File && name.endsWith('.json'));
             
-            // Optimization: Load all discussions in parallel using Promise.all
             const discussionPromises = jsonFiles.map(([name]) => 
                 this.getDiscussion(path.parse(name).name)
             );
@@ -203,6 +207,55 @@ export class DiscussionManager {
         } catch (error) {
             return [];
         }
+    }
+
+    /**
+     * Advanced search across all discussions with wildcard support and snippets.
+     */
+    async searchDiscussionsAdvanced(query: string): Promise<{id: string, title: string, snippet: string}[]> {
+        const discussions = await this.getAllDiscussions();
+        const results: {id: string, title: string, snippet: string}[] = [];
+        
+        // Convert glob-style wildcards to Regex
+        // * -> .* , ? -> .
+        const escaped = query.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+        const regexStr = escaped.replace(/\\\*/g, '.*').replace(/\\\?/g, '.');
+        const regex = new RegExp(regexStr, 'gi');
+
+        for (const d of discussions) {
+            let matchText = d.title || "";
+            const content = d.messages.map(m => typeof m.content === 'string' ? m.content : "").join(" ");
+            
+            const titleMatch = regex.test(d.title);
+            const contentMatch = regex.test(content);
+
+            if (titleMatch || contentMatch) {
+                let snippet = "";
+                if (contentMatch) {
+                    regex.lastIndex = 0;
+                    const m = regex.exec(content);
+                    if (m) {
+                        const start = Math.max(0, m.index - 40);
+                        const end = Math.min(content.length, m.index + m[0].length + 40);
+                        snippet = (start > 0 ? "..." : "") + 
+                                  content.substring(start, end).replace(/\n/g, ' ') + 
+                                  (end < content.length ? "..." : "");
+                        
+                        // Highlight the match in snippet for the UI
+                        snippet = snippet.replace(regex, (match) => `<mark>${match}</mark>`);
+                    }
+                } else {
+                    snippet = d.messages.length > 0 ? "Match found in title..." : "Empty discussion.";
+                }
+
+                results.push({
+                    id: d.id,
+                    title: d.title.replace(regex, (match) => `<mark>${match}</mark>`),
+                    snippet: snippet
+                });
+            }
+        }
+        return results;
     }
 
     async deleteDiscussion(id: string): Promise<void> {
@@ -226,8 +279,8 @@ export class DiscussionManager {
     async getGroups(): Promise<DiscussionGroup[]> {
         try {
             const content = await vscode.workspace.fs.readFile(this.groupsFile);
-            // Fix: Correctly convert Uint8Array to string
-            return JSON.parse(Buffer.from(content).toString('utf8'));
+            const jsonString = Buffer.from(content).toString('utf8');
+            return JSON.parse(jsonString);
         } catch (error) { return []; }
     }
 

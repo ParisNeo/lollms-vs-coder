@@ -1,43 +1,40 @@
-<skill id="safe-store-vectorizers">
-    <name>safe_store: Vectorizer Configuration & Management</name>
-    <description>Setting up and managing different embedding models including local and API-based options</description>
-    <category>python/safe_store/vectorizers</category>
-    <language>markdown</language>
-    <timestamp>1740265200000</timestamp>
+<skill id="safe-store-vectorizers" title="SafeStore Vectorizer Configs" description="Specific configurations for different embedding backends (Ollama, OpenAI, ST)." category="python/safe_store/vectorizers">
     <content>
         <![CDATA[
-## Vectorizer Configuration Patterns
+# 💎 SOURCE OF TRUTH: Vectorizer Configurations
 
-### 1. Sentence Transformers (Local)
+## 1. Ollama (Local)
 ```python
-from safe_store import SafeStore
-
-store = SafeStore(
-    "st_default.db",
-    vectorizer_name="st",
-    vectorizer_config={"model": "all-MiniLM-L6-v2"}
-)
+vectorizer_name="ollama"
+vectorizer_config={
+    "model": "nomic-embed-text",
+    "host": "http://localhost:11434"
+}
 ```
 
-### 2. OpenAI API
+## 2. Sentence Transformers (Local)
 ```python
-store = SafeStore(
-    "openai.db",
-    vectorizer_name="openai",
-    vectorizer_config={"model": "text-embedding-3-small"}
-)
+vectorizer_name="st"
+vectorizer_config={
+    "model": "all-MiniLM-L6-v2" # or "LaBSE" for multilingual
+}
 ```
 
-### 3. Ollama (Local API)
+## 3. OpenAI (Cloud)
 ```python
-store = SafeStore(
-    "ollama.db",
-    vectorizer_name="ollama",
-    vectorizer_config={
-        "model": "nomic-embed-text",
-        "host": "http://localhost:11434"
-    }
-)
+vectorizer_name="openai"
+vectorizer_config={
+    "model": "text-embedding-3-small",
+    "api_key": "sk-..."
+}
+```
+
+## 4. TF-IDF (Classic/Fast)
+```python
+vectorizer_name="tf_idf"
+vectorizer_config={
+    "name": "my_search_index"
+}
 ```
 ]]>
     </content>

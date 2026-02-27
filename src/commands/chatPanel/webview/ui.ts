@@ -615,6 +615,141 @@ export function updateBadges() {
     renderProfilesInModal();
 };
 
+/**
+ * Renders matched files hierarchy into a tree.
+ */
+export function renderFileSearchResults(container: HTMLElement, results: any[], query: string) {
+    if (!results || results.length === 0) {
+        container.innerHTML = '<div style="opacity:0.6; text-align:center; padding: 20px;">No files match your query.</div>';
+        return;
+    }
+
+    const highlightPattern = query.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
+    const hRegex = new RegExp(`(${highlightPattern})`, 'gi');
+
+    container.innerHTML = results.map(res => {
+        const highlightedPath = res.path.replace(hRegex, '<span class="search-highlight">$1</span>');
+        const highlightedSnippet = res.snippet.replace(hRegex, '<span class="search-highlight">$1</span>');
+        
+        return `
+            <div class="search-result-item file-search-item" data-path="${res.path}">
+                <div class="search-result-title">
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <input type="checkbox" value="${res.path}" class="file-search-check" onclick="event.stopPropagation()">
+                        <span class="codicon codicon-file"></span>
+                        <span class="title-text">${highlightedPath}</span>
+                    </div>
+                </div>
+                <div class="search-result-snippet">${highlightedSnippet}</div>
+            </div>
+        `;
+    }).join('');
+
+    container.querySelectorAll('.file-search-item').forEach(item => {
+        item.addEventListener('click', (e) => {
+            const cb = item.querySelector('.file-search-check') as HTMLInputElement;
+            if (e.target !== cb) cb.checked = !cb.checked;
+            
+            // Visual selection state
+            item.style.backgroundColor = cb.checked ? 'var(--vscode-list-activeSelectionBackground)' : '';
+            item.style.color = cb.checked ? 'var(--vscode-list-activeSelectionForeground)' : '';
+        });
+
+        item.addEventListener('dblclick', () => {
+            const path = (item as HTMLElement).dataset.path;
+            vscode.postMessage({ command: 'openFile', path });
+        });
+    });
+}
+
+/** @deprecated Use renderFileSearchResults for list view */
+export function renderFileSearchTree(container: HTMLElement, files: string[]) {
+    if (!files || files.length === 0) {
+        container.innerHTML = '<div style="opacity:0.6; text-align:center; padding: 20px;">No files match your query.</div>';
+        return;
+    }
+
+    // Build the nested tree object
+    const root: any = { children: {} };
+    files.forEach(f => {
+        const parts = f.split(/[\\/]/);
+        let current = root;
+        parts.forEach((part, i) => {
+            if (!current.children[part]) {
+                current.children[part] = { 
+                    name: part, 
+                    path: parts.slice(0, i + 1).join('/'),
+                    children: {}, 
+                    isFile: i === parts.length - 1 
+                };
+            }
+            current = current.children[part];
+        });
+    });
+
+    const renderNode = (node: any, parentElement: HTMLElement) => {
+        const sortedKeys = Object.keys(node.children).sort((a, b) => {
+            const nodeA = node.children[a];
+            const nodeB = node.children[b];
+            if (nodeA.isFile !== nodeB.isFile) return nodeA.isFile ? 1 : -1;
+            return a.localeCompare(b);
+        });
+
+        const ul = document.createElement('ul');
+        ul.className = 'skills-tree-list'; // Reuse existing tree styles
+        ul.style.paddingLeft = '16px';
+
+        sortedKeys.forEach(key => {
+            const child = node.children[key];
+            const li = document.createElement('li');
+            li.className = 'skills-tree-item';
+            li.style.listStyle = 'none';
+
+            if (child.isFile) {
+                li.innerHTML = `
+                    <div class="skill-node">
+                        <input type="checkbox" value="${child.path}" class="file-search-check" id="search-f-${child.path}">
+                        <label for="search-f-${child.path}" style="font-size: 12px; cursor: pointer;">
+                            <span class="codicon codicon-file"></span> ${child.name}
+                        </label>
+                    </div>`;
+            } else {
+                const details = document.createElement('details');
+                details.open = true;
+                const summary = document.createElement('summary');
+                summary.className = 'skill-summary';
+                
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.className = 'folder-search-check';
+                checkbox.addEventListener('change', (e) => {
+                    const checked = (e.target as HTMLInputElement).checked;
+                    li.querySelectorAll('.file-search-check, .folder-search-check').forEach((cb: any) => cb.checked = checked);
+                });
+
+                const label = document.createElement('span');
+                label.className = 'skill-folder-label';
+                label.innerHTML = `<span class="codicon codicon-folder"></span> ${child.name}`;
+
+                summary.appendChild(document.createElement('span')).className = 'folder-handle codicon';
+                summary.appendChild(checkbox);
+                summary.appendChild(label);
+                details.appendChild(summary);
+
+                const childrenContainer = document.createElement('div');
+                renderNode(child, childrenContainer);
+                details.appendChild(childrenContainer);
+                li.appendChild(details);
+            }
+            ul.appendChild(li);
+        });
+        parentElement.appendChild(ul);
+    };
+
+    container.innerHTML = '';
+    renderNode(root, container);
+}
+
 export function renderSkillsTree(container: HTMLElement, node: any, activeSkillIds: string[] = []) {
     if (!node.children || node.children.length === 0) return;
 
@@ -713,3 +848,247 @@ export function renderSkillsTree(container: HTMLElement, node: any, activeSkillI
 
     container.appendChild(ul);
 }
+
+export function renderDiscussionSearchResults(results: any[], query: string) {
+    const container = dom.discussionSearchResults;
+    if (!container) return;
+
+    if (results.length === 0) {
+        container.innerHTML = '<div style="opacity:0.6; text-align:center; padding: 40px;">No matching discussions found for this criteria.</div>';
+        return;
+    }
+
+    // Prepare highlighting regex (handles wildcards for the UI display)
+    const highlightPattern = query.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+                                  .replace(/\*/g, '.*')
+                                  .replace(/\?/g, '.');
+    const hRegex = new RegExp(`(${highlightPattern})`, 'gi');
+
+    container.innerHTML = results.map(res => {
+        const highlightedSnippet = res.snippet.replace(hRegex, '<span class="search-highlight">$1</span>');
+        const highlightedTitle = res.title.replace(hRegex, '<span class="search-highlight">$1</span>');
+        const dateStr = new Date(res.timestamp).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
+        
+        return `
+            <div class="search-result-item" data-id="${res.id}" title="Double-click to open">
+                <div class="search-result-title">
+                    <span class="title-text">${highlightedTitle}</span>
+                    <span class="search-result-date">${dateStr}</span>
+                </div>
+                <div class="search-result-snippet">${highlightedSnippet}</div>
+                <div style="font-size: 9px; opacity: 0.4; margin-top: 4px;">ID: ${res.id}</div>
+            </div>
+        `;
+    }).join('');
+
+    // Handle single click for selection visual, double click for navigation
+    container.querySelectorAll('.search-result-item').forEach(item => {
+        const jumpTo = () => {
+            const id = (item as HTMLElement).dataset.id;
+            vscode.postMessage({ command: 'switchDiscussion', discussionId: id });
+            dom.discussionSearchModal.classList.remove('visible');
+        };
+
+        item.addEventListener('dblclick', (e) => {
+            e.preventDefault();
+            jumpTo();
+        });
+
+        // Also allow single click for convenience but with a small delay or button
+        item.addEventListener('click', (e) => {
+            // Highlight selected item
+            container.querySelectorAll('.search-result-item').forEach(i => i.style.backgroundColor = '');
+            (item as HTMLElement).style.backgroundColor = 'var(--vscode-list-activeSelectionBackground)';
+            (item as HTMLElement).style.color = 'var(--vscode-list-activeSelectionForeground)';
+        });
+    });
+}
+// Add this function to src/commands/chatPanel/webview/ui.ts
+
+/**
+ * Renders web search results inside the active tab of the Web Discovery modal.
+ */
+export function renderWebSearchResults(action: string, results: any[]) {
+    const tabId = `tab-${action}`;
+    const container = document.getElementById(tabId);
+    if (!container) return;
+
+    // Reset button state immediately
+    const submitBtn = container.querySelector('.web-submit-btn') as HTMLButtonElement;
+    if (submitBtn) {
+        submitBtn.innerHTML = (action === 'google' || action === 'ddg' || action === 'github') ? 'Search Again' : 'Search';
+        submitBtn.disabled = false;
+        submitBtn.style.width = ''; // Reset explicit width from events.ts
+    } else {
+        // Fallback: search for any button in the flex container if specific class finding failed
+        const anyBtn = container.querySelector('button');
+        if (anyBtn) {
+            anyBtn.innerHTML = 'Search';
+            anyBtn.disabled = false;
+        }
+    }
+
+    let resultsList = container.querySelector('.web-search-results') as HTMLElement;
+    if (!resultsList) {
+        resultsList = document.createElement('div');
+        resultsList.className = 'web-search-results';
+        submitBtn?.insertAdjacentElement('beforebegin', resultsList);
+    }
+
+    if (!results || results.length === 0) {
+        resultsList.innerHTML = '<div style="padding:10px; opacity:0.6;">No results found.</div>';
+        return;
+    }
+
+    resultsList.innerHTML = results.map((res, idx) => `
+        <div class="web-search-item" data-url="${res.url}">
+            <div style="display:flex; align-items: flex-start; gap:10px;">
+                <input type="checkbox" class="web-result-check" id="web-res-${action}-${idx}" value="${res.url}" style="margin-top: 3px;">
+                <label for="web-res-${action}-${idx}" style="flex:1; min-width:0;">
+                    <div class="web-result-title">${res.title}</div>
+                    <div class="web-result-url">${res.url}</div>
+                </label>
+            </div>
+        </div>
+    `).join('');
+
+    // Add "Add Selected" button if it doesn't exist
+    let addBtn = container.querySelector('.web-add-selected-btn') as HTMLButtonElement;
+    if (!addBtn) {
+        addBtn = document.createElement('button');
+        addBtn.className = 'code-action-btn apply-btn web-add-selected-btn';
+        addBtn.style.width = '100%';
+        addBtn.style.marginTop = '10px';
+        addBtn.innerHTML = '<span class="codicon codicon-add"></span> Add Selected to Context';
+        resultsList.insertAdjacentElement('afterend', addBtn);
+        
+        addBtn.onclick = () => {
+            const selected = Array.from(resultsList.querySelectorAll('input:checked')).map((el: any) => el.value);
+            if (selected.length > 0) {
+                vscode.postMessage({ command: 'addWebPagesToContext', urls: selected });
+                dom.webModal.classList.remove('visible');
+            } else {
+                vscode.postMessage({ command: 'showError', message: 'Please select at least one result.' });
+            }
+        };
+    }
+    addBtn.style.display = 'flex';
+}
+
+export function renderContextUsage(usage: any[]) {
+    const container = dom.usageListContainer;
+    if (!container) return;
+
+    if (!usage || usage.length === 0) {
+        container.innerHTML = '<div style="padding:20px; opacity:0.6; text-align:center;">No files included in context.</div>';
+        return;
+    }
+
+    const sizeMatch = (dom.tokenCountLabel?.textContent || "").match(/\/ ([\d\s,.]+)/);
+    const contextSize = sizeMatch ? parseInt(sizeMatch[1].replace(/\D/g, '')) : 4096;
+
+    let html = `
+        <div class="usage-dashboard-header" style="margin-bottom: 25px; background: var(--vscode-editor-inactiveSelectionBackground); padding: 15px; border-radius: 8px; border: 1px solid var(--vscode-widget-border);">
+            <div style="display:flex; justify-content:space-between; margin-bottom: 10px; font-weight:bold; font-size: 14px;">
+                <span>Total Token Load</span>
+                <span id="usage-total-label">Calculating...</span>
+            </div>
+            <div class="token-progress-container" style="height: 12px; margin-bottom: 5px;">
+                <div id="usage-modal-bar" class="token-progress-bar"></div>
+            </div>
+        </div>
+    `;
+
+    const renderTable = (files: any[], title: string, icon: string) => {
+        if (files.length === 0) return "";
+        return `
+            <div style="margin-bottom: 30px;">
+                <h3 style="border-bottom: 1px solid var(--vscode-panel-border); padding-bottom: 8px;">
+                    <i class="codicon ${icon}"></i> ${title} (${files.length})
+                </h3>
+                <table style="width:100%; border-collapse:collapse; font-size:12px;">
+                    <tbody id="usage-table-${icon.includes('globe') ? 'extra' : 'project'}">
+                        ${files.map(item => `
+                            <tr data-path="${item.path}" style="border-bottom: 1px solid var(--vscode-widget-border);">
+                                <td style="padding:10px 8px; max-width:300px;">
+                                    <div style="font-weight: 500; overflow:hidden; text-overflow:ellipsis;">${item.path.split('/').pop()}</div>
+                                    <div style="font-size: 10px; opacity: 0.5; overflow:hidden; text-overflow:ellipsis;">${item.path}</div>
+                                </td>
+                                <td style="padding:10px 8px; width: 120px;">
+                                    <div style="display:flex; flex-direction:column; gap:4px;">
+                                        <span class="file-token-label" style="font-weight:bold;">...</span>
+                                        <div class="token-progress-container" style="height:4px; width:100%;">
+                                            <div class="token-progress-bar file-usage-bar" style="width:0%"></div>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td style="padding:10px 8px; text-align:right; width:40px;">
+                                    <button class="icon-btn" onclick="window.vscode.postMessage({command:'removeFileFromContext', path:'${item.path}'});" title="Remove"><i class="codicon codicon-trash"></i></button>
+                                </td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>
+        `;
+    };
+
+    const projectFiles = usage.filter(f => !f.isExtra);
+    const extraFiles = usage.filter(f => f.isExtra);
+
+    container.innerHTML = html + renderTable(projectFiles, "Project Files", "codicon-root-folder") + renderTable(extraFiles, "Research & External", "codicon-globe");
+}
+
+export function updateContextFileUsage(filePath: string, tokens: number) {
+    const row = document.querySelector(`tr[data-path="${filePath}"]`);
+    if (!row) return;
+
+    const label = row.querySelector('.file-token-label');
+    const bar = row.querySelector('.file-usage-bar') as HTMLElement;
+    
+    const sizeMatch = (dom.tokenCountLabel?.textContent || "").match(/\/ ([\d\s,.]+)/);
+    const contextSize = sizeMatch ? parseInt(sizeMatch[1].replace(/\D/g, '')) : 4096;
+
+    if (label) label.textContent = tokens.toLocaleString();
+    if (bar) {
+        const pct = Math.min((tokens / contextSize) * 100, 100);
+        bar.style.width = `${pct}%`;
+        bar.className = 'token-progress-bar file-usage-bar ' + (pct > 20 ? 'range-warning' : 'range-safe');
+    }
+
+    // Update global total label
+    const allLabels = Array.from(document.querySelectorAll('.file-token-label'));
+    let total = 0;
+    let pending = false;
+    allLabels.forEach(l => {
+        if (l.textContent === '...') pending = true;
+        else total += parseInt(l.textContent?.replace(/,/g, '') || '0');
+    });
+
+    const totalLabel = document.getElementById('usage-total-label');
+    if (totalLabel) totalLabel.textContent = `${total.toLocaleString()} / ${contextSize.toLocaleString()}${pending ? ' (Calculating...)' : ''}`;
+    
+    updateProgressBar(document.getElementById('usage-modal-bar'), total, contextSize);
+}
+
+/**
+ * Updates a progress bar with segmented color logic.
+ */
+export function updateProgressBar(element: HTMLElement | null, current: number, total: number) {
+    if (!element) return;
+
+    const percentage = Math.min((current / total) * 100, 100);
+    element.style.width = `${percentage}%`;
+
+    element.classList.remove('range-safe', 'range-warning', 'range-danger');
+
+    const ratio = current / total;
+    if (ratio > 1.0) {
+        element.classList.add('range-danger');
+    } else if (ratio > 0.7) {
+        element.classList.add('range-warning');
+    } else {
+        element.classList.add('range-safe');
+    }
+}
+

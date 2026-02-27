@@ -62,7 +62,10 @@ export function registerNotebookCommands(context: vscode.ExtensionContext, servi
                 try {
                     let contextText = "";
                     if (includeTree) {
-                        const contextContent = await services.contextManager.getContextContent({ includeTree: true });
+                        const contextContent = await services.contextManager.getContextContent({ 
+                            includeTree: true,
+                            modelName: services.lollmsAPI.getModelName()
+                        });
                         contextText = contextContent.text;
                     }
 

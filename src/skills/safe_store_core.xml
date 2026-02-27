@@ -1,52 +1,43 @@
-<skill id="safe-store-core">
-    <name>safe_store: Core Initialization & Configuration</name>
-    <description>Fundamental setup patterns for SafeStore with different database types, vectorizers, and configurations</description>
-    <category>python/safe_store/core</category>
-    <language>markdown</language>
-    <timestamp>1740265200000</timestamp>
+<skill id="safe-store-core" title="SafeStore Core Class" description="Primary API for local semantic storage, vectorization, and document management." category="python/safe_store/core">
     <content>
         <![CDATA[
-## SafeStore Initialization Patterns
+# 💎 SOURCE OF TRUTH: SafeStore Core API
 
-### 1. Basic File-Based Store
+The `SafeStore` class is the main entry point for document indexing and semantic retrieval.
+
+## 🛠️ Class Instantiation
 ```python
-from safe_store import SafeStore
+import safe_store
 
-# Standard persistent database
-store = SafeStore(
-    db_path="my_knowledge_base.db",
-    vectorizer_name="st",
-    vectorizer_config={"model": "all-MiniLM-L6-v2"}
+store = safe_store.SafeStore(
+    db_path="knowledge_base.db",          # Path to SQLite file
+    vectorizer_name="st",                 # "st" (SentenceTransformers), "tfidf", "ollama", "openai", "cohere"
+    vectorizer_config={                   # Dictionary based on vectorizer type
+        "model": "all-MiniLM-L6-v2"       # Default for "st"
+    },
+    chunking_strategy="token",            # "token", "recursive" (recommended for code), "sentence"
+    chunk_size=512,                       # Tokens per chunk
+    chunk_overlap=50,                     # Token overlap between chunks
+    encryption_key=None,                  # Optional password for encryption at rest
+    lock_timeout=120                      # Seconds to wait if DB is locked
 )
 ```
 
-### 2. In-Memory Store (Temporary)
-```python
-from safe_store import SafeStore, IN_MEMORY_DB_INDICATOR
+## 📄 Document Operations
+### Adding Documents
+- `store.add_document(file_path, metadata={}, chunk_processor=None, force_reindex=False)`
+- `store.add_text(unique_id, text, metadata={}, chunk_processor=None, force_reindex=False)`
 
-# For testing or ephemeral data - no persistence
-store = SafeStore(db_path=IN_MEMORY_DB_INDICATOR)
-```
+### Retrieval
+- `store.query(query_text, top_k=5)` -> Returns List of Dicts: `[{'chunk_id', 'chunk_text', 'similarity', 'document_metadata', ...}]`
 
-### 3. Temporary File Store
-```python
-from safe_store import SafeStore, TEMP_FILE_DB_INDICATOR
+### Maintenance & Inspection
+- `store.list_documents()`: Returns metadata of all indexed files.
+- `store.reconstruct_document_text(file_path)`: Reassembles chunks back into original text.
+- `store.conn.execute("VACUUM")`: Reclaim space after deletions.
 
-# Auto-creates temp file, cleaned up on close
-store = SafeStore(db_path=TEMP_FILE_DB_INDICATOR)
-```
-
-### 4. Encrypted Store
-```python
-from safe_store import SafeStore
-
-store = SafeStore(
-    db_path="encrypted_store.db",
-    vectorizer_name="st",
-    vectorizer_config={"model": "all-MiniLM-L6-v2"},
-    encryption_key="my-secure-password-123"
-)
-```
+## 🔗 Supported Extensions
+`.pdf`, `.docx`, `.xlsx`, `.xls`, `.pptx`, `.msg` (Outlook), `.txt`, `.md`, `.json`, `.py`, `.cpp`, `.js`, etc.
 ]]>
     </content>
 </skill>

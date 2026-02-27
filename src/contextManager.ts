@@ -101,8 +101,8 @@ export class ContextManager {
   };
   
   private _lastContext: ContextResult | null = null;
-  
   private static PROJECT_SKILLS_KEY = 'lollms_project_active_skills';
+  private static TOKEN_CACHE_KEY = 'lollms_token_cache';
 
   constructor(context: vscode.ExtensionContext, lollmsAPI: LollmsAPI) {
     this.context = context;
@@ -250,44 +250,73 @@ export class ContextManager {
       return null;
   }
 
-  private async fetchYoutubeTranscript(videoId: string, languageCode: string = 'en'): Promise<string> {
+private async fetchYoutubeTranscript(videoId: string, languageCode: string = 'en'): Promise<string> {
       try {
         const headers = { 
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36' 
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9'
         };
+
+        // 1. Fetch the video page to get API Key and Initial Data
         const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, { headers });
         const html = await pageRes.text();
         
-        const jsonMatch = html.match(/ytInitialPlayerResponse\s*=\s*({.+?});/);
-        if (!jsonMatch) return "Could not retrieve video metadata (Video may be restricted).";
-        
-        const playerResponse = JSON.parse(jsonMatch[1]);
-        const captions = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-        
-        if (!captions || captions.length === 0) return "No captions/transcripts found for this video.";
-        
-        // Find requested language or fallback to first available
-        let track = captions.find((t: any) => t.languageCode === languageCode);
-        if (!track) {
-            track = captions[0];
+        const apiKeyMatch = html.match(/"INNERTUBE_API_KEY":"([^"]+)"/);
+        if (!apiKeyMatch) return "Could not retrieve InnerTube API key.";
+        const apiKey = apiKeyMatch[1];
+
+        // Extract ytInitialData which contains the transcript params
+        const dataMatch = html.match(/var ytInitialData = ({.*?});/);
+        if (!dataMatch) return "Could not find video data on the page.";
+        const ytInitialData = JSON.parse(dataMatch[1]);
+
+        // 2. Locate the transcript params (continuation token)
+        let transcriptParams: string | undefined;
+        const engagementPanels = ytInitialData.engagementPanels || [];
+        for (const panel of engagementPanels) {
+            const renderer = panel.engagementPanelSectionListRenderer;
+            if (renderer?.panelIdentifier === 'engagement-panel-transcript') {
+                transcriptParams = renderer.content?.transcriptRenderer?.params 
+                                || renderer.header?.engagementPanelTitleHeaderRenderer?.menu?.menuRenderer?.items?.[0]?.menuServiceItemRenderer?.serviceEndpoint?.getTranscriptEndpoint?.params;
+            }
         }
+
+        if (!transcriptParams) return "No transcript available for this video (or it is disabled).";
+
+        // 3. Call the specialized get_transcript endpoint
+        const transcriptUrl = `https://www.youtube.com/youtubei/v1/get_transcript?key=${apiKey}`;
+        const transcriptRes = await fetch(transcriptUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                context: {
+                    client: {
+                        clientName: "WEB",
+                        clientVersion: "2.20240210.05.00"
+                    }
+                },
+                params: transcriptParams
+            })
+        });
+
+        if (!transcriptRes.ok) return `Transcript API Error: ${transcriptRes.status}`;
+        const transcriptData: any = await transcriptRes.json();
+
+        // 4. Parse the segments from the transcript response
+        const panels = transcriptData.actions?.[0]?.updateEngagementPanelAction?.content?.transcriptRenderer?.body?.transcriptBodyRenderer?.cueGroups || [];
+        const textParts: string[] = [];
         
-        const transcriptRes = await fetch(track.baseUrl);
-        const xml = await transcriptRes.text();
-        
-        // Simple XML clean up
-        const parts: string[] = [];
-        const regex = /<text[^>]*>([\s\S]*?)<\/text>/g;
-        let m;
-        while ((m = regex.exec(xml)) !== null) {
-            parts.push(m[1]
-                .replace(/&amp;/g, '&')
-                .replace(/&lt;/g, '<')
-                .replace(/&gt;/g, '>')
-                .replace(/&#39;/g, "'")
-                .replace(/&quot;/g, '"'));
+        for (const group of panels) {
+            const cues = group.transcriptCueGroupRenderer?.cues || [];
+            for (const cue of cues) {
+                const text = cue.transcriptCueRenderer?.shortId?.simpleText || cue.transcriptCueRenderer?.cue?.simpleText || "";
+                if (text) textParts.push(text);
+            }
         }
-        return parts.join(' ').replace(/\s+/g, ' ').trim();
+
+        const finalResult = textParts.join(' ').replace(/\s+/g, ' ').trim();
+        return finalResult || "Extraction failed: The transcript response contained no text segments.";
+
       } catch(e: any) {
           return `Error fetching transcript: ${e.message}`;
       }
@@ -342,7 +371,11 @@ ${content.substring(0, 20000)}
   }
 
   // --- URL Processing ---
-  public async processUrl(url: string, languageCode: string = 'en', userPrompt?: string, signal?: AbortSignal): Promise<{ filename: string, content: string, summary: string }> {
+  public async processUrl(url: string, languageCode: string = 'en', userPrompt?: string, signal?: AbortSignal, depth: number = 0, visited: Set<string> = new Set()): Promise<{ filename: string, content: string, summary: string }> {
+      if (visited.has(url) || depth < 0) {
+          return { filename: '', content: '', summary: '' };
+      }
+      visited.add(url);
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
       if (!workspaceFolder) throw new Error("No workspace folder open.");
       
@@ -467,12 +500,86 @@ ${content.substring(0, 20000)}
       // Add to context
       const relativePath = path.join('.lollms', 'web_cache', filename);
       await this.contextStateProvider?.addFilesToContext([relativePath]);
+
+      // --- RECURSIVE SCRAPING ---
+      if (depth > 0) {
+          const linkRegex = /href=["'](https?:\/\/[^"']+)["']/g;
+          let match;
+          const internalLinks: string[] = [];
+          const origin = new URL(url).origin;
+
+          while ((match = linkRegex.exec(rawContent)) !== null) {
+              const link = match[1];
+              if (link.startsWith(origin) && !visited.has(link)) {
+                  internalLinks.push(link);
+              }
+          }
+
+          // Limit recursion to avoid explosion (max 5 links per page in depth)
+          for (const link of internalLinks.slice(0, 5)) {
+              if (signal?.aborted) break;
+              await this.processUrl(link, languageCode, userPrompt, signal, depth - 1, visited);
+          }
+      }
       
       return { 
           filename: relativePath, 
           content: rawContent, 
           summary: rawContent.substring(0, 200) + "..." 
       };
+  }
+
+  /**
+   * Performs a search on specialized web providers and returns results for user selection.
+   */
+  public async searchWebInfo(action: string, query: string, signal?: AbortSignal): Promise<any[]> {
+      const results: any[] = [];
+      try {
+          if (action === 'google') {
+              const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+              const apiKey = config.get<string>('searchApiKey');
+              const cx = config.get<string>('searchCx');
+              if (!apiKey || !cx) throw new Error("Google Search not configured in Settings.");
+
+              const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${cx}&q=${encodeURIComponent(query)}`;
+              const res = await fetch(url, { timeout: 10000 }); // 10s timeout
+              const data: any = await res.json();
+              return (data.items || []).map((i: any) => ({ title: i.title, url: i.link, snippet: i.snippet }));
+          } else if (action === 'ddg') {
+              // DuckDuckGo simple HTML fallback search
+              const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+              const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+              const html = await res.text();
+              const linkRegex = /<a class="result__a" rel="noopener" href="([^"]+)">([^<]+)<\/a>/g;
+              let m;
+              while ((m = linkRegex.exec(html)) !== null && results.length < 5) {
+                  results.push({ title: m[2], url: m[1], snippet: "" });
+              }
+              return results;
+          } else if (action === 'wiki') {
+              const url = `https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(query)}&format=json&origin=*`;
+              const res = await fetch(url, { timeout: 8000 });
+              const data: any = await res.json();
+              if (data.query?.search) {
+                  return data.query.search.map((i: any) => ({
+                      title: i.title,
+                      url: `https://en.wikipedia.org/wiki/${encodeURIComponent(i.title)}`,
+                      snippet: i.snippet.replace(/<[^>]+>/g, '')
+                  }));
+              }
+          } else if (action === 'arxiv') {
+              const url = `http://export.arxiv.org/api/query?search_query=${encodeURIComponent(query)}&max_results=5`;
+              const res = await fetch(url);
+              const txt = await res.text();
+              const titles = [...txt.matchAll(/<title>([\s\S]*?)<\/title>/g)].map(m => m[1].trim()).slice(1);
+              const ids = [...txt.matchAll(/<id>([\s\S]*?)<\/id>/g)].map(m => m[1].trim()).slice(1);
+              const summaries = [...txt.matchAll(/<summary>([\s\S]*?)<\/summary>/g)].map(m => m[1].trim().substring(0, 200));
+              return titles.map((t, i) => ({ title: t, url: ids[i], snippet: summaries[i] }));
+          }
+      } catch (e) {
+          console.error(`Search failed for ${action}:`, e);
+      }
+      return results;
   }
 
   private async searchLocalCache(query: string, signal?: AbortSignal): Promise<string> {
@@ -1142,25 +1249,45 @@ You have access to the project structure and the list of currently selected file
       }
   }
   
-  async getContextContent(options?: { includeTree?: boolean, signal?: AbortSignal, importedSkillIds?: string[], activeDiagramIds?: string[] }): Promise<ContextResult> {
+  async getContextContent(options?: { includeTree?: boolean, signal?: AbortSignal, importedSkillIds?: string[], activeDiagramIds?: string[], modelName?: string }): Promise<ContextResult> {
     const result: ContextResult = { text: '', images: [], projectTree: '', selectedFilesContent: '', skillsContent: '', importedSkills: [] };
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const maxImageSize = config.get<number>('maxImageSize') || 1024;
     const includeTree = options?.includeTree !== false; 
     const signal = options?.signal;
-    const skillProtocol = `
-### 💡 SKILL CREATION PROTOCOL
-If the user asks to "save this as a skill", "remember this", or "learn a new trick", wrap the content in a <skill> tag.
-Format:
-<skill title="Clear Name" description="What this teaches/provides" category="programming/language/feature">
-The detailed documentation or code pattern here in Markdown.
-</skill>
 
-Rules:
-1. **Title**: Concise and descriptive.
-2. **Category**: Use forward slashes for hierarchy (e.g., 'web/react/hooks').
-3. **Content**: Ensure it is high-quality, reusable info.
-`;
+    // --- RLM (Recursive Language Model) / Long Context Logic ---
+    let useRLM = false;
+    if (this.contextStateProvider && options?.modelName) {
+        try {
+            const sizeData = await this.lollmsAPI.getContextSize(options.modelName);
+            if (sizeData && sizeData.context_size > 0) {
+                const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+                if (workspaceFolder) {
+                    let totalBytes = 0;
+                    const includedFiles = this.contextStateProvider.getIncludedFiles();
+                    
+                    // Quick estimate of context usage based on file size
+                    for (const f of includedFiles) {
+                        try {
+                            const stat = await vscode.workspace.fs.stat(vscode.Uri.joinPath(workspaceFolder.uri, f.path));
+                            totalBytes += stat.size;
+                        } catch { }
+                    }
+                    
+                    // Roughly 1 token ~= 3.5 chars (bytes for utf8 ascii). 
+                    // We use 70% threshold.
+                    const estimatedTokens = totalBytes / 3.5;
+                    if (estimatedTokens > (sizeData.context_size * 0.7)) {
+                        useRLM = true;
+                    }
+                }
+            }
+        } catch (e) {
+            console.error("Failed to check context size for RLM:", e);
+        }
+    }
+
     if (!this.contextStateProvider) {
       result.text = this.getNoWorkspaceMessage();
       this._lastContext = result;
@@ -1182,7 +1309,16 @@ Rules:
 
     const includedFiles = contextFiles.filter(f => !f.path.endsWith(path.sep));
     
-    if (includedFiles.length > 0) {
+    if (useRLM) {
+        result.selectedFilesContent += `### 🐢 LONG CONTEXT MODE (RLM ACTIVATED)\n`;
+        result.selectedFilesContent += `The total size of selected files exceeds 70% of the context window. Content is hidden.\n\n`;
+        result.selectedFilesContent += `**AVAILABLE FILES:**\n`;
+        for (const f of includedFiles) {
+            result.selectedFilesContent += `- ${f.path}\n`;
+        }
+        result.selectedFilesContent += `\n**INSTRUCTIONS:**\n- Use \`read_file\` to peek at specific files.\n- Use \`search_files\` to find code.\n- Use \`rlm_repl\` to maintain state and memory.\n\n`;
+        result.selectedFilesContent += `### RLM MEMORY\n- **Front Memory (Scratchpad):** [Empty]\n- **Back Memory (Persistent):** [Empty]\n`;
+    } else if (includedFiles.length > 0) {
       for (let i = 0; i < includedFiles.length; i++) {
         const fileEntry = includedFiles[i];
 
@@ -1292,14 +1428,16 @@ Rules:
         }
     }
 
-    result.skillsContent = skillProtocol + "\n";
+    result.skillsContent = "";
     if (this.skillsManager && allSkillIds.length > 0) {
         const skills = await this.skillsManager.getSkills();
         for (const skill of skills) {
             if (allSkillIds.includes(skill.id)) {
                 result.importedSkills.push(skill);
                 const scopeLabel = skill.scope === 'global' ? 'GLOBAL' : 'PROJECT';
-                result.skillsContent += `### Skill (${scopeLabel}): ${skill.name}\n> ${skill.description}\n\`\`\`${skill.language || 'text'}\n${skill.content}\n\`\`\`\n\n`;
+                result.skillsContent += `\n#### 💎 SOURCE OF TRUTH: ${skill.name.toUpperCase()} (${scopeLabel} SKILL)\n`;
+                result.skillsContent += `> Description: ${skill.description}\n`;
+                result.skillsContent += `\`\`\`${skill.language || 'text'}\n${skill.content}\n\`\`\`\n\n`;
             }
         }
     }
@@ -1507,6 +1645,21 @@ Currently operating without project context.
 `;
   }
 
+
+  public async getCachedTokens(filePath: string, currentHash: string): Promise<number | null> {
+      const cache = this.context.workspaceState.get<Record<string, { hash: string, tokens: number }>>(ContextManager.TOKEN_CACHE_KEY, {});
+      const entry = cache[filePath];
+      if (entry && entry.hash === currentHash) {
+          return entry.tokens;
+      }
+      return null;
+  }
+
+  public async setCachedTokens(filePath: string, hash: string, tokens: number) {
+      const cache = this.context.workspaceState.get<Record<string, { hash: string, tokens: number }>>(ContextManager.TOKEN_CACHE_KEY, {});
+      cache[filePath] = { hash, tokens };
+      await this.context.workspaceState.update(ContextManager.TOKEN_CACHE_KEY, cache);
+  }
 
   public async getActiveProjectSkills(): Promise<string[]> {
       return this.context.workspaceState.get<string[]>(ContextManager.PROJECT_SKILLS_KEY, []);

@@ -1,11 +1,4 @@
-<skill id="lollms-rag-document-system">
-    <name>RAG Document System</name>
-    <description>Building a complete RAG system with LoLLMs: document ingestion, vectorization, and agentic retrieval from mixed file types.</description>
-    <category>python/lollms_client/rag</category>
-    <language>markdown</language>
-    <timestamp>1738425600000</timestamp>
-    <content>
-        <![CDATA[
+<skill title="RAG Document System" description="Building a complete RAG system with LoLLMs: document ingestion, vectorization, and agentic retrieval from mixed file types." category="python/lollms_client/rag">
 # RAG Document System with LoLLMs
 
 ## Overview

@@ -1,11 +1,4 @@
-<skill id="ascii-colors-progress-bars">
-    <name>ASCIIColors Progress Bars</name>
-    <description>Customizable progress bars with multiple styles, thread safety, and manual control.</description>
-    <category>python/ascii_colors/progress</category>
-    <language>markdown</language>
-    <timestamp>1738425600000</timestamp>
-    <content>
-        <![CDATA[
+<skill title="ASCIIColors Progress Bars" description="Customizable progress bars with multiple styles, thread safety, and manual control." category="python/ascii_colors/progress" id="ascii-colors-progress-bars" language="markdown" timestamp="1738425600000">
 # ASCIIColors Progress Bars
 
 `tdqm`-like progress bars with custom styles, thread safety, and flexible control.
@@ -339,7 +332,4 @@ for epoch in range(epochs):
 | `close()` | Clean up and hide |
 | `clear()` | Remove from display |
 | `unpause()` / `pause()` | Control updates |
-
-]]>
-    </content>
 </skill>

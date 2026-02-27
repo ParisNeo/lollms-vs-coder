@@ -221,6 +221,65 @@ export function initEventHandlers() {
 
     bindClick(dom.attachButton, 'requestAddFileToContext'); 
 
+    // Web Discovery Modal
+    if (dom.webContextBtn) {
+        dom.webContextBtn.addEventListener('click', () => {
+            dom.webModal.classList.add('visible');
+        });
+    }
+
+    if (dom.webModalCloseBtn) {
+        dom.webModalCloseBtn.addEventListener('click', () => {
+            dom.webModal.classList.remove('visible');
+        });
+    }
+
+    dom.webTabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const target = (btn as HTMLElement).dataset.tab;
+            dom.webTabBtns.forEach(b => b.classList.remove('active'));
+            dom.webTabContents.forEach(c => c.classList.remove('active'));
+            btn.classList.add('active');
+            document.getElementById(target!)?.classList.add('active');
+        });
+    });
+
+    dom.webSubmitBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const action = (btn as HTMLElement).dataset.action;
+            const container = (btn as HTMLElement).closest('.web-tab-content');
+            let params: any = {};
+
+            if (action === 'scrape' || action === 'youtube') {
+                // Direct actions still close the modal
+                if (action === 'scrape') {
+                    params = {
+                        url: (document.getElementById('web-url-input') as HTMLInputElement).value,
+                        depth: parseInt((document.getElementById('web-url-depth') as HTMLInputElement).value, 10)
+                    };
+                } else {
+                    params = {
+                        url: (document.getElementById('web-yt-url') as HTMLInputElement).value,
+                        language: (document.getElementById('web-yt-lang') as HTMLInputElement).value
+                    };
+                }
+                vscode.postMessage({ command: 'requestWebAction', action, params });
+                dom.webModal.classList.remove('visible');
+            } else {
+                // Search actions display results in the tab instead of closing
+                const input = container?.querySelector('input[type="text"]') as HTMLInputElement;
+                if (!input || !input.value.trim()) {
+                    vscode.postMessage({ command: 'showError', message: 'Please enter a search query.' });
+                    return;
+                }
+                btn.innerHTML = '<div class="spinner"></div>';
+                btn.style.width = '80px'; // Maintain layout
+                btn.disabled = true;
+                vscode.postMessage({ command: 'requestWebAction', action, params: { query: input.value } });
+            }
+        });
+    });
+
     if (dom.fileSearchInput) {
         let searchTimeout: any;
         dom.fileSearchInput.addEventListener('keydown', (e) => {
@@ -259,7 +318,7 @@ export function initEventHandlers() {
     if (dom.fileSearchSelectAll) {
         dom.fileSearchSelectAll.addEventListener('change', () => {
             const checked = dom.fileSearchSelectAll.checked;
-            dom.fileSearchResults.querySelectorAll('input').forEach(i => i.checked = checked);
+            dom.fileSearchResults.querySelectorAll('input[type="checkbox"]').forEach((i: any) => i.checked = checked);
         });
     }
 
@@ -493,6 +552,40 @@ export function initEventHandlers() {
             const selectedSkills = Array.from(dom.skillsTreeContainer.querySelectorAll('.skill-checkbox:checked')).map((el: any) => el.value);
             vscode.postMessage({ command: 'importSelectedSkills', skillIds: selectedSkills });
             dom.skillsModal.classList.remove('visible');
+        });
+    }
+
+    // --- Global Discussion Search Events ---
+    if (dom.discussionSearchRunBtn) {
+        const runSearch = () => {
+            const query = dom.discussionSearchInput.value.trim();
+            if (query) {
+                dom.discussionSearchResults.innerHTML = '<div style="text-align:center; padding:20px;"><div class="spinner"></div> Searching discussions...</div>';
+                vscode.postMessage({ command: 'performDeepDiscussionSearch', query });
+            }
+        };
+        dom.discussionSearchRunBtn.addEventListener('click', runSearch);
+        dom.discussionSearchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') runSearch();
+        });
+    }
+
+    if (dom.discussionSearchCloseBtn) {
+        dom.discussionSearchCloseBtn.addEventListener('click', () => dom.discussionSearchModal.classList.remove('visible'));
+    }
+
+    // --- Raw Code Modal Events ---
+    if (dom.rawCodeCloseBtn) {
+        dom.rawCodeCloseBtn.addEventListener('click', () => dom.rawCodeModal.classList.remove('visible'));
+    }
+
+    if (dom.copyRawBtn) {
+        dom.copyRawBtn.addEventListener('click', () => {
+            const text = dom.rawCodeDisplay.textContent || '';
+            vscode.postMessage({ command: 'copyToClipboard', text });
+            const originalHtml = dom.copyRawBtn.innerHTML;
+            dom.copyRawBtn.innerHTML = '<span class="codicon codicon-check"></span> Copied!';
+            setTimeout(() => dom.copyRawBtn.innerHTML = originalHtml, 2000);
         });
     }
 

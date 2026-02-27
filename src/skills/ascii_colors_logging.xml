@@ -1,11 +1,4 @@
-<skill id="ascii-colors-logging">
-    <name>ASCIIColors Logging</name>
-    <description>Production-grade logging with colors, multiple handlers, JSON output, and context tracking.</description>
-    <category>python/ascii_colors/logging</category>
-    <language>markdown</language>
-    <timestamp>1738425600000</timestamp>
-    <content>
-        <![CDATA[
+<skill title="ASCIIColors Logging" description="Production-grade logging with colors, multiple handlers, JSON output, and context tracking." category="python/ascii_colors/logging" id="ascii-colors-logging" language="markdown" timestamp="1738425600000">
 # ASCIIColors Logging
 
 Drop-in replacement for Python's `logging` with colors, structured output, and advanced features.
@@ -345,7 +338,4 @@ logger = configure_logging("payment-api")
 logger.info("Service starting...")  # Console + debug file
 logger.warning("Rate limit approaching")  # All handlers
 ```
-
-]]>
-    </content>
 </skill>

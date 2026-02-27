@@ -1,0 +1,61 @@
+<skill title="SafeStore PageIndex: Hierarchical Tree Management" description="Implements and manages structural hierarchies (trees) for documents in SafeStore, supporting breadcrumbs, recursive tree retrieval, and automated imports from CSV or Markdown headers." category="programming/python/data-structures">
+
+### Overview
+The `PageIndex` extension allows `safe_store` to represent documents not just as semantic chunks, but as a navigable hierarchy (e.g., Book -> Chapter -> Section). It supports automatic migration of existing databases and structural parsing.
+
+### Core Implementation
+The hierarchy is stored in the `pages` table with a `parent_id` referencing itself.
+
+```python
+from safe_store import SafeStore
+
+# Initialize (Automatically migrates existing DBs)
+with SafeStore("my_knowledge_base.db") as store:
+    doc_id = store.add_document("manual.pdf")['doc_id']
+    
+    # 1. Manual Page Creation
+    ch1_id = store.page_index.add_page(doc_id, "Chapter 1", content="...")
+    sec1_id = store.page_index.add_page(doc_id, "1.1 Installation", parent_id=ch1_id)
+    
+    # 2. Automated Import from Markdown
+    # Parses #, ##, ### headers into a tree
+    full_text = store.reconstruct_document_text("manual.pdf")
+    store.page_index.import_markdown_as_tree(doc_id, full_text)
+    
+    # 3. Automated Import from CSV
+    # Each row becomes a child page
+    csv_data = "id,name,desc\n1,Apples,Fruit\n2,Carrots,Veg"
+    store.page_index.import_csv_as_flat_list(doc_id, csv_data, title_column="name")
+```
+
+### Navigation API
+
+| Method | Description | Return Type |
+| :--- | :--- | :--- |
+| `get_tree(doc_id)` | Returns the full recursive tree | `List[Dict]` |
+| `get_children(page_id)` | Returns immediate sub-pages | `List[Dict]` |
+| `get_breadcrumbs(page_id)` | Returns path from root to node | `List[Dict]` |
+| `get_page(page_id)` | Fetches specific page data | `Dict` |
+
+### Recursive Navigation Example
+```python
+def print_structure(nodes, level=0):
+    for node in nodes:
+        print("  " * level + f"• {node['title']} (ID: {node['page_id']})")
+        if node.get('children'):
+            print_structure(node['children'], level + 1)
+
+with SafeStore("docs.db") as store:
+    tree = store.page_index.get_tree(doc_id=1)
+    print_structure(tree)
+```
+
+### Schema Architecture
+The `pages` table is initialized via `CREATE TABLE IF NOT EXISTS` in `db.py`, ensuring backwards compatibility:
+- `page_id`: Primary Key
+- `doc_id`: Linked to the physical file
+- `parent_id`: Self-referential FK for tree structure
+- `level`: Depth in tree (0 = Root)
+- `page_order`: Sibling sorting
+- `metadata`: JSON storage for extra attributes
+</skill>

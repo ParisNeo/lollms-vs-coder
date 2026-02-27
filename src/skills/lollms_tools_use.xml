@@ -1,11 +1,4 @@
-<skill id="lollms-agentic">
-    <name>Agents &amp; Advanced Reasoning</name>
-    <description>Building agentic workflows with tools, composable answers, self-correction, and recursive reasoning.</description>
-    <category>python/lollms_client/agents</category>
-    <language>markdown</language>
-    <timestamp>1738425600000</timestamp>
-    <content>
-        <![CDATA[
+<skill title="Agents & Advanced Reasoning" description="Building agentic workflows with tools, composable answers, self-correction, and recursive reasoning." category="python/lollms_client/agents" id="lollms-agentic" language="markdown" timestamp="1738425600000">
 # Agentic Workflows with LoLLMs
 
 ## Overview
@@ -429,7 +422,4 @@ response = discussion.chat(
 4. **Limit steps**: Set `max_reasoning_steps` based on task complexity (5-20 typical)
 5. **Temperature tuning**: Lower for decisions (0.2-0.3), higher for synthesis (0.7-0.9)
 6. **Use RLM sparingly**: Only for truly large inputs; adds overhead
-
-]]>
-    </content>
 </skill>

@@ -1,11 +1,4 @@
-<skill id="ascii-colors-live-displays">
-    <name>ASCIIColors Live & Status</name>
-    <description>Real-time terminal updates using Status spinners and Live display contexts.</description>
-    <category>python/ascii_colors/live</category>
-    <language>markdown</language>
-    <timestamp>1739462400000</timestamp>
-    <content>
-        <![CDATA[
+<skill title="ASCIIColors Live & Status" description="Real-time terminal updates using Status spinners and Live display contexts." category="python/ascii_colors/live" id="ascii-colors-live-displays" language="markdown" timestamp="1739462400000">
 # ASCIIColors Live & Status
 
 ## Status Spinners
@@ -27,11 +20,7 @@ with ASCIIColors.status("Connecting to database...") as status:
 Common styles: `dots`, `line`, `arrow`, `pulse`, `star`, `moon`.
 
 ```python
-with ASCIIColors.status(
-    "Processing...",
-    spinner="moon",
-    spinner_style="bold magenta"
-) as status:
+with ASCIIColors.status("Processing...", spinner="moon", spinner_style="bold magenta") as status:
     do_work()
 ```
 
@@ -69,6 +58,4 @@ result = ASCIIColors.execute_with_animation(
 )
 # Automatically shows ⠋ ... → ✓ on success or ✗ on failure
 ```
-]]>
-    </content>
 </skill>

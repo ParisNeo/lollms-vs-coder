@@ -54,7 +54,8 @@ export async function buildCodeActionPrompt(
         const contextResult = await contextManager.getContextContent({ 
             includeTree: true,
             importedSkillIds: combinedSkillIds,
-            activeDiagramIds: activeDiagramIds
+            activeDiagramIds: activeDiagramIds,
+            modelName: ChatPanel.currentPanel?.getCurrentDiscussion()?.model || lollmsApi.getModelName()
         });
 
         contextText = contextResult.text;
@@ -108,15 +109,15 @@ Identify which existing files in the project are crucial to read (types, base cl
 
     let systemPrompt = '';
 
+    // Fetch unified system prompt to include Skills and Environment
+    const baseSystemPrompt = await getProcessedSystemPrompt('agent', undefined, undefined, undefined, false, contextResult);
+
     if (actionType === 'information') {
-        const agentPersonaPrompt = await getProcessedSystemPrompt('agent');
         userPrompt += `\n\nPlease provide a detailed answer in Markdown format.`;
-        systemPrompt = `You are an expert code analyst. Your task is to answer questions and provide explanations about a given code snippet.
+        systemPrompt = `${baseSystemPrompt}\n\nYou are an expert code analyst. Your task is to answer questions and provide explanations about a given code snippet.
 - Analyze the user's instruction and the provided code.
 - Respond with a clear, well-formatted Markdown explanation.
-- If you include code examples, use appropriate markdown code blocks.
-
-User preferences: ${agentPersonaPrompt}`;
+- If you include code examples, use appropriate markdown code blocks.`;
     } else { 
         // Code Generation (Surgical Replacement)
         userPrompt = `I am working on a \`${languageId}\` file.
@@ -133,13 +134,13 @@ Provide the NEW version of the selected code block.
 
 ### ⚠️ CRITICAL CONSTRAINTS:
 - Output ONLY the raw source code.
-- NEVER use markdown code fences (like \` \` \` or \` \` \`${languageId}).
+- NEVER use markdown code fences.
 - NEVER include explanations, chatter, or "Here is your code".
+- NEVER use placeholders or ellipses. Provide the full logic for the target block.
 - Provide the full replacement for the selected block only.
-- Use relative indentation: the first line of your output should have NO leading whitespace (unless the line itself is empty). Subsequent lines should be indented relative to the first line.
-- If you fail to follow these rules, the system will crash.`;
-
-        systemPrompt = `You are a surgical code replacement engine. You output raw source code with NO formatting, NO markdown, and NO dialogue.`;
+- Use relative indentation: the first line of your output should have NO leading whitespace. Subsequent lines should be indented relative to the first line.`;
+        
+        systemPrompt = `${baseSystemPrompt}\n\nYou are a surgical code replacement engine. You output raw source code with NO formatting, NO markdown, and NO dialogue.`;
     }
     
     return { systemPrompt, userPrompt };

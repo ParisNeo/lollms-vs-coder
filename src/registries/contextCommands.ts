@@ -172,7 +172,9 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.exportContextContent', async () => {
         try {
-            const contextResult = await services.contextManager.getContextContent();
+            const contextResult = await services.contextManager.getContextContent({
+                modelName: services.lollmsAPI.getModelName()
+            });
             await vscode.env.clipboard.writeText(contextResult.text);
             vscode.window.showInformationMessage(vscode.l10n.t("info.contextCopied"));
         } catch (error: any) {

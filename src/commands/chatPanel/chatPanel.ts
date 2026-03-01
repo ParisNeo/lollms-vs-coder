@@ -199,10 +199,11 @@ export class ChatPanel {
             
             let statusText = vscode.l10n.t("Lollms is thinking...");
             
-            if (activeGen) {
-                statusText = vscode.l10n.t("Generating response...");
-            } else if (process && !isBackgroundProcess) {
+            // Prioritize the real-time process description for better transparency
+            if (process) {
                 statusText = process.description;
+            } else if (activeGen) {
+                statusText = vscode.l10n.t("Generating response...");
             }
 
             this._panel.webview.postMessage({ 
@@ -626,7 +627,7 @@ export class ChatPanel {
                 const estimatedTokens = Math.ceil(wordCount * 1.33);
                 
                 const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-                const failsafeSize = config.get<number>('failsafeContextSize') || 4096;
+                const failsafeSize = config.get<number>('failsafeContextSize') || 128000;
 
                 this._panel.webview.postMessage({
                     command: 'updateTokenProgress',
@@ -813,15 +814,19 @@ export class ChatPanel {
    * Scans a finished message for partial blocks (Diff/SearchReplace),
    * verifies them against the actual file on disk, and asks AI to fix if broken.
    */
-  private async verifyAndProcessCodeBlocks(messageId: string, fullContent: string, signal: AbortSignal): Promise<string> {
+  private async verifyAndProcessCodeBlocks(messageId: string, fullContent: string, signal: AbortSignal, onStatusUpdate?: (status: string) => void): Promise<string> {
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+    const shouldVerify = config.get<boolean>('verifyAndCorrectCodeBlocks') ?? false;
+    
+    if (!shouldVerify) return fullContent;
+
     const maxRetries = config.get<number>('agentMaxRetries') || 2;
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder) return fullContent;
 
     let currentContent = fullContent;
     
-    // Detect all partial blocks (diff:path or language:path containing Aider markers)
+    // Detect all partial blocks (Diff/SearchReplace)
     // Support both \n and \r\n after the language:path header
     const blockRegex = /```(\w+):([^\n\s]+)[\r\n]+([\s\S]+?)[\r\n]+```/g;
     let match;
@@ -898,6 +903,10 @@ export class ChatPanel {
                 retryCount++;
                 lastError = result.error || "Unknown error.";
                 if (retryCount > maxRetries) break;
+
+                if (onStatusUpdate) {
+                    onStatusUpdate(`Applying self-correction to ${path.basename(block.path)} (Attempt ${retryCount}/${maxRetries})...`);
+                }
 
                 const repairPrompt = `The following code update failed to apply to \`${block.path}\`.
 **Error:** ${lastError}
@@ -1167,7 +1176,7 @@ Please provide the **FULL CONTENT** of the file instead using the format:
         return;
     }
 
-    const { id: processId, controller } = this.processManager.register(this.discussionId, 'Generating response...');
+    const { id: processId, controller } = this.processManager.register(this.discussionId, 'Preparing request...');
     this.updateGeneratingState();
 
     // Strictly check if AutoContext is enabled AND not muted
@@ -1175,6 +1184,9 @@ Please provide the **FULL CONTENT** of the file instead using the format:
 
     // --- AUTO SKILL SELECTION ---
     if (this._discussionCapabilities.autoSkillMode && !this._discussionCapabilities.disableProjectContext) {
+        this.processManager.updateDescription(processId, "Selecting skills...");
+        this.updateGeneratingState();
+
         const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
         const userPromptText = (typeof message.content === 'string') ? message.content : "User request";
         const autoSkillMsgId = 'auto_skill_agent_' + Date.now();
@@ -1217,6 +1229,9 @@ Please provide the **FULL CONTENT** of the file instead using the format:
     }
 
     if (isAutoContext && !this._discussionCapabilities.disableProjectContext) {
+        this.processManager.updateDescription(processId, "Context retrieval...");
+        this.updateGeneratingState();
+
         this.log("Auto-Context mode active. Starting agent loop.");
         const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
         const userPromptText = (typeof message.content === 'string') ? message.content : "User request with attachments";
@@ -1233,6 +1248,9 @@ Please provide the **FULL CONTENT** of the file instead using the format:
 
     // --- WEB RESEARCH AGENT ---
     if (this._discussionCapabilities.webSearch) {
+        this.processManager.updateDescription(processId, "Web Search...");
+        this.updateGeneratingState();
+
         this.log("Web Search active. Starting research agent.");
         const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
         const userPromptText = (typeof message.content === 'string') ? message.content : "User request";
@@ -1269,6 +1287,9 @@ Please provide the **FULL CONTENT** of the file instead using the format:
         }
     }
 
+    this.processManager.updateDescription(processId, "Loading file content...");
+    this.updateGeneratingState();
+
     const importedIds = this._currentDiscussion?.importedSkills || [];
 
     // Check if context is explicitly disabled for this turn
@@ -1303,6 +1324,9 @@ Please provide the **FULL CONTENT** of the file instead using the format:
     };
 
     if (this._discussionCapabilities.herdMode && this.herdManager) {
+        this.processManager.updateDescription(processId, "Multi-Agent Brainstorming...");
+        this.updateGeneratingState();
+
         let preParticipants = this._discussionCapabilities.herdPreAnswerParticipants;
         let postParticipants = this._discussionCapabilities.herdPostAnswerParticipants;
         const leaderModel = this._currentDiscussion.model || this._lollmsAPI.getModelName();
@@ -1349,6 +1373,9 @@ Please provide the **FULL CONTENT** of the file instead using the format:
 
     let assistantMessageId = '';
     try {
+        this.processManager.updateDescription(processId, "Waiting for model...");
+        this.updateGeneratingState();
+
         const personaContent = this.getCurrentPersonaSystemPrompt();
         const forceFullCode = config.get<boolean>('forceFullCodePath') || false;
         const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, forceFullCode, context);
@@ -1399,7 +1426,15 @@ Please provide the **FULL CONTENT** of the file instead using the format:
         if (!this._isDisposed) this._panel.webview.postMessage({ command: 'addMessage', message: { id: assistantMessageId, role: 'assistant', content: '', startTime: Date.now(), model: generationSession.model } });
 
         let fullResponse = '';
+        let firstTokenReceived = false;
+
         await this._lollmsAPI.sendChat(messagesToSend, (chunk) => {
+            if (!firstTokenReceived) {
+                firstTokenReceived = true;
+                this.processManager.updateDescription(processId, "Generating response...");
+                this.updateGeneratingState();
+            }
+
             fullResponse += chunk;
             generationSession.buffer += chunk;
             generationSession.tokenCount++;
@@ -1417,7 +1452,18 @@ Please provide the **FULL CONTENT** of the file instead using the format:
             generationSession.listeners.forEach(listener => listener(chunk));
         }, controller.signal, this._currentDiscussion.model);
 
-        const processedResponse = await this.verifyAndProcessCodeBlocks(assistantMessageId, fullResponse, controller.signal);
+        this.processManager.updateDescription(processId, "Verifying generated code...");
+        this.updateGeneratingState();
+        
+        const processedResponse = await this.verifyAndProcessCodeBlocks(
+            assistantMessageId, 
+            fullResponse, 
+            controller.signal,
+            (status) => {
+                this.processManager.updateDescription(processId, status);
+                this.updateGeneratingState();
+            }
+        );
 
         const elapsed = (Date.now() - generationSession.startTime) / 1000;
         const finalTps = (generationSession.tokenCount / elapsed).toFixed(1);

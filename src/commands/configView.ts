@@ -25,6 +25,7 @@ export class SettingsPanel {
     sslCertPath: '',
     requestTimeout: 600000,
     agentMaxRetries: 1,
+    verifyAndCorrectCodeBlocks: false,
     maxImageSize: 1024,
     enableCodeInspector: true,
     inspectorModelName: '',
@@ -83,6 +84,8 @@ export class SettingsPanel {
     agentFilesystemWrite: true,
     agentFilesystemRead: true,
     agentInternetAccess: true,
+    agentScreenCapture: false,
+    agentWebTesting: false,
     agentUseRLM: false,
     distillWebResults: true,
     antiPromptInjection: true,
@@ -143,6 +146,7 @@ export class SettingsPanel {
     this._pendingConfig.sslCertPath = config.get<string>('sslCertPath') || '';
     this._pendingConfig.requestTimeout = config.get<number>('requestTimeout') || 600000;
     this._pendingConfig.agentMaxRetries = config.get<number>('agentMaxRetries') || 1;
+    this._pendingConfig.verifyAndCorrectCodeBlocks = config.get<boolean>('verifyAndCorrectCodeBlocks') ?? false;
     this._pendingConfig.maxImageSize = config.get<number>('maxImageSize') || 1024;
     this._pendingConfig.enableCodeInspector = config.get<boolean>('enableCodeInspector') || true;
     this._pendingConfig.inspectorModelName = config.get<string>('inspectorModelName') || '';
@@ -157,7 +161,7 @@ export class SettingsPanel {
     this._pendingConfig.responseProfiles = config.get<ResponseProfile[]>('responseProfiles') || [];
     this._pendingConfig.defaultResponseProfileId = config.get<string>('defaultResponseProfileId') || 'balanced';
 
-    this._pendingConfig.failsafeContextSize = config.get<number>('failsafeContextSize') || 4096;
+    this._pendingConfig.failsafeContextSize = config.get<number>('failsafeContextSize') || 128000;
     
     this._pendingConfig.searchProvider = config.get<string>('searchProvider') || 'google_custom_search';
     this._pendingConfig.searchApiKey = config.get<string>('searchApiKey') || '';
@@ -200,6 +204,8 @@ export class SettingsPanel {
     this._pendingConfig.agentFilesystemWrite = agentPerms.filesystemWrite !== false;
     this._pendingConfig.agentFilesystemRead = agentPerms.filesystemRead !== false;
     this._pendingConfig.agentInternetAccess = agentPerms.internetAccess !== false;
+    this._pendingConfig.agentScreenCapture = agentPerms.screenCapture === true;
+    this._pendingConfig.agentWebTesting = agentPerms.webTesting === true;
     this._pendingConfig.agentUseRLM = config.get<boolean>('agent.useRLM') || false;
     this._pendingConfig.distillWebResults = config.get<boolean>('distillWebResults') ?? true;
     this._pendingConfig.antiPromptInjection = config.get<boolean>('antiPromptInjection') ?? true;
@@ -509,6 +515,7 @@ export class SettingsPanel {
                   ['sslCertPath', this._pendingConfig.sslCertPath],
                   ['requestTimeout', this._pendingConfig.requestTimeout],
                   ['agentMaxRetries', this._pendingConfig.agentMaxRetries],
+                  ['verifyAndCorrectCodeBlocks', this._pendingConfig.verifyAndCorrectCodeBlocks],
                   ['maxImageSize', this._pendingConfig.maxImageSize],
                   ['enableCodeInspector', this._pendingConfig.enableCodeInspector],
                   ['inspectorModelName', this._pendingConfig.inspectorModelName],
@@ -615,7 +622,7 @@ export class SettingsPanel {
                         'requestTimeout', 'agentMaxRetries', 'maxImageSize', 'enableCodeInspector',
                         'inspectorModelName', 'codeInspectorPersona', 'chatPersona', 'agentPersona',
                         'commitMessagePersona', 'contextFileExceptions', 'language', 'generationFormats', 'explainCode', 'allowedFileFormats', 
-                        'reasoningLevel', 'failsafeContextSize', 'searchProvider', 'searchApiKey',
+                        'reasoningLevel', 'failsafeContextSize', 'verifyAndCorrectCodeBlocks', 'searchProvider', 'searchApiKey',
                         'searchCx', 'autoUpdateChangelog', 'autoGenerateTitle', 
                         'addPedagogicalInstruction', 'forceFullCodePath', 'clipboardInsertRole', 'companion.enableWebSearch',
                         'companion.enableArxivSearch', 'userInfo.name', 'userInfo.email', 
@@ -686,7 +693,7 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, architectModelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, generationFormats, forceFullCode, explainCode, allowedFileFormats, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, forceFullCodePath, clipboardInsertRole, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle, enableCodeActions, enableInlineSuggestions, mcpServers, herdParticipants, herdPreAnswerParticipants, herdPostAnswerParticipants, herdRounds, herdDynamicMode, herdDynamicModelPool, deleteBranchAfterMerge, unstagedChangesBehavior, showOs, showIp, showShells, systemCustomInfo, agentShellExecution, agentFilesystemWrite, agentFilesystemRead, agentInternetAccess, agentUseRLM, moltbookEnable, moltbookApiKey, moltbookBotName, moltbookBotPurpose, remoteServerPort, remoteDiscordEnabled, remoteDiscordToken, remoteSlackEnabled, remoteSlackToken, remoteSlackSigningSecret, remoteAllowedUsers, remoteAdminUsers, remoteAllowedChannels } = config;
+    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, architectModelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, verifyAndCorrectCodeBlocks, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, generationFormats, forceFullCode, explainCode, allowedFileFormats, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, forceFullCodePath, clipboardInsertRole, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle, enableCodeActions, enableInlineSuggestions, mcpServers, herdParticipants, herdPreAnswerParticipants, herdPostAnswerParticipants, herdRounds, herdDynamicMode, herdDynamicModelPool, deleteBranchAfterMerge, unstagedChangesBehavior, showOs, showIp, showShells, systemCustomInfo, agentShellExecution, agentFilesystemWrite, agentFilesystemRead, agentInternetAccess, agentUseRLM, moltbookEnable, moltbookApiKey, moltbookBotName, moltbookBotPurpose, remoteServerPort, remoteDiscordEnabled, remoteDiscordToken, remoteSlackEnabled, remoteSlackToken, remoteSlackSigningSecret, remoteAllowedUsers, remoteAdminUsers, remoteAllowedChannels } = config;
 
     const t = (key: string, def: string) => vscode.l10n.t({ message: def, key: key });
     
@@ -940,6 +947,8 @@ export class SettingsPanel {
               <label for="agentMaxRetries">${t('config.agentMaxRetries.label', 'Agent Self-Correction Retries')}</label>
               <input type="number" id="agentMaxRetries" value="${agentMaxRetries}" min="0" max="5" />
               
+              <div class="checkbox-container"><input type="checkbox" id="verifyAndCorrectCodeBlocks" ${verifyAndCorrectCodeBlocks ? 'checked' : ''}><label for="verifyAndCorrectCodeBlocks">Auto-Verify & Correct Chat Code</label></div>
+              
               <div class="checkbox-container"><input type="checkbox" id="enableCodeInspector" ${enableCodeInspector ? 'checked' : ''}><label for="enableCodeInspector">${t('config.enableCodeInspector.label', 'Enable Code Inspector')}</label></div>
               <label for="inspectorModelName">${t('config.inspectorModelName.label', 'Inspector Model Name')}</label>
               <div class="input-group">
@@ -957,6 +966,8 @@ export class SettingsPanel {
                 <div class="checkbox-container"><input type="checkbox" id="agentFilesystemWrite" ${agentFilesystemWrite ? 'checked' : ''}><label for="agentFilesystemWrite">Filesystem Write (Save/Modify)</label></div>
                 <div class="checkbox-container"><input type="checkbox" id="agentFilesystemRead" ${agentFilesystemRead ? 'checked' : ''}><label for="agentFilesystemRead">Filesystem Read (Open/List)</label></div>
                 <div class="checkbox-container"><input type="checkbox" id="agentInternetAccess" ${agentInternetAccess ? 'checked' : ''}><label for="agentInternetAccess">Internet Access (Search/Scrape)</label></div>
+                <div class="checkbox-container"><input type="checkbox" id="agentScreenCapture" ${agentScreenCapture ? 'checked' : ''}><label for="agentScreenCapture">Screen Capture (Desktop)</label></div>
+                <div class="checkbox-container"><input type="checkbox" id="agentWebTesting" ${agentWebTesting ? 'checked' : ''}><label for="agentWebTesting">Web UI Testing (Headless)</label></div>
               </div>
 
               <h3>Moltbook Connection (Social)</h3>
@@ -1277,6 +1288,7 @@ export class SettingsPanel {
                     safeSet('useLollmsExtensions', config.useLollmsExtensions, true);
                     safeSet('requestTimeout', config.requestTimeout);
                     safeSet('agentMaxRetries', config.agentMaxRetries);
+                    safeSet('verifyAndCorrectCodeBlocks', config.verifyAndCorrectCodeBlocks, true);
                     safeSet('maxImageSize', config.maxImageSize);
                     safeSet('disableSsl', config.disableSslVerification, true);
                     safeSet('sslCertPath', config.sslCertPath);
@@ -1481,7 +1493,7 @@ export class SettingsPanel {
             ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','inspectorModelName','codeInspectorPersona','chatPersona','agentPersona','commitMessagePersona','language','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','clipboardInsertRole','herdRounds','mcpServers','unstagedChangesBehavior','systemCustomInfo','moltbookApiKey','moltbookBotName','moltbookBotPurpose',
             'remoteServerPort', 'remoteDiscordToken', 'remoteSlackToken', 'remoteSlackSigningSecret', 'remoteAllowedUsers', 'remoteAdminUsers', 'remoteAllowedChannels'].forEach(k => bind(k, k));
             
-            ['disableSsl','enableCodeInspector','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','companionEnableWebSearch','companionEnableArxivSearch','herdDynamicMode','enableCodeActions','enableInlineSuggestions','deleteBranchAfterMerge','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','agentUseRLM','explainCode','moltbookEnable',
+            ['disableSsl','enableCodeInspector','verifyAndCorrectCodeBlocks','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','companionEnableWebSearch','companionEnableArxivSearch','herdDynamicMode','enableCodeActions','enableInlineSuggestions','deleteBranchAfterMerge','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','agentUseRLM','explainCode','moltbookEnable',
             'remoteDiscordEnabled', 'remoteSlackEnabled'].forEach(id => {
                 const map = { 
                     'disableSsl': 'disableSslVerification', 'deleteBranchAfterMerge': 'git.deleteBranchAfterMerge', 

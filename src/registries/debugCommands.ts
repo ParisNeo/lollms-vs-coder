@@ -6,6 +6,24 @@ import { ChatPanel } from '../commands/chatPanel/chatPanel';
 
 export function registerDebugCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
     
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.fixDiagnosticAtPosition', async (pos?: vscode.Position) => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) return;
+        
+        // Use the passed position (from hover) or fallback to current cursor
+        const position = pos ? new vscode.Position(pos.line, pos.character) : editor.selection.active;
+        const diagnostics = vscode.languages.getDiagnostics(editor.document.uri);
+        
+        // Find the diagnostic at the specified position
+        const diagnostic = diagnostics.find(d => d.range.contains(position));
+        
+        if (diagnostic) {
+            await vscode.commands.executeCommand('lollms-vs-coder.fixDiagnostic', editor.document.uri, diagnostic);
+        } else {
+            vscode.window.showInformationMessage("No code issue found at the current cursor position.");
+        }
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.fixDiagnostic', async (uri: vscode.Uri, diagnostic: vscode.Diagnostic) => {
         try {
             const document = await vscode.workspace.openTextDocument(uri);

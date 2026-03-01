@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.6.19",
+  "version": "0.6.20",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -676,14 +676,18 @@
             "shellExecution": true,
             "filesystemWrite": true,
             "filesystemRead": true,
-            "internetAccess": true
+            "internetAccess": true,
+            "screenCapture": false,
+            "webTesting": false
           },
           "description": "Global permissions for the AI Agent tools.",
           "properties": {
             "shellExecution": { "type": "boolean", "default": true, "description": "Allow executing terminal commands and scripts." },
             "filesystemWrite": { "type": "boolean", "default": true, "description": "Allow creating or updating files in the workspace." },
             "filesystemRead": { "type": "boolean", "default": true, "description": "Allow reading file contents and listing directories." },
-            "internetAccess": { "type": "boolean", "default": true, "description": "Allow web search and website scraping." }
+            "internetAccess": { "type": "boolean", "default": true, "description": "Allow web search and website scraping." },
+            "screenCapture": { "type": "boolean", "default": false, "description": "Allow the agent to take screenshots of your desktop. (Privacy Sensitive)" },
+            "webTesting": { "type": "boolean", "default": false, "description": "Allow the agent to browse and screenshot web pages/local servers using a headless browser." }
           }
         },
         "lollmsVsCoder.agent.useRLM": {
@@ -837,6 +841,11 @@
           "default": 1,
           "description": "%config.agentMaxRetries.description%"
         },
+        "lollmsVsCoder.verifyAndCorrectCodeBlocks": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically verify AI-generated diff/search blocks against files and attempt self-correction if they fail to apply."
+        },
         "lollmsVsCoder.maxImageSize": {
           "type": "number",
           "default": 1024,
@@ -930,7 +939,7 @@
         },
         "lollmsVsCoder.failsafeContextSize": {
           "type": "number",
-          "default": 4096,
+          "default": 128000,
           "description": "Fallback context size to use if the API token counting fails."
         },
         "lollmsVsCoder.mcpServers": {

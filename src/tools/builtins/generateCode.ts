@@ -1,11 +1,39 @@
 import * as vscode from 'vscode';
 import { ToolDefinition, ToolExecutionEnv } from '../tool';
-import { getProcessedSystemPrompt } from '../../utils';
+import { getProcessedSystemPrompt, applySearchReplace } from '../../utils';
 import { ChatMessage } from '../../lollmsAPI';
 
-async function getCoderSystemPrompt(customPrompt: string, planObjective: string, projectContext: any): Promise<ChatMessage> {
+async function getCoderSystemPrompt(customPrompt: string, planObjective: string, projectContext: any, fileExists: boolean): Promise<ChatMessage> {
     const agentPersonaPrompt = await getProcessedSystemPrompt('agent', undefined, undefined, undefined, false, projectContext);
     
+    let formatInstructions = "";
+    if (fileExists) {
+        formatInstructions = `
+**MODIFICATION MODE (AIDER FORMAT):**
+The file exists. You MUST use the **SEARCH/REPLACE** block format to edit specific parts of the code.
+
+\`\`\`language
+<<<<<<< SEARCH
+[Exact code chunk to match from original file]
+=======
+[New code chunk to replace it with]
+>>>>>>> REPLACE
+\`\`\`
+
+**RULES FOR SEARCH/REPLACE:**
+1. **EXACT MATCH**: The content inside \`SEARCH\` must match the original file exactly (including indentation and whitespace).
+2. **CONTEXT**: Include 2-3 lines of unchanged context before and after your changes in the SEARCH block to ensure uniqueness.
+3. **MULTIPLE EDITS**: You MUST output multiple small SEARCH/REPLACE blocks in sequence to modify different parts of the file.
+4. **GRANULARITY**: Prefer 10 small blocks over 1 large block. If you change two functions, use two separate blocks. If you add imports and change logic, use separate blocks.
+5. **NO FULL FILE**: Do NOT output the full file content unless you are rewriting it entirely.
+`;
+    } else {
+        formatInstructions = `
+**CREATION MODE:**
+The file does not exist. You MUST output the **FULL CONTENT** of the new file in a single markdown code block.
+`;
+    }
+
     const fullContent = `${agentPersonaPrompt}
 
 **CODE GENERATION SPECIFIC INSTRUCTIONS:**
@@ -15,14 +43,14 @@ You are a code generation sub-agent. You will be given instructions and context 
 If the context contains an **Active Skill**, you are STRICTLY BOUND by its definitions.
 1. **EXACT MATCH**: Use exact method names, parameter types, and return values as documented.
 2. **VERIFICATION**: Before outputting an API call for a library mentioned in a skill, verify the syntax against the skill content provided in the context.
-3. **ZERO TOLERANCE**: Hallucinating parameters not found in the provided skills will result in execution failure.
+
+**FORMATTING INSTRUCTIONS:**
+${formatInstructions}
 
 **CRITICAL INSTRUCTIONS:**
-1.  **CODE ONLY:** Your entire response MUST be a single markdown code block containing the complete file content.
-2.  **NO EXTRA TEXT:** Do not add any explanations, comments, or conversational text outside the code block.
-3.  **COMPLETE FILE:** Your output must be the full and complete code for the file, not just the changed parts.
-4.  **NO PLACEHOLDERS:** Do not use placeholders like "...".
-5.  **NO PATCHES:** You are strictly forbidden from generating git patches or diffs.
+1.  **NO EXTRA TEXT**: Do not add any explanations, comments, or conversational text outside the code block.
+2.  **NO PLACEHOLDERS:** Do not use placeholders like "..." inside the code logic.
+3.  **NO PATCHES**: Do not use git diff format.
 
 **CUSTOM INSTRUCTIONS FOR THIS TASK:**
 ${customPrompt}
@@ -129,31 +157,59 @@ Select up to 10 relevant files. Return ONLY a valid JSON array of strings. Do NO
         contextData.skills = baseContext.skillsContent;
 
         let userPromptContent = params.user_prompt || `Generate code for ${filePath}`;
+        let existingContent: string | null = null;
 
         if (env.workspaceRoot) {
             try {
                 const fileUri = vscode.Uri.joinPath(env.workspaceRoot.uri, filePath);
                 const fileContentBytes = await vscode.workspace.fs.readFile(fileUri);
-                const existingContent = Buffer.from(fileContentBytes).toString('utf8');
+                existingContent = Buffer.from(fileContentBytes).toString('utf8');
                 userPromptContent = `I am working on the file \`${filePath}\`. Current content:\n\n\`\`\`\n${existingContent}\n\`\`\`\n\nInstruction: ${userPromptContent}`;
             } catch (error) { }
         }
 
-        const coderSystemPrompt = await getCoderSystemPrompt(params.system_prompt || env.taskPersona || '', env.currentPlan.objective, contextData);
+        const coderSystemPrompt = await getCoderSystemPrompt(params.system_prompt || env.taskPersona || '', env.currentPlan.objective, contextData, !!existingContent);
         const coderUserPrompt: ChatMessage = { role: 'user', content: userPromptContent };
         
         const responseText = await env.lollmsApi.sendChat([coderSystemPrompt, coderUserPrompt], null, signal, modelOverride);
 
-        const codeBlockRegex = /```(?:[^\n]*)\n([\s\S]+?)\n```/s;
-        const match = responseText.match(codeBlockRegex);
-        const generatedCode = match ? match[1].trim() : responseText.trim();
-
-        if (!generatedCode || generatedCode === responseText) {
-             const fallbackMatch = responseText.match(/([\s\S]*)/);
-             if (fallbackMatch && responseText.includes('import') || responseText.includes('def ')) {
-             } else {
+        let finalFileContent = "";
+        
+        // Aider regex (strict start/end)
+        const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
+        const hasAiderBlocks = existingContent && aiderRegex.test(responseText);
+        
+        if (hasAiderBlocks && existingContent) {
+            // Reset regex
+            aiderRegex.lastIndex = 0;
+            let modifiedContent = existingContent;
+            const matches = [...responseText.matchAll(aiderRegex)];
+            
+            if (matches.length > 0) {
+                 for (const match of matches) {
+                     const searchBlock = match[1];
+                     const replaceBlock = match[2];
+                     const result = applySearchReplace(modifiedContent, searchBlock, replaceBlock);
+                     if (result.success) {
+                         modifiedContent = result.result;
+                     } else {
+                         return { success: false, output: `Coder agent failed to apply SEARCH/REPLACE block:\n${result.error}\n\nBlock attempted:\n${match[0]}` };
+                     }
+                 }
+                 finalFileContent = modifiedContent;
+            } else {
+                 finalFileContent = existingContent;
+            }
+        } else {
+            // Fallback to full file extraction
+            const codeBlockRegex = /```(?:[^\n]*)\n([\s\S]+?)\n```/s;
+            const match = responseText.match(codeBlockRegex);
+            const generatedCode = match ? match[1].trim() : responseText.trim();
+            
+            if (!generatedCode || (generatedCode === responseText && !responseText.includes('def ') && !responseText.includes('class ') && !responseText.includes('import '))) {
                  return { success: false, output: `Coder agent failed to produce a valid code block.` };
-             }
+            }
+            finalFileContent = generatedCode;
         }
 
         if (!env.workspaceRoot) {
@@ -164,7 +220,7 @@ Select up to 10 relevant files. Return ONLY a valid JSON array of strings. Do NO
             const fileUri = vscode.Uri.joinPath(env.workspaceRoot.uri, filePath);
             const parentUri = vscode.Uri.joinPath(fileUri, '..');
             await vscode.workspace.fs.createDirectory(parentUri);
-            await vscode.workspace.fs.writeFile(fileUri, Buffer.from(generatedCode, 'utf8'));
+            await vscode.workspace.fs.writeFile(fileUri, Buffer.from(finalFileContent, 'utf8'));
             return { success: true, output: `Successfully generated and wrote code to file: ${filePath}` };
         } catch (error: any) {
             return { success: false, output: `Error writing generated code: ${error.message}` };

@@ -188,6 +188,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, new DebugCodeLensProvider(debugErrorManager)));
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ pattern: '**' }, inlineDiffProvider));
+    context.subscriptions.push(vscode.languages.registerHoverProvider({ pattern: '**' }, new SelectionHoverProvider()));
     context.subscriptions.push(vscode.notebooks.registerNotebookCellStatusBarItemProvider('jupyter-notebook', new LollmsNotebookCellActionProvider()));
     context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(DiffManager.SCHEME, diffManager));
 

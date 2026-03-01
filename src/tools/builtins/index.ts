@@ -35,8 +35,12 @@ import { extractYoutubeTranscriptTool } from './extractYoutubeTranscript';
 import { summarizeTextTool } from './summarizeText';
 import { searchWikipediaTool } from './searchWikipedia';
 import { searchStackOverflowTool } from './searchStackOverflow';
+import { testWebPageTool } from './testWebPage';
+import { captureDesktopTool } from './captureDesktop';
 
 export const allTools: ToolDefinition[] = [
+    testWebPageTool,
+    captureDesktopTool,
     autoSelectContextFilesTool,
     createPythonEnvironmentTool,
     deselectContextFilesTool,

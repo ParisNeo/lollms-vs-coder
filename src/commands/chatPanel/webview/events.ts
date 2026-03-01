@@ -653,6 +653,24 @@ export function initEventHandlers() {
                 }
                 return;
             }
+            // NEW: Handle Image Generation Button (CSP Safe)
+            const genImgBtn = target.closest('.generate-image-btn') as HTMLButtonElement;
+            if (genImgBtn) {
+                e.stopPropagation();
+                
+                genImgBtn.disabled = true;
+                genImgBtn.innerHTML = '<div class="spinner"></div> Generating...';
+                
+                vscode.postMessage({
+                    command: 'generateImage',
+                    prompt: decodeURIComponent(genImgBtn.dataset.prompt || ''),
+                    filePath: decodeURIComponent(genImgBtn.dataset.path || ''),
+                    width: genImgBtn.dataset.width || '',
+                    height: genImgBtn.dataset.height || '',
+                    buttonId: genImgBtn.id
+                });
+                return;
+            }            
 
             // Save & Retry Params
             const saveRetryBtn = target.closest('.save-retry-params-btn') as HTMLButtonElement;

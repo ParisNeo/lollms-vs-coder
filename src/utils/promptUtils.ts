@@ -43,6 +43,8 @@ export async function buildCodeActionPrompt(
     const languageId = document.languageId;
     
     let contextText = '';
+    let contextResult: any = { text: '', images: [], projectTree: '', selectedFilesContent: '', skillsContent: '', importedSkills: [] };
+
     if (useContext) {
         const projectSkillIds = await contextManager.getActiveProjectSkills();
         const activeDiscussion = ChatPanel.currentPanel?.getCurrentDiscussion();
@@ -51,7 +53,7 @@ export async function buildCodeActionPrompt(
         const combinedSkillIds = Array.from(new Set([...projectSkillIds, ...discussionSkillIds]));
 
         // 1. Fetch "Warm" Context (Skills, Diagrams, and ALREADY included files from Auto Context)
-        const contextResult = await contextManager.getContextContent({ 
+        contextResult = await contextManager.getContextContent({ 
             includeTree: true,
             importedSkillIds: combinedSkillIds,
             activeDiagramIds: activeDiagramIds,
@@ -65,6 +67,7 @@ export async function buildCodeActionPrompt(
             try {
                 const allFiles = await contextManager.getWorkspaceFilePaths();
                 const currentIncluded = contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || [];
+                const docPath = vscode.workspace.asRelativePath(document.uri);
                 
                 const selectionSystemPrompt = {
                     role: 'system',
@@ -83,7 +86,7 @@ Identify which existing files in the project are crucial to read (types, base cl
                 const response = await lollmsApi.sendChat([selectionSystemPrompt, selectionUserPrompt], null, signal);
                 const jsonMatch = response.match(/\[.*\]/s);
                 if (jsonMatch) {
-                    const filesToPeek = JSON.parse(jsonMatch[0]).filter((f: string) => f !== relativePath);
+                    const filesToPeek = JSON.parse(jsonMatch[0]).filter((f: string) => f !== docPath);
                     const peekedContent = await contextManager.readSpecificFiles(filesToPeek);
                     if (peekedContent) {
                         contextText += `\n\n## RELATED DEPENDENCIES (PEEKED)\n${peekedContent}`;
@@ -137,7 +140,8 @@ Provide the NEW version of the selected code block.
 - NEVER use markdown code fences.
 - NEVER include explanations, chatter, or "Here is your code".
 - NEVER use placeholders or ellipses. Provide the full logic for the target block.
-- Provide the full replacement for the selected block only.
+- **ATOMIC BLOCKS**: If the selected code is large, split your replacement into multiple small SEARCH/REPLACE blocks targeting specific lines.
+- Provide the replacement for the selected block only.
 - Use relative indentation: the first line of your output should have NO leading whitespace. Subsequent lines should be indented relative to the first line.`;
         
         systemPrompt = `${baseSystemPrompt}\n\nYou are a surgical code replacement engine. You output raw source code with NO formatting, NO markdown, and NO dialogue.`;

@@ -11,16 +11,16 @@ export class BigDataProcessor {
         // Check context size
         const model = this.lollmsAPI.getModelName();
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-        let ctxSize = 4096; // Default fallback
+        let ctxSize = 128000; // Default fallback
         try {
             const sizeRes = await this.lollmsAPI.getContextSize(model);
             if (!sizeRes.isEstimation && sizeRes.context_size > 0) {
                 ctxSize = sizeRes.context_size;
             } else {
-                 ctxSize = config.get<number>('failsafeContextSize') || 4096;
+                 ctxSize = config.get<number>('failsafeContextSize') || 128000;
             }
         } catch {
-             ctxSize = config.get<number>('failsafeContextSize') || 4096;
+             ctxSize = config.get<number>('failsafeContextSize') || 128000;
         }
 
         const tokenEstimate = Math.ceil(fileContent.length / 4);

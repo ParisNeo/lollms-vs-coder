@@ -72,25 +72,32 @@ export class SelectionHoverProvider implements vscode.HoverProvider {
         position: vscode.Position, 
         token: vscode.CancellationToken
     ): vscode.ProviderResult<vscode.Hover> {
-        const editor = vscode.window.activeTextEditor;
-        if (!editor || editor.selection.isEmpty) return null;
+        const contents = new vscode.MarkdownString();
+        contents.isTrusted = true;
+        contents.supportHtml = true;
+        contents.supportIcons = true; // FIX: Enable rendering of $(icon) syntax
+        let shouldShow = false;
 
-        const selection = editor.selection;
-        const line = document.lineAt(selection.start.line);
+        // 1. Check for Diagnostic (Error/Warning) under hover
+        const diagnostics = vscode.languages.getDiagnostics(document.uri);
+        const diag = diagnostics.find(d => d.range.contains(position));
         
-        // Only show hover if the mouse is near the beginning of the selection
-        if (position.line === selection.start.line && Math.abs(position.character - selection.start.character) <= 1) {
-            const contents = new vscode.MarkdownString();
-            contents.isTrusted = true;
-            contents.supportHtml = true;
-            
+        if (diag) {
             contents.appendMarkdown(`### 👑 Lollms AI\n\n`);
-            contents.appendMarkdown(`Click the **Lollms Actions** CodeLens above or use the link below:\n\n`);
-            contents.appendMarkdown(`[$(rocket) **OPEN ACTIONS MENU**](command:lollms-vs-coder.showSelectionMenu)\n\n`);
-            
-            return new vscode.Hover(contents);
+            // Serialize the position as an argument to the command
+            const args = encodeURIComponent(JSON.stringify([position]));
+            contents.appendMarkdown(`[$(sparkle) **Fix this issue with Lollms**](command:lollms-vs-coder.fixDiagnosticAtPosition?${args})\n\n`);
+            shouldShow = true;
+        }
+
+        // 2. Fallback to existing selection logic if mouse is over a selection
+        const editor = vscode.window.activeTextEditor;
+        if (editor && !editor.selection.isEmpty && editor.selection.contains(position)) {
+            if (!shouldShow) contents.appendMarkdown(`### 👑 Lollms AI\n\n`);
+            contents.appendMarkdown(`[$(rocket) **Open Selection Actions**](command:lollms-vs-coder.showSelectionMenu)\n\n`);
+            shouldShow = true;
         }
         
-        return null;
+        return shouldShow ? new vscode.Hover(contents) : null;
     }
 }

@@ -40,7 +40,8 @@ const langMap: { [key: string]: string } = {
     'handlebars': 'html',
     'xml': 'xml',
     'htm': 'html',
-    'html': 'html'
+    'html': 'html',
+    'svg': 'markup'
 };
 
 try {
@@ -274,6 +275,28 @@ function renderSkillBlock(rawContent: string, attrs: { title?: string, descripti
     </div>`;
 }
 
+/**
+ * Cleans up Mermaid code to prevent rendering errors.
+ * Wraps node labels in quotes and escapes characters that break the parser.
+ */
+function preprocessMermaid(code: string): string {
+    return code.split('\n').map(line => {
+        const trimmed = line.trim();
+        // Skip header definitions and keywords that don't follow node[label] syntax
+        if (trimmed.match(/^(subgraph|end|class|state|note|participant|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|gitGraph|flowchart|graph)/i)) {
+            return line;
+        }
+
+        // Identify node definitions like ID[Label], ID(Label), ID{Label}, ID((Label))
+        // and wrap the label in quotes if not already quoted.
+        return line.replace(/([a-zA-Z0-9_-]+)\s*([\[\(\{]{1,2})\s*([^"'\n\r\t]+?)\s*([\]\)\}]{1,2})/g, (match, id, open, label, close) => {
+            // Escape any existing double quotes inside the label to avoid breaking the wrapper
+            const safeLabel = label.replace(/"/g, "'");
+            return `${id}${open}"${safeLabel.trim()}"${close}`;
+        });
+    }).join('\n');
+}
+
 function renderDiagram(codeElement: HTMLElement, language: string, container: HTMLElement) {
     const diagramContainer = document.createElement('div');
     diagramContainer.className = 'diagram-container';
@@ -288,10 +311,11 @@ function renderDiagram(codeElement: HTMLElement, language: string, container: HT
 
     if (language === 'mermaid') {
         const id = `mermaid-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-        const text = codeElement.textContent || '';
+        const rawText = codeElement.textContent || '';
+        const sanitizedText = preprocessMermaid(rawText);
         
         try {
-            mermaid.render(id, text).then((result: any) => {
+            mermaid.render(id, sanitizedText).then((result: any) => {
                 const svg = typeof result === 'string' ? result : result.svg;
                 diagramContainer.innerHTML = svg;
                 container.appendChild(diagramContainer);
@@ -509,6 +533,20 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
                     else if (prefix === 'diff') type = 'diff';
                     else if (prefix === 'delete_code') type = 'delete';
                     else type = 'file';
+                } else if (headerText.toLowerCase() === 'diff') {
+                    type = 'diff';
+                }
+
+                // Logic for finding path in content (for diffs)
+                if (type === 'diff' && !pathStr) {
+                    for (let k = i + 1; k < Math.min(i + 10, lines.length); k++) {
+                        const contentLine = lines[k].trim();
+                        const diffPathMatch = contentLine.match(/^(?:---|\+\+\+)\s+(?:[ab]\/)?([^\s\n\r]+)/);
+                        if (diffPathMatch && diffPathMatch[1] && diffPathMatch[1] !== '/dev/null') {
+                            pathStr = diffPathMatch[1];
+                            break;
+                        }
+                    }
                 }
 
                 // Logic for finding path in previous lines
@@ -752,8 +790,9 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
 
         if (!isDiff && (language === 'diff' || looksLikeDiff(codeText))) {
             isDiff = true;
-            const headerMatch = codeText.match(/(?:---|\+\+)\s+(?:[ab]\/)?([^\s\n\r]+)/);
-            if (headerMatch && headerMatch[1]) {
+            // Improved regex to skip /dev/null and handle a/ b/ prefixes
+            const headerMatch = codeText.match(/^(?:---|\+\+\+)\s+(?:[ab]\/)?([^\s\n\r]+)/m);
+            if (headerMatch && headerMatch[1] && headerMatch[1] !== '/dev/null') {
                 diffFilePath = headerMatch[1].trim();
             }
         }
@@ -933,6 +972,7 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
         }
 
         if (language === 'mermaid' || language === 'svg') {
+            // Ensure that even if we render a diagram, the Apply button (if present) remains in the summary
             renderDiagram(code, language, details);
         } else {
             Prism.highlightElement(code);
@@ -1073,12 +1113,18 @@ function renderImageGenBlock(prompt: string, path: string, width?: string, heigh
     const safePath = encodeURIComponent(path);
     const buttonId = `gen-btn-${Date.now()}${Math.random().toString(36).substr(2, 5)}`;
     
+    // FIX: Replaced onclick="..." with data attributes and a class for event delegation
     return `
     <div class="generation-block">
         <div class="generation-header">
             <span class="summary-lang-label"><span class="codicon codicon-device-camera"></span> Propose Image Generation ${path ? ': ' + path : ''}</span>
             <div class="code-actions">
-                <button id="${buttonId}" class="code-action-btn apply-btn" onclick="generateImageFromTag('${safePrompt}', '${safePath}', '${width || ''}', '${height || ''}', '${buttonId}')" title="Generate Image with AI">
+                <button id="${buttonId}" class="code-action-btn apply-btn generate-image-btn" 
+                    data-prompt="${safePrompt}" 
+                    data-path="${safePath}" 
+                    data-width="${width || ''}" 
+                    data-height="${height || ''}"
+                    title="Generate Image with AI">
                     <span class="codicon codicon-sparkle"></span> Generate
                 </button>
             </div>
@@ -1114,27 +1160,38 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
             // --- SKILL TAG PARSING ---
             const skills: { html: string, start: number, end: number }[] = [];
-            const skillRegex = /<skill\s+([^>]*?)>([\s\S]*?)<\/skill>/gi;
-            let skillMatch;
             let processedContent = contentWithoutThoughts;
 
+            const skillRegex = /<skill\s+([^>]*?)>([\s\S]*?)<\/skill>/gi;
+            let skillMatch;
             while ((skillMatch = skillRegex.exec(contentWithoutThoughts)) !== null) {
                 const attrStr = skillMatch[1];
                 const innerContent = skillMatch[2];
-
-                // Parse attributes: title="...", description="...", category="..."
                 const attrs: any = {};
                 const attrRegex = /(\w+)=["']([^"']*)["']/g;
                 let m;
-                while ((m = attrRegex.exec(attrStr)) !== null) {
-                    attrs[m[1]] = m[2];
-                }
+                while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
 
                 const skillHtml = renderSkillBlock(innerContent, attrs, messageId);
                 skills.push({ html: skillHtml, start: skillMatch.index, end: skillMatch.index + skillMatch[0].length });
             }
 
-            messageDiv.querySelectorAll('.plan-scratchpad, .skill-creation-block').forEach(el => el.remove());
+            // --- IMAGE GENERATION TAG PARSING ---
+            const images: { html: string, start: number, end: number }[] = [];
+            const imgRegex = /<generateImage\s+([^>]*?)\s*\/>/gi;
+            let imgMatch;
+            while ((imgMatch = imgRegex.exec(contentWithoutThoughts)) !== null) {
+                const attrStr = imgMatch[1];
+                const attrs: any = {};
+                const attrRegex = /(\w+)=["']([^"']*)["']/g;
+                let m;
+                while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
+
+                const imgHtml = renderImageGenBlock(attrs.prompt || "", attrs.path || "", attrs.width, attrs.height);
+                images.push({ html: imgHtml, start: imgMatch.index, end: imgMatch.index + imgMatch[0].length });
+            }
+
+            messageDiv.querySelectorAll('.plan-scratchpad, .skill-creation-block, .generation-block').forEach(el => el.remove());
 
             // Render Thoughts
             thoughts.forEach(thought => {
@@ -1149,7 +1206,8 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const codeBlocks = extractFilePaths(processedContent);
             const allCandidates = [
                 ...codeBlocks.map(b => ({ ...b, elementType: 'code' as const })),
-                ...skills.map(s => ({ start: s.start, end: s.end, html: s.html, elementType: 'skill' as const }))
+                ...skills.map(s => ({ start: s.start, end: s.end, html: s.html, elementType: 'skill' as const })),
+                ...images.map(i => ({ start: i.start, end: i.end, html: i.html, elementType: 'image' as const }))
             ].sort((a, b) => a.start - b.start);
 
             // 2. Filter to keep only TOP-LEVEL elements
@@ -1178,11 +1236,11 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     fragment.appendChild(textDiv);
                 }
 
-                // B. Render the UI element (Code Block or Skill)
-                if (el.elementType === 'skill') {
-                    const skillDiv = document.createElement('div');
-                    skillDiv.innerHTML = el.html;
-                    fragment.appendChild(skillDiv);
+                // B. Render the UI element (Code Block or Skill or Image)
+                if (el.elementType === 'skill' || el.elementType === 'image') {
+                    const uiDiv = document.createElement('div');
+                    uiDiv.innerHTML = el.html;
+                    fragment.appendChild(uiDiv);
                     lastIndex = el.end;
                     return;
                 }

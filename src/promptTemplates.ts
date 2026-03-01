@@ -61,7 +61,7 @@ If changes are extensive, use:
 4. **CONTAINMENT**: All code changes must be *inside* the \`=======\` and \`>>>>>>> REPLACE\` markers. Content outside is ignored.
 5. **NO ELLIPSIS**: Do not use "..." to skip code in the SEARCH block.
 6. **NO LINE NUMBERS**: Do not include line numbers.
-7. **SMALL CHUNKS**: Prefer multiple small SEARCH/REPLACE blocks over one large block. Large blocks are prone to matching errors.
+7. **ATOMIC EDITS (CRITICAL)**: **NEVER** build a single large block for multiple changes. Split your edits into many small, highly specific SEARCH/REPLACE blocks. A block should ideally target a single function, variable, or logic branch. This ensures maximum matching precision.
 `);
         } else if (partialFormat === 'diff') {
             sections.push(`

@@ -316,7 +316,7 @@ export class LollmsAPI {
 
   public async getContextSize(model?: string): Promise<ContextSizeResponse> {
     const useExtensions = this.config.useLollmsExtensions && this.config.backendType === 'lollms';
-    const defaultSize = 4096;
+    const defaultSize = 128000;
 
     if (!useExtensions) {
         return { context_size: defaultSize, isEstimation: true };
@@ -504,7 +504,7 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
             model,
             messages: sanitizedMessages.filter(m => m.role !== 'system'),
             system: systemMsg ? systemMsg.content : undefined,
-            max_tokens: 4096,
+            max_tokens: 128000,
             stream
         };
     } else if (backend === 'google') {

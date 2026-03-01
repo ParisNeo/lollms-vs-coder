@@ -336,7 +336,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             dom.tokenProgressBar.className = 'token-progress-bar range-danger';
                         }
                     } else if (typeof totalTokens === 'number') {
-                        const size = (contextSize > 0) ? contextSize : 4096;
+                        const size = (contextSize > 0) ? contextSize : 128000;
                         dom.tokenCountLabel.textContent = `${isApproximate ? 'Est. ' : ''}Tokens: ${totalTokens.toLocaleString()} / ${size.toLocaleString()}`;
                         
                         updateProgressBar(dom.tokenProgressBar, totalTokens, size);

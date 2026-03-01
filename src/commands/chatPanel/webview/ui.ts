@@ -985,7 +985,7 @@ export function renderContextUsage(usage: any[]) {
     }
 
     const sizeMatch = (dom.tokenCountLabel?.textContent || "").match(/\/ ([\d\s,.]+)/);
-    const contextSize = sizeMatch ? parseInt(sizeMatch[1].replace(/\D/g, '')) : 4096;
+    const contextSize = sizeMatch ? parseInt(sizeMatch[1].replace(/\D/g, '')) : 128000;
 
     let html = `
         <div class="usage-dashboard-header" style="margin-bottom: 25px; background: var(--vscode-editor-inactiveSelectionBackground); padding: 15px; border-radius: 8px; border: 1px solid var(--vscode-widget-border);">
@@ -1047,7 +1047,7 @@ export function updateContextFileUsage(filePath: string, tokens: number) {
     const bar = row.querySelector('.file-usage-bar') as HTMLElement;
     
     const sizeMatch = (dom.tokenCountLabel?.textContent || "").match(/\/ ([\d\s,.]+)/);
-    const contextSize = sizeMatch ? parseInt(sizeMatch[1].replace(/\D/g, '')) : 4096;
+    const contextSize = sizeMatch ? parseInt(sizeMatch[1].replace(/\D/g, '')) : 128000;
 
     if (label) label.textContent = tokens.toLocaleString();
     if (bar) {

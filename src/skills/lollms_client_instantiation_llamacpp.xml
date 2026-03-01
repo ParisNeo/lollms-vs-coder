@@ -81,7 +81,7 @@ The binding will:
 | `models_path` | `str` | `"models/llama_cpp_models"` | 🟢 | Directory scanned for `.gguf` files |
 | `host` | `str` | `"localhost"` | 🟢 | Server bind address |
 | `port` | `int` | `9624` | 🟢 | Server port (file-locked, prevents duplicates) |
-| `ctx_size` | `int` | `4096` | 🟢 | Context window in tokens |
+| `ctx_size` | `int` | `128000` | 🟢 | Context window in tokens |
 | `n_gpu_layers` | `int` | `-1` | 🟢 | GPU offload: `-1`=all, `0`=CPU, `N`=specific layers |
 | `n_threads` | `int\|null` | `null` | 🟢 | CPU threads (`null`=auto-detect) |
 | `n_parallel` | `int` | `1` | 🟢 | Parallel sequence decoding (concurrent requests) |
@@ -133,7 +133,7 @@ models/
     "n_gpu_layers": 0,         # CPU only
     "n_threads": 16,           # Fixed thread count
     "n_parallel": 4,           # 4 concurrent sequences
-    "ctx_size": 4096
+    "ctx_size": 128000
 }
 
 # Hybrid: partial GPU for large model

@@ -63,8 +63,11 @@ export const generateCodeTool: ToolDefinition = {
         }
 
         const currentDiscussion = env.agentManager?.getCurrentDiscussion();
-        const modelOverride = currentDiscussion?.model;
-        const importedSkills = currentDiscussion?.importedSkills;
+        const modelOverride = env.taskModel || currentDiscussion?.model;
+        
+        const discussionSkills = currentDiscussion?.importedSkills ||[];
+        const taskSkills = env.taskSkills || [];
+        const importedSkills = Array.from(new Set([...discussionSkills, ...taskSkills]));
         
         let contextData = {
             tree: '',
@@ -76,8 +79,12 @@ export const generateCodeTool: ToolDefinition = {
             try {
                 const allFiles = await env.contextManager.getWorkspaceFilePaths();
                 const fileListString = allFiles.join('\n');
+                
+                // If the architect explicitly assigned files, use them immediately
+                let selectedFiles: string[] = env.taskFiles ||[];
 
-                if (allFiles.length > 0) {
+                // If no explicit files were assigned, fallback to the AI context peek
+                if (selectedFiles.length === 0 && allFiles.length > 0) {
                     const selectionSystemPrompt: ChatMessage = {
                         role: 'system',
                         content: `You are a dependency analyzer for file: "${filePath}".
@@ -102,12 +109,12 @@ Select up to 10 relevant files. Return ONLY a valid JSON array of strings. Do NO
                             selectedFiles = JSON.parse(jsonMatch[0]);
                         } catch (e) { }
                     }
+                }
 
-                    if (selectedFiles.length > 0) {
-                        const dependencyContext = await env.contextManager.readSpecificFiles(selectedFiles);
-                        if (dependencyContext) {
-                            contextData.files += `\n\n==== DYNAMICALLY LOADED DEPENDENCIES ====\n${dependencyContext}\n=========================================\n`;
-                        }
+                if (selectedFiles.length > 0) {
+                    const dependencyContext = await env.contextManager.readSpecificFiles(selectedFiles);
+                    if (dependencyContext) {
+                        contextData.files += `\n\n==== ASSIGNED DEPENDENCIES & CONTEXT FILES ====\n${dependencyContext}\n===============================================\n`;
                     }
                 }
             } catch (e) { }
@@ -132,7 +139,7 @@ Select up to 10 relevant files. Return ONLY a valid JSON array of strings. Do NO
             } catch (error) { }
         }
 
-        const coderSystemPrompt = await getCoderSystemPrompt(params.system_prompt || '', env.currentPlan.objective, contextData);
+        const coderSystemPrompt = await getCoderSystemPrompt(params.system_prompt || env.taskPersona || '', env.currentPlan.objective, contextData);
         const coderUserPrompt: ChatMessage = { role: 'user', content: userPromptContent };
         
         const responseText = await env.lollmsApi.sendChat([coderSystemPrompt, coderUserPrompt], null, signal, modelOverride);

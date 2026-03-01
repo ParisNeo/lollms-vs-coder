@@ -1249,8 +1249,8 @@ You have access to the project structure and the list of currently selected file
       }
   }
   
-  async getContextContent(options?: { includeTree?: boolean, signal?: AbortSignal, importedSkillIds?: string[], activeDiagramIds?: string[], modelName?: string }): Promise<ContextResult> {
-    const result: ContextResult = { text: '', images: [], projectTree: '', selectedFilesContent: '', skillsContent: '', importedSkills: [] };
+  async getContextContent(options?: { includeTree?: boolean, signal?: AbortSignal, importedSkillIds?: string[], activeDiagramIds?: string[], modelName?: string, allowRLM?: boolean }): Promise<ContextResult> {
+    const result: ContextResult = { text: '', images:[], projectTree: '', selectedFilesContent: '', skillsContent: '', importedSkills:[] };
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const maxImageSize = config.get<number>('maxImageSize') || 1024;
     const includeTree = options?.includeTree !== false; 
@@ -1258,7 +1258,7 @@ You have access to the project structure and the list of currently selected file
 
     // --- RLM (Recursive Language Model) / Long Context Logic ---
     let useRLM = false;
-    if (this.contextStateProvider && options?.modelName) {
+    if (options?.allowRLM && this.contextStateProvider && options?.modelName) {
         try {
             const sizeData = await this.lollmsAPI.getContextSize(options.modelName);
             if (sizeData && sizeData.context_size > 0) {

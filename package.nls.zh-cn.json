@@ -18,6 +18,7 @@
     "command.selectPythonInterpreter.title": "Lollms: 选择 Python 解释器",
     "command.inspectCode.title": "Lollms: 检查代码",
     "command.inspectFile.title": "使用 Lollms 检查",
+    "command.fixFileErrors.title": "Lollms: 修复文件错误",
     "command.debugErrorWithAI.title": "Lollms: 修复此错误",
     "command.debugErrorSendToDiscussion.title": "Lollms: 将错误发送到讨论",
     "command.buildCodeGraph.title": "构建代码图",

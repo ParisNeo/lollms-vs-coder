@@ -2256,18 +2256,26 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
             else if (item.status === 'failed') statusIcon = '<span class="codicon codicon-error" style="color:var(--vscode-charts-red)"></span>';
             else statusIcon = '<span class="codicon codicon-sync spin" style="color:var(--vscode-charts-yellow)"></span>';
             
+            let detailsHtml = '';
+            if (item.action === 'thought') {
+                detailsHtml = `<div style="padding-top:6px; opacity: 0.9; white-space: pre-wrap; font-family: var(--vscode-editor-font-family);">${sanitizer.sanitize(item.result)}</div>`;
+            } else {
+                detailsHtml = `
+                <details style="margin-top:4px;" ${item.status === 'in_progress' ? 'open' : ''}>
+                    <summary style="opacity:0.7; cursor:pointer; font-size: 10px;">Details</summary>
+                    <div style="background:var(--vscode-textCodeBlock-background); padding:6px; margin-top:4px; border-radius:4px; overflow-x:auto; font-family:var(--vscode-editor-font-family); border: 1px solid var(--vscode-widget-border);">
+                        <div style="margin-bottom:4px;"><strong style="color:var(--vscode-descriptionForeground)">Parameters:</strong><pre style="margin: 4px 0 0 0; font-size: 11px; white-space: pre-wrap;">${sanitizer.sanitize(JSON.stringify(item.parameters, null, 2))}</pre></div>
+                        ${item.result ? `<div><strong style="color:var(--vscode-descriptionForeground)">Result:</strong><pre style="margin: 4px 0 0 0; font-size: 11px; white-space: pre-wrap;">${sanitizer.sanitize(item.result.substring(0, 1500))}${item.result.length > 1500 ? '\n...[truncated]' : ''}</pre></div>` : ''}
+                    </div>
+                </details>`;
+            }
+
             return `
             <div class="investigation-item" style="padding: 8px; border-bottom: 1px solid var(--vscode-widget-border); font-size: 12px;">
                 <div style="display:flex; justify-content:space-between; align-items:center; font-weight:600;">
-                    <span>${statusIcon} ${item.action}</span>
+                    <span>${statusIcon} ${item.action === 'thought' ? 'Architect Thought' : item.action}</span>
                 </div>
-                <details style="margin-top:4px;">
-                    <summary style="opacity:0.7; cursor:pointer; font-size: 10px;">Details</summary>
-                    <div style="background:var(--vscode-textCodeBlock-background); padding:6px; margin-top:4px; border-radius:4px; overflow-x:auto; font-family:var(--vscode-editor-font-family); border: 1px solid var(--vscode-widget-border);">
-                        <div style="margin-bottom:4px;"><strong style="color:var(--vscode-descriptionForeground)">Parameters:</strong> ${JSON.stringify(item.parameters)}</div>
-                        ${item.result ? `<div><strong style="color:var(--vscode-descriptionForeground)">Result:</strong> ${sanitizer.sanitize(item.result.substring(0, 1000))}${item.result.length > 1000 ? '...' : ''}</div>` : ''}
-                    </div>
-                </details>
+                ${detailsHtml}
             </div>`;
         }).join('');
 
@@ -2312,15 +2320,37 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
             
             let resultHtml = '';
             
-            // Show Parameters for active/completed tasks
-            if (task.parameters && (task.status === 'in_progress' || task.status === 'completed' || task.status === 'failed')) {
+            // Show Parameters for all tasks to allow inspection and editing
+            if (task.parameters) {
+                let editHtml = '';
+                if (task.status === 'failed' || task.status === 'pending') {
+                    editHtml = `
+                    <div class="task-edit-zone" style="margin-top: 8px; border-top: 1px solid var(--vscode-widget-border); padding-top: 8px;">
+                        <button class="code-action-btn edit-params-btn" data-task-id="${task.id}" style="margin-bottom: 4px;">
+                            <span class="codicon codicon-edit"></span> Edit & Retry
+                        </button>
+                        <div id="edit-params-container-${task.id}" style="display: none; flex-direction: column; gap: 6px; margin-top: 4px;">
+                            <label style="font-size: 10px; font-weight: bold; color: var(--vscode-descriptionForeground);">Edit JSON Parameters:</label>
+                            <textarea id="edit-params-text-${task.id}" style="width: 100%; height: 120px; font-family: monospace; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 8px; border-radius: 4px;">${sanitizer.sanitize(JSON.stringify(task.parameters, null, 2))}</textarea>
+                            <button class="code-action-btn apply-btn save-retry-params-btn" data-task-id="${task.id}" style="align-self: flex-start;">
+                                <span class="codicon codicon-play"></span> Save & Run
+                            </button>
+                        </div>
+                    </div>`;
+                }
+
                 resultHtml += `
                     <div class="task-result" style="margin-bottom: 4px;">
-                        <details ${task.status === 'in_progress' ? 'open' : ''}>
-                            <summary class="task-result-summary" style="opacity:0.7;">Task Details (Parameters)</summary>
-                            <div class="task-result-box" style="border-style: dashed; opacity: 0.8;">
-                                <div style="font-size: 10px; font-weight: bold; color: var(--vscode-descriptionForeground); margin-bottom: 2px;">TOOL: ${task.action}</div>
-                                ${sanitizer.sanitize(JSON.stringify(task.parameters, null, 2))}
+                        <details ${task.status === 'in_progress' || task.status === 'failed' ? 'open' : ''}>
+                            <summary class="task-result-summary" style="opacity:0.7;">Task Details & Parameters</summary>
+                            <div class="task-result-box" style="border-style: dashed; opacity: 0.9;">
+                                <div style="font-size: 11px; font-weight: bold; color: var(--vscode-descriptionForeground); margin-bottom: 6px;">
+                                    TOOL: <span style="color: var(--vscode-textLink-foreground);">${task.action}</span>
+                                    ${task.model ? `<span style="margin-left: 8px; opacity: 0.7;">🤖 ${sanitizer.sanitize(task.model)}</span>` : ''}
+                                    ${task.agent_skills && task.agent_skills.length > 0 ? `<span style="margin-left: 8px; opacity: 0.7;">💡 ${sanitizer.sanitize(task.agent_skills.join(', '))}</span>` : ''}
+                                </div>
+                                <pre style="margin:0; padding:4px; background:var(--vscode-editor-inactiveSelectionBackground); border-radius:4px;"><code>${sanitizer.sanitize(JSON.stringify(task.parameters, null, 2))}</code></pre>
+                                ${editHtml}
                             </div>
                         </details>
                     </div>`;
@@ -2332,7 +2362,7 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
                 const resultBoxClass = isFailure ? 'failure' : 'success';
                 const summaryClass = isFailure ? 'failure-text' : 'success-text';
 
-                resultHtml = `
+                resultHtml += `
                     <div class="task-result">
                         <details ${isFailure ? 'open' : ''}>
                             <summary class="task-result-summary ${summaryClass}">${label}</summary>
@@ -2341,17 +2371,30 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
                     </div>`;
             }
 
+            let metaTabsHtml = '';
+            if (task.model) metaTabsHtml += `<div class="agent-meta-tab" title="Assigned Model"><span class="codicon codicon-hubot"></span> ${sanitizer.sanitize(task.model)}</div>`;
+            if (task.agent_persona) metaTabsHtml += `<div class="agent-meta-tab" title="Persona"><span class="codicon codicon-organization"></span> Persona Set</div>`;
+            if (task.agent_skills && task.agent_skills.length > 0) metaTabsHtml += `<div class="agent-meta-tab" title="Skills"><span class="codicon codicon-lightbulb"></span> ${task.agent_skills.length} Skills</div>`;
+            if (task.agent_files && task.agent_files.length > 0) metaTabsHtml += `<div class="agent-meta-tab" title="Files Context"><span class="codicon codicon-file-code"></span> ${task.agent_files.length} Files</div>`;
+            if (task.dependencies && task.dependencies.length > 0) metaTabsHtml += `<div class="agent-meta-tab" title="Waiting for Tasks"><span class="codicon codicon-git-merge"></span> Dep: [${task.dependencies.join(', ')}]</div>`;
+
             return `
-                <li class="plan-task" data-task-id="${task.id}">
-                    <div class="task-header">
-                        <div class="task-status-icon ${statusClass}">${icon}</div>
-                        <div class="task-details">
-                            <div class="task-description">${sanitizer.sanitize(task.description)}</div>
+                <li class="agent-card status-${task.status}" data-task-id="${task.id}">
+                    <div class="agent-card-header">
+                        <div style="display:flex; align-items:center; gap:8px;">
+                            <div class="${statusClass}">${icon}</div>
+                            <span style="font-weight:bold;">Agent Task ${task.id}</span>
+                        </div>
+                        <div style="display:flex; gap:8px; align-items:center;">
                             ${toolBadge}
                             ${retryButtonHtml}
                         </div>
                     </div>
-                    ${resultHtml}
+                    <div class="agent-card-body">
+                        <div class="task-description" style="margin-bottom: ${metaTabsHtml ? '8px' : '0'}; line-height: 1.4;">${sanitizer.sanitize(task.description)}</div>
+                        ${metaTabsHtml ? `<div class="agent-meta-tabs">${metaTabsHtml}</div>` : ''}
+                        ${resultHtml}
+                    </div>
                 </li>`;
         }).join('');
     }

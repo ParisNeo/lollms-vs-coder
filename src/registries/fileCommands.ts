@@ -127,6 +127,14 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 edit.insert(fileUri, new vscode.Position(0, 0), content);
                 
                 await vscode.workspace.applyEdit(edit);
+                
+                // Automatically add the newly created file to the AI context
+                try {
+                    await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', [filePath]);
+                } catch (e) {
+                    Logger.warn(`Failed to auto-add new file to context: ${e}`);
+                }
+
                 const doc = await vscode.workspace.openTextDocument(fileUri);
                 await vscode.window.showTextDocument(doc);
                 vscode.window.showInformationMessage(`Created new file: ${filePath}`);

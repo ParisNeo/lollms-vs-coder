@@ -15,9 +15,29 @@ export const executePythonScriptTool: ToolDefinition = {
         if (!params.env_name || !params.script_path) {
             return { success: false, output: "Error: 'env_name' and 'script_path' are required." };
         }
+        
+        let actualEnvName = params.env_name;
+        
+        if (env.workspaceRoot) {
+            const fs = require('fs/promises');
+            const rootPath = env.workspaceRoot.uri.fsPath;
+            try {
+                await fs.access(path.join(rootPath, actualEnvName));
+            } catch {
+                const possibleEnvs = ['.venv', 'venv', 'env'];
+                for (const e of possibleEnvs) {
+                    try {
+                        await fs.access(path.join(rootPath, e));
+                        actualEnvName = e;
+                        break;
+                    } catch {}
+                }
+            }
+        }
+
         const pythonScriptExec = os.platform() === 'win32'
-            ? path.join(params.env_name, 'Scripts', 'python.exe')
-            : path.join(params.env_name, 'bin', 'python');
-        return env.agentManager.runCommand(`"${pythonScriptExec}" ${params.script_path}`, signal);
+            ? path.join(actualEnvName, 'Scripts', 'python.exe')
+            : path.join(actualEnvName, 'bin', 'python');
+        return env.agentManager!.runCommand(`"${pythonScriptExec}" ${params.script_path}`, signal);
     }
 };

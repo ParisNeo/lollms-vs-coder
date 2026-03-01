@@ -20,6 +20,7 @@
     "command.saveNewFile.title": "Lollms: حفظ ملف جديد",
     "command.executeScript.title": "Lollms: تنفيذ البرنامج النصي",
     "command.inspectCode.title": "Lollms: فحص الكود",
+    "command.fixFileErrors.title": "Lollms: إصلاح أخطاء الملف",
     "command.autoSelectContextFiles.title": "Lollms: تحديد ملفات السياق تلقائيًا",
     "command.debugErrorWithAI.title": "Lollms: إصلاح هذا الخطأ",
     "command.debugErrorSendToDiscussion.title": "Lollms: إرسال الخطأ إلى المناقشة",    

@@ -12,7 +12,8 @@ export class PlanParser {
     constructor(
         private lollmsApi: LollmsAPI,
         private contextManager: ContextManager,
-        private toolManager: ToolManager
+        private toolManager: ToolManager,
+        private skillsManager?: import('./skillsManager').SkillsManager
     ) {}
 
     public async generateAndParsePlan(
@@ -34,7 +35,7 @@ export class PlanParser {
         
         let messages: ChatMessage[] = [];
         try {
-            const systemPromptMessage = await this.getPlannerSystemPrompt(!!existingPlan, toolsToUse);
+            const systemPromptMessage = await this.getPlannerSystemPrompt(!!existingPlan, toolsToUse, importedSkills);
             messages.push(systemPromptMessage);
 
 
@@ -67,7 +68,8 @@ ${memoryBlock}
             } else {
                 const projectContext = await this.contextManager.getContextContent({ 
                     includeTree: true,
-                    importedSkillIds: importedSkills
+                    importedSkillIds: importedSkills,
+                    allowRLM: vscode.workspace.getConfiguration('lollmsVsCoder').get<boolean>('agent.useRLM')
                 });
                 
                 const groundingBlock = `
@@ -149,6 +151,7 @@ ${memoryBlock}
             task.status = 'pending';
             task.result = null;
             task.retries = 0;
+            if (!task.dependencies) task.dependencies =[]; // Normalize to empty array
         }
     }
 
@@ -195,10 +198,24 @@ ${memoryBlock}
         return result;
     }
 
-    public async getArchitectSystemPrompt(allowedTools: ToolDefinition[]): Promise<ChatMessage> {
+    public async getArchitectSystemPrompt(allowedTools: ToolDefinition[], importedSkillIds?: string[]): Promise<ChatMessage> {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-        const modelPool = config.get<any[]>('herdDynamicModelPool') || [];
+        const modelPool = config.get<any[]>('herdDynamicModelPool') ||[];
         const poolDesc = modelPool.map(m => `- \`${m.model}\`: ${m.description}`).join('\n');
+
+        let skillsDesc = "- No specific skills have been selected by the user for this discussion.";
+        if (this.skillsManager) {
+            const activeProjectSkills = await this.contextManager.getActiveProjectSkills();
+            const allActiveSkillIds = Array.from(new Set([...(importedSkillIds || []), ...activeProjectSkills]));
+            
+            if (allActiveSkillIds.length > 0) {
+                const allSkills = await this.skillsManager.getSkills();
+                const activeSkills = allSkills.filter(s => allActiveSkillIds.includes(s.id));
+                if (activeSkills.length > 0) {
+                    skillsDesc = activeSkills.map(s => `- \`${s.id}\`: ${s.name} (${s.description})`).join('\n');
+                }
+            }
+        }
 
         const baseSystemInfo = await getProcessedSystemPrompt('agent');
         const toolDescriptions = allowedTools.map(tool => {
@@ -208,34 +225,62 @@ ${memoryBlock}
 
         const content = `${baseSystemInfo}
 
-You are the **Lead Architect**. You don't just call tools; you manage a team of specialist agents.
+You are the **Lead Architect & Autonomous Orchestrator**. You manage a team of multi-agent specialists to solve highly complex, open-ended requests (e.g., "Build a ROS node", "Train a VAE on this data and generate a PDF report").
 
-### 👥 AVAILABLE SPECIALIST MODELS
-You can assign specific models to tasks based on their strengths:
+### 🔍 PHASE 1: DISCOVERY & REFRAMING (CRITICAL FOR COMPLEX TASKS)
+If the request requires exploring code, data, or system environments, **DO NOT output a JSON plan immediately.**
+Instead, use tools directly to explore the environment.
+- **Resuming Work**: If the user asks to resume, continue, or fix an ongoing project, use \`execute_command\` (e.g., \`ls -la\`, \`git status\`) and \`read_file\` to thoroughly inspect the current state BEFORE planning. Check what has already been built.
+- **Environment Intelligence**: Look for existing virtual environments (e.g., \`.venv\`, \`venv\`, \`node_modules\`). Do NOT destructively overwrite them.
+- Output a SINGLE JSON tool call (e.g., \`execute_command\`, \`read_file\`, \`search_files\`).
+- I will execute it and return the output. You can loop this as many times as needed to learn.
+- If the task is complex, you may use the \`submit_response\` tool during this phase to summarize to the user what you understood and what your strategy will be.
+
+### 🛡️ PHASE 2: PLANNING, DELEGATION & EXECUTION
+Once you fully understand the environment, output your execution plan.
+- Break the objective into tasks.
+- **Multi-Agent Delegation**: Assign specific expert personas via the \`agent_persona\` field (e.g., "You are a Senior ROS Engineer", "You are an ML Data Scientist") and choose appropriate models.
+- **Verification Loop**: Your plan MUST include execution and validation steps. After writing code, use \`execute_command\` or \`execute_python_script\` to run it.
+- **Iterative Enhancement**: If an execution task fails, I will wake you up with the error. You must generate a *Revised Plan* to debug, edit the code, and test again until satisfactory.
+- **Artifacts**: If asked for a PDF or report, write a python script that generates it (using libraries like \`fpdf\`, \`reportlab\`, or \`matplotlib\` for data), install the dependencies, and execute it.
+
+### 💻 PLATFORM AWARENESS
+- OS Platform: ${os.platform() === 'win32' ? 'Windows' : os.platform()}
+- **Shell Commands**: You MUST adapt \`execute_command\` to the OS. On Windows, use PowerShell syntax (\`Get-ChildItem\`, \`curl.exe\`). On Linux/Mac, use Bash. Terminals ARE visible to the user.
+
+### 👥 MULTI-AGENT MODEL POOL
+You can assign these models to tasks:
 ${poolDesc || "- No specific pool: Use default model for all tasks."}
 
-### 🛡️ PROTOCOLS
-1. **DELEGATION**: For each task, you can optionally specify a \`model\` (from the pool) and an \`agent_persona\` (specialist instructions).
-2. **CONFLICT/BLAME**: If a previous task failed, analyze the specialist's "blame" in the failure log. Replan with a different model or tool.
-3. **UNDO**: If a path is wrong, use \`git_revert\` (if available) or replan to correct the state.
-4. **JSON ONLY**: You must output a valid JSON plan. If you fail to use JSON, the system fails.
+### 💡 AVAILABLE SKILLS (USER SELECTED)
+You can ONLY equip sub-agents with the following specific skills requested by the user:
+${skillsDesc}
+
+### ⚡ CONCURRENT EXECUTION
+- Tasks with \`"dependencies":[]\` run immediately in parallel.
+- Use dependencies to sequence logic (e.g., test only after coding finishes).
 
 ### TOOLS:
 ${toolDescriptions}
 
-### PLAN FORMAT:
+### FINAL OUTPUT FORMAT:
+If you are still investigating, output ONLY the tool JSON. 
+If you are ready to execute the sequence, output ONLY the Plan JSON:
 \`\`\`json
 {
   "objective": "...",
-  "scratchpad": "Architect's overall strategy...",
-  "tasks": [
+  "scratchpad": "Your reasoning, strategy, and what you discovered...",
+  "tasks":[
     { 
       "id": 1, 
       "action": "tool_name", 
-      "description": "Why this specialist is doing this...",
+      "description": "What this sub-agent will do...",
       "parameters": {},
+      "dependencies": [],
       "model": "optional_model_id",
-      "agent_persona": "Specialist instruction: 'You are an expert... Focus on...'"
+      "agent_persona": "Specific instructions for the sub-agent executing this task",
+      "agent_skills": ["skill_id_1"],
+      "agent_files":["src/main.py", "src/utils.py"]
     }
   ]
 }
@@ -244,7 +289,7 @@ ${toolDescriptions}
         return { role: 'system', content };
     }
 
-    public async getPlannerSystemPrompt(isRevision: boolean = false, allowedTools: ToolDefinition[]): Promise<ChatMessage> {
-        return this.getArchitectSystemPrompt(allowedTools);
+    public async getPlannerSystemPrompt(isRevision: boolean = false, allowedTools: ToolDefinition[], importedSkills?: string[]): Promise<ChatMessage> {
+        return this.getArchitectSystemPrompt(allowedTools, importedSkills);
     }
 }

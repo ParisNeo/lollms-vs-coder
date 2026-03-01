@@ -390,7 +390,7 @@ export function updateBadges() {
         });
         if (agentBadge) taskGroup.appendChild(agentBadge);
 
-        const herdBadge = createToggleBadge('🐂 Herd', 'herd', guiState.herdBadge, caps.herdMode, () => {
+        const herdBadge = createToggleBadge('🐂 Multi-Agent', 'herd', guiState.herdBadge, caps.herdMode, () => {
             vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { herdMode: !caps.herdMode } });
         });
         if (herdBadge) taskGroup.appendChild(herdBadge);

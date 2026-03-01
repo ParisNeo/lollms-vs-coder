@@ -27,13 +27,39 @@ export const prepareEnvironmentTool: ToolDefinition = {
         let command = "";
 
         switch (platform) {
-            case 'python':
+            case 'python': {
+                // Intelligent environment detection and preservation
+                const possibleEnvs =['.venv', 'venv', 'env'];
+                let foundEnv = '';
+                if (env.workspaceRoot) {
+                    const fs = require('fs/promises');
+                    const path = require('path');
+                    for (const e of possibleEnvs) {
+                        try {
+                            const p = path.join(env.workspaceRoot.uri.fsPath, e);
+                            const stat = await fs.stat(p);
+                            if (stat.isDirectory()) {
+                                foundEnv = e;
+                                break;
+                            }
+                        } catch { }
+                    }
+                }
+                
+                const targetEnv = foundEnv || envName || '.venv';
+                if (env.agentManager) env.agentManager.sessionState.activeEnv = targetEnv;
+
+                if (foundEnv) {
+                    return { success: true, output: `Found existing Python environment: '${foundEnv}'. Ready to use.` };
+                }
+
                 if (isWin) {
-                    command = `if (Test-Path "${envName}") { Remove-Item -Recurse -Force "${envName}" }; python -m venv "${envName}"`;
+                    command = `python -m venv "${targetEnv}"`;
                 } else {
-                    command = `rm -rf "${envName}" && python3 -m venv "${envName}"`;
+                    command = `python3 -m venv "${targetEnv}" || python -m venv "${targetEnv}"`;
                 }
                 break;
+            }
 
             case 'node':
                 // Check if package.json exists, if not init. Then install.

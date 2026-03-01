@@ -10,7 +10,8 @@ import {
     renderFileSearchResults,
     renderWebSearchResults,
     renderContextUsage,
-    updateProgressBar
+    updateProgressBar,
+    updateContextFileUsage
 } from './ui.js';
 
 export async function handleExtensionMessage(event: MessageEvent) {

@@ -12,6 +12,9 @@ export interface Task {
     parameters: { [key: string]: any };
     model?: string; // Specific model for this specialist
     agent_persona?: string; // Custom instructions for the specialist
+    agent_skills?: string[]; // Specific skills for the specialist
+    agent_files?: string[]; // Specific files this agent needs to read
+    dependencies?: number[]; // Task IDs that must complete before this starts
     status: 'pending' | 'in_progress' | 'completed' | 'failed';
     result: string | null;
     retries: number;
@@ -35,6 +38,10 @@ export interface ToolExecutionEnv {
     skillsManager?: SkillsManager;
     currentPlan: Plan | null;
     agentManager?: AgentManager; // Made optional for Companion use
+    taskModel?: string; // Specific model requested by the architect for this task
+    taskPersona?: string; // Specific instructions requested by the architect
+    taskSkills?: string[]; // Specific skills requested by the architect
+    taskFiles?: string[]; // Specific files requested by the architect
 }
 
 /**

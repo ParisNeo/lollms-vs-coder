@@ -109,6 +109,54 @@ export function registerDebugCommands(context: vscode.ExtensionContext, services
         panel._panel.reveal();
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.fixFileErrors', async (uri?: vscode.Uri) => {
+        const targetUri = uri || vscode.window.activeTextEditor?.document.uri;
+        if (!targetUri) {
+            vscode.window.showErrorMessage("No file selected.");
+            return;
+        }
+
+        const diagnostics = vscode.languages.getDiagnostics(targetUri);
+        const issues = diagnostics.filter(d => d.severity === vscode.DiagnosticSeverity.Error || d.severity === vscode.DiagnosticSeverity.Warning);
+
+        if (issues.length === 0) {
+            vscode.window.showInformationMessage("No errors or warnings found in this file.");
+            return;
+        }
+
+        try {
+            const document = await vscode.workspace.openTextDocument(targetUri);
+            const fileContent = document.getText();
+            const relativePath = vscode.workspace.asRelativePath(targetUri);
+
+            let prompt = `I have ${issues.length} issue(s) (errors/warnings) in \`${relativePath}\`.\n\n`;
+            
+            prompt += `**Issues:**\n`;
+            issues.forEach((issue, index) => {
+                const line = issue.range.start.line + 1;
+                const severity = issue.severity === vscode.DiagnosticSeverity.Error ? 'Error' : 'Warning';
+                prompt += `${index + 1}. [Line ${line}] ${severity}: ${issue.message} (${issue.source || 'unknown'})\n`;
+            });
+
+            prompt += `\n**File Content:**\n\`\`\`${document.languageId}\n${fileContent}\n\`\`\`\n\n`;
+            prompt += `Please analyze these issues and provide the corrected code.`;
+
+            const workspaceFolder = vscode.workspace.getWorkspaceFolder(targetUri) || getActiveWorkspace();
+            
+            if (workspaceFolder) {
+                // Automatically add the file to context so AI has full awareness
+                await vscode.commands.executeCommand('lollms-vs-coder.setContextIncluded', targetUri, [targetUri]);
+                
+                await startDiscussionWithInitialPrompt(services, prompt, workspaceFolder);
+            } else {
+                vscode.window.showErrorMessage("No workspace folder found for this file.");
+            }
+
+        } catch (e: any) {
+            vscode.window.showErrorMessage(`Failed to process file: ${e.message}`);
+        }
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.inspectCode', async (args?: { code: string, language: string }) => {
         if (!ChatPanel.currentPanel) {
             vscode.window.showErrorMessage("Please open a Lollms chat panel to show inspection results.");

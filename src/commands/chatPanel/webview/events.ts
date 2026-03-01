@@ -637,10 +637,48 @@ export function initEventHandlers() {
         });
     }
 
-    // Handle Skill Save buttons via delegation
+    // Handle dynamic buttons via delegation
     if (dom.messagesDiv) {
         dom.messagesDiv.addEventListener('click', (e) => {
-            const btn = (e.target as HTMLElement).closest('.save-skill-btn') as HTMLButtonElement;
+            const target = e.target as HTMLElement;
+
+            // Toggle Edit Params
+            const editBtn = target.closest('.edit-params-btn') as HTMLButtonElement;
+            if (editBtn) {
+                e.stopPropagation();
+                const taskId = editBtn.dataset.taskId;
+                const container = document.getElementById(`edit-params-container-${taskId}`);
+                if (container) {
+                    container.style.display = container.style.display === 'none' ? 'flex' : 'none';
+                }
+                return;
+            }
+
+            // Save & Retry Params
+            const saveRetryBtn = target.closest('.save-retry-params-btn') as HTMLButtonElement;
+            if (saveRetryBtn) {
+                e.stopPropagation();
+                const taskId = saveRetryBtn.dataset.taskId;
+                const textArea = document.getElementById(`edit-params-text-${taskId}`) as HTMLTextAreaElement;
+                if (textArea && taskId) {
+                    try {
+                        const newParams = JSON.parse(textArea.value);
+                        vscode.postMessage({ 
+                            command: 'editAndRetryAgentTask', 
+                            taskId: taskId,
+                            params: newParams 
+                        });
+                        
+                        saveRetryBtn.disabled = true;
+                        saveRetryBtn.innerHTML = '<span class="codicon codicon-sync spin"></span> Running...';
+                    } catch (err) {
+                        vscode.postMessage({ command: 'showError', message: 'Invalid JSON parameters. Please check your syntax.' });
+                    }
+                }
+                return;
+            }
+
+            const btn = target.closest('.save-skill-btn') as HTMLButtonElement;
             if (btn) {
                 const content = btn.dataset.content || '';
                 const scope = btn.dataset.scope as 'global' | 'local';

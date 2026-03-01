@@ -2205,6 +2205,11 @@ Task:
             case 'retryAgentTask':
                 this.agentManager?.retryFailedTask(parseInt(message.taskId, 10));
                 break;
+            case 'editAndRetryAgentTask':
+                if (this.agentManager) {
+                    this.agentManager.editAndRetryTask(parseInt(message.taskId, 10), message.params);
+                }
+                break;
             case 'loadFile':
                 const { name: fileName2, content: fileContent2, isImage: isImage2 } = message.file;
                 await this._handleFileAttachment(fileName2, fileContent2, isImage2);
@@ -2634,6 +2639,15 @@ Task:
                 }
                 break;
             case 'requestViewFullContext':
+                try {
+                    const contextResult = await this._contextManager.getContextContent({ 
+                        modelName: this._currentDiscussion?.model || this._lollmsAPI.getModelName() 
+                    });
+                    InfoPanel.createOrShow(this._extensionUri, "Full AI Context Preview", contextResult.text);
+                } catch (e: any) {
+                    vscode.window.showErrorMessage(`Failed to load context preview: ${e.message}`);
+                }
+                break;
             case 'requestContextUsage':
                 await this.handleRequestContextUsage();
                 break;
@@ -3050,7 +3064,7 @@ Task:
                                 <label class="switch"><input type="checkbox" id="autoSkillCheckbox"><span class="slider"></span></label>
                             </div>
                             <div class="menu-item-toggle">
-                                <span>🐂 Herd Mode</span>
+                                <span>🐂 Multi-Agent</span>
                                 <label class="switch"><input type="checkbox" id="herdModeCheckbox"><span class="slider"></span></label>
                             </div>
                         </div>

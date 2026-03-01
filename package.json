@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.6.17",
+  "version": "0.6.19",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -164,6 +164,11 @@
       {
         "command": "lollms-vs-coder.inspectFile",
         "title": "%command.inspectFile.title%"
+      },
+      {
+        "command": "lollms-vs-coder.fixFileErrors",
+        "title": "%command.fixFileErrors.title%",
+        "icon": "$(tools)"
       },
 
       {
@@ -686,6 +691,16 @@
           "default": false,
           "description": "Enable Recursive Language Model (RLM) mode for agents. This allows the agent to execute python code recursively to solve problems."
         },
+        "lollmsVsCoder.agent.maxSimultaneousAgents": {
+          "type": "number",
+          "default": 3,
+          "description": "Maximum number of agent tasks that can be executed in parallel."
+        },
+        "lollmsVsCoder.agent.createBranchOnEdit": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically create a new git branch (e.g., ai-task-123) before the Agent modifies files to prevent breaking existing code."
+        },
         "lollmsVsCoder.searchProvider": {
           "type": "string",
           "default": "google_custom_search",
@@ -1114,14 +1129,23 @@
           "command": "lollms-vs-coder.inspectFile",
           "group": "1_modification@1",
           "when": "!resourceIsFolder"
+        },
+        {
+          "command": "lollms-vs-coder.fixFileErrors",
+          "group": "1_modification@2",
+          "when": "!resourceIsFolder"
         }
       ],
 
-      "editor/context": [
+      "editor/context":[
         {
           "command": "lollms-vs-coder.learnSelectionAsSkill",
           "when": "editorHasSelection",
-          "group": "1_modification"
+          "group": "1_modification@1"
+        },
+        {
+          "command": "lollms-vs-coder.fixFileErrors",
+          "group": "1_modification@2"
         }
       ],
       "terminal/context": [

@@ -59,20 +59,35 @@ export const installPythonDependenciesTool: ToolDefinition = {
         { name: "dependencies", type: "array", description: "List of package names strings. Leave empty to auto-detect from requirements.txt or source code.", required: true }
     ],
     async execute(params: { env_name: string, dependencies: string[] }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
-        const pythonExec = os.platform() === 'win32'
-            ? path.join(params.env_name, 'Scripts', 'python.exe')
-            : path.join(params.env_name, 'bin', 'python');
-
         // Check if venv exists first
         if (!env.workspaceRoot) return { success: false, output: "No workspace." };
         const rootPath = env.workspaceRoot.uri.fsPath;
-        const venvPath = path.join(rootPath, params.env_name);
+        let actualEnvName = params.env_name;
+        let venvPath = path.join(rootPath, actualEnvName);
         
         try {
             await fs.access(venvPath);
         } catch {
-            return { success: false, output: `Virtual environment '${params.env_name}' not found. Please create it first.` };
+            // Auto-detect common venv folders if the requested one is missing
+            const possibleEnvs = ['.venv', 'venv', 'env'];
+            let found = false;
+            for (const e of possibleEnvs) {
+                try {
+                    venvPath = path.join(rootPath, e);
+                    await fs.access(venvPath);
+                    actualEnvName = e;
+                    found = true;
+                    break;
+                } catch {}
+            }
+            if (!found) {
+                return { success: false, output: `Virtual environment '${params.env_name}' not found. Please create it first.` };
+            }
         }
+
+        const pythonExec = os.platform() === 'win32'
+            ? path.join(actualEnvName, 'Scripts', 'python.exe')
+            : path.join(actualEnvName, 'bin', 'python');
 
         let command = "";
         let detectedDeps: string[] = [];

@@ -18,6 +18,7 @@
     "command.selectPythonInterpreter.title": "Lollms: تحديد مترجم بايثون",
     "command.inspectCode.title": "Lollms: فحص الكود",
     "command.inspectFile.title": "فحص باستخدام Lollms",
+    "command.fixFileErrors.title": "Lollms: إصلاح أخطاء الملف",
     "command.debugErrorWithAI.title": "Lollms: إصلاح هذا الخطأ",
     "command.debugErrorSendToDiscussion.title": "Lollms: إرسال الخطأ إلى المناقشة",
     "command.buildCodeGraph.title": "بناء الرسم البياني للكود",

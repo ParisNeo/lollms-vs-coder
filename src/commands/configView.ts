@@ -1074,8 +1074,9 @@ export class SettingsPanel {
 
             <!-- TabHerd -->
             <div id="TabHerd" class="tab-content">
-              <h2>Herd Mode 🐂</h2>
-              <div class="checkbox-container"><input type="checkbox" id="herdDynamicMode" ${herdDynamicMode ? 'checked' : ''}><label for="herdDynamicMode">Dynamic Herd Mode (AI builds the team for you)</label></div>
+              <h2>Multi-Agent & Herd Mode 🐂</h2>
+              <p class="help-text">Define AI specialists here. These models are available to the <strong>Agent Architect</strong> for sub-task delegation, and to <strong>Herd Mode</strong> for brainstorming.</p>
+              <div class="checkbox-container"><input type="checkbox" id="herdDynamicMode" ${herdDynamicMode ? 'checked' : ''}><label for="herdDynamicMode">Dynamic Mode (AI builds the team automatically based on the prompt)</label></div>
               <label for="herdRounds">Number of Rounds</label>
               <input type="number" id="herdRounds" value="${herdRounds}" min="1" max="10" />
               <div id="static-herd-config" style="display: ${herdDynamicMode ? 'none' : 'block'};">

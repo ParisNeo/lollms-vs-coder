@@ -24,6 +24,12 @@ export const readFileTool: ToolDefinition = {
         try {
             const fileUri = vscode.Uri.joinPath(env.workspaceRoot.uri, filePath);
             const fileContent = await vscode.workspace.fs.readFile(fileUri);
+            
+            // Auto-add the read file to the global context so the Architect and other agents have permanent access to it
+            if (env.contextManager.getContextStateProvider()) {
+                await env.contextManager.getContextStateProvider()!.addFilesToContext([filePath]);
+            }
+
             return { success: true, output: Buffer.from(fileContent).toString('utf8') };
         } catch (error: any) {
             return { success: false, output: `Error reading file ${filePath}: ${error.message}` };

@@ -212,6 +212,7 @@ export class AgentManager {
                 const result = await this.replan(content, controller.signal);
                 if (result.success) {
                     await this.executePlan(this.currentTaskIndex, controller.signal, this.currentDiscussion.model);
+                    await this.synthesizeFinalResponse(content, controller.signal, this.currentDiscussion.model);
                 } else {
                     this.ui.addMessageToDiscussion({ role: 'system', content: `❌ Plan update failed: ${result.output}` });
                 }
@@ -225,7 +226,7 @@ export class AgentManager {
                      const failedPlanState: Plan = {
                         objective: objective,
                         scratchpad: `❌ **Planning Failed.** Architect timed out or failed to provide a valid JSON plan.`,
-                        tasks: []
+                        tasks:[]
                     };
                     this.displayAndSavePlan(failedPlanState);
                     return;
@@ -233,6 +234,7 @@ export class AgentManager {
                 
                 this.displayAndSavePlan(plan);
                 await this.executePlan(0, controller.signal, this.currentDiscussion.model);
+                await this.synthesizeFinalResponse(objective, controller.signal, this.currentDiscussion.model);
             }
 
         } catch (error: any) {
@@ -318,6 +320,22 @@ export class AgentManager {
              
              const toolMatch = this.parseToolCall(cleanResponse);
              if (toolMatch) {
+                 // Add to Investigation History
+                 const invEntry = {
+                     action: toolMatch.name,
+                     parameters: toolMatch.params,
+                     status: 'in_progress',
+                     result: null as string | null
+                 };
+                 investigationHistory.push(invEntry);
+                 await this.displayAndSavePlan({
+                     objective,
+                     scratchpad: "🧠 Architect is exploring the environment...",
+                     tasks:[],
+                     investigation: investigationHistory,
+                     attempts: existingHistory
+                 });
+
                  // Update Web UI if search
                  if (toolMatch.name.includes('search')) {
                     this.ui.addMessageToDiscussion({ 
@@ -341,10 +359,37 @@ export class AgentManager {
                  try {
                      const res = await this.executeTask(toolMatch.name, toolMatch.params, signal, tempEnv as any);
                      historyContext.push({ role: 'user', content: `Tool Output: ${res.output}` });
+                     invEntry.status = res.success ? 'completed' : 'failed';
+                     invEntry.result = res.output;
                  } catch(e: any) {
                      historyContext.push({ role: 'user', content: `Tool Error: ${e.message}` });
+                     invEntry.status = 'failed';
+                     invEntry.result = e.message;
                  }
+                 
+                 // Update the plan with the tool execution result
+                 await this.displayAndSavePlan({
+                     objective,
+                     scratchpad: "🧠 Architect is exploring the environment...",
+                     tasks:[],
+                     investigation: investigationHistory,
+                     attempts: existingHistory
+                 });
              } else {
+                 investigationHistory.push({
+                     action: 'thought',
+                     parameters: {},
+                     status: 'completed',
+                     result: response
+                 });
+                 await this.displayAndSavePlan({
+                     objective,
+                     scratchpad: "🧠 Architect is thinking...",
+                     tasks:[],
+                     investigation: investigationHistory,
+                     attempts: existingHistory
+                 });
+
                  // If we have history of messages, assume the last response might be conversational.
                  // We push it to history so the model knows what it said.
                  historyContext.push({ role: 'assistant', content: response });
@@ -402,10 +447,134 @@ export class AgentManager {
         try {
             const isRepo = await this.gitIntegration.isGitRepo(this.currentWorkspaceFolder);
             if (!isRepo) return;
-            this.ui.addMessageToDiscussion({ role: 'system', content: `🔒 **Creating safety backup:** ${reason}...` });
-            await this.gitIntegration.stageAllAndCommit(`Auto-backup: ${reason}`, this.currentWorkspaceFolder);
+
+            const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+            if (config.get<boolean>('agent.createBranchOnEdit') === false) {
+                 await this.gitIntegration.stageAllAndCommit(`Auto-backup: ${reason}`, this.currentWorkspaceFolder);
+                 return;
+            }
+
+            const currentBranch = await this.gitIntegration.getCurrentBranch(this.currentWorkspaceFolder);
+            
+            // If we are already on an ai-generated branch, just commit to save state.
+            if (currentBranch.startsWith('ai-task-')) {
+                await this.gitIntegration.stageAllAndCommit(`Checkpoint: ${reason}`, this.currentWorkspaceFolder);
+                return;
+            }
+
+            // Commit pending changes first before branching
+            const status = await this.gitIntegration.getGitStatus(this.currentWorkspaceFolder);
+            if (status.unstaged.length > 0 || status.untracked.length > 0 || status.staged.length > 0) {
+                await this.gitIntegration.stageAllAndCommit(`Auto-backup before AI intervention`, this.currentWorkspaceFolder);
+            }
+
+            const branchName = `ai-task-${Date.now()}`;
+            await this.gitIntegration.createAndCheckoutBranch(this.currentWorkspaceFolder, branchName);
+            
+            this.ui.addMessageToDiscussion({ 
+                role: 'system', 
+                content: `🔒 **Safety Mechanism Triggered:** Created and checked out to branch \`${branchName}\`.\nIf things break, you can safely switch back to \`${currentBranch}\`.` 
+            });
+
+            // Update UI Git Status
+            if (this.currentDiscussion) {
+                this.currentDiscussion.gitState = { originalBranch: currentBranch, tempBranch: branchName };
+                await this.discussionManager.saveDiscussion(this.currentDiscussion);
+            }
+
         } catch (e) {
-            console.error("Backup failed", e);
+            console.error("Agent Git branching failed", e);
+        }
+    }
+
+    public async editAndRetryTask(taskId: number, newParams: any) {
+        if (!this.currentPlan || !this.processManager || !this.currentDiscussion) return;
+
+        const task = this.currentPlan.tasks.find(t => t.id === taskId);
+        if (!task) return;
+
+        task.parameters = newParams;
+        task.status = 'pending';
+        task.retries = 0;
+        task.can_retry = false;
+
+        this.ui.addMessageToDiscussion({ role: 'system', content: `🔄 **Manual Override:** Restarting Task ${taskId} with updated parameters.` });
+        
+        await this.displayAndSavePlan(this.currentPlan);
+
+        // Resume execution
+        const { id: processId, controller } = this.processManager.register(this.currentDiscussion.id, `Agent: Retrying task ${taskId}...`);
+        this.ui.updateGeneratingState();
+
+        try {
+            await this.executePlan(0, controller.signal, this.currentDiscussion.model);
+            await this.synthesizeFinalResponse("Retry task execution", controller.signal, this.currentDiscussion.model);
+        } finally {
+            this.processManager.unregister(processId);
+            this.ui.updateGeneratingState();
+        }
+    }
+
+    private async synthesizeFinalResponse(originalObjective: string, signal: AbortSignal, modelOverride?: string) {
+        if (signal.aborted || !this.currentPlan || !this.currentDiscussion) return;
+
+        // Check if the plan already explicitly submitted a response successfully
+        const hasSuccessfulResponse = this.currentPlan.tasks.some(t => t.action === 'submit_response' && t.status === 'completed');
+        if (hasSuccessfulResponse) return;
+
+        // Don't synthesize if there are still pending tasks (meaning it was stopped/deadlocked)
+        const pendingTasks = this.currentPlan.tasks.filter(t => t.status === 'pending' || t.status === 'in_progress');
+        if (pendingTasks.length > 0) return;
+
+        // Only synthesize if we actually executed something
+        if (this.currentPlan.tasks.length === 0) return;
+
+        this.ui.addMessageToDiscussion({ role: 'system', content: '📝 **Synthesizing final results...**' });
+
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const architectModel = config.get<string>('architectModelName') || modelOverride || this.currentDiscussion.model;
+        const persona = config.get<string>('agentPersona') || "You are a specialized AI agent.";
+
+        let executionLog = `### TASK EXECUTION LOG\n`;
+        this.currentPlan.tasks.forEach(t => {
+            executionLog += `- **Task ${t.id}:** ${t.description} (Tool: \`${t.action}\`)\n`;
+            executionLog += `  Status: **${t.status}**\n`;
+            if (t.result) {
+                const truncatedResult = t.result.substring(0, 2000) + (t.result.length > 2000 ? '\n...[truncated]' : '');
+                executionLog += `  Result: ${truncatedResult}\n`;
+            }
+        });
+
+        const prompt = `You are the Lead Architect. You have just finished executing an automated plan for the user.
+
+**User's Original Request:** "${originalObjective}"
+
+${executionLog}
+
+**INSTRUCTION:**
+Please provide a clear, concise final response to the user summarizing the outcome.
+- If the user asked a question (e.g., "What is my IP?"), provide the answer clearly based on the task results.
+- If tasks failed, explain why and what the user could do next.
+- If tasks succeeded, confirm the actions taken.
+- Output pure markdown, directly addressing the user. Do NOT output a JSON plan.`;
+
+        try {
+            const response = await this.lollmsApi.sendChat([
+                { role: 'system', content: persona },
+                { role: 'user', content: prompt }
+            ], null, signal, architectModel);
+
+            const msgId = `agent_synthesis_${Date.now()}`;
+            await this.ui.addMessageToDiscussion({
+                id: msgId,
+                role: 'assistant',
+                content: response,
+                model: architectModel
+            });
+        } catch (e: any) {
+            if (e.name !== 'AbortError' && e.message !== 'AbortError') {
+                this.ui.addMessageToDiscussion({ role: 'system', content: `❌ Final synthesis failed: ${e.message}` });
+            }
         }
     }
 
@@ -443,86 +612,155 @@ export class AgentManager {
 
     private async executePlan(startIndex: number = 0, signal: AbortSignal, modelOverride?: string) {
         if (!this.currentPlan) return;
-        this.currentTaskIndex = startIndex;
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const maxRetries = config.get<number>('agentMaxRetries') || 1;
+        const maxConcurrent = config.get<number>('agent.maxSimultaneousAgents') || 3;
         const architectModel = config.get<string>('architectModelName') || modelOverride || this.currentDiscussion?.model;
 
-        while (this.currentTaskIndex < this.currentPlan.tasks.length) {
-            if (signal.aborted) return;
-            const task = this.currentPlan.tasks[this.currentTaskIndex];
-            const specialistModel = task.model || modelOverride || this.currentDiscussion?.model;
+        // Reset leftover in_progress tasks back to pending if we are resuming an interrupted plan
+        this.currentPlan.tasks.forEach(t => {
+            if (t.status === 'in_progress') t.status = 'pending';
+        });
 
-            if (task.status === 'pending') {
-                // Only backup for actions that modify the local filesystem directly.
-                // execute_command is excluded by default as it might just be a network tool like curl.
-                if (['generate_code', 'delete_file', 'move_file'].includes(task.action)) {
-                    await this.performGitBackup(`Checkpoint: Task ${task.id} - ${task.description}`);
-                }
+        let activePromises: Promise<void>[] =[];
+        let planAborted = false;
 
-                task.status = 'in_progress';
-                let result: { success: boolean; output: string; } = { success: false, output: "" };
-                let resolvedParams: any = {};
+        while (true) {
+            if (signal.aborted || planAborted || !this.currentPlan) break;
 
-                try {
-                    resolvedParams = this.resolveParameters(task);
-                    task.parameters = resolvedParams; 
-                    await this.displayAndSavePlan(this.currentPlan); 
+            const pendingTasks = this.currentPlan.tasks.filter(t => t.status === 'pending');
+            const inProgressTasks = this.currentPlan.tasks.filter(t => t.status === 'in_progress');
 
-                    if (this.failureMemory.hasFailedBefore(task.action, resolvedParams)) {
-                        result = { 
-                            success: false, 
-                            output: `CRITICAL FAILURE: The Specialist detected a loop with these parameters. Strategy blocked.` 
-                        };
-                    } else {
-                        result = await this.executeTask(task.action, resolvedParams, signal, undefined, specialistModel, task.agent_persona);
+            if (pendingTasks.length === 0 && inProgressTasks.length === 0) {
+                break; // Everything is finished
+            }
+
+            const availableTasks = pendingTasks.filter(t => {
+                if (!t.dependencies || t.dependencies.length === 0) {
+                    // Backwards compatibility check: If NO task in the entire plan uses dependencies, 
+                    // enforce strictly sequential execution to avoid breaking older weak models.
+                    const hasAnyDeps = this.currentPlan!.tasks.some(x => x.dependencies && x.dependencies.length > 0);
+                    if (!hasAnyDeps) {
+                        return t.id === pendingTasks[0].id;
                     }
-                } catch (error: any) {
-                    result = { success: false, output: `Specialist Runtime Error: ${error.message}` };
+                    return true; // Explicitly empty array means run immediately in parallel
                 }
-    
-                task.result = result.output;
-                task.status = result.success ? 'completed' : 'failed';
+                return t.dependencies.every(depId => {
+                    const depTask = this.currentPlan!.tasks.find(pt => pt.id === depId);
+                    return depTask && depTask.status === 'completed';
+                });
+            });
 
-                if (!result.success) {
-                    this.failureMemory.recordFailure(task.action, resolvedParams, result.output);
+            if (availableTasks.length === 0 && inProgressTasks.length === 0 && pendingTasks.length > 0) {
+                this.ui.addMessageToDiscussion({ role: 'system', content: `❌ **Deadlock Detected:** Some tasks have unmet or failed dependencies.` });
+                break;
+            }
 
-                    if (task.retries < maxRetries) {
-                        this.ui.addMessageToDiscussion({ 
-                            role: 'system', 
-                            content: `⚠️ **Task ${task.id} Failed.** Lead Architect is revising the strategy...`,
-                            skipInPrompt: true 
-                        });
+            let startedNewTask = false;
+            while (activePromises.length < maxConcurrent && availableTasks.length > 0 && !planAborted) {
+                const task = availableTasks.shift()!;
+                task.status = 'in_progress';
+                this.displayAndSavePlan(this.currentPlan);
+                
+                startedNewTask = true;
+                
+                const taskPromise = this.runSingleTask(task, signal, modelOverride).then(async (result) => {
+                    activePromises = activePromises.filter(p => p !== taskPromise);
+                    
+                    if (!result.success) {
+                        planAborted = true; // Prevent new tasks from launching
+                        
+                        // Await running siblings to gracefully finish
+                        if (activePromises.length > 0) {
+                            await Promise.all(activePromises);
+                        }
+                        
+                        // We are now alone. Let's decide how to handle the failure.
+                        if (task.retries < maxRetries) {
+                            this.ui.addMessageToDiscussion({ 
+                                role: 'system', 
+                                content: `⚠️ **Task ${task.id} Failed.** Lead Architect is revising the strategy...`,
+                                skipInPrompt: true 
+                            });
 
-                        const revisionSucceeded = await this.revisePlanForFailure(task, signal, architectModel);
-                        if (revisionSucceeded) {
-                            await this.displayAndSavePlan(this.currentPlan);
-                            // We stay at the same currentTaskIndex because the old failed task 
-                            // was removed and replaced by new tasks at this position.
-                            continue; 
+                            const revisionSucceeded = await this.revisePlanForFailure(task, signal, architectModel);
+                            if (revisionSucceeded) {
+                                planAborted = false; // Unblock to resume the loop with the newly generated plan
+                            } else {
+                                await this.handleTaskFailureUserChoice(task);
+                            }
+                        } else {
+                            await this.handleTaskFailureUserChoice(task);
                         }
                     }
-                    
-                    task.can_retry = true;
-                    await this.displayAndSavePlan(this.currentPlan);
-
-                    const userChoice = await vscode.window.showErrorMessage(
-                        `Task "${task.description}" failed.`,
-                        { modal: true },
-                        'Stop', 'Continue Anyway', 'View Log'
-                    );
-
-                    if (userChoice === 'View Log') {
-                        InfoPanel.createOrShow(this.extensionUri, `Task ${task.id} Log`, `## Result\n${task.result}`);
-                    }
-                    if (userChoice === 'Stop' || userChoice === undefined) {
-                        return; 
-                    }
-                } else {
-                    // Success logic
-                }
+                });
+                
+                activePromises.push(taskPromise);
             }
-            this.currentTaskIndex++;
+
+            if (!startedNewTask && activePromises.length > 0) {
+                // Wait for at least one active task to finish before evaluating the while loop again
+                await Promise.race(activePromises);
+            }
+        }
+    }
+
+    private async runSingleTask(task: Task, signal: AbortSignal, modelOverride?: string): Promise<{ success: boolean, output: string }> {
+        if (!this.currentPlan) return { success: false, output: "" };
+        const specialistModel = task.model || modelOverride || this.currentDiscussion?.model;
+        
+        if (['generate_code', 'delete_file', 'move_file'].includes(task.action)) {
+            await this.performGitBackup(`Checkpoint: Task ${task.id} - ${task.description}`);
+        }
+
+        let result: { success: boolean; output: string; } = { success: false, output: "" };
+        let resolvedParams: any = {};
+
+        try {
+            resolvedParams = this.resolveParameters(task);
+            task.parameters = resolvedParams; 
+            await this.displayAndSavePlan(this.currentPlan); 
+
+            if (this.failureMemory.hasFailedBefore(task.action, resolvedParams)) {
+                result = { 
+                    success: false, 
+                    output: `CRITICAL FAILURE: The Specialist detected a loop with these parameters. Strategy blocked.` 
+                };
+            } else {
+                result = await this.executeTask(task.action, resolvedParams, signal, undefined, specialistModel, task.agent_persona, task.agent_skills, task.agent_files);
+            }
+        } catch (error: any) {
+            result = { success: false, output: `Specialist Runtime Error:\n${error.stack || error.message}` };
+        }
+
+        task.result = result.output;
+        task.status = result.success ? 'completed' : 'failed';
+        
+        if (!result.success) {
+            this.failureMemory.recordFailure(task.action, resolvedParams, result.output);
+        }
+        
+        await this.displayAndSavePlan(this.currentPlan);
+        return result;
+    }
+
+    private async handleTaskFailureUserChoice(task: Task) {
+        if (!this.currentPlan) return;
+        task.can_retry = true;
+        await this.displayAndSavePlan(this.currentPlan);
+
+        const userChoice = await vscode.window.showErrorMessage(
+            `Task "${task.description}" failed.`,
+            { modal: true },
+            'Stop', 'Continue Anyway', 'View Log'
+        );
+
+        if (userChoice === 'View Log') {
+            InfoPanel.createOrShow(this.extensionUri, `Task ${task.id} Log`, `## Result\n${task.result}`);
+        }
+        if (userChoice === 'Continue Anyway') {
+            task.status = 'completed'; // Force completion so pipeline continues
+            await this.displayAndSavePlan(this.currentPlan);
         }
     }
     
@@ -535,7 +773,7 @@ export class AgentManager {
         // ... (existing logic) ...
         return { allowed: true };
     }
-    private async executeTask(action: string, params: any, signal: AbortSignal, overrideEnv?: ToolExecutionEnv): Promise<{ success: boolean, output: string }> {
+    private async executeTask(action: string, params: any, signal: AbortSignal, overrideEnv?: ToolExecutionEnv, taskModel?: string, taskPersona?: string, taskSkills?: string[], taskFiles?: string[]): Promise<{ success: boolean, output: string }> {
         const tool = this.toolManager.getTool(action);
         if (!tool) return { success: false, output: `Unknown action: ${action}` };
 
@@ -551,7 +789,11 @@ export class AgentManager {
             codeGraphManager: this.codeGraphManager,
             skillsManager: this.skillsManager,
             currentPlan: this.currentPlan,
-            agentManager: this
+            agentManager: this,
+            taskModel: taskModel,
+            taskPersona: taskPersona,
+            taskSkills: taskSkills,
+            taskFiles: taskFiles
         };
         
         try {
@@ -669,12 +911,20 @@ export class AgentManager {
 
             if (!planResult.plan) return { success: false, output: "Failed to generate new plan." };
 
-            const splitIndex = this.currentTaskIndex + 1;
-            this.currentPlan.tasks.splice(splitIndex);
+            // Remove all currently pending tasks, we will replace them with the Architect's new plan
+            this.currentPlan.tasks = this.currentPlan.tasks.filter(t => t.status !== 'pending');
 
             let nextId = this.currentPlan.tasks.length > 0 ? Math.max(...this.currentPlan.tasks.map(t => t.id)) + 1 : 1;
+            const minGeneratedId = Math.min(...planResult.plan.tasks.map(t => t.id));
+            const idOffset = nextId - minGeneratedId;
+
             for (const newTask of planResult.plan.tasks) {
-                newTask.id = nextId++;
+                // Keep dependency references intact internally for the newly generated tasks
+                newTask.id += idOffset;
+                if (newTask.dependencies) {
+                    newTask.dependencies = newTask.dependencies.map(d => d + idOffset);
+                }
+
                 newTask.status = 'pending';
                 this.currentPlan.tasks.push(newTask);
             }

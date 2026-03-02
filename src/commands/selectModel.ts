@@ -13,40 +13,36 @@ import { LollmsServices } from '../lollmsContext';
  */
 export function registerSelectModelCommand(context: vscode.ExtensionContext, services: LollmsServices) {
     const disposable = vscode.commands.registerCommand('lollms-vs-coder.selectModel', async () => {
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const currentModel = config.get<string>('modelName');
+
         try {
-            // Retrieve the list of models from the Lollms API.
-            // Force refresh (true) to ensure we get the latest list from the backend.
-            const models = await services.lollmsAPI.getModels(true);
+            // Passing a Promise to showQuickPick makes VS Code show a loading spinner automatically
+            const selected = await vscode.window.showQuickPick(
+                services.lollmsAPI.getModels(true).then(models => {
+                    if (!models || models.length === 0) {
+                        return [{ label: "No models found", detail: "Check your API connection settings.", id: null }];
+                    }
+                    const items = models.map(m => ({
+                        label: m.id,
+                        description: m.id === currentModel ? '(Current)' : undefined,
+                        id: m.id
+                    }));
+                    items.sort((a, b) => {
+                        if (a.id === currentModel) return -1;
+                        if (b.id === currentModel) return 1;
+                        return a.label.localeCompare(b.label);
+                    });
+                    return items;
+                }),
+                {
+                    placeHolder: 'Select a Lollms model',
+                    matchOnDescription: true,
+                    matchOnDetail: true
+                }
+            );
 
-            if (!models || models.length === 0) {
-                vscode.window.showWarningMessage('No Lollms models are available. Please check your connection or backend configuration.');
-                return;
-            }
-
-            const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-            const currentModel = config.get<string>('modelName');
-
-            // Prepare items for QuickPick
-            const items: vscode.QuickPickItem[] = models.map(m => ({
-                label: m.id, 
-                description: m.id === currentModel ? '(Current)' : undefined,
-                id: m.id 
-            }));
-
-            // Sort items: Current model at the top, then alphabetical
-            items.sort((a, b) => {
-                if ((a as any).id === currentModel) return -1;
-                if ((b as any).id === currentModel) return 1;
-                return a.label.localeCompare(b.label);
-            });
-
-            const selected = await vscode.window.showQuickPick(items, {
-                placeHolder: 'Select a Lollms model',
-                matchOnDescription: true,
-                matchOnDetail: true
-            });
-
-            if (!selected) {
+            if (!selected || (selected as any).id === null) {
                 return;
             }
 

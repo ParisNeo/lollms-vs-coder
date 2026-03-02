@@ -2007,13 +2007,34 @@ export function updateContext(contextText: string, files: string[] = [], skills:
 
     // Trigger Mermaid rendering for diagrams in the context bubble
     if (diagrams.length > 0) {
-        try {
-            (window as any).mermaid.run({
-                nodes: dom.contextContainer.querySelectorAll('.mermaid')
-            });
-        } catch (e) {
-            console.error("Mermaid run error in context bubble:", e);
-        }
+        const nodes = dom.contextContainer.querySelectorAll('.mermaid');
+        nodes.forEach(async (node) => {
+            const rawText = node.textContent || '';
+            // Quote labels in brackets to prevent syntax errors
+            const sanitizedText = rawText.split('\n').map(line => {
+                const trimmed = line.trim();
+                if (trimmed.match(/^(subgraph|end|class|state|note|participant|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|gitGraph|flowchart|graph|class)/i)) {
+                    return line;
+                }
+                return line.replace(/([a-zA-Z0-9_-]+)\s*([\[\(\{]{1,2})\s*([^"'\n\r\t]+?)\s*([\]\)\}]{1,2})/g, (match, id, open, label, close) => {
+                    const safeLabel = label.replace(/"/g, "'");
+                    return `${id}${open}"${safeLabel.trim()}"${close}`;
+                });
+            }).join('\n');
+
+            node.textContent = sanitizedText;
+            
+            try {
+                await (window as any).mermaid.run({ nodes: [node] });
+            } catch (e: any) {
+                console.error("📊 Context Mermaid Error:", e);
+                node.parentElement!.innerHTML = `
+                    <div style="color:var(--vscode-errorForeground); padding:10px; background:var(--vscode-inputValidation-errorBackground); border:1px solid var(--vscode-errorForeground); border-radius:4px; font-size:10px;">
+                        <strong>Mermaid Syntax Error:</strong> ${e.message || e}
+                        <details style="margin-top:5px;"><summary>View Code</summary><pre style="font-size:9px; white-space:pre-wrap; margin-top:5px;">${sanitizedText}</pre></details>
+                    </div>`;
+            }
+        });
     }
 
     dom.contextContainer.querySelectorAll('.remove-context-btn').forEach(btn => {

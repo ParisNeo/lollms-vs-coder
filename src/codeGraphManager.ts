@@ -536,11 +536,14 @@ export class CodeGraphManager {
     }
 
     private sanitizeMermaidId(id: string): string {
+        // Ensure IDs are valid CSS-like identifiers
         return id.replace(/[^a-zA-Z0-9_]/g, '_');
     }
 
     private sanitizeMermaidLabel(label: string): string {
-        return label.replace(/["\n\r]/g, '');
+        // Class names in Mermaid cannot have spaces, dots, or most symbols.
+        // We replace all non-alphanumeric characters with underscores.
+        return label.replace(/["\n\r]/g, '').replace(/[^a-zA-Z0-9_]/g, '_');
     }
 
     private fail(message: string) {

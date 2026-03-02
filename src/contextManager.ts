@@ -949,6 +949,7 @@ If yes, you must plan searches, execute them, review results, and add valuable c
       model: string,
       signal: AbortSignal, 
       onUpdate: (content: string) => void,
+      onStatusUpdate?: (status: string) => void,
       initialKeywords?: string[]
   ): Promise<string> {
       const MAX_STEPS = 10;
@@ -969,7 +970,11 @@ If yes, you must plan searches, execute them, review results, and add valuable c
       const selectedFiles = new Set<string>(currentContextFiles);
       const initialCount = selectedFiles.size;
 
-      const fileTree = await this.generateProjectTree(signal);
+      const fileTree = await this.generateProjectTree(signal, (pct) => {
+          const status = `Scanning project structure: ${pct}%...`;
+          if (onStatusUpdate) onStatusUpdate(status);
+          onUpdate(`**🧠 Auto-Context Agent**\n\n### 📂 Building File Tree...\n\n<div class="token-progress-container" style="height:8px; margin-bottom:10px;"><div class="token-progress-bar range-safe" style="width:${pct}%"></div></div>\n\n*${status}*`);
+      });
       
       // Get current aggression level from capabilities
       const discussion = this.lollmsAPI.globalState?.get<any>(`discussion-${model}`); // Simplified lookup
@@ -996,40 +1001,41 @@ If yes, you must plan searches, execute them, review results, and add valuable c
 Your goal is to prepare the perfect context for an LLM to answer the user's request.
 ${aggressionInstruction}
 
-Your goal is to fulfill the request while strictly adhering to the aggression policy above.
+You operate in a Recursive Language Model (RLM) loop. You MUST use your 'scratchpad' to store ideas, plans, and conclusions. This builds your understanding of the codebase and prevents you from going in circles.
 
 **AVAILABLE TOOLS:**
-1. \`add_files(files=[{"path": "p1", "mode": "full|signatures"}])\`: Add files to context.
-=======
-You have access to the project structure and the list of currently selected files.
-
-**AVAILABLE TOOLS:**
-1. \`add_files(files=["path1", "path2"])\`: Add files to the context (read their content).
-2. \`remove_files(files=["path1"])\`: Remove files from the context.
-3. \`read_file(file="path")\`: Peek at a file's content without fully adding it.
-4. \`search_keywords(keywords=["funcName", "className"])\`: Search the entire codebase for specific strings. Use this to find where logic exists before adding files.
+1. \`add_files(files=[{"path": "p1", "mode": "full|signatures"}])\`: Add files to the final context.
+2. \`remove_files(files=["path1"])\`: Remove files from the final context.
+3. \`read_file(file="path")\`: Peek at a file's content to understand its logic before deciding to add it.
+4. \`search_keywords(keywords=["funcName", "className"])\`: Search the entire codebase for specific strings. Use this to locate logic.
 5. \`done()\`: Finish the context selection process.
 
 **RULES:**
-- Analyze the user request and the current selection.
-- If you aren't sure where logic is, use \`search_keywords\` first.
+- Analyze the user request and project structure.
+- Think in your scratchpad before acting. Track files you've already examined and conclusions you've made.
+- If you aren't sure where logic is, use \`search_keywords\` or \`read_file\`.
 - Only add files that are strictly relevant to save tokens.
-- **OUTPUT JSON ONLY**: Reply with a valid JSON object describing the tool call.
+- **OUTPUT JSON ONLY**: Reply with a valid JSON object.
 
 **JSON FORMAT:**
 \`\`\`json
 {
+  "scratchpad": "I need to find the authentication logic. I will search for 'login' to locate the correct files.",
   "tool": "tool_name",
   "params": { ... }
 }
 \`\`\`
 `;
 
-      const actionLog: string[] = [];
+      const actionLog: string[] =[];
+      const executedActions = new Set<string>();
+
       let initialUserContent = `**User Request:** "${userPrompt}"\n\n**Project Structure:**\n${fileTree}`;
       
       if (initialKeywords && initialKeywords.length > 0) {
-          actionLog.push(`🔍 Grounding search for keywords: ${initialKeywords.join(', ')}...`);
+          const status = `Searching keywords: ${initialKeywords.join(', ')}...`;
+          if (onStatusUpdate) onStatusUpdate(status);
+          actionLog.push(`🔍 Grounding search for: **${initialKeywords.join(', ')}**`);
           const searchResults = await this.searchWorkspaceKeywords(initialKeywords, workspaceFolder.uri.fsPath);
           initialUserContent += `\n\n**Initial Search Results:**\n${searchResults}`;
       }
@@ -1116,6 +1122,22 @@ You have access to the project structure and the list of currently selected file
               const toolCall = JSON.parse(jsonMatch[1] || jsonMatch[0]);
               const toolName = toolCall.tool;
               const params = toolCall.params || {};
+              
+              if (toolCall.scratchpad) {
+                  actionLog.push(`🧠 *Scratchpad*: ${toolCall.scratchpad}`);
+              }
+
+              // Loop Prevention
+              const actionFingerprint = JSON.stringify({ tool: toolName, params });
+              if (executedActions.has(actionFingerprint) && toolName !== 'done') {
+                  chatHistory.push({ 
+                      role: 'system', 
+                      content: `WARNING: You already executed this exact tool call earlier. Avoid infinite loops. Use your scratchpad to store conclusions, and pick a different tool, change parameters, or call \`done()\` if you are finished.` 
+                  });
+                  actionLog.push(`⚠️ Loop detected. Re-prompting agent.`);
+                  continue;
+              }
+              executedActions.add(actionFingerprint);
 
               retryCount = 0;
 
@@ -1249,7 +1271,7 @@ You have access to the project structure and the list of currently selected file
       }
   }
   
-  async getContextContent(options?: { includeTree?: boolean, signal?: AbortSignal, importedSkillIds?: string[], activeDiagramIds?: string[], modelName?: string, allowRLM?: boolean }): Promise<ContextResult> {
+  async getContextContent(options?: { includeTree?: boolean, signal?: AbortSignal, importedSkillIds?: string[], activeDiagramIds?: string[], modelName?: string, allowRLM?: boolean, onProgress?: (pct: number) => void }): Promise<ContextResult> {
     const result: ContextResult = { text: '', images:[], projectTree: '', selectedFilesContent: '', skillsContent: '', importedSkills:[] };
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const maxImageSize = config.get<number>('maxImageSize') || 1024;
@@ -1304,7 +1326,7 @@ You have access to the project structure and the list of currently selected file
 
     if (includeTree) {
         if (signal?.aborted) throw new Error("Operation cancelled");
-        result.projectTree = await this.generateProjectTree(signal);
+        result.projectTree = await this.generateProjectTree(signal, options?.onProgress);
     }
 
     const includedFiles = contextFiles.filter(f => !f.path.endsWith(path.sep));
@@ -1530,7 +1552,7 @@ Based on the objective and the file tree, which files are the most relevant? Ret
     return null;
   }
 
-  private async generateProjectTree(signal?: AbortSignal): Promise<string> {
+  private async generateProjectTree(signal?: AbortSignal, onProgress?: (percentage: number) => void): Promise<string> {
     
     if (!this.contextStateProvider) {
       return '## Project Structure\n\n*No project structure available - no workspace folder found.*\n';
@@ -1568,7 +1590,12 @@ Based on the objective and the file tree, which files are the most relevant? Ret
     
     // Performance Optimization: Process file list in chunks to avoid blocking the event loop
     for (let i = 0; i < effectiveFiles.length; i++) {
-        if (i % 200 === 0) await new Promise(resolve => setTimeout(resolve, 0));
+        if (i % 200 === 0) {
+            await new Promise(resolve => setTimeout(resolve, 0));
+            if (onProgress) {
+                onProgress(Math.round((i / effectiveFiles.length) * 100));
+            }
+        }
         
         const filePath = effectiveFiles[i];
         const parts = filePath.split(path.sep).filter(part => part.length > 0);

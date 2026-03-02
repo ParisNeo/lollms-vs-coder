@@ -315,8 +315,21 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     dom.contextLoadingSpinner.style.display = 'flex';
                     const text = dom.contextLoadingSpinner.querySelector('span');
                     if (text) text.textContent = message.text || 'Updating context...';
+                    
+                    const barContainer = document.getElementById('file-tree-progress-container');
+                    if (barContainer) barContainer.style.display = 'none';
                 }
                 if (dom.tokenCountLabel) dom.tokenCountLabel.style.opacity = '0.5';
+                break;
+            case 'tokenCalculationProgress':
+                {
+                    const barContainer = document.getElementById('file-tree-progress-container');
+                    const bar = document.getElementById('file-tree-progress-bar');
+                    if (barContainer && bar) {
+                        barContainer.style.display = 'block';
+                        bar.style.width = `${message.progress}%`;
+                    }
+                }
                 break;
 
             case 'tokenCalculationFinished':

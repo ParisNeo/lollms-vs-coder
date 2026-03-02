@@ -513,8 +513,13 @@ export class ChatPanel {
             const context = await this._contextManager.getContextContent({ 
                 signal, 
                 importedSkillIds: importedIds,
-                activeDiagramIds: activeDiagrams, // Pass the IDs here
-                modelName: modelForTokenization
+                activeDiagramIds: activeDiagrams,
+                modelName: modelForTokenization,
+                onProgress: (pct) => {
+                    if (!this._isDisposed) {
+                        this._panel.webview.postMessage({ command: 'tokenCalculationProgress', progress: pct });
+                    }
+                }
             });
             
             if (signal.aborted) {
@@ -741,6 +746,12 @@ export class ChatPanel {
                             messageId: contextAgentMsgId, 
                             newContent: newContent 
                         });
+                    }
+                },
+                (status) => {
+                    if (!this._isDisposed && this.processManager) {
+                        this.processManager.updateDescription(processId, status);
+                        this.updateGeneratingState();
                     }
                 },
                 keywords
@@ -1240,9 +1251,20 @@ Please provide the **FULL CONTENT** of the file instead using the format:
             id: contextAgentMsgId, role: 'system', content: `**🧠 Auto-Context Agent**\n*Analyzing project structure...*\n\n`, skipInPrompt: true 
         });
         try {
-            await this._contextManager.runContextAgent(userPromptText, model, controller.signal, (newContent) => {
-                if (!this._isDisposed) this._panel.webview.postMessage({ command: 'updateMessage', messageId: contextAgentMsgId, newContent });
-            });
+            await this._contextManager.runContextAgent(
+                userPromptText, 
+                model, 
+                controller.signal, 
+                (newContent) => {
+                    if (!this._isDisposed) this._panel.webview.postMessage({ command: 'updateMessage', messageId: contextAgentMsgId, newContent });
+                },
+                (status) => {
+                    if (!this._isDisposed && this.processManager) {
+                        this.processManager.updateDescription(processId, status);
+                        this.updateGeneratingState();
+                    }
+                }
+            );
         } catch (e: any) { this.log(`Auto-Context failed: ${e.message}`, 'ERROR'); }
     }
 
@@ -3146,7 +3168,12 @@ Task:
                         
                         <div id="context-loading-spinner" style="display: none; align-items: center; gap: 8px; font-size: 0.9em; color: var(--vscode-descriptionForeground);">
                             <div class="spinner"></div>
-                            <span id="loading-files-text"></span>
+                            <div style="display:flex; flex-direction:column; gap:2px;">
+                                <span id="loading-files-text" style="font-size: 11px;"></span>
+                                <div class="token-progress-container" id="file-tree-progress-container" style="width: 80px; height: 4px; display: none;">
+                                    <div class="token-progress-bar range-safe" id="file-tree-progress-bar" style="width: 0%;"></div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="input-area-container">

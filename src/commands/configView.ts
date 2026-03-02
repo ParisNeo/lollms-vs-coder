@@ -562,7 +562,9 @@ export class SettingsPanel {
                       shellExecution: this._pendingConfig.agentShellExecution,
                       filesystemWrite: this._pendingConfig.agentFilesystemWrite,
                       filesystemRead: this._pendingConfig.agentFilesystemRead,
-                      internetAccess: this._pendingConfig.agentInternetAccess
+                      internetAccess: this._pendingConfig.agentInternetAccess,
+                      screenCapture: this._pendingConfig.agentScreenCapture,
+                      webTesting: this._pendingConfig.agentWebTesting
                   }],
                   ['agent.useRLM', this._pendingConfig.agentUseRLM],
                   ['distillWebResults', this._pendingConfig.distillWebResults],
@@ -693,7 +695,7 @@ export class SettingsPanel {
   }
 
   private _getHtml(webview: vscode.Webview, config: any) {
-    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, architectModelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, verifyAndCorrectCodeBlocks, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, generationFormats, forceFullCode, explainCode, allowedFileFormats, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, forceFullCodePath, clipboardInsertRole, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle, enableCodeActions, enableInlineSuggestions, mcpServers, herdParticipants, herdPreAnswerParticipants, herdPostAnswerParticipants, herdRounds, herdDynamicMode, herdDynamicModelPool, deleteBranchAfterMerge, unstagedChangesBehavior, showOs, showIp, showShells, systemCustomInfo, agentShellExecution, agentFilesystemWrite, agentFilesystemRead, agentInternetAccess, agentUseRLM, moltbookEnable, moltbookApiKey, moltbookBotName, moltbookBotPurpose, remoteServerPort, remoteDiscordEnabled, remoteDiscordToken, remoteSlackEnabled, remoteSlackToken, remoteSlackSigningSecret, remoteAllowedUsers, remoteAdminUsers, remoteAllowedChannels } = config;
+    const { apiKey, apiUrl, backendType, useLollmsExtensions, modelName, architectModelName, disableSslVerification, sslCertPath, requestTimeout, agentMaxRetries, verifyAndCorrectCodeBlocks, maxImageSize, enableCodeInspector, inspectorModelName, codeInspectorPersona, chatPersona, agentPersona, commitMessagePersona, contextFileExceptions, language, generationFormats, forceFullCode, explainCode, allowedFileFormats, reasoningLevel, failsafeContextSize, searchProvider, searchApiKey, searchCx, autoUpdateChangelog, autoGenerateTitle, addPedagogicalInstruction, forceFullCodePath, clipboardInsertRole, companionEnableWebSearch, companionEnableArxivSearch, userInfoName, userInfoEmail, userInfoLicense, userInfoCodingStyle, enableCodeActions, enableInlineSuggestions, mcpServers, herdParticipants, herdPreAnswerParticipants, herdPostAnswerParticipants, herdRounds, herdDynamicMode, herdDynamicModelPool, deleteBranchAfterMerge, unstagedChangesBehavior, showOs, showIp, showShells, systemCustomInfo, agentShellExecution, agentFilesystemWrite, agentFilesystemRead, agentInternetAccess, agentScreenCapture, agentWebTesting, agentUseRLM, moltbookEnable, moltbookApiKey, moltbookBotName, moltbookBotPurpose, remoteServerPort, remoteDiscordEnabled, remoteDiscordToken, remoteSlackEnabled, remoteSlackToken, remoteSlackSigningSecret, remoteAllowedUsers, remoteAdminUsers, remoteAllowedChannels } = config;
 
     const t = (key: string, def: string) => vscode.l10n.t({ message: def, key: key });
     
@@ -1322,6 +1324,8 @@ export class SettingsPanel {
                     safeSet('agentFilesystemWrite', config.agentFilesystemWrite, true);
                     safeSet('agentFilesystemRead', config.agentFilesystemRead, true);
                     safeSet('agentInternetAccess', config.agentInternetAccess, true);
+                    safeSet('agentScreenCapture', config.agentScreenCapture, true);
+                    safeSet('agentWebTesting', config.agentWebTesting, true);
                     safeSet('agentUseRLM', config.agentUseRLM, true);
                     safeSet('enableCodeInspector', config.enableCodeInspector, true);
                     safeSet('codeInspectorPersona', config.codeInspectorPersona);
@@ -1493,7 +1497,7 @@ export class SettingsPanel {
             ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','inspectorModelName','codeInspectorPersona','chatPersona','agentPersona','commitMessagePersona','language','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','clipboardInsertRole','herdRounds','mcpServers','unstagedChangesBehavior','systemCustomInfo','moltbookApiKey','moltbookBotName','moltbookBotPurpose',
             'remoteServerPort', 'remoteDiscordToken', 'remoteSlackToken', 'remoteSlackSigningSecret', 'remoteAllowedUsers', 'remoteAdminUsers', 'remoteAllowedChannels'].forEach(k => bind(k, k));
             
-            ['disableSsl','enableCodeInspector','verifyAndCorrectCodeBlocks','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','companionEnableWebSearch','companionEnableArxivSearch','herdDynamicMode','enableCodeActions','enableInlineSuggestions','deleteBranchAfterMerge','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','agentUseRLM','explainCode','moltbookEnable',
+            ['disableSsl','enableCodeInspector','verifyAndCorrectCodeBlocks','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','companionEnableWebSearch','companionEnableArxivSearch','herdDynamicMode','enableCodeActions','enableInlineSuggestions','deleteBranchAfterMerge','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess', 'agentScreenCapture', 'agentWebTesting', 'agentUseRLM', 'explainCode', 'moltbookEnable',
             'remoteDiscordEnabled', 'remoteSlackEnabled'].forEach(id => {
                 const map = { 
                     'disableSsl': 'disableSslVerification', 'deleteBranchAfterMerge': 'git.deleteBranchAfterMerge', 

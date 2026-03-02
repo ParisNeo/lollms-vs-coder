@@ -112,16 +112,55 @@ function render() {
     }
 }
 
+/**
+ * Cleans up Mermaid code to prevent rendering errors.
+ * Ensures node labels are properly quoted and special characters are handled.
+ */
+function preprocessMermaid(code: string): string {
+    return code.split('\n').map(line => {
+        const trimmed = line.trim();
+        // Skip header definitions and keywords
+        if (trimmed.match(/^(subgraph|end|class|state|note|participant|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|gitGraph|flowchart|graph|class)/i)) {
+            return line;
+        }
+        // Identify node definitions like ID[Label] and wrap label in quotes
+        return line.replace(/([a-zA-Z0-9_-]+)\s*([\[\(\{]{1,2})\s*([^"'\n\r\t]+?)\s*([\]\)\}]{1,2})/g, (match, id, open, label, close) => {
+            const safeLabel = label.replace(/"/g, "'");
+            return `${id}${open}"${safeLabel.trim()}"${close}`;
+        });
+    }).join('\n');
+}
+
 async function renderMermaidView() {
     if (cyContainer) cyContainer.style.display = 'none';
     if (mermaidContainer) {
         mermaidContainer.style.display = 'block';
-        mermaidContainer.innerHTML = `<pre class="mermaid">${currentClassDiagram}</pre>`;
+        
+        const sanitizedDiagram = preprocessMermaid(currentClassDiagram);
+        const id = `mermaid-render-${Date.now()}`;
+        
+        mermaidContainer.innerHTML = `<div id="${id}" class="mermaid">${sanitizedDiagram}</div>`;
+        
         try {
-            await mermaid.run();
-        } catch (e) {
-            console.error("Mermaid render error", e);
-            mermaidContainer.innerHTML += `<div style="color:red; padding:10px;">Error rendering diagram. Code structure might be too complex.</div>`;
+            // Use specific render call for better error catching
+            await mermaid.run({
+                nodes: [document.getElementById(id)]
+            });
+        } catch (e: any) {
+            console.error("📊 Mermaid Syntax Error:", e);
+            
+            // Log the faulty code to the console for debugging
+            console.group("❌ Faulty Mermaid Source");
+            console.log(sanitizedDiagram);
+            console.groupEnd();
+
+            mermaidContainer.innerHTML = `
+                <div style="color:var(--vscode-errorForeground); padding:20px; background:var(--vscode-inputValidation-errorBackground); border:1px solid var(--vscode-errorForeground); border-radius:4px;">
+                    <div style="font-weight:bold; margin-bottom:8px;"><span class="codicon codicon-error"></span> Mermaid Render Failed</div>
+                    <div style="font-family:monospace; font-size:11px; white-space:pre-wrap;">${e.message || e}</div>
+                    <div style="margin-top:10px; font-size:10px; opacity:0.8;">The error and source have been logged to the Developer Tools console (Help > Toggle Developer Tools).</div>
+                </div>
+            `;
         }
     }
 }

@@ -61,6 +61,8 @@ export interface DiscussionCapabilities {
     };
     gitWorkflow: boolean;
     herdMode: boolean;
+    thinkingMode: boolean;
+    thinkingBudget?: number;
     herdDynamicMode: boolean;
     herdParticipants: any[];
     herdPreAnswerParticipants: any[];

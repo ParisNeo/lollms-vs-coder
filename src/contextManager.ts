@@ -609,7 +609,8 @@ ${content.substring(0, 20000)}
     }
   }
 
-  // --- AUTO-SKILL SELECTION AGENT ---
+  // --- UPGRADED AGENTIC AUTO-SKILL SELECTION ---
+    // --- UPGRADED AGENTIC AUTO-SKILL SELECTION ---
   public async runSkillSelectionAgent(
     userPrompt: string,
     model: string,
@@ -622,7 +623,30 @@ ${content.substring(0, 20000)}
     const allSkills = await this.skillsManager.getSkills();
     if (allSkills.length === 0) return currentSkillIds;
 
-    // Create a lean list of skills for the LLM to analyze
+    const actionLog: string[] = [];
+    let selectedIds = new Set<string>(currentSkillIds);
+
+    const renderUpdate = (status: string, finished: boolean = false) => {
+        const logHtml = actionLog.map(l => `<div class="agent-log-item" style="font-size:0.85em; margin-bottom:2px;">${l}</div>`).join('');
+        const logSection = actionLog.length > 0
+                ? `<details ${finished ? '' : 'open'} style="margin-top:10px;"><summary>💡 Skill Discovery</summary><div class="agent-log-container" style="padding: 8px; background: var(--vscode-editor-inactiveSelectionBackground); border-radius: 4px; max-height: 150px; overflow-y: auto;">${logHtml}</div></details>`
+                : '';
+        
+        let activeHtml = '';
+        if (selectedIds.size > 0) {
+            const names = allSkills.filter(s => selectedIds.has(s.id)).map(s => s.name);
+            activeHtml = `<div style="margin-top:10px; font-size:0.9em;"><strong>Active Skills:</strong> ${names.join(', ')}</div>`;
+        }
+        
+        let spinnerHtml = finished 
+            ? `<div class="status-line"><span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span> <strong>Skills Optimized</strong></div>`
+            : `<div class="status-line"><div class="spinner"></div> <strong>${status}</strong></div>`;
+        
+        onUpdate(`**💡 Auto-Skill Agent**\n\n${spinnerHtml}\n\n${activeHtml}\n\n${logSection}`);
+    };
+
+    renderUpdate("Analyzing library...");
+
     const skillCatalog = allSkills.map(s => ({
         id: s.id,
         name: s.name,
@@ -630,27 +654,27 @@ ${content.substring(0, 20000)}
         category: s.category
     }));
 
-    const systemPrompt = `You are a Librarian Agent. Your task is to select the most relevant "Skills" from a library to help an AI answer a user request.
-Skills provide specialized knowledge, API documentation, or coding patterns.
+    const systemPrompt = `You are the Expert Librarian Agent. 
+Your goal is to equip the main AI with the specific technical "Skills" (documentation, protocols, code patterns) needed for the user's request.
 
-**RULES:**
-1. Analyze the user request.
-2. Select skills that are DIRECTLY relevant.
-3. If a currently active skill is no longer relevant, suggest removing it.
-4. Do not select more than 5 skills to avoid context bloat.
-5. **OUTPUT JSON ONLY**.
+**STRATEGY:**
+1. **Analyze**: Identify the tech stack and specific libraries mentioned in the request.
+2. **Search**: Match requests to existing skill definitions.
+3. **Optimize**: Only select skills that provide non-obvious knowledge. Don't add a skill if the model already knows the library perfectly.
+4. **Prune**: Remove skills that are no longer relevant to the current conversation.
 
-**JSON FORMAT:**
+**OUTPUT FORMAT**: You must output a JSON object with your reasoning.
 \`\`\`json
 {
-  "add": ["skill_id_1", "skill_id_2"],
-  "remove": ["skill_id_3"]
+  "thought": "The user is asking about SafeStore's knowledge graph. I will add the graph ontology and query skills.",
+  "add": ["id1", "id2"],
+  "remove": ["id3"]
 }
 \`\`\``;
 
     const userContent = `**User Request:** "${userPrompt}"
-**Currently Active Skill IDs:** ${JSON.stringify(currentSkillIds)}
-**Available Skill Catalog:**
+**Currently Equipped:** ${JSON.stringify(currentSkillIds)}
+**Library Catalog:**
 ${JSON.stringify(skillCatalog, null, 2)}`;
 
     try {
@@ -664,27 +688,36 @@ ${JSON.stringify(skillCatalog, null, 2)}`;
         
         if (jsonMatch) {
             const decision = JSON.parse(jsonMatch[0]);
-            const toAdd = decision.add || [];
+            if (decision.thought) actionLog.push(`🧠 *Analysis*: ${decision.thought}`);
+            
+            const toAdd = (decision.add || []).filter((id: string) => allSkills.some(s => s.id === id));
             const toRemove = decision.remove || [];
 
-            let updated = currentSkillIds.filter(id => !toRemove.includes(id));
-            updated = Array.from(new Set([...updated, ...toAdd]));
+            toAdd.forEach((id: string) => {
+                const s = allSkills.find(sk => sk.id === id);
+                if (s) actionLog.push(`➕ Added: **${s.name}**`);
+                selectedIds.add(id);
+            });
 
-            // Filter against actual existence
-            const finalIds = updated.filter(id => allSkills.some(s => s.id === id));
+            toRemove.forEach((id: string) => {
+                const s = allSkills.find(sk => sk.id === id);
+                if (s) actionLog.push(`➖ Removed: **${s.name}**`);
+                selectedIds.delete(id);
+            });
 
-            if (toAdd.length > 0 || toRemove.length > 0) {
-                const addedNames = allSkills.filter(s => toAdd.includes(s.id)).map(s => s.name);
-                onUpdate(`LOG_UPDATE:{"type":"skill","added":${JSON.stringify(addedNames)},"removed":${toRemove.length}}`);
+            if (toAdd.length === 0 && toRemove.length === 0) {
+                actionLog.push("✅ Library already perfectly matched to request.");
             }
 
-            return finalIds;
+            renderUpdate("Complete", true);
+            return Array.from(selectedIds);
         }
-    } catch (e) {
-        console.error("Auto-Skill failed", e);
+    } catch (e: any) {
+        actionLog.push(`❌ Analysis failed: ${e.message}`);
+        renderUpdate("Error", true);
     }
 
-    return currentSkillIds;
+    return Array.from(selectedIds);
   }
 
   // --- WEB RESEARCH AGENT ---
@@ -1001,20 +1034,27 @@ If yes, you must plan searches, execute them, review results, and add valuable c
 Your goal is to prepare the perfect context for an LLM to answer the user's request.
 ${aggressionInstruction}
 
-You operate in a Recursive Language Model (RLM) loop. You MUST use your 'scratchpad' to store ideas, plans, and conclusions. This builds your understanding of the codebase and prevents you from going in circles.
+### 🧠 STATEFUL MEMORY PROTOCOL
+I will track your long-term memory for you. 
+In your 'scratchpad' field, provide ONLY the **newest** observations and conclusions from your last action. 
+I will append these to your "CUMULATIVE BRAIN" and show it to you in the next turn.
+
+**Your Scratchpad Output should focus on:**
+1. **LATEST OBSERVATION**: Specific findings from the last tool result.
+2. **UPDATED VERDICT**: Immediate decision on current file relevance.
+3. **NEXT STEP REASONING**: Why your next tool call is the right choice.
 
 **AVAILABLE TOOLS:**
-1. \`add_files(files=[{"path": "p1", "mode": "full|signatures"}])\`: Add files to the final context.
-2. \`remove_files(files=["path1"])\`: Remove files from the final context.
-3. \`read_file(file="path")\`: Peek at a file's content to understand its logic before deciding to add it.
-4. \`search_keywords(keywords=["funcName", "className"])\`: Search the entire codebase for specific strings. Use this to locate logic.
-5. \`done()\`: Finish the context selection process.
+1. \`add_files(files=[{"path": "p1", "mode": "full|signatures"}])\`: Finalize selection for context.
+2. \`read_file(path="path", start_line=0, end_line=500)\`: Read a specific segment of a file. If the file is large, use pagination.
+3. \`get_file_info(path="path")\`: Returns file size and total line count without reading content.
+4. \`search_keywords(keywords=["funcName", "className"])\`: Search for strings to locate logic.
+5. \`done()\`: Finish context selection.
 
 **RULES:**
-- Analyze the user request and project structure.
-- Think in your scratchpad before acting. Track files you've already examined and conclusions you've made.
-- If you aren't sure where logic is, use \`search_keywords\` or \`read_file\`.
-- Only add files that are strictly relevant to save tokens.
+- If a file is truncated, use \`read_file\` with a new \`start_line\` to see the rest.
+- Never guess content. If you see a class definition but no methods, read further down.
+- Only add files that are strictly relevant to the user's specific request.
 - **OUTPUT JSON ONLY**: Reply with a valid JSON object.
 
 **JSON FORMAT:**
@@ -1027,8 +1067,9 @@ You operate in a Recursive Language Model (RLM) loop. You MUST use your 'scratch
 \`\`\`
 `;
 
-      const actionLog: string[] =[];
+      const actionLog: string[] = [];
       const executedActions = new Set<string>();
+      let cumulativeBrain = ""; // Internal master state
 
       let initialUserContent = `**User Request:** "${userPrompt}"\n\n**Project Structure:**\n${fileTree}`;
       
@@ -1087,7 +1128,7 @@ You operate in a Recursive Language Model (RLM) loop. You MUST use your 'scratch
 
           chatHistory.push({ 
               role: 'system', 
-              content: `[System Update] Currently selected files: ${JSON.stringify(Array.from(selectedFiles))}. Continue refining or call done().` 
+              content: `### 🧠 CUMULATIVE BRAIN (MEMORY)\n${cumulativeBrain || "No observations yet."}\n\n[Status] Selected: ${JSON.stringify(Array.from(selectedFiles))}. Continue or 'done()'.` 
           });
 
           let response = "";
@@ -1124,7 +1165,11 @@ You operate in a Recursive Language Model (RLM) loop. You MUST use your 'scratch
               const params = toolCall.params || {};
               
               if (toolCall.scratchpad) {
-                  actionLog.push(`🧠 *Scratchpad*: ${toolCall.scratchpad}`);
+                  const newEntry = toolCall.scratchpad.trim();
+                  // Append to master memory for LLM context
+                  cumulativeBrain += `\n- Step ${step + 1}: ${newEntry}`;
+                  // Append to user log for timeline view
+                  actionLog.push(`🧠 **Insight**: ${newEntry}`);
               }
 
               // Loop Prevention
@@ -1149,7 +1194,19 @@ You operate in a Recursive Language Model (RLM) loop. You MUST use your 'scratch
 
               stepsTaken++;
 
-              if (toolName === 'add_files') {
+              if (toolName === 'get_file_info') {
+                  const pathArg = params.path;
+                  if (pathArg) {
+                      const uri = vscode.Uri.joinPath(workspaceFolder.uri, pathArg);
+                      const stats = await vscode.workspace.fs.stat(uri);
+                      const doc = await vscode.workspace.openTextDocument(uri);
+                      chatHistory.push({ 
+                          role: 'system', 
+                          content: `FILE INFO for ${pathArg}:\nSize: ${stats.size} bytes\nTotal Lines: ${doc.lineCount}` 
+                      });
+                      actionLog.push(`📊 Info: ${pathArg} (${doc.lineCount} lines)`);
+                  }
+              } else if (toolName === 'add_files') {
                   const files = params.files;
                   if (Array.isArray(files)) {
                       for (const fileItem of files) {
@@ -1177,11 +1234,27 @@ You operate in a Recursive Language Model (RLM) loop. You MUST use your 'scratch
               } else if (toolName === 'read_file') {
                   const pathArg = params.path || params.file;
                   if (pathArg && allFiles.includes(pathArg)) {
-                      const content = await this.readSpecificFiles([pathArg]);
-                      const snippet = content.substring(0, 4000);
-                      chatHistory.push({ role: 'system', content: `Content of ${pathArg}:\n\`\`\`\n${snippet}\n\`\`\`\n\n(Truncated if too long)` });
-                      actionLog.push(`📖 Peeked: ${pathArg}`);
-                      renderUpdate("Reading file...", false, step);
+                      const uri = vscode.Uri.joinPath(workspaceFolder.uri, pathArg);
+                      const doc = await vscode.workspace.openTextDocument(uri);
+                      const start = params.start_line || 0;
+                      const end = params.end_line || Math.min(start + 400, doc.lineCount);
+                      
+                      const range = new vscode.Range(
+                          new vscode.Position(start, 0),
+                          new vscode.Position(Math.min(end, doc.lineCount - 1), 1000)
+                      );
+                      const text = doc.getText(range);
+                      
+                      const statusMsg = end < doc.lineCount 
+                        ? `[TRUNCATED] Showing lines ${start}-${end} of ${doc.lineCount}. Use read_file with start_line=${end} to see more.`
+                        : `[END OF FILE] Showing lines ${start}-${doc.lineCount}.`;
+
+                      chatHistory.push({ 
+                          role: 'system', 
+                          content: `Content of ${pathArg}:\n\`\`\`\n${text}\n\`\`\`\n\n${statusMsg}` 
+                      });
+                      actionLog.push(`📖 Read ${pathArg} (L${start}-L${end})`);
+                      renderUpdate("Reading file segment...", false, step);
                   }
               } else if (toolName === 'search_keywords') {
                 const keywords = params.keywords || params.query;

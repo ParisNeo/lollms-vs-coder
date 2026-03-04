@@ -379,6 +379,33 @@ export function updateBadges() {
     }
 
     // --- THEME: TASK & TEAM ---
+    // --- THEME: THINKING & REASONING ---
+    const thinkingGroup = document.createElement('div');
+    thinkingGroup.className = 'badge-group';
+    thinkingGroup.innerHTML = '<span class="badge-group-label">Logic</span>';
+    container.appendChild(thinkingGroup);
+
+    const thinkBadge = createToggleBadge(
+        '🧠 Think', 
+        'thinking', 
+        true, 
+        caps.thinkingMode, 
+        () => {
+            vscode.postMessage({ 
+                command: 'updateDiscussionCapabilitiesPartial', 
+                partial: { thinkingMode: !caps.thinkingMode } 
+            });
+        }
+    );
+    if (thinkBadge) {
+        if (caps.thinkingMode) {
+            thinkBadge.classList.add('active');
+            thinkBadge.style.backgroundColor = 'var(--thinking-color)';
+            thinkBadge.style.color = 'white';
+        }
+        thinkingGroup.appendChild(thinkBadge);
+    }
+
     if (guiState.agentBadge || caps.herdMode) {
         const taskGroup = document.createElement('div');
         taskGroup.className = 'badge-group';
@@ -974,7 +1001,20 @@ export function renderWebSearchResults(action: string, results: any[]) {
     }
     addBtn.style.display = 'flex';
 }
+// Add this inside the updateDiscussionCapabilities logic or as an init listener
+export function initAutomationUI() {
+    const autoApply = document.getElementById('cap-autoApply') as HTMLInputElement;
+    const subOptions = document.getElementById('automation-sub-options') as HTMLElement;
 
+    if (autoApply && subOptions) {
+        const updateVisibility = () => {
+            subOptions.style.opacity = autoApply.checked ? "1" : "0.5";
+            subOptions.style.pointerEvents = autoApply.checked ? "auto" : "none";
+        };
+        autoApply.addEventListener('change', updateVisibility);
+        updateVisibility(); // Initial state
+    }
+}
 export function renderContextUsage(usage: any[]) {
     const container = dom.usageListContainer;
     if (!container) return;

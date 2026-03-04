@@ -15,6 +15,7 @@ import { PersonalityManager } from '../../personalityManager';
 import { GitIntegration } from '../../gitIntegration';
 import { applyDiffToString, applySearchReplace } from '../../utils';
 import { BigDataProcessor } from '../../bigDataProcessing';
+import { AutomationPanel } from '../../panels/automationPanel';
 
 interface ActiveGeneration {
     messageId: string;
@@ -172,7 +173,45 @@ export class ChatPanel {
       }
   }
   
+private async executeAutomationPipeline(content: string, messageId: string, signal: AbortSignal, processId: string) {
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) return;
 
+    // 1. Auto Branching
+    if (this._discussionCapabilities.autoBranch) {
+        this.processManager.updateDescription(processId, "Creating git branch...");
+        await vscode.commands.executeCommand('lollms-vs-coder.createGitBranch', { 
+            branch: `autofix-${Date.now()}` 
+        });
+    }
+
+    // 2. Extraction & Application
+    const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
+    const blockRegex = /```(\w+):([^\n\s]+)[\r\n]+([\s\S]+?)[\r\n]+```/g;
+    let match;
+    const modifiedFiles = new Set<string>();
+
+    while ((match = blockRegex.exec(content)) !== null) {
+        const filePath = match[2];
+        const blockContent = match[3];
+        modifiedFiles.add(filePath);
+
+        this.processManager.updateDescription(processId, `Applying updates to ${path.basename(filePath)}...`);
+        
+        const opts = { silent: true };
+        if (blockContent.includes('<<<<<<< SEARCH')) {
+            await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, blockContent, this, messageId, opts);
+        } else {
+            await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', filePath, blockContent, opts);
+        }
+    }
+
+    // 3. Auto Fix Loop
+    if (this._discussionCapabilities.autoFix && modifiedFiles.size > 0) {
+        const urisToFix = Array.from(modifiedFiles).map(fp => vscode.Uri.joinPath(workspaceFolder.uri, fp));
+        await this.repairFilesIteratively(urisToFix, signal, processId, messageId);
+    }
+}
     public updateGeneratingState() {
         if (this._isDisposed || !this.processManager) return;
 
@@ -1203,21 +1242,17 @@ Please provide the **FULL CONTENT** of the file instead using the format:
         const autoSkillMsgId = 'auto_skill_agent_' + Date.now();
 
         try {
-            await this.addMessageToDiscussion({
-                id: autoSkillMsgId,
-                role: 'system',
-                content: `**💡 Auto-Skill Agent**\n*Analyzing relevant skills...*\n\n`,
-                skipInPrompt: true 
-            });
+            // Register as a background process to hide from main overlay
+            this.processManager.updateDescription(processId, "💡 Selecting skills...");
 
             const newSkills = await this._contextManager.runSkillSelectionAgent(
                 userPromptText, 
                 model, 
                 controller.signal, 
                 this._currentDiscussion.importedSkills || [],
-                (log) => {
+                (newContent) => {
                     if (!this._isDisposed) {
-                        this._panel.webview.postMessage({ command: 'updateMessage', messageId: autoSkillMsgId, newContent: log });
+                        this._panel.webview.postMessage({ command: 'updateMessage', messageId: autoSkillMsgId, newContent });
                     }
                 }
             );
@@ -1472,7 +1507,9 @@ Please provide the **FULL CONTENT** of the file instead using the format:
             });
 
             generationSession.listeners.forEach(listener => listener(chunk));
-        }, controller.signal, this._currentDiscussion.model);
+        }, controller.signal, this._currentDiscussion.model, { 
+            thinking: this._discussionCapabilities.thinkingMode 
+        });
 
         this.processManager.updateDescription(processId, "Verifying generated code...");
         this.updateGeneratingState();
@@ -1486,6 +1523,11 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                 this.updateGeneratingState();
             }
         );
+
+        // --- AUTOMATION PIPELINE ---
+        if (this._discussionCapabilities.autoApply && !controller.signal.aborted) {
+            await this.executeAutomationPipeline(processedResponse, assistantMessageId, controller.signal, processId);
+        }
 
         const elapsed = (Date.now() - generationSession.startTime) / 1000;
         const finalTps = (generationSession.tokenCount / elapsed).toFixed(1);
@@ -1792,15 +1834,15 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                             // Use AWAIT on the commands to force sequential execution.
                             // This prevents "file busy" or "context mismatch" if multiple SEARCH/REPLACE 
                             // blocks target the same file in one message.
+                            const opts = { silent: true };
                             if (change.type === 'file') {
-                                await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', change.path, change.content);
+                                await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', change.path, change.content, opts);
                             } else if (change.type === 'diff') {
-                                await vscode.commands.executeCommand('lollms-vs-coder.applyPatchContent', change.path, change.content);
+                                await vscode.commands.executeCommand('lollms-vs-coder.applyPatchContent', change.path, change.content, opts);
                             } else if (change.type === 'insert') {
-                                await vscode.commands.executeCommand('lollms-vs-coder.insertCode', change.path, change.content);
+                                await vscode.commands.executeCommand('lollms-vs-coder.insertCode', change.path, change.content, opts);
                             } else if (change.type === 'replace') {
-                                // Pass 'this' and messageId if available for auto-repair logic
-                                await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', change.path, change.content, this, message.messageId);
+                                await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', change.path, change.content, this, message.messageId, opts);
                             } else if (change.type === 'delete') {
                                 await vscode.commands.executeCommand('lollms-vs-coder.deleteCodeBlock', change.path, change.content);
                             }
@@ -3373,6 +3415,26 @@ Task:
                             <label class="switch"><input type="checkbox" id="cap-explainCode" checked><span class="slider"></span></label>
                             <label for="cap-explainCode">AI explains changes (Problem/Hypothesis/Fix)</label>
                         </div>
+
+                        <h3 style="margin-top:20px; color:var(--vscode-charts-orange);">🚀 Automation</h3>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-autoApply"><span class="slider"></span></label>
+                            <label for="cap-autoApply"><strong>Auto Apply:</strong> Automatically apply code blocks</label>
+                        </div>
+                        <div id="automation-sub-options" style="margin-left: 25px; opacity: 0.5; pointer-events: none;">
+                            <div class="checkbox-container">
+                                <label class="switch"><input type="checkbox" id="cap-autoBranch"><span class="slider"></span></label>
+                                <label for="cap-autoBranch">Auto Branch (Git)</label>
+                            </div>
+                            <div class="checkbox-container">
+                                <label class="switch"><input type="checkbox" id="cap-autoFix"><span class="slider"></span></label>
+                                <label for="cap-autoFix">Auto Fix (Repair linting errors)</label>
+                            </div>
+                            <div style="margin-top:8px; display:flex; align-items:center; gap:10px;">
+                                <label style="font-size:11px;">Max Fix Retries:</label>
+                                <input type="number" id="cap-maxFixRetries" value="3" min="1" max="10" style="width:50px;">
+                            </div>
+                        </div>
                     </div>
 
                     <div class="modal-section">
@@ -3859,4 +3921,160 @@ Task:
 </body>
 </html>`;
   }
+    
+    /**
+     * Core loop that fixes errors in a set of files using Aider blocks.
+     */
+    public async repairFilesIteratively(fileUris: vscode.Uri[], signal: AbortSignal, processId: string, messageId: string) {
+        const max = this._discussionCapabilities.maxFixRetries || 3;
+
+        for (const fileUri of fileUris) {
+            const relativePath = vscode.workspace.asRelativePath(fileUri);
+            let retries = 0;
+
+            while (retries < max) {
+                if (signal.aborted) break;
+
+                const diagnostics = vscode.languages.getDiagnostics(fileUri)
+                    .filter(d => d.severity === vscode.DiagnosticSeverity.Error);
+
+                if (diagnostics.length === 0) {
+                    this.log(`File ${relativePath} is now clean.`);
+                    break;
+                }
+
+                retries++;
+                this.processManager.updateDescription(processId, `Repairing ${path.basename(relativePath)} (${diagnostics.length} errors, attempt ${retries}/${max})...`);
+
+                const errorReport = diagnostics.map(d => `[Line ${d.range.start.line + 1}] ${d.message}`).join('\n');
+                const doc = await vscode.workspace.openTextDocument(fileUri);
+                
+                const repairPrompt = `### 🛑 ERRORS DETECTED IN \`${relativePath}\`
+The following errors must be fixed:
+${errorReport}
+
+**FILE CONTENT:**
+\`\`\`${doc.languageId}
+${doc.getText()}
+\`\`\`
+
+**INSTRUCTION:**
+Provide SEARCH/REPLACE blocks to resolve these specific errors. Use Aider format ONLY.`;
+
+                const systemPrompt = "You are a surgical code repair expert. Output only Aider SEARCH/REPLACE blocks to fix the requested errors.";
+                
+                try {
+                    const response = await this._lollmsAPI.sendChat([
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: repairPrompt }
+                    ], null, signal, this._currentDiscussion?.model);
+
+                    // Apply the fix silently
+                    await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', relativePath, response, this, messageId, { silent: true });
+                    
+                    // Wait for diagnostics to refresh
+                    await new Promise(r => setTimeout(r, 1500));
+                } catch (e: any) {
+                    this.log(`Repair failed for ${relativePath}: ${e.message}`, 'ERROR');
+                    break;
+                }
+            }
+        }
+    }
+
+    /**
+     * Triggered by the manual "Fix All" command.
+     */
+    public async handleFixAllErrors() {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder || !this.processManager) return;
+
+        const allDiagnostics = vscode.languages.getDiagnostics();
+        const urisWithErrors: vscode.Uri[] = [];
+        for (const [uri, diagnostics] of allDiagnostics) {
+            if (diagnostics.some(d => d.severity === vscode.DiagnosticSeverity.Error)) {
+                if (uri.fsPath.startsWith(workspaceFolder.uri.fsPath)) urisWithErrors.push(uri);
+            }
+        }
+
+        if (urisWithErrors.length === 0) {
+            vscode.window.showInformationMessage("🎉 No errors found in the workspace!");
+            return;
+        }
+
+        const { id: processId, controller } = this.processManager.register(this.discussionId, `Repairing ${urisWithErrors.length} files...`);
+        const autoUI = AutomationPanel.createOrShow(this._extensionUri);
+        const sharedCache = new Map<string, string>(); // path -> content
+
+        autoUI.onDidCancel(() => {
+            this.processManager.cancel(processId);
+            autoUI.dispose();
+        });
+
+        try {
+            for (const uri of urisWithErrors) {
+                if (controller.signal.aborted) break;
+                const relPath = vscode.workspace.asRelativePath(uri);
+                const diagnostics = vscode.languages.getDiagnostics(uri).filter(d => d.severity === vscode.DiagnosticSeverity.Error);
+                
+                autoUI.updateFileProgress(relPath, 'scanning', `Starting repair: ${diagnostics.length} errors detected.`, diagnostics.length);
+
+                let hasFixed = false;
+                let retries = 0;
+                const max = this._discussionCapabilities.maxFixRetries || 3;
+
+                while (retries < max && !hasFixed) {
+                    if (controller.signal.aborted) break;
+                    retries++;
+
+                    const doc = await vscode.workspace.openTextDocument(uri);
+                    const errorLog = diagnostics.map(d => `[Line ${d.range.start.line + 1}] ${d.message}`).join('\n');
+                    
+                    // Construct surgical prompt with mutualized cache
+                    const cacheText = Array.from(sharedCache.entries()).map(([p,c]) => `--- ${p} ---\n${c}`).join('\n');
+                    const systemPrompt = await getProcessedSystemPrompt('surgical_agent');
+                    const userPrompt = `### REPAIR TASK\nFile: ${relPath}\n\nErrors:\n${errorLog}\n\nContent:\n${doc.getText()}\n\nShared Knowledge:\n${cacheText || 'No extra context cached yet.'}`;
+
+                    autoUI.updateFileProgress(relPath, 'fixing', `Agent Decision (Attempt ${retries}/${max})...`);
+                    const response = await this._lollmsAPI.sendChat([
+                        { role: 'system', content: systemPrompt },
+                        { role: 'user', content: userPrompt }
+                    ], null, controller.signal, this._currentDiscussion?.model);
+
+                    const cleanResponse = stripThinkingTags(response);
+
+                    // 1. Check for Context Expansion (Decision)
+                    if (cleanResponse.includes('"tool"')) {
+                        try {
+                            const action = JSON.parse(cleanResponse.match(/\{[\s\S]*\}/)![0]);
+                            if (action.tool === 'read_files') {
+                                for(const p of (action.params.paths || [])) {
+                                    autoUI.updateFileProgress(relPath, 'scanning', `Reading dependency: ${p}`);
+                                    const content = await this._contextManager.readSpecificFiles([p]);
+                                    sharedCache.set(p, content);
+                                }
+                                continue; // Retry fixing with new context
+                            }
+                        } catch(e) {}
+                    }
+
+                    // 2. Apply Aider Patch
+                    autoUI.updateFileProgress(relPath, 'fixing', `Applying surgical patch...`);
+                    await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', relPath, cleanResponse, this, undefined, { silent: true });
+                    
+                    // 3. Verify
+                    await new Promise(r => setTimeout(r, 2000));
+                    const currentDiags = vscode.languages.getDiagnostics(uri).filter(d => d.severity === vscode.DiagnosticSeverity.Error);
+                    if (currentDiags.length === 0) {
+                        autoUI.updateFileProgress(relPath, 'success', `Fixed all errors successfully!`);
+                        hasFixed = true;
+                    } else {
+                        autoUI.updateFileProgress(relPath, 'fixing', `Reduced to ${currentDiags.length} errors.`);
+                    }
+                }
+            }
+        } finally {
+            this.processManager.unregister(processId);
+        }
+    }
 }

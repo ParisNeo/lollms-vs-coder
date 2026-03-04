@@ -43,6 +43,7 @@ export class ActionsTreeProvider implements vscode.TreeDataProvider<ActionItem> 
         ];
 
         if (hasWorkspace) {
+            actions.unshift(new ActionItem('Fix All Workspace Errors', 'lollms-vs-coder.fixAllErrors', 'zap', 'Iteratively fix every file in the project that contains errors'));
             actions.unshift(new ActionItem('Generate Educative Notebook', 'lollms-vs-coder.generateEducativeNotebookFromAction', 'book', 'Generate a comprehensive notebook from a prompt'));
             actions.push(new ActionItem('Show Code Graph', 'lollms-vs-coder.showCodeGraphPanel', 'git-compare', 'Show the interactive code graph'));
             actions.push(new ActionItem('Auto-Select Context', 'lollms-vs-coder.autoSelectContextFiles', 'wand', 'Let the AI select relevant files for an objective'));

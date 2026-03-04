@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.6.22",
+  "version": "0.6.24",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -169,6 +169,11 @@
         "command": "lollms-vs-coder.fixFileErrors",
         "title": "%command.fixFileErrors.title%",
         "icon": "$(tools)"
+      },
+      {
+        "command": "lollms-vs-coder.fixAllErrors",
+        "title": "Lollms: Fix All Workspace Errors",
+        "icon": "$(zap)"
       },
 
       {
@@ -484,8 +489,18 @@
       },
       {
         "command": "lollms-vs-coder.exportSkills",
-        "title": "Lollms: Export Skills",
+        "title": "Lollms: Export Skills (XML)",
         "icon": "$(cloud-upload)"
+      },
+      {
+        "command": "lollms-vs-coder.exportSkillToClaude",
+        "title": "Lollms: Export to Claude Code (.md)",
+        "icon": "$(export)"
+      },
+      {
+        "command": "lollms-vs-coder.importSkillFromClaude",
+        "title": "Lollms: Import Claude Skill",
+        "icon": "$(import)"
       },
       {
         "command": "lollms-vs-coder.deleteAllSkills",
@@ -1051,6 +1066,22 @@
           "default": true,
           "description": "When scraping URLs, use the AI to distill/refactor the content based on your prompt before adding it to context."
         },
+        "lollmsVsCoder.thinkingMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable Physical Thinking/Reasoning mode for compatible models (OpenAI o1/o3, Claude 3.7, DeepSeek R1, Ollama)."
+        },
+        "lollmsVsCoder.reasoningEffort": {
+          "type": "string",
+          "default": "medium",
+          "enum": ["low", "medium", "high"],
+          "description": "Computational depth for OpenAI o1/o3 models."
+        },
+        "lollmsVsCoder.thinkingBudget": {
+          "type": "number",
+          "default": 16000,
+          "description": "Token budget for Claude 3.7 Sonnet thinking mode."
+        },
         "lollmsVsCoder.antiPromptInjection": {
           "type": "boolean",
           "default": true,
@@ -1469,6 +1500,16 @@
           "command": "lollms-vs-coder.deletePrompt",
           "when": "(view == lollmsChatPromptsView || view == lollmsCodeActionsView) && viewItem == 'prompt'",
           "group": "9_delete"
+        },
+        {
+          "command": "lollms-vs-coder.exportSkills",
+          "when": "view == lollmsSkillsView && viewItem == 'skill'",
+          "group": "inline"
+        },
+        {
+          "command": "lollms-vs-coder.exportSkills",
+          "when": "view == lollmsSkillsView && viewItem == 'skill'",
+          "group": "1_modification"
         }
       ]
     },

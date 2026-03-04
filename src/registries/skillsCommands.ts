@@ -70,10 +70,36 @@ export function registerSkillsCommands(context: vscode.ExtensionContext, service
         vscode.commands.executeCommand('lollms-vs-coder.refreshSkills');
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.importSkillFromClaude', async () => {
+        const uris = await vscode.window.showOpenDialog({
+            title: "Import Claude Code Skill (.md)",
+            filters: { "Markdown": ["md"] },
+            canSelectMany: true
+        });
+
+        if (uris && uris.length > 0) {
+            for (const uri of uris) {
+                const bytes = await vscode.workspace.fs.readFile(uri);
+                const skillData = services.skillsManager.claudeMarkdownToSkill(Buffer.from(bytes).toString('utf8'));
+                await services.skillsManager.addSkill(skillData);
+            }
+            vscode.window.showInformationMessage(`Imported ${uris.length} Claude skill(s).`);
+            vscode.commands.executeCommand('lollms-vs-coder.refreshSkills');
+        }
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.exportSkills', async (item?: any) => {
-        // If item exists, export specific skill. Otherwise export all.
         const skillId = item?.skill?.id || item?.id;
-        await services.skillsManager.exportSkills(skillId ? [skillId] : undefined);
+        await services.skillsManager.exportSkills(skillId ? [skillId] : undefined, 'lollms');
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.exportSkillToClaude', async (item?: any) => {
+        const skillId = item?.skill?.id || item?.id;
+        if (!skillId) {
+            vscode.window.showErrorMessage("Please right-click a specific skill to export to Claude format.");
+            return;
+        }
+        await services.skillsManager.exportSkills([skillId], 'claude');
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refreshSkills', () => {

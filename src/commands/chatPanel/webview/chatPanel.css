@@ -1038,6 +1038,7 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
 .mode-badge.active.agent { background-color: var(--vscode-charts-orange); color: white; }
 .mode-badge.active.herd { background-color: var(--vscode-charts-purple); color: white; }
 .mode-badge.active.autocontext { background-color: var(--vscode-charts-blue); color: white; }
+.mode-badge.active.thinking { background-color: var(--thinking-color); color: white; }
 .mode-badge.active.autoskill { background-color: var(--vscode-charts-green); color: white; }
 .mode-badge.model { background-color: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); padding-left: 8px; }
 .mode-badge.personality { background-color: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border-color: var(--vscode-button-secondaryBackground); border-style: dashed; padding-left: 6px; }
@@ -1401,7 +1402,25 @@ mark.current-match {
     background-color: rgba(155, 89, 182, 0.05);
 }
 
-.scratchpad-content { padding: 10px 12px; font-size: 13px; line-height: 1.5; color: var(--vscode-editor-foreground); border-top: 1px dashed var(--vscode-widget-border); }
+.agent-log-container { 
+    padding: 10px 12px; 
+    font-size: 11px; 
+    line-height: 1.5; 
+    color: var(--vscode-descriptionForeground); 
+    border-top: 1px dashed var(--vscode-widget-border);
+    font-family: var(--vscode-editor-font-family);
+}
+.agent-log-item {
+    margin-bottom: 4px;
+    border-left: 2px solid var(--vscode-widget-border);
+    padding-left: 8px;
+}
+.status-line {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+}
 .retry-btn { background-color: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); border: none; padding: 4px 8px; border-radius: 3px; cursor: pointer; font-size: 11px; display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
 .retry-btn:hover { background-color: var(--vscode-button-secondaryHoverBackground); }
 
@@ -1827,7 +1846,7 @@ mark.current-match {
     padding: 2px 0;
 }
 
-/* Toggle Handle Logic: Plus when closed, Minus when open */
+/* Toggle Handle Logic: Chevron right when closed, Chevron down when open */
 .folder-handle {
     width: 16px;
     height: 16px;
@@ -1839,13 +1858,13 @@ mark.current-match {
 }
 
 .folder-handle::before {
-    content: '\eab1'; /* codicon-add (Plus) */
-    font-size: 10px;
-    opacity: 0.5;
+    content: '\eab6'; /* codicon-chevron-right */
+    font-size: 12px;
+    opacity: 0.8;
 }
 
 details[open] > summary .folder-handle::before {
-    content: '\eaa5'; /* codicon-dash (Minus) */
+    content: '\eab4'; /* codicon-chevron-down */
 }
 
 .info-collapsible summary, .skill-summary, .attachment-item-summary, .code-summary, .scratchpad-header {

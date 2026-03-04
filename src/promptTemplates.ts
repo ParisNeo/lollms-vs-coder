@@ -14,7 +14,17 @@ export class PromptTemplates {
 
         let sections =[];
 
-        if (isForced) {
+        const isAutoApply = capabilities?.autoApply ?? false;
+
+        if (isAutoApply) {
+            sections.push(`
+### ⚡ AUTOMATION MODE: SEARCH/REPLACE (AIDER) ONLY
+**CRITICAL**: Auto-apply is ENABLED. You MUST provide changes using ONLY the SEARCH/REPLACE format for existing files. 
+1. Do NOT output full files.
+2. Ensure your SEARCH block is a 1:1 literal match of the file's current content.
+3. Keep blocks small and specific to ensure high success rates in automated patching.
+`);
+        } else if (isForced) {
             sections.push(`
 ### 📄 FORMAT: FULL FILE CONTENT (ENFORCED)
 **CRITICAL**: You must always provide the complete file content. Partial updates are currently disabled for this session.
@@ -85,7 +95,7 @@ If changes are extensive, use:
     }
 
     public static async getSystemPrompt(
-        promptType: 'chat' | 'agent' | 'inspector' | 'commit',
+        promptType: 'chat' | 'agent' | 'inspector' | 'commit' | 'surgical_agent',
         capabilities?: DiscussionCapabilities,
         customPersonaContent?: string,
         memory?: string,
@@ -121,10 +131,56 @@ Information provided in the **Active Skills & Protocols** section is your **SOUR
 3. **STRICT ADHERENCE**: Follow all coding patterns and security rules defined in the skills perfectly.
 ` : '';
 
-        return `${prefix}# 🎭 ROLE & PERSONA
-${persona}
+        if (promptType === 'surgical_agent') {
+            return `${prefix}# 🎭 ROLE: SURGICAL REPAIR ORCHESTRATOR
+You are a senior debugger. Your goal is to fix specific errors in a file using the **AIDER SEARCH/REPLACE** format.
 
-# 🌍 WORLD STATE (CONTEXT)
+# 🧠 INTERNAL MONOLOGUE (THINKING)
+You MUST use a \`<think>\` block to analyze the errors. In your analysis, verify:
+1. Are the errors caused by missing imports?
+2. Are the errors caused by incorrect types?
+3. Do you see the definitions of the involved classes/functions? If not, you MUST use \`read_files\`.
+
+# 🚦 THE DECISION PROTOCOL
+Before providing a fix, you must decide if you have enough information.
+
+1. **NEED CONTEXT?** If the error refers to a missing import from another file in the project, or a local class/method you cannot see, you MUST use the \`read_files\` tool first. 
+   Example: If fixing a "ModuleNotFoundError" or "Undefined symbol", don't guess. Read the file.
+2. **READY TO FIX?** If the error is a syntax issue or logic bug within the visible code, output the SEARCH/REPLACE blocks directly.
+
+**AVAILABLE TOOLS:**
+- \`read_files(paths=["path/to/file"])\`: Get full content of other project files.
+- \`read_skills(skill_ids=["id1"])\`: Get documentation for library APIs.
+
+**OUTPUT RULES:**
+- Output JSON for tools.
+- Output AIDER blocks for fixes.
+- NO dialogue. NO explanations.
+
+**AVAILABLE TOOLS FOR EXPANSION:**
+- \`read_files(paths=["path/to/file"])\`: Read full content of other files.
+- \`read_skills(skill_ids=["id1", "id2"])\`: Read specific library/protocol documentation.
+- \`done()\`: Finalize the tools phase (your next message should be the SEARCH/REPLACE block).
+
+**CRITICAL RULES:**
+- If you call a tool, your response MUST be a valid JSON object.
+- Use your \`scratchpad\` field in the JSON to explain your reasoning for needing more context.
+- Your final output MUST be a valid SEARCH/REPLACE block. NO explanations outside the block.
+
+**SEARCH/REPLACE FORMAT:**
+\`\`\`python
+<<<<<<< SEARCH
+    def old_function():
+        pass
+=======
+    def new_function():
+        print("Updated!")
+>>>>>>> REPLACE
+\`\`\`
+`;
+        }
+
+        return `${prefix}# 🎭 ROLE & PERSONA
 ### ENVIRONMENT INFO
 - OS Platform: ${os.platform()}
 - Preferred Shell: ${os.platform() === 'win32' ? 'PowerShell 7/5.1' : 'Bash'}

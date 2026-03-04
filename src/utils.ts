@@ -61,6 +61,12 @@ export interface DiscussionCapabilities {
         fullFile: boolean;
         partialFormat: 'aider' | 'diff';
     };
+    autoApply: boolean;
+    autoFix: boolean;
+    autoBranch: boolean;
+    maxFixRetries: number;
+    thinkingMode: boolean;
+    thinkingBudget?: number;
     forceFullCode: boolean;
     allowedFormats: {
         fullFile: boolean;

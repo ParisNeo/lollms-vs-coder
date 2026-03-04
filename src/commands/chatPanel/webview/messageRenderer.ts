@@ -1248,9 +1248,9 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 // 2b. Render code block
                 const block = el as any;
                 const blockIdx = idx; // Use current iteration index as block identifier
-                const blockContent = processedContent.substring(block.start, block.end);
+                // Trim the block content to remove trailing newlines that cause slice errors
+                const blockContent = processedContent.substring(block.start, block.end).trim();
                 let lines = blockContent.split('\n');
-                if (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
 
                 const firstLine = lines[0];
                 const langMatch = firstLine.match(/```(\w+)/);
@@ -1590,7 +1590,8 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                         resultsList.innerHTML = '<div style="opacity:0.7; margin-bottom:4px;">Processing file updates...</div>';
 
                         const changes = actionableBlocks.map(b => {
-                            const blockContent = processedContent.substring(b.start, b.end);
+                            // Trim content to ensure the closing fence is correctly sliced off
+                            const blockContent = processedContent.substring(b.start, b.end).trim();
                             const lines = blockContent.split('\n');
                             const codeOnly = lines.length >= 2 ? lines.slice(1, -1).join('\n') : "";
                             return {

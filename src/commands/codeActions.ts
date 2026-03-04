@@ -14,7 +14,7 @@ export class LollmsCodeActionProvider implements vscode.CodeActionProvider {
     public async provideCodeActions(document: vscode.TextDocument, range: vscode.Range | vscode.Selection, context: vscode.CodeActionContext, token: vscode.CancellationToken): Promise<vscode.CodeAction[]> {
         const codeActions: vscode.CodeAction[] = [];
 
-        // 1. Handle Diagnostics (Quick Fixes) - Integrated into the hover panel
+        // 1. Handle Diagnostics (Quick Fixes)
         for (const diagnostic of context.diagnostics) {
             const action = new vscode.CodeAction(`✨ Fix with Lollms`, vscode.CodeActionKind.QuickFix);
             action.command = {
@@ -27,31 +27,26 @@ export class LollmsCodeActionProvider implements vscode.CodeActionProvider {
             codeActions.push(action);
         }
 
-        // 2. Main Lollms Menu Action
+        // 2. Direct Actions for Selection
         if (!range.isEmpty) {
-            const mainAction = new vscode.CodeAction('👑 Lollms Actions...', vscode.CodeActionKind.Refactor);
-            mainAction.command = {
-                command: 'lollms-vs-coder.showSelectionMenu',
-                title: 'Show Lollms Menu'
+            // New "Modify" action that opens the beautiful modal directly
+            const modifyAction = new vscode.CodeAction('📝 Modify with Lollms...', vscode.CodeActionKind.Refactor);
+            modifyAction.command = {
+                command: 'lollms-vs-coder.triggerCodeAction',
+                title: 'Modify with Lollms',
+                arguments: [{ isCustom: true }]
             };
-            mainAction.isPreferred = true;
-            codeActions.push(mainAction);
+            modifyAction.isPreferred = true;
+            codeActions.push(modifyAction);
 
-            const quickModify = new vscode.CodeAction('📝 Modify with Lollms...', vscode.CodeActionKind.Refactor);
-            quickModify.command = {
-                command: 'lollms-vs-coder.showSelectionMenu', 
-                title: 'Modify with AI'
-            };
-            codeActions.push(quickModify);
-
-            // Directly expose refactoring prompts for quick access
+            // Directly expose specific library prompts in the lightbulb
             const prompts = await this.promptManager.getCodeActionPrompts();
             prompts.forEach(prompt => {
-                // Use Emojis for icons as $(icon) syntax is not supported in CodeAction labels
                 let emoji = '✨';
                 if (prompt.title.toLowerCase().includes('bug')) emoji = '🔍';
                 if (prompt.title.toLowerCase().includes('doc')) emoji = '📖';
                 if (prompt.title.toLowerCase().includes('refactor')) emoji = '🛠️';
+                if (prompt.title.toLowerCase().includes('explain')) emoji = '💡';
                 
                 const action = new vscode.CodeAction(`${emoji} ${prompt.title}`, vscode.CodeActionKind.Refactor);
                 action.command = {

@@ -348,7 +348,58 @@ export class SkillsManager {
         });
     }
 
-    public async exportSkills(skillIds?: string[]) {
+    /**
+     * Converts a Lollms Skill to Claude Code Markdown format.
+     */
+    public skillToClaudeMarkdown(skill: Skill): string {
+        const frontmatter = [
+            '---',
+            `name: ${skill.name}`,
+            `version: 1.0.0`,
+            `description: |`,
+            `  ${skill.description.replace(/\n/g, '\n  ')}`,
+            'allowed-tools:',
+            '  - Read',
+            '  - Write',
+            '  - Edit',
+            '---',
+            '',
+            skill.content
+        ].join('\n');
+        return frontmatter;
+    }
+
+    /**
+     * Converts Claude Code Markdown format back to a Lollms Skill.
+     */
+    public claudeMarkdownToSkill(mdContent: string): Omit<Skill, 'timestamp'> {
+        const parts = mdContent.split('---');
+        if (parts.length < 3) {
+            throw new Error("Invalid Claude Skill format: Missing frontmatter delimiters.");
+        }
+
+        const yamlPart = parts[1];
+        const content = parts.slice(2).join('---').trim();
+
+        const nameMatch = yamlPart.match(/name:\s*(.*)/);
+        const descMatch = yamlPart.match(/description:\s*\|?\s*\n?\s*([\s\S]*?)(?=allowed-tools:|$)/);
+
+        const name = nameMatch ? nameMatch[1].trim() : "Imported Claude Skill";
+        const description = descMatch ? descMatch[1].trim().replace(/^\s+/gm, '') : "";
+        const id = name.toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
+
+        return {
+            id,
+            name,
+            description,
+            content,
+            category: 'imported/claude',
+            language: 'markdown',
+            scope: 'local'
+        };
+    }
+
+    public async exportSkills(skillIds?: string[], format: 'lollms' | 'claude' = 'lollms') {
         const allSkills = await this.getSkills();
         const toExport = skillIds 
             ? allSkills.filter(s => skillIds.includes(s.id))
@@ -368,10 +419,15 @@ export class SkillsManager {
 
         if (folderUri && folderUri[0]) {
             for (const skill of toExport) {
-                const fileName = `${skill.id}.xml`;
+                const isClaude = format === 'claude';
+                const fileName = `${skill.id}${isClaude ? '.md' : '.xml'}`;
                 const fileUri = vscode.Uri.joinPath(folderUri[0], fileName);
-                const xmlContent = skillToXml(skill);
-                await vscode.workspace.fs.writeFile(fileUri, Buffer.from(xmlContent, 'utf8'));
+                
+                const fileContent = isClaude 
+                    ? this.skillToClaudeMarkdown(skill) 
+                    : skillToXml(skill);
+
+                await vscode.workspace.fs.writeFile(fileUri, Buffer.from(fileContent, 'utf8'));
             }
             vscode.window.showInformationMessage(`Exported ${toExport.length} skills to ${folderUri[0].fsPath}`);
         }

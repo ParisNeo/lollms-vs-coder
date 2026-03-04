@@ -101,7 +101,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         });
     }
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string) => {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string, options?: { silent?: boolean }) => {
         const activeWorkspace = getActiveWorkspace();
         if (!activeWorkspace) {
             vscode.window.showErrorMessage("No active workspace.");
@@ -114,11 +114,9 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
 
             try {
                 await vscode.workspace.fs.stat(fileUri);
-                // File exists: capture original content for diff
                 const doc = await vscode.workspace.openTextDocument(fileUri);
                 originalContent = doc.getText();
             } catch {
-                // File does not exist: Create it directly
                 const parentDir = vscode.Uri.joinPath(fileUri, '..');
                 await vscode.workspace.fs.createDirectory(parentDir);
                 
@@ -128,28 +126,30 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 
                 await vscode.workspace.applyEdit(edit);
                 
-                // Automatically add the newly created file to the AI context
                 try {
                     await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', [filePath]);
                 } catch (e) {
                     Logger.warn(`Failed to auto-add new file to context: ${e}`);
                 }
 
-                const doc = await vscode.workspace.openTextDocument(fileUri);
-                await vscode.window.showTextDocument(doc);
-                vscode.window.showInformationMessage(`Created new file: ${filePath}`);
+                if (!options?.silent) {
+                    const doc = await vscode.workspace.openTextDocument(fileUri);
+                    await vscode.window.showTextDocument(doc);
+                }
                 return;
             }
 
-            // Apply full content replacement
             const document = await vscode.workspace.openTextDocument(fileUri);
             const fullRange = new vscode.Range(new vscode.Position(0, 0), document.lineAt(document.lineCount - 1).range.end);
             const edit = new vscode.WorkspaceEdit();
             edit.replace(fileUri, fullRange, content);
-            await vscode.workspace.applyEdit(edit);
+            const applied = await vscode.workspace.applyEdit(edit);
 
-            // Open Snapshot Diff
-            await openDiffView(fileUri, originalContent);
+            if (applied && options?.silent) {
+                await document.save();
+            } else if (applied) {
+                await openDiffView(fileUri, originalContent);
+            }
 
         } catch (e: any) {
             Logger.error(`Error applying file content: ${e.message}`, e);
@@ -273,7 +273,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         );
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string, panel?: ChatPanel, messageId?: string) => {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string, panel?: any, messageId?: string, options?: { silent?: boolean }) => {
         const activeWorkspace = getActiveWorkspace();
         if (!activeWorkspace) return;
 
@@ -391,9 +391,14 @@ ${originalContent}
                 const edit = new vscode.WorkspaceEdit();
                 const fullRange = new vscode.Range(new vscode.Position(0, 0), document.lineAt(document.lineCount - 1).range.end);
                 edit.replace(fileUri, fullRange, currentContent);
-                await vscode.workspace.applyEdit(edit);
-                await openDiffView(fileUri, originalContent);
-                vscode.window.showInformationMessage(`Applied ${applyCount} change(s) to ${filePath}.`);
+                const applied = await vscode.workspace.applyEdit(edit);
+                
+                if (applied && options?.silent) {
+                    await document.save();
+                } else if (applied) {
+                    await openDiffView(fileUri, originalContent);
+                    vscode.window.showInformationMessage(`Applied ${applyCount} change(s) to ${filePath}.`);
+                }
             }
 
         } catch(e: any) {

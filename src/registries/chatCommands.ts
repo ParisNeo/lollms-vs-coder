@@ -4,6 +4,8 @@ import { ChatPanel } from '../commands/chatPanel/chatPanel';
 import { DiscussionItem, DiscussionGroupItem } from '../commands/discussionTreeProvider';
 import { startDiscussionWithInitialPrompt } from '../utils/discussionUtils';
 import { AgentManager } from '../agentManager';
+import { AutomationPanel } from '../panels/automationPanel';
+import { getProcessedSystemPrompt, stripThinkingTags } from '../utils';
 
 export function registerChatCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
     
@@ -269,6 +271,134 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
                 await services.discussionManager.saveDiscussion(discussion);
                 services.treeProviders.discussion?.refresh();
             }
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.fixAllErrors', async () => {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) return;
+
+        // 1. Scan for errors directly from the service
+        const allDiagnostics = vscode.languages.getDiagnostics();
+        const urisWithErrors: vscode.Uri[] = [];
+        for (const [uri, diagnostics] of allDiagnostics) {
+            if (diagnostics.some(d => d.severity === vscode.DiagnosticSeverity.Error)) {
+                if (uri.fsPath.startsWith(workspaceFolder.uri.fsPath)) urisWithErrors.push(uri);
+            }
+        }
+
+        if (urisWithErrors.length === 0) {
+            vscode.window.showInformationMessage("🎉 No errors found in the workspace!");
+            return;
+        }
+
+        // 2. Launch the dedicated UI immediately
+        const autoUI = AutomationPanel.createOrShow(services.extensionUri);
+        const { id: processId, controller } = services.processManager.register("global-repair", `Repairing ${urisWithErrors.length} files...`);
+
+        autoUI.onDidCancel(() => {
+            services.processManager.cancel(processId);
+            autoUI.dispose();
+        });
+
+        // 3. Run the logic using shared services (No ChatPanel needed)
+        const sharedCache = new Map<string, string>();
+        
+        try {
+            let filesProcessed = 0;
+            for (const uri of urisWithErrors) {
+                if (controller.signal.aborted) break;
+                filesProcessed++;
+                const progress = Math.round((filesProcessed / urisWithErrors.length) * 100);
+                const relPath = vscode.workspace.asRelativePath(uri);
+                const initialDiags = vscode.languages.getDiagnostics(uri).filter(d => d.severity === vscode.DiagnosticSeverity.Error);
+
+                services.processManager.updateDescription(processId, `Repairing ${relPath} (${filesProcessed}/${urisWithErrors.length})`);
+                autoUI.updateOverallProgress(progress, `Processing ${relPath}...`);
+                autoUI.updateFileProgress(relPath, 'scanning', `Scanning file...`, { errorsCount: initialDiags.length });
+
+                let hasFixed = false;
+                let retries = 0;
+                const max = 3; 
+
+                while (retries < max && !hasFixed) {
+                    if (controller.signal.aborted) break;
+                    retries++;
+
+                    const doc = await vscode.workspace.openTextDocument(uri);
+                    const errorLog = initialDiags.map(d => `[Line ${d.range.start.line + 1}] ${d.message}`).join('\n');
+                    const cacheText = Array.from(sharedCache.entries()).map(([p,c]) => `--- ${p} ---\n${c}`).join('\n');
+
+                    const systemPrompt = await getProcessedSystemPrompt('surgical_agent');
+                    const userPrompt = `### REPAIR TASK\nFile: ${relPath}\n\nErrors:\n${errorLog}\n\nContent:\n${doc.getText()}\n\nShared Knowledge:\n${cacheText}`;
+
+                    autoUI.updateFileProgress(relPath, 'fixing', `Analyzing errors & dependencies (Attempt ${retries}/${max})...`);
+                    autoUI.log(`Sending request to LLM for ${relPath}...`);
+                    
+                    let rawResponse = "";
+                    try {
+                        rawResponse = await services.lollmsAPI.sendChat([
+                            { role: 'system', content: systemPrompt },
+                            { role: 'user', content: userPrompt }
+                        ], (chunk) => {
+                            // Optional: stream small status hints to console
+                        }, controller.signal);
+                    } catch (apiErr: any) {
+                        autoUI.updateFileProgress(relPath, 'error', `API Request failed: ${apiErr.message}`);
+                        autoUI.log(`ERROR: LLM communication failed: ${apiErr.message}`);
+                        break; 
+                    }
+
+                    autoUI.log(`Response received (${rawResponse.length} chars). Parsing intent...`);
+
+                    // 🧠 Data Extraction for UI
+                    const thinkMatch = rawResponse.match(/<(?:think|thinking|scratchpad)>([\s\S]*?)<\//i);
+                    const scratchpad = thinkMatch ? thinkMatch[1].trim() : "No internal scratchpad provided.";
+                    const cleanResponse = stripThinkingTags(rawResponse);
+
+                    // 🎯 Tool/Decision Detection
+                    if (cleanResponse.includes('"tool"')) {
+                        try {
+                            const action = JSON.parse(cleanResponse.match(/\{[\s\S]*\}/)![0]);
+                            if (action.tool === 'read_files') {
+                                const paths = action.params.paths || [];
+                                autoUI.updateFileProgress(relPath, 'scanning', `Expanding Context...`, { 
+                                    scratchpad, decision: `The agent decided it needs to read: ${paths.join(', ')} before fixing.` 
+                                });
+                                autoUI.log(`Tool call: read_files -> ${paths.join(', ')}`);
+                                for(const p of paths) {
+                                    autoUI.log(`Peeking at ${p}...`);
+                                    const content = await services.contextManager.readSpecificFiles([p]);
+                                    sharedCache.set(p, content);
+                                }
+                                autoUI.log(`Context expanded with ${paths.length} files. Retrying fix with new knowledge.`);
+                                continue; 
+                            }
+                        } catch(e) {}
+                    }
+
+                    // 📝 Apply Aider Patch
+                    autoUI.updateFileProgress(relPath, 'fixing', `Decision: Applying repair patch`, { 
+                        scratchpad, patch: cleanResponse.substring(0, 1000) + (cleanResponse.length > 1000 ? '...' : '') 
+                    });
+
+                    await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', relPath, cleanResponse, undefined, undefined, { silent: true });
+
+                    // 🔍 Verification
+                    await new Promise(r => setTimeout(r, 2500));
+                    const currentDiags = vscode.languages.getDiagnostics(uri).filter(d => d.severity === vscode.DiagnosticSeverity.Error);
+
+                    if (currentDiags.length === 0) {
+                        autoUI.updateFileProgress(relPath, 'success', `File is now clean! All errors fixed.`);
+                        hasFixed = true;
+                    } else {
+                        autoUI.updateFileProgress(relPath, 'error', `Still contains ${currentDiags.length} errors after attempt.`);
+                    }
+                }
+            }
+            autoUI.updateOverallProgress(100, `Workspace repair finished.`);
+        } finally {
+            services.processManager.unregister(processId);
         }
     }));
 

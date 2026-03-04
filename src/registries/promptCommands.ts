@@ -5,7 +5,8 @@ import { buildCodeActionPrompt } from '../utils/promptUtils';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
 import { startDiscussionWithInitialPrompt } from '../utils/discussionUtils';
 import { CustomActionModal } from '../commands/customActionModal';
-import { stripThinkingTags } from '../utils';
+import { stripThinkingTags, getProcessedSystemPrompt } from '../utils';
+import { Logger } from '../logger'; // <--- AJOUTEZ CETTE LIGNE
 
 export function registerPromptCommands(context: vscode.ExtensionContext, services: LollmsServices) {
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.saveMessageAsPrompt', async (content: string) => {
@@ -76,74 +77,129 @@ export function registerPromptCommands(context: vscode.ExtensionContext, service
                 await startDiscussionWithInitialPrompt(services, prompts.userPrompt, activeFolder);
             }
         } else {
-            // Surgical code modification via side-by-side Diff
+            // Surgical code modification with Intelligent Orchestrator
             await vscode.window.withProgress({
                 location: vscode.ProgressLocation.Notification,
-                title: `Lollms: Applying ${prompt.title}...`,
+                title: `Lollms: Orchestrating ${prompt.title}...`,
                 cancellable: true
             }, async (progress, token) => {
                 const abortController = new AbortController();
                 token.onCancellationRequested(() => abortController.abort());
+                const signal = abortController.signal;
 
                 try {
-                    const response = await services.lollmsAPI.sendChat([
-                        { role: 'system', content: prompts.systemPrompt },
+                    const history: ChatMessage[] = [
+                        { role: 'system', content: await getProcessedSystemPrompt('surgical_agent') },
                         { role: 'user', content: prompts.userPrompt }
-                    ], null, abortController.signal);
+                    ];
+
+                    let finalCode = "";
+                    let stepCount = 0;
+                    const MAX_STEPS = 5;
+
+                    while (stepCount < MAX_STEPS && !finalCode) {
+                        if (signal.aborted) break;
+                        stepCount++;
+
+                        const response = await services.lollmsAPI.sendChat(history, null, signal);
+                        const cleanResponse = stripThinkingTags(response);
+
+                        // Check if response contains a tool call
+                        const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
+                        if (jsonMatch) {
+                            try {
+                                const action = JSON.parse(jsonMatch[0]);
+                                
+                                // INTENT SIGNALING
+                                if (action.tool && action.tool !== 'done') {
+                                    progress.report({ message: `🚀 Agent: Intelligent Expansion Mode (Tool: ${action.tool})` });
+                                } else if (action.tool === 'done') {
+                                    progress.report({ message: `✨ Agent: Finalizing update...` });
+                                }
+
+                                if (action.scratchpad) {
+                                    Logger.info(`[SurgicalAgent] Scratchpad: ${action.scratchpad}`);
+                                }
+
+                                if (action.tool === 'read_files' && action.params?.paths) {
+                                    const msg = `🔍 Reading: ${action.params.paths.join(', ')}`;
+                                    progress.report({ message: `Agent: ${msg}` });
+                                    Logger.info(`[SurgicalAgent] ${msg}`);
+                                    const content = await services.contextManager.readSpecificFiles(action.params.paths);
+                                    history.push({ role: 'assistant', content: response });
+                                    history.push({ role: 'system', content: `FILE CONTENT:\n${content}` });
+                                    continue;
+                                }
+
+                                if (action.tool === 'read_skills' && action.params?.skill_ids) {
+                                    const allSkills = await services.skillsManager.getSkills();
+                                    const selected = allSkills.filter(s => action.params.skill_ids.includes(s.id));
+                                    const content = selected.map(s => `Skill: ${s.name}\n${s.content}`).join('\n\n');
+                                    history.push({ role: 'assistant', content: response });
+                                    history.push({ role: 'system', content: `SKILL DATA:\n${content}` });
+                                    continue;
+                                }
+
+                                if (action.tool === 'done') {
+                                    finalCode = action.params?.code || action.code;
+                                    break;
+                                }
+                            } catch (e) {
+                                // Not a valid tool call, treat as direct content
+                                progress.report({ message: `✅ Agent: Direct Update Mode` });
+                                finalCode = cleanResponse;
+                            }
+                        } else {
+                            // No JSON/Tool found, treat as direct output
+                            progress.report({ message: `✅ Agent: Direct Update Mode` });
+                            finalCode = cleanResponse;
+                        }
+                    }
+
+                    if (signal.aborted || !finalCode) return;
 
                     // --- CLEANUP LOGIC ---
-                    let cleanText = stripThinkingTags(response).trim();
-
-                    // Extract content from markdown fences if the AI included them
-                    const codeBlockMatch = cleanText.match(/```(?:\w+)?[\r\n]+([\s\S]*?)[\r\n]+```/);
-                    if (codeBlockMatch) {
-                        cleanText = codeBlockMatch[1];
-                    } else {
-                        // Fallback: strip any remaining single fences if at start/end
-                        cleanText = cleanText.replace(/^`{3,}.*[\r\n]+/, '').replace(/[\r\n]+`{3,}$/, '');
-                    }
-
-                    // --- ROBUST RELATIVE INDENTATION NORMALIZER ---
-                    const originalFirstLine = editor.document.lineAt(editor.selection.start.line);
-                    const targetIndent = originalFirstLine.text.match(/^\s*/)?.[0] || "";
-                    const aiLines = cleanText.split(/\r?\n/).filter((l, i, arr) => 
-                        !(i === 0 && l.trim() === "") && !(i === arr.length - 1 && l.trim() === "")
-                    );
-
-                    if (aiLines.length > 0) {
-                        // 1. Determine common prefix to strip from AI output
-                        const nonPaddedLines = aiLines.filter(l => l.trim().length > 0);
-                        const aiMinIndentLen = Math.min(...nonPaddedLines.map(l => l.match(/^\s*/)?.[0].length || 0));
-                        
-                        const eol = editor.document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
-                        const startInColumnZero = editor.selection.start.character === 0 || targetIndent.length === 0;
-
-                        cleanText = aiLines.map((line, idx) => {
-                            if (line.trim().length === 0) return "";
-                            
-                            // Strip AI's arbitrary common indentation
-                            const stripped = line.substring(aiMinIndentLen);
-                            
-                            // If selection starts mid-line, the first line shouldn't be re-indented 
-                            // as the 'before' text already contains the leading space.
-                            if (idx === 0 && !startInColumnZero) return stripped;
-                            
-                            // Re-apply original file indentation
-                            return targetIndent + stripped;
-                        }).join(eol);
-                    }
-
-                    // --- DOCUMENT RECONSTRUCTION ---
+                    let cleanText = finalCode.trim();
                     const originalDocText = editor.document.getText();
-                    const selectionStartOffset = editor.document.offsetAt(editor.selection.start);
-                    const selectionEndOffset = editor.document.offsetAt(editor.selection.end);
-                    
-                    const before = originalDocText.substring(0, selectionStartOffset);
-                    const after = originalDocText.substring(selectionEndOffset);
-                    const newDocumentContent = before + cleanText + after;
+                    let newDocumentContent = originalDocText;
+
+                    // 1. Check for SEARCH/REPLACE blocks (Preferred)
+                    const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
+                    const matches = [...cleanText.matchAll(aiderRegex)];
+
+                    if (matches.length > 0) {
+                        const { applySearchReplace } = require('../utils');
+                        for (const match of matches) {
+                            const searchBlock = match[1];
+                            const replaceBlock = match[2];
+                            const result = applySearchReplace(newDocumentContent, searchBlock, replaceBlock);
+                            
+                            if (result.success) {
+                                newDocumentContent = result.result;
+                            } else {
+                                vscode.window.showWarningMessage(`Could not apply a change: ${result.error}`);
+                            }
+                        }
+                    } else {
+                        // 2. Fallback: Direct replacement of the selected range without fragile math
+                        // Extract content from markdown fences if the AI included them
+                        const codeBlockMatch = cleanText.match(/```(?:\w+)?[\r\n]+([\s\S]*?)[\r\n]+```/);
+                        if (codeBlockMatch) {
+                            cleanText = codeBlockMatch[1];
+                        } else {
+                            // Fallback: strip any remaining single fences if at start/end
+                            cleanText = cleanText.replace(/^`{3,}.*[\r\n]+/, '').replace(/[\r\n]+`{3,}$/, '');
+                        }
+
+                        const selectionStartOffset = editor.document.offsetAt(editor.selection.start);
+                        const selectionEndOffset = editor.document.offsetAt(editor.selection.end);
+                        
+                        const before = originalDocText.substring(0, selectionStartOffset);
+                        const after = originalDocText.substring(selectionEndOffset);
+                        newDocumentContent = before + cleanText + after;
+                    }
 
                     // Open Side-by-Side Diff View. 
-                    // Saving the temporary file will apply the changes back to the original document.
                     await services.diffManager.openDiff(editor.document.uri, newDocumentContent);
 
                 } catch (e: any) {

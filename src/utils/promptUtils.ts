@@ -46,66 +46,17 @@ export async function buildCodeActionPrompt(
     let contextResult: any = { text: '', images: [], projectTree: '', selectedFilesContent: '', skillsContent: '', importedSkills: [] };
 
     if (useContext) {
-        const projectSkillIds = await contextManager.getActiveProjectSkills();
-        const activeDiscussion = ChatPanel.currentPanel?.getCurrentDiscussion();
-        const discussionSkillIds = activeDiscussion?.importedSkills || [];
-        const activeDiagramIds = activeDiscussion?.activeDiagrams || [];
-        const combinedSkillIds = Array.from(new Set([...projectSkillIds, ...discussionSkillIds]));
+        // --- UPGRADE: MINIMAL INITIAL CONTEXT ---
+        const tree = await contextManager.getContextStateProvider()?.getAllVisibleFiles();
+        const skills = await contextManager.skillsManager?.getSkills();
+        const topCategories = Array.from(new Set(skills?.map(s => s.category?.split('/')[0]).filter(Boolean)));
 
-        // 1. Fetch "Warm" Context (Skills, Diagrams, and ALREADY included files from Auto Context)
-        contextResult = await contextManager.getContextContent({ 
-            includeTree: true,
-            importedSkillIds: combinedSkillIds,
-            activeDiagramIds: activeDiagramIds,
-            modelName: ChatPanel.currentPanel?.getCurrentDiscussion()?.model || lollmsApi.getModelName()
-        });
-
-        contextText = contextResult.text;
-
-        // 2. SMART DEPENDENCY PEAK: If we have an API and a signal, find missing dependencies
-        if (lollmsApi && !signal?.aborted) {
-            try {
-                const allFiles = await contextManager.getWorkspaceFilePaths();
-                const currentIncluded = contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || [];
-                const docPath = vscode.workspace.asRelativePath(document.uri);
-                
-                const selectionSystemPrompt = {
-                    role: 'system',
-                    content: `You are a dependency analyzer. The user is refactoring a code snippet in "${fileName}".
-Identify which existing files in the project are crucial to read (types, base classes, or related logic) to avoid hallucinations.
-- PRIORITIZE files in the "ALREADY INCLUDED" list.
-- Select up to 5 additional relevant files.
-- Return ONLY a valid JSON array of strings.`
-                };
-
-                const selectionUserPrompt = {
-                    role: 'user',
-                    content: `**Selection in ${fileName}:**\n\`\`\`\n${selectedText}\n\`\`\`\n\n**Included Files:** ${JSON.stringify(currentIncluded)}\n\n**All Files:**\n${allFiles.join('\n')}`
-                };
-
-                const response = await lollmsApi.sendChat([selectionSystemPrompt, selectionUserPrompt], null, signal);
-                const jsonMatch = response.match(/\[.*\]/s);
-                if (jsonMatch) {
-                    const filesToPeek = JSON.parse(jsonMatch[0]).filter((f: string) => f !== docPath);
-                    const peekedContent = await contextManager.readSpecificFiles(filesToPeek);
-                    if (peekedContent) {
-                        contextText += `\n\n## RELATED DEPENDENCIES (PEEKED)\n${peekedContent}`;
-                    }
-                }
-            } catch (e) {
-                console.warn("Smart context peek failed, proceeding with base context.", e);
-            }
-        }
-
-        if (contextText && !contextText.includes("**No workspace folder is currently open.**")) {
-            let diagramText = "";
-            if (contextResult.diagrams && contextResult.diagrams.length > 0) {
-                diagramText = "\n## ARCHITECTURE DIAGRAMS\n" + contextResult.diagrams.map(d => 
-                    `### ${d.type.toUpperCase()}\n\`\`\`mermaid\n${d.mermaid}\n\`\`\``
-                ).join('\n\n');
-            }
-            contextText = `\n\n==== PROJECT & SMART CONTEXT ====\n${contextText}${diagramText}\n==================================\n`;
-        }
+        contextText = `\n\n### PROJECT STRUCTURE:\n${tree?.join('\n')}\n\n### AVAILABLE SKILL CATEGORIES:\n${topCategories.join(', ')}\n`;
+        
+        // Include current file content as essential minimal context
+        const currentFileText = document.getText();
+        const relPath = vscode.workspace.asRelativePath(document.uri);
+        contextText += `\n### CURRENT FILE: ${relPath}\n\`\`\`${languageId}\n${currentFileText}\n\`\`\`\n`;
     }
 
     let userPrompt = `I am working on the file \`${fileName}\` which is a \`${languageId}\` file.\n\nHere is the code selection:\n\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\nINSTRUCTION: **${userInstruction}**${contextText}`;
@@ -124,7 +75,7 @@ Identify which existing files in the project are crucial to read (types, base cl
     } else { 
         // Code Generation (Surgical Replacement)
         userPrompt = `I am working on a \`${languageId}\` file.
-I have selected this specific block of code:
+I want to modify the following code selection:
 \`\`\`${languageId}
 ${selectedText}
 \`\`\`
@@ -133,18 +84,22 @@ INSTRUCTION: **${userInstruction}**
 ${contextText}
 
 TASK:
-Provide the NEW version of the selected code block. 
+You must use the SEARCH/REPLACE block format to apply the requested changes. 
+Only replace the code that needs to be changed.
+
+\`\`\`${languageId}
+<<<<<<< SEARCH
+[Exact code to replace from the original file, including context lines]
+=======[New updated code]
+>>>>>>> REPLACE
+\`\`\`
 
 ### ⚠️ CRITICAL CONSTRAINTS:
-- Output ONLY the raw source code.
-- NEVER use markdown code fences.
-- NEVER include explanations, chatter, or "Here is your code".
-- NEVER use placeholders or ellipses. Provide the full logic for the target block.
-- **ATOMIC BLOCKS**: If the selected code is large, split your replacement into multiple small SEARCH/REPLACE blocks targeting specific lines.
-- Provide the replacement for the selected block only.
-- Use relative indentation: the first line of your output should have NO leading whitespace. Subsequent lines should be indented relative to the first line.`;
+- The SEARCH block MUST match the original file EXACTLY, including indentation.
+- If you are only modifying a few lines inside a large selection, do NOT replace the whole selection. Create a focused SEARCH/REPLACE block for just the changed lines.
+- NEVER include explanations, chatter, or "Here is your code". Output ONLY the SEARCH/REPLACE blocks (or tool calls if needed).`;
         
-        systemPrompt = `${baseSystemPrompt}\n\nYou are a surgical code replacement engine. You output raw source code with NO formatting, NO markdown, and NO dialogue.`;
+        systemPrompt = `${baseSystemPrompt}\n\nYou are a surgical code replacement engine. You strictly output SEARCH/REPLACE blocks with NO dialogue.`;
     }
     
     return { systemPrompt, userPrompt };

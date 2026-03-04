@@ -72,10 +72,9 @@ export class SelectionHoverProvider implements vscode.HoverProvider {
         position: vscode.Position, 
         token: vscode.CancellationToken
     ): vscode.ProviderResult<vscode.Hover> {
-        const contents = new vscode.MarkdownString();
+        const contents = new vscode.MarkdownString('', true);
         contents.isTrusted = true;
         contents.supportHtml = true;
-        contents.supportIcons = true; // FIX: Enable rendering of $(icon) syntax
         let shouldShow = false;
 
         // 1. Check for Diagnostic (Error/Warning) under hover
@@ -86,7 +85,7 @@ export class SelectionHoverProvider implements vscode.HoverProvider {
             contents.appendMarkdown(`### 👑 Lollms AI\n\n`);
             // Serialize the position as an argument to the command
             const args = encodeURIComponent(JSON.stringify([position]));
-            contents.appendMarkdown(`[$(sparkle) **Fix this issue with Lollms**](command:lollms-vs-coder.fixDiagnosticAtPosition?${args})\n\n`);
+            contents.appendMarkdown(`[✨ **Fix this issue with Lollms**](command:lollms-vs-coder.fixDiagnosticAtPosition?${args})\n\n`);
             shouldShow = true;
         }
 

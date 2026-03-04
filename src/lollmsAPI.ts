@@ -470,7 +470,8 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
     messages: ChatMessage[],
     onChunk?: ((chunk: string) => void) | null,
     signal?: AbortSignal,
-    modelOverride?: string
+    modelOverride?: string,
+    options?: { thinking?: boolean }
   ): Promise<string> {
     const backend = this.config.backendType;
     const model = modelOverride || this.config.modelName;
@@ -488,9 +489,21 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
         content: m.content
     }));
 
+    // Handle Physical Thinking Mode from config/capabilities
+    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+    // Use the override if provided, otherwise fallback to global config
+    const isThinkingActive = options?.thinking !== undefined ? options.thinking : (config.get<boolean>('thinkingMode') || false);
+    const reasoningEffort = config.get<string>('reasoningEffort') || 'medium';
+    const thinkingBudget = config.get<number>('thinkingBudget') || 16000;
+
     if (backend === 'ollama') {
         url += '/api/chat';
-        body = { model, messages: sanitizedMessages, stream };
+        body = { 
+            model, 
+            messages: sanitizedMessages, 
+            stream,
+            think: isThinkingActive
+        };
     } else if (backend === 'anthropic') {
         url = 'https://api.anthropic.com/v1/messages';
         headers = {
@@ -498,7 +511,6 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
             'x-api-key': this.config.apiKey,
             'anthropic-version': '2023-06-01'
         };
-        // Anthropic requires a specific system prompt field, not a message
         const systemMsg = messages.find(m => m.role === 'system');
         body = {
             model,
@@ -507,6 +519,18 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
             max_tokens: 128000,
             stream
         };
+        if (isThinkingActive) {
+            body.thinking = { type: "enabled", budget_tokens: thinkingBudget };
+        }
+    } else if (backend === 'openai' || backend === 'lollms') {
+        url += '/v1/chat/completions';
+        body = { model, messages: sanitizedMessages, stream };
+        if (isThinkingActive) {
+            // OpenAI o1/o3 style
+            body.reasoning_effort = reasoningEffort;
+            // DeepSeek Reasoner style (passed via extra_body/direct)
+            body.thinking = { type: "enabled" };
+        }
     } else if (backend === 'google') {
         const method = stream ? 'streamGenerateContent' : 'generateContent';
         url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:${method}?key=${this.config.apiKey}`;

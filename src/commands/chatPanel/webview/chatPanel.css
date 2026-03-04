@@ -1854,12 +1854,13 @@ mark.current-match {
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    margin-right: 2px;
+    margin-right: 4px;
+    font-family: codicon; /* CRITICAL: Required to render the icons */
 }
 
 .folder-handle::before {
     content: '\eab6'; /* codicon-chevron-right */
-    font-size: 12px;
+    font-size: 14px;
     opacity: 0.8;
 }
 

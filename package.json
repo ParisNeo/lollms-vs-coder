@@ -493,16 +493,6 @@
         "icon": "$(cloud-upload)"
       },
       {
-        "command": "lollms-vs-coder.exportSkillToClaude",
-        "title": "Lollms: Export to Claude Code (.md)",
-        "icon": "$(export)"
-      },
-      {
-        "command": "lollms-vs-coder.importSkillFromClaude",
-        "title": "Lollms: Import Claude Skill",
-        "icon": "$(import)"
-      },
-      {
         "command": "lollms-vs-coder.deleteAllSkills",
         "title": "Lollms: Delete All Skills",
         "icon": "$(trash)"
@@ -1358,6 +1348,11 @@
           "command": "lollms-vs-coder.buildCodeGraph",
           "when": "view == lollmsCodeExplorerView",
           "group": "navigation@1"
+        },
+        {
+          "command": "lollms-vs-coder.addSkill",
+          "when": "view == lollmsSkillsView && viewItem =~ /skillRoot|skillCategory/",
+          "group": "inline"
         },
         {
           "command": "lollms-vs-coder.addSkill",

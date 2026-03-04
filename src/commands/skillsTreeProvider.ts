@@ -16,24 +16,30 @@ export class SkillsTreeProvider implements vscode.TreeDataProvider<vscode.TreeIt
     }
 
     async getChildren(element?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
-        const skills = await this.skillsManager.getSkills();
-        
-        if (skills.length === 0 && !element) {
-            const placeholder = new vscode.TreeItem("No skills learned yet.", vscode.TreeItemCollapsibleState.None);
-            placeholder.iconPath = new vscode.ThemeIcon('info');
-            return [placeholder];
-        }
+        const allSkills = await this.skillsManager.getSkills();
 
         if (!element) {
-            return this.getNodes(skills, '');
-        } else if (element instanceof SkillCategoryItem) {
-            return this.getNodes(skills, element.fullPath);
+            // Root Level: Show the two libraries
+            return [
+                new SkillRootItem("Global Library", "global", vscode.TreeItemCollapsibleState.Expanded),
+                new SkillRootItem("Project Library", "local", vscode.TreeItemCollapsibleState.Expanded)
+            ];
+        }
+
+        if (element instanceof SkillRootItem) {
+            // Level 1: Root categories for a specific scope
+            return this.getNodes(allSkills.filter(s => s.scope === element.scope), '', element.scope);
+        }
+
+        if (element instanceof SkillCategoryItem) {
+            // Level N: Nested categories/skills
+            return this.getNodes(allSkills.filter(s => s.scope === element.scope), element.fullPath, element.scope);
         }
 
         return [];
     }
 
-    private getNodes(skills: Skill[], parentPath: string): vscode.TreeItem[] {
+    private getNodes(skills: Skill[], parentPath: string, scope: 'global' | 'local'): vscode.TreeItem[] {
         const items: vscode.TreeItem[] = [];
         const seenCategories = new Set<string>();
 
@@ -51,27 +57,45 @@ export class SkillsTreeProvider implements vscode.TreeDataProvider<vscode.TreeIt
                 
                 if (nextCategorySegment && !seenCategories.has(nextCategorySegment)) {
                     const fullCategoryPath = parentPath ? `${parentPath}/${nextCategorySegment}` : nextCategorySegment;
-                    items.push(new SkillCategoryItem(nextCategorySegment, fullCategoryPath));
+                    items.push(new SkillCategoryItem(nextCategorySegment, fullCategoryPath, scope));
                     seenCategories.add(nextCategorySegment);
                 }
             }
         });
 
         return items.sort((a, b) => {
+            // 1. Categories (Folders) always come before individual Skills
             if (a instanceof SkillCategoryItem && b instanceof SkillItem) return -1;
             if (a instanceof SkillItem && b instanceof SkillCategoryItem) return 1;
-            return (a.label as string).localeCompare(b.label as string);
+            
+            // 2. Sort by Label (alphabetical)
+            const labelA = String(a.label || "");
+            const labelB = String(b.label || "");
+            return labelA.localeCompare(labelB, undefined, { sensitivity: 'base', numeric: true });
         });
+    }
+}
+
+class SkillRootItem extends vscode.TreeItem {
+    constructor(
+        public readonly label: string,
+        public readonly scope: 'global' | 'local',
+        public readonly collapsibleState: vscode.TreeItemCollapsibleState
+    ) {
+        super(label, collapsibleState);
+        this.contextValue = `skillRoot:${scope}`;
+        this.iconPath = new vscode.ThemeIcon(scope === 'global' ? 'globe' : 'root-folder');
     }
 }
 
 class SkillCategoryItem extends vscode.TreeItem {
     constructor(
         public readonly label: string,
-        public readonly fullPath: string
+        public readonly fullPath: string,
+        public readonly scope: 'global' | 'local'
     ) {
         super(label, vscode.TreeItemCollapsibleState.Collapsed);
-        this.contextValue = 'skillCategory';
+        this.contextValue = `skillCategory:${scope}`;
         this.iconPath = vscode.ThemeIcon.Folder;
         this.tooltip = `Category: ${fullPath}`;
     }

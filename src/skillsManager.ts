@@ -174,24 +174,52 @@ export class SkillsManager {
         }
     }
 
-    private async writeSkillToFile(skill: Skill): Promise<void> {
-        const fileName = `${skill.id}.xml`;
-        let targetDir = skill.scope === 'global' ? this.globalSkillsDir : this.localSkillsDir;
+    /**
+     * Finds the URI of a skill file by its ID by searching through the directory structure.
+     */
+    private async findSkillFileUri(skillId: string, root: vscode.Uri): Promise<vscode.Uri | null> {
+        const walk = async (uri: vscode.Uri): Promise<vscode.Uri | null> => {
+            let entries;
+            try { entries = await vscode.workspace.fs.readDirectory(uri); } catch (e) { return null; }
+            for (const [name, type] of entries) {
+                const entryUri = vscode.Uri.joinPath(uri, name);
+                if (type === vscode.FileType.Directory) {
+                    const found = await walk(entryUri);
+                    if (found) return found;
+                } else if (type === vscode.FileType.File && name === `${skillId}.xml`) {
+                    return entryUri;
+                }
+            }
+            return null;
+        };
+        return walk(root);
+    }
 
-        if (!targetDir) {
+    private async writeSkillToFile(skill: Skill): Promise<void> {
+        // 1. Determine target directory based on scope and category
+        let rootDir = skill.scope === 'global' ? this.globalSkillsDir : this.localSkillsDir;
+        if (!rootDir) {
             if (skill.scope === 'local') throw new Error("No active workspace for local skill.");
-            targetDir = this.globalSkillsDir;
+            rootDir = this.globalSkillsDir;
         }
 
+        // 2. CRITICAL: Find and delete existing file with this ID to prevent duplicates if category changed
+        const existingFile = await this.findSkillFileUri(skill.id, rootDir);
+        if (existingFile) {
+            try { await vscode.workspace.fs.delete(existingFile); } catch (e) {}
+        }
+
+        // 3. Construct new path
+        let targetDir = rootDir;
         if (skill.category) {
             const relativeCategory = skill.category.replace(/\\/g, '/');
-            targetDir = vscode.Uri.joinPath(targetDir, ...relativeCategory.split('/'));
+            targetDir = vscode.Uri.joinPath(rootDir, ...relativeCategory.split('/'));
             try {
                 await vscode.workspace.fs.createDirectory(targetDir);
             } catch (e) {}
         }
 
-        const filePath = vscode.Uri.joinPath(targetDir, fileName);
+        const filePath = vscode.Uri.joinPath(targetDir, `${skill.id}.xml`);
         const xmlContent = skillToXml(skill);
         await vscode.workspace.fs.writeFile(filePath, Buffer.from(xmlContent, 'utf8'));
     }
@@ -237,29 +265,40 @@ export class SkillsManager {
 
     public async importSkills(): Promise<Skill[]> {
         const uris = await vscode.window.showOpenDialog({
-            title: "Import Skill Pack (XML)",
-            filters: { "XML": ["xml"] },
+            title: "Import Skills (XML or Claude Markdown)",
+            filters: { "Skills": ["xml", "md"] },
             canSelectMany: true
         });
 
         if (!uris || uris.length === 0) return [];
 
+        // Ask for scope once for the batch
+        const scopeChoice = await vscode.window.showQuickPick(
+            [{ label: 'Global', value: 'global' }, { label: 'Local (Project)', value: 'local' }],
+            { placeHolder: 'Where should these skills be imported?' }
+        );
+        const scope = (scopeChoice?.value as 'global' | 'local') || 'global';
+
         const addedSkills: Skill[] = [];
         try {
             for (const uri of uris) {
-                const content = await vscode.workspace.fs.readFile(uri);
-                const xmlStr = content.toString();
-                // Simple heuristic: check if it's a single skill or list?
-                // For now assuming single file = single skill per file or handle simple concat
-                // But generally users might want to import one skill file at a time or select multiple.
-                const skill = xmlToSkill(xmlStr, 'global'); // Default to global for import?
-                if (skill.id) {
-                    // Ask scope? Defaulting to global for now as per previous logic
-                    await this.writeSkillToFile(skill);
-                    addedSkills.push(skill);
+                const bytes = await vscode.workspace.fs.readFile(uri);
+                const content = Buffer.from(bytes).toString('utf8');
+                const format = this.detectFormat(content);
+                
+                let skill: any;
+                if (format === 'claude') {
+                    skill = this.claudeMarkdownToSkill(content, scope);
+                } else {
+                    skill = xmlToSkill(content, scope);
+                }
+
+                if (skill && skill.id) {
+                    await this.writeSkillToFile(skill as Skill);
+                    addedSkills.push(skill as Skill);
                 }
             }
-            vscode.window.showInformationMessage(`Imported ${addedSkills.length} skills successfully.`);
+            vscode.window.showInformationMessage(`Successfully detected and imported ${addedSkills.length} skills.`);
             return addedSkills;
         } catch (e: any) {
             vscode.window.showErrorMessage(`Failed to import skills: ${e.message}`);
@@ -370,22 +409,31 @@ export class SkillsManager {
     }
 
     /**
+     * Detects if content is LoLLMs XML or Claude Markdown.
+     */
+    private detectFormat(content: string): 'lollms' | 'claude' {
+        const trimmed = content.trim();
+        if (trimmed.startsWith('<skill')) return 'lollms';
+        if (trimmed.startsWith('---') && trimmed.includes('name:')) return 'claude';
+        return 'lollms'; // Default fallback
+    }
+
+    /**
      * Converts Claude Code Markdown format back to a Lollms Skill.
      */
-    public claudeMarkdownToSkill(mdContent: string): Omit<Skill, 'timestamp'> {
+    public claudeMarkdownToSkill(mdContent: string, scope: 'global' | 'local' = 'local'): Omit<Skill, 'timestamp'> {
         const parts = mdContent.split('---');
-        if (parts.length < 3) {
-            throw new Error("Invalid Claude Skill format: Missing frontmatter delimiters.");
-        }
+        // Extract content (everything after the second ---)
+        const content = parts.length >= 3 ? parts.slice(2).join('---').trim() : mdContent;
+        const yamlPart = parts.length >= 3 ? parts[1] : "";
 
-        const yamlPart = parts[1];
-        const content = parts.slice(2).join('---').trim();
-
-        const nameMatch = yamlPart.match(/name:\s*(.*)/);
-        const descMatch = yamlPart.match(/description:\s*\|?\s*\n?\s*([\s\S]*?)(?=allowed-tools:|$)/);
+        const nameMatch = yamlPart.match(/name:\s*["']?(.*?)["']?(\n|$)/);
+        const descMatch = yamlPart.match(/description:\s*(?:\||>)?\n?\s*([\s\S]*?)(?=\n\w+:|$)/);
+        const catMatch = yamlPart.match(/category:\s*["']?(.*?)["']?(\n|$)/);
 
         const name = nameMatch ? nameMatch[1].trim() : "Imported Claude Skill";
-        const description = descMatch ? descMatch[1].trim().replace(/^\s+/gm, '') : "";
+        const description = descMatch ? descMatch[1].trim().replace(/^\s+/gm, '') : "No description provided.";
+        const category = catMatch ? catMatch[1].trim() : "imported/claude";
         const id = name.toLowerCase().replace(/[^a-z0-9]/g, '-') + '-' + Date.now();
 
         return {
@@ -393,9 +441,9 @@ export class SkillsManager {
             name,
             description,
             content,
-            category: 'imported/claude',
+            category,
             language: 'markdown',
-            scope: 'local'
+            scope
         };
     }
 

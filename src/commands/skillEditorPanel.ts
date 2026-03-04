@@ -75,15 +75,23 @@ export class SkillEditorPanel {
             return;
         }
 
-        const id = this._skill ? this._skill.id : ('skill-' + Date.now());
+        // Preserve existing ID if editing, otherwise generate one
+        const id = this._skill?.id || ('skill-' + Date.now());
         
-        const skill: Omit<Skill, 'timestamp'> = {
+        // Scope Logic:
+        // 1. If editing an existing skill, keep its scope.
+        // 2. If it's a new skill, use the scope passed from the command (default global).
+        const scope = this._skill?.scope || (this as any)._targetScope || 'global';
+        
+        const skill: Skill = {
             id,
             name: data.name,
             description: data.description || '',
             category: data.category || '',
             language: data.language || 'markdown',
-            content: data.content
+            content: data.content,
+            scope: scope,
+            timestamp: Date.now()
         };
 
         await this._skillsManager.addOrUpdateSkill(skill);

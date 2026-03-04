@@ -3,10 +3,4 @@
 - upgrade ascii_colors skills
 - Add skills for ScrapeMaster and safe_store
 
-- Fix:
-  - Webview error: renderContextUsage is not defined
-  - Webview error: updateProgressBar is not defined
-  - Webview error: renderContextUsage is not defined
-
-- fix:
-  - Webview error: updateContextFileUsage is not defined
+- Add notes building and storing (like skills), notes are for uset and skills for ai

@@ -315,6 +315,7 @@ export function updateBadges() {
 
     // Initialize capability UI elements
     if (dom.capHerdMode) dom.capHerdMode.checked = caps.herdMode || false;
+    if (dom.capHerdParallelGeneration) dom.capHerdParallelGeneration.checked = !!caps.herdParallelGeneration;
     if (dom.capHerdRounds) dom.capHerdRounds.value = caps.herdRounds?.toString() || '2';
     if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = !!caps.agentMode;
     if (dom.autoContextCheckbox) dom.autoContextCheckbox.checked = !!caps.autoContextMode;
@@ -322,6 +323,19 @@ export function updateBadges() {
     if (dom.herdModeCheckbox) dom.herdModeCheckbox.checked = !!caps.herdMode;
     if (dom.herdConfigSection) {
         dom.herdConfigSection.style.display = caps.herdMode ? 'block' : 'none';
+    }
+
+    // Render Dynamic Model Pool Selection inside herd config (if present)
+    if (dom.herdModelsList && caps.herdParticipantModels) {
+        const globalPool = (window as any).herdDynamicModelPool || [];
+        const activeModels = caps.herdParticipantModels;
+
+        dom.herdModelsList.innerHTML = globalPool.map((m: any) => `
+            <div class="checkbox-container" style="border:none; background:transparent; padding:2px 0;">
+                <input type="checkbox" value="${m.model}" class="herd-pool-check" ${activeModels.includes(m.model) || activeModels.length === 0 ? 'checked' : ''}>
+                <label style="font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${m.model}</label>
+            </div>
+        `).join('');
     }
 
     // Response Profile Badge (Mode)

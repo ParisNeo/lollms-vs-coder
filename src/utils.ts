@@ -101,6 +101,9 @@ export interface DiscussionCapabilities {
     
     // --- UPDATED HERD CONFIG ---
     herdMode: boolean;
+    herdParallelGeneration: boolean;
+    herdPreAnswerCount: number;
+    herdPostAnswerCount: number;
     herdOrchestratorModel?: string;      // The leader/planner model
     herdParticipantModels?: string[];    // List of model names participating
     herdCriticEnabled?: boolean;         // Optional critique step
@@ -532,6 +535,9 @@ export interface DiscussionCapabilities {
     
     // --- UPDATED HERD CONFIG ---
     herdMode: boolean;
+    herdParallelGeneration: boolean;
+    herdPreAnswerCount: number;
+    herdPostAnswerCount: number;
     herdOrchestratorModel?: string;      // The leader/planner model
     herdParticipantModels?: string[];    // List of model names participating
     herdCriticEnabled?: boolean;         // Optional critique step

@@ -5,8 +5,8 @@ import { PersonalityManager } from './personalityManager';
 import { HerdParticipant, DynamicModelEntry } from './utils';
 import { AgentManager } from './agentManager';
 
-const SCRATCHPAD_WORD_LIMIT  = 80;  // ~3-5 sentences — opening position only
-const DISCUSSION_WORD_LIMIT  = 60;  // ~2-4 sentences — one idea per turn
+const SCRATCHPAD_WORD_LIMIT  = 300; // Expanded for deep technical analysis
+const DISCUSSION_WORD_LIMIT  = 200; // Expanded for detailed peer-to-peer code review
 const API_CALL_DELAY_MS      = 500; // pause between calls — Ollama is single-threaded
 const MAX_CONSECUTIVE_FAILS  = 2;   // skip a participant after this many consecutive errors
 
@@ -37,16 +37,24 @@ export class HerdManager {
         userPrompt: string,
         modelPool: DynamicModelEntry[],
         leaderModel: string,
-        signal: AbortSignal
+        signal: AbortSignal,
+        capabilities?: any
     ): Promise<{ pre: HerdParticipant[], post: HerdParticipant[] } | null> {
         if (modelPool.length === 0) return null;
 
         const poolDesc = modelPool.map(m => `- \`${m.model}\`: ${m.description}`).join('\n');
 
+        const preCount = capabilities?.herdPreAnswerCount || 3;
+        const postCount = capabilities?.herdPostAnswerCount || 2;
+
         const planningPrompt = `You are a Software Team Architect AI. Your job is to assign sharp, opinionated code-review personas to a set of AI models, then form two panels to tackle a coding problem.
 
 **USER PROBLEM:**
 "${userPrompt}"
+
+**TEAM SIZE REQUIREMENTS:**
+- Brainstorming Panel (Pre-Answer): You MUST select exactly ${preCount} personas.
+- Review Panel (Post-Answer): You MUST select exactly ${postCount} personas.
 
 **AVAILABLE MODELS (you MUST use these exact model IDs — no others):**
 ${poolDesc}
@@ -192,7 +200,6 @@ ${poolDesc}
 
 
     // ── MAIN RUN ────────────────────────────────────────────────────────────────
-
     public async run(
         userPrompt: string,
         brainstormingParticipants: HerdParticipant[],
@@ -203,7 +210,8 @@ ${poolDesc}
         onStatusUpdate: (status: string) => void,
         onUpdateMessage: (content: string) => Promise<void>,
         signal: AbortSignal,
-        chatHistory: ChatMessage[] = []
+        chatHistory: ChatMessage[] = [],
+        capabilities?: any
     ): Promise<string> {
 
         const safeUpdate = typeof onUpdateMessage === 'function' ? onUpdateMessage : async (_: string) => {};
@@ -223,7 +231,6 @@ ${poolDesc}
             await appendToUI("❌ No brainstorming participants provided.\n");
             return "Herd aborted: no participants.";
         }
-
 
         // ── TEAM ROSTER ────────────────────────────────────────────────────────────
         // Show the assembled team immediately so the user knows who is participating
@@ -252,41 +259,40 @@ ${poolDesc}
         // This prevents anchoring: every agent forms a genuine independent position.
 
         await appendToUI(`#### 🗒️ Private Scratchpads\n\n`);
-        safeStatus("Agents forming independent positions…");
-
-        // Sequential scratchpads — Ollama is single-threaded; parallel calls cause
-        // 500 errors and 'tool_calls' variable crashes. Each agent writes one at a time.
-        // The privacy guarantee is preserved: each prompt contains NO prior scratchpad content.
+        
+        const isParallel = capabilities?.herdParallelGeneration === true;
         const scratchpadResults: { participant: ResolvedParticipant; content: string }[] = [];
+        const seenScratchpads = new Set<string>(); // Prevent UI duplication
 
-        for (const participant of discussants) {
-            if (signal.aborted) break;
+        const handleScratchpadResult = async (p: ResolvedParticipant, content: string) => {
+            if (seenScratchpads.has(p.name)) return;
+            seenScratchpads.add(p.name);
+            
+            scratchpadResults.push({ participant: p, content });
+            await appendToUI(
+`<details>
+<summary>🗒️ ${p.name} — private scratchpad</summary>
 
-            const systemPrompt = `${participant.prompt}
+${content}
 
-You are about to join a group discussion. Before it begins, write your private opening position.
+</details>\n`
+            );
+        };
 
-**PROBLEM:** ${userPrompt}
-
-**CONTEXT:** ${contextText}
-
-**RULES — NON-NEGOTIABLE:**
-- Hard limit: ${SCRATCHPAD_WORD_LIMIT} words. Stop mid-sentence if you must.
-- State your angle and your single biggest concern. Nothing else.
-- No summaries, no hedging, no "on the other hand". Pick a stance and defend it.
-- This is a scratchpad, not a report. Be blunt.`;
-
-            try {
-                safeStatus(`${participant.name} writing private position…`);
-                await new Promise(r => setTimeout(r, API_CALL_DELAY_MS));
-                let content = await this.lollmsAPI.sendChat([
-                    { role: 'system', content: systemPrompt }
-                ], null, signal, participant.model);
-
-                content = this.truncateToWordLimit(content.trim(), SCRATCHPAD_WORD_LIMIT);
-                scratchpadResults.push({ participant, content });
-            } catch (error: any) {
-                scratchpadResults.push({ participant, content: `*(error: ${error.message})*` });
+        if (isParallel) {
+            safeStatus("Agents brainstorming in parallel...");
+            const promises = discussants.map(async (p) => {
+                const content = await this.generateScratchpad(p, userPrompt, contextText, signal);
+                await handleScratchpadResult(p, content);
+            });
+            await Promise.all(promises);
+        } else {
+            for (const participant of discussants) {
+                if (signal.aborted) break;
+                safeStatus(`${participant.name} is thinking privately...`);
+                const content = await this.generateScratchpad(participant, userPrompt, contextText, signal);
+                await handleScratchpadResult(participant, content);
+                await new Promise(r => setTimeout(r, 800));
             }
         }
 
@@ -329,29 +335,31 @@ ${content}
 
             const systemPrompt = `${participant.prompt}
 
-You are in a live group discussion with: ${allNames}.
-Goal: collectively solve the user's problem through debate. The thinking happens between you, not inside you.
+You are in a live technical group discussion with: ${allNames}.
+Goal: Use the provided project files to collectively solve the user's problem.
 
-**PROBLEM:** ${userPrompt}
+### 📚 PROJECT CONTEXT (FILES & CODE)
+${contextText}`;
 
-**CONTEXT:** ${contextText}
+            const taskPrompt = `**USER OBJECTIVE:** ${userPrompt}
 
-**EVERYONE'S OPENING POSITIONS (revealed simultaneously):**
+**EVERYONE'S OPENING POSITIONS:**
 ${revealBlock}
 
 **DISCUSSION SO FAR:**
 ${transcript || "(You are the first to speak after the reveal.)"}
 
 **RULES — NON-NEGOTIABLE:**
-- Hard limit: ${DISCUSSION_WORD_LIMIT} words. Stop mid-sentence if you must.
-- React to what was just said. Address someone by name if you're challenging or building on their point.
-- One idea per message. Make it sharp and specific.
-- No preamble, no sign-offs, no summaries. Just speak.
-- Only write <ready/> (nothing else) if the discussion has genuinely concluded and you have nothing to add.`;
+- Hard limit: ${DISCUSSION_WORD_LIMIT} words.
+- **PROJECT FOCUS**: You MUST refer to specific files, variables, or functions found in the context. Do not speak in generalities.
+- React to what was just said. Address others by name to build or challenge technical implementations.
+- One technical point per message.
+- Only write <ready/> if a definitive technical solution has been agreed upon.`;
 
             let response = await this.lollmsAPI.sendChat([
-                { role: 'system', content: systemPrompt }
-            ], null, signal, participant.model);
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: taskPrompt }
+            ], null, signal, participant.model, { thinking: false });
 
             if (signal.aborted) return { content: "", isReady: true };
 
@@ -436,23 +444,37 @@ ${transcript || "(You are the first to speak after the reveal.)"}
         let draftSolution = "";
 
         try {
-            draftSolution = await this.lollmsAPI.sendChat([{
-                role: 'system',
-                content: `You are the Leader Agent. Your team has just debated the problem.
-Synthesise their discussion into a concrete, detailed solution. Be thorough — this is the one place where full detail is expected.
+            const { PromptTemplates } = require('./promptTemplates');
+            const formattingRules = (PromptTemplates as any).getFormatInstructions(capabilities);
+
+            const systemPrompt = `You are the Leader Agent. Your team has just debated a technical problem. 
+Your task is to synthesize the debate into a definitive, actionable solution.
+
+### 🏢 VS CODER INTERFACE PROTOCOL
+- **Skill Building**: <skill title="..." description="..." category="...">Content</skill>
+- **Images**: <generateImage prompt="..." path="..." />
+- **File Ops**: <rename old="..." new="..." /> or <delete path="..." />
+
+${formattingRules}`;
+
+            const userPromptContent = `### 📚 PROJECT CONTEXT
+${contextText}
 
 **USER OBJECTIVE:** ${userPrompt}
 
 **OPENING POSITIONS:**
 ${revealBlock}
 
-**DISCUSSION:**
+**DISCUSSION HISTORY:**
 ${this.renderTranscript(discussionTurns)}
 
-**CONTEXT:** ${contextText}
+**INSTRUCTION:**
+Write the comprehensive Draft Solution based on the debate and the provided context.`;
 
-Write the Draft Solution now.`
-            }], null, signal, leaderModel);
+            draftSolution = await this.lollmsAPI.sendChat([
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPromptContent }
+            ], null, signal, leaderModel);
 
             await appendToUI(draftSolution + "\n");
         } catch (error: any) {
@@ -478,23 +500,25 @@ Write the Draft Solution now.`
             const systemPrompt = `${reviewer.prompt}
 
 You are reviewing a proposed solution with: ${reviewers.map(r => r.name).join(', ')}.
+### 📚 PROJECT CONTEXT
+${contextText}`;
 
-**DRAFT SOLUTION:**
+            const userPromptContent = `**DRAFT SOLUTION TO REVIEW:**
 ${draftSolution}
 
-**REVIEW SO FAR:**
+**REVIEW HISTORY:**
 ${this.renderTranscript(reviewTurns) || "(You are the first reviewer.)"}
 
 **RULES — NON-NEGOTIABLE:**
-- Hard limit: ${DISCUSSION_WORD_LIMIT} words. Stop mid-sentence if you must.
-- Flag one specific issue OR confirm one specific strength. Not both.
-- Address other reviewers by name if you're building on their point.
-- No preamble, no summaries. Just speak.
-- Only write <ready/> (nothing else) if the draft is solid and issues are covered.`;
+- Hard limit: ${DISCUSSION_WORD_LIMIT} words.
+- **SKEPTICISM**: Be extremely critical. Check if the solution actually works given the files in the context.
+- Flag one specific code-level issue OR confirm one specific strength.
+- Only write <ready/> if the draft is ready to be applied to the project.`;
 
             const response = await this.lollmsAPI.sendChat([
-                { role: 'system', content: systemPrompt }
-            ], null, signal, reviewer.model);
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPromptContent }
+            ], null, signal, reviewer.model, { thinking: false });
 
             const isReady = response.trim() === '<ready/>' || (response.includes('<ready/>') && response.replace(/<ready\/>/g, '').trim().length === 0);
             const content = this.truncateToWordLimit(response.replace(/<ready\/>/g, '').trim(), DISCUSSION_WORD_LIMIT);
@@ -566,6 +590,38 @@ ${this.renderTranscript(reviewTurns) || "(You are the first reviewer.)"}
         };
     }
 
+    private async generateScratchpad(participant: ResolvedParticipant, userPrompt: string, contextText: string, signal: AbortSignal): Promise<string> {
+        const systemPrompt = `${participant.prompt}
+
+You are about to join a group discussion. Before it begins, you must form a private opening position.
+
+### 📚 PROJECT CONTEXT (FILES & SKILLS)
+The following context contains the current files, their structure, and active coding skills/protocols:
+${contextText}`;
+
+        const taskPrompt = `**YOUR TASK:**
+Analyze the project context above and write your private opening position regarding this problem: "${userPrompt}"
+
+**RULES — NON-NEGOTIABLE:**
+- Hard limit: ${SCRATCHPAD_WORD_LIMIT} words.
+- State your technical angle and your single biggest concern based on the provided files.
+- No summaries or hedging. Pick a technical stance and defend it.
+- This is a private scratchpad. Be blunt.`;
+
+        try {
+            // We split system and user roles. 
+            // We explicitly pass { thinking: false } to avoid Ollama 500 errors on models that don't support reasoning tags.
+            let content = await this.lollmsAPI.sendChat([
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: taskPrompt }
+            ], null, signal, participant.model, { thinking: false });
+
+            return this.truncateToWordLimit(content.trim(), SCRATCHPAD_WORD_LIMIT);
+        } catch (error: any) {
+            return `*(error: ${error.message})*`;
+        }
+    }
+    
     private renderTranscript(turns: DiscussionTurn[]): string {
         if (turns.length === 0) return "";
         return turns.map(t => `**${t.participantName}:** ${t.content}`).join('\n\n');

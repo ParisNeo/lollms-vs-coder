@@ -1411,7 +1411,8 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                     promptText,
                     modelPool,
                     orchestrator,
-                    controller.signal
+                    controller.signal,
+                    this._discussionCapabilities
                 )
                 : null;
 
@@ -1444,7 +1445,8 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                     await this.updateMessageContent(herdMessageId, newContent); 
                 },
                 controller.signal,
-                this._currentDiscussion.messages
+                this._currentDiscussion.messages,
+                this._discussionCapabilities
             );
 
             if (!controller.signal.aborted && synthesisResult) {
@@ -3438,8 +3440,22 @@ Task:
                             <label class="switch"><input type="checkbox" id="cap-herdMode"><span class="slider"></span></label>
                             <label for="cap-herdMode"><strong>🐂 Herd Mode:</strong> Multiple agents brainstorm the answer.</label>
                         </div>
-                        <div id="herd-config-section" style="display:none; margin: 8px 0 0 40px;">
-                            <label style="font-size:11px;">Debate Rounds: <input type="number" id="cap-herdRounds" min="1" max="10" style="width:40px; padding:2px;"></label>
+                        <div id="herd-config-section" style="display:none; margin: 8px 0 0 40px; border-left: 2px solid var(--vscode-charts-purple); padding-left: 12px;">
+                            <div style="display:flex; flex-direction:column; gap:8px;">
+                                <label style="font-size:11px;">Debate Rounds: <input type="number" id="cap-herdRounds" min="1" max="10" style="width:40px; float:right;"></label>
+                                <label style="font-size:11px;">Brainstorm Agents: <input type="number" id="cap-herdPreCount" min="1" max="5" style="width:40px; float:right;"></label>
+                                <label style="font-size:11px;">Review Agents: <input type="number" id="cap-herdPostCount" min="1" max="5" style="width:40px; float:right;"></label>
+                            </div>
+                            
+                            <label style="font-size: 10px; font-weight: bold; margin-top: 10px; display: block; opacity: 0.7;">ACTIVE MODEL POOL</label>
+                            <div id="herd-models-list" style="max-height: 100px; overflow-y: auto; background: var(--vscode-input-background); border: 1px solid var(--vscode-input-border); padding: 4px; border-radius: 4px; margin-top: 4px;">
+                                <!-- Checkboxes injected here -->
+                            </div>
+
+                            <div class="checkbox-container" style="margin-top:8px; border:none; background:transparent; padding:0;">
+                                <label class="switch" style="width:24px; height:14px;"><input type="checkbox" id="cap-herdParallelGeneration"><span class="slider"></span></label>
+                                <label for="cap-herdParallelGeneration" style="font-size:11px; opacity:0.8;">Parallel Generation (Fast Servers)</label>
+                            </div>
                         </div>
                     </div>
 

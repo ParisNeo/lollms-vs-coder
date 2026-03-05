@@ -61,6 +61,7 @@ export interface DiscussionCapabilities {
     };
     gitWorkflow: boolean;
     herdMode: boolean;
+    herdParallelGeneration: boolean;
     thinkingMode: boolean;
     thinkingBudget?: number;
     herdOrchestratorModel?: string;
@@ -214,6 +215,9 @@ export const dom = {
 
     get capHerdMode() { return document.getElementById('cap-herdMode') as HTMLInputElement; },
     get capHerdRounds() { return document.getElementById('cap-herdRounds') as HTMLInputElement; },
+    get capHerdPreCount() { return document.getElementById('cap-herdPreCount') as HTMLInputElement; },
+    get capHerdPostCount() { return document.getElementById('cap-herdPostCount') as HTMLInputElement; },
+    get capHerdParallelGeneration() { return document.getElementById('cap-herdParallelGeneration') as HTMLInputElement; },
     get herdConfigSection() { return document.getElementById('herd-config-section') as HTMLDivElement; },
     get herdModelsList() { return document.getElementById('herd-models-list') as HTMLDivElement; },
 

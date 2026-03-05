@@ -501,6 +501,7 @@ export function initEventHandlers() {
                 },
                 gitWorkflow: dom.capGitWorkflow?.checked ?? false,
                 herdMode: dom.capHerdMode?.checked ?? false,
+                herdParallelGeneration: dom.capHerdParallelGeneration?.checked ?? false,
                 herdOrchestratorModel: dom.capHerdOrchestrator?.value || undefined,
                 herdParticipantModels: Array.from(dom.capHerdParticipants?.querySelectorAll('input:checked') || []).map((el: any) => el.value),
                 herdCriticEnabled: dom.capHerdCritic?.checked ?? false

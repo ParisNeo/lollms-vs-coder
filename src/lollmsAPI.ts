@@ -501,9 +501,12 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
         body = { 
             model, 
             messages: sanitizedMessages, 
-            stream,
-            think: isThinkingActive
+            stream
         };
+        // Only inject the 'think' key if explicitly requested to avoid 500 on standard models
+        if (isThinkingActive) {
+            body.think = true;
+        }
     } else if (backend === 'anthropic') {
         url = 'https://api.anthropic.com/v1/messages';
         headers = {

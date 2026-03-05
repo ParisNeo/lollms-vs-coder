@@ -95,6 +95,9 @@ export class DiscussionManager {
                 github: false
             },
             herdMode: false,
+            herdParallelGeneration: false,
+            herdPreAnswerCount: 3,
+            herdPostAnswerCount: 2,
             herdOrchestratorModel: undefined,
             herdParticipantModels: [],
             herdCriticEnabled: false,

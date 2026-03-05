@@ -63,11 +63,9 @@ export interface DiscussionCapabilities {
     herdMode: boolean;
     thinkingMode: boolean;
     thinkingBudget?: number;
-    herdDynamicMode: boolean;
-    herdParticipants: any[];
-    herdPreAnswerParticipants: any[];
-    herdPostAnswerParticipants: any[];
-    herdRounds: number;
+    herdOrchestratorModel?: string;
+    herdParticipantModels?: string[];
+    herdCriticEnabled?: boolean;
     agentMode: boolean;
     autoContextMode: boolean;
     autoSkillMode: boolean;

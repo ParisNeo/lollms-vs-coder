@@ -546,12 +546,6 @@ export class SettingsPanel {
                   ['enableCodeActions', this._pendingConfig.enableCodeActions],
                   ['enableInlineSuggestions', this._pendingConfig.enableInlineSuggestions],
                   ['mcpServers', parsedMcpServers],
-                  ['herdParticipants', this._pendingConfig.herdParticipants],
-                  ['herdPreAnswerParticipants', this._pendingConfig.herdPreAnswerParticipants],
-                  ['herdPostAnswerParticipants', this._pendingConfig.herdPostAnswerParticipants],
-                  ['herdRounds', this._pendingConfig.herdRounds],
-                  ['herdDynamicMode', this._pendingConfig.herdDynamicMode],
-                  ['herdDynamicModelPool', this._pendingConfig.herdDynamicModelPool],
                   ['git.deleteBranchAfterMerge', this._pendingConfig.deleteBranchAfterMerge],
                   ['git.unstagedChangesBehavior', this._pendingConfig.unstagedChangesBehavior],
                   ['systemEnv.showOs', this._pendingConfig.showOs],
@@ -702,11 +696,8 @@ export class SettingsPanel {
     const personalities = this._personalityManager.getPersonalities();
     
     const stateData = {
-        config: config,
-        personalities: this._personalityManager.getPersonalities(),
-        herdPre: config.herdPreAnswerParticipants || [],
-        herdPost: config.herdPostAnswerParticipants || [],
-        herdPool: config.herdDynamicModelPool || []
+config: config,
+personalities: this._personalityManager.getPersonalities()
     };
     
     const jsonState = JSON.stringify(stateData).replace(/</g, '\\u003c');
@@ -794,9 +785,7 @@ export class SettingsPanel {
               <button class="tab-link" onclick="openTab(event, 'TabAgent')">🤖 Agent & Tools</button>
               <button class="tab-link" onclick="openTab(event, 'TabRemote')">📡 Remote</button>
               <button class="tab-link" onclick="openTab(event, 'TabGit')">🐙 Git</button>
-              <button class="tab-link" onclick="openTab(event, 'TabHerd')">🐂 Herd Mode</button>
               <button class="tab-link" onclick="openTab(event, 'TabPersonas')">🎭 Personas</button>
-              <button class="tab-link" onclick="openTab(event, 'TabUser')">👤 User Info</button>
               <button class="tab-link" onclick="openTab(event, 'TabLog')">📋 Log</button>
             </div>
 
@@ -1340,8 +1329,6 @@ export class SettingsPanel {
                     safeSet('autoUpdateChangelog', config.autoUpdateChangelog, true);
                     safeSet('deleteBranchAfterMerge', config.deleteBranchAfterMerge, true);
                     safeSet('unstagedChangesBehavior', config.unstagedChangesBehavior);
-                    safeSet('herdDynamicMode', config.herdDynamicMode, true);
-                    safeSet('herdRounds', config.herdRounds);
                     safeSet('userInfoName', config.userInfoName);
                     safeSet('userInfoEmail', config.userInfoEmail);
                     safeSet('userInfoLicense', config.userInfoLicense);
@@ -1366,16 +1353,9 @@ export class SettingsPanel {
                     if(document.getElementById('remoteAllowedChannels') && Array.isArray(config.remoteAllowedChannels)) 
                         document.getElementById('remoteAllowedChannels').value = config.remoteAllowedChannels.join('\\n');
 
-                    const herdDynamic = document.getElementById('herdDynamicMode').checked;
-                    document.getElementById('static-herd-config').style.display = herdDynamic ? 'none' : 'block';
-                    document.getElementById('dynamic-herd-config').style.display = herdDynamic ? 'block' : 'none';
-                    
                     populateModelDropdown(document.getElementById('modelSelect'), config.modelName);
                     populateModelDropdown(document.getElementById('architectModelSelect'), config.architectModelName);
                     populateModelDropdown(document.getElementById('inspectorModelName'), config.inspectorModelName);
-                    renderParticipantsList('herd-pre-list', herdPre, 'herdPreAnswerParticipants');
-                    renderParticipantsList('herd-post-list', herdPost, 'herdPostAnswerParticipants');
-                    renderPoolList();
                     updatePersonaSelects();
                     renderProfiles(); // Init Profiles
                 

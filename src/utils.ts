@@ -98,12 +98,14 @@ export interface DiscussionCapabilities {
     };
     gitWorkflow: boolean;
     gitCommit?: boolean;
+    
+    // --- UPDATED HERD CONFIG ---
     herdMode: boolean;
-    herdDynamicMode: boolean;
-    herdParticipants: HerdParticipant[];
-    herdPreAnswerParticipants: HerdParticipant[];
-    herdPostAnswerParticipants: HerdParticipant[];
-    herdRounds: number;
+    herdOrchestratorModel?: string;      // The leader/planner model
+    herdParticipantModels?: string[];    // List of model names participating
+    herdCriticEnabled?: boolean;         // Optional critique step
+    // ---------------------------
+
     agentMode: boolean;
     autoContextMode: boolean;
     autoSkillMode: boolean;
@@ -484,4 +486,67 @@ export function stripThinkingTags(responseText: string): string {
 export function extractAndStripMemory(responseText: string): { content: string, memory: string | null } {
     const match = responseText.match(/<memory>([\s\S]*?)<\/memory>/);
     return match ? { content: responseText.replace(match[0], '').trim(), memory: match[1].trim() } : { content: responseText, memory: null };
+}
+
+export interface DiscussionCapabilities {
+    generationFormats: {
+        fullFile: boolean;
+        partialFormat: 'aider' | 'diff';
+    };
+    autoApply: boolean;
+    autoFix: boolean;
+    autoBranch: boolean;
+    maxFixRetries: number;
+    thinkingMode: boolean;
+    thinkingBudget?: number;
+    forceFullCode: boolean;
+    allowedFormats: {
+        fullFile: boolean;
+        insert: boolean;
+        replace: boolean;
+        delete: boolean;
+    };
+    responseProfileId: string;
+    explainCode: boolean;
+    addPedagogicalInstruction: boolean;
+    forceFullCodePath: boolean;
+    fileRename: boolean;
+    fileDelete: boolean;
+    fileSelect: boolean;
+    fileReset: boolean;
+    imageGen: boolean;
+    webSearch: boolean;
+    distillWebResults: boolean;
+    antiPromptInjection: boolean;
+    searchInCacheFirst: boolean;
+    searchSources: {
+        google: boolean;
+        arxiv: boolean;
+        wikipedia: boolean;
+        stackoverflow: boolean;
+        youtube: boolean;
+        github: boolean;
+    };
+    gitWorkflow: boolean;
+    gitCommit?: boolean;
+    
+    // --- UPDATED HERD CONFIG ---
+    herdMode: boolean;
+    herdOrchestratorModel?: string;      // The leader/planner model
+    herdParticipantModels?: string[];    // List of model names participating
+    herdCriticEnabled?: boolean;         // Optional critique step
+    // ---------------------------
+
+    agentMode: boolean;
+    autoContextMode: boolean;
+    autoSkillMode: boolean;
+    contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
+    disableProjectContext: boolean;
+    guiState?: {
+        agentBadge: boolean;
+        autoContextBadge: boolean;
+        herdBadge: boolean;
+        webSearchBadge?: boolean;
+        autoSkillBadge?: boolean;
+    };
 }

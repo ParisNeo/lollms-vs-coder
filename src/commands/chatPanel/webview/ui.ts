@@ -313,6 +313,17 @@ export function updateBadges() {
     const caps = state.capabilities;
     const guiState = caps.guiState || { agentBadge: true, autoContextBadge: true, herdBadge: true, webSearchBadge: true };
 
+    // Initialize capability UI elements
+    if (dom.capHerdMode) dom.capHerdMode.checked = caps.herdMode || false;
+    if (dom.capHerdRounds) dom.capHerdRounds.value = caps.herdRounds?.toString() || '2';
+    if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = !!caps.agentMode;
+    if (dom.autoContextCheckbox) dom.autoContextCheckbox.checked = !!caps.autoContextMode;
+    if (dom.contextAggressionSelect) dom.contextAggressionSelect.value = caps.contextAggression || 'respect';
+    if (dom.herdModeCheckbox) dom.herdModeCheckbox.checked = !!caps.herdMode;
+    if (dom.herdConfigSection) {
+        dom.herdConfigSection.style.display = caps.herdMode ? 'block' : 'none';
+    }
+
     // Response Profile Badge (Mode)
     const currentProfileId = caps.responseProfileId || 'balanced';
     const currentProfile = state.profiles.find(p => p.id === currentProfileId) || state.profiles[0];

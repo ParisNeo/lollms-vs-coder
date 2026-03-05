@@ -1381,51 +1381,102 @@ Please provide the **FULL CONTENT** of the file instead using the format:
     };
 
     if (this._discussionCapabilities.herdMode && this.herdManager) {
-        this.processManager.updateDescription(processId, "Multi-Agent Brainstorming...");
+        this.processManager.updateDescription(processId, "🐂 Planning herd...");
         this.updateGeneratingState();
 
-        let preParticipants = this._discussionCapabilities.herdPreAnswerParticipants;
-        let postParticipants = this._discussionCapabilities.herdPostAnswerParticipants;
-        const leaderModel = this._currentDiscussion.model || this._lollmsAPI.getModelName();
-        const dynamicMode = config.get<boolean>('herdDynamicMode') || false;
-        
-        if (dynamicMode) {
-             const modelPool = config.get<any[]>('herdDynamicModelPool') || [];
-             if (modelPool.length > 0) {
-                 const herdMessageId = 'herd_plan_' + Date.now();
-                 await this.addMessageToDiscussion({ id: herdMessageId, role: 'system', content: `### 🐂  Recruiting Agents...\n\n`, skipInPrompt: true });
-                 const plan = await this.herdManager.planDynamicHerd(typeof message.content === 'string' ? message.content : "Task", modelPool, leaderModel, controller.signal);
-                 if (plan) {
-                     preParticipants = plan.pre;
-                     postParticipants = plan.post;
-                     await this.updateMessageContent(herdMessageId, `### ✨  Herd Assembled\n\n**Pre-Code:** ${plan.pre.map(p => p.name).join(', ')}\n**Post-Code:** ${plan.post.map(p => p.name).join(', ')}`);
-                 }
-             }
-        }
-
         try {
-            const promptText = typeof message.content === 'string' ? message.content : 'User rich content.';
+            const promptText = typeof message.content === 'string' 
+                ? message.content : 'User rich content.';
             const herdMessageId = 'herd_log_' + Date.now();
-            await this.addMessageToDiscussion({ id: herdMessageId, role: 'system', content: `### 🐂 Herd Mode Initializing...\n\n`, skipInPrompt: true });
-            const synthesisResult = await this.herdManager.run(promptText, preParticipants, postParticipants, this._discussionCapabilities.herdRounds || 2, leaderModel, contextData.text, (status) => {
-                this._panel.webview.postMessage({ command: 'updateStatus', status });
-            }, async (newContent) => { await this.updateMessageContent(herdMessageId, newContent); }, controller.signal, this._currentDiscussion.messages );
+
+            const orchestrator = this._discussionCapabilities.herdOrchestratorModel 
+                || this._currentDiscussion.model 
+                || this._lollmsAPI.getModelName();
+
+            const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+            const modelPool = config.get<any[]>('herdDynamicModelPool') || [];
+            const maxRounds = this._discussionCapabilities.herdRounds || 3;
+
+            await this.addMessageToDiscussion({ 
+                id: herdMessageId, 
+                role: 'system', 
+                content: `### 🐂 Herd Discussion\n\n*Planning team...*`, 
+                skipInPrompt: true 
+            });
+
+            // Always plan first — this assigns personas to models
+            this.processManager.updateDescription(processId, "🐂 Assembling team...");
+            const plan = modelPool.length > 0
+                ? await this.herdManager.planDynamicHerd(
+                    promptText,
+                    modelPool,
+                    orchestrator,
+                    controller.signal
+                )
+                : null;
+
+            // plan is null only if modelPool was empty — use empty arrays and
+            // let herdManager's fallback archetypes kick in via buildFallbackHerd.
+            // But buildFallbackHerd needs a pool, so if pool is empty we warn.
+            if (!plan) {
+                await this.updateMessageContent(herdMessageId, 
+                    `### 🐂 Herd Discussion\n\n❌ No model pool configured. Add models to \`lollmsVsCoder.herdDynamicModelPool\` in settings.`
+                );
+                this.processManager.unregister(processId);
+                this.updateGeneratingState();
+                return;
+            }
+
+            this.processManager.updateDescription(processId, "🐂 Herd thinking...");
+
+            const synthesisResult = await this.herdManager.run(
+                promptText,
+                plan.pre,                   // brainstorming participants (with personas)
+                plan.post,                  // review participants (with personas)
+                maxRounds,
+                orchestrator,
+                contextData.text,
+                (status: string) => {
+                    this.processManager.updateDescription(processId, status);
+                    this.updateGeneratingState();
+                },
+                async (newContent: string) => { 
+                    await this.updateMessageContent(herdMessageId, newContent); 
+                },
+                controller.signal,
+                this._currentDiscussion.messages
+            );
 
             if (!controller.signal.aborted && synthesisResult) {
-                const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities);
                 const assistantMessageId = 'assistant_' + Date.now().toString();
-                this._panel.webview.postMessage({ command: 'addMessage', message: { id: assistantMessageId, role: 'assistant', content: '', startTime: Date.now(), model: leaderModel } });
-                let fullResponse = '';
-                await this._lollmsAPI.sendChat([{ role: 'system', content: systemPrompt }, ...this._currentDiscussion.messages.filter(m => !m.skipInPrompt), { role: 'user', content: synthesisResult }], (chunk) => {
-                    fullResponse += chunk;
-                    this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk });
-                }, controller.signal, leaderModel);
-                await this.addMessageToDiscussion({ id: assistantMessageId, role: 'assistant', content: fullResponse, model: leaderModel }, false);
-                this._panel.webview.postMessage({ command: 'finalizeMessage', id: assistantMessageId, fullContent: fullResponse });
+                await this.addMessageToDiscussion({ 
+                    id: assistantMessageId, 
+                    role: 'assistant', 
+                    content: synthesisResult, 
+                    model: orchestrator 
+                }, true);
+
+                if (!this._isDisposed) {
+                    this._panel.webview.postMessage({ 
+                        command: 'finalizeMessage', 
+                        id: assistantMessageId, 
+                        fullContent: synthesisResult 
+                    });
+                }
             }
-        } catch (error: any) { if (error.name !== 'AbortError') this.addMessageToDiscussion({ role: 'system', content: `Herd Error: ${error.message}` }); }
-        finally { this.processManager.unregister(processId); this.updateGeneratingState(); this.updateContextAndTokens(); }
-        return; 
+        } catch (error: any) { 
+            if (error.name !== 'AbortError') {
+                this.addMessageToDiscussion({ 
+                    role: 'system', 
+                    content: `Herd Error: ${error.message}` 
+                }); 
+            }
+        } finally { 
+            this.processManager.unregister(processId); 
+            this.updateGeneratingState(); 
+            this.updateContextAndTokens(); 
+        }
+        return;
     }
 
     let assistantMessageId = '';

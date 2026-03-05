@@ -501,7 +501,9 @@ export function initEventHandlers() {
                 },
                 gitWorkflow: dom.capGitWorkflow?.checked ?? false,
                 herdMode: dom.capHerdMode?.checked ?? false,
-                herdRounds: parseInt(dom.capHerdRounds?.value || "2", 10)
+                herdOrchestratorModel: dom.capHerdOrchestrator?.value || undefined,
+                herdParticipantModels: Array.from(dom.capHerdParticipants?.querySelectorAll('input:checked') || []).map((el: any) => el.value),
+                herdCriticEnabled: dom.capHerdCritic?.checked ?? false
             };
             vscode.postMessage({ command: 'updateDiscussionCapabilities', capabilities: caps });
             dom.discussionToolsModal.classList.remove('visible');

@@ -61,11 +61,6 @@ export class DiscussionManager {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const allowedFormats = config.get<any>('allowedFileFormats') || { fullFile: true, insert: false, replace: false, delete: false };
         
-        const herdPreAnswerParticipants = config.get<HerdParticipant[]>('herdPreAnswerParticipants') || [];
-        const herdPostAnswerParticipants = config.get<HerdParticipant[]>('herdPostAnswerParticipants') || [];
-        const herdRounds = config.get<number>('herdRounds') || 2;
-        const herdDynamicMode = config.get<boolean>('herdDynamicMode') || false;
-        
         // Load default profile ID from config
         const defaultProfileId = config.get<string>('defaultResponseProfileId') || 'balanced';
 
@@ -100,11 +95,9 @@ export class DiscussionManager {
                 github: false
             },
             herdMode: false,
-            herdDynamicMode: herdDynamicMode,
-            herdParticipants: [], 
-            herdPreAnswerParticipants: herdPreAnswerParticipants,
-            herdPostAnswerParticipants: herdPostAnswerParticipants,
-            herdRounds: herdRounds,
+            herdOrchestratorModel: undefined,
+            herdParticipantModels: [],
+            herdCriticEnabled: false,
             agentMode: false,
             autoContextMode: false, 
             autoSkillMode: false,

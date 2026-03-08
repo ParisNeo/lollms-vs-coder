@@ -278,61 +278,120 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         if (!workspaceFolder) return;
 
-        // 1. Scan for errors directly from the service
         const allDiagnostics = vscode.languages.getDiagnostics();
-        const urisWithErrors: vscode.Uri[] = [];
+        const discoveryData: { path: string, uri: vscode.Uri, errors: any[] }[] = [];
+
         for (const [uri, diagnostics] of allDiagnostics) {
-            if (diagnostics.some(d => d.severity === vscode.DiagnosticSeverity.Error)) {
-                if (uri.fsPath.startsWith(workspaceFolder.uri.fsPath)) urisWithErrors.push(uri);
+            const errors = diagnostics.filter(d => d.severity === vscode.DiagnosticSeverity.Error);
+            if (errors.length > 0 && uri.fsPath.startsWith(workspaceFolder.uri.fsPath)) {
+                const doc = await vscode.workspace.openTextDocument(uri);
+                discoveryData.push({
+                    path: vscode.workspace.asRelativePath(uri),
+                    uri: uri,
+                    errors: errors.map(e => ({
+                        line: e.range.start.line + 1,
+                        message: e.message,
+                        snippet: doc.lineAt(e.range.start.line).text.trim()
+                    }))
+                });
             }
         }
 
-        if (urisWithErrors.length === 0) {
+        if (discoveryData.length === 0) {
             vscode.window.showInformationMessage("🎉 No errors found in the workspace!");
             return;
         }
 
-        // 2. Launch the dedicated UI immediately
         const autoUI = AutomationPanel.createOrShow(services.extensionUri);
-        const { id: processId, controller } = services.processManager.register("global-repair", `Repairing ${urisWithErrors.length} files...`);
+        
+        // Provide immediate feedback and send discovery data to unhide the UI
+        autoUI.updateOverallProgress(0, "Select errors to repair...");
+        autoUI.showDiscovery(discoveryData);
 
-        autoUI.onDidCancel(() => {
-            services.processManager.cancel(processId);
-            autoUI.dispose();
+        // Wait for Start signal from UI with specific error line selections
+        const selections: Record<string, number[]> = await new Promise((resolve) => {
+            const disposable = autoUI['_panel'].webview.onDidReceiveMessage(msg => {
+                if (msg.command === 'start') {
+                    disposable.dispose();
+                    resolve(msg.selections);
+                }
+            });
         });
 
-        // 3. Run the logic using shared services (No ChatPanel needed)
+        const selectedFiles = Object.keys(selections);
+        const { id: processId, controller } = services.processManager.register("global-repair", `Repairing ${selectedFiles.length} files...`);
+        autoUI.onDidCancel(() => { services.processManager.cancel(processId); autoUI.dispose(); });
+
+        // Handle Export Request from Webview
+        const exportDisposable = autoUI['_panel'].webview.onDidReceiveMessage(async msg => {
+            if (msg.command === 'export') {
+                const data = msg.data;
+                let report = `# 🛠️ Lollms Workspace Repair Report\n`;
+                report += `**Started:** ${data.startTime}\n\n`;
+                
+                report += `## 🔍 Initial Discovery\n`;
+                data.discovery.forEach((f: any) => {
+                    report += `### File: ${f.path}\n`;
+                    f.errors.forEach((e: any) => report += `- [Line ${e.line}] ${e.message}\n`);
+                });
+
+                report += `\n## ⏳ Execution Timeline\n`;
+                data.timeline.forEach((t: any) => {
+                    report += `### [${t.timestamp}] ${t.file}\n`;
+                    report += `**Action:** ${t.details} (${t.status.toUpperCase()})\n`;
+                    if (t.reasoning) report += `**Reasoning:**\n> ${t.reasoning.replace(/\n/g, '\n> ')}\n\n`;
+                });
+
+                report += `\n## 📋 System Logs\n\`\`\`\n`;
+                data.systemLogs.forEach((l: any) => report += `[${l.timestamp}] ${l.message}\n`);
+                report += `\`\`\`\n`;
+
+                const doc = await vscode.workspace.openTextDocument({ content: report, language: 'markdown' });
+                await vscode.window.showTextDocument(doc);
+                vscode.window.showInformationMessage("Repair log exported to a new editor tab.");
+            }
+        });
+
         const sharedCache = new Map<string, string>();
         
         try {
             let filesProcessed = 0;
-            for (const uri of urisWithErrors) {
+            for (const relPath of selectedFiles) {
                 if (controller.signal.aborted) break;
                 filesProcessed++;
-                const progress = Math.round((filesProcessed / urisWithErrors.length) * 100);
-                const relPath = vscode.workspace.asRelativePath(uri);
-                const initialDiags = vscode.languages.getDiagnostics(uri).filter(d => d.severity === vscode.DiagnosticSeverity.Error);
+                const uri = vscode.Uri.joinPath(workspaceFolder.uri, relPath);
+                const progress = Math.round((filesProcessed / selectedFiles.length) * 100);
+                const selectedLines = selections[relPath] || [];
+                const initialDiags = vscode.languages.getDiagnostics(uri).filter(d => 
+                    d.severity === vscode.DiagnosticSeverity.Error && selectedLines.includes(d.range.start.line + 1)
+                );
 
-                services.processManager.updateDescription(processId, `Repairing ${relPath} (${filesProcessed}/${urisWithErrors.length})`);
+                if (initialDiags.length === 0) continue;
+
+                services.processManager.updateDescription(processId, `Repairing ${relPath} (${filesProcessed}/${selectedFiles.length})`);
                 autoUI.updateOverallProgress(progress, `Processing ${relPath}...`);
                 autoUI.updateFileProgress(relPath, 'scanning', `Scanning file...`, { errorsCount: initialDiags.length });
 
                 let hasFixed = false;
                 let retries = 0;
                 const max = 3; 
+                let extraNudge = "";
 
                 while (retries < max && !hasFixed) {
                     if (controller.signal.aborted) break;
                     retries++;
 
                     const doc = await vscode.workspace.openTextDocument(uri);
-                    const errorLog = initialDiags.map(d => `[Line ${d.range.start.line + 1}] ${d.message}`).join('\n');
+                    // Use initialDiags + extraNudge to prevent polluting the diagnostics objects which lack 'range'
+                    const errorLog = initialDiags.map(d => `[Line ${d.range.start.line + 1}] ${d.message}`).join('\n') + extraNudge;
                     const cacheText = Array.from(sharedCache.entries()).map(([p,c]) => `--- ${p} ---\n${c}`).join('\n');
 
                     const systemPrompt = await getProcessedSystemPrompt('surgical_agent');
                     const userPrompt = `### REPAIR TASK\nFile: ${relPath}\n\nErrors:\n${errorLog}\n\nContent:\n${doc.getText()}\n\nShared Knowledge:\n${cacheText}`;
 
-                    autoUI.updateFileProgress(relPath, 'fixing', `Analyzing errors & dependencies (Attempt ${retries}/${max})...`);
+                    autoUI.updateFileProgress(relPath, 'fixing', `Analyzing errors & dependencies (Attempt ${retries}/${max})...`, {
+                        scratchpad: "Preparing prompt and context..."
+                    });
                     autoUI.log(`Sending request to LLM for ${relPath}...`);
                     
                     let rawResponse = "";
@@ -349,56 +408,110 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
                         break; 
                     }
 
-                    autoUI.log(`Response received (${rawResponse.length} chars). Parsing intent...`);
+                    autoUI.log(`Response received (${rawResponse.length} chars). Processing...`);
 
-                    // 🧠 Data Extraction for UI
-                    const thinkMatch = rawResponse.match(/<(?:think|thinking|scratchpad)>([\s\S]*?)<\//i);
-                    const scratchpad = thinkMatch ? thinkMatch[1].trim() : "No internal scratchpad provided.";
-                    const cleanResponse = stripThinkingTags(rawResponse);
+                    // 🧠 Robust Reasoning Extraction
+                    let scratchpad = "";
+                    
+                    // 1. Try extracting from common thinking tags (R1, o1, Claude 3.7 style)
+                    const thinkMatch = rawResponse.match(/<(?:think|thinking|analysis|reasoning)>([\s\S]*?)<\/\1>/i);
+                    if (thinkMatch) {
+                        scratchpad = thinkMatch[1].trim();
+                    }
+
+                    let cleanResponse = stripThinkingTags(rawResponse);
+                    let parsedAction: any = null;
+
+                    // 2. Try extracting from JSON scratchpad (Standard Agent models)
+                    try {
+                        const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
+                        if (jsonMatch) {
+                            parsedAction = JSON.parse(jsonMatch[0]);
+                            if (parsedAction.scratchpad) {
+                                // If we already have <think> content, append the scratchpad to it
+                                scratchpad = scratchpad ? `${scratchpad}\n\n---\n${parsedAction.scratchpad}` : parsedAction.scratchpad;
+                            }
+                        }
+                    } catch (e) {}
+
+                    if (!scratchpad) scratchpad = "AI provided a solution directly without a separate reasoning step.";
+
+                    // Update UI with the actual reasoning
+                    autoUI.updateFileProgress(relPath, 'fixing', `Analysis complete.`, { 
+                        scratchpad 
+                    });
 
                     // 🎯 Tool/Decision Detection
-                    if (cleanResponse.includes('"tool"')) {
-                        try {
-                            const action = JSON.parse(cleanResponse.match(/\{[\s\S]*\}/)![0]);
-                            if (action.tool === 'read_files') {
-                                const paths = action.params.paths || [];
-                                autoUI.updateFileProgress(relPath, 'scanning', `Expanding Context...`, { 
-                                    scratchpad, decision: `The agent decided it needs to read: ${paths.join(', ')} before fixing.` 
-                                });
-                                autoUI.log(`Tool call: read_files -> ${paths.join(', ')}`);
-                                for(const p of paths) {
-                                    autoUI.log(`Peeking at ${p}...`);
-                                    const content = await services.contextManager.readSpecificFiles([p]);
-                                    sharedCache.set(p, content);
-                                }
-                                autoUI.log(`Context expanded with ${paths.length} files. Retrying fix with new knowledge.`);
-                                continue; 
+                    if (parsedAction && parsedAction.tool) {
+                        try{
+                            if (parsedAction.tool === 'read_files') {
+                                    const paths = parsedAction.params.paths || [];
+                                    autoUI.updateFileProgress(relPath, 'scanning', `Expanding Context...`, { 
+                                        scratchpad, decision: `The agent decided it needs to read: ${paths.join(', ')} before fixing.` 
+                                    });
+                                    autoUI.log(`Tool call: read_files -> ${paths.join(', ')}`);
+                                    for(const p of paths) {
+                                        autoUI.log(`Peeking at ${p}...`);
+                                        const content = await services.contextManager.readSpecificFiles([p]);
+                                        sharedCache.set(p, content);
+                                    }
+                                    autoUI.log(`Context expanded with ${paths.length} files. Retrying fix with new knowledge.`);
+                                    continue; 
                             }
                         } catch(e) {}
                     }
 
+                    // 📝 Pre-process response to ensure AIDER markers are at start of lines
+                    // Remove markdown fences that wrap the markers
+                    // Check for JSON tools first
+                    const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
+                    if (jsonMatch) {
+                        try { parsedAction = JSON.parse(jsonMatch[0]); } catch (e) {}
+                    }
+
+                    // Pre-process response to ensure AIDER markers are at start of lines
+                    let processedPatch = cleanResponse
+                        .replace(/^```\w*\n/gm, '')
+                        .replace(/\n```$/gm, '');
+
+                    const aiderCount = (processedPatch.match(/<<<<<<< SEARCH/g) || []).length;
+
+                    // VALIDATION: If neither a tool nor an Aider block is found, the AI just "talked"
+                    if (aiderCount === 0 && (!parsedAction || !parsedAction.tool)) {
+                        autoUI.log(`❌ ERROR: AI provided dialogue instead of an action. Nudging...`);
+                        // Set nudge for next prompt instead of polluting initialDiags array (prevents "reading 'start'" crash)
+                        extraNudge = "\nSTRICT INSTRUCTION: You previously provided an explanation. You MUST provide actual AIDER SEARCH/REPLACE blocks now.";
+                        continue; 
+                    }
+                    extraNudge = ""; // Reset if valid output received
+
+                    autoUI.log(`Found ${aiderCount} Aider blocks in response.`);
+
                     // 📝 Apply Aider Patch
-                    autoUI.updateFileProgress(relPath, 'fixing', `Decision: Applying repair patch`, { 
-                        scratchpad, patch: cleanResponse.substring(0, 1000) + (cleanResponse.length > 1000 ? '...' : '') 
+                    autoUI.updateFileProgress(relPath, 'fixing', `Applying ${aiderCount} surgical patches...`, { 
+                        scratchpad, patch: processedPatch.substring(0, 1000) + (processedPatch.length > 1000 ? '...' : '') 
                     });
 
-                    await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', relPath, cleanResponse, undefined, undefined, { silent: true });
+                    await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', relPath, processedPatch, undefined, undefined, { silent: true });
 
                     // 🔍 Verification
                     await new Promise(r => setTimeout(r, 2500));
                     const currentDiags = vscode.languages.getDiagnostics(uri).filter(d => d.severity === vscode.DiagnosticSeverity.Error);
 
                     if (currentDiags.length === 0) {
-                        autoUI.updateFileProgress(relPath, 'success', `File is now clean! All errors fixed.`);
+                        autoUI.updateFileProgress(relPath, 'success', `File is now clean! All errors fixed.`, { scratchpad: "Verification passed: 0 errors remaining." });
                         hasFixed = true;
                     } else {
-                        autoUI.updateFileProgress(relPath, 'error', `Still contains ${currentDiags.length} errors after attempt.`);
+                        autoUI.updateFileProgress(relPath, 'error', `Still contains ${currentDiags.length} errors after attempt.`, { 
+                            scratchpad: `The previous patch failed to resolve all issues.\nRemaining Errors:\n${currentDiags.map(d => `[L${d.range.start.line+1}] ${d.message}`).join('\n')}` 
+                        });
                     }
                 }
             }
             autoUI.updateOverallProgress(100, `Workspace repair finished.`);
         } finally {
             services.processManager.unregister(processId);
+            exportDisposable.dispose();
         }
     }));
 

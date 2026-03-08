@@ -282,23 +282,28 @@ export function initEventHandlers() {
 
     if (dom.fileSearchInput) {
         let searchTimeout: any;
+        const triggerSearch = () => {
+            const query = dom.fileSearchInput.value.trim();
+            const mode = (document.querySelector('input[name="search-mode"]:checked') as HTMLInputElement)?.value || 'path';
+            if (query) {
+                vscode.postMessage({ command: 'requestFileSearch', query, mode });
+            }
+        };
+
         dom.fileSearchInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
-                const query = dom.fileSearchInput.value.trim();
-                if (query) {
-                    vscode.postMessage({ command: 'requestFileSearch', query });
-                }
+                triggerSearch();
             }
         });
 
         dom.fileSearchInput.addEventListener('input', () => {
             clearTimeout(searchTimeout);
             const query = dom.fileSearchInput.value.trim();
-            // Real-time search for long queries, or wait for Enter for wildcards
-            if (query.length > 2 && !query.includes('*')) {
-                searchTimeout = setTimeout(() => {
-                    vscode.postMessage({ command: 'requestFileSearch', query });
-                }, 400);
+            const mode = (document.querySelector('input[name="search-mode"]:checked') as HTMLInputElement)?.value || 'path';
+            
+            // Real-time search only for filename mode. Content search is too heavy for every keystroke.
+            if (mode === 'path' && query.length > 2 && !query.includes('*')) {
+                searchTimeout = setTimeout(triggerSearch, 400);
             }
         });
     }
@@ -373,8 +378,8 @@ export function initEventHandlers() {
     
     if (dom.refreshModelsBtn) {
         dom.refreshModelsBtn.addEventListener('click', () => {
-            const icon = dom.refreshModelsBtn.querySelector('.codicon');
-            if(icon) icon.classList.add('spin');
+            const iconEl = dom.refreshModelsBtn.querySelector('.codicon');
+            if(iconEl) iconEl.classList.add('spin');
             vscode.postMessage({ command: 'refreshModels' });
         });
     }
@@ -699,28 +704,28 @@ export function initEventHandlers() {
                 return;
             }
 
-            const btn = target.closest('.save-skill-btn') as HTMLButtonElement;
-            if (btn) {
-                const content = btn.dataset.content || '';
-                const scope = btn.dataset.scope as 'global' | 'local';
-                const title = btn.dataset.title || '';
-                const desc = btn.dataset.description || '';
-                const cat = btn.dataset.category || '';
+            const skillBtn = target.closest('.save-skill-btn') as HTMLButtonElement;
+            if (skillBtn) {
+                const content = skillBtn.dataset.content || '';
+                const scope = skillBtn.dataset.scope as 'global' | 'local';
+                const title = skillBtn.dataset.title || '';
+                const desc = skillBtn.dataset.description || '';
+                const cat = skillBtn.dataset.category || '';
                 
                 // Call the globally defined handler in main.ts
                 if (typeof (window as any).saveSkill === 'function') {
                     (window as any).saveSkill(content, scope, title, desc, cat);
                     
                     // Provide immediate visual feedback
-                    const originalHtml = btn.innerHTML;
-                    btn.disabled = true;
-                    btn.classList.add('success');
-                    btn.innerHTML = '<span class="codicon codicon-check"></span> Saved';
+                    const originalHtml = skillBtn.innerHTML;
+                    skillBtn.disabled = true;
+                    skillBtn.classList.add('success');
+                    skillBtn.innerHTML = '<span class="codicon codicon-check"></span> Saved';
                     
                     setTimeout(() => {
-                        btn.innerHTML = originalHtml;
-                        btn.classList.remove('success');
-                        btn.disabled = false;
+                        skillBtn.innerHTML = originalHtml;
+                        skillBtn.classList.remove('success');
+                        skillBtn.disabled = false;
                     }, 2000);
                 }
             }

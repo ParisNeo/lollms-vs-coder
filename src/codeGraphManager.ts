@@ -10,6 +10,7 @@ export type GraphNode = {
     docstring?: string;
     methods?: string[];
     attributes?: string[];
+    signature?: string; // New field for function/method signatures
 };
 
 export type GraphEdge = {
@@ -171,15 +172,23 @@ export class CodeGraphManager {
                         if (!trimmed) return;
                         const indent = line.search(/\S/);
 
-                        const fnMatch = line.match(/function\s+([a-zA-Z0-9_]+)/);
-                        if (fnMatch && !currentClass) {
+                        // Improved Regex to capture signature (parameters and return types)
+                        const fnMatch = line.match(/(?:async\s+)?function\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*:\s*([^\{]+))?/);
+                        const pyMatch = line.match(/^\s*def\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?\s*:/);
+
+                        if ((fnMatch || pyMatch) && !currentClass) {
+                            const name = fnMatch ? fnMatch[1] : pyMatch![1];
+                            const args = fnMatch ? fnMatch[2] : pyMatch![2];
+                            const ret = fnMatch ? (fnMatch[3] || 'any') : (pyMatch![3] || 'None');
+                            
                             const fnNodeId = `fn_${nodeId++}`;
                             nodes.push({
                                 id: fnNodeId,
-                                label: fnMatch[1],
+                                label: name,
                                 type: 'function',
                                 filePath: relativePath,
-                                startLine: index
+                                startLine: index,
+                                signature: `${name}(${args.trim()}) -> ${ret.trim()}`
                             });
                             edges.push({ id: `edge_${edgeId++}`, source: fileNodeId, target: fnNodeId, label: 'contains' });
                         }
@@ -222,18 +231,18 @@ export class CodeGraphManager {
                             if (currentClass) {
                                 let methodMatch;
                                 if (ext === 'py') {
-                                    methodMatch = line.match(/^\s+def\s+([a-zA-Z0-9_]+)/);
-                                } else {
-                                    methodMatch = line.match(/(?:public|private|protected|static|\s)*\s+([a-zA-Z0-9_]+)\s*\(/);
-                                    if (methodMatch && ['if', 'for', 'while', 'switch', 'catch', 'constructor'].includes(methodMatch[1])) {
-                                        methodMatch = null;
+                                    // Capture full Python method signature
+                                    methodMatch = line.match(/^\s+def\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?\s*:/);
+                                    if (methodMatch) {
+                                        const sig = `${methodMatch[1]}(${methodMatch[2].trim()}) -> ${methodMatch[3]?.trim() || 'None'}`;
+                                        currentClass.methods?.push(sig);
                                     }
-                                }
-
-                                if (methodMatch) {
-                                    const methodName = methodMatch[1];
-                                    if (!methodName.startsWith('__')) {
-                                        currentClass.methods?.push(methodName);
+                                } else {
+                                    // Capture TS/JS method signature
+                                    methodMatch = line.match(/(?:public|private|protected|static|async|\s)*\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*:\s*([^\{]+))?/);
+                                    if (methodMatch && !['if', 'for', 'while', 'switch', 'catch', 'constructor'].includes(methodMatch[1])) {
+                                        const sig = `${methodMatch[1]}(${methodMatch[2].trim()}) : ${methodMatch[3]?.trim() || 'any'}`;
+                                        currentClass.methods?.push(sig);
                                     }
                                 }
 
@@ -290,30 +299,70 @@ export class CodeGraphManager {
                 }
             }
 
-            // --- PASS 3: Inheritance (Optional, lighter check) ---
-            const inheritancePattern = /class\s+([a-zA-Z0-9_]+)(?:\s*(?:extends|\()\s*([a-zA-Z0-9_.]+))?/g;
+            // --- PASS 3: Function Calls & References (Links) ---
+            const allSymbols = nodes.filter(n => n.type === 'function' || n.type === 'class');
+            
             for (let i = 0; i < files.length; i++) {
                 if (signal.aborted) return;
+                const file = files[i];
+                const normalizedPath = vscode.workspace.asRelativePath(file).replace(/\\/g, '/');
+                const fileNodeId = fileNodeMap.get(normalizedPath);
+                if (!fileNodeId) continue;
 
-                // Yield again
-                if (i % 50 === 0) {
-                    await new Promise(resolve => setTimeout(resolve, 0));
-                }
+                try {
+                    const doc = await vscode.workspace.openTextDocument(file);
+                    const text = doc.getText();
+                    
+                    // For every known symbol in the project, check if this file calls it
+                    for (const symbol of allSymbols) {
+                        // Avoid self-references or linking a file to its own children via 'calls'
+                        if (symbol.filePath === normalizedPath) continue;
+
+                        // Use a word-boundary regex to find the function/class name in the text
+                        const callRegex = new RegExp(`\\b${symbol.label}\\s*\\(`, 'g');
+                        if (callRegex.test(text)) {
+                            edges.push({
+                                id: `call_${edgeId++}`,
+                                source: fileNodeId,
+                                target: symbol.id,
+                                label: 'calls'
+                            });
+                        }
+                    }
+                } catch {}
+            }
+
+            // --- PASS 4: Inheritance Parsing ---
+            // TS/JS: class Child extends Parent
+            // Python: class Child(Parent)
+            const jsInheritance = /class\s+([a-zA-Z0-9_]+)\s+extends\s+([a-zA-Z0-9_.]+)/g;
+            const pyInheritance = /class\s+([a-zA-Z0-9_]+)\s*\(\s*([a-zA-Z0-9_.]+)\s*\)/g;
+
+            for (let i = 0; i < files.length; i++) {
+                if (signal.aborted) return;
+                if (i % 50 === 0) await new Promise(resolve => setTimeout(resolve, 0));
                 
                 try {
                     const file = files[i];
+                    const ext = path.extname(file.fsPath).toLowerCase();
                     const doc = await vscode.workspace.openTextDocument(file);
-                    
-                    if (doc.getText().length > 500000) continue;
-
                     const text = this.stripCommentsAndStrings(doc.getText());
+
                     let match;
-                    while ((match = inheritancePattern.exec(text)) !== null) {
+                    const regex = (ext === '.py') ? pyInheritance : jsInheritance;
+                    
+                    // Reset regex state
+                    regex.lastIndex = 0;
+
+                    while ((match = regex.exec(text)) !== null) {
                         const className = match[1];
-                        const parentName = match[2];
-                        if (parentName) {
+                        const parentName = match[2]; // Python captures Parent in group 2
+                        
+                        if (parentName && parentName !== 'object') {
                             const childId = classNodeMap.get(className);
-                            const parentId = classNodeMap.get(parentName);
+                            // Try to find parent by name, might need more complex resolution in future
+                            const parentId = classNodeMap.get(parentName); 
+                            
                             if (childId && parentId) {
                                 edges.push({
                                     id: `edge_${edgeId++}`,
@@ -327,7 +376,17 @@ export class CodeGraphManager {
                 } catch {}
             }
 
-            this.graph = { nodes, edges };
+            // --- PASS 5: Filter Isolated Nodes ---
+            // Remove nodes that have no edges connecting them to anything else
+            const activeNodeIds = new Set<string>();
+            edges.forEach(e => {
+                activeNodeIds.add(e.source);
+                activeNodeIds.add(e.target);
+            });
+
+            const filteredNodes = nodes.filter(n => activeNodeIds.has(n.id));
+
+            this.graph = { nodes: filteredNodes, edges };
             this.buildState = 'ready';
             this.contextSetter?.('codeGraph.ready', true);
 
@@ -361,11 +420,24 @@ export class CodeGraphManager {
             const requireRegex = /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
             while ((match = requireRegex.exec(text)) !== null) imports.push(match[1]);
         } else if (ext === 'py') {
+            // Handle: from package import module
             const fromImportRegex = /^from\s+([\w\.]+)\s+import/gm;
             let match;
-            while ((match = fromImportRegex.exec(text)) !== null) imports.push(match[1].replace(/\./g, '/'));
-            const importRegex = /^import\s+([\w\.]+)/gm;
-            while ((match = importRegex.exec(text)) !== null) imports.push(match[1].replace(/\./g, '/'));
+            while ((match = fromImportRegex.exec(text)) !== null) {
+                imports.push(match[1].replace(/\./g, '/'));
+            }
+
+            // Handle: import os, sys, json
+            // Captures the whole line "import os, sys" then splits
+            const importRegex = /^import\s+([^\n]+)/gm;
+            while ((match = importRegex.exec(text)) !== null) {
+                const modules = match[1].split(',');
+                modules.forEach(m => {
+                    // Remove aliases like "import pandas as pd" -> "pandas"
+                    const cleanName = m.trim().split(/\s+as\s+/)[0];
+                    if (cleanName) imports.push(cleanName.replace(/\./g, '/'));
+                });
+            }
         }
         return imports;
     }
@@ -404,16 +476,85 @@ export class CodeGraphManager {
        ========================= */
 
     generateMermaid(type: string): string {
+        // Apply global init for better dark mode rendering
+        const header = "%%{init: {'theme': 'dark', 'themeVariables': { 'lineColor': '#569cd6' }}}%%\n";
+        
+        let diagram = "";
         switch (type) {
             case 'class_diagram':
-                return this.generateClassDiagramMermaid();
+                diagram = this.generateClassDiagramMermaid();
+                break;
             case 'call_graph':
-                return this.generateCallGraphMermaid();
+                diagram = this.generateCallGraphMermaid();
+                break;
             case 'import_graph':
-                return this.generateImportGraphMermaid();
+                diagram = this.generateImportGraphMermaid();
+                break;
+            case 'function_signatures':
+                diagram = this.generateFunctionSignaturesMermaid();
+                break;
             default:
-                return 'graph TD;';
+                diagram = 'graph TD;\n  Empty["No graph selected"]';
         }
+        return header + diagram;
+    }
+
+    private sanitizeMermaidMember(member: string): string {
+        // Strip out brackets and quotes that break the Mermaid class diagram parser
+        return member.replace(/[\{\}\[\]\<\>\"\'\;]/g, '').trim();
+    }
+
+    private generateFunctionSignaturesMermaid(): string {
+        let out = 'classDiagram\n  direction LR\n';
+        const files = this.graph.nodes.filter(n => n.type === 'file');
+        
+        files.forEach(f => {
+            const childrenEdges = this.graph.edges.filter(e => e.source === f.id && e.label === 'contains');
+            if (childrenEdges.length === 0) return;
+
+            const safeFileLabel = this.sanitizeMermaidLabel(f.label);
+            
+            // 1. Handle stand-alone functions in the file
+            const standaloneFunctions = childrenEdges
+                .map(edge => this.graph.nodes.find(n => n.id === edge.target))
+                .filter(n => n && n.type === 'function');
+
+            if (standaloneFunctions.length > 0) {
+                out += `  class ${safeFileLabel} {\n    <<file>>\n`;
+                standaloneFunctions.forEach(fn => {
+                    let sig = fn!.signature ? fn!.signature : `${fn!.label}()`;
+                    // Sanitize for Mermaid: remove braces/quotes, replace Python -> with :
+                    sig = sig.replace(/[{}";]/g, '').replace(/->/g, ':').replace(/\s+/g, ' ');
+                    out += `    ${sig}\n`;
+                });
+                out += `  }\n`;
+            } else {
+                out += `  class ${safeFileLabel}\n  ${safeFileLabel} : <<file>>\n`;
+            }
+
+            // 2. Handle classes in the file
+            childrenEdges.forEach(edge => {
+                const child = this.graph.nodes.find(n => n.id === edge.target);
+                if (child && child.type === 'class') {
+                    const safeClassName = this.sanitizeMermaidLabel(child.label);
+                    const methods = child.methods || [];
+                    
+                    if (methods.length > 0) {
+                        out += `  class ${safeClassName} {\n`;
+                        methods.forEach(m => {
+                            const safeMethod = m.replace(/[{}";]/g, '').replace(/->/g, ':').replace(/\s+/g, ' ');
+                            out += `    ${safeMethod}\n`;
+                        });
+                        out += `  }\n`;
+                    } else {
+                        out += `  class ${safeClassName}\n`;
+                    }
+                    // Relationship: File contains Class
+                    out += `  ${safeFileLabel} *-- ${safeClassName}\n`;
+                }
+            });
+        });
+        return out;
     }
 
     private generateClassDiagramMermaid(): string {
@@ -422,14 +563,22 @@ export class CodeGraphManager {
         
         classes.forEach(c => {
             const safeLabel = this.sanitizeMermaidLabel(c.label);
-            out += `class ${safeLabel} {\n`;
-            if (c.attributes) {
-                c.attributes.slice(0, 20).forEach(a => out += `  +${a}\n`);
+            
+            const hasAttrs = c.attributes && c.attributes.length > 0;
+            const hasMethods = c.methods && c.methods.length > 0;
+            
+            if (hasAttrs || hasMethods) {
+                out += `class ${safeLabel} {\n`;
+                if (c.attributes) {
+                    c.attributes.slice(0, 15).forEach(a => out += `  +${a.replace(/[{}]/g, '')}\n`);
+                }
+                if (c.methods) {
+                    c.methods.slice(0, 15).forEach(m => out += `  +${m.replace(/[{}]/g, '')}()\n`);
+                }
+                out += `}\n`;
+            } else {
+                out += `class ${safeLabel}\n`;
             }
-            if (c.methods) {
-                c.methods.slice(0, 20).forEach(m => out += `  +${m}()\n`);
-            }
-            out += `}\n`;
         });
         
         this.graph.edges.filter(e => e.label === 'inherits').forEach(e => {
@@ -543,7 +692,16 @@ export class CodeGraphManager {
     private sanitizeMermaidLabel(label: string): string {
         // Class names in Mermaid cannot have spaces, dots, or most symbols.
         // We replace all non-alphanumeric characters with underscores.
-        return label.replace(/["\n\r]/g, '').replace(/[^a-zA-Z0-9_]/g, '_');
+        let safe = label
+            .replace(/<.*?>/g, '') // Remove generics
+            .replace(/["\n\r\t(){}]/g, '') // Remove brackets and quotes
+            .replace(/[^a-zA-Z0-9_]/g, '_'); // Flatten spaces/dots to underscores
+            
+        // Identifiers cannot start with a digit
+        if (/^\d/.test(safe)) {
+            safe = '_' + safe;
+        }
+        return safe;
     }
 
     private fail(message: string) {

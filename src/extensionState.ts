@@ -6,6 +6,20 @@ import * as path from 'path';
 export let pythonApi: any = null; 
 export let lollmsExecutionTerminal: vscode.Terminal | null = null;
 
+
+export const debugStateManager = {
+    _onDidStop: new vscode.EventEmitter<any>(),
+    get onDidStop(): vscode.Event<any> { return this._onDidStop.event; },
+    lastState: null as any,
+    setStoppedState(state: any) {
+        this.lastState = state;
+        this._onDidStop.fire(state);
+    },
+    clearState() {
+        this.lastState = null;
+    }
+};
+
 export const debugErrorManager = {
     _onDidChange: new vscode.EventEmitter<void>(),
     get onDidChange(): vscode.Event<void> { return this._onDidChange.event; },

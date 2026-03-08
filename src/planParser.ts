@@ -43,10 +43,15 @@ export class PlanParser {
             let memoryBlock = "";
             if (completedActionsHistory && completedActionsHistory.length > 0) {
                 memoryBlock = `
-# 🧠 COMPLETED ACTIONS MEMORY
-The following actions have ALREADY been successfully executed in this session.
-**DO NOT** include these in the new plan unless you explicitly intend to redo them (e.g. rewrite a file).
-${completedActionsHistory.map(a => `- [DONE] ${a}`).join('\n')}
+# 🕒 PROJECT TIMELINE (DEBUGGING LOG)
+The following actions were recently taken. Compare the "Intended Goal" with the "Actual Observation".
+
+${completedActionsHistory.join('\n\n')}
+
+**CRITICAL DIAGNOSTIC**:
+- If an action resulted in SUCCESS but the observation shows the screen didn't change as expected (e.g., you clicked but no menu appeared), the previous coordinates were WRONG.
+- You MUST adjust your strategy (e.g., different tool, different location, or more discovery) in the next plan.
+- DO NOT repeat failed steps with the same parameters.
 `;
             }
 

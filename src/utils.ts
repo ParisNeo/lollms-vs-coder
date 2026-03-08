@@ -329,6 +329,12 @@ export function applySearchReplace(content: string, searchBlock: string, replace
         return { success: true, result: resultLines.join('\n') };
     }
 
+    // --- CHECK IF ALREADY APPLIED (Half-applied detection) ---
+    // If the search block is completely missing, check if the replace block is already there.
+    if (normalizedReplace.trim().length > 0 && normalizedContent.includes(normalizedReplace.trim())) {
+        return { success: true, result: normalizedContent }; 
+    }
+
     return { 
         success: false, 
         result: content, 
@@ -471,10 +477,18 @@ export async function getProcessedSystemPrompt(
     customPersonaContent?: string,
     memoryManager?: MemoryManager,
     forceFullCode?: boolean,
-    context?: { tree: string, files: string, skills: string }
+    context?: { tree: string, files: string, skills: string },
+    workingMemory?: string // Added parameter for pre-processing insights
 ): Promise<string> {
     const memory = memoryManager ? await memoryManager.getMemory() : "";
-    return PromptTemplates.getSystemPrompt(promptType, capabilities, customPersonaContent, memory, forceFullCode, context);
+    let finalPersona = customPersonaContent || "";
+    
+    // Inject Working Memory (insights from Librarian/Auto-Context) if it exists
+    if (workingMemory) {
+        finalPersona = `### 🧠 CURRENT WORKING MEMORY (LIBRARIAN INSIGHTS)\n${workingMemory}\n\n${finalPersona}`;
+    }
+
+    return PromptTemplates.getSystemPrompt(promptType, capabilities, finalPersona, memory, forceFullCode, context);
 }
 
 export function stripAnsiCodes(text: string): string {

@@ -161,7 +161,8 @@ export class CodeExplorerPanel {
             graph: this.graphManager.getGraphData(),
             state: this.graphManager.getBuildState(),
             lastError: this.graphManager.getLastError(),
-            classDiagram: this.graphManager.generateMermaid('class_diagram')
+            classDiagram: this.graphManager.generateMermaid('class_diagram'),
+            functionSignatures: this.graphManager.generateMermaid('function_signatures')
         });
     }
 
@@ -271,7 +272,8 @@ export class CodeExplorerPanel {
         <select id="view">
             <option value="call_graph">Call Graph</option>
             <option value="import_graph">Import Graph</option>
-            <option value="class_diagram">Class Diagram</option>
+            <option value="class_diagram">Inheritance Diagram</option>
+            <option value="function_signatures">Function Signatures</option>
         </select>
         <button id="rebuild">Refresh</button>
         <button id="stop">Stop</button>

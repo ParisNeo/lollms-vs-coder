@@ -1,9 +1,11 @@
 import cytoscape from 'cytoscape';
 import dagre from 'cytoscape-dagre';
+import coseBilkent from 'cytoscape-cose-bilkent';
 import mermaid from 'mermaid';
 
 // Register extensions
 cytoscape.use(dagre);
+cytoscape.use(coseBilkent);
 
 // Initialize Mermaid
 mermaid.initialize({
@@ -31,6 +33,7 @@ const loadingOverlay = document.getElementById('loading') as HTMLDivElement;
 // State
 let currentGraphData: any = null;
 let currentClassDiagram: string = '';
+let currentFunctionSignatures: string = '';
 let cyInstance: cytoscape.Core | null = null;
 
 // Event Listeners
@@ -38,7 +41,7 @@ window.addEventListener('message', event => {
     const message = event.data;
     
     if (message.command === 'graph') {
-        const { graph, state, lastError, classDiagram } = message;
+        const { graph, state, lastError, classDiagram, functionSignatures } = message;
         
         // Update Status UI
         if (state === 'building') {
@@ -59,6 +62,7 @@ window.addEventListener('message', event => {
         // Store Data
         if (graph) currentGraphData = graph;
         if (classDiagram) currentClassDiagram = classDiagram;
+        if (functionSignatures) currentFunctionSignatures = functionSignatures;
 
         // Render if ready
         if (state === 'ready' || (graph && graph.nodes.length > 0)) {
@@ -105,8 +109,17 @@ vscode.postMessage({ command: 'ready' });
 function render() {
     const view = viewSelect.value;
 
-    if (view === 'class_diagram') {
-        renderMermaidView();
+    // Reset containers to ensure clean render
+    if (cyContainer) cyContainer.style.display = 'none';
+    if (mermaidContainer) {
+        mermaidContainer.style.display = 'none';
+        mermaidContainer.innerHTML = '';
+        mermaidContainer.style.transform = '';
+        mermaidContainer.style.cursor = 'default';
+    }
+
+    if (view === 'class_diagram' || view === 'function_signatures') {
+        renderMermaidView(view);
     } else {
         renderCytoscapeView(view);
     }
@@ -117,6 +130,9 @@ function render() {
  * Ensures node labels are properly quoted and special characters are handled.
  */
 function preprocessMermaid(code: string): string {
+    if (code.includes('classDiagram')) {
+        return code; // Do NOT run the node bracket replacement on class diagrams!
+    }
     return code.split('\n').map(line => {
         const trimmed = line.trim();
         // Skip header definitions and keywords
@@ -131,25 +147,33 @@ function preprocessMermaid(code: string): string {
     }).join('\n');
 }
 
-async function renderMermaidView() {
+async function renderMermaidView(view: string) {
     if (cyContainer) cyContainer.style.display = 'none';
     if (mermaidContainer) {
         mermaidContainer.style.display = 'block';
         
-        const sanitizedDiagram = preprocessMermaid(currentClassDiagram);
+        const rawDiagram = view === 'class_diagram' ? currentClassDiagram : currentFunctionSignatures;
+        const sanitizedDiagram = preprocessMermaid(rawDiagram);
         const id = `mermaid-render-${Date.now()}`;
         
         mermaidContainer.innerHTML = `<div id="${id}" class="mermaid">${sanitizedDiagram}</div>`;
         
         try {
-            // Use specific render call for better error catching
             await mermaid.run({
                 nodes: [document.getElementById(id)]
             });
+            
+            // Enable Pan/Zoom AND Auto-Fit
+            const handlers = enablePanZoom(mermaidContainer);
+            
+            // Allow DOM and SVG geometry to fully stabilize
+            setTimeout(() => {
+                handlers.fitToScreen();
+            }, 500);
+
         } catch (e: any) {
             console.error("📊 Mermaid Syntax Error:", e);
             
-            // Log the faulty code to the console for debugging
             console.group("❌ Faulty Mermaid Source");
             console.log(sanitizedDiagram);
             console.groupEnd();
@@ -165,16 +189,115 @@ async function renderMermaidView() {
     }
 }
 
+function enablePanZoom(container: HTMLElement) {
+    let zoomScale = 1;
+    let panX = 0;
+    let panY = 0;
+    let isDragging = false;
+    let startX = 0;
+    let startY = 0;
+
+    const innerDiv = container.querySelector('.mermaid') as HTMLElement;
+    
+    // Return empty handlers if init fails
+    if (!innerDiv) return { fitToScreen: () => {} };
+
+    container.style.overflow = 'hidden';
+    container.style.cursor = 'grab';
+    container.style.position = 'relative';
+
+    innerDiv.style.transformOrigin = '0 0';
+    innerDiv.style.transition = 'transform 0.05s ease-out';
+    innerDiv.style.width = 'fit-content'; 
+    innerDiv.style.minWidth = '100px'; 
+    innerDiv.style.minHeight = '100px';
+
+    const updateTransform = () => {
+        innerDiv.style.transform = `translate(${panX}px, ${panY}px) scale(${zoomScale})`;
+    };
+
+    // Logic to auto-fit the content to the screen
+    const fitToScreen = () => {
+        const svg = innerDiv.querySelector('svg') as SVGSVGElement;
+        if (!svg) return;
+        
+        svg.removeAttribute('width');
+        svg.removeAttribute('height');
+        svg.style.width = '';
+        svg.style.height = '';
+        svg.style.maxWidth = 'none';
+
+        const containerRect = container.getBoundingClientRect();
+        const bbox = svg.getBBox();
+        
+        if (bbox.width <= 0 || bbox.height <= 0) return;
+
+        const padding = 20;
+        const scaleX = (containerRect.width - padding) / bbox.width;
+        const scaleY = (containerRect.height - padding) / bbox.height;
+        
+        // Fit content but don't blow up tiny diagrams beyond 1.0
+        // Use 0.95 to ensure a small visible border
+        zoomScale = Math.min(scaleX, scaleY, 1.0) * 0.95;
+        
+        // Centering calculation using the Bounding Box offset
+        panX = (containerRect.width / 2) - (zoomScale * (bbox.x + bbox.width / 2));
+        panY = (containerRect.height / 2) - (zoomScale * (bbox.y + bbox.height / 2));
+        
+        updateTransform();
+    };
+
+    container.onwheel = (e) => {
+        e.preventDefault();
+        const delta = e.deltaY > 0 ? 0.9 : 1.1;
+        zoomScale = Math.min(Math.max(0.05, zoomScale * delta), 10); 
+        updateTransform();
+    };
+
+    container.onmousedown = (e) => {
+        isDragging = true;
+        startX = e.clientX - panX;
+        startY = e.clientY - panY;
+        container.style.cursor = 'grabbing';
+        innerDiv.style.transition = 'none'; 
+    };
+
+    window.onmousemove = (e) => {
+        if (!isDragging) return;
+        e.preventDefault();
+        panX = e.clientX - startX;
+        panY = e.clientY - startY;
+        updateTransform();
+    };
+
+    window.onmouseup = () => {
+        if(isDragging) {
+            isDragging = false;
+            container.style.cursor = 'grab';
+            innerDiv.style.transition = 'transform 0.1s ease-out';
+        }
+    };
+
+    return { fitToScreen };
+}
+
 function renderCytoscapeView(viewType: string) {
     if (mermaidContainer) mermaidContainer.style.display = 'none';
     if (cyContainer) cyContainer.style.display = 'block';
 
     if (!currentGraphData) return;
 
-    // Filter elements based on view type
     const elements: any[] = [];
+    const parentMap = new Map<string, string>();
+
+    // 1. Identify containment for Compound Nodes
+    currentGraphData.edges.forEach((e: any) => {
+        if (e.label === 'contains') {
+            parentMap.set(e.target, e.source);
+        }
+    });
     
-    // Add Nodes
+    // 2. Add Nodes with nesting
     currentGraphData.nodes.forEach((n: any) => {
         let cssClass = n.type;
         if (n.type === 'file') cssClass = 'node-file';
@@ -184,19 +307,23 @@ function renderCytoscapeView(viewType: string) {
 
         elements.push({
             group: 'nodes',
-            data: { id: n.id, label: n.label, type: n.type, filePath: n.filePath, line: n.startLine },
+            data: { 
+                id: n.id, 
+                label: n.label, 
+                type: n.type, 
+                filePath: n.filePath, 
+                line: n.startLine,
+                parent: parentMap.get(n.id) // This triggers the "box-inside-box" rendering
+            },
             classes: cssClass
         });
     });
 
-    // Add Edges
+    // 3. Add Interaction Edges (filtering out "contains" since it's now a nesting relation)
     currentGraphData.edges.forEach((e: any) => {
         let include = false;
-        if (viewType === 'call_graph') {
-            if (e.label === 'calls' || e.label === 'contains') include = true;
-        } else if (viewType === 'import_graph') {
-            if (e.label === 'imports') include = true;
-        }
+        if (viewType === 'call_graph' && e.label === 'calls') include = true;
+        if (viewType === 'import_graph' && e.label === 'imports') include = true;
 
         if (include) {
             elements.push({
@@ -207,19 +334,40 @@ function renderCytoscapeView(viewType: string) {
         }
     });
 
+    // Use 'cose' (physics) for everything to avoid flat, overlapping graphs
+    // FCose would be better but requires an extension; cose is built-in.
+    
     cyInstance = cytoscape({
         container: cyContainer,
         elements: elements,
         style: getCyStyle(),
         layout: {
-            name: 'dagre',
-            rankDir: 'LR',
-            nodeSep: 50,
-            rankSep: 100,
-            animate: true,
-            animationDuration: 500
+            name: 'cose-bilkent',
+            // CoSE-Bilkent options for better compound layout
+            quality: 'proof',
+            nodeDimensionsIncludeLabels: true,
+            randomize: false,        // Keep deterministic
+            fit: true,
+            padding: 30,
+            
+            // "Pack elements of same file together"
+            // Tiling puts disconnected nodes in a grid, keeping them tidy
+            tilingPaddingVertical: 20,
+            tilingPaddingHorizontal: 20,
+            
+            // "Unpack files to avoid intersections"
+            nodeRepulsion: 8500,     // Repulsion between nodes
+            idealEdgeLength: 120,    // Longer edges between files
+            edgeElasticity: 0.45,
+            nestingFactor: 0.1,      // Tighter nesting for children inside parents
+            gravity: 0.25,           // Weak gravity to allow spreading
+            numIter: 2500,           // More iterations for a cleaner result
+            tile: true,              // Enable tiling for disconnected components
+            animate: false
         } as any,
-        wheelSensitivity: 0.3
+        minZoom: 0.05,
+        maxZoom: 4.0,
+        wheelSensitivity: 0.2
     });
 
     // Node Interaction
@@ -242,32 +390,40 @@ function getCyStyle() {
             selector: 'node',
             style: {
                 'label': 'data(label)',
-                'color': '#cccccc',
-                'font-size': '12px',
-                'text-valign': 'center',
+                'color': '#ffffff',
+                'font-size': '10px',
+                'text-valign': 'bottom',
                 'text-halign': 'center',
-                'background-color': '#333',
-                'border-width': 1,
+                'text-margin-y': '4px',
+                'background-color': '#3c3c3c',
+                'border-width': 2,
                 'border-color': '#555',
-                'width': 'label',
-                'height': 'label',
-                'padding': '10px',
-                'shape': 'round-rectangle'
+                'width': '15px',
+                'height': '15px',
+                'shape': 'ellipse',
+                'overlay-opacity': 0,
+                'transition-property': 'background-color, line-color, target-arrow-color',
+                'transition-duration': '0.2s'
             }
         },
         {
-            selector: '.node-file',
+            selector: ':parent', 
             style: {
-                'background-color': '#2a2d3e',
-                'border-color': '#007acc',
-                'color': '#ffffff',
-                'font-weight': 'bold'
+                'text-valign': 'top',
+                'text-halign': 'center',
+                'background-color': '#ffffff',
+                'background-opacity': 0.03,
+                'border-color': '#ffffff',
+                'border-opacity': 0.1,
+                'border-width': 1,
+                'border-style': 'dashed',
+                'padding': '5px'  // Reduced padding significantly for tighter boxes
             }
         },
         {
             selector: '.node-class',
             style: {
-                'background-color': '#1e4e3c', // darker green
+                'background-color': '#1e4e3c',
                 'border-color': '#4ec9b0',
                 'shape': 'cut-rectangle'
             }
@@ -275,7 +431,7 @@ function getCyStyle() {
         {
             selector: '.node-function',
             style: {
-                'background-color': '#4d3b1e', // darker yellow/orange
+                'background-color': '#4d3b1e',
                 'border-color': '#dcdcaa',
                 'shape': 'ellipse'
             }
@@ -283,7 +439,7 @@ function getCyStyle() {
         {
             selector: '.node-library',
             style: {
-                'background-color': '#6e3e1e', // brownish/orange
+                'background-color': '#6e3e1e',
                 'border-color': '#f96',
                 'shape': 'hexagon',
                 'color': '#ffffff'

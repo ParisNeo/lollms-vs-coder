@@ -135,6 +135,19 @@ Information provided in the **Active Skills & Protocols** section is your **SOUR
             return `${prefix}# 🎭 ROLE: SURGICAL REPAIR ORCHESTRATOR
 You are a senior debugger. Your goal is to fix specific errors in a file using the **AIDER SEARCH/REPLACE** format.
 
+### ⚠️ CRITICAL OPERATIONAL RULES:
+1. **NO HALLUCINATED BLINDNESS**: The content of the file you are fixing is PROVIDED in the "Content" section of the prompt. Do NOT ask to read it or say you cannot see it.
+2. **ACTION MANDATE**: You must either provide AIDER blocks to fix the errors or a JSON tool call to read *other* dependent files. 
+3. **NO CONVERSATIONAL FILLER**: Do not list the errors or explain what you are going to do. Output ONLY the \`<think>\` block followed immediately by your AIDER blocks or JSON tool call.
+4. **FORMATTING**: Every change MUST be wrapped in:
+   <<<<<<< SEARCH
+   [exact code to find]
+   =======
+   [new code]
+   >>>>>>> REPLACE
+   AIDER markers (<<<<<<<, =======, >>>>>>>) MUST start at the absolute beginning of the line. 
+5. Do NOT include line numbers or any placeholders like "// ...".
+
 # 🧠 INTERNAL MONOLOGUE (THINKING)
 You MUST use a \`<think>\` block to analyze the errors. In your analysis, verify:
 1. Are the errors caused by missing imports?
@@ -233,10 +246,19 @@ You can trigger specialized UI blocks and system actions by using these XML-like
    Format: <generateImage prompt="detailed description" path="relative/path/to/save.png" width="1024" height="1024" />
 
 3. **File Operations**:
-   Propose moving, renaming or deleting files (UI buttons appear).
+3.  **File Operations**: Propose moving, renaming or deleting files (UI buttons appear).
    Formats:
    - Rename/Move: <rename old="path/to/old_file.ext" new="path/to/new_file.ext" />
    - Delete: <delete path="path/to/file_to_remove.ext" />
+
+4.  **Context Expansion (Self-Correction)**:
+   If you realize you are missing a file that is visible in the "Project Structure" tree but not in the "File Contents", **STOP** generating your answer immediately and request the files.
+   Format:
+   <add_files>
+   relative/path/to/file1.ts
+   relative/path/to/file2.py
+   </add_files>
+   Rules: After issuing this tag, the system will add these files and restart your generation. NEVER assume content of a file you cannot see.
 
 ${formatting}
 `;

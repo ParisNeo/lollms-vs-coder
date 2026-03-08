@@ -823,13 +823,15 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
             });
             
             // Visual feedback
-            const icon = copyBtn.querySelector('.codicon');
-            if(icon) {
-                icon.classList.remove('codicon-copy');
-                icon.classList.add('codicon-check');
+            const iconEl = copyBtn.querySelector('.codicon');
+            if(iconEl) {
+                iconEl.classList.remove('codicon-copy');
+                iconEl.classList.add('codicon-check');
                 setTimeout(() => {
-                    icon.classList.remove('codicon-check');
-                    icon.classList.add('codicon-copy');
+                    if (iconEl) {
+                        iconEl.classList.remove('codicon-check');
+                        iconEl.classList.add('codicon-copy');
+                    }
                 }, 2000);
             }
         });
@@ -1108,6 +1110,89 @@ export function scheduleRender(messageId: string) {
     }, RENDER_THROTTLE_MS);
 }
 
+function renderDebugReport(dataStr: string): string {
+    try {
+        const data = JSON.parse(dataStr.replace(/&apos;/g, "'"));
+        
+        // Format variables if present
+        let varHtml = '<div style="opacity:0.6; font-style:italic;">No variables captured.</div>';
+        if (data.variables) {
+            const lines = data.variables.split('\n').filter((l: string) => l.includes('='));
+            if (lines.length > 0) {
+                varHtml = '<table class="debug-var-table">';
+                lines.forEach((l: string) => {
+                    const [name, rest] = l.split('=');
+                    const valueMatch = rest.match(/^(.*?)\s*\((.*?)\)$/);
+                    const val = valueMatch ? valueMatch[1] : rest;
+                    const type = valueMatch ? valueMatch[2] : 'unknown';
+                    varHtml += `<tr>
+                        <td class="var-name">${sanitizer.sanitize(name.trim())}</td>
+                        <td class="var-type">${sanitizer.sanitize(type)}</td>
+                        <td class="var-val">${sanitizer.sanitize(val.trim())}</td>
+                    </tr>`;
+                });
+                varHtml += '</table>';
+            }
+        }
+
+        return `
+        <div class="debug-report-card">
+            <div class="debug-header">
+                <span class="codicon codicon-error"></span>
+                <span>Runtime Exception</span>
+            </div>
+            <div class="debug-section">
+                <span class="debug-label">Error Message</span>
+                <div style="font-weight:600; color:var(--vscode-errorForeground);">${sanitizer.sanitize(data.message)}</div>
+            </div>
+            <div class="debug-section">
+                <span class="debug-label">Crash Site: ${sanitizer.sanitize(data.file)}</span>
+                <div class="debug-code-box">
+                    <span class="debug-line-num">${data.line}</span>
+                    <code>${sanitizer.sanitize(data.code)}</code>
+                </div>
+            </div>
+            <div class="debug-section">
+                <span class="debug-label">Live Variables (State)</span>
+                ${varHtml}
+            </div>
+            <details class="debug-section" style="border:none;">
+                <summary class="debug-label" style="cursor:pointer; margin:0;">View Full Stack Trace</summary>
+                <pre style="font-size:10px; margin-top:10px; opacity:0.8;">${sanitizer.sanitize(data.stack)}</pre>
+            </details>
+        </div>`;
+    } catch (e) {
+        return `<div class="error">Failed to render debug report.</div>`;
+    }
+}
+
+function renderAddFilesBlock(rawContent: string): string {
+    const files = rawContent.split('\n')
+        .map(f => f.trim())
+        .filter(f => f.length > 0);
+
+    const fileItems = files.map(f => `
+        <div class="expansion-file-item">
+            <span class="codicon codicon-file-add"></span>
+            <span>${sanitizer.sanitize(f)}</span>
+        </div>
+    `).join('');
+
+    return `
+    <div class="context-expansion-block">
+        <div class="expansion-header">
+            <span class="codicon codicon-library"></span>
+            <span>Context Expansion Requested</span>
+        </div>
+        <div class="expansion-body">
+            <p>The AI identified that it needs the following files to complete the task without making assumptions:</p>
+            <div class="expansion-file-list">
+                ${fileItems}
+            </div>
+        </div>
+    </div>`;
+}
+
 function renderImageGenBlock(prompt: string, path: string, width?: string, height?: string): string {
     const safePrompt = encodeURIComponent(prompt);
     const safePath = encodeURIComponent(path);
@@ -1143,6 +1228,25 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     const contentDiv = wrapper.querySelector('.message-content') as HTMLElement;
     const messageDiv = wrapper.querySelector('.message') as HTMLElement;
     if (!contentDiv || !messageDiv) return;
+
+    // PRESERVE STATE of Apply All List to prevent blinking/resetting during repair
+    const existingResultsList = contentDiv.querySelector('.apply-results-list');
+    const existingApplyBtn = contentDiv.querySelector('.apply-all-btn');
+    let savedResultsHtml = '';
+    let savedBtnClasses = '';
+    let savedBtnText = '';
+    let savedBtnDisabled = false;
+    let isApplyListVisible = false;
+
+    if (existingResultsList) {
+        savedResultsHtml = existingResultsList.innerHTML;
+        isApplyListVisible = (existingResultsList as HTMLElement).style.display !== 'none';
+    }
+    if (existingApplyBtn) {
+        savedBtnClasses = existingApplyBtn.className;
+        savedBtnText = existingApplyBtn.innerHTML;
+        savedBtnDisabled = (existingApplyBtn as HTMLButtonElement).disabled;
+    }
 
     const shouldScroll = isScrolledToBottom(dom.messagesDiv);
 
@@ -1191,7 +1295,25 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 images.push({ html: imgHtml, start: imgMatch.index, end: imgMatch.index + imgMatch[0].length });
             }
 
-            messageDiv.querySelectorAll('.plan-scratchpad, .skill-creation-block, .generation-block').forEach(el => el.remove());
+            // --- DEBUG REPORT TAG PARSING ---
+            const debugReports: { html: string, start: number, end: number }[] = [];
+            const debugRegex = /<debug_report\s+data=['"]([\s\S]*?)['"]\s*\/>/gi;
+            let dMatch;
+            while ((dMatch = debugRegex.exec(contentWithoutThoughts)) !== null) {
+                const dHtml = renderDebugReport(dMatch[1]);
+                debugReports.push({ html: dHtml, start: dMatch.index, end: dMatch.index + dMatch[0].length });
+            }
+
+            // --- ADD FILES TAG PARSING ---
+            const addFiles: { html: string, start: number, end: number }[] = [];
+            const addFilesRegex = /<add_files>([\s\S]*?)<\/add_files>/gi;
+            let afMatch;
+            while ((afMatch = addFilesRegex.exec(contentWithoutThoughts)) !== null) {
+                const afHtml = renderAddFilesBlock(afMatch[1]);
+                addFiles.push({ html: afHtml, start: afMatch.index, end: afMatch.index + afMatch[0].length });
+            }
+
+            messageDiv.querySelectorAll('.plan-scratchpad, .skill-creation-block, .generation-block, .context-expansion-block').forEach(el => el.remove());
 
             // Render Thoughts
             thoughts.forEach(thought => {
@@ -1207,7 +1329,9 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const allCandidates = [
                 ...codeBlocks.map(b => ({ ...b, elementType: 'code' as const })),
                 ...skills.map(s => ({ start: s.start, end: s.end, html: s.html, elementType: 'skill' as const })),
-                ...images.map(i => ({ start: i.start, end: i.end, html: i.html, elementType: 'image' as const }))
+                ...images.map(i => ({ start: i.start, end: i.end, html: i.html, elementType: 'image' as const })),
+                ...addFiles.map(a => ({ start: a.start, end: a.end, html: a.html, elementType: 'addFiles' as const })),
+                ...debugReports.map(d => ({ start: d.start, end: d.end, html: d.html, elementType: 'debugReport' as const }))
             ].sort((a, b) => a.start - b.start);
 
             // 2. Filter to keep only TOP-LEVEL elements
@@ -1236,8 +1360,8 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     fragment.appendChild(textDiv);
                 }
 
-                // B. Render the UI element (Code Block or Skill or Image)
-                if (el.elementType === 'skill' || el.elementType === 'image') {
+                // B. Render the UI element (Code Block or Skill or Image or AddFiles or DebugReport)
+                if (el.elementType === 'skill' || el.elementType === 'image' || el.elementType === 'addFiles' || el.elementType === 'debugReport') {
                     const uiDiv = document.createElement('div');
                     uiDiv.innerHTML = el.html;
                     fragment.appendChild(uiDiv);
@@ -1279,6 +1403,11 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 // Copy All button
                 const copyBtn = createButton('Copy All', 'codicon-copy', () => {
                     vscode.postMessage({ command: 'copyToClipboard', text: codeOnly });
+                    const iconEl = copyBtn.querySelector('.codicon');
+                    if (iconEl) {
+                        iconEl.classList.replace('codicon-copy', 'codicon-check');
+                        setTimeout(() => iconEl.classList.replace('codicon-check', 'codicon-copy'), 2000);
+                    }
                 }, 'code-action-btn', 'Copy entire block content');
                 actions.appendChild(copyBtn);
 
@@ -1313,13 +1442,15 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     actions.appendChild(gotoBtn);
                 }
 
+                // Determine icon for the apply buttons
+                const isSurgical = isAider || ['replace', 'insert', 'diff'].includes(block.type);
+                const applyIcon = isSurgical ? 'codicon-arrow-swap' : 'codicon-tools';
+
                 // Apply button
                 if (block.path && ['file', 'replace', 'insert', 'diff'].includes(block.type)) {
                     const effectiveType = isAider ? 'replace' : block.type;
-                    const isSurgical = ['replace', 'insert', 'diff'].includes(effectiveType);
-                    const icon = isSurgical ? 'codicon-arrow-swap' : 'codicon-tools';
 
-                    const applyBtn = createButton('Apply', icon, () => {
+                    const applyBtn = createButton('Apply', applyIcon, () => {
                         const cmd = effectiveType === 'diff' ? 'applyPatchContent' :
                             (effectiveType === 'replace' ? 'replaceCode' : 'applyFileContent');
                         vscode.postMessage({ command: cmd, filePath: block.path, content: codeOnly, messageId });
@@ -1329,6 +1460,9 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
                         applyBtn.classList.add('applied');
                         applyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
+                        
+                        // Check if this makes the whole message applied
+                        checkAndSyncMessageAppliedState(messageId);
                     }, 'code-action-btn apply-btn', isSurgical ? 'Apply surgical update to file' : 'Overwrite entire file with this content');
 
                     // Restore state from persistence
@@ -1420,17 +1554,17 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                         // Copy Search Button for this hunk
                         const copySearchBtn = createButton('Copy Search', 'codicon-copy', () => {
                             vscode.postMessage({ command: 'copyToClipboard', text: searchPart });
-                            const icon = copySearchBtn.querySelector('.codicon');
-                            if (icon) icon.className = 'codicon codicon-check';
-                            setTimeout(() => { if (icon) icon.className = 'codicon codicon-copy'; }, 2000);
+                            const iconEl = copySearchBtn.querySelector('.codicon');
+                            if (iconEl) iconEl.className = 'codicon codicon-check';
+                            setTimeout(() => { if (iconEl) iconEl.className = 'codicon codicon-copy'; }, 2000);
                         }, 'code-action-btn', 'Copy the SEARCH block for this hunk');
 
                         // Copy Replace Button for this hunk
                         const copyReplaceBtn = createButton('Copy Replace', 'codicon-copy', () => {
                             vscode.postMessage({ command: 'copyToClipboard', text: replacePart });
-                            const icon = copyReplaceBtn.querySelector('.codicon');
-                            if (icon) icon.className = 'codicon codicon-check';
-                            setTimeout(() => { if (icon) icon.className = 'codicon codicon-copy'; }, 2000);
+                            const iconEl = copyReplaceBtn.querySelector('.codicon');
+                            if (iconEl) iconEl.className = 'codicon codicon-check';
+                            setTimeout(() => { if (iconEl) iconEl.className = 'codicon codicon-copy'; }, 2000);
                         }, 'code-action-btn', 'Copy the REPLACE block for this hunk');
 
                         // NEW: View Raw button for this specific hunk
@@ -1442,7 +1576,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                         }, 'code-action-btn', 'View raw SEARCH/REPLACE for this hunk');
                         
                         // Apply Hunk Button
-                        const applyHunkBtn = createButton('Apply Hunk', 'codicon-tools', () => {
+                        const applyHunkBtn = createButton('Apply Hunk', applyIcon, () => {
                             vscode.postMessage({ 
                                 command: 'replaceCode', 
                                 filePath: block.path, 
@@ -1453,18 +1587,22 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                             // Notify extension to persist hunk
                             vscode.postMessage({ command: 'markBlockApplied', messageId, blockIndex: blockIdx, hunkIndex: hIdx });
 
-                            // UI Update: Just collapse this hunk
+                            // UI Update
                             applyHunkBtn.classList.add('applied');
                             applyHunkBtn.innerHTML = '<span class="codicon codicon-check"></span>';
                             hunkBubble.classList.add('collapsed');
 
-                            // Logic to update parent "Apply All" button color
+                            // 1. Sync Hunks -> Parent Block
                             const allHunkButtons = hunkGroup.querySelectorAll('.aider-hunk-actions .apply-btn');
                             const appliedCount = hunkGroup.querySelectorAll('.aider-hunk-actions .apply-btn.applied').length;
                             if (appliedCount === allHunkButtons.length) {
                                 applyBtn.classList.add('applied');
                                 applyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
+                                details.open = false;
                             }
+                            
+                            // 2. Sync Blocks -> Message "Apply All"
+                            checkAndSyncMessageAppliedState(messageId);
                         }, 'code-action-btn apply-btn', 'Apply only this modification');
                         
                         // Restore hunk state from persistence
@@ -1566,79 +1704,67 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             // Apply All button logic
             const actionableBlocks = codeBlocks.filter(b => b.path && ['file', 'replace', 'insert', 'diff'].includes(b.type || ''));
             if (actionableBlocks.length > 0) {
-                let wrapper = contentDiv.querySelector('.apply-all-wrapper') as HTMLElement;
-                let btn: HTMLButtonElement;
-                let resultsList: HTMLElement;
+                const wrapper = document.createElement('div');
+                wrapper.className = 'apply-all-wrapper';
+                wrapper.style.marginTop = '16px';
 
-                if (!wrapper) {
-                    wrapper = document.createElement('div');
-                    wrapper.className = 'apply-all-wrapper';
-                    wrapper.style.marginTop = '16px';
+                const btn = document.createElement('button');
+                btn.className = 'apply-all-btn';
+                
+                const resultsList = document.createElement('div');
+                resultsList.className = 'apply-results-list';
+                resultsList.style.cssText = 'display:none; margin-top:8px; font-size:11px; padding:8px; background:var(--vscode-editor-inactiveSelectionBackground); border-radius:4px; border:1px solid var(--vscode-widget-border);';
 
-                    btn = document.createElement('button');
-                    btn.className = 'apply-all-btn';
-
-                    resultsList = document.createElement('div');
-                    resultsList.className = 'apply-results-list';
-                    resultsList.style.cssText = 'display:none; margin-top:8px; font-size:11px; padding:8px; background:var(--vscode-editor-inactiveSelectionBackground); border-radius:4px; border:1px solid var(--vscode-widget-border);';
-
-                    btn.onclick = () => {
-                        if (!isFinal) return;
-                        btn.disabled = true;
-                        btn.innerHTML = '<span class="codicon codicon-sync spin"></span> Applying Sequentially...';
-                        resultsList.style.display = 'block';
-                        resultsList.innerHTML = '<div style="opacity:0.7; margin-bottom:4px;">Processing file updates...</div>';
-
-                        const changes = actionableBlocks.map(b => {
-                            // Trim content to ensure the closing fence is correctly sliced off
-                            const blockContent = processedContent.substring(b.start, b.end).trim();
-                            const lines = blockContent.split('\n');
-                            const codeOnly = lines.length >= 2 ? lines.slice(1, -1).join('\n') : "";
-                            return {
-                                type: b.type === 'file' ? 'file' : (b.type || 'replace'),
-                                path: b.path,
-                                content: codeOnly
-                            };
-                        });
-
-                        vscode.postMessage({ command: 'applyAllChanges', changes, messageId });
-
-                        const auditHtml = changes.map(c => `
-                            <div style="display:flex; gap:8px; margin-bottom:2px;">
-                                <span class="codicon codicon-pass" style="color:var(--vscode-charts-green)"></span>
-                                <span style="font-weight:600; min-width:50px;">[${c.type.toUpperCase()}]</span>
-                                <span style="opacity:0.9;">${c.path}</span>
-                            </div>
-                        `).join('');
-
-                        setTimeout(() => {
-                            resultsList.innerHTML = `<div style="font-weight:bold; margin-bottom:6px; color:var(--vscode-charts-green);">✅ Applied ${changes.length} changes:</div>` + auditHtml;
-                            btn.innerHTML = '<span class="codicon codicon-check"></span> All Changes Applied';
-                            btn.classList.add('applied');
-                        }, 800);
-                    };
-
-                    wrapper.appendChild(btn);
-                    wrapper.appendChild(resultsList);
-                    contentDiv.appendChild(wrapper);
+                // Restore state if we are re-rendering due to an update (e.g. repair)
+                if (savedResultsHtml && isApplyListVisible) {
+                    resultsList.innerHTML = savedResultsHtml;
+                    resultsList.style.display = 'block';
+                    btn.className = savedBtnClasses;
+                    btn.innerHTML = savedBtnText;
+                    btn.disabled = savedBtnDisabled;
                 } else {
-                    btn = wrapper.querySelector('.apply-all-btn') as HTMLButtonElement;
-                    resultsList = wrapper.querySelector('.apply-results-list') as HTMLElement;
-                }
-
-                if (btn && !btn.classList.contains('applied')) {
-                    btn.disabled = !isFinal;
+                    // Default state
                     btn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply All Modifications (${actionableBlocks.length})`;
+                    btn.disabled = !isFinal;
                     if (!isFinal) {
                         btn.style.opacity = '0.5';
                         btn.style.cursor = 'not-allowed';
-                        btn.title = "Waiting for generation to finish...";
-                    } else {
-                        btn.style.opacity = '1';
-                        btn.style.cursor = 'pointer';
-                        btn.title = "";
                     }
                 }
+
+                btn.onclick = () => {
+                    if (btn.classList.contains('applied') || btn.disabled) return; 
+                    btn.disabled = true;
+                    btn.innerHTML = '<span class="codicon codicon-sync spin"></span> Processing Files...';
+                    resultsList.style.display = 'block';
+                    
+                    const changes = actionableBlocks.map(b => {
+                        const blockContent = processedContent.substring(b.start, b.end).trim();
+                        const lines = blockContent.split('\n');
+                        const codeOnly = lines.length >= 2 ? lines.slice(1, -1).join('\n') : "";
+                        return {
+                            type: b.type === 'file' ? 'file' : (b.type || 'replace'),
+                            path: b.path,
+                            content: codeOnly
+                        };
+                    });
+
+                    // Create skeleton rows with "Pending" icon (Clock) initially
+                    resultsList.innerHTML = changes.map((c, idx) => `
+                        <div class="apply-row" data-path="${c.path}" data-block-index="${idx}" style="display:flex; align-items:center; gap:8px; margin-bottom:6px; padding:4px; border-radius:4px;">
+                            <span class="status-icon"><span class="codicon codicon-clock"></span></span>
+                            <span style="font-weight:600; font-size:10px; opacity:0.7; min-width:50px;">[${c.type.toUpperCase()}]</span>
+                            <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${c.path}</span>
+                            <div class="row-actions" style="display:none;"></div>
+                        </div>
+                    `).join('');
+
+                    vscode.postMessage({ command: 'applyAllChanges', changes, messageId });
+                };
+
+                wrapper.appendChild(btn);
+                wrapper.appendChild(resultsList);
+                contentDiv.appendChild(wrapper);
             }
         }
     } catch (e) {
@@ -1773,10 +1899,12 @@ function addChatMessage(message: any, isFinal: boolean = true) {
             text: textForClipboard 
         });
         
-        const icon = copyBtn.querySelector('.codicon');
-        if(icon) {
-            icon.classList.replace('codicon-copy', 'codicon-check');
-            setTimeout(() => icon.classList.replace('codicon-check', 'codicon-copy'), 2000);
+        const iconEl = copyBtn.querySelector('.codicon');
+        if(iconEl) {
+            iconEl.classList.replace('codicon-copy', 'codicon-check');
+            setTimeout(() => {
+                if (iconEl) iconEl.classList.replace('codicon-check', 'codicon-copy');
+            }, 2000);
         }
     }, 'msg-action-btn', 'Copy Message');
     actions.appendChild(copyBtn);
@@ -1887,8 +2015,8 @@ export function updateContext(contextText: string, files: string[] = [], skills:
             <span class="codicon codicon-library"></span>
         </div>
         <div class="message-body">
-            <div class="message-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 10px;">
-                <div style="display:flex; flex-direction:column; gap:4px; flex:1;">
+            <div class="message-header" style="display: flex; justify-content: space-between; align-items: flex-start; width: 100%; margin-bottom: 10px; flex-wrap: wrap; gap: 10px;">
+                <div style="display:flex; flex-direction:column; gap:4px; min-width: 180px;">
                     <div style="display:flex; align-items:center; gap:8px;">
                         <span class="role-name">Project Context</span>
                         <div id="status-label" class="status-label visible" style="background:transparent; padding:0; margin:0; font-weight:normal; opacity:0.7;">
@@ -1896,7 +2024,7 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                             <span id="status-text" style="font-size:10px;">Ready</span>
                         </div>
                     </div>
-                    <div class="token-progress" style="width: 200px; margin-top: 2px;">
+                    <div class="token-progress" style="width: 100%; max-width: 200px; margin-top: 2px;">
                         <div class="token-progress-container" style="height: 3px;">
                             <div class="token-progress-bar" id="token-progress-bar"></div>
                         </div>
@@ -1907,7 +2035,7 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                         </div>
                     </div>
                 </div>
-                <div style="display: flex; gap: 5px;">
+                <div style="display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-start; flex: 1;">
                     <button id="view-full-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="View Full Context and Structure">
                         <span class="codicon codicon-book"></span> View
                     </button>
@@ -2615,6 +2743,33 @@ export function insertNewMessageEditor(role: 'user' | 'assistant') {
     const cancelBtn = editorWrapper.querySelector('.edit-cancel-btn');
     if(cancelBtn) {
         (cancelBtn as HTMLElement).addEventListener('click', () => editorWrapper.remove());
+    }
+}
+
+/**
+ * Checks all actionable blocks in a message. If all are red (applied), 
+ * makes the "Apply All" button at the bottom red as well.
+ */
+export function checkAndSyncMessageAppliedState(messageId: string) {
+    const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
+    if (!wrapper) return;
+
+    const blocks = wrapper.querySelectorAll('details.code-collapsible');
+    const applyAllBtn = wrapper.querySelector('.apply-all-btn') as HTMLButtonElement;
+    if (!applyAllBtn) return;
+
+    let allApplied = true;
+    blocks.forEach(block => {
+        const mainBtn = block.querySelector('.code-actions .apply-btn');
+        if (mainBtn && !mainBtn.classList.contains('applied')) {
+            allApplied = false;
+        }
+    });
+
+    if (allApplied && blocks.length > 0) {
+        applyAllBtn.classList.add('applied');
+        applyAllBtn.innerHTML = '<span class="codicon codicon-check"></span> All Changes Applied';
+        applyAllBtn.disabled = true;
     }
 }
 

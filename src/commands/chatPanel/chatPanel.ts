@@ -60,6 +60,10 @@ export class ChatPanel {
   private _discussionCapabilities: DiscussionCapabilities;
   private _tokenAbortController: AbortController | null = null;
 
+  // Track active listeners to prevent duplication
+  private _activeGenerationListener?: (chunk: string) => void;
+  private _activeGenerationCompleteListener?: (fullContent: string) => void;
+
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, discussionManager: DiscussionManager, discussionId: string, gitIntegration: GitIntegration, skillsManager?: SkillsManager): ChatPanel {
     const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
 
@@ -401,6 +405,7 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
       if (activeGen) {
           this.log(`Reconnecting to active generation for ${this.discussionId}`);
           
+          // Re-inject the partial message into the UI (since loadDiscussion wipes UI state)
           const tempMsg: ChatMessage = {
               id: activeGen.messageId,
               role: 'assistant',
@@ -410,36 +415,51 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
           };
           this._panel.webview.postMessage({ command: 'addMessage', message: tempMsg });
           
-          const listener = (chunk: string) => {
-              if (!this._isDisposed && this._panel.webview) {
-                  this._panel.webview.postMessage({ 
-                      command: 'appendMessageChunk', 
-                      id: activeGen.messageId, 
-                      chunk: chunk 
-                  });
-              }
-          };
-          
-          const completionListener = (fullContent: string) => {
-              if (!this._isDisposed && this._panel.webview) {
-                  this._panel.webview.postMessage({ 
-                      command: 'finalizeMessage', 
-                      id: activeGen.messageId, 
-                      fullContent: fullContent 
-                  });
-                  this.updateGeneratingState();
-              }
-          };
+          // Only attach new listeners if we haven't already attached them for this panel instance
+          if (!this._activeGenerationListener || !activeGen.listeners.has(this._activeGenerationListener)) {
+              this.log("Attaching new listeners for active generation");
 
-          activeGen.listeners.add(listener);
-          activeGen.onComplete.add(completionListener);
+              const listener = (chunk: string) => {
+                  if (!this._isDisposed && this._panel.webview) {
+                      this._panel.webview.postMessage({ 
+                          command: 'appendMessageChunk', 
+                          id: activeGen.messageId, 
+                          chunk: chunk 
+                      });
+                  }
+              };
+              
+              const completionListener = (fullContent: string) => {
+                  if (!this._isDisposed && this._panel.webview) {
+                      this._panel.webview.postMessage({ 
+                          command: 'finalizeMessage', 
+                          id: activeGen.messageId, 
+                          fullContent: fullContent 
+                  });
+                      this.updateGeneratingState();
+                      
+                      // Cleanup
+                      this._activeGenerationListener = undefined;
+                      this._activeGenerationCompleteListener = undefined;
+                  }
+              };
+
+              this._activeGenerationListener = listener;
+              this._activeGenerationCompleteListener = completionListener;
+
+              activeGen.listeners.add(listener);
+              activeGen.onComplete.add(completionListener);
+          } else {
+              this.log("Listeners already attached for this panel, skipping.");
+          }
           
           this.updateGeneratingState();
       }
 
       // Merge System Profiles with User Profiles for the UI
       const { SYSTEM_RESPONSE_PROFILES } = require('../../utils');
-      const allProfiles = [...SYSTEM_RESPONSE_PROFILES, ...profiles.filter((p: any) => !SYSTEM_RESPONSE_PROFILES.some((sp: any) => sp.id === p.id))];
+      const userProfiles = (Array.isArray(profiles) ? profiles : []).filter((p: any) => p && p.id);
+      const allProfiles = [...SYSTEM_RESPONSE_PROFILES, ...userProfiles.filter((p: any) => !SYSTEM_RESPONSE_PROFILES.some((sp: any) => sp.id === p.id))];
 
       this._panel.webview.postMessage({ 
           command: 'updateDiscussionCapabilities', 
@@ -774,7 +794,7 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
               content: `**🧠 Auto-Context Agent (Manual)**\n*Objective: "${objective.substring(0, 100)}${objective.length>100?'...':''}"*\n\n`,
               skipInPrompt: true // Keep it out of future context
           });
-          await this._contextManager.runContextAgent(
+          const result = await this._contextManager.runContextAgent(
                 objective, 
                 model, 
                 controller.signal,
@@ -795,6 +815,17 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
                 },
                 keywords
             );
+
+            // Persist the Librarian's analysis into the discussion data zone 
+            // so the next model call has the reasoning context.
+            if (this._currentDiscussion && result.analysis) {
+                const header = `### 🧠 AUTO-CONTEXT ANALYSIS\n`;
+                this._currentDiscussion.discussion_data_zone = (this._currentDiscussion.discussion_data_zone || "") + `\n${header}${result.analysis}\n`;
+                if (!this._currentDiscussion.id.startsWith('temp-')) {
+                    await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                }
+            }
+
             this.updateContextAndTokens();
       } catch (e: any) {
           if (e.name !== 'AbortError') {
@@ -822,18 +853,23 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
     const activeSkillIds = Array.from(new Set([...projectSkills, ...discussionSkills]));
 
     const root: any = { id: 'root', label: 'Skills Library', children: [], isSkill: false };
+    
+    // Initialize explicit library branches
+    const globalRoot = { id: 'global-lib', label: 'Global Library', children: [], isSkill: false, isBundle: true };
+    const projectRoot = { id: 'project-lib', label: 'Project Library', children: [], isSkill: false, isBundle: true };
+    root.children.push(globalRoot, projectRoot);
 
     allSkills.forEach(skill => {
         const category = skill.category || 'Uncategorized';
-        // Handle backslashes and split
         const parts = category.replace(/\\/g, '/').split('/').filter(p => p);
         
-        let current = root;
-        let pathSoFar = "";
+        // Route to the correct library branch based on scope
+        let current = skill.scope === 'global' ? globalRoot : projectRoot;
+        let pathSoFar = skill.scope;
         
-        // Build/Navigate Categories
+        // Build/Navigate Categories within that branch
         parts.forEach(part => {
-            pathSoFar = pathSoFar ? `${pathSoFar}/${part}` : part;
+            pathSoFar = `${pathSoFar}/${part}`;
             let existing = current.children.find((c:any) => c.label === part && !c.isSkill);
             if (!existing) {
                 existing = { id: pathSoFar, label: part, children: [], isSkill: false, isBundle: true };
@@ -1286,7 +1322,7 @@ Please provide the **FULL CONTENT** of the file instead using the format:
             id: contextAgentMsgId, role: 'system', content: `**🧠 Auto-Context Agent**\n*Analyzing project structure...*\n\n`, skipInPrompt: true 
         });
         try {
-            await this._contextManager.runContextAgent(
+            const result = await this._contextManager.runContextAgent(
                 userPromptText, 
                 model, 
                 controller.signal, 
@@ -1300,6 +1336,12 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                     }
                 }
             );
+            
+            // Persist Librarian insights for the main chat call
+            if (this._currentDiscussion && result.analysis) {
+                const header = `### 🧠 AUTO-CONTEXT ANALYSIS\n`;
+                this._currentDiscussion.discussion_data_zone = (this._currentDiscussion.discussion_data_zone || "") + `\n${header}${result.analysis}\n`;
+            }
         } catch (e: any) { this.log(`Auto-Context failed: ${e.message}`, 'ERROR'); }
     }
 
@@ -1379,6 +1421,8 @@ Please provide the **FULL CONTENT** of the file instead using the format:
         files: isContextMuted ? "## File Contents\n(Muted by user for this turn)" : contextData.selectedFilesContent, 
         skills: contextData.skillsContent 
     };
+
+    const workingMemory = this._currentDiscussion?.discussion_data_zone || "";
 
     if (this._discussionCapabilities.herdMode && this.herdManager) {
         this.processManager.updateDescription(processId, "🐂 Planning herd...");
@@ -1488,7 +1532,7 @@ Please provide the **FULL CONTENT** of the file instead using the format:
 
         const personaContent = this.getCurrentPersonaSystemPrompt();
         const forceFullCode = config.get<boolean>('forceFullCodePath') || false;
-        const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, forceFullCode, context);
+        const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, forceFullCode, context, workingMemory);
         
         const profiles = config.get<ResponseProfile[]>('responseProfiles') || [];
         const activeProfileId = this._discussionCapabilities.responseProfileId || config.get<string>('defaultResponseProfileId') || 'balanced';
@@ -1529,7 +1573,13 @@ Please provide the **FULL CONTENT** of the file instead using the format:
             onComplete: new Set()
         };
         
-        const panelListener = (chunk: string) => { if (!this._isDisposed && this._panel.webview) this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk }); };
+        const panelListener = (chunk: string) => { 
+            if (!this._isDisposed && this._panel.webview) {
+                this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk }); 
+            }
+        };
+        
+        this._activeGenerationListener = panelListener;
         generationSession.listeners.add(panelListener);
         ChatPanel.activeGenerations.set(this.discussionId, generationSession);
         
@@ -1543,6 +1593,12 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                 firstTokenReceived = true;
                 this.processManager.updateDescription(processId, "Generating response...");
                 this.updateGeneratingState();
+            }
+
+            // 🧠 THOUGHT NOTIFICATIONS (REAL-TIME)
+            // If the model starts thinking using tags, show a preview notification
+            if (fullResponse.length === 0 && chunk.includes('<think')) {
+                vscode.window.showInformationMessage("🧠 Lollms is contemplating a solution...");
             }
 
             fullResponse += chunk;
@@ -1577,6 +1633,40 @@ Please provide the **FULL CONTENT** of the file instead using the format:
             }
         );
 
+        // --- CONTEXT EXPANSION (SELF-CORRECTION) ---
+        const addFilesRegex = /<add_files>([\s\S]*?)<\/add_files>/i;
+        const addFilesMatch = processedResponse.match(addFilesRegex);
+
+        if (addFilesMatch && !controller.signal.aborted) {
+            const filesToInclude = addFilesMatch[1].split('\n')
+                .map(f => f.trim())
+                .filter(f => f.length > 0);
+
+            if (filesToInclude.length > 0) {
+                this.log(`AI requested context expansion: ${filesToInclude.join(', ')}`);
+                
+                // 1. Mark this partial response as a "Thinking Step" in the data zone
+                if (this._currentDiscussion) {
+                    const insight = `Step ${this._currentDiscussion.messages.length}: AI realized it needed more files to avoid assumptions.\nRequest: ${filesToInclude.join(', ')}`;
+                    this._currentDiscussion.discussion_data_zone = (this._currentDiscussion.discussion_data_zone || "") + `\n${insight}\n`;
+                }
+
+                // 2. Add files to context
+                await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', filesToInclude);
+                
+                // 3. Remove the "waiting" assistant bubble that just requested files
+                await this.deleteMessage(assistantMessageId);
+
+                // 4. Auto-Resume: Call sendMessage again with a system nudge
+                this.processManager.unregister(processId);
+                return this.sendMessage({ 
+                    role: 'system', 
+                    content: `Files have been added to your context. Please resume your task and complete the original user request without making assumptions.`,
+                    skipInPrompt: true 
+                } as any);
+            }
+        }
+
         // --- AUTOMATION PIPELINE ---
         if (this._discussionCapabilities.autoApply && !controller.signal.aborted) {
             await this.executeAutomationPipeline(processedResponse, assistantMessageId, controller.signal, processId);
@@ -1599,9 +1689,11 @@ Please provide the **FULL CONTENT** of the file instead using the format:
     } catch (error: any) { 
         if (error.name === 'AbortError' || error.message === 'AbortError') {
             const session = ChatPanel.activeGenerations.get(this.discussionId);
-            // If the user stopped it but NO text was generated yet, remove the empty bubble
+            // If the user stopped it but NO text was generated yet, remove the empty bubble.
+            // Since it hasn't been added to the discussion.messages array yet, 
+            // reloading the discussion will clear the optimistic UI state in the webview.
             if (session && (!session.buffer || session.buffer.trim().length === 0)) {
-                await this.deleteMessage(assistantMessageId);
+                await this.loadDiscussion(); 
             }
         } else {
             this.addMessageToDiscussion({ role: 'system', content: `**Error:** ${error.message}` }); 
@@ -1609,6 +1701,11 @@ Please provide the **FULL CONTENT** of the file instead using the format:
     }
     finally { 
         ChatPanel.activeGenerations.delete(this.discussionId); 
+        
+        // Clean up listeners
+        this._activeGenerationListener = undefined;
+        this._activeGenerationCompleteListener = undefined;
+
         this.processManager.unregister(processId); 
         
         // Reset metrics in the UI
@@ -1868,14 +1965,21 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                 break;
             case 'applyAllChanges':
                 const changesBatch = message.changes;
+                const messageId = message.messageId;
+                
+                const { id: applyProcId, controller: applyCtrl } = this.processManager.register(this.discussionId, `Applying ${changesBatch.length} changes...`);
+                
                 await vscode.window.withProgress({
                     location: vscode.ProgressLocation.Notification,
-                    title: `Lollms: Sequential Apply (${changesBatch.length} steps)`,
+                    title: `Lollms: Bulk Apply (${changesBatch.length} files)`,
                     cancellable: true
                 }, async (progress, token) => {
+                    token.onCancellationRequested(() => applyCtrl.abort());
+
                     let count = 0;
-                    for (const change of changesBatch) {
-                        if (token.isCancellationRequested) break;
+                    for (let i = 0; i < changesBatch.length; i++) {
+                        if (token.isCancellationRequested || applyCtrl.signal.aborted) break;
+                        const change = changesBatch[i];
                         count++;
                         
                         progress.report({ 
@@ -1883,33 +1987,52 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                             increment: (1 / changesBatch.length) * 100 
                         });
 
+                        // Show spinner for the current item
+                        this._panel.webview.postMessage({ command: 'applyStart', messageId: messageId, blockIndex: i });
+
+                        let result: any = { success: false };
                         try {
-                            // Use AWAIT on the commands to force sequential execution.
-                            // This prevents "file busy" or "context mismatch" if multiple SEARCH/REPLACE 
-                            // blocks target the same file in one message.
                             const opts = { silent: true };
                             if (change.type === 'file') {
                                 await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', change.path, change.content, opts);
+                                result.success = true;
+                            } else if (change.type === 'replace') {
+                                try {
+                                    const replaceResult = await vscode.commands.executeCommand(
+                                        'lollms-vs-coder.replaceCode',
+                                        change.path,
+                                        change.content,
+                                        this,
+                                        messageId,
+                                        opts
+                                    );
+                                    // Preserve any other properties the command might return
+                                    result = { success: true, ...(replaceResult || {}) };
+                                } catch (e: any) {
+                                    result = { success: false, error: e.message };
+                                }
                             } else if (change.type === 'diff') {
                                 await vscode.commands.executeCommand('lollms-vs-coder.applyPatchContent', change.path, change.content, opts);
-                            } else if (change.type === 'insert') {
-                                await vscode.commands.executeCommand('lollms-vs-coder.insertCode', change.path, change.content, opts);
-                            } else if (change.type === 'replace') {
-                                await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', change.path, change.content, this, message.messageId, opts);
-                            } else if (change.type === 'delete') {
-                                await vscode.commands.executeCommand('lollms-vs-coder.deleteCodeBlock', change.path, change.content);
+                                result.success = true;
                             }
-                            
-                            // Small delay between operations to allow FS events to settle
-                            await new Promise(resolve => setTimeout(resolve, 100));
-
                         } catch (e: any) {
-                            Logger.error(`Apply All failed at step ${count} (${change.path}): ${e.message}`);
-                            vscode.window.showErrorMessage(`Failed at ${change.path}: ${e.message}`);
-                            // We continue with other files even if one fails
+                            result = { success: false, error: e.message };
                         }
+                        
+                        // Notify UI for this specific file including the index
+                        this._panel.webview.postMessage({
+                            command: 'applyAllResult',
+                            messageId: messageId,
+                            filePath: change.path,
+                            blockIndex: i, // Crucial for unique row mapping
+                            success: result.success,
+                            error: result.error
+                        });
+
+                        await new Promise(resolve => setTimeout(resolve, 100));
                     }
                 });
+                this.processManager.unregister(applyProcId);
                 break;
             case 'renameFile':
                 vscode.commands.executeCommand('lollms-vs-coder.renameFile', message.originalPath, message.newPath);
@@ -1969,66 +2092,26 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                 }
                 break;
             case 'requestFileSearch':
-                if (vscode.workspace.workspaceFolders) {
+                {
                     const query = message.query.trim();
-                    const allFiles = await this._contextManager.getWorkspaceFilePaths();
-                    const workspaceRoot = vscode.workspace.workspaceFolders[0].uri;
-                    
-                    // Regex Conversion (Wildcards to Regex)
-                    let regex: RegExp;
-                    try {
-                        const regexStr = query.replace(/[.+^${}()|[\]\\]/g, '\\$&')
-                                              .replace(/\*/g, '.*')
-                                              .replace(/\?/g, '.');
-                        regex = new RegExp(regexStr, 'gi');
-                    } catch (e) {
-                        regex = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
-                    }
+                    const searchMode = message.mode || 'path'; // 'path' or 'content'
+                    let results: any[] = [];
 
-                    const results: any[] = [];
-                    const binaryExts = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.zip', '.tar', '.gz', '.exe', '.dll', '.so', '.pyc']);
-
-                    // Deep Scan: Check path AND content
-                    for (const f of allFiles) {
-                        if (results.length >= 50) break; // Limit UI results for performance
-
-                        const ext = path.extname(f).toLowerCase();
-                        if (binaryExts.has(ext)) continue;
-
-                        try {
-                            const fileUri = vscode.Uri.joinPath(workspaceRoot, f);
-                            const bytes = await vscode.workspace.fs.readFile(fileUri);
-                            const content = Buffer.from(bytes).toString('utf8');
-                            
-                            let matchFound = false;
-                            let snippet = "";
-
-                            // 1. Check File Path
-                            if (f.match(regex)) {
-                                matchFound = true;
-                                snippet = content.substring(0, 150).replace(/\r?\n/g, ' ') + "...";
-                            } 
-                            
-                            // 2. Check File Content (if path didn't match or to get better snippet)
-                            const contentMatch = regex.exec(content);
-                            if (contentMatch) {
-                                matchFound = true;
-                                const start = Math.max(0, contentMatch.index - 50);
-                                snippet = (start > 0 ? "..." : "") + content.substring(start, start + 150).replace(/\r?\n/g, ' ') + "...";
-                            }
-
-                            if (matchFound) {
-                                results.push({ path: f, snippet });
-                            }
-                            
-                            // Reset regex index for the next file
-                            regex.lastIndex = 0;
-                        } catch (e) {
-                            // Skip files that can't be read
-                        }
+                    if (searchMode === 'content') {
+                        results = await this._contextManager.searchWorkspaceContent(query);
+                    } else {
+                        // Original Filename Search Logic (Optimized)
+                        const allFiles = await this._contextManager.getWorkspaceFilePaths();
+                        const escapedQuery = query.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
+                        const regex = new RegExp(escapedQuery, 'gi');
+                        
+                        results = allFiles
+                            .filter(f => f.match(regex))
+                            .slice(0, 50)
+                            .map(f => ({ path: f, snippet: "" }));
                     }
                     
-                    webview.postMessage({ command: 'fileSearchResults', results, query });
+                    webview.postMessage({ command: 'fileSearchResults', results, query, mode: searchMode });
                 }
                 break;
             case 'performDeepDiscussionSearch':
@@ -2108,9 +2191,10 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                 break;
             case 'requestAddDiagramToContext':
                 const diagType = await vscode.window.showQuickPick([
-                    { label: 'Class Diagram', id: 'class_diagram' },
+                    { label: 'Inheritance Diagram', id: 'class_diagram' },
                     { label: 'Call Graph', id: 'call_graph' },
-                    { label: 'Import Graph', id: 'import_graph' }
+                    { label: 'Import Graph', id: 'import_graph' },
+                    { label: 'Function Signatures', id: 'function_signatures' }
                 ], { placeHolder: 'Select diagram type to include in AI context' });
 
                 if (diagType && this._currentDiscussion) {
@@ -2500,6 +2584,7 @@ Task:
                         this.addMessageToDiscussion({ role: 'system', content: `❌ Image generation failed: ${error.message}` });
                     }
                 });
+                this.processManager.unregister(applyProcId);
                 break;
             case 'saveSkill':
                 await this.handleSaveSkill(message.content);
@@ -2706,6 +2791,7 @@ Task:
                         }
                     }
                 });
+                this.processManager.unregister(applyProcId);
                 break;
 
             case 'requestGitStatus':
@@ -3621,41 +3707,6 @@ Task:
                         </div>
                     </div>
 
-                    <div class="modal-section">
-                        <h3>Response Profiles</h3>
-                        <p style="font-size: 11px; opacity: 0.8; margin-bottom: 10px;">Select or modify response styles (e.g., Balanced, Minimalist, Pedagogical).</p>
-                        
-                        <div style="display:flex; gap:10px; margin-bottom:10px;">
-                            <select id="modal-default-profile-select" class="menu-select" style="flex:1; margin:0;"></select>
-                            <button id="modal-add-profile-btn" class="code-action-btn apply-btn" style="margin:0; width: auto; height: 32px;"><i class="codicon codicon-add"></i> New</button>
-                        </div>
-
-                        <div id="modal-profiles-container" style="display:flex; flex-direction:column; gap:8px; max-height: 200px; overflow-y: auto; padding: 2px;">
-                            <!-- Profiles injected here -->
-                        </div>
-
-                        <!-- Profile Editor Overlay (Hidden by default) -->
-                        <div id="modal-profile-editor" style="display:none; border: 1px solid var(--vscode-focusBorder); padding: 12px; border-radius: 4px; margin-top: 10px; background: var(--vscode-editor-inactiveSelectionBackground);">
-                            <h4 style="margin: 0 0 10px 0; font-size: 12px;">Edit Profile</h4>
-                            <div class="form-group">
-                                <label style="font-size: 11px;">Name</label>
-                                <input type="text" id="modal-p-name">
-                            </div>
-                            <div class="form-group">
-                                <label style="font-size: 11px;">Description</label>
-                                <input type="text" id="modal-p-desc">
-                            </div>
-                            <div class="form-group">
-                                <label style="font-size: 11px;">System Instructions</label>
-                                <textarea id="modal-p-prompt" rows="4" style="font-family: var(--vscode-editor-font-family); font-size: 11px;"></textarea>
-                            </div>
-                            <div style="display:flex; gap:8px; margin-top:10px; justify-content: flex-end;">
-                                <button id="modal-p-cancel" class="code-action-btn" style="width: auto;">Cancel</button>
-                                <button id="modal-p-save" class="code-action-btn apply-btn" style="width: auto;">Update</button>
-                            </div>
-                        </div>
-                    </div>
-
                     <div class="modal-section" style="border:none;">
                         <h3>Misc</h3>
                         <div class="checkbox-container">
@@ -3747,7 +3798,15 @@ Task:
                 </div>
                 <div class="modal-body">
                     <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:12px;">
-                        <input type="text" id="file-search-input" placeholder="Search files by name or path..." style="flex:1;">
+                        <div style="display:flex; gap:15px; margin-bottom: 5px;">
+                            <label style="display:flex; align-items:center; gap:5px; font-size:11px; cursor:pointer;">
+                                <input type="radio" name="search-mode" value="path" checked style="width:auto; margin:0;"> Filename
+                            </label>
+                            <label style="display:flex; align-items:center; gap:5px; font-size:11px; cursor:pointer;">
+                                <input type="radio" name="search-mode" value="content" style="width:auto; margin:0;"> Code Content
+                            </label>
+                        </div>
+                        <input type="text" id="file-search-input" placeholder="Type query and press Enter..." style="flex:1;">
                         <div style="font-size: 10px; opacity: 0.7; display: flex; gap: 10px; flex-wrap: wrap;">
                             <span>Examples:</span>
                             <code>*.ts</code>
@@ -3778,7 +3837,15 @@ Task:
                 </div>
                 <div class="modal-body">
                     <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:12px;">
-                        <input type="text" id="file-search-input" placeholder="Search files by name or path..." style="flex:1;">
+                        <div style="display:flex; gap:15px; margin-bottom: 5px;">
+                            <label style="display:flex; align-items:center; gap:5px; font-size:11px; cursor:pointer;">
+                                <input type="radio" name="search-mode" value="path" checked style="width:auto; margin:0;"> Filename
+                            </label>
+                            <label style="display:flex; align-items:center; gap:5px; font-size:11px; cursor:pointer;">
+                                <input type="radio" name="search-mode" value="content" style="width:auto; margin:0;"> Code Content
+                            </label>
+                        </div>
+                        <input type="text" id="file-search-input" placeholder="Type query and press Enter..." style="flex:1;">
                         <div style="font-size: 10px; opacity: 0.7; display: flex; gap: 10px; flex-wrap: wrap;">
                             <span>Examples:</span>
                             <code>*.ts</code>

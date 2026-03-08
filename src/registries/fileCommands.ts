@@ -273,17 +273,17 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         );
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string, panel?: any, messageId?: string, options?: { silent?: boolean }) => {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string, panel?: any, messageId?: string, options?: { silent?: boolean }): Promise<{ success: boolean, error?: string, repaired?: boolean }> => {
         const activeWorkspace = getActiveWorkspace();
-        if (!activeWorkspace) return;
+        if (!activeWorkspace) return { success: false, error: "No active workspace" };
 
-        // Use strict line-anchored regex to find all hunks
-        const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
+        // Use multiline regex but allow flexibility for start-of-line markers
+        const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
         const matches = [...content.matchAll(aiderRegex)];
         
         if (matches.length === 0) {
-             vscode.window.showErrorMessage("No valid Search/Replace blocks found. Ensure markers start at the beginning of the line.");
-             return;
+             if (!options?.silent) vscode.window.showErrorMessage("No valid Search/Replace blocks found. Ensure markers start at the beginning of the line.");
+             return { success: false, error: "Invalid Aider block format" };
         }
         
         const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
@@ -306,7 +306,9 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                     applyCount++;
                 } else {
                     const fixBtn = "Fix with AI";
-                    const selection = await vscode.window.showErrorMessage(
+                    // If in silent mode (e.g. Workspace Repair Engine), we auto-select "Fix with AI" 
+                    // instead of blocking the execution with a UI dialog.
+                    const selection = options?.silent ? fixBtn : await vscode.window.showErrorMessage(
                         `Could not apply search/replace block in ${filePath}: ${result.error}`,
                         fixBtn, "Cancel"
                     );
@@ -372,7 +374,7 @@ ${originalContent}
 
                                     // 2. Automatically retry applying the NEW content
                                     vscode.window.showInformationMessage(vscode.l10n.t("Block repaired. Retrying apply..."));
-                                    await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, fixedBlock, panel, messageId);
+                                    await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, fixedBlock, panel, messageId, { silent: true });
                                 } else {
                                     vscode.window.showWarningMessage(
                                         vscode.l10n.t("Lollms: The AI suggested a fix but the response format was unrecognizable. Please fix the block manually.")
@@ -393,13 +395,17 @@ ${originalContent}
                 edit.replace(fileUri, fullRange, currentContent);
                 const applied = await vscode.workspace.applyEdit(edit);
                 
-                if (applied && options?.silent) {
-                    await document.save();
-                } else if (applied) {
-                    await openDiffView(fileUri, originalContent);
-                    vscode.window.showInformationMessage(`Applied ${applyCount} change(s) to ${filePath}.`);
+                if (applied) {
+                    if (options?.silent) {
+                        await document.save();
+                    } else {
+                        await openDiffView(fileUri, originalContent);
+                        vscode.window.showInformationMessage(`Applied ${applyCount} change(s) to ${filePath}.`);
+                    }
+                    return { success: true };
                 }
             }
+            return { success: false, error: "Failed to apply edits to document." };
 
         } catch(e: any) {
             vscode.window.showErrorMessage(`Error accessing file ${filePath}: ${e.message}`);

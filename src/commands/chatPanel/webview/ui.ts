@@ -125,33 +125,39 @@ function createToggleBadge(
 export function renderProfilesInModal() {
     const container = document.getElementById('modal-profiles-container');
     const selector = document.getElementById('modal-default-profile-select') as HTMLSelectElement;
-    if (!container || !selector || !state.profiles) return;
+    if (!selector || !state.profiles) return;
 
-    container.innerHTML = '';
+    // Clear and repopulate the dropdown seen in your screenshot
     selector.innerHTML = '';
 
     const currentProfileId = state.capabilities?.responseProfileId || 'balanced';
 
     state.profiles.forEach((p, idx) => {
-        // 1. Update Selector
-        const opt = new Option(p.name + (p.id === currentProfileId ? " (Active)" : ""), p.id);
+        // 1. Update Selector (Dropdown)
+        const opt = document.createElement('option');
+        opt.value = p.id;
+        opt.textContent = p.name + (p.id === currentProfileId ? " (Active)" : "");
         opt.selected = p.id === currentProfileId;
         selector.appendChild(opt);
 
-        // 2. Create Profile Row
-        const item = document.createElement('div');
-        item.style.cssText = "display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--vscode-list-hoverBackground); border-radius: 4px; border: 1px solid var(--vscode-widget-border);";
-        
-        item.innerHTML = `
-            <div style="flex:1; min-width:0;">
-                <div style="font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${p.name}</div>
-                <div style="font-size: 10px; opacity: 0.7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${p.description}</div>
-            </div>
-            <button class="icon-btn edit-p-btn" data-idx="${idx}" title="Edit"><i class="codicon codicon-edit"></i></button>
-            <button class="icon-btn remove-p-btn" data-idx="${idx}" title="Delete" style="color: var(--vscode-errorForeground);"><i class="codicon codicon-trash"></i></button>
-        `;
-        
-        container.appendChild(item);
+        // 2. Create Profile Management Row (List)
+        if (container) {
+            if (idx === 0) container.innerHTML = ''; // Clear only on first item
+
+            const item = document.createElement('div');
+            item.className = 'profile-list-item';
+            item.style.cssText = "display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--vscode-list-hoverBackground); border-radius: 4px; border: 1px solid var(--vscode-widget-border); margin-bottom: 4px;";
+            
+            item.innerHTML = `
+                <div style="flex:1; min-width:0;">
+                    <div style="font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${p.name}</div>
+                    <div style="font-size: 10px; opacity: 0.7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${p.description}</div>
+                </div>
+                <button class="icon-btn edit-p-btn" data-idx="${idx}" title="Edit"><i class="codicon codicon-edit"></i></button>
+                <button class="icon-btn remove-p-btn" data-idx="${idx}" title="Delete" style="color: var(--vscode-errorForeground);"><i class="codicon codicon-trash"></i></button>
+            `;
+            container.appendChild(item);
+        }
     });
 
     // Delegate Events
@@ -573,15 +579,15 @@ export function updateBadges() {
         badge.title = `Current Branch: ${branchName}. Click for actions.`;
         badge.id = 'git-badge';
         
-        const icon = document.createElement('span');
-        icon.className = 'codicon codicon-git-branch';
-        icon.style.marginRight = '4px';
+        const iconEl = document.createElement('span');
+        iconEl.className = 'codicon codicon-git-branch';
+        iconEl.style.marginRight = '4px';
         
         const label = document.createElement('span');
         label.className = 'badge-label';
         label.textContent = branchName;
         
-        badge.appendChild(icon);
+        badge.appendChild(iconEl);
         badge.appendChild(label);
         
         wrapper.appendChild(badge);

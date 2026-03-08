@@ -94,28 +94,39 @@ export function registerDebugCommands(context: vscode.ExtensionContext, services
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.debugErrorSendToDiscussion', async () => {
         const error = debugErrorManager.lastError;
-        if (!error) {
-            vscode.window.showWarningMessage("No debug error captured to send.");
+        if (!error || !error.filePath) {
+            vscode.window.showWarningMessage("No debug error with source captured.");
             return;
         }
 
         const panel = ChatPanel.currentPanel;
         if (!panel) {
-            vscode.window.showErrorMessage("No active Lollms chat discussion found. Please open a chat first.");
+            vscode.window.showErrorMessage("Open a Lollms chat first.");
             return;
         }
 
-        const errorFileRelative = error.filePath ? vscode.workspace.asRelativePath(error.filePath) : 'Unknown file';
-        
-        let errorText = `### 🛑 RUNTIME EXCEPTION\n`;
-        errorText += `**Error:** ${error.message}\n`;
-        errorText += `**Location:** \`${errorFileRelative}\` at line ${error.line}\n\n`;
+        let sourceLine = "";
+        let langId = "plaintext";
+        try {
+            const doc = await vscode.workspace.openTextDocument(error.filePath);
+            langId = doc.languageId;
+            if (error.line && error.line <= doc.lineCount) {
+                sourceLine = doc.lineAt(error.line - 1).text;
+            }
+        } catch (e) {}
 
-        if (error.locals) {
-            errorText += `**Local Variables:**\n\`\`\`\n${error.locals}\n\`\`\`\n\n`;
-        }
+        const reportData = {
+            message: error.message,
+            file: vscode.workspace.asRelativePath(error.filePath),
+            line: error.line,
+            code: sourceLine,
+            language: langId,
+            variables: error.locals,
+            stack: error.stack
+        };
 
-        errorText += `**Stack Trace:**\n\`\`\`\n${error.stack || 'No stack trace available'}\n\`\`\`\n\nPlease analyze this error and suggest a fix.`;
+        // Wrap in a custom tag for the specialized renderer
+        const errorText = `<debug_report data='${JSON.stringify(reportData).replace(/'/g, "&apos;")}' />\n\nPlease analyze this error and suggest a fix.`;
 
         await panel.addMessageToDiscussion({
             id: 'user_debug_err_' + Date.now(),
@@ -123,7 +134,6 @@ export function registerDebugCommands(context: vscode.ExtensionContext, services
             content: errorText
         });
 
-        // Focus the panel so the user sees the injected message
         panel._panel.reveal();
     }));
 

@@ -1,14 +1,42 @@
 import * as vscode from 'vscode';
-import { debugErrorManager } from './extensionState';
+import { debugErrorManager, debugStateManager } from './extensionState';
 
 export class LollmsDebugAdapterTracker implements vscode.DebugAdapterTracker {
     async onDidSendMessage(message: any) {
-        if (message.type === 'event' && message.event === 'stopped' && message.body.reason === 'exception') {
+        if (message.type === 'event' && message.event === 'stopped') {
             const session = vscode.debug.activeDebugSession;
             if (session) {
-                // Fetch details asynchronously
-                this.handleException(session, message.body.threadId);
+                if (message.body.reason === 'exception') {
+                    // Fetch details asynchronously
+                    this.handleException(session, message.body.threadId);
+                } else {
+                    this.handleStop(session, message.body.threadId, message.body.reason);
+                }
             }
+        }
+    }
+
+    private async handleStop(session: vscode.DebugSession, threadId: number, reason: string) {
+        try {
+            const stackTrace = await session.customRequest('stackTrace', { threadId, startFrame: 0, levels: 10 });
+            let localsString = "";
+            let location = "";
+            let topFrame = stackTrace?.stackFrames?.[0];
+            
+            if (topFrame) {
+                location = `${topFrame.source?.path}:${topFrame.line}`;
+                const scopes = await session.customRequest('scopes', { frameId: topFrame.id });
+                const localScope = scopes?.scopes?.find((s: any) => s.name === 'Locals' || s.presentationHint === 'locals');
+                
+                if (localScope) {
+                    const variables = await session.customRequest('variables', { variablesReference: localScope.variablesReference });
+                    localsString = variables?.variables?.map((v: any) => `${v.name} = ${v.value} (${v.type || 'unknown'})`).join('\n') || "";
+                }
+            }
+            
+            debugStateManager.setStoppedState({ reason, threadId, location, locals: localsString, stack: stackTrace?.stackFrames });
+        } catch(e) {
+            console.error("Lollms Debug Tracker State Error:", e);
         }
     }
 

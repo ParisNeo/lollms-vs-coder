@@ -308,6 +308,16 @@ export class AgentManager {
              }
              
              const cleanResponse = stripThinkingTags(response);
+
+             // 🧠 REASONING NOTIFICATIONS
+             // Extract thinking/reasoning tags and show them as toast notifications
+             const thoughtMatch = response.match(/<(?:think|thinking|analysis|reasoning)>([\s\S]*?)<\/\1>/i);
+             if (thoughtMatch && thoughtMatch[1]) {
+                 const thought = thoughtMatch[1].trim();
+                 const preview = thought.length > 120 ? thought.substring(0, 117) + "..." : thought;
+                 vscode.window.showInformationMessage(`🧠 Architect: ${preview}`);
+             }
+
              const jsonStr = this.planParser.extractJson(cleanResponse);
              
              if (jsonStr) {
@@ -736,6 +746,18 @@ Please provide a clear, concise final response to the user summarizing the outco
         task.result = result.output;
         task.status = result.success ? 'completed' : 'failed';
         
+        // 📊 STRUCTURED TIMELINE
+        // Record the action and the observation for the next prompt iteration.
+        // We explicitly prompt the model to compare expectations with reality.
+        const observation = result.output.substring(0, 500) + (result.output.length > 500 ? '...' : '');
+        this.completedActionsHistory.push(
+            `[TASK ${task.id}]
+- Action: ${task.action}(${JSON.stringify(resolvedParams)})
+- Intended Goal: ${task.description}
+- Status: ${task.status.toUpperCase()}
+- Actual Observation: "${observation}"`
+        );
+
         if (!result.success) {
             this.failureMemory.recordFailure(task.action, resolvedParams, result.output);
         }

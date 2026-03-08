@@ -19,7 +19,7 @@ export class SkillsTreeProvider implements vscode.TreeDataProvider<vscode.TreeIt
         const allSkills = await this.skillsManager.getSkills();
 
         if (!element) {
-            // Root Level: Show the two libraries
+            // Root Level: Show the two separate library containers
             return [
                 new SkillRootItem("Global Library", "global", vscode.TreeItemCollapsibleState.Expanded),
                 new SkillRootItem("Project Library", "local", vscode.TreeItemCollapsibleState.Expanded)
@@ -32,7 +32,7 @@ export class SkillsTreeProvider implements vscode.TreeDataProvider<vscode.TreeIt
         }
 
         if (element instanceof SkillCategoryItem) {
-            // Level N: Nested categories/skills
+            // Level N: Nested categories/skills filtered by the specific scope of the ancestor root
             return this.getNodes(allSkills.filter(s => s.scope === element.scope), element.fullPath, element.scope);
         }
 

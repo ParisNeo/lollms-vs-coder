@@ -995,11 +995,12 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
 
 .active-badges {
     display: flex;
-    gap: 12px;
+    gap: 8px;
     align-items: center;
     margin-right: 10px;
     position: relative; 
     overflow: visible;
+    flex-wrap: wrap; /* Fix: allow badges to wrap on small windows */
 }
 
 .badge-group {
@@ -1741,18 +1742,112 @@ mark.current-match {
     gap: 8px;
 }
 
-/* Skill Creation Sub-Bubble */
-.skill-creation-block {
-    background-color: var(--vscode-notifications-background, var(--vscode-editorWidget-background));
+/* Debug Report Card */
+.debug-report-card {
+    background: var(--vscode-editorWidget-background);
+    border: 1px solid var(--vscode-errorForeground);
+    border-radius: 8px;
+    margin: 15px 0;
+    overflow: hidden;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+}
+
+.debug-header {
+    background: var(--vscode-inputValidation-errorBackground);
+    color: var(--vscode-errorForeground);
+    padding: 8px 12px;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 1px solid var(--vscode-errorForeground);
+}
+
+.debug-section { padding: 12px; border-bottom: 1px solid var(--vscode-widget-border); }
+.debug-section:last-child { border-bottom: none; }
+.debug-label { font-size: 10px; text-transform: uppercase; opacity: 0.7; font-weight: bold; margin-bottom: 6px; display: block; }
+
+.debug-code-box {
+    background: var(--vscode-editor-background);
     border: 1px solid var(--vscode-widget-border);
-    border-radius: 12px;
-    margin: 16px 8px;
+    padding: 8px;
+    font-family: var(--vscode-editor-font-family);
+    border-radius: 4px;
+    position: relative;
+}
+
+.debug-line-num { color: var(--vscode-editorLineNumber-foreground); margin-right: 10px; font-size: 11px; }
+
+.debug-var-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+    font-family: var(--vscode-editor-font-family);
+}
+
+.debug-var-table tr { border-bottom: 1px solid var(--vscode-panel-border); }
+.debug-var-table td { padding: 4px 8px; }
+.var-name { color: var(--vscode-symbolIcon-variableForeground); font-weight: 600; }
+.var-type { color: var(--vscode-descriptionForeground); font-size: 10px; font-style: italic; }
+.var-val { color: var(--vscode-debugTokenExpression-string); word-break: break-all; }
+
+/* Context Expansion / Add Files Block */
+.context-expansion-block {
+    background-color: var(--vscode-editor-inactiveSelectionBackground);
+    border: 1px solid var(--vscode-widget-border);
+    border-left: 4px solid var(--vscode-infoIcon-foreground);
+    border-radius: 6px;
+    margin: 16px 0;
     padding: 0;
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
 }
+
+.expansion-header {
+    padding: 8px 12px;
+    background-color: var(--vscode-sideBarSectionHeader-background);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    font-size: 12px;
+    color: var(--vscode-infoIcon-foreground);
+}
+
+.expansion-body {
+    padding: 12px;
+    font-size: 13px;
+}
+
+.expansion-body p {
+    margin: 0 0 8px 0;
+    opacity: 0.9;
+}
+
+.expansion-file-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.expansion-file-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    background: var(--vscode-editor-background);
+    border-radius: 4px;
+    font-family: var(--vscode-editor-font-family);
+    font-size: 11px;
+    border: 1px solid var(--vscode-panel-border);
+}
+
+/* Skill Creation Sub-Bubble */
+.skill-creation-block {
 
 .skill-header {
     background-color: var(--vscode-editorWidget-background);

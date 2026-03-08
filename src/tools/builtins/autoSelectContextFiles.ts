@@ -22,7 +22,7 @@ export const autoSelectContextFilesTool: ToolDefinition = {
         const model = env.agentManager?.getCurrentDiscussion()?.model || env.lollmsApi.getModelName();
 
         try {
-            const contextText = await env.contextManager.runContextAgent(
+            const result = await env.contextManager.runContextAgent(
                 params.objective,
                 model,
                 signal,
@@ -37,7 +37,15 @@ export const autoSelectContextFilesTool: ToolDefinition = {
                 return { success: false, output: "Operation cancelled." };
             }
 
-            return { success: true, output: `Auto-context selection complete. Re-reading context...` };
+            // In Agent Mode, we also feed the analysis into the working memory
+            if (env.agentManager && result.analysis) {
+                env.agentManager.sessionState.workingMemory.push(`Auto-Context Insights: ${result.analysis}`);
+            }
+
+            return { 
+                success: true, 
+                output: `Auto-context selection complete.\n\n**Agent Analysis:**\n${result.analysis}` 
+            };
         } catch (e: any) {
             return { success: false, output: `AI failed to select files: ${e.message}` };
         }

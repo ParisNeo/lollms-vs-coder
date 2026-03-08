@@ -205,6 +205,41 @@ export class ContextManager {
       return content;
   }
 
+  public async searchWorkspaceContent(query: string, signal?: AbortSignal): Promise<{path: string, snippet: string}[]> {
+    const results: {path: string, snippet: string}[] = [];
+    const maxResults = 50;
+
+    const options: vscode.FindTextInFilesOptions = {
+        include: '**/*',
+        useIgnoreFiles: true,
+        followSymlinks: false
+    };
+
+    try {
+        await vscode.workspace.findTextInFiles({ pattern: query }, options, (match) => {
+            const relPath = vscode.workspace.asRelativePath(match.uri);
+            
+            // Extract a clean snippet from the match
+            let snippet = "";
+            if (match.results && match.results.length > 0) {
+                const firstMatch = match.results[0] as any;
+                // findTextInFiles returns preview text in the match result
+                if (firstMatch.preview) {
+                    snippet = firstMatch.preview.text.trim();
+                }
+            }
+
+            if (!results.some(r => r.path === relPath)) {
+                results.push({ path: relPath, snippet: snippet || "File match" });
+            }
+        });
+    } catch (e) {
+        console.error("Content search failed", e);
+    }
+
+    return results.slice(0, maxResults);
+  }
+
   private async searchWorkspaceKeywords(keywords: string[], cwd: string): Promise<string> {
     if (keywords.length === 0) return "No keywords provided.";
     
@@ -984,7 +1019,7 @@ If yes, you must plan searches, execute them, review results, and add valuable c
       onUpdate: (content: string) => void,
       onStatusUpdate?: (status: string) => void,
       initialKeywords?: string[]
-  ): Promise<string> {
+  ): Promise<{ context: string, analysis: string }> {
       const MAX_STEPS = 10;
       const MAX_RETRIES = 3;
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -1275,10 +1310,15 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
 
       renderUpdate("Context Ready", true, stepsTaken);
 
+      let finalContext = "";
       if (selectedFiles.size > 0) {
-          return await this.readSpecificFiles(Array.from(selectedFiles));
+          finalContext = await this.readSpecificFiles(Array.from(selectedFiles));
       }
-      return "";
+      
+      return {
+          context: finalContext,
+          analysis: cumulativeBrain
+      };
   }
 
   private async parsePdfLocal(buffer: Buffer): Promise<string> {

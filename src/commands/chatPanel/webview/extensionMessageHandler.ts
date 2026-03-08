@@ -634,10 +634,117 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 if (dom.skillsModal) {
                     dom.skillsModal.classList.add('visible');
                 }
+                break;                
+            case 'applyAllStart': {
+                const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
+                const row = wrapper?.querySelector(`.apply-row[data-block-index='${message.blockIndex}']`);
+                if (row) {
+                    const iconEl = row.querySelector('.status-icon');
+                    if (iconEl) iconEl.innerHTML = '<div class="spinner"></div>';
+                    row.style.background = 'rgba(255, 255, 255, 0.05)';
+                }
                 break;
-        }
+            }
+            case 'applyAllResult':
+                {
+                    const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
+                    const row = wrapper?.querySelector(`.apply-row[data-block-index='${message.blockIndex}']`);
+                    
+                    if (row && message.success) {
+                        const iconEl = row.querySelector('.status-icon');
+                        row.style.background = 'rgba(15, 157, 88, 0.05)';
+                        
+                        if (message.alreadyApplied) {
+                            row.style.opacity = '0.6';
+                            if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)" title="Already matches file on disk"></span>';
+                            const label = row.querySelector('span:last-of-type');
+                            if (label) label.innerHTML += ' <small style="opacity:0.6">(Already applied)</small>';
+                        } else {
+                            // Standard success
+                            if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span>';
+                            // If auto-repaired, add a note
+                            if (message.repaired) {
+                                const label = row.querySelector('span:last-of-type');
+                                if (label) label.innerHTML += ' <small style="color:var(--vscode-charts-orange); margin-left:4px;">(Auto-repaired)</small>';
+                            }
+                        }
+                        
+                        // NEW: Find every individual "Apply" and "Apply Hunk" button in this message 
+                        // matching this file path and mark them red immediately.
+                        if (wrapper) {
+                            const relatedBlocks = wrapper.querySelectorAll('details.code-collapsible');
+                            relatedBlocks.forEach(block => {
+                                const langLabel = block.querySelector('.summary-lang-label')?.textContent || "";
+                                if (langLabel.includes(message.filePath)) {
+                                    // Mark block button
+                                    const blockBtn = block.querySelector('.code-actions .apply-btn');
+                                    if (blockBtn) {
+                                        blockBtn.classList.add('applied');
+                                        blockBtn.innerHTML = '<span class="codicon codicon-check"></span>';
+                                    }
+                                    // Mark all hunk buttons inside
+                                    const hunkBtns = block.querySelectorAll('.aider-hunk-actions .apply-btn');
+                                    hunkBtns.forEach(hb => {
+                                        hb.classList.add('applied');
+                                        hb.innerHTML = '<span class="codicon codicon-check"></span>';
+                                    });
+                                    // Collapse the finished block
+                                    (block as HTMLDetailsElement).open = false;
+                                }
+                            });
+                        }
+                    } else if (row) {
+                        row.style.background = 'rgba(244, 71, 71, 0.05)';
+                        const iconEl = row.querySelector('.status-icon');
+                        const actionsEl = row.querySelector('.row-actions') as HTMLElement;
+
+                        if (iconEl) {
+                            iconEl.innerHTML = '<span class="codicon codicon-error" style="color:var(--vscode-charts-red)" title="' + (message.error || 'Failed') + '"></span>';
+                        }
+
+                        if (actionsEl) {
+                            actionsEl.style.display = 'flex';
+                            actionsEl.innerHTML = '<button class="code-action-btn apply-btn retry-row-btn" style="height:20px; font-size:9px; padding:0 6px;">Fix with AI</button>';
+                            const retryBtn = actionsEl.querySelector('.retry-row-btn') as HTMLButtonElement;
+                            retryBtn.onclick = () => {
+                                retryBtn.disabled = true;
+                                retryBtn.innerHTML = '<div class="spinner"></div>';
+                                // Trigger the specialized repair command
+                                vscode.postMessage({ 
+                                    command: 'replaceCode', 
+                                    filePath: message.filePath, 
+                                    content: "REPAIR_REQUESTED", // Placeholder logic
+                                    messageId: message.messageId 
+                                });
+                            };
+                        }
+                    }
+
+
+                    // Update main button state if everything is finished
+                    const resultsList = row?.closest('.apply-results-list');
+                    if (resultsList) {
+                        const stillPending = resultsList.querySelectorAll('.spinner').length;
+                        if (stillPending === 0) {
+                            const mainBtn = resultsList.previousElementSibling as HTMLButtonElement;
+                            if (mainBtn) {
+                                const failedCount = resultsList.querySelectorAll('.codicon-error').length;
+                                if (failedCount === 0) {
+                                    mainBtn.innerHTML = '<span class="codicon codicon-check"></span> All Files Applied';
+                                    mainBtn.classList.add('applied');
+                                } else {
+                                    mainBtn.innerHTML = '<span class="codicon codicon-warning"></span> Finished with ' + failedCount + ' errors';
+                                    mainBtn.disabled = false;
+                                }
+                            }
+                        }
+                    }
+                }
+                break;
+            }
     } catch(e: any) {
         console.error("Lollms Webview Error: Failed to process message from extension.", e);
         vscode.postMessage({ command: 'showError', message: 'Webview error: ' + e.message });
     }
 }
+

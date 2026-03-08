@@ -4,3 +4,4 @@
 - Add skills for ScrapeMaster and safe_store
 
 - Add notes building and storing (like skills), notes are for uset and skills for ai
+- Add the possibility to have multiple profiles et switch between

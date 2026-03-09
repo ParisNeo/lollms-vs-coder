@@ -156,21 +156,17 @@ async function renderMermaidView(view: string) {
         const sanitizedDiagram = preprocessMermaid(rawDiagram);
         const id = `mermaid-render-${Date.now()}`;
         
-        mermaidContainer.innerHTML = `<div id="${id}" class="mermaid">${sanitizedDiagram}</div>`;
-        
+        // Render to a temporary string first to let mermaid generate the SVG
         try {
-            await mermaid.run({
-                nodes: [document.getElementById(id)]
-            });
+            const { svg } = await mermaid.render(id, sanitizedDiagram);
+            mermaidContainer.innerHTML = `<div class="mermaid">${svg}</div>`;
             
-            // Enable Pan/Zoom AND Auto-Fit
+            // Enable Pan/Zoom
             const handlers = enablePanZoom(mermaidContainer);
             
-            // Allow DOM and SVG geometry to fully stabilize
-            setTimeout(() => {
-                handlers.fitToScreen();
-            }, 500);
-
+            // Initial fit
+            handlers.fitToScreen();
+            
         } catch (e: any) {
             console.error("📊 Mermaid Syntax Error:", e);
             
@@ -198,49 +194,44 @@ function enablePanZoom(container: HTMLElement) {
     let startY = 0;
 
     const innerDiv = container.querySelector('.mermaid') as HTMLElement;
-    
-    // Return empty handlers if init fails
     if (!innerDiv) return { fitToScreen: () => {} };
+
+    const svg = innerDiv.querySelector('svg') as SVGSVGElement;
+    if (!svg) return { fitToScreen: () => {} };
 
     container.style.overflow = 'hidden';
     container.style.cursor = 'grab';
     container.style.position = 'relative';
 
-    innerDiv.style.transformOrigin = '0 0';
-    innerDiv.style.transition = 'transform 0.05s ease-out';
-    innerDiv.style.width = 'fit-content'; 
-    innerDiv.style.minWidth = '100px'; 
-    innerDiv.style.minHeight = '100px';
+    svg.style.transformOrigin = '0 0';
+    svg.style.transition = 'transform 0.1s ease-out';
+    
+    // Remove static sizing
+    svg.removeAttribute('width');
+    svg.removeAttribute('height');
+    svg.style.width = '100%';
+    svg.style.height = '100%';
+    svg.style.maxWidth = 'none';
 
     const updateTransform = () => {
-        innerDiv.style.transform = `translate(${panX}px, ${panY}px) scale(${zoomScale})`;
+        svg.style.transform = `translate(${panX}px, ${panY}px) scale(${zoomScale})`;
     };
 
-    // Logic to auto-fit the content to the screen
     const fitToScreen = () => {
-        const svg = innerDiv.querySelector('svg') as SVGSVGElement;
-        if (!svg) return;
-        
-        svg.removeAttribute('width');
-        svg.removeAttribute('height');
-        svg.style.width = '';
-        svg.style.height = '';
-        svg.style.maxWidth = 'none';
-
         const containerRect = container.getBoundingClientRect();
         const bbox = svg.getBBox();
         
         if (bbox.width <= 0 || bbox.height <= 0) return;
 
-        const padding = 20;
-        const scaleX = (containerRect.width - padding) / bbox.width;
-        const scaleY = (containerRect.height - padding) / bbox.height;
+        const padding = 40;
+        const availableWidth = containerRect.width - padding;
+        const availableHeight = containerRect.height - padding;
+
+        const scaleX = availableWidth / bbox.width;
+        const scaleY = availableHeight / bbox.height;
         
-        // Fit content but don't blow up tiny diagrams beyond 1.0
-        // Use 0.95 to ensure a small visible border
-        zoomScale = Math.min(scaleX, scaleY, 1.0) * 0.95;
+        zoomScale = Math.min(scaleX, scaleY, 1.5); // Limit max auto-zoom to 1.5x
         
-        // Centering calculation using the Bounding Box offset
         panX = (containerRect.width / 2) - (zoomScale * (bbox.x + bbox.width / 2));
         panY = (containerRect.height / 2) - (zoomScale * (bbox.y + bbox.height / 2));
         

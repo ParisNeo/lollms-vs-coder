@@ -512,7 +512,7 @@ export class CodeGraphManager {
             const childrenEdges = this.graph.edges.filter(e => e.source === f.id && e.label === 'contains');
             if (childrenEdges.length === 0) return;
 
-            const safeFileLabel = this.sanitizeMermaidLabel(f.label);
+            const safeFileId = this.sanitizeMermaidId(f.id);
             
             // 1. Handle stand-alone functions in the file
             const standaloneFunctions = childrenEdges
@@ -520,37 +520,35 @@ export class CodeGraphManager {
                 .filter(n => n && n.type === 'function');
 
             if (standaloneFunctions.length > 0) {
-                out += `  class ${safeFileLabel} {\n    <<file>>\n`;
+                out += `  class ${safeFileId}["${f.label}"] {\n    <<file>>\n`;
                 standaloneFunctions.forEach(fn => {
                     let sig = fn!.signature ? fn!.signature : `${fn!.label}()`;
-                    // Sanitize for Mermaid: remove braces/quotes, replace Python -> with :
                     sig = sig.replace(/[{}";]/g, '').replace(/->/g, ':').replace(/\s+/g, ' ');
                     out += `    ${sig}\n`;
                 });
                 out += `  }\n`;
             } else {
-                out += `  class ${safeFileLabel}\n  ${safeFileLabel} : <<file>>\n`;
+                out += `  class ${safeFileId}["${f.label}"]\n  ${safeFileId} : <<file>>\n`;
             }
 
             // 2. Handle classes in the file
             childrenEdges.forEach(edge => {
                 const child = this.graph.nodes.find(n => n.id === edge.target);
                 if (child && child.type === 'class') {
-                    const safeClassName = this.sanitizeMermaidLabel(child.label);
+                    const safeClassId = this.sanitizeMermaidId(child.id);
                     const methods = child.methods || [];
                     
                     if (methods.length > 0) {
-                        out += `  class ${safeClassName} {\n`;
+                        out += `  class ${safeClassId}["${child.label}"] {\n`;
                         methods.forEach(m => {
                             const safeMethod = m.replace(/[{}";]/g, '').replace(/->/g, ':').replace(/\s+/g, ' ');
                             out += `    ${safeMethod}\n`;
                         });
                         out += `  }\n`;
                     } else {
-                        out += `  class ${safeClassName}\n`;
+                        out += `  class ${safeClassId}["${child.label}"]\n`;
                     }
-                    // Relationship: File contains Class
-                    out += `  ${safeFileLabel} *-- ${safeClassName}\n`;
+                    out += `  ${safeFileId} *-- ${safeClassId}\n`;
                 }
             });
         });
@@ -562,13 +560,12 @@ export class CodeGraphManager {
         const classes = this.graph.nodes.filter(n => n.type === 'class');
         
         classes.forEach(c => {
-            const safeLabel = this.sanitizeMermaidLabel(c.label);
-            
+            const safeId = this.sanitizeMermaidId(c.id);
             const hasAttrs = c.attributes && c.attributes.length > 0;
             const hasMethods = c.methods && c.methods.length > 0;
             
             if (hasAttrs || hasMethods) {
-                out += `class ${safeLabel} {\n`;
+                out += `class ${safeId}["${c.label}"] {\n`;
                 if (c.attributes) {
                     c.attributes.slice(0, 15).forEach(a => out += `  +${a.replace(/[{}]/g, '')}\n`);
                 }
@@ -577,7 +574,7 @@ export class CodeGraphManager {
                 }
                 out += `}\n`;
             } else {
-                out += `class ${safeLabel}\n`;
+                out += `class ${safeId}["${c.label}"]\n`;
             }
         });
         
@@ -585,7 +582,7 @@ export class CodeGraphManager {
             const src = this.graph.nodes.find(n => n.id === e.source);
             const trg = this.graph.nodes.find(n => n.id === e.target);
             if (src && trg) {
-                out += `${this.sanitizeMermaidLabel(trg.label)} <|-- ${this.sanitizeMermaidLabel(src.label)}\n`;
+                out += `${this.sanitizeMermaidId(trg.id)} <|-- ${this.sanitizeMermaidId(src.id)}\n`;
             }
         });
         return out;

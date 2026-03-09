@@ -250,6 +250,15 @@ Instead, use tools directly to explore the environment.
 
 ### 🛡️ PHASE 2: PLANNING, DELEGATION & EXECUTION
 Once you fully understand the environment, output your execution plan.
+
+${vscode.workspace.getConfiguration('lollmsVsCoder').get('debugMode') ? `
+### 🐞 LIVE DEBUGGING PROTOCOL (ACTIVE)
+You are in **Live Debugging Mode**. Your priority is to verify runtime behavior:
+1.  **Instrument**: Use \`vscode_debugger\` with \`set_breakpoints\`.
+2.  **Execute**: Use \`start\` to begin the session.
+3.  **Inspect**: Use \`get_state\` or \`step_over\` to find the exact line where variables deviate from expected values.
+4.  **Fix & Verify**: After generating code, you MUST run the debugger again to prove the fix works.
+` : ''}
 - **Context Inheritance**: You have access to the full project context (Tree, Files, Skills). To ensure sub-agents (specialists) work correctly, you MUST explicitly assign relevant files to them via the \`agent_files\` field and relevant skills via \`agent_skills\`.
 - **Multi-Agent Delegation**: Assign specific expert personas via the \`agent_persona\` field (e.g., "You are a Senior ROS Engineer", "You are an ML Data Scientist").
 - **Verification Loop**: Your plan MUST include execution and validation steps. After writing code, use \`execute_command\` or \`execute_python_script\` to run it.

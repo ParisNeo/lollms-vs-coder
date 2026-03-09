@@ -68,11 +68,14 @@ export interface DiscussionCapabilities {
     herdParticipantModels?: string[];
     herdCriticEnabled?: boolean;
     agentMode: boolean;
+    debugMode: boolean;
+    maxDebugSteps: number;
     autoContextMode: boolean;
     autoSkillMode: boolean;
     disableProjectContext: boolean;
     guiState?: {
         agentBadge: boolean;
+        debugBadge: boolean;
         autoContextBadge: boolean;
         herdBadge: boolean;
         webSearchBadge?: boolean;
@@ -123,6 +126,7 @@ export const dom = {
     get attachButton() { return document.getElementById('attachButton') as HTMLButtonElement; },
     get importSkillsButton() { return document.getElementById('importSkillsButton') as HTMLButtonElement; },
     get copyFullPromptButton() { return document.getElementById('copyFullPromptButton') as HTMLButtonElement; },
+    get copyTreeAndContentButton() { return document.getElementById('copyTreeAndContentButton') as HTMLButtonElement; },
     get executeButton() { return document.getElementById('executeButton') as HTMLButtonElement; },
     get setEntryPointButton() { return document.getElementById('setEntryPointButton') as HTMLButtonElement; },
     get debugRestartButton() { return document.getElementById('debugRestartButton') as HTMLButtonElement; },
@@ -202,6 +206,8 @@ export const dom = {
     get capFileReset() { return document.getElementById('cap-fileReset') as HTMLInputElement; },
 
     get capImageGen() { return document.getElementById('cap-imageGen') as HTMLInputElement; },
+    get capEnableImages() { return document.getElementById('cap-enableImages') as HTMLInputElement; },
+    get capUseImageModeForDocs() { return document.getElementById('cap-useImageModeForDocs') as HTMLInputElement; },
     get capWebSearch() { return document.getElementById('cap-webSearch') as HTMLInputElement; },
     get capDistillWebResults() { return document.getElementById('cap-distillWebResults') as HTMLInputElement; },
     get capAntiPromptInjection() { return document.getElementById('cap-antiPromptInjection') as HTMLInputElement; },

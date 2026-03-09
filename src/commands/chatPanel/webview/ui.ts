@@ -57,7 +57,12 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string) {
 
     if (!isGenerating) {
         if (dom.generatingOverlay) dom.generatingOverlay.style.display = 'none';
-        if (dom.inputAreaWrapper) dom.inputAreaWrapper.style.display = 'block';
+        if (dom.inputAreaWrapper) {
+            dom.inputAreaWrapper.style.display = 'block';
+            dom.inputAreaWrapper.style.pointerEvents = 'auto';
+            dom.inputAreaWrapper.style.opacity = '1';
+        }
+        if (dom.inputArea) dom.inputArea.classList.remove('disabled');
 
         if (dom.messagesDiv && !isScrolledToBottom(dom.messagesDiv)) {
             dom.scrollToBottomBtn.style.display = 'flex';
@@ -66,10 +71,12 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string) {
         }
         
         if (dom.messageInput) {
+            dom.messageInput.disabled = false;
             dom.messageInput.focus();
         }
     } else {
         dom.scrollToBottomBtn.style.display = 'none';
+        if (dom.inputArea) dom.inputArea.classList.add('disabled');
     }
 }
 
@@ -317,7 +324,16 @@ export function updateBadges() {
     if (!state.capabilities) return;
     
     const caps = state.capabilities;
-    const guiState = caps.guiState || { agentBadge: true, autoContextBadge: true, herdBadge: true, webSearchBadge: true };
+    // Robust merge: ensures new keys (like debugBadge) exist even if guiState was saved previously
+    const guiState = {
+        agentBadge: true,
+        debugBadge: true,
+        autoContextBadge: true,
+        herdBadge: true,
+        webSearchBadge: true,
+        autoSkillBadge: true,
+        ...(caps.guiState || {})
+    };
 
     // Initialize capability UI elements
     if (dom.capHerdMode) dom.capHerdMode.checked = caps.herdMode || false;
@@ -437,7 +453,7 @@ export function updateBadges() {
         thinkingGroup.appendChild(thinkBadge);
     }
 
-    if (guiState.agentBadge || caps.herdMode) {
+    if (guiState.agentBadge || guiState.debugBadge || caps.herdMode) {
         const taskGroup = document.createElement('div');
         taskGroup.className = 'badge-group';
         taskGroup.innerHTML = '<span class="badge-group-label">Task</span>';
@@ -447,6 +463,24 @@ export function updateBadges() {
             vscode.postMessage({ command: 'toggleAgentMode' });
         });
         if (agentBadge) taskGroup.appendChild(agentBadge);
+
+        const debugBadge = createToggleBadge('🐞 Debug', 'thinking', guiState.debugBadge, caps.debugMode, () => {
+            vscode.postMessage({ 
+                command: 'updateDiscussionCapabilitiesPartial', 
+                partial: { debugMode: !caps.debugMode } 
+            });
+        });
+        if (debugBadge) {
+            if (caps.debugMode) {
+                debugBadge.style.backgroundColor = 'var(--vscode-charts-red)';
+                debugBadge.style.color = 'white';
+            } else {
+                // Ensure default style if inactive
+                debugBadge.style.backgroundColor = '';
+                debugBadge.style.color = '';
+            }
+            taskGroup.appendChild(debugBadge);
+        }
 
         const herdBadge = createToggleBadge('🐂 Multi-Agent', 'herd', guiState.herdBadge, caps.herdMode, () => {
             vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { herdMode: !caps.herdMode } });

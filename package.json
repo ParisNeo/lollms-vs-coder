@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.7.2",
+  "version": "0.7.5",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -134,6 +134,11 @@
       {
         "command": "lollms-vs-coder.exportContextContent",
         "title": "%command.exportContextContent.title%",
+        "icon": "$(clippy)"
+      },
+      {
+        "command": "lollms-vs-coder.copyTreeAndContent",
+        "title": "Lollms: Copy Tree and Content",
         "icon": "$(clippy)"
       },
       {

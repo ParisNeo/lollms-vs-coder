@@ -82,6 +82,8 @@ export class DiscussionManager {
             fileSelect: true,
             fileReset: true,
             imageGen: true,
+            enableImages: true,
+            useImageModeForDocs: false,
             webSearch: false,
             distillWebResults: config.get<boolean>('distillWebResults') ?? true,
             antiPromptInjection: config.get<boolean>('antiPromptInjection') ?? true,
@@ -102,6 +104,8 @@ export class DiscussionManager {
             herdParticipantModels: [],
             herdCriticEnabled: false,
             agentMode: false,
+            debugMode: false,
+            maxDebugSteps: 10,
             autoContextMode: false, 
             autoSkillMode: false,
             contextAggression: 'respect',
@@ -116,6 +120,7 @@ export class DiscussionManager {
             forceFullCodePath: false,
             guiState: {
                 agentBadge: true,
+                debugBadge: true,
                 autoContextBadge: true,
                 herdBadge: true
             }

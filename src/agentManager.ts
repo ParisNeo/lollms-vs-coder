@@ -62,6 +62,7 @@ export class AgentManager {
     private readonly MAX_TASK_REVISIONS = 3;
 
     private failureMemory: FailureMemory = new FailureMemory();
+    private isDebugging: boolean = false;
     
     /**
      * Explicitly track completed actions for prompt injection to prevent
@@ -187,6 +188,8 @@ export class AgentManager {
         workspaceFolder: vscode.WorkspaceFolder,
         permissions: UserPermissions = { canExecute: true, canRead: true }
     ) {
+        const isDebugActive = discussion.capabilities?.debugMode || false;
+        const maxSteps = discussion.capabilities?.maxDebugSteps || 10;
         if (!this.isActive) this.isActive = true;
         if (!this.processManager) return;
 

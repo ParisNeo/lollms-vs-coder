@@ -206,6 +206,8 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if(dom.capFileReset) dom.capFileReset.checked = caps.fileReset;
 
                     if(dom.capImageGen) dom.capImageGen.checked = caps.imageGen;
+                    if(dom.capEnableImages) dom.capEnableImages.checked = caps.enableImages !== false;
+                    if(dom.capUseImageModeForDocs) dom.capUseImageModeForDocs.checked = !!caps.useImageModeForDocs;
                     if(dom.capWebSearch) dom.capWebSearch.checked = caps.webSearch;
                     if(dom.capDistillWebResults) dom.capDistillWebResults.checked = caps.distillWebResults;
                     if(dom.capAntiPromptInjection) dom.capAntiPromptInjection.checked = caps.antiPromptInjection;
@@ -236,6 +238,14 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (dom.herdConfigSection) {
                         dom.herdConfigSection.style.display = caps.herdMode ? 'block' : 'none';
                     }
+                    
+                    const debugConfig = document.getElementById('debug-config-section');
+                    if (debugConfig) {
+                        debugConfig.style.display = caps.debugMode ? 'block' : 'none';
+                    }
+
+                    if (dom.capDebugMode) dom.capDebugMode.checked = !!caps.debugMode;
+                    if (dom.capMaxDebugSteps) dom.capMaxDebugSteps.value = caps.maxDebugSteps || 10;
 
                     if (dom.activeToolsIndicator) {
                         dom.activeToolsIndicator.innerHTML = '';
@@ -728,12 +738,14 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         if (stillPending === 0) {
                             const mainBtn = resultsList.previousElementSibling as HTMLButtonElement;
                             if (mainBtn) {
+                                mainBtn.classList.remove('stop-btn-red'); // Remove stop color
                                 const failedCount = resultsList.querySelectorAll('.codicon-error').length;
                                 if (failedCount === 0) {
                                     mainBtn.innerHTML = '<span class="codicon codicon-check"></span> All Files Applied';
                                     mainBtn.classList.add('applied');
+                                    mainBtn.disabled = true;
                                 } else {
-                                    mainBtn.innerHTML = '<span class="codicon codicon-warning"></span> Finished with ' + failedCount + ' errors';
+                                    mainBtn.innerHTML = '<span class="codicon codicon-warning"></span> Retry Failed (' + failedCount + ')';
                                     mainBtn.disabled = false;
                                 }
                             }

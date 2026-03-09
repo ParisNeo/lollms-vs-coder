@@ -84,6 +84,8 @@ export interface DiscussionCapabilities {
     fileSelect: boolean;
     fileReset: boolean;
     imageGen: boolean;
+    enableImages: boolean;
+    useImageModeForDocs: boolean;
     webSearch: boolean;
     distillWebResults: boolean;
     antiPromptInjection: boolean;
@@ -110,6 +112,8 @@ export interface DiscussionCapabilities {
     // ---------------------------
 
     agentMode: boolean;
+    debugMode: boolean;
+    maxDebugSteps: number;
     autoContextMode: boolean;
     autoSkillMode: boolean;
     contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
@@ -532,6 +536,8 @@ export interface DiscussionCapabilities {
     fileSelect: boolean;
     fileReset: boolean;
     imageGen: boolean;
+    enableImages: boolean;
+    useImageModeForDocs: boolean;
     webSearch: boolean;
     distillWebResults: boolean;
     antiPromptInjection: boolean;
@@ -558,6 +564,8 @@ export interface DiscussionCapabilities {
     // ---------------------------
 
     agentMode: boolean;
+    debugMode: boolean;
+    maxDebugSteps: number;
     autoContextMode: boolean;
     autoSkillMode: boolean;
     contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';

@@ -340,6 +340,13 @@ export function initEventHandlers() {
         });
     }
 
+    if (dom.copyTreeAndContentButton) {
+        dom.copyTreeAndContentButton.addEventListener('click', () => {
+            vscode.postMessage({ command: 'copyTreeAndContent' });
+            dom.moreActionsMenu.classList.remove('visible');
+        });
+    }
+
     bindClick(dom.setEntryPointButton, 'setEntryPoint');
     bindClick(dom.executeButton, 'executeProject');
     bindClick(dom.debugRestartButton, 'debugRestart');
@@ -495,6 +502,8 @@ export function initEventHandlers() {
                 fileSelect: dom.capFileSelect?.checked ?? true,
                 fileReset: dom.capFileReset?.checked ?? true,
                 imageGen: dom.capImageGen?.checked ?? true,
+                enableImages: dom.capEnableImages?.checked ?? true,
+                useImageModeForDocs: dom.capUseImageModeForDocs?.checked ?? false,
                 webSearch: dom.capWebSearch?.checked ?? false,
                 searchSources: {
                     google: (document.getElementById('src-google') as HTMLInputElement)?.checked ?? true,
@@ -701,6 +710,25 @@ export function initEventHandlers() {
                         vscode.postMessage({ command: 'showError', message: 'Invalid JSON parameters. Please check your syntax.' });
                     }
                 }
+                return;
+            }
+
+            const skillFileBtn = target.closest('.save-skill-file-btn') as HTMLButtonElement;
+            if (skillFileBtn) {
+                const content = skillFileBtn.dataset.content || '';
+                const title = skillFileBtn.dataset.title || '';
+                const desc = skillFileBtn.dataset.description || '';
+                const cat = skillFileBtn.dataset.category || '';
+                
+                vscode.postMessage({ 
+                    command: 'saveSkillToFile', 
+                    skillData: { 
+                        name: decodeURIComponent(title), 
+                        description: decodeURIComponent(desc), 
+                        content: decodeURIComponent(content), 
+                        category: decodeURIComponent(cat) 
+                    } 
+                });
                 return;
             }
 

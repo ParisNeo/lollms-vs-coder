@@ -1076,15 +1076,24 @@ Please provide the **FULL CONTENT** of the file instead using the format:
   
   private async deleteMessage(messageId: string) {
     if (this._currentDiscussion) {
-        // Stop any active generation first to be safe
+        // 1. Force stop and purge before deletion to prevent ghost states
+        ChatPanel.activeGenerations.delete(this.discussionId);
         this.processManager.cancelForDiscussion(this.discussionId);
 
         this._currentDiscussion.messages = this._currentDiscussion.messages.filter(m => m.id !== messageId);
+        
         if (!this._currentDiscussion.id.startsWith('temp-')) {
             await this._discussionManager.saveDiscussion(this._currentDiscussion);
         }
-        // Reload without re-calculating tokens immediately to prevent UI flicker
+
+        // 2. Reload UI
         await this.loadDiscussion(); 
+        
+        // 3. Explicitly signal to the webview that generation has stopped
+        this._panel.webview.postMessage({ 
+            command: 'setGeneratingState', 
+            isGenerating: false 
+        });
         this.updateGeneratingState();
     }
 }
@@ -1278,8 +1287,15 @@ Please provide the **FULL CONTENT** of the file instead using the format:
         const autoSkillMsgId = 'auto_skill_agent_' + Date.now();
 
         try {
-            // Register as a background process to hide from main overlay
             this.processManager.updateDescription(processId, "💡 Selecting skills...");
+
+            // NEW: Add the actual UI bubble immediately so the user sees thoughts in real-time
+            await this.addMessageToDiscussion({
+                id: autoSkillMsgId,
+                role: 'system',
+                content: `**💡 Auto-Skill Agent**\n\n*Analyzing request...*`,
+                skipInPrompt: true 
+            });
 
             const newSkills = await this._contextManager.runSkillSelectionAgent(
                 userPromptText, 
@@ -1288,7 +1304,11 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                 this._currentDiscussion.importedSkills || [],
                 (newContent) => {
                     if (!this._isDisposed) {
-                        this._panel.webview.postMessage({ command: 'updateMessage', messageId: autoSkillMsgId, newContent });
+                        this._panel.webview.postMessage({ 
+                            command: 'updateMessage', 
+                            messageId: autoSkillMsgId, 
+                            newContent: newContent 
+                        });
                     }
                 }
             );
@@ -1963,6 +1983,9 @@ Please provide the **FULL CONTENT** of the file instead using the format:
             case 'copyFullPrompt':
                 await this.copyFullPromptToClipboard(message.draftMessage);
                 break;
+            case 'copyTreeAndContent':
+                vscode.commands.executeCommand('lollms-vs-coder.copyTreeAndContent');
+                break;
             case 'applyAllChanges':
                 const changesBatch = message.changes;
                 const messageId = message.messageId;
@@ -1978,7 +2001,12 @@ Please provide the **FULL CONTENT** of the file instead using the format:
 
                     let count = 0;
                     for (let i = 0; i < changesBatch.length; i++) {
-                        if (token.isCancellationRequested || applyCtrl.signal.aborted) break;
+                        // Check both the VS Code progress token and our internal process signal
+                        if (token.isCancellationRequested || applyCtrl.signal.aborted) {
+                            this.log("Bulk apply operation aborted by user.");
+                            break;
+                        }
+                        
                         const change = changesBatch[i];
                         count++;
                         
@@ -2406,18 +2434,24 @@ Task:
             case 'stopGeneration':
                 if (this._currentDiscussion) {
                     // 1. Force Deactivate Agent if running
-                    if (this.agentManager) {
-                        this.agentManager.toggleAgentMode(); // Set to inactive
+                    if (this.agentManager && this.agentManager.getIsActive()) {
+                        this.agentManager.toggleAgentMode(); 
                     }
                     
-                    // 2. Cancel all backend processes for this discussion
+                    // 2. Force purge from the generation registry
+                    ChatPanel.activeGenerations.delete(this.discussionId);
+
+                    // 3. Cancel all backend processes for this discussion
                     this.processManager.cancelForDiscussion(this.discussionId);
                     
-                    // 3. Force UI overlay to hide immediately
-                    this._panel.webview.postMessage({ 
-                        command: 'setGeneratingState', 
-                        isGenerating: false 
+                    // 4. Reset metrics
+                    this._panel.webview.postMessage({
+                        command: 'updateGenerationMetrics',
+                        reset: true
                     });
+
+                    // 5. Authoritatively hide overlay and unlock input
+                    this.updateGeneratingState();
                 }
                 break;
             case 'toggleAgentMode':
@@ -2588,6 +2622,36 @@ Task:
                 break;
             case 'saveSkill':
                 await this.handleSaveSkill(message.content);
+                break;
+            case 'saveSkillToFile':
+                {
+                    const { name, description, content, category } = message.skillData;
+                    const format = await vscode.window.showQuickPick([
+                        { label: 'LoLLMs XML (.xml)', value: 'lollms', description: 'Native Lollms format' },
+                        { label: 'Claude Markdown (.md)', value: 'claude', description: 'Claude Code compatible format' }
+                    ], { placeHolder: 'Select file format to save the skill' });
+
+                    if (!format) return;
+
+                    const isClaude = format.value === 'claude';
+                    const fileName = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') + (isClaude ? '.md' : '.xml');
+                    
+                    const uri = await vscode.window.showSaveDialog({
+                        defaultUri: vscode.workspace.workspaceFolders ? vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, fileName) : undefined,
+                        filters: isClaude ? { 'Markdown': ['md'] } : { 'XML': ['xml'] },
+                        saveLabel: 'Save Skill File'
+                    });
+
+                    if (uri) {
+                        const skill: any = { name, description, content, category, id: 'temp' };
+                        const fileContent = isClaude 
+                            ? this._skillsManager.skillToClaudeMarkdown(skill) 
+                            : `<skill title="${name}" description="${description}" category="${category}">${content}</skill>`;
+
+                        await vscode.workspace.fs.writeFile(uri, Buffer.from(fileContent, 'utf8'));
+                        vscode.window.showInformationMessage(`Skill saved to ${path.basename(uri.fsPath)}`);
+                    }
+                }
                 break;
             case 'saveGeneratedSkill':
                 const { name: sName, description: sDesc, content: sContent, category: sCat, scope: sScope } = message.skillData;
@@ -3289,6 +3353,7 @@ Task:
                             <button class="menu-item" id="attachButton"><i class="codicon codicon-add"></i><span>Attach Files</span></button>
                             <button class="menu-item" id="importSkillsButton"><i class="codicon codicon-lightbulb"></i><span>Import Skill</span></button>
                             <button class="menu-item" id="copyFullPromptButton"><i class="codicon codicon-copy"></i><span>Copy Context & Prompt</span></button>
+                            <button class="menu-item" id="copyTreeAndContentButton"><i class="codicon codicon-clippy"></i><span>Copy Tree & Content</span></button>
                             <button class="menu-item" id="setEntryPointButton"><i class="codicon codicon-target"></i><span>Set Project Entry Point</span></button>
                             <button class="menu-item" id="executeButton"><i class="codicon codicon-play"></i><span>Execute Project</span></button>
                             <button class="menu-item" id="debugRestartButton"><i class="codicon codicon-debug-restart"></i><span>Re-run Last Debug</span></button>
@@ -3523,6 +3588,14 @@ Task:
                             <p style="font-size: 10px; opacity: 0.7; margin-top: 4px;">Controls how many files the Auto-Context agent tries to pack into the prompt.</p>
                         </div>
                         <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-debugMode"><span class="slider"></span></label>
+                            <label for="cap-debugMode"><strong>🐞 Debug Mode:</strong> Autonomous live debugging loop.</label>
+                        </div>
+                        <div id="debug-config-section" style="display:none; margin: 8px 0 0 40px; border-left: 2px solid var(--vscode-charts-red); padding-left: 12px;">
+                            <label style="font-size:11px;">Max Debug Steps: <input type="number" id="cap-maxDebugSteps" value="10" min="1" max="50" style="width:40px; float:right;"></label>
+                        </div>
+
+                        <div class="checkbox-container">
                             <label class="switch"><input type="checkbox" id="cap-herdMode"><span class="slider"></span></label>
                             <label for="cap-herdMode"><strong>🐂 Herd Mode:</strong> Multiple agents brainstorm the answer.</label>
                         </div>
@@ -3672,8 +3745,16 @@ Task:
                     </div>
 
                     <div class="modal-section">
-                        <h3>Agent Permissions</h3>
+                        <h3>Agent & Vision Permissions</h3>
                         <div class="checkbox-grid">
+                            <div class="checkbox-container">
+                                <label class="switch"><input type="checkbox" id="cap-enableImages" checked><span class="slider"></span></label>
+                                <label for="cap-enableImages">Enable Vision (Images)</label>
+                            </div>
+                            <div class="checkbox-container">
+                                <label class="switch"><input type="checkbox" id="cap-useImageModeForDocs"><span class="slider"></span></label>
+                                <label for="cap-useImageModeForDocs" title="Convert PDF/PPTX to Images">Visual Doc Mode</label>
+                            </div>
                             <div class="checkbox-container">
                                 <label class="switch"><input type="checkbox" id="cap-imageGen" checked><span class="slider"></span></label>
                                 <label for="cap-imageGen">Image Gen</label>

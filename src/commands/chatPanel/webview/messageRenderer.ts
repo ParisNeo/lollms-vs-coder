@@ -271,6 +271,9 @@ function renderSkillBlock(rawContent: string, attrs: { title?: string, descripti
             <button class="code-action-btn apply-btn save-skill-btn" data-content="${safeContent}" data-scope="global" data-title="${safeTitle}" data-description="${safeDesc}" data-category="${safeCat}">
                 <span class="codicon codicon-globe"></span> Save Global
             </button>
+            <button class="code-action-btn apply-btn save-skill-file-btn" data-content="${safeContent}" data-title="${safeTitle}" data-description="${safeDesc}" data-category="${safeCat}">
+                <span class="codicon codicon-export"></span> Save to File...
+            </button>
         </div>
     </div>`;
 }
@@ -280,17 +283,17 @@ function renderSkillBlock(rawContent: string, attrs: { title?: string, descripti
  * Wraps node labels in quotes and escapes characters that break the parser.
  */
 function preprocessMermaid(code: string): string {
+    // If it's a class diagram, we trust the generator quoted it correctly
+    if (code.includes('classDiagram')) {
+        return code;
+    }
     return code.split('\n').map(line => {
         const trimmed = line.trim();
-        // Skip header definitions and keywords that don't follow node[label] syntax
         if (trimmed.match(/^(subgraph|end|class|state|note|participant|sequenceDiagram|classDiagram|stateDiagram|erDiagram|journey|gantt|pie|gitGraph|flowchart|graph)/i)) {
             return line;
         }
 
-        // Identify node definitions like ID[Label], ID(Label), ID{Label}, ID((Label))
-        // and wrap the label in quotes if not already quoted.
         return line.replace(/([a-zA-Z0-9_-]+)\s*([\[\(\{]{1,2})\s*([^"'\n\r\t]+?)\s*([\]\)\}]{1,2})/g, (match, id, open, label, close) => {
-            // Escape any existing double quotes inside the label to avoid breaking the wrapper
             const safeLabel = label.replace(/"/g, "'");
             return `${id}${open}"${safeLabel.trim()}"${close}`;
         });
@@ -1255,8 +1258,23 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             // Handle Multipart
             let html = '';
             rawContent.forEach(p => {
-                if (p.type === 'text') html += `<div>${sanitizer.sanitize(marked.parse(p.text) as string)}</div>`;
-                else if (p.type === 'image_url') html += `<img src="${p.image_url.url}" style="max-width:100%; border-radius:4px; margin-top:8px;">`;
+                if (p.type === 'text'){
+                    html += `<div>${sanitizer.sanitize(marked.parse(p.text) as string)}</div>`;
+                } else if (p.type === 'image_url') {
+                    const isMuted = state.capabilities?.enableImages === false;
+                    if (isMuted) {
+                        html += `
+                        <div class="muted-image-container">
+                            <img src="${p.image_url.url}" style="max-width:100%; border-radius:4px; opacity: 0.5; filter: grayscale(1);">
+                            <div class="muted-image-warning">
+                                <span class="codicon codicon-warning"></span>
+                                Vision Disabled: The LLM will NOT see this image.
+                            </div>
+                        </div>`;
+                    } else {
+                        html += `<img src="${p.image_url.url}" style="max-width:100%; border-radius:4px; margin-top:8px;">`;
+                    }
+                }
             });
             contentDiv.innerHTML = html;
         } else if (typeof rawContent === 'string') {
@@ -1319,7 +1337,9 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             thoughts.forEach(thought => {
                 const thinkDiv = document.createElement('div');
                 thinkDiv.className = 'plan-scratchpad';
-                thinkDiv.innerHTML = `<details ${isFinal ? '' : 'open'}><summary class="scratchpad-header">AI Reasoning</summary><div class="scratchpad-content">${sanitizer.sanitize(marked.parse(thought.content) as string)}</div></details>`;
+                // Force open during generation (not final) for transparency
+                const isOpen = isFinal ? '' : 'open';
+                thinkDiv.innerHTML = `<details ${isOpen}><summary class="scratchpad-header">AI Reasoning</summary><div class="scratchpad-content">${sanitizer.sanitize(marked.parse(thought.content) as string)}</div></details>`;
                 if (contentDiv.parentNode) contentDiv.parentNode.insertBefore(thinkDiv, contentDiv);
             });
 
@@ -1433,6 +1453,10 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 }
 
                 const isBlockGenerating = !isFinal && !block.isClosed;
+                
+                // Assign a unique ID to the block for navigation from the summary list
+                const blockIdentifier = `block-${messageId}-${idx}`;
+                details.id = blockIdentifier;
 
                 // Go to File button
                 if (block.path) {
@@ -1733,11 +1757,20 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 }
 
                 btn.onclick = () => {
-                    if (btn.classList.contains('applied') || btn.disabled) return; 
-                    btn.disabled = true;
-                    btn.innerHTML = '<span class="codicon codicon-sync spin"></span> Processing Files...';
+                    if (btn.classList.contains('applied')) return;
+
+                    // IF ALREADY PROCESSING -> BEHAVE AS STOP BUTTON
+                    if (btn.classList.contains('stop-btn-red')) {
+                        vscode.postMessage({ command: 'stopGeneration' });
+                        return;
+                    }
+
+                    // START PROCESSING
+                    btn.classList.add('stop-btn-red');
+                    btn.innerHTML = '<span class="codicon codicon-stop"></span> Stop Applying';
+
                     resultsList.style.display = 'block';
-                    
+
                     const changes = actionableBlocks.map(b => {
                         const blockContent = processedContent.substring(b.start, b.end).trim();
                         const lines = blockContent.split('\n');
@@ -1751,13 +1784,28 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
                     // Create skeleton rows with "Pending" icon (Clock) initially
                     resultsList.innerHTML = changes.map((c, idx) => `
-                        <div class="apply-row" data-path="${c.path}" data-block-index="${idx}" style="display:flex; align-items:center; gap:8px; margin-bottom:6px; padding:4px; border-radius:4px;">
+                        <div class="apply-row" data-path="${c.path}" data-block-index="${idx}" data-target-id="block-${messageId}-${idx}" style="display:flex; align-items:center; gap:8px; margin-bottom:6px; padding:4px; border-radius:4px; cursor:pointer;">
                             <span class="status-icon"><span class="codicon codicon-clock"></span></span>
                             <span style="font-weight:600; font-size:10px; opacity:0.7; min-width:50px;">[${c.type.toUpperCase()}]</span>
                             <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${c.path}</span>
                             <div class="row-actions" style="display:none;"></div>
                         </div>
                     `).join('');
+
+                    // Add navigation listener to results list
+                    resultsList.onclick = (e) => {
+                        const row = (e.target as HTMLElement).closest('.apply-row') as HTMLElement;
+                        if (row && row.dataset.targetId) {
+                            const target = document.getElementById(row.dataset.targetId);
+                            if (target) {
+                                target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                // Visual feedback: pulse highlight
+                                target.style.transition = 'outline 0.2s';
+                                target.style.outline = '2px solid var(--vscode-focusBorder)';
+                                setTimeout(() => target.style.outline = 'none', 1000);
+                            }
+                        }
+                    };
 
                     vscode.postMessage({ command: 'applyAllChanges', changes, messageId });
                 };

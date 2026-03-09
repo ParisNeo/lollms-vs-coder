@@ -141,9 +141,13 @@ export class HelpPanel {
             <div class="nav-item" onclick="showSection('agent')"><i class="codicon codicon-robot"></i> Agent Mode</div>
             <div class="nav-item" onclick="showSection('context')"><i class="codicon codicon-layers"></i> Smart Context</div>
             <div class="nav-item" onclick="showSection('graph')"><i class="codicon codicon-graph"></i> Visual Code Graph</div>
+            <div class="nav-item" onclick="showSection('automation')"><i class="codicon codicon-zap"></i> Automation & Fixes</div>
             <div class="nav-item" onclick="showSection('jupyter')"><i class="codicon codicon-notebook"></i> Notebooks</div>
+            <div class="nav-item" onclick="showSection('research')"><i class="codicon codicon-globe"></i> Research & Web</div>
+            <div class="nav-item" onclick="showSection('advanced-debug')"><i class="codicon codicon-bug"></i> Advanced Debugging</div>
             <div class="nav-item" onclick="showSection('git')"><i class="codicon codicon-git-commit"></i> Git Mastery</div>
             <div class="nav-item" onclick="showSection('skills')"><i class="codicon codicon-lightbulb"></i> Skills & Memory</div>
+            <div class="nav-item" onclick="showSection('profiles')"><i class="codicon codicon-settings-gear"></i> Response Styles</div>
             <div class="nav-item" onclick="showSection('custom')"><i class="codicon codicon-settings"></i> Configuration</div>
         </div>
     </nav>
@@ -177,6 +181,30 @@ export class HelpPanel {
                 <li><strong>Select a Model:</strong> Click the model name in the Status Bar (bottom right) or use the settings panel.</li>
                 <li><strong>Add Context:</strong> Right-click files in the Explorer -> <code>Lollms: Include in Context</code>.</li>
                 <li><strong>Start Chatting:</strong> Click the Lollms icon in the Activity Bar.</li>
+            </ol>
+        </section>
+
+        <!-- AUTOMATION -->
+        <section id="automation">
+            <h1>🚀 Automation & Workspace Repair</h1>
+            <p>Lollms can operate in "Hands-Free" mode, performing repetitive tasks or fixing workspace-wide errors without constant supervision.</p>
+
+            <div class="card">
+                <h3>Auto-Apply Mode</h3>
+                <p>When enabled in <b>Discussion Settings (⚙️)</b>, the AI won't show an "Apply" button. It will directly modify your files as it thinks.</p>
+                <ul>
+                    <li><b>Safety:</b> It is recommended to use this with a clean Git state.</li>
+                    <li><b>Feedback:</b> You will see a list of modified files appearing at the bottom of the message.</li>
+                </ul>
+            </div>
+
+            <h2>🛠️ Workspace-Wide Error Repair</h2>
+            <p>Have a project full of TypeScript or Python errors? Use the <b>Fix All Workspace Errors</b> tool from the Actions view.</p>
+            <ol>
+                <li>The engine scans your entire project for <code>Error</code> diagnostics.</li>
+                <li>It presents a list of "Discovery" hits.</li>
+                <li>Click <b>Start Repair</b>, and a dedicated Automation Panel opens.</li>
+                <li>The AI iterates through every file, reads dependencies, applies fixes, and <b>verifies</b> if the error disappeared before moving on.</li>
             </ol>
         </section>
 
@@ -243,6 +271,55 @@ export class HelpPanel {
         <!-- NOTEBOOKS -->
         <section id="jupyter">
             <h1>📓 Jupyter Integration</h1>
+            <p>Lollms supercharges <code>.ipynb</code> notebooks with context-aware buttons in the cell toolbar.</p>
+            
+            <div class="feature-grid">
+                <div class="feature-item">
+                    <strong>$(book) Educative</strong>
+                    <p>Generates a complete tutorial notebook on a topic, alternating text and code cells.</p>
+                </div>
+                <div class="feature-item">
+                    <strong>$(sparkle) Enhance</strong>
+                    <p>Refactors the current cell for performance and readability.</p>
+                </div>
+                <div class="feature-item">
+                    <strong>$(graph) Visualize</strong>
+                    <p>Reads the output data of a cell and auto-generates Matplotlib/Seaborn code to plot it.</p>
+                </div>
+                <div class="feature-item">
+                    <strong>$(debug-restart) Fix Error</strong>
+                    <p>Appears when a cell fails. Analyzes the stack trace and patches the code.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- RESEARCH -->
+        <section id="research">
+            <h1>🌍 Research & Web Discovery</h1>
+            <p>Enable the <b>Web Search</b> badge to allow the AI to fact-check or read documentation from the internet.</p>
+
+            <h3>The Research Librarian</h3>
+            <p>Lollms doesn't just "search"; it spawns a specialized Librarian Agent that:</p>
+            <ul>
+                <li>Decides if your question needs external data.</li>
+                <li>Plans multiple queries (Google, Wikipedia, ArXiv).</li>
+                <li>Scrapes the resulting pages.</li>
+                <li><b>Distills</b> the content to fit only the relevant info into your context.</li>
+            </ul>
+
+            <div class="tip">
+                <strong>Manual Web Discovery:</strong> Click the <b>Paperclip -> Web</b> button. You can search Wikipedia, ArXiv, or Google directly from the UI and select which results to "Inject" into your context.
+            </div>
+
+            <h2>📚 Big Data Processing</h2>
+            <p>If you attach a file larger than 128k characters (like a massive CSV or a 200-page PDF), Lollms uses a <b>Map-Reduce</b> strategy:</p>
+            <ol>
+                <li>It splits the file into semantic chunks.</li>
+                <li>Summarizes each chunk based on your instruction.</li>
+                <li>Synthesizes the summaries into a final, coherent answer.</li>
+            </ol>
+        </section>
+            <h1>📓 Jupyter Integration</h1>
             <p>Lollms supercharges \`.ipynb\` notebooks with context-aware buttons in the cell toolbar.</p>
             
             <div class="feature-grid">
@@ -265,6 +342,42 @@ export class HelpPanel {
             </div>
         </section>
 
+        <!-- ADVANCED DEBUGGING -->
+        <section id="advanced-debug">
+            <h1>🐞 Advanced Debugging & UI Apps</h1>
+            <p>Debugging logic errors is easy, but debugging runtime behavior in complex or GUI apps requires a specific setup.</p>
+
+            <div class="card">
+                <h3>The "Active Duo": Agent + Debug</h3>
+                <p>To have the AI actually <b>fix</b> your code in real-time, you must activate both modes:</p>
+                <ul>
+                    <li><span class="badge" style="background:var(--vscode-charts-orange); color:white;">Agent Mode</span>: Gives the AI the <b>Tools</b> (Terminal, Filesystem).</li>
+                    <li><span class="badge" style="background:var(--vscode-charts-red); color:white;">Debug Mode</span>: Gives the AI the <b>Reasoning</b> (Permission to use the Debugger).</li>
+                </ul>
+                <p>When both are on, the Architect will set breakpoints, start sessions, and inspect variables to find the root cause of a crash.</p>
+            </div>
+
+            <h2>🖥️ Debugging GUI Apps (PyQt, Tkinter, etc.)</h2>
+            <p>GUI apps are unique because they don't exit; they wait for events. Lollms uses a <b>Vision & Automation</b> strategy for these:</p>
+            
+            <div class="tip">
+                <strong>Step 1: Enable Screen Capture</strong><br>
+                Go to <code>Settings -> Agent & Tools -> Permissions</code> and check <b>Screen Capture (Desktop)</b>. For privacy, this is disabled by default.
+            </div>
+
+            <h3>The Workflow</h3>
+            <ol>
+                <li><strong>Instrumentation:</strong> The agent writes a test script using <code>pyautogui</code> or <code>pytest-qt</code>.</li>
+                <li><strong>Non-blocking Launch:</strong> It launches your app in the background.</li>
+                <li><strong>Visual Analysis:</strong> It uses the <code>capture_desktop</code> tool to "see" your app's window and verify UI states or error dialogs.</li>
+                <li><strong>State Inspection:</strong> It uses the <code>vscode_debugger</code> to step through the event loop while the UI is alive.</li>
+            </ol>
+
+            <div class="warning">
+                <strong>Pro Tip:</strong> If your app hangs, the agent is trained to use <code>taskkill</code> or <code>pkill</code> as a final cleanup step to ensure your workspace stays clean.
+            </div>
+        </section>
+
         <!-- GIT -->
         <section id="git">
             <h1>🐙 Git Mastery</h1>
@@ -282,6 +395,38 @@ export class HelpPanel {
 
         <!-- SKILLS -->
         <section id="skills">
+            <h1>💡 Skills & Memory</h1>
+            <p>Teach the AI new tricks. Skills are reusable snippets of code, prompts, or documentation that you can inject into any conversation.</p>
+
+            <h3>Creating Skills</h3>
+            <ol>
+                <li>Select code in the editor.</li>
+                <li>Right-click -> <code>Lollms: Learn Selection as Skill</code>.</li>
+                <li>Give it a name (e.g., "React Component Pattern").</li>
+            </ol>
+
+            <div class="tip">
+                <strong>Source of Truth:</strong> When a skill is active, the AI treats it as a "Diamond Protocol." It will prioritize the skill's instructions over its general training data.
+            </div>
+        </section>
+
+        <!-- PROFILES -->
+        <section id="profiles">
+            <h1>🎭 Response Profiles</h1>
+            <p>You can switch the "Personality Mode" of the AI at any time using the badge next to the model name.</p>
+            
+            <table>
+                <tr><th>Profile</th><th>Behavior</th></tr>
+                <tr><td><b>Balanced</b></td><td>Explanation first, then code. Professional and helpful.</td></tr>
+                <tr><td><b>Structured</b></td><td>Strict <i>Problem / Hypothesis / Fix</i> layout. Best for complex debugging.</td></tr>
+                <tr><td><b>Minimalist</b></td><td>No talking. Just the code or the direct answer.</td></tr>
+                <tr><td><b>Pedagogical</b></td><td>Acts as a teacher. Explains the "Why" deeply with analogies.</td></tr>
+            </table>
+
+            <div class="tip">
+                <strong>Custom Profiles:</strong> You can create your own profiles in the Discussion Settings (⚙️). For example, a "Senior Architect" profile that only responds with UML and Design Patterns.
+            </div>
+        </section>
             <h1>💡 Skills & Memory</h1>
             <p>Teach the AI new tricks. Skills are reusable snippets of code, prompts, or documentation that you can inject into any conversation.</p>
 

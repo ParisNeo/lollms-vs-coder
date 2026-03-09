@@ -181,4 +181,18 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
             vscode.window.showErrorMessage(vscode.l10n.t("error.failedToExportContext", error.message));
         }
     }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.copyTreeAndContent', async () => {
+        try {
+            const res = await services.contextManager.getContextContent({
+                includeTree: true,
+                modelName: services.lollmsAPI.getModelName()
+            });
+            const output = `${res.projectTree}\n\n## File Contents\n\n${res.selectedFilesContent}`;
+            await vscode.env.clipboard.writeText(output);
+            vscode.window.showInformationMessage("File tree and selected content copied to clipboard.");
+        } catch (error: any) {
+            vscode.window.showErrorMessage(`Failed to copy: ${error.message}`);
+        }
+    }));
 }

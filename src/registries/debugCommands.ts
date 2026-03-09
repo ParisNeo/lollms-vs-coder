@@ -28,11 +28,33 @@ export function registerDebugCommands(context: vscode.ExtensionContext, services
         try {
             const document = await vscode.workspace.openTextDocument(uri);
             const range = diagnostic.range;
+            const errorLine = range.start.line + 1;
+            
+            // 1. Build a visual code snippet with pointers and line numbers
             const startLine = Math.max(0, range.start.line - 10);
             const endLine = Math.min(document.lineCount - 1, range.end.line + 10);
-            const contextText = document.getText(new vscode.Range(startLine, 0, endLine, document.lineAt(endLine).range.end.character));
+            
+            let codeSnippet = "";
+            for (let i = startLine; i <= endLine; i++) {
+                const lineText = document.lineAt(i).text;
+                const lineNum = i + 1;
+                // Highlight the line if it falls within the diagnostic range
+                const isTarget = (i >= range.start.line && i <= range.end.line);
+                codeSnippet += `${isTarget ? ' -> ' : '    '}${lineNum.toString().padStart(4)} | ${lineText}\n`;
+            }
+
             const relativePath = vscode.workspace.asRelativePath(uri);
-            const prompt = `I have a ${diagnostic.severity === vscode.DiagnosticSeverity.Error ? 'error' : 'warning'} in my code.\n\n**File:** \`${relativePath}\`\n**Line:** ${range.start.line + 1}\n**Diagnostic Message:** ${diagnostic.message}\n\n**Code Context:**\n\`\`\`${document.languageId}\n${contextText}\n\`\`\`\n\nPlease analyze this issue and suggest a fix. Provide the corrected code.`;
+            const severityLabel = diagnostic.severity === vscode.DiagnosticSeverity.Error ? 'ERROR' : 'WARNING';
+
+            let prompt = `### ⚠️ CODE ${severityLabel} DETECTED\n\n`;
+            prompt += `**File:** \`${relativePath}\`\n`;
+            prompt += `**Message:** \`${diagnostic.message}\`\n\n`;
+            prompt += `#### 🔍 CODE CONTEXT (Line ${errorLine})\n`;
+            prompt += `\`\`\`${document.languageId}\n${codeSnippet}\`\`\`\n\n`;
+            prompt += `**TASK:**\n`;
+            prompt += `1. Identify the cause of the ${severityLabel.toLowerCase()} at the highlighted line(s).\n`;
+            prompt += `2. Suggest a concise fix using the **SEARCH/REPLACE (AIDER)** format if possible.\n`;
+
             const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
             if (workspaceFolder) {
                  await startDiscussionWithInitialPrompt(services, prompt, workspaceFolder);
@@ -52,41 +74,60 @@ export function registerDebugCommands(context: vscode.ExtensionContext, services
         
         const includedFiles = services.contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || [];
         
-        let prompt = "";
+        let prompt = `### 🛑 RUNTIME EXCEPTION DETECTED\n\n`;
+        prompt += `**Error:** \`${error.message}\`\n`;
 
-        // 1. File Content (if NOT in context)
-        if (error.filePath) {
-            const errorFileRelative = vscode.workspace.asRelativePath(error.filePath);
-            const isFileInContext = includedFiles.includes(errorFileRelative);
-
-            if (!isFileInContext) {
-                try {
-                    const document = await vscode.workspace.openTextDocument(error.filePath);
-                    const fileContent = document.getText();
-                    prompt += `**Content of ${errorFileRelative} (Not in context):**\n\`\`\`${document.languageId}\n${fileContent}\n\`\`\`\n\n`;
-                } catch (e) {
-                    prompt += `(Could not read content of ${errorFileRelative})\n\n`;
+        // 1. Precise Code Snippet Extraction
+        if (error.filePath && error.line) {
+            try {
+                const document = await vscode.workspace.openTextDocument(error.filePath);
+                const relPath = vscode.workspace.asRelativePath(error.filePath);
+                
+                const startLine = Math.max(0, error.line - 6);
+                const endLine = Math.min(document.lineCount - 1, error.line + 4);
+                
+                let codeSnippet = "";
+                for (let i = startLine; i <= endLine; i++) {
+                    const lineText = document.lineAt(i).text;
+                    const lineNum = i + 1;
+                    const isErrorLine = lineNum === error.line;
+                    
+                    // Add a visual pointer and highlight the error line
+                    codeSnippet += `${isErrorLine ? ' -> ' : '    '}${lineNum.toString().padStart(4)} | ${lineText}\n`;
                 }
+
+                prompt += `**Location:** \`${relPath}\` at Line ${error.line}\n\n`;
+                prompt += `#### 🔍 CODE CONTEXT\n`;
+                prompt += `\`\`\`${document.languageId}\n${codeSnippet}\`\`\`\n\n`;
+
+                // If file is not in context, offer full file as well
+                if (!includedFiles.includes(relPath)) {
+                    prompt += `*(Note: The full content of this file is currently hidden from your primary context. Refer to the snippet above or use \`read_file\` if needed.)*\n\n`;
+                }
+            } catch (e) {
+                prompt += `**Location:** \`${error.filePath.fsPath}\` (File could not be read)\n\n`;
             }
         }
 
-        // 2. Error Details & Live State
-        prompt += `### DEBUG EXCEPTION CAPTURED\n`;
-        prompt += `**Error Message:** ${error.message}\n`;
-        prompt += `**Exact Location:** \`${error.filePath?.fsPath}\` at Line ${error.line}\n\n`;
-
+        // 2. Live State (Locals)
         if (error.locals) {
-            prompt += `#### RUNTIME STATE (LOCALS)\n`;
-            prompt += `Values of involved variables at the moment of exception:\n`;
+            prompt += `#### 🧪 RUNTIME STATE (LOCALS)\n`;
+            prompt += `Values at moment of crash:\n`;
             prompt += `\`\`\`\n${error.locals}\n\`\`\`\n\n`;
         }
 
-        prompt += `#### STACK TRACE\n`;
-        prompt += `\`\`\`\n${error.stack || 'No stack trace available'}\n\`\`\`\n\n`;
+        // 3. Stack Trace
+        if (error.stack) {
+            prompt += `#### 📜 STACK TRACE\n`;
+            prompt += `\`\`\`\n${error.stack}\n\`\`\`\n\n`;
+        }
 
-        // 3. Instructions
-        prompt += `Please analyze the error using the provided source code and the runtime variable values. Propose a fix to prevent this exception.`;
-        
+        // 4. Critical Instructions
+        prompt += `**TASK:**\n`;
+        prompt += `1. Analyze the code snippet and the error message.\n`;
+        prompt += `2. Use the runtime variables to understand why the logic failed at the highlighted line.\n`;
+        prompt += `3. Provide a fix using the **SEARCH/REPLACE (AIDER)** format if the file is in context, or provide the corrected code block.\n`;
+
         if (getActiveWorkspace()) {
             await startDiscussionWithInitialPrompt(services, prompt, getActiveWorkspace()!);
         }

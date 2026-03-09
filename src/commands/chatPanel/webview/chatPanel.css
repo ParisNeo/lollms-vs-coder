@@ -156,6 +156,24 @@ body {
 .special-zone-message .message-avatar { background-color: transparent; border: 1px solid var(--vscode-focusBorder); color: var(--vscode-foreground); }
 .special-zone-message .message-header { font-weight: bold; color: var(--vscode-textLink-foreground); }
 
+.muted-image-container {
+    border: 2px solid var(--vscode-charts-red);
+    border-radius: 4px;
+    padding: 8px;
+    margin-top: 8px;
+    background: rgba(244, 71, 71, 0.05);
+}
+
+.muted-image-warning {
+    color: var(--vscode-charts-red);
+    font-size: 11px;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 4px;
+}
+
 .context-message.muted-bubble {
     border: 2px solid var(--vscode-charts-red) !important;
     box-shadow: 0 0 10px rgba(244, 71, 71, 0.2) !important;

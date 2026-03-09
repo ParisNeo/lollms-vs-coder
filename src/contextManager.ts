@@ -38,7 +38,7 @@ export class ContextManager {
       '.pth', '.pt', '.onnx', '.tflite', '.pb', '.h5', '.hdf5', '.pkl', '.bin', 
       '.exe', '.dll', '.so', '.dylib', '.class', '.jar', '.war', '.ear', 
       '.zip', '.tar', '.gz', '.7z', '.rar', '.iso', '.img', '.db', '.sqlite', '.sqlite3',
-      '.pyc', '.pyo', '.pyd'
+      '.pyc', '.pyo', '.pyd', '.pth', '.pt', '.pkl', '.pickle'
   ]);
 
   private extensionToLanguageMap: { [key: string]: string } = {
@@ -645,7 +645,10 @@ ${content.substring(0, 20000)}
   }
 
   // --- UPGRADED AGENTIC AUTO-SKILL SELECTION ---
-    // --- UPGRADED AGENTIC AUTO-SKILL SELECTION ---
+    /**
+   * REWRITTEN: Multi-step Librarian Agent for Skill Selection.
+   * Behaves exactly like the Context Agent with iterative reasoning and tools.
+   */
   public async runSkillSelectionAgent(
     userPrompt: string,
     model: string,
@@ -656,102 +659,143 @@ ${content.substring(0, 20000)}
     if (!this.skillsManager) return currentSkillIds;
 
     const allSkills = await this.skillsManager.getSkills();
-    if (allSkills.length === 0) return currentSkillIds;
-
     const actionLog: string[] = [];
-    let selectedIds = new Set<string>(currentSkillIds);
+    const selectedIds = new Set<string>(currentSkillIds);
+    const executedActions = new Set<string>();
+    let cumulativeBrain = ""; 
+    const MAX_STEPS = 8;
 
-    const renderUpdate = (status: string, finished: boolean = false) => {
-        const logHtml = actionLog.map(l => `<div class="agent-log-item" style="font-size:0.85em; margin-bottom:2px;">${l}</div>`).join('');
-        const logSection = actionLog.length > 0
-                ? `<details ${finished ? '' : 'open'} style="margin-top:10px;"><summary>💡 Skill Discovery</summary><div class="agent-log-container" style="padding: 8px; background: var(--vscode-editor-inactiveSelectionBackground); border-radius: 4px; max-height: 150px; overflow-y: auto;">${logHtml}</div></details>`
-                : '';
+    const renderUpdate = (status: string, finished: boolean = false, step: number = 0) => {
+        const sortedSkills = allSkills.filter(s => selectedIds.has(s.id));
+        const skillsListItems = sortedSkills.map(s => `<li><span class="codicon codicon-lightbulb"></span> ${s.name}</li>`).join('');
         
-        let activeHtml = '';
-        if (selectedIds.size > 0) {
-            const names = allSkills.filter(s => selectedIds.has(s.id)).map(s => s.name);
-            activeHtml = `<div style="margin-top:10px; font-size:0.9em;"><strong>Active Skills:</strong> ${names.join(', ')}</div>`;
-        }
+        const skillsTree = selectedIds.size > 0 
+            ? `<details ${finished ? 'open' : ''}><summary>📂 <strong>Active Skills (${selectedIds.size})</strong></summary><ul class="file-list-tree">${skillsListItems}</ul></details>`
+            : `*No specialized skills currently active.*`;
+        
+        const logHtml = actionLog.map(l => `<div class="agent-log-item">${l}</div>`).join('');
+        const logSection = actionLog.length > 0
+             ? `<details ${finished ? '' : 'open'}><summary>📜 Discovery Log</summary><div class="agent-log-container">${logHtml}</div></details>`
+             : '';
+
+        const scratchpadHtml = cumulativeBrain 
+            ? `<div class="plan-scratchpad" style="margin-top:10px;"><details open><summary class="scratchpad-header">🧠 Librarian Reasoning</summary><div class="scratchpad-content">${cumulativeBrain}</div></details></div>`
+            : '';
         
         let spinnerHtml = finished 
-            ? `<div class="status-line"><span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span> <strong>Skills Optimized</strong></div>`
-            : `<div class="status-line"><div class="spinner"></div> <strong>${status}</strong></div>`;
+            ? `<div class="status-line"><span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span> <span>Library Optimized</span></div>`
+            : `<div class="status-line"><div class="spinner"></div> <span>Searching Library (Step ${step + 1}): ${status}</span></div>`;
         
-        onUpdate(`**💡 Auto-Skill Agent**\n\n${spinnerHtml}\n\n${activeHtml}\n\n${logSection}`);
+        onUpdate(`**💡 Auto-Skill Agent**\n\n${spinnerHtml}\n\n${scratchpadHtml}\n\n${skillsTree}\n\n${logSection}`);
     };
 
-    renderUpdate("Analyzing library...");
+    const systemPrompt = `You are the Expert Librarian Agent for the LoLLMs Skills Library.
+Your goal is to optimize the AI's "Skill Context" by selecting specific documentation, protocols, or code patterns from the library that are relevant to the user's request.
 
-    const skillCatalog = allSkills.map(s => ({
-        id: s.id,
-        name: s.name,
-        description: s.description,
-        category: s.category
-    }));
+### 📚 LIBRARIAN PROTOCOL
+1. **Analyze**: Identify the tech stack, library APIs (e.g. safe_store, moltbook), or complex patterns in the request.
+2. **Search**: Use tools to find skills you aren't sure about. 
+3. **Verify**: If you see a skill name that sounds relevant, READ its description/content before adding it.
+4. **Finalize**: Use \`select_skills\` to update the active list.
 
-    const systemPrompt = `You are the Expert Librarian Agent. 
-Your goal is to equip the main AI with the specific technical "Skills" (documentation, protocols, code patterns) needed for the user's request.
+**AVAILABLE TOOLS:**
+1. \`get_skill_catalog()\`: Returns a list of ALL available skill IDs, names, and categories.
+2. \`read_skill_details(id="id")\`: Returns the full content and documentation of a specific skill.
+3. \`search_library(query="term")\`: Performs a keyword search across skill names and descriptions.
+4. \`select_skills(add=["id1"], remove=["id2"])\`: Add or remove skills from the active context.
+5. \`done()\`: Finish the optimization.
 
-**STRATEGY:**
-1. **Analyze**: Identify the tech stack and specific libraries mentioned in the request.
-2. **Search**: Match requests to existing skill definitions.
-3. **Optimize**: Only select skills that provide non-obvious knowledge. Don't add a skill if the model already knows the library perfectly.
-4. **Prune**: Remove skills that are no longer relevant to the current conversation.
-
-**OUTPUT FORMAT**: You must output a JSON object with your reasoning.
+**OUTPUT FORMAT**: You must output a JSON object. Use 'scratchpad' for your current step-by-step thoughts.
 \`\`\`json
 {
-  "thought": "The user is asking about SafeStore's knowledge graph. I will add the graph ontology and query skills.",
-  "add": ["id1", "id2"],
-  "remove": ["id3"]
+  "scratchpad": "I see the user mentioned RAG. I will search for 'safe_store' skills to see what documentation we have.",
+  "tool": "tool_name",
+  "params": { ... }
 }
 \`\`\``;
 
-    const userContent = `**User Request:** "${userPrompt}"
-**Currently Equipped:** ${JSON.stringify(currentSkillIds)}
-**Library Catalog:**
-${JSON.stringify(skillCatalog, null, 2)}`;
+    let chatHistory: ChatMessage[] = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: `**USER REQUEST:** "${userPrompt}"\n\n**CURRENTLY ACTIVE SKILLS:** ${JSON.stringify(Array.from(selectedIds))}` }
+    ];
 
-    try {
-        const response = await this.lollmsAPI.sendChat([
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userContent }
-        ], null, signal, model);
+    renderUpdate("Initializing search...");
+
+    for (let step = 0; step < MAX_STEPS; step++) {
+        if (signal.aborted) break;
+
+        const response = await this.lollmsAPI.sendChat(chatHistory, null, signal, model);
+        chatHistory.push({ role: 'assistant', content: response });
 
         const cleanResponse = stripThinkingTags(response);
         const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
         
-        if (jsonMatch) {
-            const decision = JSON.parse(jsonMatch[0]);
-            if (decision.thought) actionLog.push(`🧠 *Analysis*: ${decision.thought}`);
-            
-            const toAdd = (decision.add || []).filter((id: string) => allSkills.some(s => s.id === id));
-            const toRemove = decision.remove || [];
+        if (!jsonMatch) {
+            actionLog.push("❌ Failed to parse response.");
+            break;
+        }
 
-            toAdd.forEach((id: string) => {
-                const s = allSkills.find(sk => sk.id === id);
-                if (s) actionLog.push(`➕ Added: **${s.name}**`);
-                selectedIds.add(id);
-            });
-
-            toRemove.forEach((id: string) => {
-                const s = allSkills.find(sk => sk.id === id);
-                if (s) actionLog.push(`➖ Removed: **${s.name}**`);
-                selectedIds.delete(id);
-            });
-
-            if (toAdd.length === 0 && toRemove.length === 0) {
-                actionLog.push("✅ Library already perfectly matched to request.");
+        try {
+            const toolCall = JSON.parse(jsonMatch[0]);
+            if (toolCall.scratchpad) {
+                // Render scratchpad line with bullet and markdown support
+                cumulativeBrain += `\n- ${toolCall.scratchpad}`;
             }
 
-            renderUpdate("Complete", true);
-            return Array.from(selectedIds);
+            const actionFingerprint = JSON.stringify({ tool: toolCall.tool, params: toolCall.params });
+            if (executedActions.has(actionFingerprint) && toolCall.tool !== 'done') {
+                chatHistory.push({ role: 'system', content: "LOOP DETECTED: You already called this tool with these parameters. Move forward or call 'done'." });
+                continue;
+            }
+            executedActions.add(actionFingerprint);
+
+            if (toolCall.tool === 'done') {
+                renderUpdate("Complete", true, step);
+                break;
+            }
+
+            if (toolCall.tool === 'get_skill_catalog') {
+                const catalog = allSkills.map(s => ({ id: s.id, name: s.name, category: s.category }));
+                chatHistory.push({ role: 'system', content: `LIBRARY CATALOG:\n${JSON.stringify(catalog, null, 2)}` });
+                actionLog.push("📖 Retrieved full skill catalog.");
+                renderUpdate("Reviewing catalog...", false, step);
+            } 
+            else if (toolCall.tool === 'read_skill_details') {
+                const skill = allSkills.find(s => s.id === toolCall.params.id);
+                if (skill) {
+                    chatHistory.push({ role: 'system', content: `SKILL CONTENT (${skill.id}):\n${skill.content}` });
+                    actionLog.push(`🔍 Inspected skill: **${skill.name}**`);
+                    renderUpdate(`Reading ${skill.name}...`, false, step);
+                } else {
+                    chatHistory.push({ role: 'system', content: "Error: Skill ID not found." });
+                }
+            }
+            else if (toolCall.tool === 'search_library') {
+                const query = toolCall.params.query.toLowerCase();
+                const matches = allSkills.filter(s => 
+                    s.name.toLowerCase().includes(query) || 
+                    s.description.toLowerCase().includes(query) ||
+                    s.category?.toLowerCase().includes(query)
+                ).map(s => ({ id: s.id, name: s.name, description: s.description }));
+                
+                chatHistory.push({ role: 'system', content: `SEARCH RESULTS for "${query}":\n${JSON.stringify(matches, null, 2)}` });
+                actionLog.push(`🔎 Searched library for: "${query}" (${matches.length} matches)`);
+                renderUpdate("Filtering results...", false, step);
+            }
+            else if (toolCall.tool === 'select_skills') {
+                const toAdd = toolCall.params.add || [];
+                const toRemove = toolCall.params.remove || [];
+                toAdd.forEach((id: string) => selectedIds.add(id));
+                toRemove.forEach((id: string) => selectedIds.delete(id));
+                actionLog.push(`✅ Updated selection: +${toAdd.length} / -${toRemove.length} skills.`);
+                renderUpdate("Updating selection...", false, step);
+            }
+        } catch (e: any) {
+            actionLog.push(`❌ Tool execution failed: ${e.message}`);
         }
-    } catch (e: any) {
-        actionLog.push(`❌ Analysis failed: ${e.message}`);
-        renderUpdate("Error", true);
     }
 
+    renderUpdate("Optimization complete.", true, MAX_STEPS);
     return Array.from(selectedIds);
   }
 
@@ -1384,10 +1428,14 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
       }
   }
   
-  async getContextContent(options?: { includeTree?: boolean, signal?: AbortSignal, importedSkillIds?: string[], activeDiagramIds?: string[], modelName?: string, allowRLM?: boolean, onProgress?: (pct: number) => void }): Promise<ContextResult> {
+  async getContextContent(options?: { includeTree?: boolean, signal?: AbortSignal, importedSkillIds?: string[], activeDiagramIds?: string[], modelName?: string, allowRLM?: boolean, onProgress?: (pct: number) => void, capabilities?: DiscussionCapabilities }): Promise<ContextResult> {
     const result: ContextResult = { text: '', images:[], projectTree: '', selectedFilesContent: '', skillsContent: '', importedSkills:[] };
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const maxImageSize = config.get<number>('maxImageSize') || 1024;
+    
+    // Check vision capability
+    const enableVision = options?.capabilities?.enableImages !== false;
+    const useVisualDocs = options?.capabilities?.useImageModeForDocs === true;
     const includeTree = options?.includeTree !== false; 
     const signal = options?.signal;
 
@@ -1489,6 +1537,10 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
           let fileContent = '';
 
           if (this.imageExtensions.has(ext)) {
+            if (!enableVision) {
+                result.selectedFilesContent += `### \`${filePath}\` (Image Muted - Vision Disabled)\n\n`;
+                continue;
+            }
             const image = await Jimp.read(buffer);
             if (maxImageSize > 0 && (image.getWidth() > maxImageSize || image.getHeight() > maxImageSize)) {
               image.scaleToFit(maxImageSize, maxImageSize);
@@ -1499,15 +1551,33 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
             continue; 
           } else {
             if (this.docExtensions.has(ext)) {
-                try {
-                    fileContent = await this.lollmsAPI.extractText(buffer.toString('base64'), filePath);
-                } catch (apiError: any) {
-                    if (ext === '.pdf') {
-                        fileContent = await this.parsePdfLocal(buffer);
-                    } else if (ext === '.docx') {
-                        fileContent = await this.parseDocxLocal(buffer);
-                    } else {
-                        fileContent = `⚠️ **Error processing document on backend:** ${apiError.message}`;
+                if (useVisualDocs && enableVision) {
+                    try {
+                        // Request backend to convert document to images
+                        const visualData = await this.lollmsAPI.extractVisualText(buffer.toString('base64'), filePath);
+                        if (visualData.images) {
+                            visualData.images.forEach((img: string, idx: number) => {
+                                result.images.push({ filePath: `${filePath}#page${idx+1}`, data: img });
+                            });
+                            fileContent = `[Document converted to ${visualData.images.length} images for Vision analysis]`;
+                        } else {
+                            fileContent = visualData.text || "";
+                        }
+                    } catch (e) {
+                        fileContent = `⚠️ **Visual extraction failed, falling back to text:** ${e}`;
+                        fileContent += await this.lollmsAPI.extractText(buffer.toString('base64'), filePath);
+                    }
+                } else {
+                    try {
+                        fileContent = await this.lollmsAPI.extractText(buffer.toString('base64'), filePath);
+                    } catch (apiError: any) {
+                        if (ext === '.pdf') {
+                            fileContent = await this.parsePdfLocal(buffer);
+                        } else if (ext === '.docx') {
+                            fileContent = await this.parseDocxLocal(buffer);
+                        } else {
+                            fileContent = `⚠️ **Error processing document on backend:** ${apiError.message}`;
+                        }
                     }
                 }
             } else if (ext === '.ipynb') {
@@ -1576,7 +1646,10 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
             }
         }
     }
-    result.text = `# Project Context\n\n**Workspace:** ${path.basename(workspaceFolder.uri.fsPath)}\n\n`;
+    result.text = `# 📂 PROJECT: ${path.basename(workspaceFolder.uri.fsPath)}\n`;
+    result.text += `**Sandbox Protocol:** You are restricted to this project folder. Use ONLY relative paths (e.g., \`src/main.ts\`) for all file operations.\n`;
+    result.text += `**Active Context:** ${includedFiles.length} Files | ${allSkillIds.length} Skills\n\n`;
+
     if (result.skillsContent) {
         result.text += `## Active Skills & Protocols\n${result.skillsContent}---\n\n`;
     }

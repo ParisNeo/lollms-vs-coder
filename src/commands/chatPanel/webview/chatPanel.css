@@ -226,6 +226,7 @@ body {
 .message-content { line-height: 1.6; font-size: var(--vscode-editor-font-size); overflow-wrap: break-word; color: var(--vscode-editor-foreground); width: 100%; }
 .message-content p { margin-top: 0; margin-bottom: 0.8em; }
 .message-content p:last-child { margin-bottom: 0; }
+.message-content pre { max-height: 500px; overflow-y: auto; }
 .message-actions { position: sticky; top: 6px; align-self: flex-end; margin-bottom: -32px; z-index: 20; display: flex; gap: 4px; background-color: var(--vscode-editor-background); border-radius: 4px; padding: 2px; border: 1px solid var(--vscode-editorGroup-border); box-shadow: 0 2px 4px rgba(0,0,0,0.1); opacity: 0; transition: opacity 0.2s; pointer-events: none; }
 .message:hover .message-actions { opacity: 1; pointer-events: auto; }
 .msg-action-btn { background: transparent; border: none; color: var(--vscode-icon-foreground); cursor: pointer; padding: 4px; border-radius: 3px; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; }
@@ -807,15 +808,128 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 
 .input-area {
     display: flex;
-    gap: 8px;
+    flex-direction: column;
     background-color: var(--vscode-input-background);
     border: 1px solid var(--vscode-input-border);
     border-bottom-left-radius: 6px;
     border-bottom-right-radius: 6px;
     padding: 8px;
-    align-items: flex-end;
     position: relative;
     min-height: 40px;
+}
+
+.input-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+    width: 100%;
+}
+
+.attachment-preview-area {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 4px 0;
+    border-bottom: 1px solid var(--vscode-widget-border);
+    margin-bottom: 8px;
+}
+
+.attachment-preview-area:empty {
+    display: none;
+}
+
+.staged-image-card {
+    position: relative;
+    width: 60px;
+    height: 60px;
+    border-radius: 4px;
+    border: 1px solid var(--vscode-widget-border);
+    background-size: cover;
+    background-position: center;
+}
+
+.staged-image-card .remove-btn, .staged-image-card .edit-btn {
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    color: white;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    z-index: 2;
+}
+
+.staged-image-card .remove-btn {
+    top: -6px;
+    right: -6px;
+    background: var(--vscode-charts-red);
+}
+
+.staged-image-card .edit-btn {
+    top: -6px;
+    left: -6px;
+    background: var(--vscode-button-background);
+}
+
+/* Image Editor Modal Styles */
+.editor-modal {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(0,0,0,0.85);
+    z-index: 10000;
+    flex-direction: column;
+}
+
+.editor-toolbar {
+    background: var(--vscode-editorWidget-background);
+    padding: 10px;
+    display: flex;
+    gap: 15px;
+    align-items: center;
+    border-bottom: 1px solid var(--vscode-widget-border);
+    flex-wrap: wrap;
+}
+
+.editor-canvas-container {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: auto;
+    padding: 20px;
+    position: relative;
+}
+
+#webcam-feed {
+    transform: scaleX(-1); /* Mirror the preview for better user experience */
+    background: #222;
+}
+
+#image-editor-canvas {
+    background: white;
+    box-shadow: 0 0 20px rgba(0,0,0,0.5);
+    cursor: crosshair;
+}
+
+.tool-group { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+.tool-group label { margin: 0; font-weight: bold; }
+.editor-toolbar input[type="color"] { width: 30px; height: 24px; padding: 0; border: none; }
+.editor-toolbar input[type="number"] { width: 50px; }
+
+#canvas-text-input {
+    position: absolute;
+    display: none;
+    background: transparent;
+    border: 1px dashed #333;
+    outline: none;
+    padding: 0;
+    margin: 0;
+    z-index: 10001;
 }
 .input-area:focus-within { border-color: var(--vscode-focusBorder); }
 .input-area.disabled { opacity: 0.6; pointer-events: none; }
@@ -1792,6 +1906,8 @@ mark.current-match {
     font-family: var(--vscode-editor-font-family);
     border-radius: 4px;
     position: relative;
+    max-height: 300px;
+    overflow-y: auto;
 }
 
 .debug-line-num { color: var(--vscode-editorLineNumber-foreground); margin-right: 10px; font-size: 11px; }

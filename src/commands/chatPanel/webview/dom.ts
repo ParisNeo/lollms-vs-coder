@@ -95,7 +95,8 @@ export const state: {
     currentBranch: string,
     currentPersonalityId: string,
     personalities: any[],
-    profiles: ResponseProfile[]
+    profiles: ResponseProfile[],
+    pendingImages: { name: string, data: string }[]
 } = {
     searchMatches: [],
     currentMatchIndex: -1,
@@ -106,7 +107,8 @@ export const state: {
     currentBranch: '',
     currentPersonalityId: 'default_coder',
     personalities: [],
-    profiles: [] 
+    profiles: [],
+    pendingImages: []
 };
 
 export const dom = {
@@ -176,6 +178,19 @@ export const dom = {
     get saveToolsBtn() { return document.getElementById('save-tools-btn') as HTMLButtonElement; },
     get saveDiscussionToolsBtn() { return document.getElementById('save-discussion-tools-btn') as HTMLButtonElement; },
     get toolsListDiv() { return document.getElementById('tools-list') as HTMLDivElement; },
+    get attachmentPreviewArea() { return document.getElementById('attachment-preview-area') as HTMLDivElement; },
+    get addDrawingButton() { return document.getElementById('addDrawingButton') as HTMLButtonElement; },
+    get editorModal() { return document.getElementById('image-editor-modal') as HTMLDivElement; },
+    get editorCanvas() { return document.getElementById('image-editor-canvas') as HTMLCanvasElement; },
+    get editorSaveBtn() { return document.getElementById('editor-save') as HTMLButtonElement; },
+    get editorCancelBtn() { return document.getElementById('editor-cancel') as HTMLButtonElement; },
+    get editorClearBtn() { return document.getElementById('editor-clear') as HTMLButtonElement; },
+    get editorTextInput() { return document.getElementById('canvas-text-input') as HTMLInputElement; },
+    get toolWebcam() { return document.getElementById('tool-webcam') as HTMLButtonElement; },
+    get webcamContainer() { return document.getElementById('webcam-container') as HTMLDivElement; },
+    get webcamFeed() { return document.getElementById('webcam-feed') as HTMLVideoElement; },
+    get webcamCaptureBtn() { return document.getElementById('webcam-capture') as HTMLButtonElement; },
+    get webcamCancelBtn() { return document.getElementById('webcam-cancel') as HTMLButtonElement; },
     get addUserMessageBtn() { return document.getElementById('add-user-message-btn') as HTMLButtonElement; },
     get addAiMessageBtn() { return document.getElementById('add-ai-message-btn') as HTMLButtonElement; },
     get copyContextButton() { return document.getElementById('copyContextButton') as HTMLButtonElement; },

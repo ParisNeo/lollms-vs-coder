@@ -98,20 +98,32 @@ export class LollmsAPI {
 
   private createHttpsAgent(): https.Agent {
       const certPath = this.config.sslCertPath ? this.config.sslCertPath.replace(/^['"]|['"]$/g, '') : '';
+      
+      // Mitigation: If user explicitly disabled SSL, force the Node environment to respect it.
+      // This helps with dependencies that might ignore the custom agent.
+      if (this.config.disableSslVerification) {
+          process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+          Logger.warn("SSL Verification Disabled globally for this session.");
+      } else {
+          // Re-enable if it was previously disabled
+          process.env.NODE_TLS_REJECT_UNAUTHORIZED = '1';
+      }
+
       const options: https.AgentOptions = {
           keepAlive: true,
           rejectUnauthorized: !this.config.disableSslVerification,
       };
 
       if (this.config.disableSslVerification) {
+          // Additional layer of bypass for some node versions
           options.checkServerIdentity = () => undefined;
-          Logger.info("SSL Verification Disabled.");
       }
 
       if (certPath && fs.existsSync(certPath)) {
           try {
-              options.ca = fs.readFileSync(certPath);
-              Logger.info(`Loaded custom SSL cert: ${certPath}`);
+              const certBuffer = fs.readFileSync(certPath);
+              options.ca = certBuffer;
+              Logger.info(`Loaded custom SSL cert buffer: ${certPath}`);
           } catch (e) {
               Logger.error(`Failed to read SSL cert: ${certPath}`, e);
           }
@@ -228,11 +240,13 @@ export class LollmsAPI {
     const timeout = setTimeout(() => controller.abort(), 15000);
 
     try {
+        const isHttps = url.startsWith('https');
         const response = await fetch(url, {
             method: 'GET',
             headers,
             signal: controller.signal,
-            agent: url.startsWith('https') ? this.httpsAgent : undefined
+            // Use the agent for all HTTPS calls regardless of backend
+            agent: isHttps ? this.httpsAgent : undefined
         });
 
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -385,7 +399,10 @@ export class LollmsAPI {
         options.agent = this.httpsAgent;
     }
 
-    const response = await fetch(extractUrl, options);
+    const response = await fetch(extractUrl, {
+        ...options,
+        agent: isHttps ? this.httpsAgent : undefined
+    });
     if (!response.ok) {
         throw new Error(`Failed to extract text: ${response.status}`);
     }
@@ -491,10 +508,14 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
 
     // Handle Physical Thinking Mode from config/capabilities
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-    // Use the override if provided, otherwise fallback to global config
-    const isThinkingActive = options?.thinking !== undefined ? options.thinking : (config.get<boolean>('thinkingMode') || false);
-    const reasoningEffort = config.get<string>('reasoningEffort') || 'medium';
-    const thinkingBudget = config.get<number>('thinkingBudget') || 16000;
+    
+    // PRIORITY: 
+    // 1. Explicit option passed by ChatPanel (The Badge)
+    // 2. Global Setting fallback
+    const isThinkingActive = options?.thinking !== undefined ? options.thinking : (config.get<boolean>('lollmsVsCoder.thinkingMode') || false);
+    
+    const reasoningEffort = config.get<string>('lollmsVsCoder.reasoningEffort') || 'medium';
+    const thinkingBudget = config.get<number>('lollmsVsCoder.thinkingBudget') || 16000;
 
     if (backend === 'ollama') {
         url += '/api/chat';
@@ -533,6 +554,10 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
             body.reasoning_effort = reasoningEffort;
             // DeepSeek Reasoner style (passed via extra_body/direct)
             body.thinking = { type: "enabled" };
+        } else {
+            // Explicitly disable for providers that default to thinking
+            // Some proxies use 'thinking' while others use 'include_reasoning'
+            body.include_reasoning = false;
         }
     } else if (backend === 'google') {
         const method = stream ? 'streamGenerateContent' : 'generateContent';

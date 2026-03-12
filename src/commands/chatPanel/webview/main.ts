@@ -59,7 +59,7 @@ import 'prismjs/components/prism-sass';
 import 'prismjs/components/prism-scss';
 import 'prismjs/components/prism-jsx';
 import 'prismjs/components/prism-tsx';
-import { updateBadges } from './ui.js';
+import { setGeneratingState, updateBadges, renderPendingImages, openImageEditor } from './ui.js';
 
 // Initialize DOMPurify
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
@@ -69,6 +69,8 @@ const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) :
 (window as any).DOMPurify = sanitizer;
 (window as any).mermaid = mermaid;
 (window as any).Prism = Prism;
+(window as any).renderPendingImages = renderPendingImages;
+(window as any).openImageEditor = openImageEditor;
 
 // --- Initialize Mermaid ---
 try {

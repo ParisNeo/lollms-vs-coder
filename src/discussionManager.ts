@@ -195,13 +195,37 @@ export class DiscussionManager {
         const filePath = vscode.Uri.joinPath(this.discussionsDir, `${id}.json`);
         try {
             const content = await vscode.workspace.fs.readFile(filePath);
-            // Use Buffer.from to ensure the Uint8Array is correctly interpreted as a UTF-8 string
-            const jsonString = Buffer.from(content).toString('utf8');
-            return JSON.parse(jsonString);
+            const jsonString = Buffer.from(content).toString('utf8').trim();
+            
+            if (!jsonString) {
+                Logger.warn(`Discussion file ${id}.json is empty. Returning recovery skeleton.`);
+                return this.createRecoverySkeleton(id);
+            }
+
+            const data = JSON.parse(jsonString);
+            
+            // Migration: Ensure mandatory arrays exist
+            if (!data.messages) data.messages = [];
+            if (!data.importedSkills) data.importedSkills = [];
+            if (!data.capabilities) data.capabilities = this.getLastCapabilities();
+            
+            return data;
         } catch (error) { 
-            console.error(`[DiscussionManager] Failed to read discussion ${id}:`, error);
+            Logger.error(`[DiscussionManager] Failed to read/parse discussion ${id}`, error);
             return null; 
         }
+    }
+
+    private createRecoverySkeleton(id: string): Discussion {
+        return {
+            id,
+            title: 'Recovered Discussion',
+            messages: [{ role: 'system', content: '⚠️ This discussion file was corrupted or empty. Data has been reset to prevent UI crashes.' }],
+            timestamp: Date.now(),
+            groupId: null,
+            capabilities: this.getLastCapabilities(),
+            importedSkills: []
+        };
     }
 
     async getAllDiscussions(): Promise<Discussion[]> {
@@ -209,11 +233,13 @@ export class DiscussionManager {
             const entries = await vscode.workspace.fs.readDirectory(this.discussionsDir);
             const jsonFiles = entries.filter(([name, type]) => type === vscode.FileType.File && name.endsWith('.json'));
             
-            const discussionPromises = jsonFiles.map(([name]) => 
-                this.getDiscussion(path.parse(name).name)
-            );
-            
-            const results = await Promise.all(discussionPromises);
+            const results: Discussion[] = [];
+            for (const [name] of jsonFiles) {
+                const discussion = await this.getDiscussion(path.parse(name).name);
+                if (discussion) {
+                    results.push(discussion);
+                }
+            }
             return results
                 .filter((d): d is Discussion => d !== null)
                 .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));

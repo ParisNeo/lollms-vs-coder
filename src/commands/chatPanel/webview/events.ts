@@ -1,7 +1,7 @@
 import { dom, vscode, state } from './dom.js';
 import { performSearch, navigateSearch, clearSearch } from './search.js';
 import { insertNewMessageEditor } from './messageRenderer.js';
-import { setGeneratingState, updateBadges } from './ui.js';
+import { setGeneratingState, updateBadges, openImageEditor, renderPendingImages } from './ui.js';
 import { isScrolledToBottom } from './utils.js';
 
 export function initEventHandlers() {
@@ -37,10 +37,29 @@ export function initEventHandlers() {
 
     if (dom.sendButton) dom.sendButton.addEventListener('click', () => {
         const text = dom.messageInput.value.trim();
-        if (text) {
-            vscode.postMessage({ command: 'sendMessage', message: { role: 'user', content: text } });
+        if (text || state.pendingImages.length > 0) {
+            let content: any = text;
+            
+            // If we have images, wrap in multipart format
+            if (state.pendingImages.length > 0) {
+                const parts: any[] = [];
+                if (text) parts.push({ type: 'text', text: text });
+                state.pendingImages.forEach(img => {
+                    parts.push({ type: 'image_url', image_url: { url: img.data } });
+                });
+                content = parts;
+            }
+
+            vscode.postMessage({ 
+                command: 'sendMessage', 
+                message: { role: 'user', content: content } 
+            });
+            
+            // Reset
             dom.messageInput.value = '';
             dom.messageInput.style.height = 'auto';
+            state.pendingImages = [];
+            renderPendingImages();
         }
     });
 
@@ -133,7 +152,11 @@ export function initEventHandlers() {
                         const reader = new FileReader();
                         reader.onload = (event) => {
                             const base64 = event.target?.result as string;
-                            vscode.postMessage({ command: 'loadFile', file: { name: `pasted_image_${Date.now()}.png`, content: base64, isImage: true } });
+                            state.pendingImages.push({ 
+                                name: `pasted_${Date.now()}.png`, 
+                                data: base64 
+                            });
+                            renderPendingImages();
                         };
                         reader.readAsDataURL(blob);
                         e.preventDefault();
@@ -350,7 +373,16 @@ export function initEventHandlers() {
     bindClick(dom.setEntryPointButton, 'setEntryPoint');
     bindClick(dom.executeButton, 'executeProject');
     bindClick(dom.debugRestartButton, 'debugRestart');
-    bindClick(dom.showDebugLogButton, 'requestLog');
+    if (dom.showDebugLogButton) dom.showDebugLogButton.addEventListener('click', () => {
+        vscode.postMessage({ command: 'requestLog' });
+        dom.moreActionsMenu.classList.remove('visible');
+    });
+
+    if (dom.addDrawingButton) {
+        dom.addDrawingButton.addEventListener('click', () => {
+            openImageEditor();
+        });
+    }
 
     if (dom.addUserMessageBtn) {
         dom.addUserMessageBtn.addEventListener('click', () => {

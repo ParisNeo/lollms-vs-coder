@@ -12,6 +12,404 @@ function getStatusEmoji(text: string): string {
     return '✍️';
 }
 
+export function renderPendingImages() {
+    if (!dom.attachmentPreviewArea) return;
+    dom.attachmentPreviewArea.innerHTML = '';
+    
+    state.pendingImages.forEach((img, idx) => {
+        const card = document.createElement('div');
+        card.className = 'staged-image-card';
+        card.style.backgroundImage = `url(${img.data})`;
+        
+        const edit = document.createElement('div');
+        edit.className = 'edit-btn';
+        edit.innerHTML = '<span class="codicon codicon-edit"></span>';
+        edit.onclick = () => {
+            openImageEditor(idx);
+        };
+
+        const remove = document.createElement('div');
+        remove.className = 'remove-btn';
+        remove.innerHTML = '<span class="codicon codicon-close"></span>';
+        remove.onclick = () => {
+            state.pendingImages.splice(idx, 1);
+            renderPendingImages();
+        };
+        
+        card.appendChild(edit);
+        card.appendChild(remove);
+        dom.attachmentPreviewArea.appendChild(card);
+    });
+}
+
+let canvasCtx: CanvasRenderingContext2D | null = null;
+let currentEditingIdx: number | null = null;
+let isDrawing = false;
+let currentTool = 'brush';
+let textInputPos = { x: 0, y: 0, w: 0, h: 0 };
+let startPos = { x: 0, y: 0 };
+let webcamStream: MediaStream | null = null;
+
+// Undo/Redo System
+let undoStack: string[] = [];
+let redoStack: string[] = [];
+
+function saveState() {
+    if (!dom.editorCanvas) return;
+    undoStack.push(dom.editorCanvas.toDataURL());
+    redoStack = []; // Clear redo on new action
+    if (undoStack.length > 50) undoStack.shift();
+}
+
+function undo() {
+    if (undoStack.length < 2) return; // Keep current state
+    const current = undoStack.pop()!;
+    redoStack.push(current);
+    const prev = undoStack[undoStack.length - 1];
+    loadState(prev);
+}
+
+function redo() {
+    if (redoStack.length === 0) return;
+    const next = redoStack.pop()!;
+    undoStack.push(next);
+    loadState(next);
+}
+
+function loadState(dataUrl: string) {
+    const img = new Image();
+    img.onload = () => {
+        canvasCtx?.clearRect(0, 0, dom.editorCanvas.width, dom.editorCanvas.height);
+        canvasCtx?.drawImage(img, 0, 0);
+    };
+    img.src = dataUrl;
+}
+
+export function openImageEditor(index: number | null = null): void {
+    currentEditingIdx = index;
+    const modal = dom.editorModal;
+    const canvas = dom.editorCanvas;
+    if (!modal || !canvas) return;
+
+    modal.style.display = 'flex';
+    canvasCtx = canvas.getContext('2d');
+    
+    undoStack = [];
+    redoStack = [];
+
+    if (index !== null) {
+        const img = new Image();
+        img.onload = () => {
+            canvas.width = img.width;
+            canvas.height = img.height;
+            canvasCtx?.drawImage(img, 0, 0);
+            saveState(); // Initial state
+        };
+        img.src = state.pendingImages[index].data;
+    } else {
+        canvas.width = 800;
+        canvas.height = 600;
+        if (canvasCtx) {
+            canvasCtx.fillStyle = 'white';
+            canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+        saveState(); // Initial state
+    }
+
+    initCanvasEvents();
+}
+
+async function startWebcam() {
+    try {
+        // Standard browser prompt for camera access
+        webcamStream = await navigator.mediaDevices.getUserMedia({ 
+            video: { 
+                width: { ideal: 1280 }, 
+                height: { ideal: 720 },
+                facingMode: "user" 
+            }, 
+            audio: false 
+        });
+        
+        dom.webcamFeed.srcObject = webcamStream;
+        dom.webcamContainer.style.display = 'flex';
+        
+    } catch (err: any) {
+        stopWebcam();
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+            vscode.postMessage({ command: 'updateStatus', status: 'Webcam Blocked', type: 'error' });
+            
+            dom.webcamContainer.style.display = 'flex';
+            dom.webcamContainer.innerHTML = ''; // Clear previous
+
+            const wrapper = document.createElement('div');
+            wrapper.style.cssText = "padding: 20px; text-align: center; color: white; display: flex; flex-direction: column; align-items: center; gap: 10px;";
+            
+            const icon = document.createElement('i');
+            icon.className = 'codicon codicon-error';
+            icon.style.cssText = "font-size: 30px; color: var(--vscode-charts-red);";
+            
+            const title = document.createElement('p');
+            title.innerHTML = '<strong>Camera Access Blocked</strong>';
+            
+            const text = document.createElement('p');
+            text.style.fontSize = '11px';
+            text.style.opacity = '0.8';
+            text.textContent = 'VS Code permission denied. You must reload the window to reset the permission prompt.';
+
+            const reloadBtn = document.createElement('button');
+            reloadBtn.className = 'code-action-btn apply-btn';
+            reloadBtn.style.width = '100%';
+            reloadBtn.textContent = 'Reload Window (Force Prompt)';
+            reloadBtn.onclick = () => {
+                vscode.postMessage({
+                    command: 'executeLollmsCommand', 
+                    details: { command: 'workbench.action.reloadWindow', params: {} }
+                });
+            };
+
+            const cancelBtn = document.createElement('button');
+            cancelBtn.className = 'code-action-btn';
+            cancelBtn.style.width = '100%';
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.onclick = () => { dom.webcamContainer.style.display = 'none'; };
+
+            wrapper.append(icon, title, text, reloadBtn, cancelBtn);
+            dom.webcamContainer.appendChild(wrapper);
+        } else {
+            vscode.postMessage({ command: 'showError', message: 'Webcam Error: ' + err.message });
+        }
+    }
+}
+
+function stopWebcam() {
+    if (webcamStream) {
+        webcamStream.getTracks().forEach(track => track.stop());
+        webcamStream = null;
+    }
+    dom.webcamFeed.srcObject = null;
+    dom.webcamContainer.style.display = 'none';
+}
+
+function captureWebcam() {
+    const video = dom.webcamFeed;
+    const canvas = dom.editorCanvas;
+
+    if (video.videoWidth === 0) return; // Video not ready
+    
+    // 1. Setup Canvas dimensions
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    
+    // 2. Clear canvas first
+    canvasCtx!.fillStyle = "white";
+    canvasCtx!.fillRect(0, 0, canvas.width, canvas.height);
+
+    // 3. Draw video frame (mirrored to match preview)
+    canvasCtx?.save();
+    canvasCtx?.translate(canvas.width, 0);
+    canvasCtx?.scale(-1, 1);
+    canvasCtx?.drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvasCtx?.restore();
+    
+    // 4. Close the feed
+    stopWebcam();
+    
+    // 5. Notify the user they can now draw or save
+    vscode.postMessage({ command: 'updateStatus', status: 'Photo Captured. You can now draw on it or Save.', type: 'info' });
+}
+
+function initCanvasEvents() {
+    const canvas = dom.editorCanvas;
+    if (!canvas || !canvasCtx) return;
+
+    canvas.onmousedown = (e) => {
+        // Click-to-validate: Commit text if clicking elsewhere
+        if (dom.editorTextInput.style.display === 'block') {
+            commitTextToCanvas();
+        }
+
+        startPos = { x: e.offsetX, y: e.offsetY };
+        isDrawing = true;
+
+        if (currentTool === 'brush') {
+            canvasCtx!.beginPath();
+            canvasCtx!.moveTo(e.offsetX, e.offsetY);
+            canvasCtx!.strokeStyle = (document.getElementById('editor-color') as HTMLInputElement).value;
+            canvasCtx!.lineWidth = parseInt((document.getElementById('editor-width') as HTMLInputElement).value);
+            canvasCtx!.lineCap = 'round';
+            canvasCtx!.lineJoin = 'round';
+        }
+    };
+
+    canvas.onmousemove = (e) => {
+        if (!isDrawing) return;
+
+        if (currentTool === 'brush') {
+            canvasCtx!.lineTo(e.offsetX, e.offsetY);
+            canvasCtx!.stroke();
+        } else if (currentTool === 'text') {
+            // Draw temporary selection box for text area
+            loadState(undoStack[undoStack.length - 1]);
+            canvasCtx!.setLineDash([5, 5]);
+            canvasCtx!.strokeStyle = 'gray';
+            canvasCtx!.lineWidth = 1;
+            canvasCtx!.strokeRect(startPos.x, startPos.y, e.offsetX - startPos.x, e.offsetY - startPos.y);
+            canvasCtx!.setLineDash([]);
+        }
+    };
+
+    canvas.onmouseup = (e) => {
+        if (!isDrawing) return;
+        isDrawing = false;
+
+        if (currentTool === 'brush') {
+            saveState();
+        } else if (currentTool === 'text') {
+            const width = Math.abs(e.offsetX - startPos.x);
+            const height = Math.abs(e.offsetY - startPos.y);
+            const x = Math.min(startPos.x, e.offsetX);
+            const y = Math.min(startPos.y, e.offsetY);
+
+            if (width > 10 && height > 10) {
+                showTextInput(x, y, width, height);
+            } else {
+                // Just a click? Show a default sized box
+                showTextInput(x, y, 200, 100);
+            }
+        }
+    };
+    
+    const brushTool = document.getElementById('tool-brush');
+    if (brushTool) {
+        brushTool.onclick = (e) => {
+            e.preventDefault();
+            currentTool = 'brush';
+        };
+    }
+
+    const textTool = document.getElementById('tool-text');
+    if (textTool) {
+        textTool.onclick = (e) => {
+            e.preventDefault();
+            currentTool = 'text';
+        };
+    }
+
+    const undoBtn = document.getElementById('editor-undo');
+    if (undoBtn) undoBtn.onclick = undo;
+
+    const redoBtn = document.getElementById('editor-redo');
+    if (redoBtn) redoBtn.onclick = redo;
+
+    if (dom.toolWebcam) {
+        dom.toolWebcam.onclick = (e) => {
+            e.preventDefault();
+            startWebcam();
+        };
+    }
+
+    if (dom.webcamCaptureBtn) {
+        dom.webcamCaptureBtn.onclick = captureWebcam;
+    }
+
+    if (dom.webcamCancelBtn) {
+        dom.webcamCancelBtn.onclick = stopWebcam;
+    }
+    
+    dom.editorClearBtn.onclick = () => {
+        canvasCtx!.fillStyle = 'white';
+        canvasCtx!.fillRect(0, 0, canvas.width, canvas.height);
+    };
+
+    dom.editorCancelBtn.onclick = () => {
+        dom.editorModal.style.display = 'none';
+    };
+
+    dom.editorSaveBtn.onclick = () => {
+        // Ensure any active text is drawn before capturing the data URL
+        commitTextToCanvas();
+
+        const dataUrl = canvas.toDataURL('image/png');
+        if (currentEditingIdx !== null) {
+            state.pendingImages[currentEditingIdx].data = dataUrl;
+        } else {
+            state.pendingImages.push({ name: `drawing_${Date.now()}.png`, data: dataUrl });
+        }
+        dom.editorModal.style.display = 'none';
+        renderPendingImages();
+    };
+}
+
+function commitTextToCanvas() {
+    const input = dom.editorTextInput;
+    if (input.style.display === 'block' && input.value.trim() !== '') {
+        const fontSize = parseInt(input.style.fontSize);
+        canvasCtx!.fillStyle = input.style.color;
+        canvasCtx!.font = `${fontSize}px sans-serif`;
+        canvasCtx!.textBaseline = 'top';
+
+        wrapTextToCanvas(
+            canvasCtx!, 
+            input.value, 
+            textInputPos.x, 
+            textInputPos.y, 
+            textInputPos.w, 
+            fontSize * 1.2
+        );
+        saveState();
+    }
+    input.style.display = 'none';
+}
+
+function wrapTextToCanvas(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, maxWidth: number, lineHeight: number) {
+    const words = text.split(' ');
+    let line = '';
+
+    for (let n = 0; n < words.length; n++) {
+        const testLine = line + words[n] + ' ';
+        const metrics = ctx.measureText(testLine);
+        const testWidth = metrics.width;
+        if (testWidth > maxWidth && n > 0) {
+            ctx.fillText(line, x, y);
+            line = words[n] + ' ';
+            y += lineHeight;
+        } else {
+            line = testLine;
+        }
+    }
+    ctx.fillText(line, x, y);
+}
+
+function showTextInput(x: number, y: number, w: number, h: number) {
+    const input = dom.editorTextInput;
+    textInputPos = { x, y, w, h };
+    
+    input.style.display = 'block';
+    input.style.left = `${dom.editorCanvas.offsetLeft + x}px`;
+    input.style.top = `${dom.editorCanvas.offsetTop + y}px`;
+    input.style.width = `${w}px`;
+    input.style.height = `${h}px`;
+    
+    input.style.color = (document.getElementById('editor-color') as HTMLInputElement).value;
+    input.style.fontSize = `${(document.getElementById('editor-font-size') as HTMLInputElement).value}px`;
+    input.value = '';
+    
+    // Switch tool UI back to brush immediately so next click validates
+    currentTool = 'brush'; 
+    
+    setTimeout(() => input.focus(), 10);
+
+    input.onkeydown = (e) => {
+        if (e.key === 'Enter' && e.ctrlKey) {
+            commitTextToCanvas();
+        } else if (e.key === 'Escape') {
+            input.style.display = 'none';
+            loadState(undoStack[undoStack.length - 1]); // Clean up the preview box
+        }
+    };
+}
+
 export function setGeneratingState(isGenerating: boolean, statusText?: string) {
     // Avoid redundant updates if the state and text haven't changed
     if (state.isGenerating === isGenerating && !statusText) return;

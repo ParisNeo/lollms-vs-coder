@@ -392,11 +392,13 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
           }
       }
 
-      this.log(`Sending ${this._currentDiscussion.messages.length} messages to webview`);
+      // Safety check: ensure messages is always an array before sending to Webview
+      const safeMessages = Array.isArray(this._currentDiscussion.messages) ? this._currentDiscussion.messages : [];
+      this.log(`Sending ${safeMessages.length} messages to webview`);
       
       await this._panel.webview.postMessage({ 
           command: 'loadDiscussion', 
-          messages: this._currentDiscussion.messages,
+          messages: safeMessages,
           isInspectorEnabled: isInspectorEnabled,
           appliedState: this._currentDiscussion.appliedState || {}
       });
@@ -2407,6 +2409,8 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                     vscode.commands.executeCommand('lollms-vs-coder.mergeGitBranch', params);
                 } else if (command === 'lollms-vs-coder.switchGitBranch') {
                     vscode.commands.executeCommand('lollms-vs-coder.switchGitBranch', params);
+                } else if (command === 'workbench.action.reloadWindow') {
+                    vscode.commands.executeCommand('workbench.action.reloadWindow');
                 } else if (command === 'synthesizeSearchResults') {
                     if (!this.agentManager.getIsActive()) {
                         this.agentManager.toggleAgentMode();
@@ -3436,14 +3440,18 @@ Task:
                             <button class="toolbar-tool" data-wrap-type="italic" title="Italic"><i class="codicon codicon-italic"></i></button>
                         </div>
                         <div class="input-area">
-                            <div class="control-buttons">
-                                <button id="moreActionsButton" title="Menu"><i class="codicon codicon-menu"></i></button>
-                            </div>
-                            
-                            <textarea id="messageInput" placeholder="Enter your message (Shift+Enter for new line)..."></textarea>
+                            <div id="attachment-preview-area" class="attachment-preview-area"></div>
+                            <div class="input-row">
+                                <div class="control-buttons">
+                                    <button id="moreActionsButton" title="Menu"><i class="codicon codicon-menu"></i></button>
+                                    <button id="addDrawingButton" title="Add Empty Drawing"><i class="codicon codicon-edit"></i></button>
+                                </div>
+                                
+                                <textarea id="messageInput" placeholder="Enter your message (Shift+Enter for new line)..."></textarea>
 
-                            <div class="control-buttons">
-                                <button id="sendButton" title="Send Message"><i class="codicon codicon-send"></i></button>
+                                <div class="control-buttons">
+                                    <button id="sendButton" title="Send Message"><i class="codicon codicon-send"></i></button>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -4084,6 +4092,48 @@ Task:
                 <div class="modal-footer">
                     <button id="copy-raw-btn" class="code-action-btn apply-btn" style="width: 100%; justify-content: center;"><span class="codicon codicon-copy"></span> Copy to Clipboard</button>
                 </div>
+            </div>
+        </div>
+
+        <!-- Image Editor Modal -->
+        <div id="image-editor-modal" class="editor-modal">
+            <div class="editor-toolbar">
+                <div class="tool-group">
+                    <button class="code-action-btn" id="tool-brush" title="Brush"><i class="codicon codicon-edit"></i></button>
+                    <button class="code-action-btn" id="tool-text" title="Text Area"><i class="codicon codicon-type-hierarchy"></i></button>
+                    <button class="code-action-btn" id="tool-webcam" title="Webcam"><i class="codicon codicon-device-camera"></i></button>
+                </div>
+                <div class="tool-group">
+                    <button class="code-action-btn" id="editor-undo" title="Undo"><i class="codicon codicon-discard"></i></button>
+                    <button class="code-action-btn" id="editor-redo" title="Redo"><i class="codicon codicon-redo"></i></button>
+                </div>
+                <div class="tool-group">
+                    <label>Color</label>
+                    <input type="color" id="editor-color" value="#ff0000">
+                </div>
+                <div class="tool-group">
+                    <label>Width</label>
+                    <input type="number" id="editor-width" value="3" min="1" max="50">
+                </div>
+                <div class="tool-group">
+                    <label>Font Size</label>
+                    <input type="number" id="editor-font-size" value="20" min="8" max="100">
+                </div>
+                <div style="flex:1"></div>
+                <button class="code-action-btn" id="editor-clear">Clear</button>
+                <button class="code-action-btn" id="editor-cancel">Cancel</button>
+                <button class="code-action-btn apply-btn" id="editor-save">Save & Close</button>
+            </div>
+            <div class="editor-canvas-container">
+                <div id="webcam-container" style="display: none; position: absolute; z-index: 10001; background: black; flex-direction: column; align-items: center; gap: 10px; padding: 10px; border-radius: 8px;">
+                    <video id="webcam-feed" autoplay playsinline style="max-width: 100%; border-radius: 4px;"></video>
+                    <div style="display: flex; gap: 10px;">
+                        <button class="code-action-btn secondary-btn" id="webcam-cancel">Cancel</button>
+                        <button class="code-action-btn apply-btn" id="webcam-capture">Capture Photo</button>
+                    </div>
+                </div>
+                <canvas id="image-editor-canvas"></canvas>
+                <input type="text" id="canvas-text-input">
             </div>
         </div>
 

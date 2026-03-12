@@ -305,7 +305,13 @@ export class AgentManager {
              try {
                 const config = vscode.workspace.getConfiguration('lollmsVsCoder');
                 const architectModel = config.get<string>('architectModelName') || modelOverride || this.currentDiscussion?.model;
-                response = await this.lollmsApi.sendChat(historyContext, null, signal, architectModel);
+                
+                // Pass the current discussion's thinking capability to the Architect
+                const options = { 
+                    thinking: this.currentDiscussion?.capabilities?.thinkingMode 
+                };
+                
+                response = await this.lollmsApi.sendChat(historyContext, null, signal, architectModel, options);
              } catch(e: any) {
                  return null;
              }

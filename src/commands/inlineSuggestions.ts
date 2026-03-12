@@ -83,7 +83,7 @@ ${truncatedBefore}
 Code after cursor:
 ${truncatedAfter}`;
 
-        const chatPersonaPrompt = getProcessedSystemPrompt('chat');
+        const chatPersonaPrompt = await getProcessedSystemPrompt('chat');
         const messages: ChatMessage[] = [];
         if (chatPersonaPrompt) {
             messages.push({ role: 'system', content: chatPersonaPrompt });

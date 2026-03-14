@@ -1759,35 +1759,56 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 btn.onclick = () => {
                     if (btn.classList.contains('applied')) return;
 
-                    // IF ALREADY PROCESSING -> BEHAVE AS STOP BUTTON
                     if (btn.classList.contains('stop-btn-red')) {
                         vscode.postMessage({ command: 'stopGeneration' });
                         return;
                     }
 
-                    // START PROCESSING
                     btn.classList.add('stop-btn-red');
                     btn.innerHTML = '<span class="codicon codicon-stop"></span> Stop Applying';
-
                     resultsList.style.display = 'block';
 
-                    const changes = actionableBlocks.map(b => {
+                    const changes: any[] = [];
+                    const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======[\r\n]*([\s\S]*?)[\r\n]*>>>>>>> REPLACE/gm;
+
+                    actionableBlocks.forEach((b, bIdx) => {
                         const blockContent = processedContent.substring(b.start, b.end).trim();
                         const lines = blockContent.split('\n');
                         const codeOnly = lines.length >= 2 ? lines.slice(1, -1).join('\n') : "";
-                        return {
+
+                        if (b.type === 'replace' || codeOnly.includes('<<<<<<< SEARCH')) {
+                            // Split Aider block into individual hunks
+                            const matches = [...codeOnly.matchAll(aiderRegex)];
+                            if (matches.length > 0) {
+                                matches.forEach((m, hIdx) => {
+                                    changes.push({
+                                        type: 'replace',
+                                        path: b.path,
+                                        content: m[0],
+                                        blockIndex: bIdx,
+                                        hunkIndex: hIdx,
+                                        label: `${b.path} [Hunk ${hIdx + 1}]`
+                                    });
+                                });
+                                return;
+                            }
+                        }
+
+                        // Standard file or diff block
+                        changes.push({
                             type: b.type === 'file' ? 'file' : (b.type || 'replace'),
                             path: b.path,
-                            content: codeOnly
-                        };
+                            content: codeOnly,
+                            blockIndex: bIdx,
+                            label: b.path
+                        });
                     });
 
-                    // Create skeleton rows with "Pending" icon (Clock) initially
                     resultsList.innerHTML = changes.map((c, idx) => `
-                        <div class="apply-row" data-path="${c.path}" data-block-index="${idx}" data-target-id="block-${messageId}-${idx}" style="display:flex; align-items:center; gap:8px; margin-bottom:6px; padding:4px; border-radius:4px; cursor:pointer;">
+                        <div class="apply-row" data-path="${c.path}" data-block-index="${c.blockIndex}" data-hunk-index="${c.hunkIndex ?? ''}" data-target-id="block-${messageId}-${c.blockIndex}" style="display:flex; align-items:center; gap:8px; margin-bottom:6px; padding:4px; border-radius:4px; cursor:pointer;">
                             <span class="status-icon"><span class="codicon codicon-clock"></span></span>
                             <span style="font-weight:600; font-size:10px; opacity:0.7; min-width:50px;">[${c.type.toUpperCase()}]</span>
-                            <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${c.path}</span>
+                            <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${c.label}</span>
                             <div class="row-actions" style="display:none;"></div>
                         </div>
                     `).join('');

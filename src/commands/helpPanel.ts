@@ -249,6 +249,23 @@ export class HelpPanel {
             <div class="tip">
                 <strong>Auto-Context:</strong> Click the <span class="codicon codicon-wand"></span> <strong>Auto-Select</strong> button in the sidebar. Describe your task (e.g., "Fix the login page"), and an AI agent will scan your project and automatically select the relevant files for you.
             </div>
+
+            <h2>🔍 Pro Search Engine</h2>
+            <p>The manual search tool (Search icon in the context bubble) supports advanced logic to help you find specific files or code patterns in large projects.</p>
+            
+            <table>
+                <tr><th>Feature</th><th>Syntax</th><th>Description</th></tr>
+                <tr><td><strong>AND</strong></td><td><code>term1 term2</code></td><td>Finds results containing both terms (separated by space).</td></tr>
+                <tr><td><strong>OR</strong></td><td><code>term1 | term2</code></td><td>Finds results containing either term.</td></tr>
+                <tr><td><strong>NOT</strong></td><td><code>-term</code></td><td>Excludes results containing the specified term.</td></tr>
+                <tr><td><strong>Extension</strong></td><td><code>ext:py</code></td><td>Narrows search to a specific file extension.</td></tr>
+            </table>
+
+            <div class="card">
+                <strong>Example Query:</strong><br>
+                <code>auth service -test ext:ts</code>
+                <p style="margin-top:5px; font-size: 0.9em; opacity: 0.8;">This finds TypeScript files containing "auth" and "service", but excludes any file containing "test".</p>
+            </div>
         </section>
 
         <!-- GRAPH -->

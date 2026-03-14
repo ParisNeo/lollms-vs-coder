@@ -647,7 +647,8 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;                
             case 'applyAllStart': {
                 const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
-                const row = wrapper?.querySelector(`.apply-row[data-block-index='${message.blockIndex}']`);
+                const hunkAttr = message.hunkIndex !== undefined ? `[data-hunk-index='${message.hunkIndex}']` : ':not([data-hunk-index])';
+                const row = wrapper?.querySelector(`.apply-row[data-block-index='${message.blockIndex}']${hunkAttr}`);
                 if (row) {
                     const iconEl = row.querySelector('.status-icon');
                     if (iconEl) iconEl.innerHTML = '<div class="spinner"></div>';
@@ -658,7 +659,8 @@ export async function handleExtensionMessage(event: MessageEvent) {
             case 'applyAllResult':
                 {
                     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
-                    const row = wrapper?.querySelector(`.apply-row[data-block-index='${message.blockIndex}']`);
+                    const hunkAttr = message.hunkIndex !== undefined ? `[data-hunk-index='${message.hunkIndex}']` : ':not([data-hunk-index])';
+                    const row = wrapper?.querySelector(`.apply-row[data-block-index='${message.blockIndex}']${hunkAttr}`);
                     
                     if (row && message.success) {
                         const iconEl = row.querySelector('.status-icon');

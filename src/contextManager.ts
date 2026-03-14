@@ -205,39 +205,99 @@ export class ContextManager {
       return content;
   }
 
-  public async searchWorkspaceContent(query: string, signal?: AbortSignal): Promise<{path: string, snippet: string}[]> {
+  public async searchWorkspaceContent(query: string, options: { matchCase: boolean, wholeWord: boolean } = { matchCase: false, wholeWord: false }, signal?: AbortSignal): Promise<{path: string, snippet: string}[]> {
     const results: {path: string, snippet: string}[] = [];
     const maxResults = 50;
+    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+    if (!workspaceFolder) return [];
 
-    const options: vscode.FindTextInFilesOptions = {
-        include: '**/*',
-        useIgnoreFiles: true,
-        followSymlinks: false
-    };
+    const cwd = workspaceFolder.uri.fsPath;
 
     try {
-        await vscode.workspace.findTextInFiles({ pattern: query }, options, (match) => {
-            const relPath = vscode.workspace.asRelativePath(match.uri);
+        let stdout = "";
+        // 1. Try git grep first (Supports rich boolean logic)
+        try {
+            let gitGrepArgs = `-n -I --max-count=1`;
+            if (!options.matchCase) gitGrepArgs += ` -i`;
+            if (options.wholeWord) gitGrepArgs += ` -w`;
+
+            // Parse Boolean Logic for git grep
+            // Split by OR first
+            const orParts = query.split('|').map(p => p.trim()).filter(p => p);
+            let patternArgs = "";
             
-            // Extract a clean snippet from the match
-            let snippet = "";
-            if (match.results && match.results.length > 0) {
-                const firstMatch = match.results[0] as any;
-                // findTextInFiles returns preview text in the match result
-                if (firstMatch.preview) {
-                    snippet = firstMatch.preview.text.trim();
+            orParts.forEach((part, idx) => {
+                if (idx > 0) patternArgs += " --or ";
+                const andTerms = part.split(/\s+/).filter(p => p);
+                if (andTerms.length > 1) patternArgs += " ( ";
+                
+                andTerms.forEach((term, tIdx) => {
+                    const isNot = term.startsWith('-');
+                    const actualTerm = isNot ? term.substring(1) : term;
+                    if (tIdx > 0) patternArgs += " --and ";
+                    if (isNot) patternArgs += " --not ";
+                    patternArgs += ` -e "${actualTerm.replace(/"/g, '\\"')}" `;
+                });
+
+                if (andTerms.length > 1) patternArgs += " ) ";
+            });
+            
+            const res = await execAsync(`git grep ${gitGrepArgs} ${patternArgs}`, { cwd, maxBuffer: 1024 * 1024 });
+            stdout = res.stdout;
+        } catch (e) {
+            // 2. Fallback to system tools
+            const isWin = process.platform === 'win32';
+            let command = "";
+            
+            if (isWin) {
+                // findstr /I = case insensitive. /BE = match start/end (closest to whole word findstr has)
+                // Note: findstr's whole-word support is limited.
+                let findstrArgs = `/S /N`;
+                if (!options.matchCase) findstrArgs += ` /I`;
+                // For whole word on Windows, we'll wrap in regex boundaries if word is set
+                const winPattern = options.wholeWord ? `\\<${pattern}\\>` : pattern;
+                command = `findstr ${findstrArgs} /C:"${winPattern}" *`;
+            } else {
+                let grepArgs = `-r -n -I -m 1`;
+                if (!options.matchCase) grepArgs += ` -i`;
+                if (options.wholeWord) grepArgs += ` -w`;
+                command = `grep ${grepArgs} "${pattern}" .`;
+            }
+            
+            try {
+                const res = await execAsync(command, { cwd, maxBuffer: 1024 * 1024 });
+                stdout = res.stdout;
+            } catch (innerE) {
+                // If grep returns 1 (no results), stdout will be empty, which is fine
+            }
+        }
+
+        if (stdout.trim()) {
+            const lines = stdout.split('\n');
+            for (const line of lines) {
+                if (results.length >= maxResults) break;
+                
+                // Format is usually path:line:content
+                const parts = line.split(':');
+                if (parts.length >= 3) {
+                    const filePath = parts[0].trim();
+                    const snippet = parts.slice(2).join(':').trim();
+                    
+                    // Avoid duplicates
+                    if (!results.some(r => r.path === filePath)) {
+                        results.push({
+                            path: filePath,
+                            snippet: snippet.substring(0, 150)
+                        });
+                    }
                 }
             }
-
-            if (!results.some(r => r.path === relPath)) {
-                results.push({ path: relPath, snippet: snippet || "File match" });
-            }
-        });
+        }
     } catch (e) {
         console.error("Content search failed", e);
     }
 
-    return results.slice(0, maxResults);
+    return results;
   }
 
   private async searchWorkspaceKeywords(keywords: string[], cwd: string): Promise<string> {

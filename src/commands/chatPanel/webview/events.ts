@@ -307,27 +307,72 @@ export function initEventHandlers() {
         let searchTimeout: any;
         const triggerSearch = () => {
             const query = dom.fileSearchInput.value.trim();
-            const mode = (document.querySelector('input[name="search-mode"]:checked') as HTMLInputElement)?.value || 'path';
-            if (query) {
-                vscode.postMessage({ command: 'requestFileSearch', query, mode });
+            const modeEl = document.getElementById('file-search-mode') as HTMLSelectElement;
+            const mode = modeEl ? modeEl.value : 'content';
+            const matchCase = (document.getElementById('file-search-case') as HTMLInputElement)?.checked || false;
+            const wholeWord = (document.getElementById('file-search-word') as HTMLInputElement)?.checked || false;
+
+            if (!query) {
+                if (dom.fileSearchResults) {
+                    dom.fileSearchResults.innerHTML = '<div style="opacity:0.6; text-align:center; padding: 20px;">Type to start searching...</div>';
+                }
+                return;
             }
+
+            if (dom.fileSearchResults) {
+                dom.fileSearchResults.innerHTML = `
+                    <div style="text-align:center; padding: 30px; opacity: 0.8;">
+                        <div class="spinner" style="width: 24px; height: 24px; border-width: 3px; margin-bottom: 10px;"></div>
+                        <div style="font-size: 11px;">Searching ${mode === 'content' ? 'code content' : 'filenames'}...</div>
+                    </div>
+                `;
+            }
+            vscode.postMessage({ 
+                command: 'requestFileSearch', 
+                query, 
+                mode,
+                options: { matchCase, wholeWord }
+            });
         };
 
         dom.fileSearchInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {
+                clearTimeout(searchTimeout);
                 triggerSearch();
             }
         });
 
+        // Trigger search when typing
         dom.fileSearchInput.addEventListener('input', () => {
             clearTimeout(searchTimeout);
             const query = dom.fileSearchInput.value.trim();
-            const mode = (document.querySelector('input[name="search-mode"]:checked') as HTMLInputElement)?.value || 'path';
+            const modeEl = document.getElementById('file-search-mode') as HTMLSelectElement;
+            const mode = modeEl ? modeEl.value : 'content';
             
-            // Real-time search only for filename mode. Content search is too heavy for every keystroke.
-            if (mode === 'path' && query.length > 2 && !query.includes('*')) {
-                searchTimeout = setTimeout(triggerSearch, 400);
+            if (!query) {
+                triggerSearch(); // This will clear the results
+                return;
             }
+
+            // Real-time search for filenames (faster)
+            if (mode === 'path' && query.length >= 2) {
+                searchTimeout = setTimeout(triggerSearch, 300);
+            }
+        });
+
+        // REFRESH when checkboxes or the mode dropdown are changed
+        const searchOptions = [
+            'file-search-case', 
+            'file-search-word', 
+            'file-search-mode'
+        ];
+        
+        searchOptions.forEach(opt => {
+            const el = typeof opt === 'string' ? document.getElementById(opt) : opt;
+            el?.addEventListener('change', () => {
+                clearTimeout(searchTimeout);
+                triggerSearch();
+            });
         });
     }
 

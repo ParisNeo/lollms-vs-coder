@@ -1120,15 +1120,19 @@ export function renderFileSearchResults(container: HTMLElement, results: any[], 
     container.innerHTML = results.map(res => {
         const highlightedPath = res.path.replace(hRegex, '<span class="search-highlight">$1</span>');
         const highlightedSnippet = res.snippet.replace(hRegex, '<span class="search-highlight">$1</span>');
-        
+        const isIncluded = res.isAlreadyIncluded;
+
         return `
-            <div class="search-result-item file-search-item" data-path="${res.path}">
+            <div class="search-result-item file-search-item ${isIncluded ? 'already-in-context' : ''}" data-path="${res.path}">
                 <div class="search-result-title">
-                    <div style="display:flex; align-items:center; gap:8px;">
-                        <input type="checkbox" value="${res.path}" class="file-search-check" onclick="event.stopPropagation()">
+                    <div style="display:flex; align-items:center; gap:8px; flex:1;">
+                        <input type="checkbox" value="${res.path}" class="file-search-check" 
+                            ${isIncluded ? 'disabled' : ''} 
+                            onclick="event.stopPropagation()">
                         <span class="codicon codicon-file"></span>
                         <span class="title-text">${highlightedPath}</span>
                     </div>
+                    ${isIncluded ? '<span class="already-included-badge"><i class="codicon codicon-check"></i> In Context</span>' : ''}
                 </div>
                 <div class="search-result-snippet">${highlightedSnippet}</div>
             </div>

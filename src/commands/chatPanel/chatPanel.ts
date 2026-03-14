@@ -2017,8 +2017,13 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                             increment: (1 / changesBatch.length) * 100 
                         });
 
-                        // Show spinner for the current item
-                        this._panel.webview.postMessage({ command: 'applyStart', messageId: messageId, blockIndex: i });
+                        // Show spinner for the specific hunk/block row
+                        this._panel.webview.postMessage({ 
+                            command: 'applyAllStart', 
+                            messageId: messageId, 
+                            blockIndex: change.blockIndex,
+                            hunkIndex: change.hunkIndex
+                        });
 
                         let result: any = { success: false };
                         try {
@@ -2036,7 +2041,6 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                                         messageId,
                                         opts
                                     );
-                                    // Preserve any other properties the command might return
                                     result = { success: true, ...(replaceResult || {}) };
                                 } catch (e: any) {
                                     result = { success: false, error: e.message };
@@ -2049,12 +2053,12 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                             result = { success: false, error: e.message };
                         }
                         
-                        // Notify UI for this specific file including the index
                         this._panel.webview.postMessage({
                             command: 'applyAllResult',
                             messageId: messageId,
                             filePath: change.path,
-                            blockIndex: i, // Crucial for unique row mapping
+                            blockIndex: change.blockIndex,
+                            hunkIndex: change.hunkIndex,
                             success: result.success,
                             error: result.error
                         });
@@ -2124,24 +2128,65 @@ Please provide the **FULL CONTENT** of the file instead using the format:
             case 'requestFileSearch':
                 {
                     const query = message.query.trim();
-                    const searchMode = message.mode || 'path'; // 'path' or 'content'
+                    const searchMode = message.mode || 'path';
+                    const options = message.options || { matchCase: false, wholeWord: false };
                     let results: any[] = [];
 
+                    const includedFiles = new Set(
+                        this._contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || []
+                    );
+
                     if (searchMode === 'content') {
-                        results = await this._contextManager.searchWorkspaceContent(query);
+                        results = await this._contextManager.searchWorkspaceContent(query, options);
                     } else {
-                        // Original Filename Search Logic (Optimized)
                         const allFiles = await this._contextManager.getWorkspaceFilePaths();
-                        const escapedQuery = query.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
-                        const regex = new RegExp(escapedQuery, 'gi');
                         
-                        results = allFiles
-                            .filter(f => f.match(regex))
-                            .slice(0, 50)
-                            .map(f => ({ path: f, snippet: "" }));
+                        // --- ADVANCED FILENAME PARSER ---
+                        let filtered = allFiles;
+                        
+                        // 1. Handle Extension Filter (ext:py)
+                        const extMatch = query.match(/ext:(\w+)/);
+                        if (extMatch) {
+                            const targetExt = "." + extMatch[1].toLowerCase();
+                            filtered = filtered.filter(f => f.toLowerCase().endsWith(targetExt));
+                        }
+                        
+                        // Clean query of metadata tags
+                        const cleanQuery = query.replace(/ext:\w+/g, '').trim();
+                        if (!cleanQuery) {
+                            results = filtered.slice(0, 50).map(f => ({ path: f, snippet: "" }));
+                        } else {
+                            // 2. Handle OR logic (|)
+                            const orParts = cleanQuery.split('|').map(p => p.trim()).filter(p => p);
+                            
+                            filtered = filtered.filter(f => {
+                                return orParts.some(part => {
+                                    // 3. Handle AND logic (spaces) and NOT logic (-) within each OR branch
+                                    const terms = part.split(/\s+/);
+                                    return terms.every(term => {
+                                        const isNot = term.startsWith('-');
+                                        const actualTerm = isNot ? term.substring(1) : term;
+                                        if (!actualTerm) return true;
+
+                                        const match = options.matchCase 
+                                            ? f.includes(actualTerm) 
+                                            : f.toLowerCase().includes(actualTerm.toLowerCase());
+                                        
+                                        return isNot ? !match : match;
+                                    });
+                                });
+                            });
+                            results = filtered.slice(0, 50).map(f => ({ path: f, snippet: "" }));
+                        }
                     }
                     
-                    webview.postMessage({ command: 'fileSearchResults', results, query, mode: searchMode });
+                    // Add the 'isAlreadyIncluded' flag to each result
+                    const resultsWithMetadata = results.map(r => ({
+                        ...r,
+                        isAlreadyIncluded: includedFiles.has(r.path)
+                    }));
+                    
+                    webview.postMessage({ command: 'fileSearchResults', results: resultsWithMetadata, query, mode: searchMode });
                 }
                 break;
             case 'performDeepDiscussionSearch':
@@ -3887,21 +3932,30 @@ Task:
                 </div>
                 <div class="modal-body">
                     <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:12px;">
-                        <div style="display:flex; gap:15px; margin-bottom: 5px;">
-                            <label style="display:flex; align-items:center; gap:5px; font-size:11px; cursor:pointer;">
-                                <input type="radio" name="search-mode" value="path" checked style="width:auto; margin:0;"> Filename
-                            </label>
-                            <label style="display:flex; align-items:center; gap:5px; font-size:11px; cursor:pointer;">
-                                <input type="radio" name="search-mode" value="content" style="width:auto; margin:0;"> Code Content
-                            </label>
+                        <div style="display:flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <label style="font-size:11px; opacity:0.8;">Search in:</label>
+                                <select id="file-search-mode" style="width: auto; margin: 0; height: 24px; font-size: 11px; padding: 2px 4px;">
+                                    <option value="content" selected>Code Content</option>
+                                    <option value="path">Filenames</option>
+                                </select>
+                            </div>
+                            <div style="display:flex; gap:10px;">
+                                <label title="Match Case" style="display:flex; align-items:center; gap:3px; font-size:10px; cursor:pointer; opacity:0.8;">
+                                    <input type="checkbox" id="file-search-case" style="width:auto; margin:0;"> Ab
+                                </label>
+                                <label title="Match Whole Word" style="display:flex; align-items:center; gap:3px; font-size:10px; cursor:pointer; opacity:0.8;">
+                                    <input type="checkbox" id="file-search-word" style="width:auto; margin:0;"> \b
+                                </label>
+                            </div>
                         </div>
                         <input type="text" id="file-search-input" placeholder="Type query and press Enter..." style="flex:1;">
-                        <div style="font-size: 10px; opacity: 0.7; display: flex; gap: 10px; flex-wrap: wrap;">
-                            <span>Examples:</span>
-                            <code>*.ts</code>
-                            <code>src/**/*.py</code>
-                            <code>auth?_service</code>
-                            <code>config.json</code>
+                        <div style="font-size: 10px; opacity: 0.7; display: flex; gap: 10px; flex-wrap: wrap; line-height: 1.5;">
+                            <span>Pro Search:</span>
+                            <code>A B (AND)</code>
+                            <code>A | B (OR)</code>
+                            <code>-ignore (NOT)</code>
+                            <code>ext:py</code>
                         </div>
                     </div>
                     <div class="checkbox-container" id="file-search-master-container" style="display:none; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid var(--vscode-widget-border);">
@@ -3926,21 +3980,30 @@ Task:
                 </div>
                 <div class="modal-body">
                     <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:12px;">
-                        <div style="display:flex; gap:15px; margin-bottom: 5px;">
-                            <label style="display:flex; align-items:center; gap:5px; font-size:11px; cursor:pointer;">
-                                <input type="radio" name="search-mode" value="path" checked style="width:auto; margin:0;"> Filename
-                            </label>
-                            <label style="display:flex; align-items:center; gap:5px; font-size:11px; cursor:pointer;">
-                                <input type="radio" name="search-mode" value="content" style="width:auto; margin:0;"> Code Content
-                            </label>
+                        <div style="display:flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <label style="font-size:11px; opacity:0.8;">Search in:</label>
+                                <select id="file-search-mode" style="width: auto; margin: 0; height: 24px; font-size: 11px; padding: 2px 4px;">
+                                    <option value="content" selected>Code Content</option>
+                                    <option value="path">Filenames</option>
+                                </select>
+                            </div>
+                            <div style="display:flex; gap:10px;">
+                                <label title="Match Case" style="display:flex; align-items:center; gap:3px; font-size:10px; cursor:pointer; opacity:0.8;">
+                                    <input type="checkbox" id="file-search-case" style="width:auto; margin:0;"> Ab
+                                </label>
+                                <label title="Match Whole Word" style="display:flex; align-items:center; gap:3px; font-size:10px; cursor:pointer; opacity:0.8;">
+                                    <input type="checkbox" id="file-search-word" style="width:auto; margin:0;"> \b
+                                </label>
+                            </div>
                         </div>
                         <input type="text" id="file-search-input" placeholder="Type query and press Enter..." style="flex:1;">
-                        <div style="font-size: 10px; opacity: 0.7; display: flex; gap: 10px; flex-wrap: wrap;">
-                            <span>Examples:</span>
-                            <code>*.ts</code>
-                            <code>src/**/*.py</code>
-                            <code>auth?_service</code>
-                            <code>config.json</code>
+                        <div style="font-size: 10px; opacity: 0.7; display: flex; gap: 10px; flex-wrap: wrap; line-height: 1.5;">
+                            <span>Pro Search:</span>
+                            <code>A B (AND)</code>
+                            <code>A | B (OR)</code>
+                            <code>-ignore (NOT)</code>
+                            <code>ext:py</code>
                         </div>
                     </div>
                     <div class="checkbox-container" id="file-search-master-container" style="display:none; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid var(--vscode-widget-border);">

@@ -2283,6 +2283,28 @@ details[open] > summary .folder-handle::before {
     border-radius: 2px;
 }
 
+.file-search-item.already-in-context {
+    opacity: 0.7;
+    cursor: default !important;
+}
+
+.already-included-badge {
+    font-size: 9px;
+    background: var(--vscode-badge-background);
+    color: var(--vscode-badge-foreground);
+    padding: 2px 6px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-weight: bold;
+    text-transform: uppercase;
+}
+
+.file-search-item.already-in-context:hover {
+    background-color: transparent !important;
+}
+
 #usage-list-container tr:hover {
     background-color: var(--vscode-list-hoverBackground);
 }

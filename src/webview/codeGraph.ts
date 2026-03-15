@@ -328,38 +328,40 @@ function renderCytoscapeView(viewType: string) {
     // Use 'cose' (physics) for everything to avoid flat, overlapping graphs
     // FCose would be better but requires an extension; cose is built-in.
     
+    const isLarge = elements.length > 500;
+
     cyInstance = cytoscape({
         container: cyContainer,
         elements: elements,
         style: getCyStyle(),
-        layout: {
+        layout: isLarge ? {
+            name: 'dagre', // Faster non-physics layout for large graphs
+            rankDir: 'LR',
+            nodeSep: 50,
+            rankSep: 100,
+            animate: false
+        } : {
             name: 'cose-bilkent',
-            // CoSE-Bilkent options for better compound layout
             quality: 'proof',
             nodeDimensionsIncludeLabels: true,
-            randomize: false,        // Keep deterministic
+            randomize: false,
             fit: true,
             padding: 30,
-            
-            // "Pack elements of same file together"
-            // Tiling puts disconnected nodes in a grid, keeping them tidy
-            tilingPaddingVertical: 20,
-            tilingPaddingHorizontal: 20,
-            
-            // "Unpack files to avoid intersections"
-            nodeRepulsion: 8500,     // Repulsion between nodes
-            idealEdgeLength: 120,    // Longer edges between files
-            edgeElasticity: 0.45,
-            nestingFactor: 0.1,      // Tighter nesting for children inside parents
-            gravity: 0.25,           // Weak gravity to allow spreading
-            numIter: 2500,           // More iterations for a cleaner result
-            tile: true,              // Enable tiling for disconnected components
-            animate: false
+            nodeRepulsion: 8500,
+            idealEdgeLength: 120,
+            animate: false,
+            numIter: 2500,
+            tile: true
         } as any,
-        minZoom: 0.05,
+        minZoom: 0.01, // Allow zooming out further for large graphs
         maxZoom: 4.0,
-        wheelSensitivity: 0.2
+        wheelSensitivity: 0.1
     });
+
+    if (isLarge) {
+        statusLabel.textContent += ' (Performance Mode Active)';
+        statusLabel.style.color = 'var(--vscode-charts-orange)';
+    }
 
     // Node Interaction
     cyInstance.on('tap', 'node', function(evt) {

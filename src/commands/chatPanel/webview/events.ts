@@ -311,6 +311,9 @@ export function initEventHandlers() {
             const mode = modeEl ? modeEl.value : 'content';
             const matchCase = (document.getElementById('file-search-case') as HTMLInputElement)?.checked || false;
             const wholeWord = (document.getElementById('file-search-word') as HTMLInputElement)?.checked || false;
+            const fuzzy = (document.getElementById('file-search-fuzzy') as HTMLInputElement)?.checked || false;
+            const include = (document.getElementById('file-search-include') as HTMLInputElement)?.value.trim() || "";
+            const exclude = (document.getElementById('file-search-exclude') as HTMLInputElement)?.value.trim() || "";
 
             if (!query) {
                 if (dom.fileSearchResults) {
@@ -331,7 +334,7 @@ export function initEventHandlers() {
                 command: 'requestFileSearch', 
                 query, 
                 mode,
-                options: { matchCase, wholeWord }
+                options: { matchCase, wholeWord, fuzzy, include, exclude }
             });
         };
 
@@ -360,27 +363,49 @@ export function initEventHandlers() {
             }
         });
 
-        // REFRESH when checkboxes or the mode dropdown are changed
+        // REFRESH when the switches or the mode dropdown are changed
         const searchOptions = [
             'file-search-case', 
             'file-search-word', 
+            'file-search-fuzzy',
             'file-search-mode'
         ];
         
-        searchOptions.forEach(opt => {
-            const el = typeof opt === 'string' ? document.getElementById(opt) : opt;
-            el?.addEventListener('change', () => {
-                clearTimeout(searchTimeout);
-                triggerSearch();
-            });
+        searchOptions.forEach(id => {
+            const el = document.getElementById(id);
+            if (el) {
+                el.addEventListener('change', () => {
+                    clearTimeout(searchTimeout);
+                    triggerSearch();
+                });
+            }
         });
     }
 
     if (dom.fileSearchAddBtn) {
         dom.fileSearchAddBtn.addEventListener('click', () => {
-            const selected = Array.from(dom.fileSearchResults.querySelectorAll('input:checked')).map((el: any) => el.value);
-            if (selected.length > 0) {
-                vscode.postMessage({ command: 'addFilesToContext', files: selected });
+            const toAdd: string[] = [];
+            const toRemove: string[] = [];
+            
+            const rows = dom.fileSearchResults.querySelectorAll('.file-search-item');
+            rows.forEach((row: any) => {
+                const cb = row.querySelector('.file-search-check') as HTMLInputElement;
+                const path = row.dataset.path;
+                const wasIncluded = row.dataset.wasIncluded === 'true';
+
+                if (cb.checked && !wasIncluded) {
+                    toAdd.push(path);
+                } else if (!cb.checked && wasIncluded) {
+                    toRemove.push(path);
+                }
+            });
+
+            if (toAdd.length > 0 || toRemove.length > 0) {
+                vscode.postMessage({ 
+                    command: 'syncFilesContext', 
+                    add: toAdd, 
+                    remove: toRemove 
+                });
                 dom.fileSearchModal.classList.remove('visible');
             }
         });

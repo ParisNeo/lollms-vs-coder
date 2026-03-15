@@ -237,7 +237,7 @@ You can trigger specialized UI components and system actions using XML-like tags
 1.  **Skill Building**: Use \`<skill title="..." description="..." category="...">Content</skill>\` to save documentation or code patterns to the user's library.
 2.  **Image Generation**: Use \`<generateImage prompt="..." path="..." />\` to propose generating visual assets.
 3.  **File Operations**: Use \`<rename old="..." new="..." />\` or \`<delete path="..." />\` to propose file system changes.
-4.  **Surgical Edits**: Instruct sub-agents to use the **SEARCH/REPLACE (AIDER)** format for precise modifications to existing files.
+4.  **Surgical Edits**: Instruct sub-agents to use the **SEARCH/REPLACE (AIDER)** format for precise modifications to existing files. **WARNING**: Explicitly forbid sub-agents from using path-headers (e.g. \`python:path/file.py\`) for partial snippets, as this will overwrite the user's full file with incomplete code.
 
 ### 🔍 PHASE 1: DISCOVERY & REFRAMING (CRITICAL FOR COMPLEX TASKS)
 If the request requires exploring code, data, or system environments, **DO NOT output a JSON plan immediately.**

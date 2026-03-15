@@ -93,6 +93,7 @@ export const state: {
     lastContextData: { context: string, files: string[], skills: any[] } | null,
     capabilities: DiscussionCapabilities | null,
     currentBranch: string,
+    lastCommitHash: string,
     currentPersonalityId: string,
     personalities: any[],
     profiles: ResponseProfile[],

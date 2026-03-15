@@ -377,6 +377,11 @@ export class AgentManager {
                  };
                  try {
                      const res = await this.executeTask(toolMatch.name, toolMatch.params, signal, tempEnv as any);
+                     // Check if the Librarian added a significant insight
+                     if (toolMatch.name === 'auto_select_context_files' && res.output.includes('Agent Analysis:')) {
+                         const analysis = res.output.split('Agent Analysis:')[1].trim();
+                         this.sessionState.workingMemory.push(analysis);
+                     }
                      historyContext.push({ role: 'user', content: `Tool Output: ${res.output}` });
                      invEntry.status = res.success ? 'completed' : 'failed';
                      invEntry.result = res.output;

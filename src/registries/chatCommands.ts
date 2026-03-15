@@ -515,6 +515,45 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
         }
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showFileSearch', async () => {
+        // 1. Try to find any existing panel
+        let panel = ChatPanel.currentPanel;
+        if (!panel && ChatPanel.panels.size > 0) {
+            panel = ChatPanel.panels.values().next().value;
+        }
+
+        // 2. If no panel is open, create one
+        if (!panel) {
+            // Create a new discussion (this will automatically show the panel)
+            await vscode.commands.executeCommand('lollms-vs-coder.newDiscussion');
+            
+            // Give the new panel a moment to be registered as 'currentPanel'
+            // and for the internal Webview JS to bootstrap
+            await new Promise(resolve => setTimeout(resolve, 300));
+            panel = ChatPanel.currentPanel;
+        }
+        
+        // 3. Reveal and trigger the search modal
+        if (panel) {
+            panel._panel.reveal();
+            
+            // Helper function to send the signal
+            const triggerModal = () => {
+                panel!._panel.webview.postMessage({ 
+                    command: 'executeLollmsCommand', 
+                    details: { command: 'search-add-context-btn', params: {} } 
+                });
+            };
+
+            // Fire once immediately
+            triggerModal();
+            
+            // Fire again after a short delay in case the webview was still initializing 
+            // (prevents silent failures on first-load)
+            setTimeout(triggerModal, 500);
+        }
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.runScript', async (code: string, language: string) => {
         const panel = ChatPanel.currentPanel;
         const workspaceFolder = getActiveWorkspace();

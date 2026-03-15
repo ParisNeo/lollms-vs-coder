@@ -998,6 +998,7 @@ export function updateBadges() {
 
     if (caps.gitWorkflow) {
         const branchName = state.currentBranch || 'git-workflow';
+        if (message.lastHash) state.lastCommitHash = message.lastHash;
         
         const wrapper = document.createElement('div');
         wrapper.id = 'git-badge-wrapper';
@@ -1052,6 +1053,17 @@ export function updateBadges() {
         menu.appendChild(createMenuItem('git-menu-commit', 'codicon-check', 'Commit', 'requestCommitStaging'));
         menu.appendChild(createMenuItem('git-menu-merge', 'codicon-git-merge', 'Fuse Branch', 'lollms-vs-coder.mergeGitBranch'));
         menu.appendChild(createMenuItem('git-menu-revert', 'codicon-history', 'Revert / Motion', 'requestGitHistory'));
+        
+        if (state.lastCommitHash) {
+            const copyItem = document.createElement('div');
+            copyItem.className = 'custom-menu-item';
+            copyItem.style.borderTop = '1px solid var(--vscode-menu-separatorBackground)';
+            copyItem.innerHTML = `<span class="codicon codicon-copy"></span> Copy Last Hash (${state.lastCommitHash.substring(0,7)})`;
+            copyItem.onclick = () => {
+                vscode.postMessage({ command: 'copyToClipboard', text: state.lastCommitHash });
+            };
+            menu.appendChild(copyItem);
+        }
 
         wrapper.appendChild(menu);
         container.appendChild(wrapper);
@@ -1121,23 +1133,40 @@ export function renderFileSearchResults(container: HTMLElement, results: any[], 
         const highlightedPath = res.path.replace(hRegex, '<span class="search-highlight">$1</span>');
         const highlightedSnippet = res.snippet.replace(hRegex, '<span class="search-highlight">$1</span>');
         const isIncluded = res.isAlreadyIncluded;
+        // Toned down line numbers (opacity 0.6)
+        const lineInfo = res.line ? `<span style="color:var(--vscode-charts-orange); opacity: 0.6; font-size: 10px; margin-right:5px;">L${res.line}:</span>` : '';
 
         return `
-            <div class="search-result-item file-search-item ${isIncluded ? 'already-in-context' : ''}" data-path="${res.path}">
+            <div class="search-result-item file-search-item ${isIncluded ? 'already-in-context' : ''}" data-path="${res.path}" data-was-included="${isIncluded}">
                 <div class="search-result-title">
-                    <div style="display:flex; align-items:center; gap:8px; flex:1;">
+                    <div style="display:flex; align-items:center; gap:8px; flex:1; min-width:0;">
                         <input type="checkbox" value="${res.path}" class="file-search-check" 
-                            ${isIncluded ? 'disabled' : ''} 
+                            ${isIncluded ? 'checked' : ''} 
                             onclick="event.stopPropagation()">
-                        <span class="codicon codicon-file"></span>
-                        <span class="title-text">${highlightedPath}</span>
+                        <span class="codicon codicon-file" style="opacity: 0.7;"></span>
+                        <span class="title-text" style="overflow:hidden; text-overflow:ellipsis; font-size: 12px; opacity: 0.9;">${highlightedPath}</span>
                     </div>
-                    ${isIncluded ? '<span class="already-included-badge"><i class="codicon codicon-check"></i> In Context</span>' : ''}
+                    <div style="display:flex; gap:5px; align-items:center;">
+                        ${isIncluded ? '<span class="already-included-badge">Active</span>' : `
+                            <button class="icon-btn quick-add-def" title="Add Definitions Only" data-path="${res.path}"><i class="codicon codicon-symbol-class"></i></button>
+                        `}
+                    </div>
                 </div>
-                <div class="search-result-snippet">${highlightedSnippet}</div>
+                <div class="search-result-snippet" style="margin-top: 2px;">${lineInfo}${highlightedSnippet}</div>
             </div>
         `;
     }).join('');
+
+    // Add listener for the new "Definitions Only" quick button
+    container.querySelectorAll('.quick-add-def').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const path = (btn as HTMLElement).dataset.path;
+            vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.setContextDefinitionsOnly', params: [path] }});
+            (btn as HTMLElement).innerHTML = '<i class="codicon codicon-check"></i>';
+            (btn as HTMLElement).classList.add('success');
+        });
+    });
 
     container.querySelectorAll('.file-search-item').forEach(item => {
         item.addEventListener('click', (e) => {
@@ -1247,6 +1276,8 @@ export function renderFileSearchTree(container: HTMLElement, files: string[]) {
 export function renderSkillsTree(container: HTMLElement, node: any, activeSkillIds: string[] = []) {
     if (!node.children || node.children.length === 0) return;
 
+    const fragment = document.createDocumentFragment();
+
     // Sort: Folders first, then files
     node.children.sort((a: any, b: any) => {
         if (a.isSkill === b.isSkill) return a.label.localeCompare(b.label);
@@ -1340,7 +1371,8 @@ export function renderSkillsTree(container: HTMLElement, node: any, activeSkillI
         ul.appendChild(li);
     });
 
-    container.appendChild(ul);
+    fragment.appendChild(ul);
+    container.appendChild(fragment);
 }
 
 export function renderDiscussionSearchResults(results: any[], query: string) {

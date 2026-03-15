@@ -205,7 +205,7 @@ export class ContextManager {
       return content;
   }
 
-  public async searchWorkspaceContent(query: string, options: { matchCase: boolean, wholeWord: boolean } = { matchCase: false, wholeWord: false }, signal?: AbortSignal): Promise<{path: string, snippet: string}[]> {
+  public async searchWorkspaceContent(query: string, options: { matchCase: boolean, wholeWord: boolean, include?: string, exclude?: string } = { matchCase: false, wholeWord: false }, signal?: AbortSignal): Promise<{path: string, snippet: string}[]> {
     const results: {path: string, snippet: string}[] = [];
     const maxResults = 50;
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -242,7 +242,16 @@ export class ContextManager {
                 if (andTerms.length > 1) patternArgs += " ) ";
             });
             
-            const res = await execAsync(`git grep ${gitGrepArgs} ${patternArgs}`, { cwd, maxBuffer: 1024 * 1024 });
+            // Handle Includes and Excludes via Git Pathspecs
+            let pathspec = "";
+            if (options.include) {
+                pathspec += options.include.split(',').map(p => `"${p.trim()}"`).join(' ');
+            }
+            if (options.exclude) {
+                pathspec += " " + options.exclude.split(',').map(p => `":!${p.trim()}"`).join(' ');
+            }
+
+            const res = await execAsync(`git grep ${gitGrepArgs} ${patternArgs} -- ${pathspec}`, { cwd, maxBuffer: 1024 * 1024 });
             stdout = res.stdout;
         } catch (e) {
             // 2. Fallback to system tools
@@ -287,6 +296,7 @@ export class ContextManager {
                     if (!results.some(r => r.path === filePath)) {
                         results.push({
                             path: filePath,
+                            line: parts[1], // Extract line number
                             snippet: snippet.substring(0, 150)
                         });
                     }
@@ -809,6 +819,11 @@ Your goal is to optimize the AI's "Skill Context" by selecting specific document
             }
             executedActions.add(actionFingerprint);
 
+            if (toolCall.scratchpad) {
+                const newEntry = toolCall.scratchpad.trim();
+                cumulativeBrain += `\n\n**Insight**: ${newEntry}`;
+            }
+
             if (toolCall.tool === 'done') {
                 renderUpdate("Complete", true, step);
                 break;
@@ -840,6 +855,7 @@ Your goal is to optimize the AI's "Skill Context" by selecting specific document
                 
                 chatHistory.push({ role: 'system', content: `SEARCH RESULTS for "${query}":\n${JSON.stringify(matches, null, 2)}` });
                 actionLog.push(`🔎 Searched library for: "${query}" (${matches.length} matches)`);
+                if (toolCall.scratchpad) actionLog.push(`💡 **Insight**: ${toolCall.scratchpad}`);
                 renderUpdate("Filtering results...", false, step);
             }
             else if (toolCall.tool === 'select_skills') {
@@ -848,6 +864,7 @@ Your goal is to optimize the AI's "Skill Context" by selecting specific document
                 toAdd.forEach((id: string) => selectedIds.add(id));
                 toRemove.forEach((id: string) => selectedIds.delete(id));
                 actionLog.push(`✅ Updated selection: +${toAdd.length} / -${toRemove.length} skills.`);
+                if (toolCall.scratchpad) actionLog.push(`💡 **Insight**: ${toolCall.scratchpad}`);
                 renderUpdate("Updating selection...", false, step);
             }
         } catch (e: any) {
@@ -1122,7 +1139,9 @@ If yes, you must plan searches, execute them, review results, and add valuable c
       signal: AbortSignal, 
       onUpdate: (content: string) => void,
       onStatusUpdate?: (status: string) => void,
-      initialKeywords?: string[]
+      initialKeywords?: string[],
+      mode: 'selection_only' | 'collaborative' = 'collaborative',
+      fullHistory: ChatMessage[] = []
   ): Promise<{ context: string, analysis: string }> {
       const MAX_STEPS = 10;
       const MAX_RETRIES = 3;
@@ -1134,8 +1153,9 @@ If yes, you must plan searches, execute them, review results, and add valuable c
 
       const allFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
       if (allFiles.length === 0) {
-          onUpdate("⚠️ No visible files found in project.");
-          return "";
+          // Instead of breaking, inform the LLM that this is a "Blank State" 
+          // and skip the file selection logic.
+          return { context: "", analysis: "No files found in workspace. Operating in general discussion mode." };
       }
 
       const currentContextFiles = this.contextStateProvider.getIncludedFiles().map(f => f.path);
@@ -1169,8 +1189,22 @@ If yes, you must plan searches, execute them, review results, and add valuable c
             break;
       }
 
-      const systemPrompt = `You are a Senior Context Librarian Agent.
-Your goal is to prepare the perfect context for an LLM to answer the user's request.
+      const isCollaborative = mode === 'collaborative';
+      const roleTitle = isCollaborative ? "Lead Architect & Librarian" : "Context Librarian";
+      
+      const systemPrompt = `You are the **${roleTitle}**.
+Your goal is to prepare the perfect context for the **Lead Persona** to answer the user's request.
+
+### 🤝 TEAM COLLABORATION PROTOCOL
+1. **Context Awareness**: You have been provided with the FULL discussion history. You MUST read back to the very first user message to identify the primary objective.
+2. **Librarian Duty**: Your specific job is to prevent the Lead Persona from working "blind". 
+3. **Collaboration**: ${isCollaborative ? `As you find and read files, analyze the logic. Use your 'scratchpad' to draft the technical solution and identify lines to change. Your analysis will be directly injected into the Lead Persona's working memory.` : `Find and add relevant files based on the history.`}
+
+### 🧠 STRATEGIC OBJECTIVE
+- Identify the original user intent from the history.
+- Ensure all dependencies and logic files required for that intent are added.
+- If this is a continuation (e.g. "Files have been added"), verify if the context is now sufficient or if more peeking is needed.
+
 ${aggressionInstruction}
 
 ### 🧠 STATEFUL MEMORY PROTOCOL
@@ -1184,16 +1218,16 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
 3. **NEXT STEP REASONING**: Why your next tool call is the right choice.
 
 **AVAILABLE TOOLS:**
-1. \`add_files(files=[{"path": "p1", "mode": "full|signatures"}])\`: Finalize selection for context.
-2. \`read_file(path="path", start_line=0, end_line=500)\`: Read a specific segment of a file. If the file is large, use pagination.
-3. \`get_file_info(path="path")\`: Returns file size and total line count without reading content.
+1. \`add_files(files=[{"path": "p1", "mode": "full|signatures"}])\`: **CRITICAL**: Use this to persistently add files to the AI's memory. If you don't call this, the final response will have NO access to the file content.
+2. \`read_file(path="path", start_line=0, end_line=500)\`: Use this to "peek" at a file to decide if it's relevant. Reading a file does NOT add it to the permanent context.
+3. \`get_file_info(path="path")\`: Returns file size and total line count.
 4. \`search_keywords(keywords=["funcName", "className"])\`: Search for strings to locate logic.
 5. \`done()\`: Finish context selection.
 
 **RULES:**
-- If a file is truncated, use \`read_file\` with a new \`start_line\` to see the rest.
-- Never guess content. If you see a class definition but no methods, read further down.
-- Only add files that are strictly relevant to the user's specific request.
+- **AUTO-ADD POLICY**: If you use \`read_file\` and confirm the code is relevant to the task, you MUST immediately follow up with \`add_files\`.
+- **THE FINAL LLM IS BLIND**: The LLM that answers the user can ONLY see files you have explicitly added via \`add_files\`. It cannot see what you "read" during this discovery phase.
+- Only add files that are strictly relevant to the user's specific request to save tokens.
 - **OUTPUT JSON ONLY**: Reply with a valid JSON object.
 
 **JSON FORMAT:**
@@ -1210,7 +1244,12 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
       const executedActions = new Set<string>();
       let cumulativeBrain = ""; // Internal master state
 
-      let initialUserContent = `**User Request:** "${userPrompt}"\n\n**Project Structure:**\n${fileTree}`;
+      // Build history context for the Librarian
+      const historyContext = fullHistory.length > 0 
+          ? `### 📜 DISCUSSION HISTORY\n${fullHistory.map(m => `**${m.role.toUpperCase()}**: ${typeof m.content === 'string' ? m.content : '[Multipart content]'}`).join('\n\n')}\n\n---\n`
+          : "";
+
+      let initialUserContent = `${historyContext}**LATEST PROMPT:** "${userPrompt}"\n\n**Project Structure:**\n${fileTree}`;
       
       if (initialKeywords && initialKeywords.length > 0) {
           const status = `Searching keywords: ${initialKeywords.join(', ')}...`;
@@ -1232,23 +1271,24 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
       const renderUpdate = (status: string, finished: boolean = false, step: number = 0) => {
           const sortedFiles = Array.from(selectedFiles).sort();
           const filesListItems = sortedFiles.map(f => `<li><span class="codicon codicon-file"></span> ${f}</li>`).join('');
-          
+
           const filesTree = selectedFiles.size > 0 
-              ? `<details ${finished ? 'open' : ''}><summary>📂 <strong>Context Files (${selectedFiles.size})</strong></summary><ul class="file-list-tree">${filesListItems}</ul></details>`
-              : `*No files selected.*`;
-          
-          const logHtml = actionLog.map(l => `<div class="agent-log-item">${l}</div>`).join('');
+              ? `<details ${finished ? 'open' : ''}><summary>📂 <strong>Context Files Selected (${selectedFiles.size})</strong></summary><ul class="file-list-tree">${filesListItems}</ul></details>`
+              : `<div style="color:var(--vscode-charts-orange); font-style:italic;">⚠️ Discovery in progress: No files added to context yet...</div>`;
+
+          // Render log entries as Markdown list items
+          const logMarkdown = actionLog.map(l => `- ${l}`).join('\n');
           const logSection = actionLog.length > 0
-               ? `<details ${finished ? '' : 'open'}><summary>📜 Agent Execution Log</summary><div class="agent-log-container">${logHtml}</div></details>`
+               ? `<details ${finished ? '' : 'open'}><summary>📜 Agent Execution Log</summary>\n\n<div class="agent-log-container">\n\n${logMarkdown}\n\n</div></details>`
                : '';
-          
+
           let spinnerHtml = '';
           if (!finished) {
               spinnerHtml = `<div class="status-line"><div class="spinner"></div> <span>Files selection Round ${step + 1}: ${status}</span></div>`;
           } else {
-              spinnerHtml = `<div class="status-line"><span class="codicon codicon-check"></span> <span>Context Ready</span></div>`;
+              spinnerHtml = `<div class="status-line"><span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span> <span style="font-weight:bold;">Context Ready</span></div>`;
           }
-          
+
           const fullMessage = `**🧠 Auto-Context Agent**\n\n${spinnerHtml}\n\n${filesTree}\n\n${logSection}`;
           onUpdate(fullMessage);
       };
@@ -1306,7 +1346,7 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
               if (toolCall.scratchpad) {
                   const newEntry = toolCall.scratchpad.trim();
                   // Append to master memory for LLM context
-                  cumulativeBrain += `\n- Step ${step + 1}: ${newEntry}`;
+                  cumulativeBrain += `\n\n**Insight**: ${newEntry}`;
                   // Append to user log for timeline view
                   actionLog.push(`🧠 **Insight**: ${newEntry}`);
               }
@@ -1374,6 +1414,11 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
                   const pathArg = params.path || params.file;
                   if (pathArg && allFiles.includes(pathArg)) {
                       const uri = vscode.Uri.joinPath(workspaceFolder.uri, pathArg);
+                      
+                      // SAFETY NET: Automatically add to context when the Librarian reads it
+                      selectedFiles.add(pathArg);
+                      await this.contextStateProvider.setStateForUris([uri], 'included');
+
                       const doc = await vscode.workspace.openTextDocument(uri);
                       const start = params.start_line || 0;
                       const end = params.end_line || Math.min(start + 400, doc.lineCount);

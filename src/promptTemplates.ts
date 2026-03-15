@@ -36,20 +36,21 @@ export class PromptTemplates {
 `);
         } else {
             sections.push(`
-### 🚦 CODE GENERATION DECISION LOGIC
+### 🚦 CODE GENERATION DECISION LOGIC (CRITICAL SAFETY)
 1. **NEW FILE**: You MUST use the **FULL FILE** format.
-2. **HUGE CHANGES (>50%)**: If you are changing more than 50% of the file, use the **FULL FILE** format.
-3. **STANDARD EDITS (<50%)**: For most edits, you MUST use the ${partialFormat.toUpperCase()} format. Do NOT output the full file for small changes.
+2. **EXISTING FILE (Surgical Edit)**: For any modification to a file that already exists in the context, you MUST use the **SEARCH/REPLACE (AIDER)** format. 
+3. **EXISTING FILE (Full Rewrite)**: Only use the **FULL FILE** format for existing files if you are rewriting more than 80% of the logic.
 
-### ⚡ FORMAT: ${partialFormat.toUpperCase()} (For Standard Edits)
-Use this for modifications to existing files.
-[Specific ${partialFormat.toUpperCase()} rules will follow below]
+### 📄 THE "FULL FILE" SAFETY PROTOCOL
+- **STRICT RULE**: When you use the \`language:path\` header (e.g., \`python:src/main.py\`), the UI provides an **Apply** button that replaces the entire file.
+- **FORBIDDEN**: Never output a snippet or partial code using a path-header.
+- **FORBIDDEN**: Never use placeholders like \`# ... rest of code\` inside a path-header block.
+- **CONSEQUENCE**: If you cannot provide the 100% complete source code from line 1 to the end, you MUST use the **SEARCH/REPLACE** format instead.
 
-### 📄 FORMAT: FULL FILE CONTENT (For Heavy Modifications Only)
-If changes are extensive, use:
-\`\`\`python:src/utils.py
-[FULL CODE HERE]
-\`\`\`
+### 💡 THE "EXAMPLE/SNIPPET" PROTOCOL
+- If you are showing an example, a suggestion, or a snippet that is NOT intended to overwrite a file, you **MUST NOT** include the path in the block header.
+- **Correct**: \`\`\`python
+- **Wrong**: \`\`\`python:src/main.py
 `);
         }
         if (partialFormat === 'aider') {
@@ -214,6 +215,7 @@ ${activeProfile.systemPrompt}
 
 ### 🚷 ANTI-HALLUCINATION & CONTEXT BOUNDARIES
 1. **NO BLIND EDITS**: You are FORBIDDEN from generating code blocks (edit/create) for files that are NOT present in the "File Contents" section above. If you need to modify a file that is only visible in the Tree, you MUST ask the user to add it to context first (or use \`read_file\` if available).
+   - **CASUAL EXCEPTION**: If the user is asking a general question not related to the specific project files (e.g., "How does a Linked List work?"), you MAY provide general code examples, but do NOT include a \`:path\` header in the code block.
 2. **NO BLIND IMPORTS**: Do not assume a class, function, or variable exists in a file you cannot see. You must verify exports by reading the file before importing.
 3. **EXACT PATHS**: Always use the exact file paths as they appear in the "Project Structure" tree. Do not guess paths or hallucinate files that do not exist in the tree.
 4. **SUBPROJECTS**: If working in a workspace with multiple subprojects, pay strict attention to the root directories shown in the file tree.

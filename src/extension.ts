@@ -274,6 +274,15 @@ export async function activate(context: vscode.ExtensionContext) {
 
     initializeWorkspace();
 
+    // --- FIRST RUN WIZARD ---
+    const wasConfigured = context.globalState.get<boolean>('lollms.wasConfigured', false);
+    const currentUrl = config.get<string>('apiUrl');
+    
+    // If never configured or URL is default/empty, show the wizard
+    if (!wasConfigured && (currentUrl === 'http://localhost:9642' || !currentUrl)) {
+        showQuickSetupWizard(context);
+    }
+
     // Event Listeners
     context.subscriptions.push(vscode.workspace.onDidChangeWorkspaceFolders(initializeWorkspace));
     context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(editor => {
@@ -290,6 +299,56 @@ export async function activate(context: vscode.ExtensionContext) {
         statusBar.updateProcesses(processManager.getAll().length);
         ChatPanel.panels.forEach(panel => panel.updateGeneratingState());
     }));
+}
+
+async function showQuickSetupWizard(context: vscode.ExtensionContext) {
+    const choices = [
+        { label: "🚀 Start Configuration Wizard", description: "Set up your API host and model in 30 seconds." },
+        { label: "⚙️ Open Full Settings", description: "Go directly to the advanced configuration panel." },
+        { label: "Later", description: "Dismiss for now." }
+    ];
+
+    const selection = await vscode.window.showInformationMessage(
+        "👋 Welcome to Lollms VS Coder! Let's get your AI connection configured to start coding.",
+        ...choices.map(c => c.label)
+    );
+
+    if (selection === choices[0].label) {
+        // Simple step-by-step wizard
+        const backend = await vscode.window.showQuickPick(
+            ['lollms', 'ollama', 'openai', 'anthropic', 'google', 'groq'], 
+            { title: "Step 1: Select Backend", placeHolder: "Which AI server are you using?" }
+        );
+        if (!backend) return;
+
+        const url = await vscode.window.showInputBox({
+            title: "Step 2: API Host URL",
+            value: backend === 'ollama' ? 'http://localhost:11434' : 'http://localhost:9642',
+            prompt: "Enter the base URL of your AI server"
+        });
+        if (!url) return;
+
+        const key = await vscode.window.showInputBox({
+            title: "Step 3: API Key (Optional)",
+            prompt: "Enter your API key if required by the server",
+            password: true
+        });
+
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        await config.update('backendType', backend, vscode.ConfigurationTarget.Global);
+        await config.update('apiUrl', url, vscode.ConfigurationTarget.Global);
+        if (key) await config.update('apiKey', key, vscode.ConfigurationTarget.Global);
+
+        await context.globalState.update('lollms.wasConfigured', true);
+        
+        vscode.window.showInformationMessage("🎉 Lollms configured! Testing connection...");
+        await vscode.commands.executeCommand('lollmsApi.recreateClient');
+        await vscode.commands.executeCommand('lollms-vs-coder.checkConnection');
+        
+    } else if (selection === choices[1].label) {
+        await vscode.commands.executeCommand('lollms-vs-coder.showConfigView');
+        await context.globalState.update('lollms.wasConfigured', true);
+    }
 }
 
 export function deactivate(): void {

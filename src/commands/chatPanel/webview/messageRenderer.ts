@@ -1473,8 +1473,16 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 // Apply button
                 if (block.path && ['file', 'replace', 'insert', 'diff'].includes(block.type)) {
                     const effectiveType = isAider ? 'replace' : block.type;
+                    
+                    // HEURISTIC: If it's a "file" block but contains placeholders or is suspiciously 
+                    // shorter than the description suggests, mark it as risky.
+                    const isRisky = block.type === 'file' && 
+                                    (codeOnly.includes('...') || codeOnly.includes('// rest') || codeOnly.includes('# rest'));
 
-                    const applyBtn = createButton('Apply', applyIcon, () => {
+                    const applyBtn = createButton(isRisky ? 'Apply (Risky)' : 'Apply', applyIcon, () => {
+                        if (isRisky) {
+                            // Manual check would go here if we wanted a popup, but for now we just label it.
+                        }
                         const cmd = effectiveType === 'diff' ? 'applyPatchContent' :
                             (effectiveType === 'replace' ? 'replaceCode' : 'applyFileContent');
                         vscode.postMessage({ command: cmd, filePath: block.path, content: codeOnly, messageId });
@@ -2032,7 +2040,9 @@ export function updateContext(contextText: string, files: string[] = [], skills:
     // Cache the data so we can re-render if capabilities (like Mute) change
     state.lastContextData = { context: contextText, files, skills, diagrams };
     
-    const renderedMarkdown = sanitizer.sanitize(marked.parse(contextText) as string, SANITIZE_CONFIG);
+    // If no context text but we have files/skills, show "Loading content..." in the preview
+    const displayContent = contextText || (files.length > 0 ? "_Loading project content..._" : "");
+    const renderedMarkdown = displayContent ? sanitizer.sanitize(marked.parse(displayContent) as string, SANITIZE_CONFIG) : "";
 
     const isExternal = (f: string) => f.includes('.lollms/web_cache') || f.includes('.lollms/temp_scripts') || f.startsWith('http');
     const externalFiles = files.filter(isExternal);
@@ -2196,7 +2206,8 @@ export function updateContext(contextText: string, files: string[] = [], skills:
         </div>
     </div>`;
     
-    dom.contextContainer.innerHTML = contextText ? innerHTML : '';
+    const hasMetadata = files.length > 0 || skills.length > 0 || (diagrams && diagrams.length > 0);
+    dom.contextContainer.innerHTML = (contextText || hasMetadata) ? innerHTML : '';
 
     const markdownView = dom.contextContainer.querySelector('.markdown-context-view');
     if (markdownView) {

@@ -9,9 +9,12 @@ export class CommitInspectorPanel {
     private readonly _extensionUri: vscode.Uri;
     private readonly _gitIntegration: GitIntegration;
     private readonly _lollmsAPI: LollmsAPI;
+    private readonly _discussionManager: any; // DiscussionManager
     private _disposables: vscode.Disposable[] = [];
 
-    public static createOrShow(extensionUri: vscode.Uri, gitIntegration: GitIntegration, lollmsAPI: LollmsAPI, initialHash?: string) {
+    private _lastReportContent: string = "";
+
+    public static createOrShow(extensionUri: vscode.Uri, gitIntegration: GitIntegration, lollmsAPI: LollmsAPI, discussionManager: any, initialHash?: string) {
         const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
 
         if (CommitInspectorPanel.currentPanel) {
@@ -32,14 +35,15 @@ export class CommitInspectorPanel {
             }
         );
 
-        CommitInspectorPanel.currentPanel = new CommitInspectorPanel(panel, extensionUri, gitIntegration, lollmsAPI, initialHash);
+        CommitInspectorPanel.currentPanel = new CommitInspectorPanel(panel, extensionUri, gitIntegration, lollmsAPI, discussionManager, initialHash);
     }
 
-    private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, gitIntegration: GitIntegration, lollmsAPI: LollmsAPI, initialHash?: string) {
+    private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, gitIntegration: GitIntegration, lollmsAPI: LollmsAPI, discussionManager: any, initialHash?: string) {
         this._panel = panel;
         this._extensionUri = extensionUri;
         this._gitIntegration = gitIntegration;
         this._lollmsAPI = lollmsAPI;
+        this._discussionManager = discussionManager;
 
         this._panel.webview.html = this._getHtmlForWebview();
         
@@ -131,6 +135,16 @@ export class CommitInspectorPanel {
                         await this.analyzeCommit(folder, message.hash);
                     }
                     break;
+                case 'copyReport':
+                    await vscode.env.clipboard.writeText(message.text);
+                    vscode.window.showInformationMessage("Analysis copied to clipboard.");
+                    break;
+                case 'saveReport':
+                    await this.handleSaveReport(message.text, message.hash);
+                    break;
+                case 'sendToDiscussion':
+                    await this.handleSendToDiscussion(message.text, message.hash);
+                    break;
                 case 'copyHash':
                     if (message.hash) {
                         await vscode.env.clipboard.writeText(message.hash);
@@ -179,7 +193,36 @@ ${diff.substring(0, 15000)}
             this._panel.webview.postMessage({ command: 'setLoading', value: false });
         }
     }
+    private async handleSaveReport(text: string, hash: string) {
+        const uri = await vscode.window.showSaveDialog({
+            defaultUri: vscode.Uri.file(`analysis_${hash.substring(0, 7)}.md`),
+            filters: { 'Markdown': ['md'] },
+            saveLabel: 'Save Analysis'
+        });
 
+        if (uri) {
+            await vscode.workspace.fs.writeFile(uri, Buffer.from(text, 'utf8'));
+            vscode.window.showInformationMessage(`Security analysis saved to ${vscode.workspace.asRelativePath(uri)}`);
+        }
+    }
+
+    private async handleSendToDiscussion(text: string, hash: string) {
+        const discussion = this._discussionManager.createNewDiscussion();
+        discussion.title = `Security Audit: ${hash.substring(0, 7)}`;
+        
+        // Populate the first message with the analysis results
+        discussion.messages.push({
+            id: 'audit_' + Date.now(),
+            role: 'assistant',
+            content: `### 🛡️ Imported Security Analysis for Commit \`${hash}\`\n\n${text}\n\n---\n**How can I help you refine this fix or analyze it further?**`
+        });
+
+        await this._discussionManager.saveDiscussion(discussion);
+        
+        // Open the chat
+        await vscode.commands.executeCommand('lollms-vs-coder.switchDiscussion', discussion.id);
+        vscode.window.showInformationMessage("Security analysis exported to new discussion.");
+    }
     private _getHtmlForWebview(): string {
         const markedUri = "https://cdn.jsdelivr.net/npm/marked@5.1.1/marked.min.js";
         const domPurifyUri = "https://cdn.jsdelivr.net/npm/dompurify@3.0.5/dist/purify.min.js";
@@ -230,11 +273,35 @@ ${diff.substring(0, 15000)}
             padding: 8px 10px;
             border-bottom: 1px solid var(--vscode-list-hoverBackground);
             cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
         }
         .commit-item:hover { background-color: var(--vscode-list-hoverBackground); }
         .commit-item.selected { background-color: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
-        .commit-msg { font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
-        .commit-meta { font-size: 0.85em; opacity: 0.8; margin-top: 4px; display: flex; justify-content: space-between; }
+        
+        .commit-row-top {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            width: 100%;
+        }
+
+        .commit-msg { 
+            font-weight: bold; 
+            white-space: nowrap; 
+            overflow: hidden; 
+            text-overflow: ellipsis; 
+            flex: 1; 
+        }
+
+        .commit-meta { 
+            font-size: 0.85em; 
+            opacity: 0.7; 
+            display: flex; 
+            justify-content: space-between;
+            padding-left: 28px; /* Align with text after the icon */
+        }
         
         button {
             background-color: var(--vscode-button-background);
@@ -272,9 +339,17 @@ ${diff.substring(0, 15000)}
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
 
         .icon-btn { 
-            background: none; border: none; color: var(--vscode-icon-foreground); 
-            cursor: pointer; padding: 2px; display: flex; align-items: center; 
-            opacity: 0.7; flex-shrink: 0; margin-right: 6px;
+            background: none; 
+            border: none; 
+            color: var(--vscode-icon-foreground); 
+            cursor: pointer; 
+            padding: 4px; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center;
+            opacity: 0.6; 
+            flex-shrink: 0;
+            border-radius: 4px;
         }
         .icon-btn:hover { opacity: 1; background-color: var(--vscode-toolbar-hoverBackground); border-radius: 3px; }
         .commit-top { display: flex; align-items: center; }
@@ -304,7 +379,11 @@ ${diff.substring(0, 15000)}
 
         <div id="analysis-view" style="display:none;">
             <div class="action-bar">
-                <button id="regenerate-btn">Regenerate Analysis</button>
+                <button id="regenerate-btn">↻ Regenerate</button>
+                <div style="flex:1"></div>
+                <button class="secondary" id="copy-report-btn">Copy</button>
+                <button class="secondary" id="save-report-btn">Save As...</button>
+                <button class="primary" id="chat-report-btn">Send to Chat</button>
             </div>
             <div id="analysis-report"></div>
         </div>
@@ -331,10 +410,22 @@ ${diff.substring(0, 15000)}
             }
         });
 
+        let currentReport = "";
+
         document.getElementById('regenerate-btn').addEventListener('click', () => {
-            if(currentHash) {
-                vscode.postMessage({ command: 'analyzeCommit', hash: currentHash });
-            }
+            if(currentHash) vscode.postMessage({ command: 'analyzeCommit', hash: currentHash });
+        });
+
+        document.getElementById('copy-report-btn').addEventListener('click', () => {
+            vscode.postMessage({ command: 'copyReport', text: currentReport });
+        });
+
+        document.getElementById('save-report-btn').addEventListener('click', () => {
+            vscode.postMessage({ command: 'saveReport', text: currentReport, hash: currentHash });
+        });
+
+        document.getElementById('chat-report-btn').addEventListener('click', () => {
+            vscode.postMessage({ command: 'sendToDiscussion', text: currentReport, hash: currentHash });
         });
 
         window.addEventListener('message', event => {
@@ -364,6 +455,7 @@ ${diff.substring(0, 15000)}
                     break;
                 case 'showAnalysis':
                     currentHash = message.hash;
+                    currentReport = message.report;
                     const html = DOMPurify.sanitize(marked.parse(message.report));
                     reportContainer.innerHTML = html;
                     Prism.highlightAllUnder(reportContainer);
@@ -395,13 +487,11 @@ ${diff.substring(0, 15000)}
                 el.className = 'commit-item';
                 el.setAttribute('data-hash', commit.hash);
                 if (currentHash === commit.hash) el.classList.add('selected');
+                
                 el.innerHTML = \`
-                    <div class="commit-top">
-                        <button class="icon-btn copy-btn" title="Copy Hash" data-hash="\${commit.hash}">
-                            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                                <path d="M4 4l1-1h5.414L14 6.586V14l-1 1H5l-1-1V4zm9 3l-3-3H5v10h8V7z"/>
-                                <path d="M3 1L2 2v10l1 1V2h6.414l-1-1H3z"/>
-                            </svg>
+                    <div class="commit-row-top">
+                        <button class="icon-btn copy-btn" title="Copy Full Hash" data-hash="\${commit.hash}">
+                            <i class="codicon codicon-copy"></i>
                         </button>
                         <div class="commit-msg">\${commit.message}</div>
                     </div>

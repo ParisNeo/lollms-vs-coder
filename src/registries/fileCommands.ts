@@ -147,9 +147,12 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
 
             if (applied && options?.silent) {
                 await document.save();
+                return { success: true };
             } else if (applied) {
                 await openDiffView(fileUri, originalContent);
+                return { success: true };
             }
+            return { success: false, error: "Failed to apply edit" };
 
         } catch (e: any) {
             Logger.error(`Error applying file content: ${e.message}`, e);
@@ -372,20 +375,24 @@ ${originalContent}
                                         }
                                     }
 
-                                    // 2. Automatically retry applying the NEW content
+                                    // 2. Automatically retry applying the NEW content and RETURN that result
                                     vscode.window.showInformationMessage(vscode.l10n.t("Block repaired. Retrying apply..."));
-                                    await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, fixedBlock, panel, messageId, { silent: true });
+                                    return await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, fixedBlock, panel, messageId, { silent: true });
                                 } else {
                                     vscode.window.showWarningMessage(
                                         vscode.l10n.t("Lollms: The AI suggested a fix but the response format was unrecognizable. Please fix the block manually.")
                                     );
+                                    return { success: false, error: "AI repair produced invalid format" };
                                 }
                             } catch (err: any) {
                                 vscode.window.showErrorMessage(`Repair failed: ${err.message}`);
+                                return { success: false, error: `Repair failed: ${err.message}` };
                             }
                         });
-                        return; 
+                        // The above returns a Promise, but we need to ensure the outer function awaits it correctly
+                        return await repairPromise; 
                     }
+                    return { success: false, error: result.error };
                 }
             }
 

@@ -374,9 +374,14 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
 
       if (this._contextManager) {
           const cachedContext = this._contextManager.getLastContext();
+          const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || [];
+          const projectSkills = await this._contextManager.getActiveProjectSkills();
+          const discussionSkills = this._currentDiscussion.importedSkills || [];
+          
+          // Merge metadata for immediate display
+          const allSkillIds = Array.from(new Set([...projectSkills, ...discussionSkills]));
+
           if (cachedContext) {
-              const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || [];
-              
               const contextTextToSend = cachedContext.text.length > 50000 
                   ? `# Context Hidden (Too Large for Preview)\n\nThe full context (${cachedContext.text.length} chars) is loaded in backend memory for AI usage, but is hidden from this preview to improve UI performance.`
                   : cachedContext.text;
@@ -386,9 +391,19 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
                 context: contextTextToSend,
                 files: includedFiles,
                 skills: cachedContext.importedSkills || [],
-                diagrams: cachedContext.diagrams || [] // Send diagrams to UI
+                diagrams: cachedContext.diagrams || []
             });
-              this._panel.webview.postMessage({ command: 'updateImageContext', images: cachedContext.images });
+            this._panel.webview.postMessage({ command: 'updateImageContext', images: cachedContext.images });
+          } else {
+              // NO CACHE: Send minimal metadata immediately so the header appears right away
+              this._panel.webview.postMessage({ 
+                command: 'updateContext', 
+                context: '', 
+                files: includedFiles,
+                // Create skeleton skill objects so the count is correct
+                skills: allSkillIds.map(id => ({ id, name: '...' })),
+                diagrams: this._currentDiscussion.activeDiagrams?.map(type => ({ type, mermaid: '' })) || []
+            });
           }
       }
 
@@ -815,7 +830,8 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
                         this.updateGeneratingState();
                     }
                 },
-                keywords
+                keywords,
+                'selection_only' // <--- Explicit Selection Mode
             );
 
             // Persist the Librarian's analysis into the discussion data zone 
@@ -843,20 +859,23 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
   // --- REPLACED: NEW HIERARCHICAL IMPORT LOGIC ---
 
   private async handleImportSkills() {
+    // 1. Show the UI immediately with loading state
+    this._panel.webview.postMessage({ command: 'showSkillsModal', loading: true });
+
+    // 2. Perform the heavy disk operations asynchronously
     const allSkills = await this._skillsManager.getSkills();
+    
     if (allSkills.length === 0) {
+        this._panel.webview.postMessage({ command: 'closeSkillsModal' });
         vscode.window.showInformationMessage("No saved skills found.");
         return;
     }
 
-    // Get currently active skills to pre-select them
     const projectSkills = await this._contextManager.getActiveProjectSkills();
     const discussionSkills = this._currentDiscussion?.importedSkills || [];
     const activeSkillIds = Array.from(new Set([...projectSkills, ...discussionSkills]));
 
     const root: any = { id: 'root', label: 'Skills Library', children: [], isSkill: false };
-    
-    // Initialize explicit library branches
     const globalRoot = { id: 'global-lib', label: 'Global Library', children: [], isSkill: false, isBundle: true };
     const projectRoot = { id: 'project-lib', label: 'Project Library', children: [], isSkill: false, isBundle: true };
     root.children.push(globalRoot, projectRoot);
@@ -1356,7 +1375,10 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                         this.processManager.updateDescription(processId, status);
                         this.updateGeneratingState();
                     }
-                }
+                },
+                undefined,
+                'collaborative',
+                this._currentDiscussion.messages // Pass the full discussion history
             );
             
             // Persist Librarian insights for the main chat call
@@ -2029,11 +2051,11 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                         try {
                             const opts = { silent: true };
                             if (change.type === 'file') {
-                                await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', change.path, change.content, opts);
-                                result.success = true;
+                                const applyResult: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', change.path, change.content, opts);
+                                result = applyResult || { success: true };
                             } else if (change.type === 'replace') {
                                 try {
-                                    const replaceResult = await vscode.commands.executeCommand(
+                                    const replaceResult: any = await vscode.commands.executeCommand(
                                         'lollms-vs-coder.replaceCode',
                                         change.path,
                                         change.content,
@@ -2041,7 +2063,8 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                                         messageId,
                                         opts
                                     );
-                                    result = { success: true, ...(replaceResult || {}) };
+                                    // Use the actual success/error returned by the replaceCode command
+                                    result = replaceResult || { success: false, error: "Unknown error in replacement" };
                                 } catch (e: any) {
                                     result = { success: false, error: e.message };
                                 }
@@ -2139,7 +2162,17 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                     if (searchMode === 'content') {
                         results = await this._contextManager.searchWorkspaceContent(query, options);
                     } else {
-                        const allFiles = await this._contextManager.getWorkspaceFilePaths();
+                        let allFiles = await this._contextManager.getWorkspaceFilePaths();
+
+                        // Apply Include/Exclude filters to filename list
+                        if (options.include) {
+                            const includes = options.include.split(',').map((p: string) => p.trim().toLowerCase());
+                            allFiles = allFiles.filter(f => includes.some((p: string) => f.toLowerCase().includes(p) || f.toLowerCase().endsWith(p.replace('*', ''))));
+                        }
+                        if (options.exclude) {
+                            const excludes = options.exclude.split(',').map((p: string) => p.trim().toLowerCase());
+                            allFiles = allFiles.filter(f => !excludes.some((p: string) => f.toLowerCase().includes(p) || f.toLowerCase().endsWith(p.replace('*', ''))));
+                        }
                         
                         // --- ADVANCED FILENAME PARSER ---
                         let filtered = allFiles;
@@ -2158,25 +2191,53 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                         } else {
                             // 2. Handle OR logic (|)
                             const orParts = cleanQuery.split('|').map(p => p.trim()).filter(p => p);
-                            
-                            filtered = filtered.filter(f => {
-                                return orParts.some(part => {
-                                    // 3. Handle AND logic (spaces) and NOT logic (-) within each OR branch
-                                    const terms = part.split(/\s+/);
-                                    return terms.every(term => {
-                                        const isNot = term.startsWith('-');
-                                        const actualTerm = isNot ? term.substring(1) : term;
-                                        if (!actualTerm) return true;
 
-                                        const match = options.matchCase 
-                                            ? f.includes(actualTerm) 
-                                            : f.toLowerCase().includes(actualTerm.toLowerCase());
-                                        
-                                        return isNot ? !match : match;
+                            if (options.fuzzy === false) {
+                                // STRICT MATCHING MODE
+                                const filteredFiles = filtered.filter(f => {
+                                    return orParts.some(part => {
+                                        const terms = part.split(/\s+/);
+                                        return terms.every(term => {
+                                            const isNot = term.startsWith('-');
+                                            const actualTerm = isNot ? term.substring(1) : term;
+                                            const match = options.matchCase ? f.includes(actualTerm) : f.toLowerCase().includes(actualTerm.toLowerCase());
+                                            return isNot ? !match : match;
+                                        });
                                     });
                                 });
-                            });
-                            results = filtered.slice(0, 50).map(f => ({ path: f, snippet: "" }));
+                                results = filteredFiles.slice(0, 50).map(f => ({ path: f, snippet: "" }));
+                            } else {
+                                // FUZZY SCORING MODE
+                                const scoredResults = filtered.map(f => {
+                                    let maxOrScore = 0;
+                                    const matches = orParts.some(part => {
+                                        const terms = part.split(/\s+/);
+                                        return terms.every(term => {
+                                            const isNot = term.startsWith('-');
+                                            const actualTerm = isNot ? term.substring(1) : term;
+                                            if (!actualTerm) return true;
+
+                                            const fLower = f.toLowerCase();
+                                            const tLower = actualTerm.toLowerCase();
+                                            const idx = options.matchCase ? f.indexOf(actualTerm) : fLower.indexOf(tLower);
+
+                                            if (idx !== -1) {
+                                                let score = 10;
+                                                if (f.split(/[\\/]/).pop()?.toLowerCase().startsWith(tLower)) score += 50;
+                                                if (idx === 0) score += 100;
+                                                maxOrScore = Math.max(maxOrScore, score);
+                                                return isNot ? false : true;
+                                            }
+                                            return isNot ? true : false;
+                                        });
+                                    });
+                                    return { path: f, score: maxOrScore, matches };
+                                })
+                                .filter(res => res.matches)
+                                .sort((a, b) => b.score - a.score);
+
+                                results = scoredResults.slice(0, 50).map(r => ({ path: r.path, snippet: "" }));
+                            }
                         }
                     }
                     
@@ -2438,7 +2499,12 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                 break;
             case 'executeLollmsCommand':
                 const { command, params } = message.details;
-                if (command === 'createNotebook') {
+                if (command === 'search-add-context-btn') {
+                    if (dom.fileSearchModal) {
+                        dom.fileSearchModal.classList.add('visible');
+                        dom.fileSearchInput.focus();
+                    }
+                } else if (command === 'createNotebook') {
                     vscode.commands.executeCommand('lollms-vs-coder.createNotebook', params.path, params.cellContent);
                 } else if (command === 'gitCommit') {
                     vscode.commands.executeCommand('lollms-vs-coder.gitCommit', params.message);
@@ -2970,8 +3036,17 @@ Task:
             case 'performCommit':
                 if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
                     try {
-                        await this._gitIntegration.commitWithMessage(message.message, vscode.workspace.workspaceFolders[0]);
-                        vscode.window.showInformationMessage("Commit successful.");
+                        const folder = vscode.workspace.workspaceFolders[0];
+                        const hash = await this._gitIntegration.commitWithMessage(message.message, folder);
+                        if (hash) {
+                            // Notify chat with a system message containing the hash
+                            await this.addMessageToDiscussion({
+                                role: 'system',
+                                content: `✅ **Commit Successful**\n**Hash:** \`${hash}\`\n*Link to this fix for CVE tracking.*`
+                            });
+                            // Update the UI state
+                            this._panel.webview.postMessage({ command: 'updateGitState', branch: await this._gitIntegration.getCurrentBranch(folder), lastHash: hash });
+                        }
                     } catch (e: any) {
                          vscode.window.showErrorMessage("Commit failed: " + e.message);
                     }
@@ -3925,37 +4000,63 @@ Task:
         </div>
 
         <div id="file-search-modal" class="modal">
-            <div class="modal-content">
+            <div class="modal-content" style="max-width: 500px;">
                 <div class="modal-header">
-                    <h2>Search & Add Files</h2>
+                    <h2 style="font-size: 14px; font-weight: 600;"><i class="codicon codicon-search" style="margin-right: 8px;"></i>Search & Add Files</h2>
                     <span class="close-btn" id="file-search-close-btn">&times;</span>
                 </div>
                 <div class="modal-body">
-                    <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:12px;">
-                        <div style="display:flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:12px;">
+                        <div style="display:flex; justify-content: space-between; align-items: center; background: var(--vscode-editor-inactiveSelectionBackground); padding: 8px; border-radius: 4px; border: 1px solid var(--vscode-widget-border);">
                             <div style="display:flex; align-items:center; gap:8px;">
-                                <label style="font-size:11px; opacity:0.8;">Search in:</label>
-                                <select id="file-search-mode" style="width: auto; margin: 0; height: 24px; font-size: 11px; padding: 2px 4px;">
+                                <label style="font-size:11px; font-weight: 600; opacity:0.9; margin: 0;">Scope:</label>
+                                <select id="file-search-mode" class="menu-select" style="width: 130px; margin: 0; height: 24px;">
                                     <option value="content" selected>Code Content</option>
                                     <option value="path">Filenames</option>
                                 </select>
                             </div>
-                            <div style="display:flex; gap:10px;">
-                                <label title="Match Case" style="display:flex; align-items:center; gap:3px; font-size:10px; cursor:pointer; opacity:0.8;">
-                                    <input type="checkbox" id="file-search-case" style="width:auto; margin:0;"> Ab
-                                </label>
-                                <label title="Match Whole Word" style="display:flex; align-items:center; gap:3px; font-size:10px; cursor:pointer; opacity:0.8;">
-                                    <input type="checkbox" id="file-search-word" style="width:auto; margin:0;"> \b
-                                </label>
+                            <div style="display:flex; gap:12px;">
+                                <div style="display:flex; align-items:center; gap:4px;" title="Match Case">
+                                    <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">Ab</span>
+                                    <label class="switch" style="width: 24px; height: 14px; margin: 0;">
+                                        <input type="checkbox" id="file-search-case">
+                                        <span class="slider" style="border-radius: 14px;"></span>
+                                    </label>
+                                </div>
+                                <div style="display:flex; align-items:center; gap:4px;" title="Match Whole Word">
+                                    <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">\b</span>
+                                    <label class="switch" style="width: 24px; height: 14px; margin: 0;">
+                                        <input type="checkbox" id="file-search-word">
+                                        <span class="slider" style="border-radius: 14px;"></span>
+                                    </label>
+                                </div>
+                                <div style="display:flex; align-items:center; gap:4px;" title="Fuzzy Search (Filename only)">
+                                    <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">~</span>
+                                    <label class="switch" style="width: 24px; height: 14px; margin: 0;">
+                                        <input type="checkbox" id="file-search-fuzzy" checked>
+                                        <span class="slider" style="border-radius: 14px;"></span>
+                                    </label>
+                                </div>
                             </div>
                         </div>
-                        <input type="text" id="file-search-input" placeholder="Type query and press Enter..." style="flex:1;">
+                        <input type="text" id="file-search-input" class="search-modal-input" placeholder="Type query and press Enter..." style="flex:1;">
+                        
+                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                            <div class="form-group" style="margin:0;">
+                                <label style="font-size: 10px; opacity: 0.7; margin-bottom: 2px;">Include (e.g. src/, *.ts)</label>
+                                <input type="text" id="file-search-include" class="search-modal-input" placeholder="Files to include..." style="font-size: 11px; height: 24px;">
+                            </div>
+                            <div class="form-group" style="margin:0;">
+                                <label style="font-size: 10px; opacity: 0.7; margin-bottom: 2px;">Exclude (e.g. tests/, *.log)</label>
+                                <input type="text" id="file-search-exclude" class="search-modal-input" placeholder="Files to hide..." style="font-size: 11px; height: 24px;">
+                            </div>
+                        </div>
+
                         <div style="font-size: 10px; opacity: 0.7; display: flex; gap: 10px; flex-wrap: wrap; line-height: 1.5;">
                             <span>Pro Search:</span>
                             <code>A B (AND)</code>
                             <code>A | B (OR)</code>
                             <code>-ignore (NOT)</code>
-                            <code>ext:py</code>
                         </div>
                     </div>
                     <div class="checkbox-container" id="file-search-master-container" style="display:none; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid var(--vscode-widget-border);">
@@ -3973,37 +4074,63 @@ Task:
         </div>
 
         <div id="file-search-modal" class="modal">
-            <div class="modal-content">
+            <div class="modal-content" style="max-width: 500px;">
                 <div class="modal-header">
-                    <h2>Search & Add Files</h2>
+                    <h2 style="font-size: 14px; font-weight: 600;"><i class="codicon codicon-search" style="margin-right: 8px;"></i>Search & Add Files</h2>
                     <span class="close-btn" id="file-search-close-btn">&times;</span>
                 </div>
                 <div class="modal-body">
-                    <div style="display:flex; flex-direction:column; gap:8px; margin-bottom:12px;">
-                        <div style="display:flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:12px;">
+                        <div style="display:flex; justify-content: space-between; align-items: center; background: var(--vscode-editor-inactiveSelectionBackground); padding: 8px; border-radius: 4px; border: 1px solid var(--vscode-widget-border);">
                             <div style="display:flex; align-items:center; gap:8px;">
-                                <label style="font-size:11px; opacity:0.8;">Search in:</label>
-                                <select id="file-search-mode" style="width: auto; margin: 0; height: 24px; font-size: 11px; padding: 2px 4px;">
+                                <label style="font-size:11px; font-weight: 600; opacity:0.9; margin: 0;">Scope:</label>
+                                <select id="file-search-mode" class="menu-select" style="width: 130px; margin: 0; height: 24px;">
                                     <option value="content" selected>Code Content</option>
                                     <option value="path">Filenames</option>
                                 </select>
                             </div>
-                            <div style="display:flex; gap:10px;">
-                                <label title="Match Case" style="display:flex; align-items:center; gap:3px; font-size:10px; cursor:pointer; opacity:0.8;">
-                                    <input type="checkbox" id="file-search-case" style="width:auto; margin:0;"> Ab
-                                </label>
-                                <label title="Match Whole Word" style="display:flex; align-items:center; gap:3px; font-size:10px; cursor:pointer; opacity:0.8;">
-                                    <input type="checkbox" id="file-search-word" style="width:auto; margin:0;"> \b
-                                </label>
+                            <div style="display:flex; gap:12px;">
+                                <div style="display:flex; align-items:center; gap:4px;" title="Match Case">
+                                    <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">Ab</span>
+                                    <label class="switch" style="width: 24px; height: 14px; margin: 0;">
+                                        <input type="checkbox" id="file-search-case">
+                                        <span class="slider" style="border-radius: 14px;"></span>
+                                    </label>
+                                </div>
+                                <div style="display:flex; align-items:center; gap:4px;" title="Match Whole Word">
+                                    <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">\b</span>
+                                    <label class="switch" style="width: 24px; height: 14px; margin: 0;">
+                                        <input type="checkbox" id="file-search-word">
+                                        <span class="slider" style="border-radius: 14px;"></span>
+                                    </label>
+                                </div>
+                                <div style="display:flex; align-items:center; gap:4px;" title="Fuzzy Search (Filename only)">
+                                    <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">~</span>
+                                    <label class="switch" style="width: 24px; height: 14px; margin: 0;">
+                                        <input type="checkbox" id="file-search-fuzzy" checked>
+                                        <span class="slider" style="border-radius: 14px;"></span>
+                                    </label>
+                                </div>
                             </div>
                         </div>
-                        <input type="text" id="file-search-input" placeholder="Type query and press Enter..." style="flex:1;">
+                        <input type="text" id="file-search-input" class="search-modal-input" placeholder="Type query and press Enter..." style="flex:1;">
+                        
+                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                            <div class="form-group" style="margin:0;">
+                                <label style="font-size: 10px; opacity: 0.7; margin-bottom: 2px;">Include (e.g. src/, *.ts)</label>
+                                <input type="text" id="file-search-include" class="search-modal-input" placeholder="Files to include..." style="font-size: 11px; height: 24px;">
+                            </div>
+                            <div class="form-group" style="margin:0;">
+                                <label style="font-size: 10px; opacity: 0.7; margin-bottom: 2px;">Exclude (e.g. tests/, *.log)</label>
+                                <input type="text" id="file-search-exclude" class="search-modal-input" placeholder="Files to hide..." style="font-size: 11px; height: 24px;">
+                            </div>
+                        </div>
+
                         <div style="font-size: 10px; opacity: 0.7; display: flex; gap: 10px; flex-wrap: wrap; line-height: 1.5;">
                             <span>Pro Search:</span>
                             <code>A B (AND)</code>
                             <code>A | B (OR)</code>
                             <code>-ignore (NOT)</code>
-                            <code>ext:py</code>
                         </div>
                     </div>
                     <div class="checkbox-container" id="file-search-master-container" style="display:none; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid var(--vscode-widget-border);">

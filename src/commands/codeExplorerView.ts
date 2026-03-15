@@ -48,11 +48,13 @@ export class CodeExplorerPanel {
     private listen() {
         this.panel.webview.onDidReceiveMessage(async msg => {
             if (msg.command === 'ready') {
-                // Only build if the graph is empty AND we aren't already building
+                const activeEditor = vscode.window.activeTextEditor;
+                const focusPath = activeEditor ? vscode.workspace.asRelativePath(activeEditor.document.uri) : undefined;
+
                 if (this.graphManager.getGraphData().nodes.length === 0 && this.graphManager.getBuildState() === 'idle') {
-                    // Start build asynchronously
-                    this.graphManager.buildGraph().then(() => this.update());
-                    this.update(); // Push updated state (building)
+                    // Start build asynchronously, focusing on current file if possible
+                    this.graphManager.buildGraph(focusPath).then(() => this.update());
+                    this.update();
                 } else {
                     this.update();
                 }

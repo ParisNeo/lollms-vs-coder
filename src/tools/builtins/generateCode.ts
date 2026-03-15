@@ -217,8 +217,10 @@ Select up to 10 relevant files. Return ONLY a valid JSON array of strings. Do NO
         }
 
         try {
+            const path = require('path');
             const fileUri = vscode.Uri.joinPath(env.workspaceRoot.uri, filePath);
-            const parentUri = vscode.Uri.joinPath(fileUri, '..');
+            const parentDir = path.dirname(filePath);
+            const parentUri = vscode.Uri.joinPath(env.workspaceRoot.uri, parentDir);
             await vscode.workspace.fs.createDirectory(parentUri);
             await vscode.workspace.fs.writeFile(fileUri, Buffer.from(finalFileContent, 'utf8'));
             return { success: true, output: `Successfully generated and wrote code to file: ${filePath}` };

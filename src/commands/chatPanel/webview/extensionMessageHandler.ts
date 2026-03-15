@@ -637,13 +637,22 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 renderWebSearchResults(message.action, message.results);
                 break;
             case 'showSkillsModal':
-                if (dom.skillsTreeContainer) {
-                    dom.skillsTreeContainer.innerHTML = '';
-                    renderSkillsTree(dom.skillsTreeContainer, message.skillsTree, message.activeSkillIds);
-                }
                 if (dom.skillsModal) {
                     dom.skillsModal.classList.add('visible');
+                    if (message.loading) {
+                        dom.skillsTreeContainer.innerHTML = '<div class="big-spinner"></div>';
+                        dom.skillsTreeContainer.classList.add('loading');
+                        dom.skillsImportBtn.disabled = true;
+                    } else {
+                        dom.skillsTreeContainer.classList.remove('loading');
+                        dom.skillsTreeContainer.innerHTML = '';
+                        renderSkillsTree(dom.skillsTreeContainer, message.skillsTree, message.activeSkillIds);
+                        dom.skillsImportBtn.disabled = false;
+                    }
                 }
+                break;
+            case 'closeSkillsModal':
+                if (dom.skillsModal) dom.skillsModal.classList.remove('visible');
                 break;                
             case 'applyAllStart': {
                 const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);

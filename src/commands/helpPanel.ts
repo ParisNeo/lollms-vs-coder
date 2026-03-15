@@ -90,10 +90,31 @@ export class HelpPanel {
         body { font-family: var(--vscode-font-family); background-color: var(--bg); color: var(--fg); margin: 0; padding: 0; display: flex; height: 100vh; overflow: hidden; }
         
         /* Navigation Sidebar */
-        nav { width: 260px; background: var(--sidebar-bg); border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
+        nav { width: 280px; background: var(--sidebar-bg); border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
         .nav-header { padding: 20px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 1.1em; color: var(--header-fg); }
         .nav-header img { width: 24px; height: 24px; }
         .nav-items { flex: 1; overflow-y: auto; padding: 10px 0; }
+        
+        /* Chapter Groups */
+        .nav-group { margin-bottom: 5px; }
+        .nav-group-header { 
+            padding: 10px 20px; 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            cursor: pointer; 
+            font-weight: bold; 
+            font-size: 0.85em; 
+            text-transform: uppercase; 
+            opacity: 0.7; 
+            letter-spacing: 1px;
+        }
+        .nav-group-header:hover { opacity: 1; color: var(--link); }
+        .nav-group-content { display: none; padding-left: 10px; }
+        .nav-group.open .nav-group-content { display: block; }
+        .nav-group.open .chevron { transform: rotate(90deg); }
+        .chevron { font-size: 10px; transition: transform 0.2s; }
+
         .nav-item { padding: 8px 20px; cursor: pointer; display: flex; align-items: center; gap: 10px; font-size: 0.95em; transition: 0.2s; color: var(--fg); }
         .nav-item:hover { background: var(--hover); }
         .nav-item.active { background: var(--active-bg); color: var(--active-fg); border-left: 3px solid var(--link); }
@@ -138,16 +159,35 @@ export class HelpPanel {
         </div>
         <div class="nav-items">
             <div class="nav-item active" onclick="showSection('intro')"><i class="codicon codicon-home"></i> Overview</div>
-            <div class="nav-item" onclick="showSection('agent')"><i class="codicon codicon-robot"></i> Agent Mode</div>
-            <div class="nav-item" onclick="showSection('context')"><i class="codicon codicon-layers"></i> Smart Context</div>
-            <div class="nav-item" onclick="showSection('graph')"><i class="codicon codicon-graph"></i> Visual Code Graph</div>
-            <div class="nav-item" onclick="showSection('automation')"><i class="codicon codicon-zap"></i> Automation & Fixes</div>
-            <div class="nav-item" onclick="showSection('jupyter')"><i class="codicon codicon-notebook"></i> Notebooks</div>
-            <div class="nav-item" onclick="showSection('research')"><i class="codicon codicon-globe"></i> Research & Web</div>
-            <div class="nav-item" onclick="showSection('advanced-debug')"><i class="codicon codicon-bug"></i> Advanced Debugging</div>
-            <div class="nav-item" onclick="showSection('git')"><i class="codicon codicon-git-commit"></i> Git Mastery</div>
-            <div class="nav-item" onclick="showSection('skills')"><i class="codicon codicon-lightbulb"></i> Skills & Memory</div>
-            <div class="nav-item" onclick="showSection('profiles')"><i class="codicon codicon-settings-gear"></i> Response Styles</div>
+            
+            <div class="nav-group open">
+                <div class="nav-group-header" onclick="toggleGroup(this)">Fundamentals <i class="codicon codicon-chevron-right chevron"></i></div>
+                <div class="nav-group-content">
+                    <div class="nav-item" onclick="showSection('context')"><i class="codicon codicon-layers"></i> Smart Context</div>
+                    <div class="nav-item" onclick="showSection('graph')"><i class="codicon codicon-graph"></i> Code Graph</div>
+                    <div class="nav-item" onclick="showSection('profiles')"><i class="codicon codicon-settings-gear"></i> Response Styles</div>
+                    <div class="nav-item" onclick="showSection('skills')"><i class="codicon codicon-lightbulb"></i> Skills & Memory</div>
+                </div>
+            </div>
+
+            <div class="nav-group">
+                <div class="nav-group-header" onclick="toggleGroup(this)">Agentic Workflow <i class="codicon codicon-chevron-right chevron"></i></div>
+                <div class="nav-group-content">
+                    <div class="nav-item" onclick="showSection('agent')"><i class="codicon codicon-robot"></i> Agent Mode</div>
+                    <div class="nav-item" onclick="showSection('automation')"><i class="codicon codicon-zap"></i> Auto-Repair</div>
+                    <div class="nav-item" onclick="showSection('advanced-debug')"><i class="codicon codicon-bug"></i> Live Debugging</div>
+                </div>
+            </div>
+
+            <div class="nav-group">
+                <div class="nav-group-header" onclick="toggleGroup(this)">Specialized Tools <i class="codicon codicon-chevron-right chevron"></i></div>
+                <div class="nav-group-content">
+                    <div class="nav-item" onclick="showSection('research')"><i class="codicon codicon-globe"></i> Web Discovery</div>
+                    <div class="nav-item" onclick="showSection('jupyter')"><i class="codicon codicon-notebook"></i> Notebooks</div>
+                    <div class="nav-item" onclick="showSection('git')"><i class="codicon codicon-git-commit"></i> Git Mastery</div>
+                </div>
+            </div>
+
             <div class="nav-item" onclick="showSection('custom')"><i class="codicon codicon-settings"></i> Configuration</div>
         </div>
     </nav>
@@ -397,16 +437,35 @@ export class HelpPanel {
 
         <!-- GIT -->
         <section id="git">
-            <h1>🐙 Git Mastery</h1>
+            <h1>🐙 Git & Security (CVE) Workflow</h1>
             
-            <h3>Commit Message Generation</h3>
-            <p>In the <strong>Source Control</strong> panel, click the Lollms icon to generate a conventional commit message based on your staged changes.</p>
+            <div class="card">
+                <h3>🛡️ CVE Fix Tracking</h3>
+                <p>For security researchers, tracking the exact commit ID of a fix is mandatory. Lollms makes this easy:</p>
+                <ul>
+                    <li><strong>Instant Hash Capture:</strong> Whenever you commit via the Lollms Git interface, the full SHA-1 hash is injected into the chat and saved to the Git menu.</li>
+                    <li><strong>One-Click Copy:</strong> Click the Git Branch badge -> <code>Copy Last Hash</code> to grab the ID for your report.</li>
+                    <li><strong>Agentic Checkpoints:</strong> When using Agent Mode, the agent is trained to perform "Checkpoints" before and after risky security fixes.</li>
+                </ul>
+            </div>
 
-            <h3>Commit Inspector</h3>
-            <p>Open the <strong>Lollms Git Manager</strong> (via command palette or status bar) to:</p>
+            <h3>Commit Message Generation</h3>
+            <p>Lollms writes <strong>Conventional Commits</strong>. It analyzes your diff and suggests <code>feat:</code>, <code>fix:</code>, or <code>chore:</code> labels automatically. If you are fixing a CVE, mention it in the chat (e.g., "Fix CVE-2024-1234"), and the generated message will include it.</p>
+
+            <h3>The Git Dashboard</h3>
+            <p>Access the <strong>Git Dashboard</strong> from the Actions sidebar to get a full overview of your repository:</p>
             <ul>
-                <li><strong>Natural Language Search:</strong> Ask "When did I break the login?" to find commits.</li>
-                <li><strong>Deep Analysis:</strong> Select a commit to have the AI analyze it for security bugs, logic errors, and code quality issues.</li>
+                <li><strong>Tree Management:</strong> View all Staged, Unstaged, and Untracked files with buttons to Stage/Unstage/Discard.</li>
+                <li><strong>Branching:</strong> Create new branches or switch between existing ones instantly.</li>
+                <li><strong>Stash Support:</strong> Quickly stash all current changes or apply them from your stash history.</li>
+                <li><strong>Commit Log:</strong> See a quick preview of your last 10 commits.</li>
+            </ul>
+            
+            <h3>The Git Manager</h3>
+            <ul>
+                <li><strong>Natural Language Search:</strong> Use the Git Manager to ask "Find the commit where I added the eval() call" or "Who modified the auth logic last month?".</li>
+                <li><strong>Security Export:</strong> Once an analysis is generated in the Commit Inspector, you can <strong>Copy</strong> it to your report, <strong>Save</strong> it as a Markdown file, or <strong>Send to Chat</strong>.</li>
+                <li><strong>Discussion Loop:</strong> Sending an analysis to chat creates a new discussion where the AI "remembers" the security audit, allowing you to ask follow-up questions like <em>"Is this fix sufficient for CVE-2024-XXX?"</em>.</li>
             </ul>
         </section>
 
@@ -478,21 +537,35 @@ export class HelpPanel {
     </main>
 
     <script>
+        function toggleGroup(header) {
+            const group = header.parentElement;
+            group.classList.toggle('open');
+        }
+
         function showSection(id) {
-            // Update Nav
+            // Update Nav item activation
             document.querySelectorAll('.nav-item').forEach(item => {
                 item.classList.remove('active');
-                if (item.getAttribute('onclick').includes(id)) item.classList.add('active');
+                // Use a more precise check to find the clicked section ID
+                if (item.getAttribute('onclick') && item.getAttribute('onclick').includes("'"+id+"'")) {
+                    item.classList.add('active');
+                    // Ensure the parent group is open
+                    const group = item.closest('.nav-group');
+                    if (group) group.classList.add('open');
+                }
             });
             
-            // Update Content
+            // Update Content Visibility
             document.querySelectorAll('section').forEach(sec => {
                 sec.classList.remove('active');
             });
-            document.getElementById(id).classList.add('active');
-            
-            // Scroll to top
-            document.getElementById('main-content').scrollTop = 0;
+            const target = document.getElementById(id);
+            if (target) {
+                target.classList.add('active');
+                document.getElementById('main-content').scrollTop = 0;
+            } else {
+                console.error("Section not found:", id);
+            }
         }
     </script>
 </body>

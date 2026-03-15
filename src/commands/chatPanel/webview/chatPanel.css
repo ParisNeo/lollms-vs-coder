@@ -190,29 +190,40 @@ body {
     display: flex;
     flex-direction: column;
     position: relative; /* Context for children */
+    /* Ensure child z-indexes work correctly and don't get clipped by borders */
+    isolation: isolate; 
 }
 
 /* Update these specific sections in chatPanel.css */
 
 /* --- UPDATED MESSAGE ACTIONS (The main bubble toolbar) --- */
 .message-actions { 
-    position: sticky;
-    top: 0px; /* Sticks to the very top edge */
-    align-self: flex-end;
-    margin-bottom: -32px; 
-    z-index: 1001; /* Highest priority */
+    position: absolute;
+    /* Move it inside the bubble slightly to avoid edge-flicker */
+    top: 6px; 
+    right: 6px;
+    z-index: 10000; 
     
     display: flex; 
     gap: 4px;
     background-color: var(--vscode-editor-background); 
     border-radius: 4px; 
-    padding: 2px; 
-    border: 1px solid var(--vscode-editorGroup-border); 
-    box-shadow: 0 2px 8px rgba(0,0,0,0.2); 
+    padding: 4px; 
+    border: 1px solid var(--vscode-widget-border); 
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3); 
     
     opacity: 0;
-    transition: opacity 0.2s;
+    /* Use visibility to ensure pointer events are completely stripped when hidden */
+    visibility: hidden;
+    transition: opacity 0.15s ease-in-out, visibility 0.15s;
     pointer-events: none;
+}
+
+/* Stable hover trigger */
+.message:hover .message-actions {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
 }
 
 .message:hover .message-actions {
@@ -268,7 +279,7 @@ body {
 .code-summary {
     position: sticky;
     top: 0;
-    z-index: 1000;
+    z-index: 500; /* Lower than message-actions (10000) */
     background-color: var(--code-header-bg);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
@@ -700,9 +711,39 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     background-color: var(--vscode-dropdown-background);
     color: var(--vscode-dropdown-foreground);
     border: 1px solid var(--vscode-dropdown-border);
-    padding: 4px;
+    padding: 2px 4px;
     border-radius: 2px;
     font-size: 11px;
+    outline: none;
+}
+
+.menu-select:focus {
+    border-color: var(--vscode-focusBorder);
+}
+
+.search-modal-input {
+    background-color: var(--vscode-input-background) !important;
+    color: var(--vscode-input-foreground) !important;
+    border: 1px solid var(--vscode-input-border) !important;
+    padding: 4px 8px !important;
+    border-radius: 2px !important;
+}
+
+.search-modal-input:focus {
+    border-color: var(--vscode-focusBorder) !important;
+    outline: none !important;
+}
+
+/* Adjust switch slider size for the small modal header */
+#file-search-modal .slider:before {
+    height: 10px;
+    width: 10px;
+    left: 2px;
+    bottom: 1px;
+}
+
+#file-search-modal input:checked + .slider:before {
+    transform: translateX(10px);
 }
 
 .modal {
@@ -2029,6 +2070,32 @@ mark.current-match {
     animation: lollms-rotation 1s linear infinite;
 }
 
+/* Skills Modal Loading State */
+#skills-tree-container.loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 200px;
+    opacity: 0.7;
+}
+
+#skills-tree-container.loading::after {
+    content: "Loading Skills Library...";
+    margin-top: 15px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+#skills-tree-container .big-spinner {
+    width: 30px;
+    height: 30px;
+    border: 3px solid var(--vscode-textLink-foreground);
+    border-bottom-color: transparent;
+    border-radius: 50%;
+    animation: lollms-rotation 1s linear infinite;
+}
+
 /* Skills Modal Tree Styles */
 .skills-tree-list {
     list-style: none;
@@ -2258,17 +2325,31 @@ details[open] > summary .folder-handle::before {
 }
 
 .search-result-snippet {
-    font-size: 12px;
-    opacity: 0.8;
-    font-family: var(--vscode-editor-font-family);
-    background: var(--vscode-textCodeBlock-background);
-    padding: 6px;
-    border-radius: 4px;
+    font-size: 11px;
+    opacity: 0.9;
+    font-family: 'Consolas', 'Courier New', monospace;
+    background: var(--vscode-editor-background);
+    border-left: 2px solid var(--vscode-widget-border);
+    padding: 4px 8px;
+    margin-top: 4px;
+    border-radius: 0 4px 4px 0;
     overflow: hidden;
     text-overflow: ellipsis;
     display: -webkit-box;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
+    word-break: break-all;
+}
+
+.quick-add-def {
+    width: 20px;
+    height: 20px;
+    opacity: 0.5;
+    transition: opacity 0.2s;
+}
+
+.quick-add-def:hover {
+    opacity: 1;
 }
 
 .search-result-date {
@@ -2277,28 +2358,28 @@ details[open] > summary .folder-handle::before {
 }
 
 .search-highlight {
-    background-color: var(--vscode-editor-findMatchHighlightBackground);
-    color: inherit;
-    font-weight: bold;
-    border-radius: 2px;
+    background-color: rgba(255, 197, 0, 0.2); /* Very subtle yellow */
+    color: var(--vscode-editor-findMatchHighlightForeground);
+    border-bottom: 1px solid rgba(255, 197, 0, 0.5); /* Emphasize with underline instead of block */
+    border-radius: 1px;
 }
 
 .file-search-item.already-in-context {
-    opacity: 0.7;
-    cursor: default !important;
+    background-color: rgba(15, 157, 88, 0.03); /* Extremely faint green tint for the whole row */
 }
 
 .already-included-badge {
     font-size: 9px;
-    background: var(--vscode-badge-background);
-    color: var(--vscode-badge-foreground);
-    padding: 2px 6px;
-    border-radius: 10px;
+    border: 1px solid var(--vscode-charts-green); /* Use border instead of solid block */
+    color: var(--vscode-charts-green);
+    padding: 1px 5px;
+    border-radius: 3px;
     display: flex;
     align-items: center;
-    gap: 4px;
-    font-weight: bold;
+    gap: 3px;
+    font-weight: 500;
     text-transform: uppercase;
+    opacity: 0.8;
 }
 
 .file-search-item.already-in-context:hover {

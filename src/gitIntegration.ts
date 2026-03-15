@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as fs from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
@@ -86,25 +88,45 @@ export class GitIntegration {
 
   public async getGitStatus(folder: vscode.WorkspaceFolder): Promise<{ staged: string[], unstaged: string[], untracked: string[] }> {
       if (!folder) return { staged: [], unstaged: [], untracked: [] };
-
-      // Staged
       const staged = await this.getStagedFiles(folder);
-
-      // Unstaged (Modified/Deleted)
       let unstaged: string[] = [];
       try {
           const { stdout } = await execAsync('git diff --name-only', { cwd: folder.uri.fsPath });
           unstaged = stdout.split('\n').filter(l => l.trim().length > 0);
       } catch {}
-
-      // Untracked (New)
       let untracked: string[] = [];
       try {
           const { stdout } = await execAsync('git ls-files --others --exclude-standard', { cwd: folder.uri.fsPath });
           untracked = stdout.split('\n').filter(l => l.trim().length > 0);
       } catch {}
-
       return { staged, unstaged, untracked };
+  }
+
+  public async stageFile(folder: vscode.WorkspaceFolder, path: string) {
+      await execAsync(`git add "${path}"`, { cwd: folder.uri.fsPath });
+  }
+
+  public async unstageFile(folder: vscode.WorkspaceFolder, path: string) {
+      await execAsync(`git restore --staged "${path}"`, { cwd: folder.uri.fsPath });
+  }
+
+  public async discardChanges(folder: vscode.WorkspaceFolder, path: string) {
+      await execAsync(`git restore "${path}"`, { cwd: folder.uri.fsPath });
+  }
+
+  public async getStashList(folder: vscode.WorkspaceFolder): Promise<string[]> {
+      try {
+          const { stdout } = await execAsync('git stash list', { cwd: folder.uri.fsPath });
+          return stdout.split('\n').filter(l => l.trim().length > 0);
+      } catch { return []; }
+  }
+
+  public async applyStash(folder: vscode.WorkspaceFolder, index: number) {
+      await execAsync(`git stash apply ${index}`, { cwd: folder.uri.fsPath });
+  }
+
+  public async dropStash(folder: vscode.WorkspaceFolder, index: number) {
+      await execAsync(`git stash drop ${index}`, { cwd: folder.uri.fsPath });
   }
 
   public async stageFiles(folder: vscode.WorkspaceFolder, files: string[]): Promise<void> {
@@ -148,35 +170,90 @@ export class GitIntegration {
       await execAsync(`git stash pop`, { cwd: folder.uri.fsPath });
   }
 
-  public async createAndCheckoutBranch(folder: vscode.WorkspaceFolder, branchName: string): Promise<void> {
+  public async createAndCheckoutBranch(folder: vscode.WorkspaceFolder, branchName: string, startPoint?: string): Promise<void> {
       try {
           // Quote the branch name to handle spaces or special characters safely
           const safeBranchName = `"${branchName}"`;
+          const start = startPoint ? ` "${startPoint}"` : '';
           try {
               await execAsync(`git rev-parse --verify ${safeBranchName}`, { cwd: folder.uri.fsPath });
               await execAsync(`git checkout ${safeBranchName}`, { cwd: folder.uri.fsPath });
           } catch {
-              await execAsync(`git checkout -b ${safeBranchName}`, { cwd: folder.uri.fsPath });
+              await execAsync(`git checkout -b ${safeBranchName}${start}`, { cwd: folder.uri.fsPath });
           }
       } catch (e: any) {
           throw new Error(`Failed to create/checkout branch: ${e.message}`);
       }
   }
 
-  public async checkout(folder: vscode.WorkspaceFolder, branchName: string): Promise<void> {
+public async checkout(folder: vscode.WorkspaceFolder, ref: string): Promise<void> {
+    if (!folder) return;
+
+    try {
+        const safeRef = `"${ref.replace(/"/g, '\\"')}"`;
+
+        try {
+            await execAsync(`git checkout ${safeRef}`, { cwd: folder.uri.fsPath });
+        } catch {
+            await execAsync(`git fetch`, { cwd: folder.uri.fsPath });
+            await execAsync(`git checkout ${safeRef}`, { cwd: folder.uri.fsPath });
+        }
+
+    } catch (e: any) {
+        throw new Error(`Checkout failed: ${e.message}`);
+    }
+}
+
+  public async detachSubmodule(folder: vscode.WorkspaceFolder, subPath: string): Promise<void> {
+      if (!folder) return;
+      const fullPath = path.join(folder.uri.fsPath, subPath);
+      const tempPath = path.join(folder.uri.fsPath, `${subPath}_temp`);
+
       try {
-          await execAsync(`git checkout "${branchName}"`, { cwd: folder.uri.fsPath });
+          // 1. Move the current submodule contents to a temp folder outside Git's tracking
+          await fs.promises.rename(fullPath, tempPath);
+          
+          // 2. Remove the submodule from Git index and configuration
+          await execAsync(`git rm -f "${subPath}"`, { cwd: folder.uri.fsPath });
+          
+          // 3. Remove .git/modules entries (The internal git link)
+          const gitModulesDir = path.join(folder.uri.fsPath, '.git', 'modules', subPath);
+          try { await fs.promises.rm(gitModulesDir, { recursive: true, force: true }); } catch {}
+
+          // 4. Move content back into the repo as plain files
+          await fs.promises.rename(tempPath, fullPath);
+
+          // 5. Explicitly remove the .git file that was inside the submodule folder
+          const subGitFile = path.join(fullPath, '.git');
+          try { await fs.promises.unlink(subGitFile); } catch {}
+          
+          vscode.window.showInformationMessage(`Successfully detached ${subPath}. It is now part of your main repository.`);
       } catch (e: any) {
-          throw new Error(`Failed to checkout ${branchName}: ${e.message}`);
+          throw new Error(`Detachment failed: ${e.message}`);
       }
   }
 
   public async mergeBranch(folder: vscode.WorkspaceFolder, sourceBranch: string): Promise<string> {
       try {
-          const { stdout } = await execAsync(`git merge "${sourceBranch}"`, { cwd: folder.uri.fsPath });
+          const currentBranch = await this.getCurrentBranch(folder);
+          if (currentBranch === sourceBranch) {
+              throw new Error(`Cannot merge branch into itself (You are already on \${currentBranch}).`);
+          }
+
+          // Ensure we have the latest info from the source before merging
+          await execAsync(`git fetch origin`, { cwd: folder.uri.fsPath }).catch(() => {}); 
+          
+          const { stdout } = await execAsync(`git merge "\${sourceBranch}"`, { cwd: folder.uri.fsPath });
+          
+          // Force VS Code to refresh its internal git state
+          await vscode.commands.executeCommand('git.refresh');
+          
           return stdout;
       } catch (e: any) {
-          throw new Error(`Merge failed (Conflict likely): ${e.message}`);
+          if (e.stdout && e.stdout.includes("CONFLICT")) {
+              throw new Error(`Merge Conflict: Please resolve manually in the editor.`);
+          }
+          throw new Error(`Merge failed: \${e.message}`);
       }
   }
 
@@ -192,11 +269,67 @@ export class GitIntegration {
       }
   }
 
+  public async getSubmodules(folder: vscode.WorkspaceFolder): Promise<{path: string, hash: string}[]> {
+      if (!folder) return[];
+      try {
+          const { stdout } = await execAsync('git submodule status', { cwd: folder.uri.fsPath });
+          return stdout.split('\n')
+              .filter(line => line.trim().length > 0)
+              .map(line => {
+                  const parts = line.trim().split(/\s+/);
+                  // Git submodule status prefixes hashes with -, +, or U if out of sync/uninitialized
+                  const hash = parts[0].replace(/^[+-U]/, ''); 
+                  const path = parts[1];
+                  return { hash, path };
+              });
+      } catch (e) {
+          return[];
+      }
+  }
+
+  public async addSubmodule(folder: vscode.WorkspaceFolder, url: string, path: string): Promise<void> {
+      if (!folder) return;
+      try {
+          await execAsync(`git submodule add "${url}" "${path}"`, { cwd: folder.uri.fsPath });
+      } catch (e: any) {
+          throw new Error(`Failed to add submodule: ${e.message}`);
+      }
+  }
+
+  public async removeSubmodule(folder: vscode.WorkspaceFolder, path: string): Promise<void> {
+      if (!folder) return;
+      try {
+          await execAsync(`git rm "${path}"`, { cwd: folder.uri.fsPath });
+      } catch (e: any) {
+          throw new Error(`Failed to remove submodule: ${e.message}`);
+      }
+  }
+
   public async updateSubmodules(folder: vscode.WorkspaceFolder): Promise<void> {
       try {
           await execAsync('git submodule update --init --recursive', { cwd: folder.uri.fsPath });
       } catch (e: any) {
           throw new Error(`Failed to update submodules: ${e.message}`);
+      }
+  }
+
+  public async checkoutPrevious(folder: vscode.WorkspaceFolder): Promise<void> {
+      if (!folder) return;
+      try {
+          // 'git checkout -' switches to the previously checked out branch/commit
+          await execAsync(`git checkout -`, { cwd: folder.uri.fsPath });
+      } catch (e: any) {
+          throw new Error(`Failed to checkout previous branch: ${e.message}`);
+      }
+  }
+
+  public async getCompareDiff(folder: vscode.WorkspaceFolder, hash1: string, hash2: string): Promise<string> {
+      if (!folder) return "";
+      try {
+          // Use _getDiff to benefit from maxBuffer and fallback handling for huge diffs
+          return await this._getDiff(`${hash1} ${hash2}`, folder);
+      } catch (e: any) {
+          throw new Error(`Failed to get compare diff: ${e.message}`);
       }
   }
 
@@ -420,8 +553,8 @@ export class GitIntegration {
       }
   }
 
-  public async commitWithMessage(message: string, folder: vscode.WorkspaceFolder): Promise<void> {
-    if (!folder) return;
+  public async commitWithMessage(message: string, folder: vscode.WorkspaceFolder): Promise<string> {
+    if (!folder) return "";
 
     const staged = await this.getStagedFiles(folder);
     
@@ -459,9 +592,13 @@ export class GitIntegration {
 
     try {
       await execAsync(`git commit -m "${message.replace(/"/g, '\\"')}"`, { cwd: folder.uri.fsPath });
-      vscode.window.showInformationMessage('Committed changes successfully.');
-    } catch (error) {
+      const { stdout: hash } = await execAsync(`git rev-parse HEAD`, { cwd: folder.uri.fsPath });
+      const shortHash = hash.trim();
+      vscode.window.showInformationMessage(`Committed successfully: ${shortHash.substring(0, 7)}`);
+      return shortHash;
+    } catch (error: any) {
       vscode.window.showErrorMessage('Git commit failed: ' + (error as Error).message);
+      return "";
     }
   }
 
@@ -480,12 +617,25 @@ export class GitIntegration {
     }
   }
 
+  /**
+   * Fetches a formatted graph string showing all branches and merges.
+   * Includes hash, relative date, author, and subject. Supports pagination via skip.
+   */
+  public async getGitGraph(folder: vscode.WorkspaceFolder, count: number = 30, skip: number = 0): Promise<string> {
+    try {
+        const { stdout } = await execAsync(
+            `git log --graph --all --pretty=format:"%h|%ar|%an|%d|%s" --color=never -n ${count} --skip=${skip}`,
+            { cwd: folder.uri.fsPath }
+        );
+        return stdout;
+    } catch { return "No history found."; }
+  }
+
   public async getCommitHistory(folder: vscode.WorkspaceFolder, count: number = 50): Promise<GitCommit[]> {
     if (!folder) return [];
     try {
-        // Using --all to ensure we see future commits after a revert/checkout of an older hash
         const { stdout } = await execAsync(
-            `git log --all --pretty=format:"%H|%s|%an|%ad" --date=short -n ${count}`, 
+            `git log --all --pretty=format:"%H|%s|%an|%ar" -n ${count}`, 
             { cwd: folder.uri.fsPath }
         );
         
@@ -538,17 +688,30 @@ export class GitIntegration {
     }
   }
 
-  public async getCommitDiff(folder: vscode.WorkspaceFolder, commitHash: string): Promise<string> {
-      if (!folder || !commitHash) return '';
+  public async getChangedFiles(folder: vscode.WorkspaceFolder, hash: string): Promise<string[]> {
+    if (!folder) return [];
+    try {
+        const { stdout } = await execAsync(`git show --pretty="" --name-only ${hash}`, { 
+            cwd: folder.uri.fsPath,
+            maxBuffer: MAX_BUFFER_SIZE
+        });
+        return stdout.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+    } catch (e) {
+        console.error(`Failed to get changed files for commit ${hash}:`, e);
+        return [];
+    }
+  }
+
+  public async getFileAtCommit(folder: vscode.WorkspaceFolder, hash: string, filePath: string): Promise<string> {
       try {
-          const { stdout } = await execAsync(`git show ${commitHash}`, { 
+          // git show hash:path/to/file
+          const { stdout } = await execAsync(`git show ${hash}:"${filePath}"`, { 
               cwd: folder.uri.fsPath,
               maxBuffer: MAX_BUFFER_SIZE
           });
           return stdout;
-      } catch (error) {
-          console.error(`Failed to fetch diff for commit ${commitHash}:`, error);
-          throw error;
+      } catch (e) {
+          return ""; // File might not exist at that commit
       }
   }
 }

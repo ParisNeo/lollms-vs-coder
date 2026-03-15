@@ -3,6 +3,7 @@ import { LollmsServices } from '../lollmsContext';
 import { CommitInspectorPanel } from '../commands/commitInspectorPanel';
 import { GitManagerPanel } from '../commands/gitManagerPanel';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
+import { GitDashboardPanel } from '../commands/gitDashboardPanel';
 
 export function registerGitCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
     
@@ -89,7 +90,13 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
 
     // Command: Inspect Commit History (Supports deep linking)
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.inspectCommit', (hash?: string) => {
-        CommitInspectorPanel.createOrShow(services.extensionUri, services.gitIntegration, services.lollmsAPI, hash);
+        CommitInspectorPanel.createOrShow(
+            services.extensionUri, 
+            services.gitIntegration, 
+            services.lollmsAPI, 
+            services.discussionManager, 
+            hash
+        );
     }));
 
     // Command: Update Submodules
@@ -390,5 +397,8 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
                 });
             }
         }
+    }));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showGitDashboard', () => {
+        GitDashboardPanel.createOrShow(services.extensionUri, services.gitIntegration);
     }));
 }

@@ -70,7 +70,11 @@ export class CodeGraphManager {
         }
     }
 
-    async buildGraph() {
+    /**
+     * Builds a graph. 
+     * @param focusPath If provided, only builds a subgraph around this file to prevent UI freezing on large projects.
+     */
+    async buildGraph(focusPath?: string) {
         // Cancel any existing operation
         this.cancel();
 
@@ -384,9 +388,33 @@ export class CodeGraphManager {
                 activeNodeIds.add(e.target);
             });
 
-            const filteredNodes = nodes.filter(n => activeNodeIds.has(n.id));
+            // --- PERFORMANCE CAP ---
+            // If the graph is still huge, we prioritize local files over external libraries
+            let finalNodes = nodes.filter(n => activeNodeIds.has(n.id));
+            let finalEdges = edges;
 
-            this.graph = { nodes: filteredNodes, edges };
+            if (focusPath) {
+                const normalizedFocus = focusPath.replace(/\\/g, '/');
+                const focusId = fileNodeMap.get(normalizedFocus);
+                if (focusId) {
+                    const neighborIds = new Set<string>([focusId]);
+                    edges.forEach(e => {
+                        if (e.source === focusId) neighborIds.add(e.target);
+                        if (e.target === focusId) neighborIds.add(e.source);
+                    });
+                    finalNodes = finalNodes.filter(n => neighborIds.has(n.id));
+                    finalEdges = edges.filter(e => neighborIds.has(e.source) && neighborIds.has(e.target));
+                }
+            }
+
+            // Hard cap at 1000 nodes for stability
+            if (finalNodes.length > 1000) {
+                finalNodes = finalNodes.slice(0, 1000);
+                const nodeIdSet = new Set(finalNodes.map(n => n.id));
+                finalEdges = finalEdges.filter(e => nodeIdSet.has(e.source) && nodeIdSet.has(e.target));
+            }
+
+            this.graph = { nodes: finalNodes, edges: finalEdges };
             this.buildState = 'ready';
             this.contextSetter?.('codeGraph.ready', true);
 

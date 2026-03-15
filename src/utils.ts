@@ -489,7 +489,19 @@ export async function getProcessedSystemPrompt(
     
     // Inject Working Memory (insights from Librarian/Auto-Context) if it exists
     if (workingMemory) {
-        finalPersona = `### 🧠 CURRENT WORKING MEMORY (LIBRARIAN INSIGHTS)\n${workingMemory}\n\n${finalPersona}`;
+        finalPersona = `### 🧠 ARCHITECT'S TECHNICAL ANALYSIS (WORKING MEMORY)
+The preliminary analysis phase has already identified relevant code sections and drafted a strategy. 
+**You MUST follow the technical direction established below**:
+${workingMemory}\n\n${finalPersona}`;
+    }
+
+    // --- CASUAL MODE DETECTION ---
+    if (context && (!context.files || context.files.trim().length === 0)) {
+        finalPersona = `### 💬 MODE: GENERAL DISCUSSION
+The user has not provided any file context. 
+1. Answer general questions normally.
+2. If asked to modify the project, explain that you need files added to context first.
+3. Use general code snippets without file paths for explanations.\n\n` + finalPersona;
     }
 
     return PromptTemplates.getSystemPrompt(promptType, capabilities, finalPersona, memory, forceFullCode, context);

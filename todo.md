@@ -5,3 +5,5 @@
 
 - Add notes building and storing (like skills), notes are for uset and skills for ai
 - Add the possibility to have multiple profiles et switch between
+- The librarian must be able to access the images if there are images in the discussion
+- The default context length is not taking into consideration the settings. Make it modifiable directly in discussion settings

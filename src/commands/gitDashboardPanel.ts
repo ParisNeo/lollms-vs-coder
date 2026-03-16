@@ -32,53 +32,72 @@ export class GitDashboardPanel {
         this._panel = panel;
         this._extensionUri = extensionUri;
         this._git = git;
-        this._panel.webview.html = this._getHtml(this._panel.webview);
+
+        // Register listeners BEFORE setting HTML so no messages are missed
         this._setListeners();
-        
         this._panel.onDidDispose(() => this.dispose(), null, this._disposables);
+
+        this._panel.webview.html = this._getHtml(this._panel.webview);
+
+        // Trigger initial load from the extension side — no round-trip needed.
+        // A short delay lets the webview DOM parse and attach its message listener first.
+        setTimeout(() => this.refresh(), 100);
     }
 
     private _currentGraphLimit = 50;
 
     private async refresh(appendGraph: boolean = false) {
-        if (this._isDisposed) return;
+        console.log('[GitDashboard] refresh() called, isDisposed:', this._isDisposed);
+        if (this._isDisposed) {
+            console.log('[GitDashboard] Aborting: panel is disposed');
+            return;
+        }
+
         const folder = vscode.workspace.workspaceFolders?.[0];
-        if (!folder) return;
+        console.log('[GitDashboard] workspaceFolder:', folder?.uri.fsPath ?? 'UNDEFINED');
+        if (!folder) {
+            this._panel.webview.postMessage({
+                command: 'error',
+                message: 'No workspace folder open. Please open a git repo folder first.'
+            });
+            return;
+        }
 
         try {
-            const limit = appendGraph ? 50 : this._currentGraphLimit;
+            const limit = 50;
             const skip = appendGraph ? this._currentGraphLimit : 0;
+            const graphLimit = appendGraph ? limit : this._currentGraphLimit;
 
-            // STAGGERED LOADING: send lightweight data first
-            const currentBranch = await this._git.getCurrentBranch(folder).catch(() => 'unknown');
-            const status = await this._git.getGitStatus(folder).catch(() => ({ staged: [], unstaged: [], untracked: [] }));
-            const branches = await this._git.getBranches(folder).catch(() => []);
+            console.log('[GitDashboard] Fetching lightweight data...');
+            const currentBranch = await this._git.getCurrentBranch(folder).catch((e: any) => { console.error('[GitDashboard] getCurrentBranch failed:', e); return 'unknown'; });
+            const status = await this._git.getGitStatus(folder).catch((e: any) => { console.error('[GitDashboard] getGitStatus failed:', e); return { staged: [], unstaged: [], untracked: [] }; });
+            const branches = await this._git.getBranches(folder).catch((e: any) => { console.error('[GitDashboard] getBranches failed:', e); return []; });
+            console.log('[GitDashboard] branch:', currentBranch, '| branches:', branches.length);
 
-            // Send initial partial update
             if (this._isDisposed) return;
             this._panel.webview.postMessage({ 
                 command: 'updatePartial', 
                 data: { status, branches, currentBranch } 
             });
 
-            // Load heavier data
-            const stashes = await this._git.getStashList(folder).catch(() => []);
-            const submodules = await this._git.getSubmodules(folder).catch(() => []);
-            const history = await this._git.getCommitHistory(folder, 15).catch(() => []);
-            const graph = await this._git.getGitGraph(folder, limit, skip).catch(() => "No history found.");
+            console.log('[GitDashboard] Fetching heavy data...');
+            const stashes = await this._git.getStashList(folder).catch((e: any) => { console.error('[GitDashboard] getStashList failed:', e); return []; });
+            const submodules = await this._git.getSubmodules(folder).catch((e: any) => { console.error('[GitDashboard] getSubmodules failed:', e); return []; });
+            const history = await this._git.getCommitHistory(folder, 15).catch((e: any) => { console.error('[GitDashboard] getCommitHistory failed:', e); return []; });
+            const graph = await this._git.getGitGraph(folder, graphLimit, skip).catch((e: any) => { console.error('[GitDashboard] getGitGraph failed:', e); return null; });
+            console.log('[GitDashboard] graph length:', graph?.length ?? 0);
 
             if (this._isDisposed) return;
-            if (appendGraph) this._currentGraphLimit += limit;
+            if (appendGraph) { this._currentGraphLimit += limit; }
 
             this._panel.webview.postMessage({ 
                 command: appendGraph ? 'appendGraph' : 'update', 
-                data: { status, branches, currentBranch, stashes, history, graph, submodules } 
+                data: { status, branches, currentBranch, stashes, history, graph: graph ?? '', submodules } 
             });
+            console.log('[GitDashboard] postMessage(update) sent');
 
-            if (appendGraph) {
-                this._currentGraphLimit += limit;
-            }
         } catch (error: any) {
+            console.error('[GitDashboard] Unhandled error in refresh():', error);
             if (!this._isDisposed) {
                 this._panel.webview.postMessage({ 
                     command: 'error', 
@@ -86,7 +105,6 @@ export class GitDashboardPanel {
                 });
                 vscode.window.showErrorMessage(`Failed to refresh Git Dashboard: ${error.message}`);
             }
-            console.error('Git Dashboard refresh failed:', error);
         }
     }
 
@@ -96,9 +114,6 @@ export class GitDashboardPanel {
             if (!folder) return;
             try {
                 switch (msg.command) {
-                    case 'webviewReady':
-                        await this.refresh();
-                        break;
                     case 'loadMore':
                         await this.refresh(true);
                         break;
@@ -558,6 +573,13 @@ export class GitDashboardPanel {
     </div>
 
     <script>
+        // BUG FIX 2: acquireVsCodeApi() called once here at the top level.
+        // All inline onclick handlers and post() calls now have access to vscode.
+        const vscode = acquireVsCodeApi();
+
+        function post(cmd, extra = {}) {
+            vscode.postMessage({ command: cmd, ...extra });
+        }
 
         function setLoadingStates() {
             const loader = '<div style="opacity:0.5; padding:20px; text-align:center;"><i class="codicon codicon-sync spinner"></i> Loading...</div>';
@@ -580,70 +602,30 @@ export class GitDashboardPanel {
             if(m) { post('commit', {message: m}); document.getElementById('c-msg').value = ''; } 
         }
 
-        window.addEventListener('message', e => {
-            const msg = e.data;
-            
-            if (msg.command === 'error') {
-                const errorHtml = '<div style="padding:20px; color:var(--vscode-errorForeground); text-align:center;">' +
-                    '<i class="codicon codicon-error"></i> ' + (msg.message || 'Unknown Error') +
-                '</div>';
-                document.getElementById('files').innerHTML = errorHtml;
-                document.getElementById('branches').innerHTML = errorHtml;
-                document.getElementById('graph-inner').innerHTML = errorHtml;
-                return;
-            }
+        function jsEscape(str) {
+            if (!str) return '';
+            // JSON.stringify handles all escaping safely, then strip the outer quotes
+            return JSON.stringify(str).slice(1, -1);
+        }
 
-            if (msg.command === 'setMessage') {
-                document.getElementById('c-msg').value = msg.message;
-                const btn = document.getElementById('ai-gen-btn');
-                btn.disabled = false;
-                btn.innerHTML = '<i class="codicon codicon-sparkle"></i> Auto-Generate';
-                return;
-            }
+        function escapeHtml(text) {
+            if(!text) return '';
+            return text
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
 
-            const { status, branches, currentBranch, stashes, history, graph, submodules } = msg.data;
-            
-            document.getElementById('files').innerHTML = [
-                ...status.staged.map(f => \`
-                    <div class="list-row">
-                        <div class="item-label" title="\${escapeHtml(f)}"><span class="badge-status staged"></span> \${escapeHtml(f)}</div>
-                        <div class="item-actions">
-                            <button class="btn btn-secondary" onclick="post('unstage',{path:'\${jsEscape(f)}'})"><i class="codicon codicon-remove"></i> Unstage</button>
-                        </div>
-                    </div>\`),
-                ...status.unstaged.map(f => \`
-                    <div class="list-row">
-                        <div class="item-label" title="\${escapeHtml(f)}"><span class="badge-status unstaged"></span> \${escapeHtml(f)}</div>
-                        <div class="item-actions">
-                            <button class="btn btn-secondary" onclick="post('stage',{path:'\${jsEscape(f)}'})"><i class="codicon codicon-add"></i> Stage</button>
-                            <button class="btn btn-danger" onclick="post('discard',{path:'\${jsEscape(f)}'})"><i class="codicon codicon-discard"></i> Discard</button>
-                        </div>
-                    </div>\`),
-                ...status.untracked.map(f => \`
-                    <div class="list-row">
-                        <div class="item-label" title="\${escapeHtml(f)}"><span class="badge-status untracked"></span> \${escapeHtml(f)}</div>
-                        <div class="item-actions">
-                            <button class="btn btn-secondary" onclick="post('stage',{path:'\${jsEscape(f)}'})"><i class="codicon codicon-add"></i> Track</button>
-                        </div>
-                    </div>\`)
-            ].join('') || '<div style="opacity:0.5; padding:20px; text-align:center;">Clean working tree ✨</div>';
-
-            document.getElementById('branches').innerHTML = branches.map(b => \`
-                <div class="list-row">
-                    <div class="item-label" style="\${b === currentBranch ? 'font-weight:bold; color:var(--vscode-textLink-foreground)' : ''}">
-                        <i class="codicon \${b === currentBranch ? 'codicon-git-branch' : 'codicon-source-control'}"></i> \${escapeHtml(b)}
-                    </div>
-                    \${b !== currentBranch ? \`
-                    <div class="item-actions">
-                        <button class="btn btn-secondary" onclick="post('switch',{branch:'\${jsEscape(b)}'})"><i class="codicon codicon-arrow-swap"></i> Switch</button>
-                    </div>\` : ''}
-                </div>
-            \`).join('');
-
-            // --- PROFESSIONAL SVG GRAPH RENDERING ---
+        function renderGraph(graph) {
             const graphLines = graph.split('\\n').filter(l => l.trim());
-            
-            const colors =[
+            if (!graphLines.length) {
+                document.getElementById('graph-inner').innerHTML =
+                    '<div style="opacity:0.5; padding:20px; text-align:center;">No commit history found.</div>';
+                return;
+            }
+            const colors = [
                 'var(--vscode-charts-blue)', 
                 'var(--vscode-charts-purple)', 
                 'var(--vscode-charts-red)', 
@@ -651,20 +633,17 @@ export class GitDashboardPanel {
                 'var(--vscode-charts-orange)', 
                 'var(--vscode-charts-yellow)'
             ];
-
             const charW = 14;
             const charH = 24;
             let paths = '';
             let htmlRows = '';
             let maxCols = 0;
 
-            // 1. Create a 2D grid representation of the graph characters for vertical lookahead
             const grid = graphLines.map(line => {
                 const match = line.match(/^([\\*\\|\\/\\s\\\\\\_]+)/);
                 return match ? match[1] : '';
             });
 
-            // 2. Build the SVG strings
             graphLines.forEach((line, rowIndex) => {
                 const match = line.match(/^([\\*\\|\\/\\s\\\\\\_]+)(.*)$/);
                 if (!match) return;
@@ -689,23 +668,18 @@ export class GitDashboardPanel {
                         const strokeW = isHead ? 3 : 0;
                         const r = isHead ? 5 : 4;
                         
-                        // Look above: if the previous row has a commit or vertical line in this column, draw UP
                         if (rowIndex > 0) {
                             const prevChar = grid[rowIndex - 1][col];
                             if (prevChar === '*' || prevChar === '|') {
                                 paths += \`<line x1="\${cx}" y1="\${y}" x2="\${cx}" y2="\${cy}" stroke="\${color}" stroke-width="2" />\`;
                             }
                         }
-                        
-                        // Look below: if the next row has a commit or vertical line in this column, draw DOWN
                         if (rowIndex < grid.length - 1) {
                             const nextChar = grid[rowIndex + 1][col];
                             if (nextChar === '*' || nextChar === '|') {
                                 paths += \`<line x1="\${cx}" y1="\${cy}" x2="\${cx}" y2="\${y + charH}" stroke="\${color}" stroke-width="2" />\`;
                             }
                         }
-
-                        // Draw the commit dot on top of lines
                         paths += \`<circle cx="\${cx}" cy="\${cy}" r="\${r}" fill="\${fill}" stroke="\${color}" stroke-width="\${strokeW}" />\`;
                     } else if (char === '|') {
                         paths += \`<line x1="\${cx}" y1="\${y}" x2="\${cx}" y2="\${y + charH}" stroke="\${color}" stroke-width="2" />\`;
@@ -727,17 +701,16 @@ export class GitDashboardPanel {
                 }
 
                 if (textPart.trim()) {
-                    // Format is: hash|relative_date|author|decoration|subject
                     const parts = textPart.split('|');
-                    const hash = parts[0] ? parts[0].trim() : '';
-                    const date = parts[1] ? parts[1].trim() : '';
-                    const author = parts[2] ? parts[2].trim() : '';
-                    const decoration = parts[3] ? parts[3].trim() : '';
-                    const message = parts[4] ? parts[4].trim() : '';
+                    const hash = parts[0]?.trim() ?? '';
+                    const date = parts[1]?.trim() ?? '';
+                    const author = parts[2]?.trim() ?? '';
+                    const decoration = parts[3]?.trim() ?? '';
+                    const message = parts[4]?.trim() ?? '';
 
                     let tagsHtml = '';
                     if (decoration) {
-                        const cleanDecoration = decoration.replace(/^\(|\)\$/g, '');
+                        const cleanDecoration = decoration.replace(/^\\(|\\)$/g, '');
                         tagsHtml = cleanDecoration.split(',').map(t => {
                             t = t.trim();
                             let cls = 'branch-tag';
@@ -759,21 +732,20 @@ export class GitDashboardPanel {
                             <span class="graph-author" title="Author: \${escapeHtml(author)}">\${escapeHtml(author)}</span>
                             <span class="graph-date">\${escapeHtml(date)}</span>
                             \${tagsHtml}
-                    \${hash ? \`
-                    <div class="item-actions">
-                        <button class="icon-btn" onclick="vscode.postMessage({command:'copyToClipboard', text:'\${hash}'})" title="Copy Hash"><i class="codicon codicon-copy"></i></button>
-                        <button class="icon-btn" onclick="post('checkoutRef',{ref:'\${jsEscape(hash)}'})" title="Checkout Commit"><i class="codicon codicon-target"></i></button>
-                        <button class="icon-btn" onclick="post('branchFromCommit',{ref:'\${jsEscape(hash)}'})" title="Create Branch From Here"><i class="codicon codicon-git-branch"></i></button>
-                        <button class="icon-btn" onclick="post('mergeRef',{ref:'\${jsEscape(decoration ? decoration.split(',')[0].replace(/[()]/g, '').trim() : hash)}'})" title="Merge Branch/Commit"><i class="codicon codicon-git-merge"></i></button>
-                        <button class="icon-btn" onclick="post('compareRef',{ref:'\${jsEscape(hash)}'})" title="Compare with HEAD"><i class="codicon codicon-git-compare"></i></button>
-                    </div>\` : ''}
+                            \${hash ? \`
+                            <div class="item-actions">
+                                <button class="icon-btn" onclick="post('copyToClipboard', {text:'\${jsEscape(hash)}'})" title="Copy Hash"><i class="codicon codicon-copy"></i></button>
+                                <button class="icon-btn" onclick="post('checkoutRef',{ref:'\${jsEscape(hash)}'})" title="Checkout Commit"><i class="codicon codicon-target"></i></button>
+                                <button class="icon-btn" onclick="post('branchFromCommit',{ref:'\${jsEscape(hash)}'})" title="Create Branch From Here"><i class="codicon codicon-git-branch"></i></button>
+                                <button class="icon-btn" onclick="post('mergeRef',{ref:'\${jsEscape(hash)}'})" title="Merge Commit"><i class="codicon codicon-git-merge"></i></button>
+                                <button class="icon-btn" onclick="post('compareRef',{ref:'\${jsEscape(hash)}'})" title="Compare with HEAD"><i class="codicon codicon-git-compare"></i></button>
+                            </div>\` : ''}
                         </div>\`;
                 }
             });
 
             const svgWidth = maxCols * charW + 20;
             const svgHeight = graphLines.length * charH;
-
             document.getElementById('graph-inner').innerHTML = \`
                 <div style="position: relative; height: \${svgHeight}px; width: 100%; min-width: 600px;">
                     <svg width="\${svgWidth}" height="\${svgHeight}" style="position: absolute; top: 0; left: 0; z-index: 1;">
@@ -782,73 +754,10 @@ export class GitDashboardPanel {
                     <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 2;">
                         \${htmlRows}
                     </div>
-                </div>
-            \`;
-
-            document.getElementById('submodules').innerHTML = submodules.map(s => \`
-                <div class="list-row">
-                    <div class="item-label" title="\${escapeHtml(s.path)}"><i class="codicon codicon-file-submodule"></i> \${escapeHtml(s.path)}</div>
-                    <div class="item-actions" style="align-items: center;">
-                        <span style="font-size:10px; opacity:0.5; font-family:monospace; margin-right: 8px;">\${s.hash.substring(0,7)}</span>
-                        <button class="btn btn-danger" onclick="post('removeSubmodule',{path:'\${jsEscape(s.path)}'})" title="Remove"><i class="codicon codicon-trash"></i></button>
-                    </div>
-                </div>
-            \`).join('') || '<div style="opacity:0.5; font-size:11px; padding:10px; text-align:center;">No submodules.</div>';
-
-            document.getElementById('stashes').innerHTML = stashes.map((s, i) => \`
-                <div class="list-row">
-                    <div class="item-label" title="\${escapeHtml(s)}"><i class="codicon codicon-archive"></i> \${escapeHtml(s)}</div>
-                    <div class="item-actions">
-                        <button class="btn btn-secondary" onclick="post('stashApply',{index:\${i}})"><i class="codicon codicon-check"></i> Apply</button>
-                    </div>
-                </div>
-            \`).join('') || '<div style="opacity:0.5; font-size:11px; padding:10px; text-align:center;">No stashes found.</div>';
-            // Notify extension that webview is ready
-            post('webviewReady');
-        });
-
-        let lastState = {
-            status: { staged: [], unstaged: [], untracked: [] },
-            branches: [],
-            currentBranch: '',
-            stashes: [],
-            submodules: [],
-            graph: ''
-        };
-
-        window.addEventListener('message', e => {
-            const msg = e.data;
-            if (msg.command === 'updateSection') {
-                switch(msg.section) {
-                    case 'branch': lastState.currentBranch = msg.data; break;
-                    case 'files': lastState.status = msg.data; break;
-                    case 'branches': lastState.branches = msg.data; break;
-                    case 'stashes': lastState.stashes = msg.data; break;
-                    case 'submodules': lastState.submodules = msg.data; break;
-                    case 'graph': lastState.graph = msg.data; break;
-                }
-                updateUI(lastState.status, lastState.branches, lastState.currentBranch, lastState.stashes, [], lastState.graph, lastState.submodules);
-            } else if (msg.command === 'appendGraph') {
-                lastState.graph += "\n" + msg.data;
-                updateUI(lastState.status, lastState.branches, lastState.currentBranch, lastState.stashes, [], lastState.graph, lastState.submodules);
-            }
-        });
-
-        function jsEscape(str) {
-            return str.replace(/'/g, "\\'");
+                </div>\`;
         }
 
-        function escapeHtml(text) {
-            if(!text) return '';
-            return text
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/"/g, "&quot;")
-                .replace(/'/g, "&#039;");
-        }
-
-        function updateUI(status, branches, currentBranch, stashes, history, graph, submodules) {
+        function renderFiles(status) {
             document.getElementById('files').innerHTML = [
                 ...status.staged.map(f => \`
                     <div class="list-row">
@@ -873,7 +782,9 @@ export class GitDashboardPanel {
                         </div>
                     </div>\`)
             ].join('') || '<div style="opacity:0.5; padding:20px; text-align:center;">Clean working tree ✨</div>';
+        }
 
+        function renderBranches(branches, currentBranch) {
             document.getElementById('branches').innerHTML = branches.map(b => \`
                 <div class="list-row">
                     <div class="item-label" style="\${b === currentBranch ? 'font-weight:bold; color:var(--vscode-textLink-foreground)' : ''}">
@@ -883,126 +794,11 @@ export class GitDashboardPanel {
                     <div class="item-actions">
                         <button class="btn btn-secondary" onclick="post('switch',{branch:'\${jsEscape(b)}'})"><i class="codicon codicon-arrow-swap"></i> Switch</button>
                     </div>\` : ''}
-                </div>\`).join('');
+                </div>
+            \`).join('');
+        }
 
-            // Re-render graph (same as earlier rendering code)
-            const graphLines = graph.split('\n').filter(l => l.trim());
-            const colors = [
-                'var(--vscode-charts-blue)',
-                'var(--vscode-charts-purple)',
-                'var(--vscode-charts-red)',
-                'var(--vscode-charts-green)',
-                'var(--vscode-charts-orange)',
-                'var(--vscode-charts-yellow)'
-            ];
-            const charW = 14, charH = 24;
-            let paths = '', htmlRows = '', maxCols = 0;
-            const grid = graphLines.map(line => {
-                const match = line.match(/^([\*\|\/\s\\\_]+)/);
-                return match ? match[1] : '';
-            });
-            graphLines.forEach((line, rowIndex) => {
-                const match = line.match(/^([\*\|\/\s\\\_]+)(.*)$/);
-                if (!match) return;
-                const graphPart = match[1];
-                let textPart = match[2];
-                maxCols = Math.max(maxCols, graphPart.length);
-                const y = rowIndex * charH;
-                const cy = y + charH / 2;
-                for (let col = 0; col < graphPart.length; col++) {
-                    const char = graphPart[col];
-                    if (char === ' ') continue;
-                    const cx = col * charW + charW / 2;
-                    let color = colors[Math.floor(col / 2) % colors.length];
-                    if (char === '*') {
-                        const isHead = textPart.includes('HEAD');
-                        const fill = isHead ? 'var(--vscode-editor-background)' : color;
-                        const strokeW = isHead ? 3 : 0;
-                        const r = isHead ? 5 : 4;
-                        if (rowIndex > 0) {
-                            const prevChar = grid[rowIndex - 1][col];
-                            if (prevChar === '*' || prevChar === '|') {
-                                paths += \`<line x1="\${cx}" y1="\${y}" x2="\${cx}" y2="\${cy}" stroke="\${color}" stroke-width="2" />\`;
-                            }
-                        }
-                        if (rowIndex < grid.length - 1) {
-                            const nextChar = grid[rowIndex + 1][col];
-                            if (nextChar === '*' || nextChar === '|') {
-                                paths += \`<line x1="\${cx}" y1="\${cy}" x2="\${cx}" y2="\${y + charH}" stroke="\${color}" stroke-width="2" />\`;
-                            }
-                        }
-                        paths += \`<circle cx="\${cx}" cy="\${cy}" r="\${r}" fill="\${fill}" stroke="\${color}" stroke-width="\${strokeW}" />\`;
-                    } else if (char === '|') {
-                        paths += \`<line x1="\${cx}" y1="\${y}" x2="\${cx}" y2="\${y + charH}" stroke="\${color}" stroke-width="2" />\`;
-                    } else if (char === '/') {
-                        color = colors[Math.floor((col + 1) / 2) % colors.length] || color;
-                        const startX = (col + 1) * charW + charW / 2;
-                        const endX = (col - 1) * charW + charW / 2;
-                        paths += \`<path d="M \${startX} \${y} C \${startX} \${y + charH/2}, \${endX} \${y + charH/2}, \${endX} \${y + charH}" stroke="\${color}" stroke-width="2" fill="none" />\`;
-                    } else if (char === '\\') {
-                        color = colors[Math.floor((col + 1) / 2) % colors.length] || color;
-                        const startX = (col - 1) * charW + charW / 2;
-                        const endX = (col + 1) * charW + charW / 2;
-                        paths += \`<path d="M \${startX} \${y} C \${startX} \${y + charH/2}, \${endX} \${y + charH/2}, \${endX} \${y + charH}" stroke="\${color}" stroke-width="2" fill="none" />\`;
-                    } else if (char === '_') {
-                        const startX = (col - 1) * charW + charW / 2;
-                        const endX = (col + 1) * charW + charW / 2;
-                        paths += \`<line x1="\${startX}" y1="\${cy}" x2="\${endX}" y2="\${cy}" stroke="\${color}" stroke-width="2" />\`;
-                    }
-                }
-                if (textPart.trim()) {
-                    const parts = textPart.split('|');
-                    const hash = parts[0]?.trim() ?? '';
-                    const date = parts[1]?.trim() ?? '';
-                    const author = parts[2]?.trim() ?? '';
-                    const decoration = parts[3]?.trim() ?? '';
-                    const message = parts[4]?.trim() ?? '';
-                    let tagsHtml = '';
-                    if (decoration) {
-                        const cleanDecoration = decoration.replace(/^\(|\)\$/g, '');
-                        tagsHtml = cleanDecoration.split(',').map(t => {
-                            t = t.trim();
-                            let cls = 'branch-tag';
-                            let branchName = t;
-                            if (t.includes('HEAD')) {
-                                cls += ' head';
-                                branchName = t.split('->').pop().trim();
-                            } else if (t.includes('origin/')) {
-                                cls += ' remote';
-                            }
-                            return \`<span class="\${cls}" onclick="post('switch', {branch: '\${jsEscape(branchName)}'})" title="Checkout \${escapeHtml(branchName)}">\${escapeHtml(t)}</span>\`;
-                        }).join('');
-                    }
-                    htmlRows += \`
-                        <div class="graph-html-row" style="top: \${y}px; left: \${maxCols * charW + 10}px; height: \${charH}px;">
-                            \${hash ? \`<button class="graph-hash-btn" onclick="post('inspectCommit', {hash: '\${jsEscape(hash)}'})" title="Inspect Commit with AI">\${hash}</button>\` : ''}
-                            <span class="graph-msg" title="\${escapeHtml(message)}">\${escapeHtml(message)}</span>
-                            <span class="graph-author" title="Author: \${escapeHtml(author)}">\${escapeHtml(author)}</span>
-                            <span class="graph-date">\${escapeHtml(date)}</span>
-                            \${tagsHtml}
-                            \${hash ? \`
-                            <div class="item-actions">
-                                <button class="icon-btn" onclick="vscode.postMessage({command:'copyToClipboard', text:'\${hash}'}); vscode.postMessage({command:'showInformationMessage', message:'Copied hash'})" title="Copy Hash"><i class="codicon codicon-copy"></i></button>
-                                <button class="icon-btn" onclick="post('checkoutRef',{ref:'\${jsEscape(hash)}'})" title="Checkout Commit"><i class="codicon codicon-target"></i></button>
-                                <button class="icon-btn" onclick="post('branchFromCommit',{ref:'\${jsEscape(hash)}'})" title="Create Branch From Here"><i class="codicon codicon-git-branch"></i></button>
-                                <button class="btn btn-secondary" style="height:20px; font-size:10px; padding:0 4px;" onclick="post('mergeRef',{ref:'\${jsEscape(hash)}'})" title="Merge Commit">Merge</button>
-                                <button class="icon-btn" onclick="post('compareRef',{ref:'\${jsEscape(hash)}'})" title="Compare with HEAD"><i class="codicon codicon-git-compare"></i></button>
-                            </div>\` : ''}
-                        </div>\`;
-                }
-            });
-            const svgWidth = maxCols * charW + 20;
-            const svgHeight = graphLines.length * charH;
-            document.getElementById('graph-inner').innerHTML = \`
-                <div style="position: relative; height: \${svgHeight}px; width: 100%; min-width: 600px;">
-                    <svg width="\${svgWidth}" height="\${svgHeight}" style="position: absolute; top: 0; left: 0; z-index: 1;">
-                        \${paths}
-                    </svg>
-                    <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 2;">
-                        \${htmlRows}
-                    </div>
-                </div>\`;
-            // Update submodules and stashes
+        function renderSubmodules(submodules) {
             document.getElementById('submodules').innerHTML = submodules.map(s => \`
                 <div class="list-row">
                     <div class="item-label" title="\${escapeHtml(s.path)}"><i class="codicon codicon-file-submodule"></i> \${escapeHtml(s.path)}</div>
@@ -1010,15 +806,72 @@ export class GitDashboardPanel {
                         <span style="font-size:10px; opacity:0.5; font-family:monospace; margin-right: 8px;">\${s.hash.substring(0,7)}</span>
                         <button class="btn btn-danger" onclick="post('removeSubmodule',{path:'\${jsEscape(s.path)}'})" title="Remove"><i class="codicon codicon-trash"></i></button>
                     </div>
-                </div>\`).join('') || '<div style="opacity:0.5; font-size:11px; padding:10px; text-align:center;">No submodules.</div>';
-            document.getElementById('stashes').innerHTML = stashes.map((s,i) => \`
+                </div>
+            \`).join('') || '<div style="opacity:0.5; font-size:11px; padding:10px; text-align:center;">No submodules.</div>';
+        }
+
+        function renderStashes(stashes) {
+            document.getElementById('stashes').innerHTML = stashes.map((s, i) => \`
                 <div class="list-row">
                     <div class="item-label" title="\${escapeHtml(s)}"><i class="codicon codicon-archive"></i> \${escapeHtml(s)}</div>
                     <div class="item-actions">
                         <button class="btn btn-secondary" onclick="post('stashApply',{index:\${i}})"><i class="codicon codicon-check"></i> Apply</button>
                     </div>
-                </div>\`).join('') || '<div style="opacity:0.5; font-size:11px; padding:10px; text-align:center;">No stashes found.</div>';
+                </div>
+            \`).join('') || '<div style="opacity:0.5; font-size:11px; padding:10px; text-align:center;">No stashes found.</div>';
         }
+
+        // Accumulated graph state for appendGraph support
+        let accumulatedGraph = '';
+
+        window.addEventListener('message', e => {
+            const msg = e.data;
+
+            if (msg.command === 'error') {
+                const errorHtml = '<div style="padding:20px; color:var(--vscode-errorForeground); text-align:center;">' +
+                    '<i class="codicon codicon-error"></i> ' + escapeHtml(msg.message || 'Unknown Error') +
+                '</div>';
+                document.getElementById('files').innerHTML = errorHtml;
+                document.getElementById('branches').innerHTML = errorHtml;
+                document.getElementById('graph-inner').innerHTML = errorHtml;
+                return;
+            }
+
+            if (msg.command === 'setMessage') {
+                document.getElementById('c-msg').value = msg.message;
+                const btn = document.getElementById('ai-gen-btn');
+                btn.disabled = false;
+                btn.innerHTML = '<i class="codicon codicon-sparkle"></i> Auto-Generate';
+                return;
+            }
+
+            // Partial update: only lightweight fields available yet
+            if (msg.command === 'updatePartial') {
+                const { status, branches, currentBranch } = msg.data;
+                renderFiles(status);
+                renderBranches(branches, currentBranch);
+                return;
+            }
+
+            const { status, branches, currentBranch, stashes, graph, submodules } = msg.data;
+
+            if (msg.command === 'appendGraph') {
+                // Append new commits to the existing graph
+                accumulatedGraph += '\\n' + graph;
+            } else {
+                // Full update — reset accumulated graph
+                accumulatedGraph = graph;
+            }
+
+            renderFiles(status);
+            renderBranches(branches, currentBranch);
+            renderGraph(accumulatedGraph);
+            renderSubmodules(submodules);
+            renderStashes(stashes);
+        });
+
+        // The extension drives the initial refresh via setTimeout after setting HTML.
+        // No webviewReady round-trip needed.
     </script>
 </body>
 </html>`;

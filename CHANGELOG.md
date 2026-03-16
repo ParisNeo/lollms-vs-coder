@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-03-16 07:21]
+
+- feat: bump version to 0.7.13 and update Git dashboard integration
+
 ## [2026-03-16 01:16]
 
 - Add robust path handling and enhance Git dashboard interactions

@@ -7,3 +7,4 @@
 - Add the possibility to have multiple profiles et switch between
 - The librarian must be able to access the images if there are images in the discussion
 - The default context length is not taking into consideration the settings. Make it modifiable directly in discussion settings
+- Images does not work on ollama binding

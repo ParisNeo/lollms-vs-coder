@@ -36,7 +36,7 @@ export class GitIntegration {
   public async isGitRepo(folder: vscode.WorkspaceFolder): Promise<boolean> {
     if (!folder) return false;
     try {
-      await execAsync('git rev-parse --is-inside-work-tree', { cwd: folder.uri.fsPath });
+      await execAsync('git --no-pager rev-parse --is-inside-work-tree', { cwd: folder.uri.fsPath, timeout: 5000 });
       return true;
     } catch {
       return false;
@@ -45,7 +45,7 @@ export class GitIntegration {
 
   public async getCurrentBranch(folder: vscode.WorkspaceFolder): Promise<string> {
       try {
-          const { stdout } = await execAsync('git branch --show-current', { cwd: folder.uri.fsPath });
+          const { stdout } = await execAsync('git --no-pager branch --show-current', { cwd: folder.uri.fsPath, timeout: 10000 });
           return stdout.trim();
       } catch (e) {
           return '';
@@ -54,7 +54,7 @@ export class GitIntegration {
 
   public async getCurrentHash(folder: vscode.WorkspaceFolder): Promise<string> {
     try {
-        const { stdout } = await execAsync('git rev-parse HEAD', { cwd: folder.uri.fsPath });
+        const { stdout } = await execAsync('git --no-pager rev-parse HEAD', { cwd: folder.uri.fsPath, timeout: 10000 });
         return stdout.trim();
     } catch (e) {
         return '';
@@ -63,16 +63,16 @@ export class GitIntegration {
 
   public async getBranches(folder: vscode.WorkspaceFolder): Promise<string[]> {
       try {
-          const { stdout } = await execAsync('git branch --format="%(refname:short)"', { cwd: folder.uri.fsPath });
+          const { stdout } = await execAsync('git --no-pager branch --format="%(refname:short)"', { cwd: folder.uri.fsPath, timeout: 15000 });
           return stdout.split('\n').map(b => b.trim()).filter(b => b.length > 0);
       } catch {
-          return [];
+          return[];
       }
   }
   
   public async hasUnstagedChanges(folder: vscode.WorkspaceFolder): Promise<boolean> {
       try {
-          const { stdout } = await execAsync('git status --porcelain', { cwd: folder.uri.fsPath });
+          const { stdout } = await execAsync('git --no-pager status --porcelain', { cwd: folder.uri.fsPath, timeout: 10000 });
           return stdout.trim().length > 0;
       } catch (e) {
           return false;
@@ -81,9 +81,9 @@ export class GitIntegration {
 
   public async getStagedFiles(folder: vscode.WorkspaceFolder): Promise<string[]> {
       try {
-          const { stdout } = await execAsync('git diff --name-only --cached', { cwd: folder.uri.fsPath });
+          const { stdout } = await execAsync('git --no-pager diff --name-only --cached', { cwd: folder.uri.fsPath, timeout: 15000 });
           return stdout.split('\n').filter(l => l.trim().length > 0);
-      } catch { return []; }
+      } catch { return[]; }
   }
 
   public async getGitStatus(folder: vscode.WorkspaceFolder): Promise<{ staged: string[], unstaged: string[], untracked: string[] }> {
@@ -91,12 +91,13 @@ export class GitIntegration {
       const staged = await this.getStagedFiles(folder);
       let unstaged: string[] = [];
       try {
-          const { stdout } = await execAsync('git diff --name-only', { cwd: folder.uri.fsPath });
+          // Added 5s timeout to prevent dashboard freeze
+          const { stdout } = await execAsync('git --no-pager diff --name-only', { cwd: folder.uri.fsPath, timeout: 5000 });
           unstaged = stdout.split('\n').filter(l => l.trim().length > 0);
       } catch {}
       let untracked: string[] = [];
       try {
-          const { stdout } = await execAsync('git ls-files --others --exclude-standard', { cwd: folder.uri.fsPath });
+          const { stdout } = await execAsync('git --no-pager ls-files --others --exclude-standard', { cwd: folder.uri.fsPath, timeout: 5000 });
           untracked = stdout.split('\n').filter(l => l.trim().length > 0);
       } catch {}
       return { staged, unstaged, untracked };
@@ -116,9 +117,9 @@ export class GitIntegration {
 
   public async getStashList(folder: vscode.WorkspaceFolder): Promise<string[]> {
       try {
-          const { stdout } = await execAsync('git stash list', { cwd: folder.uri.fsPath });
+          const { stdout } = await execAsync('git --no-pager stash list', { cwd: folder.uri.fsPath, timeout: 15000 });
           return stdout.split('\n').filter(l => l.trim().length > 0);
-      } catch { return []; }
+      } catch { return[]; }
   }
 
   public async applyStash(folder: vscode.WorkspaceFolder, index: number) {
@@ -150,8 +151,8 @@ export class GitIntegration {
   
   public async getUnstagedFiles(folder: vscode.WorkspaceFolder): Promise<string[]> {
       try {
-          const { stdout: modified } = await execAsync('git diff --name-only', { cwd: folder.uri.fsPath });
-          const { stdout: untracked } = await execAsync('git ls-files --others --exclude-standard', { cwd: folder.uri.fsPath });
+          const { stdout: modified } = await execAsync('git --no-pager diff --name-only', { cwd: folder.uri.fsPath, timeout: 15000 });
+          const { stdout: untracked } = await execAsync('git --no-pager ls-files --others --exclude-standard', { cwd: folder.uri.fsPath, timeout: 15000 });
           
           const files = new Set([
               ...modified.split('\n').filter(l => l.trim().length > 0),
@@ -176,7 +177,7 @@ export class GitIntegration {
           const safeBranchName = `"${branchName}"`;
           const start = startPoint ? ` "${startPoint}"` : '';
           try {
-              await execAsync(`git rev-parse --verify ${safeBranchName}`, { cwd: folder.uri.fsPath });
+              await execAsync(`git --no-pager rev-parse --verify ${safeBranchName}`, { cwd: folder.uri.fsPath, timeout: 10000 });
               await execAsync(`git checkout ${safeBranchName}`, { cwd: folder.uri.fsPath });
           } catch {
               await execAsync(`git checkout -b ${safeBranchName}${start}`, { cwd: folder.uri.fsPath });
@@ -195,7 +196,7 @@ public async checkout(folder: vscode.WorkspaceFolder, ref: string): Promise<void
         try {
             await execAsync(`git checkout ${safeRef}`, { cwd: folder.uri.fsPath });
         } catch {
-            await execAsync(`git fetch`, { cwd: folder.uri.fsPath });
+            await execAsync(`git fetch`, { cwd: folder.uri.fsPath, timeout: 30000 });
             await execAsync(`git checkout ${safeRef}`, { cwd: folder.uri.fsPath });
         }
 
@@ -241,7 +242,7 @@ public async checkout(folder: vscode.WorkspaceFolder, ref: string): Promise<void
           }
 
           // Ensure we have the latest info from the source before merging
-          await execAsync(`git fetch origin`, { cwd: folder.uri.fsPath }).catch(() => {}); 
+          await execAsync(`git fetch origin`, { cwd: folder.uri.fsPath, timeout: 30000 }).catch(() => {}); 
           
           const { stdout } = await execAsync(`git merge "\${sourceBranch}"`, { cwd: folder.uri.fsPath });
           
@@ -272,7 +273,7 @@ public async checkout(folder: vscode.WorkspaceFolder, ref: string): Promise<void
   public async getSubmodules(folder: vscode.WorkspaceFolder): Promise<{path: string, hash: string}[]> {
       if (!folder) return[];
       try {
-          const { stdout } = await execAsync('git submodule status', { cwd: folder.uri.fsPath });
+          const { stdout } = await execAsync('git --no-pager submodule status', { cwd: folder.uri.fsPath, timeout: 15000 });
           return stdout.split('\n')
               .filter(line => line.trim().length > 0)
               .map(line => {
@@ -307,7 +308,7 @@ public async checkout(folder: vscode.WorkspaceFolder, ref: string): Promise<void
 
   public async updateSubmodules(folder: vscode.WorkspaceFolder): Promise<void> {
       try {
-          await execAsync('git submodule update --init --recursive', { cwd: folder.uri.fsPath });
+          await execAsync('git submodule update --init --recursive', { cwd: folder.uri.fsPath, timeout: 60000 });
       } catch (e: any) {
           throw new Error(`Failed to update submodules: ${e.message}`);
       }
@@ -344,16 +345,19 @@ public async checkout(folder: vscode.WorkspaceFolder, ref: string): Promise<void
   private async _getDiff(args: string, folder: vscode.WorkspaceFolder): Promise<string> {
     if (!folder) return '';
     try {
-      const { stdout } = await execAsync(`git diff ${args}`, { 
-        cwd: folder.uri.fsPath,
-        maxBuffer: MAX_BUFFER_SIZE
-      });
+        // Use a shorter timeout and kill the process if it hangs to prevent extension host lockup
+        const { stdout } = await execAsync(`git --no-pager diff ${args}`, { 
+            cwd: folder.uri.fsPath,
+            maxBuffer: MAX_BUFFER_SIZE,
+            timeout: 10000,
+            killSignal: 'SIGKILL'
+        });
       return stdout || '';
     } catch (error: any) {
       console.error(`Git diff error for args '${args}':`, error);
       if (error.message && error.message.includes('maxBuffer')) {
           try {
-              const { stdout } = await execAsync(`git diff ${args} --name-only`, { cwd: folder.uri.fsPath });
+              const { stdout } = await execAsync(`git --no-pager diff ${args} --name-only`, { cwd: folder.uri.fsPath, timeout: 15000 });
               return `Diff too large to display. Modified files:\n${stdout}`;
           } catch(e) {
               return '';
@@ -364,9 +368,9 @@ public async checkout(folder: vscode.WorkspaceFolder, ref: string): Promise<void
   }
 
   private async _getUntrackedFiles(folder: vscode.WorkspaceFolder): Promise<string[]> {
-    if (!folder) return [];
+    if (!folder) return[];
     try {
-        const { stdout } = await execAsync('git ls-files --others --exclude-standard', { cwd: folder.uri.fsPath });
+        const { stdout } = await execAsync('git --no-pager ls-files --others --exclude-standard', { cwd: folder.uri.fsPath, timeout: 15000 });
         return stdout.split('\n').filter(line => line.trim().length > 0);
     } catch (e) {
         return [];
@@ -623,20 +627,24 @@ public async checkout(folder: vscode.WorkspaceFolder, ref: string): Promise<void
    */
   public async getGitGraph(folder: vscode.WorkspaceFolder, count: number = 30, skip: number = 0): Promise<string> {
     try {
+        // Reduced timeout to 7 seconds. 
+        // We also use --max-count to prevent git from traversing the entire history if the graph is too complex.
         const { stdout } = await execAsync(
-            `git log --graph --all --pretty=format:"%h|%ar|%an|%d|%s" --color=never -n ${count} --skip=${skip}`,
-            { cwd: folder.uri.fsPath }
+            `git --no-pager log --graph --all --pretty=format:"%h|%ar|%an|%d|%s" --color=never -n ${count} --skip=${skip} --max-count=${count + skip}`,
+            { cwd: folder.uri.fsPath, timeout: 7000 }
         );
         return stdout;
-    } catch { return "No history found."; }
+    } catch { 
+        return "Timeline generation timed out. Your repository might have a very complex merge history."; 
+    }
   }
 
   public async getCommitHistory(folder: vscode.WorkspaceFolder, count: number = 50): Promise<GitCommit[]> {
-    if (!folder) return [];
+    if (!folder) return[];
     try {
         const { stdout } = await execAsync(
-            `git log --all --pretty=format:"%H|%s|%an|%ar" -n ${count}`, 
-            { cwd: folder.uri.fsPath }
+            `git --no-pager log --all --pretty=format:"%H|%s|%an|%ar" -n ${count}`, 
+            { cwd: folder.uri.fsPath, timeout: 15000 }
         );
         
         return stdout.split('\n').filter(line => line.trim()).map(line => {
@@ -650,9 +658,9 @@ public async checkout(folder: vscode.WorkspaceFolder, ref: string): Promise<void
   }
 
   public async searchCommits(folder: vscode.WorkspaceFolder, options: GitSearchOptions): Promise<GitCommit[]> {
-    if (!folder) return [];
+    if (!folder) return[];
 
-    let cmd = `git log --pretty=format:"%H|%s|%an|%ad" --date=short`;
+    let cmd = `git --no-pager log --pretty=format:"%H|%s|%an|%ad" --date=short`;
     
     if (options.count) cmd += ` -n ${options.count}`;
     else cmd += ` -n 50`;
@@ -671,7 +679,7 @@ public async checkout(folder: vscode.WorkspaceFolder, ref: string): Promise<void
     }
 
     try {
-        const { stdout } = await execAsync(cmd, { cwd: folder.uri.fsPath });
+        const { stdout } = await execAsync(cmd, { cwd: folder.uri.fsPath, timeout: 20000 });
         
         return stdout.split('\n').filter(line => line.trim()).map(line => {
             const parts = line.split('|');
@@ -689,11 +697,12 @@ public async checkout(folder: vscode.WorkspaceFolder, ref: string): Promise<void
   }
 
   public async getChangedFiles(folder: vscode.WorkspaceFolder, hash: string): Promise<string[]> {
-    if (!folder) return [];
+    if (!folder) return[];
     try {
-        const { stdout } = await execAsync(`git show --pretty="" --name-only ${hash}`, { 
+        const { stdout } = await execAsync(`git --no-pager show --pretty="" --name-only ${hash}`, { 
             cwd: folder.uri.fsPath,
-            maxBuffer: MAX_BUFFER_SIZE
+            maxBuffer: MAX_BUFFER_SIZE,
+            timeout: 15000
         });
         return stdout.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     } catch (e) {
@@ -705,9 +714,10 @@ public async checkout(folder: vscode.WorkspaceFolder, ref: string): Promise<void
   public async getFileAtCommit(folder: vscode.WorkspaceFolder, hash: string, filePath: string): Promise<string> {
       try {
           // git show hash:path/to/file
-          const { stdout } = await execAsync(`git show ${hash}:"${filePath}"`, { 
+          const { stdout } = await execAsync(`git --no-pager show ${hash}:"${filePath}"`, { 
               cwd: folder.uri.fsPath,
-              maxBuffer: MAX_BUFFER_SIZE
+              maxBuffer: MAX_BUFFER_SIZE,
+              timeout: 15000
           });
           return stdout;
       } catch (e) {

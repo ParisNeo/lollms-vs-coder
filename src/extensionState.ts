@@ -62,17 +62,6 @@ export function disposeTerminal() {
 }
 
 /**
- * Normalizes a Windows path to Unix-style for Bash.
- */
-function toBashPath(p: string): string {
-    let unixPath = p.replace(/\\/g, '/');
-    if (process.platform === 'win32') {
-        unixPath = unixPath.replace(/^([a-zA-Z]):/, (match, drive) => `/${drive.toLowerCase()}`);
-    }
-    return unixPath;
-}
-
-/**
  * Executes a command in a visible VS Code terminal via the Task API.
  * Handles PowerShell, CMD, and various Unix shells (Bash, Zsh, Fish).
  */
@@ -94,6 +83,10 @@ export async function runCommandInTerminal(
 
         const outputFile = path.join(outputDir, 'last_output.txt');
         const exitCodeFile = path.join(outputDir, 'last_exit_code.txt');
+        
+        // Relative paths from cwd
+        const relOutputFile = '.lollms/last_output.txt';
+        const relExitCodeFile = '.lollms/last_exit_code.txt';
 
         if (fs.existsSync(outputFile)) { try { fs.unlinkSync(outputFile); } catch(e) {} }
         if (fs.existsSync(exitCodeFile)) { try { fs.unlinkSync(exitCodeFile); } catch(e) {} }
@@ -111,31 +104,24 @@ export async function runCommandInTerminal(
 
         if (isWin) {
             if (shellType === 'powershell') {
-                // Ensure paths are quoted and escaped for PowerShell
-                const safeOutputFile = `"${outputFile.replace(/"/g, '`"')}"`;
-                const safeExitCodeFile = `"${exitCodeFile.replace(/"/g, '`"')}"`;
-                
                 // Execute command and capture output manually to ensure we bypass terminal buffer limits
-                const psCommand = `& { ${sanitizedCommand} } > ${safeOutputFile} 2>&1; $LASTEXITCODE | Out-File -FilePath ${safeExitCodeFile} -Encoding utf8`;
+                const psCommand = `& { ${sanitizedCommand} } > "${relOutputFile}" 2>&1; $LASTEXITCODE | Out-File -FilePath "${relExitCodeFile}" -Encoding utf8`;
 
                 execution = new vscode.ShellExecution(
-                    "powershell.exe", 
-                    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psCommand], 
+                    "powershell.exe",["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psCommand], 
                     { cwd }
                 );
             } else if (shellType === 'cmd') {
                 // Force UTF-8 in CMD as well
-                const cmdCommand = `chcp 65001 > nul && ${sanitizedCommand} > "${outputFile}" 2>&1 & echo %errorlevel% > "${exitCodeFile}"`;
+                const cmdCommand = `chcp 65001 > nul && ${sanitizedCommand} > "${relOutputFile}" 2>&1 & echo %errorlevel% > "${relExitCodeFile}"`;
                 execution = new vscode.ShellExecution("cmd.exe", ["/c", cmdCommand], { cwd });
             } else {
-                const bashOutputFile = toBashPath(outputFile);
-                const bashExitCodeFile = toBashPath(exitCodeFile);
-                const shCommand = `export LANG=en_US.UTF-8; (${sanitizedCommand}) 2>&1 | tee '${bashOutputFile}'; echo $? > '${bashExitCodeFile}'`;
+                const shCommand = `export LANG=en_US.UTF-8; (${sanitizedCommand}) 2>&1 | tee '${relOutputFile}'; echo $? > '${relExitCodeFile}'`;
                 execution = new vscode.ShellExecution("bash.exe", ["-c", shCommand], { cwd });
             }
         } else {
             const targetShell = options?.shell || 'bash';
-            const shCommand = `export LANG=en_US.UTF-8; export FORCE_COLOR=1; export TERM=xterm-256color; export CLICOLOR_FORCE=1; (${sanitizedCommand}) 2>&1 | tee "${outputFile}"; echo $? > "${exitCodeFile}"`;
+            const shCommand = `export LANG=en_US.UTF-8; export FORCE_COLOR=1; export TERM=xterm-256color; export CLICOLOR_FORCE=1; (${sanitizedCommand}) 2>&1 | tee "${relOutputFile}"; echo $? > "${relExitCodeFile}"`;
             execution = new vscode.ShellExecution(targetShell, ["-c", shCommand], { cwd });
         }
 
@@ -168,10 +154,6 @@ export async function runCommandInTerminal(
                     try {
                         if (fs.existsSync(outputFile)) {
                             output = fs.readFileSync(outputFile, 'utf8').replace(/^\uFEFF/, '');
-                        }
-                        if (fs.existsSync(exitCodeFile)) {
-                            const code = fs.readFileSync(exitCodeFile, 'utf8').trim().replace(/^\uFEFF/, '');
-                            success = code === '0';
                         }
                     } catch (err) {
                         output = `[Extension Error] Failed to read terminal output: ${err}`;

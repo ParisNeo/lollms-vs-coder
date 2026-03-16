@@ -74,7 +74,7 @@ export const createPythonEnvironmentTool: ToolDefinition = {
             command = `python3 -m venv "${finalEnvName}" || python -m venv "${finalEnvName}"`;
         }
 
-        const result = await env.agentManager.runCommand(command, signal);
+        const result = await env.agentManager.runCommand(command, signal, { shell: isWin ? 'powershell' : 'bash' });
         
         if (result.success) {
             env.agentManager.sessionState.activeEnv = finalEnvName;

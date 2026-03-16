@@ -609,18 +609,21 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
 
             const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || [];
             
-            const PREVIEW_LIMIT = 50000;
-            const contextTextToSend = context.text.length > PREVIEW_LIMIT
-                ? `# Context Hidden (Too Large for Preview)\n\nThe full context (${context.text.length} chars) is loaded in backend memory for AI usage, but is hidden from this preview to improve UI performance.`
+            // Aggressive truncation for Webview UI to prevent IPC Channel Closure
+            const UI_PREVIEW_LIMIT = 10000; 
+            const contextTextForUI = context.text.length > UI_PREVIEW_LIMIT
+                ? context.text.substring(0, UI_PREVIEW_LIMIT) + `\n\n... [Truncated for UI performance. Total: ${context.text.length} chars]`
                 : context.text;
 
-            this._panel.webview.postMessage({ 
-                command: 'updateContext', 
-                context: contextTextToSend,
-                files: includedFiles,
-                skills: context.importedSkills || [],
-                diagrams: context.diagrams || [] // Send diagrams to UI
-            });
+            if (!this._isDisposed && this._panel.webview) {
+                this._panel.webview.postMessage({ 
+                    command: 'updateContext', 
+                    context: contextTextForUI,
+                    files: includedFiles,
+                    skills: context.importedSkills || [],
+                    diagrams: context.diagrams || []
+                });
+            }
             this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
             
             this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: 'Counting tokens...' });
@@ -655,25 +658,24 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
             const [tokenizeResponse, contextSizeResponse] = await Promise.all([
                 this._lollmsAPI.tokenize(fullTextToTokenize, modelForTokenization),
                 this._lollmsAPI.getContextSize(modelForTokenization)
-            ]);
+            ]).catch(err => {
+                this.log(`Tokenization Promise failed: ${err.message}`, 'ERROR');
+                return [null, null];
+            });
             
-            if (this._isDisposed || signal.aborted) return;
+            if (this._isDisposed || signal.aborted || !tokenizeResponse || !contextSizeResponse) return;
 
-            this.log(`Tokenization complete. Count: ${tokenizeResponse.count}, Context Size: ${contextSizeResponse.context_size}, Estimated: ${tokenizeResponse.isEstimation}`);
-
-            let ctxSize = contextSizeResponse.context_size;
-            if (!ctxSize || ctxSize <= 0) {
-                ctxSize = 0;
-            }
-
+            let ctxSize = contextSizeResponse.context_size || 0;
             const isApproximate = tokenizeResponse.isEstimation || contextSizeResponse.isEstimation;
 
-            this._panel.webview.postMessage({
-                command: 'updateTokenProgress',
-                totalTokens: tokenizeResponse.count,
-                contextSize: ctxSize,
-                isApproximate: isApproximate
-            });
+            if (this._panel && this._panel.webview) {
+                this._panel.webview.postMessage({
+                    command: 'updateTokenProgress',
+                    totalTokens: tokenizeResponse.count,
+                    contextSize: ctxSize,
+                    isApproximate: isApproximate
+                });
+            }
             
             if (isApproximate) {
                 this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (Approximate - API Check Failed)', type: 'warning' });

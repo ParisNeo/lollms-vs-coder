@@ -67,7 +67,8 @@ with open(".lollms/repl_memory.json", "w", encoding="utf-8") as f:
                 : path.join(env.agentManager.sessionState.activeEnv, 'bin', 'python');
         }
 
-        const result = await env.agentManager.runCommand(`"${pythonExec}" "${tempFilePath}"`, signal);
+        const relTempPath = path.relative(env.workspaceRoot.uri.fsPath, tempFilePath).replace(/\\/g, '/');
+        const result = await env.agentManager.runCommand(`"${pythonExec}" "${relTempPath}"`, signal);
 
         // Recover Updated State
         try {

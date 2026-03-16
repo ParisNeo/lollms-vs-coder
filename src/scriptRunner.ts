@@ -12,14 +12,6 @@ export class ScriptRunner {
     this.pythonExtApi = pythonExtApi;
   }
 
-  private toUnixPath(p: string): string {
-    let unixPath = p.replace(/\\/g, '/');
-    if (process.platform === 'win32') {
-        unixPath = unixPath.replace(/^([a-zA-Z]):/, (match, drive) => `/${drive.toLowerCase()}`);
-    }
-    return unixPath;
-  }
-
   /**
    * Asks the LLM to translate a script to a compatible shell.
    */
@@ -110,11 +102,14 @@ Translate the provided ${fromLang} script into a ${toLang} script for the user's
                 if (execDetails?.execCommand?.[0]) pythonExecutable = execDetails.execCommand[0];
             } catch (error) {}
         }
+        
+        const relTempPath = path.relative(workspaceRoot, tempFilePath).replace(/\\/g, '/');
+        
         if (isWin) {
-            fullCommand = `& '${pythonExecutable}' -u '${tempFilePath.replace(/\\/g, '/')}'`;
+            fullCommand = `& '${pythonExecutable}' -u '${relTempPath}'`;
             targetShell = 'powershell';
         } else {
-            fullCommand = `"${pythonExecutable}" -u "${tempFilePath}"`;
+            fullCommand = `"${pythonExecutable}" -u "${relTempPath}"`;
             targetShell = 'bash';
         }
         break;
@@ -124,14 +119,16 @@ Translate the provided ${fromLang} script into a ${toLang} script for the user's
         fileExtension = '.js';
         tempFilePath = `${tempFileBase}${fileExtension}`;
         fs.writeFileSync(tempFilePath, currentCode);
-        fullCommand = `node '${tempFilePath.replace(/\\/g, '/')}'`;
+        const relJsPath = path.relative(workspaceRoot, tempFilePath).replace(/\\/g, '/');
+        fullCommand = `node '${relJsPath}'`;
         break;
       case 'typescript':
       case 'ts':
         fileExtension = '.ts';
         tempFilePath = `${tempFileBase}${fileExtension}`;
         fs.writeFileSync(tempFilePath, currentCode);
-        fullCommand = `npx ts-node '${tempFilePath.replace(/\\/g, '/')}'`;
+        const relTsPath = path.relative(workspaceRoot, tempFilePath).replace(/\\/g, '/');
+        fullCommand = `npx ts-node '${relTsPath}'`;
         break;
       case 'bash':
       case 'sh':
@@ -141,14 +138,16 @@ Translate the provided ${fromLang} script into a ${toLang} script for the user's
         fileExtension = '.sh';
         tempFilePath = `${tempFileBase}${fileExtension}`;
         fs.writeFileSync(tempFilePath, currentCode);
+        const relShPath = path.relative(workspaceRoot, tempFilePath).replace(/\\/g, '/');
+        
         const requestedShell = (currentLang === 'zsh' || currentLang === 'fish') ? currentLang : 'bash';
         const shellToUse = availableShells.includes(requestedShell) ? requestedShell : (isWin ? 'bash' : 'sh');
+        
         if (isWin) {
-            const unixPath = this.toUnixPath(tempFilePath);
-            fullCommand = `${shellToUse} '${unixPath}'`;
+            fullCommand = `${shellToUse} '${relShPath}'`;
             targetShell = 'bash';
         } else {
-            fullCommand = `${shellToUse} "${tempFilePath}"`;
+            fullCommand = `${shellToUse} "${relShPath}"`;
             targetShell = shellToUse as any;
         }
         break;
@@ -157,11 +156,13 @@ Translate the provided ${fromLang} script into a ${toLang} script for the user's
         fileExtension = '.ps1';
         tempFilePath = `${tempFileBase}${fileExtension}`;
         fs.writeFileSync(tempFilePath, currentCode);
+        const relPsPath = path.relative(workspaceRoot, tempFilePath).replace(/\\/g, '/');
+        
         if (isWin) {
-            fullCommand = `powershell -ExecutionPolicy Bypass -File '${tempFilePath.replace(/\\/g, '/')}'`;
+            fullCommand = `powershell -ExecutionPolicy Bypass -File '${relPsPath}'`;
             targetShell = 'powershell';
         } else {
-            fullCommand = `pwsh -File "${tempFilePath}"`;
+            fullCommand = `pwsh -File "${relPsPath}"`;
             // @ts-ignore
             targetShell = 'pwsh';
         }
@@ -172,7 +173,8 @@ Translate the provided ${fromLang} script into a ${toLang} script for the user's
         fileExtension = '.bat';
         tempFilePath = `${tempFileBase}${fileExtension}`;
         fs.writeFileSync(tempFilePath, currentCode);
-        fullCommand = `"${tempFilePath}"`;
+        const relBatPath = path.relative(workspaceRoot, tempFilePath); // CMD prefers backslashes or forwards, relative is fine
+        fullCommand = `"${relBatPath}"`;
         targetShell = 'cmd';
         break;
       default:

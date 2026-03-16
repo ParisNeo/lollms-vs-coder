@@ -44,35 +44,49 @@ export class GitDashboardPanel {
         if (this._isDisposed) return;
         const folder = vscode.workspace.workspaceFolders?.[0];
         if (!folder) return;
-        
+
         try {
             const limit = appendGraph ? 50 : this._currentGraphLimit;
             const skip = appendGraph ? this._currentGraphLimit : 0;
 
-            const [status, branches, currentBranch, stashes, history, graph, submodules] = await Promise.all([
-                this._git.getGitStatus(folder),
-                this._git.getBranches(folder),
-                this._git.getCurrentBranch(folder),
-                this._git.getStashList(folder),
-                this._git.getCommitHistory(folder, 15),
-                this._git.getGitGraph(folder, limit, skip),
-                this._git.getSubmodules(folder)
-            ]);
+            // STAGGERED LOADING: send lightweight data first
+            const currentBranch = await this._git.getCurrentBranch(folder).catch(() => 'unknown');
+            const status = await this._git.getGitStatus(folder).catch(() => ({ staged: [], unstaged: [], untracked: [] }));
+            const branches = await this._git.getBranches(folder).catch(() => []);
 
-            if (appendGraph) {
-                this._currentGraphLimit += limit;
-            }
+            // Send initial partial update
+            if (this._isDisposed) return;
+            this._panel.webview.postMessage({ 
+                command: 'updatePartial', 
+                data: { status, branches, currentBranch } 
+            });
+
+            // Load heavier data
+            const stashes = await this._git.getStashList(folder).catch(() => []);
+            const submodules = await this._git.getSubmodules(folder).catch(() => []);
+            const history = await this._git.getCommitHistory(folder, 15).catch(() => []);
+            const graph = await this._git.getGitGraph(folder, limit, skip).catch(() => "No history found.");
+
+            if (this._isDisposed) return;
+            if (appendGraph) this._currentGraphLimit += limit;
 
             this._panel.webview.postMessage({ 
                 command: appendGraph ? 'appendGraph' : 'update', 
                 data: { status, branches, currentBranch, stashes, history, graph, submodules } 
             });
+
+            if (appendGraph) {
+                this._currentGraphLimit += limit;
+            }
         } catch (error: any) {
-            this._panel.webview.postMessage({ 
-                command: 'error', 
-                message: `Git Error: ${error.message}` 
-            });
-            vscode.window.showErrorMessage(`Failed to refresh Git Dashboard: ${error.message}`);
+            if (!this._isDisposed) {
+                this._panel.webview.postMessage({ 
+                    command: 'error', 
+                    message: `Git Error: ${error.message}` 
+                });
+                vscode.window.showErrorMessage(`Failed to refresh Git Dashboard: ${error.message}`);
+            }
+            console.error('Git Dashboard refresh failed:', error);
         }
     }
 
@@ -568,6 +582,17 @@ export class GitDashboardPanel {
 
         window.addEventListener('message', e => {
             const msg = e.data;
+            
+            if (msg.command === 'error') {
+                const errorHtml = '<div style="padding:20px; color:var(--vscode-errorForeground); text-align:center;">' +
+                    '<i class="codicon codicon-error"></i> ' + (msg.message || 'Unknown Error') +
+                '</div>';
+                document.getElementById('files').innerHTML = errorHtml;
+                document.getElementById('branches').innerHTML = errorHtml;
+                document.getElementById('graph-inner').innerHTML = errorHtml;
+                return;
+            }
+
             if (msg.command === 'setMessage') {
                 document.getElementById('c-msg').value = msg.message;
                 const btn = document.getElementById('ai-gen-btn');
@@ -782,11 +807,30 @@ export class GitDashboardPanel {
             post('webviewReady');
         });
 
+        let lastState = {
+            status: { staged: [], unstaged: [], untracked: [] },
+            branches: [],
+            currentBranch: '',
+            stashes: [],
+            submodules: [],
+            graph: ''
+        };
+
         window.addEventListener('message', e => {
             const msg = e.data;
-            if (msg.command === 'appendGraph' || msg.command === 'update') {
-                const { status, branches, currentBranch, stashes, history, graph, submodules } = msg.data;
-                updateUI(status, branches, currentBranch, stashes, history, graph, submodules);
+            if (msg.command === 'updateSection') {
+                switch(msg.section) {
+                    case 'branch': lastState.currentBranch = msg.data; break;
+                    case 'files': lastState.status = msg.data; break;
+                    case 'branches': lastState.branches = msg.data; break;
+                    case 'stashes': lastState.stashes = msg.data; break;
+                    case 'submodules': lastState.submodules = msg.data; break;
+                    case 'graph': lastState.graph = msg.data; break;
+                }
+                updateUI(lastState.status, lastState.branches, lastState.currentBranch, lastState.stashes, [], lastState.graph, lastState.submodules);
+            } else if (msg.command === 'appendGraph') {
+                lastState.graph += "\n" + msg.data;
+                updateUI(lastState.status, lastState.branches, lastState.currentBranch, lastState.stashes, [], lastState.graph, lastState.submodules);
             }
         });
 

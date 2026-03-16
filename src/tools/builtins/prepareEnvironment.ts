@@ -102,6 +102,6 @@ export const prepareEnvironmentTool: ToolDefinition = {
             return { success: false, output: "Error: Agent Manager not available in environment." };
         }
 
-        return await env.agentManager.runCommand(command, signal);
+        return await env.agentManager.runCommand(command, signal, { shell: isWin ? 'powershell' : 'bash' });
     }
 };

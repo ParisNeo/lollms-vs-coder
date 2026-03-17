@@ -12,3 +12,4 @@
 - when the llm selects more files, we are loosing the message!! Please make sure when the llm is not operating in auto context mode, if it needs more files, it shows a ui with a add to context button where the user can do it before continuing to prompt the llm
 - add a search inside skills ui
 - fix the skill names
+- Actual command not found, wanted to execute lollms-vs-coder.editSkill /1505

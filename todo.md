@@ -9,3 +9,4 @@
 - The default context length is not taking into consideration the settings. Make it modifiable directly in discussion settings
 - Images does not work on ollama binding
 - When there is an image in the message the missage bubble is not editable
+- when the llm selects more files, we are loosing the message!! Please make sure when the llm is not operating in auto context mode, if it needs more files, it shows a ui with a add to context button where the user can do it before continuing to prompt the llm

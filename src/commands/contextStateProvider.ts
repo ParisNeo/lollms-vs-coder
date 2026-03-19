@@ -362,61 +362,38 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     }
 
     public async getAllVisibleFiles(signal?: AbortSignal): Promise<string[]> {
-        const rootUri = vscode.Uri.file(this.workspaceRoot);
+        const workspaceFolder = vscode.workspace.workspaceFolders?.find(f => f.uri.fsPath === this.workspaceRoot);
+        if (!workspaceFolder) return [];
+
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const exceptions = config.get<string[]>('contextFileExceptions') || [];
+        
+        // 1. Build a combined exclusion pattern for findFiles
+        // We add node_modules and .git explicitly as safety
+        const excludePattern = `{${exceptions.join(',')},**/node_modules/**,**/.git/**}`;
+
+        // 2. Use VS Code's native C++ multi-threaded file finder
+        // This is significantly faster than manual recursion.
+        const files = await vscode.workspace.findFiles(
+            new vscode.RelativePattern(workspaceFolder, '**/*'),
+            excludePattern,
+            10000, // Limit to 10k files for the Librarian's map
+            new vscode.CancellationTokenSource().token // We use a fresh token for the low-level call
+        );
+
+        if (signal?.aborted) return [];
+
+        // 3. Normalize paths and filter by custom state (exclusions/collapsed)
         const visibleFiles: string[] = [];
-        let count = 0;
-
-        const processDirectory = async (dirUri: vscode.Uri) => {
-            if (signal?.aborted) return;
-
-            // PERFORMANCE FIX: Yield to the event loop every 50 directories
-            // to keep the extension host responsive
-            count++;
-            if (count % 50 === 0) {
-                await new Promise(resolve => setTimeout(resolve, 0));
+        for (const file of files) {
+            if (this.isExcluded(file)) continue;
+            
+            const state = this.getStateForUri(file);
+            if (state !== 'fully-excluded') {
+                visibleFiles.push(this.normalize(vscode.workspace.asRelativePath(file, false)));
             }
+        }
 
-            const relativePath = this.normalize(vscode.workspace.asRelativePath(dirUri, false));
-            let currentState = this.getStateForUri(dirUri);
-
-            if (currentState === 'fully-excluded' || this.isExcluded(dirUri)) {
-                return;
-            }
-
-            if (currentState === 'collapsed') {
-                visibleFiles.push(relativePath);
-                return; 
-            }
-    
-            let entries;
-            try {
-                entries = await vscode.workspace.fs.readDirectory(dirUri);
-            } catch (error) {
-                return; 
-            }
-    
-            for (const [name, type] of entries) {
-                if (signal?.aborted) return;
-
-                const entryUri = vscode.Uri.joinPath(dirUri, name);
-                const entryRelativePath = this.normalize(vscode.workspace.asRelativePath(entryUri, false));
-                
-                if (this.isExcluded(entryUri)) {
-                    continue;
-                }
-    
-                if (type === vscode.FileType.Directory) {
-                    await processDirectory(entryUri);
-                } else {
-                    const fileState = this.getStateForUri(entryUri);
-                    if (fileState !== 'fully-excluded') {
-                        visibleFiles.push(entryRelativePath);
-                    }
-                }
-            }
-        };
-    
-        await processDirectory(rootUri);
         return visibleFiles;
     }
     

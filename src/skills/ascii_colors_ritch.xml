@@ -1,5 +1,5 @@
 <skill id="ascii-colors-rich-integration">
-    <name>ASCIIColors Rich Integration</name>
+    <name>ASCIIColors: Rich UI Integration</name>
     <description>Advanced terminal output with multicolor, highlighting, spinners, and enhanced tracebacks.</description>
     <category>python/ascii_colors/rich</category>
     <language>markdown</language>

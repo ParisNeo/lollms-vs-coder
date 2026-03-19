@@ -105,17 +105,19 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         const activeWorkspace = getActiveWorkspace();
         if (!activeWorkspace) {
             vscode.window.showErrorMessage("No active workspace.");
-            return;
+            return { success: false, error: "No workspace" };
         }
         
         try {
             const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
             let originalContent = '';
+            let fileExists = false;
 
             try {
                 await vscode.workspace.fs.stat(fileUri);
                 const doc = await vscode.workspace.openTextDocument(fileUri);
                 originalContent = doc.getText();
+                fileExists = true;
             } catch {
                 const parentDir = vscode.Uri.joinPath(fileUri, '..');
                 await vscode.workspace.fs.createDirectory(parentDir);
@@ -139,17 +141,51 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 return;
             }
 
+            // --- PLACEHOLDER & SIZE SAFETY CHECK ---
+            if (fileExists) {
+                const placeholders = ["...", "// rest", "# rest", "/* same as", "logic goes here"];
+                const hasPlaceholder = placeholders.some(p => content.toLowerCase().includes(p));
+                const sizeRatio = content.length / (originalContent.length || 1);
+
+                // If content is < 40% of original or has a placeholder string
+                if (hasPlaceholder || sizeRatio < 0.4) {
+                    const warningMsg = hasPlaceholder 
+                        ? `The AI generated code contains potential placeholders (like '...') which will break your file.`
+                        : `The new code is significantly smaller than the original (${Math.round(sizeRatio * 100)}% of original size). It might be incomplete.`;
+                    
+                    const choices = ["Apply Anyway", "Ask AI for Full Code", "Cancel"];
+                    const result = await vscode.window.showWarningMessage(
+                        `⚠️ Potential Placeholder Detected in ${filePath}: ${warningMsg}`,
+                        { modal: true },
+                        ...choices
+                    );
+
+                    if (result === "Ask AI for Full Code") {
+                        if (ChatPanel.currentPanel) {
+                            ChatPanel.currentPanel.sendMessage({
+                                role: 'user',
+                                content: `The code you provided for \`${filePath}\` appears to be incomplete or uses placeholders. Please provide the 100% COMPLETE file content from line 1 to the end, without skipping any sections.`
+                            } as any);
+                        }
+                        return { success: false, error: "AI repair requested" };
+                    }
+                    if (result !== "Apply Anyway") {
+                        return { success: false, error: "User cancelled risky apply" };
+                    }
+                }
+            }
+
             const document = await vscode.workspace.openTextDocument(fileUri);
             const fullRange = new vscode.Range(new vscode.Position(0, 0), document.lineAt(document.lineCount - 1).range.end);
             const edit = new vscode.WorkspaceEdit();
             edit.replace(fileUri, fullRange, content);
             const applied = await vscode.workspace.applyEdit(edit);
 
-            if (applied && options?.silent) {
+            if (applied) {
                 await document.save();
-                return { success: true };
-            } else if (applied) {
-                await openDiffView(fileUri, originalContent);
+                if (!options?.silent) {
+                    await openDiffView(fileUri, originalContent);
+                }
                 return { success: true };
             }
             return { success: false, error: "Failed to apply edit" };
@@ -297,11 +333,19 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             const originalContent = currentContent;
             
             let applyCount = 0;
-            const { applySearchReplace } = require('../utils');
+            const { applySearchReplace } = await import('../utils');
 
             for (const match of matches) {
                 const searchCode = match[1];
                 const replaceCode = match[2];
+                
+                // Check if this specific hunk is already applied to currentContent
+                // This prevents "Match Failed" errors during sequential Aider runs
+                if (currentContent.includes(replaceCode.trim())) {
+                    applyCount++;
+                    continue; 
+                }
+
                 const result = applySearchReplace(currentContent, searchCode, replaceCode);
 
                 if (result.success) {
@@ -318,7 +362,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
 
                     if (selection === fixBtn && panel && messageId) {
                         // --- ENHANCED SILENT REPAIR ---
-                        await vscode.window.withProgress({
+                        return await vscode.window.withProgress({
                             location: vscode.ProgressLocation.Notification,
                             title: `Lollms: Repairing block for ${filePath}...`,
                             cancellable: false
@@ -352,7 +396,7 @@ ${originalContent}
                                     { role: 'user', content: repairPrompt }
                                 ]);
 
-                                // Robust Block Extraction: Find the markers regardless of surrounding text or markdown blocks
+                                // Robust Block Extraction
                                 let fixedBlock = "";
                                 const startTag = "<<<<<<< SEARCH";
                                 const endTag = ">>>>>>> REPLACE";
@@ -365,22 +409,22 @@ ${originalContent}
                                 }
 
                                 if (fixedBlock) {
-                                    // 1. Update the message content in the UI so the user sees the fix
+                                    // 1. Update the message content in the UI
                                     const currentDiscussion = panel.getCurrentDiscussion();
                                     if (currentDiscussion) {
-                                        const msg = currentDiscussion.messages.find(m => m.id === messageId);
+                                        const msg = currentDiscussion.messages.find((m: any) => m.id === messageId);
                                         if (msg && typeof msg.content === 'string') {
                                             const updatedContent = msg.content.replace(match[0], fixedBlock);
                                             await panel.updateMessageContent(messageId, updatedContent);
                                         }
                                     }
 
-                                    // 2. Automatically retry applying the NEW content and RETURN that result
+                                    // 2. Automatically retry applying the NEW content
                                     vscode.window.showInformationMessage(vscode.l10n.t("Block repaired. Retrying apply..."));
                                     return await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, fixedBlock, panel, messageId, { silent: true });
                                 } else {
                                     vscode.window.showWarningMessage(
-                                        vscode.l10n.t("Lollms: The AI suggested a fix but the response format was unrecognizable. Please fix the block manually.")
+                                        vscode.l10n.t("Lollms: The AI suggested a fix but the response format was unrecognizable.")
                                     );
                                     return { success: false, error: "AI repair produced invalid format" };
                                 }
@@ -389,8 +433,6 @@ ${originalContent}
                                 return { success: false, error: `Repair failed: ${err.message}` };
                             }
                         });
-                        // The above returns a Promise, but we need to ensure the outer function awaits it correctly
-                        return await repairPromise; 
                     }
                     return { success: false, error: result.error };
                 }
@@ -403,11 +445,10 @@ ${originalContent}
                 const applied = await vscode.workspace.applyEdit(edit);
                 
                 if (applied) {
-                    if (options?.silent) {
-                        await document.save();
-                    } else {
-                        await openDiffView(fileUri, originalContent);
-                        vscode.window.showInformationMessage(`Applied ${applyCount} change(s) to ${filePath}.`);
+                    await document.save();
+                    if (!options?.silent) {
+                        // Open diff in background so it doesn't block the logic return
+                        openDiffView(fileUri, originalContent).catch(() => {});
                     }
                     return { success: true };
                 }

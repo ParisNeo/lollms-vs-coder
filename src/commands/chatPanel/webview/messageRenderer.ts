@@ -74,22 +74,10 @@ function createButton(text: string, icon: string, onClick: () => void, className
         e.stopPropagation();
         try {
             onClick();
-            // Mark as applied and collapse block if it's an apply button
-            if (className.includes('apply-btn') || text.toLowerCase().includes('apply')) {
-                btn.classList.add('applied');
-                
-                // Only collapse if this is the main block apply button, NOT a hunk button
-                const isHunkButton = btn.closest('.aider-hunk-actions');
-                if (!isHunkButton) {
-                    const codeBlock = btn.closest('details.code-collapsible');
-                    if (codeBlock instanceof HTMLDetailsElement) {
-                        codeBlock.open = false;
-                    }
-                }
-            }
+            // Removed optimistic 'applied' logic. 
+            // Color change is now driven by extension success signal.
         } catch (err) {
             console.error(`Error executing action for ${text || tooltip}:`, err);
-            vscode.postMessage({ command: 'showError', message: `Action failed: ${err}` });
         }
     };
     return btn;
@@ -1026,28 +1014,22 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
                     resultsList.style.display = 'block';
                     resultsList.innerHTML = '<div style="opacity:0.7; margin-bottom:4px;">Executing operations...</div>';
 
-                    // Track results per file
-                    const audit: string[] = [];
-                    
-                    // We send the whole batch. The extension handles the loop.
-                    vscode.postMessage({ command: 'applyAllChanges', changes, messageId });
-                    
-                    // The extension doesn't currently "callback" for each file, 
-                    // so we simulate the UI list based on the changes we sent.
-                    changes.forEach(c => {
-                        const icon = c.type === 'file' ? 'v' : '+';
-                        audit.push(`<div style="display:flex; gap:8px; margin-bottom:2px;">
-                            <span class="codicon codicon-pass" style="color:var(--vscode-charts-green)"></span>
-                            <span style="font-weight:600; min-width:50px;">[${c.type.toUpperCase()}]</span>
-                            <span style="opacity:0.9;">${c.path}</span>
-                        </div>`);
-                    });
+                    // 1. Prepare the validation list with "Pending" states immediately
+                    resultsList.innerHTML = changes.map((c) => {
+                        const typeLabel = c.type === 'file' ? 'FULL' : 'PATCH';
+                        const typeColor = c.type === 'file' ? 'var(--vscode-charts-blue)' : 'var(--vscode-charts-orange)';
+                        
+                        return `
+                        <div class="apply-row" data-path="${c.path}" data-block-index="${c.blockIndex}" data-hunk-index="${c.hunkIndex ?? ''}" data-target-id="block-${messageId}-${c.blockIndex}" style="display:flex; align-items:center; gap:8px; margin-bottom:6px; padding:4px; border-radius:4px; cursor:pointer;">
+                            <span class="status-icon"><span class="codicon codicon-clock"></span></span>
+                            <span style="font-weight:800; font-size:9px; color:${typeColor}; min-width:45px; border:1px solid ${typeColor}; border-radius:3px; text-align:center; padding:0 2px;">${typeLabel}</span>
+                            <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px;">${c.label}</span>
+                            <div class="row-actions" style="display:none;"></div>
+                        </div>`;
+                    }).join('');
 
-                    setTimeout(() => {
-                        resultsList.innerHTML = `<div style="font-weight:bold; margin-bottom:6px; color:var(--vscode-charts-green);">✅ Applied ${changes.length} modifications:</div>` + audit.join('');
-                        btn.innerHTML = '<span class="codicon codicon-check"></span> All Changes Applied';
-                        btn.classList.add('applied');
-                    }, 800);
+                    // 2. Start the actual sequential process in the extension
+                    vscode.postMessage({ command: 'applyAllChanges', changes, messageId });
                 }
             };
 
@@ -1169,29 +1151,56 @@ function renderDebugReport(dataStr: string): string {
     }
 }
 
-function renderAddFilesBlock(rawContent: string): string {
+function renderAddFilesBlock(rawContent: string, messageId: string): string {
     const files = rawContent.split('\n')
         .map(f => f.trim())
         .filter(f => f.length > 0);
 
-    const fileItems = files.map(f => `
-        <div class="expansion-file-item">
-            <span class="codicon codicon-file-add"></span>
-            <span>${sanitizer.sanitize(f)}</span>
-        </div>
-    `).join('');
+    const currentFiles = state.lastContextData?.files || [];
+    let allIncluded = true;
+
+    const fileItems = files.map(f => {
+        const isIncluded = currentFiles.includes(f);
+        if (!isIncluded) allIncluded = false;
+
+        const itemStyle = isIncluded 
+            ? 'border-color: var(--vscode-charts-green); background: rgba(15, 157, 88, 0.1);' 
+            : '';
+        const iconClass = isIncluded ? 'codicon-check' : 'codicon-file-add';
+        const iconStyle = isIncluded ? 'color: var(--vscode-charts-green);' : '';
+
+        return `
+        <div class="expansion-file-item" style="display:flex; justify-content:space-between; align-items:center; ${itemStyle}">
+            <div style="display:flex; align-items:center; gap:8px;">
+                <span class="codicon ${iconClass}" style="${iconStyle}"></span>
+                <span>${sanitizer.sanitize(f)}</span>
+            </div>
+        </div>`;
+    }).join('');
+
+    const blockId = `add-files-${messageId}`;
+    const fileListJson = JSON.stringify(files).replace(/"/g, '&quot;');
+    
+    const btnText = allIncluded ? 'Added to Context' : 'Add all to Context';
+    const btnClass = allIncluded ? 'applied' : 'apply-btn';
+    const btnDisabled = allIncluded ? 'disabled' : '';
+    const btnIcon = allIncluded ? 'codicon-check' : 'codicon-add';
 
     return `
-    <div class="context-expansion-block">
+    <div class="context-expansion-block" id="${blockId}">
         <div class="expansion-header">
             <span class="codicon codicon-library"></span>
-            <span>Context Expansion Requested</span>
+            <span>AI Requested More Context</span>
         </div>
         <div class="expansion-body">
-            <p>The AI identified that it needs the following files to complete the task without making assumptions:</p>
-            <div class="expansion-file-list">
+            <p style="margin-bottom:12px;">To answer accurately, I need to see the content of these files:</p>
+            <div class="expansion-file-list" id="list-${blockId}" style="margin-bottom:12px;">
                 ${fileItems}
             </div>
+            <button class="code-action-btn ${btnClass}" id="btn-${blockId}" ${btnDisabled}
+                onclick="this.disabled=true; this.innerHTML='<div class=\'spinner\'></div> Adding...'; window.vscode.postMessage({command:'addFilesToContext', files:${fileListJson}, blockId:'${blockId}'})">
+                <span class="codicon ${btnIcon}"></span> ${btnText}
+            </button>
         </div>
     </div>`;
 }
@@ -1474,27 +1483,26 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 if (block.path && ['file', 'replace', 'insert', 'diff'].includes(block.type)) {
                     const effectiveType = isAider ? 'replace' : block.type;
                     
-                    // HEURISTIC: If it's a "file" block but contains placeholders or is suspiciously 
-                    // shorter than the description suggests, mark it as risky.
+                    // HEURISTIC: Detect placeholders
                     const isRisky = block.type === 'file' && 
                                     (codeOnly.includes('...') || codeOnly.includes('// rest') || codeOnly.includes('# rest'));
 
                     const applyBtn = createButton(isRisky ? 'Apply (Risky)' : 'Apply', applyIcon, () => {
-                        if (isRisky) {
-                            // Manual check would go here if we wanted a popup, but for now we just label it.
-                        }
                         const cmd = effectiveType === 'diff' ? 'applyPatchContent' :
                             (effectiveType === 'replace' ? 'replaceCode' : 'applyFileContent');
-                        vscode.postMessage({ command: cmd, filePath: block.path, content: codeOnly, messageId });
                         
-                        // Notify extension to persist
-                        vscode.postMessage({ command: 'markBlockApplied', messageId, blockIndex: blockIdx });
+                        // LOCAL FEEDBACK: Show spinner and store original icon/text for recovery
+                        applyBtn.disabled = true;
+                        applyBtn.dataset.originalHtml = applyBtn.innerHTML;
+                        applyBtn.innerHTML = '<div class="spinner"></div>';
 
-                        applyBtn.classList.add('applied');
-                        applyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
-                        
-                        // Check if this makes the whole message applied
-                        checkAndSyncMessageAppliedState(messageId);
+                        vscode.postMessage({ 
+                            command: cmd, 
+                            filePath: block.path, 
+                            content: codeOnly, 
+                            messageId,
+                            blockIndex: blockIdx 
+                        });
                     }, 'code-action-btn apply-btn', isSurgical ? 'Apply surgical update to file' : 'Overwrite entire file with this content');
 
                     // Restore state from persistence
@@ -1613,28 +1621,10 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                                 command: 'replaceCode', 
                                 filePath: block.path, 
                                 content: match[0], 
-                                messageId 
+                                messageId,
+                                blockIndex: blockIdx,
+                                hunkIndex: hIdx
                             });
-                            
-                            // Notify extension to persist hunk
-                            vscode.postMessage({ command: 'markBlockApplied', messageId, blockIndex: blockIdx, hunkIndex: hIdx });
-
-                            // UI Update
-                            applyHunkBtn.classList.add('applied');
-                            applyHunkBtn.innerHTML = '<span class="codicon codicon-check"></span>';
-                            hunkBubble.classList.add('collapsed');
-
-                            // 1. Sync Hunks -> Parent Block
-                            const allHunkButtons = hunkGroup.querySelectorAll('.aider-hunk-actions .apply-btn');
-                            const appliedCount = hunkGroup.querySelectorAll('.aider-hunk-actions .apply-btn.applied').length;
-                            if (appliedCount === allHunkButtons.length) {
-                                applyBtn.classList.add('applied');
-                                applyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
-                                details.open = false;
-                            }
-                            
-                            // 2. Sync Blocks -> Message "Apply All"
-                            checkAndSyncMessageAppliedState(messageId);
                         }, 'code-action-btn apply-btn', 'Apply only this modification');
                         
                         // Restore hunk state from persistence
@@ -1812,14 +1802,18 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                         });
                     });
 
-                    resultsList.innerHTML = changes.map((c, idx) => `
+                    resultsList.innerHTML = changes.map((c, idx) => {
+                        const typeLabel = c.type === 'file' ? 'FULL' : 'PATCH';
+                        const typeColor = c.type === 'file' ? 'var(--vscode-charts-blue)' : 'var(--vscode-charts-orange)';
+                        
+                        return `
                         <div class="apply-row" data-path="${c.path}" data-block-index="${c.blockIndex}" data-hunk-index="${c.hunkIndex ?? ''}" data-target-id="block-${messageId}-${c.blockIndex}" style="display:flex; align-items:center; gap:8px; margin-bottom:6px; padding:4px; border-radius:4px; cursor:pointer;">
                             <span class="status-icon"><span class="codicon codicon-clock"></span></span>
-                            <span style="font-weight:600; font-size:10px; opacity:0.7; min-width:50px;">[${c.type.toUpperCase()}]</span>
-                            <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${c.label}</span>
+                            <span style="font-weight:800; font-size:9px; color:${typeColor}; min-width:45px; border:1px solid ${typeColor}; border-radius:3px; text-align:center; padding:0 2px;">${typeLabel}</span>
+                            <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px;">${c.label}</span>
                             <div class="row-actions" style="display:none;"></div>
-                        </div>
-                    `).join('');
+                        </div>`;
+                    }).join('');
 
                     // Add navigation listener to results list
                     resultsList.onclick = (e) => {

@@ -1,5 +1,5 @@
-<skill id="lollms-instantiation">
-    <name>Client Setup &amp; Bindings</name>
+<skill id="lollms-instantiation-llamacpp">
+    <name>LoLLMs Client: LlamaCPP Binding</name>
     <description>Initializing LollmsClient with llama_cpp_server binding for direct GGUF model execution.</description>
     <category>python/lollms_client/setup/llama_cpp_server</category>
     <language>markdown</language>

@@ -1,5 +1,5 @@
-<skill id="lollms-instantiation">
-    <name>Client Setup &amp; Bindings</name>
+<skill id="lollms-instantiation-server">
+    <name>LoLLMs Client: Native Server Binding</name>
     <description>Initializing LollmsClient with native LoLLMs server binding.</description>
     <category>python/lollms_client/setup/lollms</category>
     <language>markdown</language>

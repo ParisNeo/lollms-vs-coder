@@ -205,9 +205,9 @@ export class ContextManager {
       return content;
   }
 
-  public async searchWorkspaceContent(query: string, options: { matchCase: boolean, wholeWord: boolean, include?: string, exclude?: string } = { matchCase: false, wholeWord: false }, signal?: AbortSignal): Promise<{path: string, snippet: string}[]> {
-    const results: {path: string, snippet: string}[] = [];
-    const maxResults = 50;
+  public async searchWorkspaceContent(query: string, options: { matchCase: boolean, wholeWord: boolean, include?: string, exclude?: string } = { matchCase: false, wholeWord: false }, signal?: AbortSignal): Promise<{path: string, snippet: string, line?: string}[]> {
+    const results: {path: string, snippet: string, line?: string}[] = [];
+    const maxResults = 100;
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder) return [];
 
@@ -217,12 +217,11 @@ export class ContextManager {
         let stdout = "";
         // 1. Try git grep first (Supports rich boolean logic)
         try {
-            let gitGrepArgs = `-n -I --max-count=1`;
+            // Increase max-count per file to find better snippets
+            let gitGrepArgs = `-n -I --max-count=3 --context=0`;
             if (!options.matchCase) gitGrepArgs += ` -i`;
             if (options.wholeWord) gitGrepArgs += ` -w`;
 
-            // Parse Boolean Logic for git grep
-            // Split by OR first
             const orParts = query.split('|').map(p => p.trim()).filter(p => p);
             let patternArgs = "";
             
@@ -286,20 +285,17 @@ export class ContextManager {
             for (const line of lines) {
                 if (results.length >= maxResults) break;
                 
-                // Format is usually path:line:content
                 const parts = line.split(':');
                 if (parts.length >= 3) {
                     const filePath = parts[0].trim();
+                    const lineNum = parts[1].trim();
                     const snippet = parts.slice(2).join(':').trim();
                     
-                    // Avoid duplicates
-                    if (!results.some(r => r.path === filePath)) {
-                        results.push({
-                            path: filePath,
-                            line: parts[1], // Extract line number
-                            snippet: snippet.substring(0, 150)
-                        });
-                    }
+                    results.push({
+                        path: filePath,
+                        line: lineNum,
+                        snippet: snippet.length > 200 ? snippet.substring(0, 200) + "..." : snippet
+                    });
                 }
             }
         }
@@ -1162,10 +1158,13 @@ If yes, you must plan searches, execute them, review results, and add valuable c
       const selectedFiles = new Set<string>(currentContextFiles);
       const initialCount = selectedFiles.size;
 
+      // Show immediate intent before starting heavy tree generation
+      onUpdate(`**🧠 Auto-Context Agent**\n\n*Initializing Librarian...*`);
+
       const fileTree = await this.generateProjectTree(signal, (pct) => {
-          const status = `Scanning project structure: ${pct}%...`;
+          const status = pct < 20 ? "Indexing workspace..." : `Building tree: ${pct}%...`;
           if (onStatusUpdate) onStatusUpdate(status);
-          onUpdate(`**🧠 Auto-Context Agent**\n\n### 📂 Building File Tree...\n\n<div class="token-progress-container" style="height:8px; margin-bottom:10px;"><div class="token-progress-bar range-safe" style="width:${pct}%"></div></div>\n\n*${status}*`);
+          onUpdate(`**🧠 Auto-Context Agent**\n\n### 📂 Processing Project Structure...\n\n<div class="token-progress-container" style="height:8px; margin-bottom:10px;"><div class="token-progress-bar range-safe" style="width:${pct}%"></div></div>\n\n*${status}*`);
       });
       
       // Get current aggression level from capabilities
@@ -1198,7 +1197,7 @@ Your goal is to prepare the perfect context for the **Lead Persona** to answer t
 ### 🤝 TEAM COLLABORATION PROTOCOL
 1. **Context Awareness**: You have been provided with the FULL discussion history. You MUST read back to the very first user message to identify the primary objective.
 2. **Librarian Duty**: Your specific job is to prevent the Lead Persona from working "blind". 
-3. **Collaboration**: ${isCollaborative ? `As you find and read files, analyze the logic. Use your 'scratchpad' to draft the technical solution and identify lines to change. Your analysis will be directly injected into the Lead Persona's working memory.` : `Find and add relevant files based on the history.`}
+3. **Collaboration**: ${isCollaborative ? `As you find and read files, analyze the logic. Use your 'scratchpad' to draft the technical solution and identify lines to change. Your analysis will be directly injected into the Lead Persona's working memory.` : `Find and add relevant files based on the history. **IMPORTANT**: In "Selection Only" mode, do NOT attempt to solve the task. Simply identify the correct files and add them.`}
 
 ### 🧠 STRATEGIC OBJECTIVE
 - Identify the original user intent from the history.
@@ -1218,13 +1217,15 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
 3. **NEXT STEP REASONING**: Why your next tool call is the right choice.
 
 **AVAILABLE TOOLS:**
-1. \`add_files(files=[{"path": "p1", "mode": "full|signatures"}])\`: **CRITICAL**: Use this to persistently add files to the AI's memory. If you don't call this, the final response will have NO access to the file content.
+1. \`add_files(files=[{"path": "p1", "mode": "full|signatures"}])\`: **CRITICAL**: Use this to persistently add files to the AI's memory.
 2. \`read_file(path="path", start_line=0, end_line=500)\`: Use this to "peek" at a file to decide if it's relevant. Reading a file does NOT add it to the permanent context.
-3. \`get_file_info(path="path")\`: Returns file size and total line count.
-4. \`search_keywords(keywords=["funcName", "className"])\`: Search for strings to locate logic.
-5. \`done()\`: Finish context selection.
+3. \`search_files(pattern="regex", path=".")\`: SMART SEARCH. Performs a high-speed grep search through the codebase. Use this to find where specific functions or variables are defined across the project.
+4. \`read_code_graph(type="class_diagram|import_graph")\`: Get a structural overview of the project architecture.
+5. \`get_file_info(path="path")\`: Returns file size and total line count.
+6. \`done()\`: Finish context selection.
 
 **RULES:**
+- **DEDUPLICATION**: DO NOT repeat the same tool call with the same parameters. If a search yields no results, do not try it again; change your keywords.
 - **AUTO-ADD POLICY**: If you use \`read_file\` and confirm the code is relevant to the task, you MUST immediately follow up with \`add_files\`.
 - **THE FINAL LLM IS BLIND**: The LLM that answers the user can ONLY see files you have explicitly added via \`add_files\`. It cannot see what you "read" during this discovery phase.
 - Only add files that are strictly relevant to the user's specific request to save tokens.
@@ -1276,28 +1277,35 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
               ? `<details ${finished ? 'open' : ''}><summary>📂 <strong>Context Files Selected (${selectedFiles.size})</strong></summary><ul class="file-list-tree">${filesListItems}</ul></details>`
               : `<div style="color:var(--vscode-charts-orange); font-style:italic;">⚠️ Discovery in progress: No files added to context yet...</div>`;
 
-          // Render log entries as Markdown list items
+          // FIX: Don't render cumulativeBrain inside the log, use it for the dedicated reasoning section
           const logMarkdown = actionLog.map(l => `- ${l}`).join('\n');
           const logSection = actionLog.length > 0
-               ? `<details ${finished ? '' : 'open'}><summary>📜 Agent Execution Log</summary>\n\n<div class="agent-log-container">\n\n${logMarkdown}\n\n</div></details>`
+               ? `<details ${finished ? '' : 'open'}><summary>📜 Discovery Log</summary>\n\n<div class="agent-log-container">\n\n${logMarkdown}\n\n</div></details>`
                : '';
+
+          const scratchpadHtml = cumulativeBrain 
+            ? `<div class="plan-scratchpad" style="margin-top:10px;"><details open><summary class="scratchpad-header">🧠 Librarian Reasoning</summary><div class="scratchpad-content">${cumulativeBrain}</div></details></div>`
+            : '';
 
           let spinnerHtml = '';
           if (!finished) {
-              spinnerHtml = `<div class="status-line"><div class="spinner"></div> <span>Files selection Round ${step + 1}: ${status}</span></div>`;
+              spinnerHtml = `<div class="status-line"><div class="spinner"></div> <span>Step ${step + 1}: ${status}</span></div>`;
           } else {
-              spinnerHtml = `<div class="status-line"><span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span> <span style="font-weight:bold;">Context Ready</span></div>`;
+              spinnerHtml = `<div class="status-line"><span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span> <span style="font-weight:bold;">Context Synchronized</span></div>`;
           }
 
-          const fullMessage = `**🧠 Auto-Context Agent**\n\n${spinnerHtml}\n\n${filesTree}\n\n${logSection}`;
+          const fullMessage = `**🧠 Auto-Context Agent**\n\n${spinnerHtml}\n\n${scratchpadHtml}\n\n${filesTree}\n\n${logSection}`;
           onUpdate(fullMessage);
       };
 
       if (initialCount > 0) {
-          actionLog.push(`ℹ️ Started with ${initialCount} previously selected files.`);
+          actionLog.push(`ℹ️ Librarian started with ${initialCount} files already in context.`);
       }
       actionLog.push("🔍 Analyzing project structure and request...");
-      renderUpdate("Thinking...", false, 0);
+      if (onStatusUpdate) onStatusUpdate("Librarian is analyzing your objective...");
+      
+      // Force immediate UI update to show Librarian is "Thinking"
+      renderUpdate("Analyzing Intent...", false, 0);
 
       let retryCount = 0;
       let stepsTaken = 0;
@@ -1305,9 +1313,11 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
       for (let step = 0; step < MAX_STEPS; step++) {
           if (signal.aborted) throw new Error("Context agent aborted.");
 
+          // Use 'user' role for state updates to avoid multiple 'system' messages which confusion some models
           chatHistory.push({ 
-              role: 'system', 
-              content: `### 🧠 CUMULATIVE BRAIN (MEMORY)\n${cumulativeBrain || "No observations yet."}\n\n[Status] Selected: ${JSON.stringify(Array.from(selectedFiles))}. Continue or 'done()'.` 
+              role: 'user', 
+              content: `### 🧠 CUMULATIVE BRAIN (MEMORY)\n${cumulativeBrain || "No observations yet."}\n\n[Status] Selected: ${JSON.stringify(Array.from(selectedFiles))}. Continue or 'done()'.`,
+              skipInPrompt: true 
           });
 
           let response = "";
@@ -1318,13 +1328,24 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
               renderUpdate("Error", true, step);
               break;
           }
-          
+
           chatHistory.push({ role: 'assistant', content: response });
 
           const cleanResponse = stripThinkingTags(response);
-          let jsonMatch = cleanResponse.match(/```json\s*([\s\S]+?)\s*```/) || cleanResponse.match(/\{[\s\S]*\}/);
-          
-          if (!jsonMatch) {
+
+          let jsonStr = "";
+          const markdownMatch = cleanResponse.match(/```json\s*([\s\S]+?)\s*```/);
+          if (markdownMatch) {
+              jsonStr = markdownMatch[1];
+          } else {
+              const lastBrace = cleanResponse.lastIndexOf('}');
+              const firstBrace = cleanResponse.indexOf('{');
+              if (firstBrace !== -1 && lastBrace !== -1) {
+                  jsonStr = cleanResponse.substring(firstBrace, lastBrace + 1);
+              }
+          }
+
+          if (!jsonStr) {
               if (retryCount < MAX_RETRIES) {
                   retryCount++;
                   chatHistory.push({ 
@@ -1338,16 +1359,20 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
               }
           }
 
+          // Declare variables outside the try block for unified access
+          let toolCall: any = null;
+          let toolName: string = "";
+          let params: any = {};
+
           try {
-              const toolCall = JSON.parse(jsonMatch[1] || jsonMatch[0]);
-              const toolName = toolCall.tool;
-              const params = toolCall.params || {};
-              
-              if (toolCall.scratchpad) {
+              toolCall = JSON.parse(jsonStr);
+              toolName = toolCall?.tool || "";
+              params = toolCall?.params || {};
+
+              // Safely handle the scratchpad update here instead of inside renderUpdate
+              if (toolCall?.scratchpad) {
                   const newEntry = toolCall.scratchpad.trim();
-                  // Append to master memory for LLM context
                   cumulativeBrain += `\n\n**Insight**: ${newEntry}`;
-                  // Append to user log for timeline view
                   actionLog.push(`🧠 **Insight**: ${newEntry}`);
               }
 
@@ -1356,13 +1381,12 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
               if (executedActions.has(actionFingerprint) && toolName !== 'done') {
                   chatHistory.push({ 
                       role: 'system', 
-                      content: `WARNING: You already executed this exact tool call earlier. Avoid infinite loops. Use your scratchpad to store conclusions, and pick a different tool, change parameters, or call \`done()\` if you are finished.` 
+                      content: `WARNING: You already executed this exact tool call earlier. Avoid infinite loops.` 
                   });
-                  actionLog.push(`⚠️ Loop detected. Re-prompting agent.`);
+                  actionLog.push(`⚠️ Loop detected.`);
                   continue;
               }
               executedActions.add(actionFingerprint);
-
               retryCount = 0;
 
               if (toolName === 'done') {
@@ -1373,17 +1397,31 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
 
               stepsTaken++;
 
-              if (toolName === 'get_file_info') {
+              if (toolName === 'search_files') {
+                const results = await this.searchWorkspaceContent(params.pattern, { matchCase: false, wholeWord: false, include: params.path });
+                const output = results.length > 0 
+                    ? results.map(r => `${r.path}:${r.line} - ${r.snippet}`).join('\n').substring(0, 4000)
+                    : "No matches found.";
+                chatHistory.push({ role: 'system', content: `SEARCH RESULTS:\n${output}` });
+                actionLog.push(`🔍 Smart Search: "${params.pattern}" found ${results.length} hits.`);
+                renderUpdate("Searching files...", false, step);
+              }
+              else if (toolName === 'read_code_graph') {
+                if (this.codeGraphManager) {
+                    const mermaid = this.codeGraphManager.generateMermaid(params.type || 'class_diagram');
+                    chatHistory.push({ role: 'system', content: `CODE GRAPH:\n\`\`\`mermaid\n${mermaid}\n\`\`\`` });
+                    actionLog.push(`📊 Read structural graph: ${params.type || 'class_diagram'}`);
+                    renderUpdate("Analyzing project structure...", false, step);
+                }
+              }
+              else if (toolName === 'get_file_info') {
                   const pathArg = params.path;
                   if (pathArg) {
                       const uri = vscode.Uri.joinPath(workspaceFolder.uri, pathArg);
                       const stats = await vscode.workspace.fs.stat(uri);
                       const doc = await vscode.workspace.openTextDocument(uri);
-                      chatHistory.push({ 
-                          role: 'system', 
-                          content: `FILE INFO for ${pathArg}:\nSize: ${stats.size} bytes\nTotal Lines: ${doc.lineCount}` 
-                      });
-                      actionLog.push(`📊 Info: ${pathArg} (${doc.lineCount} lines)`);
+                      chatHistory.push({ role: 'system', content: `FILE INFO for ${pathArg}:\nSize: ${stats.size} bytes\nLines: ${doc.lineCount}` });
+                      actionLog.push(`📊 Info: ${pathArg}`);
                   }
               } else if (toolName === 'add_files') {
                   const files = params.files;
@@ -1391,69 +1429,48 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
                       for (const fileItem of files) {
                           const fPath = typeof fileItem === 'string' ? fileItem : fileItem.path;
                           const fMode = typeof fileItem === 'string' ? 'included' : (fileItem.mode === 'signatures' ? 'definitions-only' : 'included');
-                          
                           if (allFiles.includes(fPath)) {
                               selectedFiles.add(fPath);
                               const uri = vscode.Uri.joinPath(workspaceFolder.uri, fPath);
                               await this.contextStateProvider.setStateForUris([uri], fMode);
                           }
                       }
-                      actionLog.push(`➕ Processed: ${files.length} file(s).`);
-                      renderUpdate("Updating context...", false, step);
-                  }
-              } else if (toolName === 'remove_files') {
-                  const files = params.files || params.paths;
-                  if (Array.isArray(files)) {
-                      files.forEach(f => selectedFiles.delete(f));
-                      const uris = files.map((f: string) => vscode.Uri.joinPath(workspaceFolder.uri, f));
-                      await this.contextStateProvider.setStateForUris(uris, 'tree-only'); 
-                      actionLog.push(`➖ Removed: ${files.length} file(s).`);
+                      actionLog.push(`➕ Added: ${files.length} file(s).`);
                       renderUpdate("Updating context...", false, step);
                   }
               } else if (toolName === 'read_file') {
                   const pathArg = params.path || params.file;
                   if (pathArg && allFiles.includes(pathArg)) {
                       const uri = vscode.Uri.joinPath(workspaceFolder.uri, pathArg);
-                      
-                      // SAFETY NET: Automatically add to context when the Librarian reads it
                       selectedFiles.add(pathArg);
                       await this.contextStateProvider.setStateForUris([uri], 'included');
-
                       const doc = await vscode.workspace.openTextDocument(uri);
                       const start = params.start_line || 0;
                       const end = params.end_line || Math.min(start + 400, doc.lineCount);
-                      
-                      const range = new vscode.Range(
-                          new vscode.Position(start, 0),
-                          new vscode.Position(Math.min(end, doc.lineCount - 1), 1000)
-                      );
-                      const text = doc.getText(range);
-                      
-                      const statusMsg = end < doc.lineCount 
-                        ? `[TRUNCATED] Showing lines ${start}-${end} of ${doc.lineCount}. Use read_file with start_line=${end} to see more.`
-                        : `[END OF FILE] Showing lines ${start}-${doc.lineCount}.`;
-
-                      chatHistory.push({ 
-                          role: 'system', 
-                          content: `Content of ${pathArg}:\n\`\`\`\n${text}\n\`\`\`\n\n${statusMsg}` 
-                      });
-                      actionLog.push(`📖 Read ${pathArg} (L${start}-L${end})`);
-                      renderUpdate("Reading file segment...", false, step);
+                      const text = doc.getText(new vscode.Range(new vscode.Position(start, 0), new vscode.Position(Math.min(end, doc.lineCount - 1), 1000)));
+                      chatHistory.push({ role: 'system', content: `Content of ${pathArg}:\n\`\`\`\n${text}\n\`\`\`` });
+                      actionLog.push(`📖 Read ${pathArg}`);
+                      renderUpdate("Reading file...", false, step);
                   }
               } else if (toolName === 'search_keywords') {
                 const keywords = params.keywords || params.query;
                 if (Array.isArray(keywords)) {
                     const results = await this.searchWorkspaceKeywords(keywords, workspaceFolder.uri.fsPath);
                     chatHistory.push({ role: 'system', content: results });
-                    actionLog.push(`🔍 Searched for: ${keywords.join(', ')}`);
-                    renderUpdate("Searching codebase...", false, step);
+                    actionLog.push(`🔍 Searched: ${keywords.join(', ')}`);
+                    renderUpdate("Searching...", false, step);
                 }
               } else {
                    actionLog.push(`⚠️ Unknown tool: ${toolName}`);
               }
-
           } catch (e: any) {
-              actionLog.push(`❌ Tool Error: ${e.message}`);
+              actionLog.push(`❌ Error: ${e.message}`);
+              if (retryCount < MAX_RETRIES) {
+                  retryCount++;
+                  chatHistory.push({ role: 'system', content: "ERROR: Tool failed. Try a different approach." });
+                  continue;
+              }
+              break;
           }
       }
 
@@ -1849,7 +1866,10 @@ Based on the objective and the file tree, which files are the most relevant? Ret
       return '## Project Structure\n\n*No project structure available - no workspace folder found.*\n';
     }
 
-    // Pass the signal to get visible files (which already yields)
+    // 1. Update UI to show we are scanning, not just "Building"
+    if (onProgress) onProgress(5); 
+
+    // 2. Fast Scan
     const allVisibleFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
     if (signal?.aborted) throw new Error("Operation cancelled");
 
@@ -1865,26 +1885,27 @@ Based on the objective and the file tree, which files are the most relevant? Ret
       return tree;
     }
 
-    // --- SAFETY CHECK: Truncate very large file lists to prevent freeze/OOM ---
-    const FILE_LIMIT = 2000;
+    // --- SAFETY CHECK: Truncate large trees to prevent API Context Length errors ---
+    const FILE_LIMIT = 1500; // Reduced for Librarian safety
     let effectiveFiles = allVisibleFiles;
     let warningMsg = '';
 
     if (allVisibleFiles.length > FILE_LIMIT) {
         effectiveFiles = allVisibleFiles.slice(0, FILE_LIMIT);
-        warningMsg = `\n*(Tree truncated: ${allVisibleFiles.length - FILE_LIMIT} additional files hidden to save memory. Use context exclusions to hide irrelevant folders.)*\n`;
+        warningMsg = `\n*(⚠️ Tree truncated: ${allVisibleFiles.length - FILE_LIMIT} files hidden. Use .lollms/context_exceptions to ignore large folders like node_modules or build.)*\n`;
     }
 
     tree += '```text\n';
     
     const fileTree: { [key: string]: any } = {};
     
-    // Performance Optimization: Process file list in chunks to avoid blocking the event loop
+    // Enhanced Performance: Crawl files in larger batches but yield strictly
     for (let i = 0; i < effectiveFiles.length; i++) {
-        if (i % 200 === 0) {
-            await new Promise(resolve => setTimeout(resolve, 0));
+        if (i % 150 === 0) {
+            await new Promise(resolve => setTimeout(resolve, 5)); // Longer sleep to let UI breathe
             if (onProgress) {
-                onProgress(Math.round((i / effectiveFiles.length) * 100));
+                const pct = Math.round((i / effectiveFiles.length) * 100);
+                onProgress(pct);
             }
         }
         

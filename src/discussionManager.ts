@@ -164,11 +164,12 @@ export class DiscussionManager {
     private saveMutex: Promise<void> = Promise.resolve();
 
     async saveDiscussion(discussion: Discussion): Promise<void> {
-        if (discussion.id.startsWith('temp-')) return;
+        if (discussion.id.startsWith('temp-') || discussion.id.startsWith('remote-')) return;
         
         const filePath = vscode.Uri.joinPath(this.discussionsDir, `${discussion.id}.json`);
         const tempPath = vscode.Uri.joinPath(this.discussionsDir, `${discussion.id}.tmp`);
         
+        // Use a background task to avoid blocking the UI thread for large files
         this.saveMutex = this.saveMutex.then(async () => {
             try {
                 const content = Buffer.from(JSON.stringify(discussion, null, 2), 'utf8');

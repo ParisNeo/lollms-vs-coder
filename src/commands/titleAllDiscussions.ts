@@ -97,10 +97,14 @@ export function registerTitleAllDiscussions(
                 // 3️⃣  Refresh the discussion tree view (only if not cancelled).
                 // -----------------------------------------------------------------
                 if (!wasCancelled) {
+                    // Use the correct ID defined in package.json
                     vscode.commands.executeCommand(
                         'workbench.action.refreshTreeView',
-                        'lollms-vs-coder.discussionTree'
-                    );
+                        'lollmsDiscussionsView'
+                    ).then(undefined, err => {
+                        console.warn("Refresh tree view failed, falling back to provider refresh.");
+                        discussionManager.refreshProvider?.(); 
+                    });
 
                     vscode.window.showInformationMessage(
                         `Generated titles for ${untitledDiscussions.length} discussion(s).`

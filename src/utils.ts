@@ -333,16 +333,19 @@ export function applySearchReplace(content: string, searchBlock: string, replace
         return { success: true, result: resultLines.join('\n') };
     }
 
-    // --- CHECK IF ALREADY APPLIED (Half-applied detection) ---
-    // If the search block is completely missing, check if the replace block is already there.
-    if (normalizedReplace.trim().length > 0 && normalizedContent.includes(normalizedReplace.trim())) {
-        return { success: true, result: normalizedContent }; 
+    // --- CHECK IF ALREADY APPLIED (Repetition Guard) ---
+    const trimR = normalizedReplace.trim();
+    if (trimR.length > 0) {
+        if (normalizedContent.includes(normalizedReplace) || normalizedContent.includes(trimR)) {
+            return { success: true, result: normalizedContent };
+        }
     }
 
+    // 4. Final Fallback: All matching strategies failed.
     return { 
         success: false, 
         result: content, 
-        error: `Could not find match for SEARCH block (Best similarity: ${(bestScore*100).toFixed(1)}%). Check indentation and content.` 
+        error: "The SEARCH block was not found in the file. Ensure the code you are trying to match is identical to the file content, including indentation and blank lines." 
     };
 }
 
@@ -398,7 +401,9 @@ export function applyDiffToString(originalContent: string, diffContent: string):
         hunks.push(currentHunk);
     }
 
-    if (hunks.length === 0) return { success: false, result: originalContent, error: "No valid diff hunks found." };
+    if (hunks.length === 0) {
+        return { success: false, result: originalContent, error: "No valid diff hunks found. Ensure the diff follows the unified format (---/+++/@@)." };
+    }
 
     let workingLines = [...docLines];
     
@@ -489,10 +494,13 @@ export async function getProcessedSystemPrompt(
     
     // Inject Working Memory (insights from Librarian/Auto-Context) if it exists
     if (workingMemory) {
-        finalPersona = `### 🧠 ARCHITECT'S TECHNICAL ANALYSIS (WORKING MEMORY)
-The preliminary analysis phase has already identified relevant code sections and drafted a strategy. 
-**You MUST follow the technical direction established below**:
-${workingMemory}\n\n${finalPersona}`;
+        finalPersona = `### 🧠 LIBRARIAN'S CONTEXT ANALYSIS
+A specialized Librarian agent has pre-scanned the project and synchronized the most relevant files to your context.
+**LIBRARIAN'S FINDINGS & SUGGESTED STRATEGY**:
+${workingMemory}
+
+**MANDATE**: Use the files the Librarian has provided to solve the user request. If a file is mentioned in the analysis but missing from your content, use <add_files> to request it.
+\n\n${finalPersona}`;
     }
 
     // --- CASUAL MODE DETECTION ---

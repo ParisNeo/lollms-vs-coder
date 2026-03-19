@@ -111,7 +111,13 @@ export class GitIntegration {
   }
 
   public async discardChanges(folder: vscode.WorkspaceFolder, filePath: string) {
-      await execAsync(`git restore "${filePath}"`, { cwd: folder.uri.fsPath });
+      // Use restore for tracked files and clean for untracked files
+      if (filePath === ".") {
+          await execAsync(`git restore .`, { cwd: folder.uri.fsPath });
+          await execAsync(`git clean -fd`, { cwd: folder.uri.fsPath });
+      } else {
+          await execAsync(`git restore "${filePath}"`, { cwd: folder.uri.fsPath });
+      }
   }
 
   public async getStashList(folder: vscode.WorkspaceFolder): Promise<string[]> {

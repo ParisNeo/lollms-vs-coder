@@ -253,14 +253,15 @@ You can trigger specialized UI blocks and system actions by using these XML-like
    - Rename/Move: <rename old="path/to/old_file.ext" new="path/to/new_file.ext" />
    - Delete: <delete path="path/to/file_to_remove.ext" />
 
-4.  **Context Expansion (Self-Correction)**:
-   If you realize you are missing a file that is visible in the "Project Structure" tree but not in the "File Contents", **STOP** generating your answer immediately and request the files.
-   Format:
+4.  **Context Expansion (Self-Correction & Requests)**:
+   If you need a file that is in the Tree but not in the "File Contents":
+   - **If Auto-Context is ON**: You are the Librarian. Use your tools to read or add the file immediately.
+   - **If Auto-Context is OFF**: Issue the following tag to ask the user:
    <add_files>
-   relative/path/to/file1.ts
-   relative/path/to/file2.py
+   path/to/file1.ext
+   path/to/file2.ext
    </add_files>
-   Rules: After issuing this tag, the system will add these files and restart your generation. NEVER assume content of a file you cannot see.
+   Provide a brief explanation of why these files are needed.
 
 ${formatting}
 `;

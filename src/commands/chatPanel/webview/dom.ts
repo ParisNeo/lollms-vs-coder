@@ -274,6 +274,7 @@ export const dom = {
 
     // Skills Modal Elements
     get skillsModal() { return document.getElementById('skills-modal') as HTMLDivElement; },
+    get skillsSearchInput() { return document.getElementById('skills-search-input') as HTMLInputElement; },
     get skillsTreeContainer() { return document.getElementById('skills-tree-container') as HTMLDivElement; },
     get skillsImportBtn() { return document.getElementById('skills-import-btn') as HTMLButtonElement; },
     get skillsCloseBtn() { return document.getElementById('skills-close-btn') as HTMLSpanElement; },
@@ -297,5 +298,9 @@ export const dom = {
     get rawCodeModal() { return document.getElementById('raw-code-modal') as HTMLDivElement; },
     get rawCodeDisplay() { return document.getElementById('raw-code-display') as HTMLElement; },
     get rawCodeCloseBtn() { return document.getElementById('raw-code-close-btn') as HTMLSpanElement; },
+    get rawSearchInput() { return document.getElementById('raw-search-input') as HTMLInputElement; },
+    get rawSearchCount() { return document.getElementById('raw-search-count') as HTMLElement; },
+    get rawSearchPrev() { return document.getElementById('raw-search-prev') as HTMLButtonElement; },
+    get rawSearchNext() { return document.getElementById('raw-search-next') as HTMLButtonElement; },
     get copyRawBtn() { return document.getElementById('copy-raw-btn') as HTMLButtonElement; }
 };

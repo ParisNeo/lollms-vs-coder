@@ -216,16 +216,17 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
 
         try {
             const currentBranch = await services.gitIntegration.getCurrentBranch(folder);
+            
+            // Try to create and checkout
+            await services.gitIntegration.createAndCheckoutBranch(folder, branchName);
+            
+            // If successful, track the state
             if (currentBranch) {
                 const discussion = discussionPanel.getCurrentDiscussion()!;
-                discussion.gitState = {
-                    originalBranch: currentBranch,
-                    tempBranch: branchName
-                };
+                discussion.gitState = { originalBranch: currentBranch, tempBranch: branchName };
                 await services.discussionManager.saveDiscussion(discussion);
             }
-
-            await services.gitIntegration.createAndCheckoutBranch(folder, branchName);
+            
             vscode.window.showInformationMessage(`Switched to new branch: ${branchName}`);
             
             // Explicitly update the UI
@@ -236,53 +237,66 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
         }
     }));
 
-    // Switch Git Branch (New)
+    /**
+     * Helper to handle Git Checkout conflicts (dirty worktree)
+     */
+    async function handleCheckoutWithRecovery(folder: vscode.WorkspaceFolder, targetRef: string): Promise<boolean> {
+        try {
+            await services.gitIntegration.checkout(folder, targetRef);
+            return true;
+        } catch (e: any) {
+            if (e.message.includes("overwritten by checkout") || e.message.includes("local changes")) {
+                const choices = ["📦 Stash & Switch", "💾 Commit Changes", "🗑️ Discard All", "Cancel"];
+                const result = await vscode.window.showErrorMessage(
+                    `Git Conflict: Your local changes would be overwritten by switching to "${targetRef}". What would you like to do?`,
+                    { modal: true },
+                    ...choices
+                );
+
+                if (result === "📦 Stash & Switch") {
+                    await services.gitIntegration.stash(folder, `Auto-stash before switching to ${targetRef}`);
+                    await services.gitIntegration.checkout(folder, targetRef);
+                    vscode.window.showInformationMessage(`Changes stashed and switched to ${targetRef}.`);
+                    return true;
+                } else if (result === "💾 Commit Changes") {
+                    await vscode.commands.executeCommand('lollms-vs-coder.commitWithAIMessage');
+                    // We don't auto-switch here because the commit might fail or user might cancel message
+                    return false; 
+                } else if (result === "🗑️ Discard All") {
+                    const confirm = await vscode.window.showWarningMessage("This will PERMANENTLY delete all your uncommitted changes. Are you sure?", { modal: true }, "Yes, Discard");
+                    if (confirm === "Yes, Discard") {
+                        await services.gitIntegration.discardChanges(folder, "."); // Discard all
+                        await services.gitIntegration.checkout(folder, targetRef);
+                        return true;
+                    }
+                }
+            } else {
+                vscode.window.showErrorMessage(`Checkout failed: ${e.message}`);
+            }
+            return false;
+        }
+    }
+
+    // Switch Git Branch (Enhanced with Recovery)
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.switchGitBranch', async () => {
         const folder = getActiveWorkspace() || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0] : undefined);
-        if (!folder) {
-            vscode.window.showErrorMessage("No workspace folder found.");
-            return;
-        }
+        if (!folder) return;
 
-        try {
-            const branches = await services.gitIntegration.getBranches(folder);
-            const current = await services.gitIntegration.getCurrentBranch(folder);
-            
-            if (branches.length <= 1) {
-                vscode.window.showInformationMessage(`Only one branch found (${current}).`);
-                return;
+        const branches = await services.gitIntegration.getBranches(folder);
+        const current = await services.gitIntegration.getCurrentBranch(folder);
+        
+        const items = branches.map(b => ({ 
+            label: b, 
+            description: b === current ? ' (Active)' : '',
+            iconPath: new vscode.ThemeIcon(b.includes('origin/') ? 'cloud' : 'git-branch')
+        })).sort((a, b) => a.label === current ? -1 : 1);
+
+        const selected = await vscode.window.showQuickPick(items, { placeHolder: `Switch from ${current} to...` });
+        if (selected && selected.label !== current) {
+            const success = await handleCheckoutWithRecovery(folder, selected.label);
+            if (success && ChatPanel.currentPanel) {
+                ChatPanel.currentPanel.sendGitBranchState(folder);
             }
-
-            const items = branches.map(b => ({ 
-                label: b, 
-                description: b === current ? '(Current)' : '',
-                picked: b === current
-            }));
-
-            // Move current to top or sort logic? Sorting by name usually fine, but highlighting current is good.
-            items.sort((a, b) => {
-                if (a.label === current) return -1;
-                if (b.label === current) return 1;
-                return a.label.localeCompare(b.label);
-            });
-
-            const selected = await vscode.window.showQuickPick(items, { 
-                placeHolder: `Select branch to switch to (Current: ${current})` 
-            });
-
-            if (selected) {
-                if (selected.label === current) return; // No op
-
-                await services.gitIntegration.checkout(folder, selected.label);
-                vscode.window.showInformationMessage(`Switched to branch ${selected.label}`);
-                
-                // Update UI if panel is open
-                if (ChatPanel.currentPanel) {
-                    ChatPanel.currentPanel.sendGitBranchState(folder);
-                }
-            }
-        } catch (e: any) {
-            vscode.window.showErrorMessage(`Failed to switch branch: ${e.message}`);
         }
     }));
 

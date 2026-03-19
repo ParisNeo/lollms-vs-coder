@@ -45,10 +45,27 @@ export function renderPendingImages() {
 let canvasCtx: CanvasRenderingContext2D | null = null;
 let currentEditingIdx: number | null = null;
 let isDrawing = false;
+let isPanning = false;
 let currentTool = 'brush';
 let textInputPos = { x: 0, y: 0, w: 0, h: 0 };
 let startPos = { x: 0, y: 0 };
+let lastPanPos = { x: 0, y: 0 };
 let webcamStream: MediaStream | null = null;
+
+// Zoom & Pan State
+let viewState = {
+    scale: 1,
+    offsetX: 0,
+    offsetY: 0
+};
+
+// Helper to convert screen mouse coords to internal canvas coords
+function getTransformedPoint(x: number, y: number) {
+    return {
+        x: (x - viewState.offsetX) / viewState.scale,
+        y: (y - viewState.offsetY) / viewState.scale
+    };
+}
 
 // Undo/Redo System
 let undoStack: string[] = [];
@@ -79,10 +96,22 @@ function redo() {
 function loadState(dataUrl: string) {
     const img = new Image();
     img.onload = () => {
-        canvasCtx?.clearRect(0, 0, dom.editorCanvas.width, dom.editorCanvas.height);
-        canvasCtx?.drawImage(img, 0, 0);
+        if (!canvasCtx || !dom.editorCanvas) return;
+        // Reset transform to clear the whole physical area
+        canvasCtx.setTransform(1, 0, 0, 1, 0, 0);
+        canvasCtx.clearRect(0, 0, dom.editorCanvas.width, dom.editorCanvas.height);
+        
+        // Re-apply current zoom/pan before drawing the background image
+        canvasCtx.setTransform(viewState.scale, 0, 0, viewState.scale, viewState.offsetX, viewState.offsetY);
+        canvasCtx.drawImage(img, 0, 0);
     };
     img.src = dataUrl;
+}
+
+function redrawCanvas() {
+    if (undoStack.length > 0) {
+        loadState(undoStack[undoStack.length - 1]);
+    }
 }
 
 export function openImageEditor(index: number | null = null): void {
@@ -223,59 +252,109 @@ function initCanvasEvents() {
     const canvas = dom.editorCanvas;
     if (!canvas || !canvasCtx) return;
 
+    // --- ZOOM LOGIC (Wheel) ---
+    canvas.onwheel = (e) => {
+        e.preventDefault();
+        const zoomSpeed = 0.0015;
+        const delta = -e.deltaY;
+        const factor = Math.pow(1.1, delta / 100);
+        
+        const newScale = Math.min(Math.max(viewState.scale * factor, 0.1), 10);
+        
+        // Zoom relative to mouse position
+        const mouse = { x: e.offsetX, y: e.offsetY };
+        viewState.offsetX = mouse.x - (mouse.x - viewState.offsetX) * (newScale / viewState.scale);
+        viewState.offsetY = mouse.y - (mouse.y - viewState.offsetY) * (newScale / viewState.scale);
+        viewState.scale = newScale;
+
+        redrawCanvas();
+    };
+
     canvas.onmousedown = (e) => {
-        // Click-to-validate: Commit text if clicking elsewhere
+        // Middle button (1) or Space+Left triggers Pan
+        if (e.button === 1 || (e.button === 0 && (window as any).isSpaceDown)) {
+            isPanning = true;
+            lastPanPos = { x: e.clientX, y: e.clientY };
+            canvas.style.cursor = 'grabbing';
+            return;
+        }
+
         if (dom.editorTextInput.style.display === 'block') {
             commitTextToCanvas();
         }
 
-        startPos = { x: e.offsetX, y: e.offsetY };
+        const pt = getTransformedPoint(e.offsetX, e.offsetY);
+        startPos = pt;
         isDrawing = true;
 
         if (currentTool === 'brush') {
+            canvasCtx!.setTransform(viewState.scale, 0, 0, viewState.scale, viewState.offsetX, viewState.offsetY);
             canvasCtx!.beginPath();
-            canvasCtx!.moveTo(e.offsetX, e.offsetY);
+            canvasCtx!.moveTo(pt.x, pt.y);
             canvasCtx!.strokeStyle = (document.getElementById('editor-color') as HTMLInputElement).value;
-            canvasCtx!.lineWidth = parseInt((document.getElementById('editor-width') as HTMLInputElement).value);
+            canvasCtx!.lineWidth = parseInt((document.getElementById('editor-width') as HTMLInputElement).value) / viewState.scale;
             canvasCtx!.lineCap = 'round';
             canvasCtx!.lineJoin = 'round';
         }
     };
 
     canvas.onmousemove = (e) => {
+        if (isPanning) {
+            const dx = e.clientX - lastPanPos.x;
+            const dy = e.clientY - lastPanPos.y;
+            viewState.offsetX += dx;
+            viewState.offsetY += dy;
+            lastPanPos = { x: e.clientX, y: e.clientY };
+            redrawCanvas();
+            return;
+        }
+
         if (!isDrawing) return;
 
+        const pt = getTransformedPoint(e.offsetX, e.offsetY);
+
         if (currentTool === 'brush') {
-            canvasCtx!.lineTo(e.offsetX, e.offsetY);
+            canvasCtx!.lineTo(pt.x, pt.y);
             canvasCtx!.stroke();
         } else if (currentTool === 'text') {
-            // Draw temporary selection box for text area
-            loadState(undoStack[undoStack.length - 1]);
-            canvasCtx!.setLineDash([5, 5]);
+            redrawCanvas();
+            canvasCtx!.setLineDash([5 / viewState.scale, 5 / viewState.scale]);
             canvasCtx!.strokeStyle = 'gray';
-            canvasCtx!.lineWidth = 1;
-            canvasCtx!.strokeRect(startPos.x, startPos.y, e.offsetX - startPos.x, e.offsetY - startPos.y);
+            canvasCtx!.lineWidth = 1 / viewState.scale;
+            canvasCtx!.strokeRect(startPos.x, startPos.y, pt.x - startPos.x, pt.y - startPos.y);
             canvasCtx!.setLineDash([]);
         }
     };
 
     canvas.onmouseup = (e) => {
+        if (isPanning) {
+            isPanning = false;
+            canvas.style.cursor = 'crosshair';
+            return;
+        }
+
         if (!isDrawing) return;
         isDrawing = false;
+
+        const pt = getTransformedPoint(e.offsetX, e.offsetY);
 
         if (currentTool === 'brush') {
             saveState();
         } else if (currentTool === 'text') {
-            const width = Math.abs(e.offsetX - startPos.x);
-            const height = Math.abs(e.offsetY - startPos.y);
-            const x = Math.min(startPos.x, e.offsetX);
-            const y = Math.min(startPos.y, e.offsetY);
+            const width = Math.abs(pt.x - startPos.x);
+            const height = Math.abs(pt.y - startPos.y);
+            const x = Math.min(startPos.x, pt.x);
+            const y = Math.min(startPos.y, pt.y);
 
-            if (width > 10 && height > 10) {
-                showTextInput(x, y, width, height);
-            } else {
-                // Just a click? Show a default sized box
-                showTextInput(x, y, 200, 100);
+            if (width > 5 && height > 5) {
+                // Convert back to screen coords for the input box placement
+                const screenPos = {
+                    x: x * viewState.scale + viewState.offsetX,
+                    y: y * viewState.scale + viewState.offsetY,
+                    w: width * viewState.scale,
+                    h: height * viewState.scale
+                };
+                showTextInput(x, y, width, height, screenPos);
             }
         }
     };
@@ -381,15 +460,15 @@ function wrapTextToCanvas(ctx: CanvasRenderingContext2D, text: string, x: number
     ctx.fillText(line, x, y);
 }
 
-function showTextInput(x: number, y: number, w: number, h: number) {
+function showTextInput(x: number, y: number, w: number, h: number, screenPos: any) {
     const input = dom.editorTextInput;
     textInputPos = { x, y, w, h };
     
     input.style.display = 'block';
-    input.style.left = `${dom.editorCanvas.offsetLeft + x}px`;
-    input.style.top = `${dom.editorCanvas.offsetTop + y}px`;
-    input.style.width = `${w}px`;
-    input.style.height = `${h}px`;
+    input.style.left = `${dom.editorCanvas.offsetLeft + screenPos.x}px`;
+    input.style.top = `${dom.editorCanvas.offsetTop + screenPos.y}px`;
+    input.style.width = `${screenPos.w}px`;
+    input.style.height = `${screenPos.h}px`;
     
     input.style.color = (document.getElementById('editor-color') as HTMLInputElement).value;
     input.style.fontSize = `${(document.getElementById('editor-font-size') as HTMLInputElement).value}px`;
@@ -998,7 +1077,7 @@ export function updateBadges() {
 
     if (caps.gitWorkflow) {
         const branchName = state.currentBranch || 'git-workflow';
-        if (message.lastHash) state.lastCommitHash = message.lastHash;
+        const lastHash = state.lastCommitHash;
         
         const wrapper = document.createElement('div');
         wrapper.id = 'git-badge-wrapper';
@@ -1055,12 +1134,13 @@ export function updateBadges() {
         menu.appendChild(createMenuItem('git-menu-revert', 'codicon-history', 'Revert / Motion', 'requestGitHistory'));
         
         if (state.lastCommitHash) {
+            const lastHash = state.lastCommitHash;
             const copyItem = document.createElement('div');
             copyItem.className = 'custom-menu-item';
             copyItem.style.borderTop = '1px solid var(--vscode-menu-separatorBackground)';
-            copyItem.innerHTML = `<span class="codicon codicon-copy"></span> Copy Last Hash (${state.lastCommitHash.substring(0,7)})`;
+            copyItem.innerHTML = `<span class="codicon codicon-copy"></span> Copy Last Hash (${lastHash.substring(0,7)})`;
             copyItem.onclick = () => {
-                vscode.postMessage({ command: 'copyToClipboard', text: state.lastCommitHash });
+                vscode.postMessage({ command: 'copyToClipboard', text: lastHash });
             };
             menu.appendChild(copyItem);
         }
@@ -1122,69 +1202,83 @@ export function updateBadges() {
  */
 export function renderFileSearchResults(container: HTMLElement, results: any[], query: string) {
     if (!results || results.length === 0) {
-        container.innerHTML = '<div style="opacity:0.6; text-align:center; padding: 20px;">No files match your query.</div>';
+        container.innerHTML = '<div style="opacity:0.6; text-align:center; padding: 40px;"><i class="codicon codicon-search-stop" style="font-size:24px; display:block; margin-bottom:10px;"></i>No matches found.</div>';
         return;
     }
 
-    const highlightPattern = query.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
-    const hRegex = new RegExp(`(${highlightPattern})`, 'gi');
+    // Prepare highlight terms (AND logic)
+    const highlightQuery = query.replace(/ext:\w+/g, '').replace(/[-|]/g, ' ').trim();
+    const terms = highlightQuery.split(/\s+/).filter(t => t.length > 1);
 
     container.innerHTML = results.map(res => {
-        const highlightedPath = res.path.replace(hRegex, '<span class="search-highlight">$1</span>');
-        const highlightedSnippet = res.snippet.replace(hRegex, '<span class="search-highlight">$1</span>');
+        let hPath = sanitizer.sanitize(res.path);
+        let hSnippet = sanitizer.sanitize(res.snippet);
+        
+        terms.forEach(t => {
+            const reg = new RegExp(`(${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+            hPath = hPath.replace(reg, '<mark class="search-highlight">$1</mark>');
+            hSnippet = hSnippet.replace(reg, '<mark class="search-highlight">$1</mark>');
+        });
+
         const isIncluded = res.isAlreadyIncluded;
-        // Toned down line numbers (opacity 0.6)
-        const lineInfo = res.line ? `<span style="color:var(--vscode-charts-orange); opacity: 0.6; font-size: 10px; margin-right:5px;">L${res.line}:</span>` : '';
+        const lineBadge = res.line ? `<span style="opacity:0.5; font-family:monospace; margin-right:8px;">${res.line}:</span>` : '';
 
         return `
-            <div class="search-result-item file-search-item ${isIncluded ? 'already-in-context' : ''}" data-path="${res.path}" data-was-included="${isIncluded}">
-                <div class="search-result-title">
+            <div class="search-result-item file-search-item ${isIncluded ? 'already-in-context' : ''}" 
+                 data-path="${res.path}" data-was-included="${isIncluded}">
+                <div class="search-result-title" style="display:flex; align-items:center; justify-content:space-between;">
                     <div style="display:flex; align-items:center; gap:8px; flex:1; min-width:0;">
                         <input type="checkbox" value="${res.path}" class="file-search-check" 
                             ${isIncluded ? 'checked' : ''} 
                             onclick="event.stopPropagation()">
-                        <span class="codicon codicon-file" style="opacity: 0.7;"></span>
-                        <span class="title-text" style="overflow:hidden; text-overflow:ellipsis; font-size: 12px; opacity: 0.9;">${highlightedPath}</span>
+                        <span class="codicon codicon-file-code" style="color:var(--vscode-symbolIcon-fileForeground);"></span>
+                        <span class="title-text" style="overflow:hidden; text-overflow:ellipsis; font-weight:600; font-size: 12px;">${hPath}</span>
                     </div>
-                    <div style="display:flex; gap:5px; align-items:center;">
-                        ${isIncluded ? '<span class="already-included-badge">Active</span>' : `
-                            <button class="icon-btn quick-add-def" title="Add Definitions Only" data-path="${res.path}"><i class="codicon codicon-symbol-class"></i></button>
-                        `}
+                    <div style="display:flex; gap:8px;">
+                         ${isIncluded ? '<span class="already-included-badge"><i class="codicon codicon-check"></i> ACTIVE</span>' : `
+                            <button class="code-action-btn quick-add-def" title="Add Definitions Only (Save Tokens)" data-path="${res.path}" style="height:18px; font-size:9px; padding:0 5px;">
+                                <i class="codicon codicon-symbol-class"></i> DEFS ONLY
+                            </button>
+                         `}
                     </div>
                 </div>
-                <div class="search-result-snippet" style="margin-top: 2px;">${lineInfo}${highlightedSnippet}</div>
+                <div class="search-result-snippet" style="
+                    margin: 6px 0 0 24px; 
+                    padding: 6px 10px; 
+                    background: var(--vscode-textCodeBlock-background); 
+                    border-radius: 4px; 
+                    font-family: var(--vscode-editor-font-family);
+                    font-size: 11px;
+                    border: 1px solid var(--vscode-widget-border);
+                    white-space: pre-wrap;
+                    display: flex;
+                ">${lineBadge}<div style="flex:1;">${hSnippet}</div></div>
             </div>
         `;
     }).join('');
 
-    // Add listener for the new "Definitions Only" quick button
+    // Logic for the quick "DEFS ONLY" button
     container.querySelectorAll('.quick-add-def').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
             const path = (btn as HTMLElement).dataset.path;
-            vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.setContextDefinitionsOnly', params: [path] }});
-            (btn as HTMLElement).innerHTML = '<i class="codicon codicon-check"></i>';
-            (btn as HTMLElement).classList.add('success');
+            // Send command with empty first arg (uri) and path in the array arg (uris)
+            vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.setContextDefinitionsOnly', params: [null, [{ path: path, scheme: 'file' }]] }});
+            btn.innerHTML = '<i class="codicon codicon-check"></i> ADDED';
+            btn.classList.add('applied');
         });
     });
 
+    // Toggle checkboxes on row click
     container.querySelectorAll('.file-search-item').forEach(item => {
         item.addEventListener('click', (e) => {
+            if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).closest('button')) return;
             const cb = item.querySelector('.file-search-check') as HTMLInputElement;
-            if (e.target !== cb) cb.checked = !cb.checked;
-            
-            // Visual selection state
-            item.style.backgroundColor = cb.checked ? 'var(--vscode-list-activeSelectionBackground)' : '';
-            item.style.color = cb.checked ? 'var(--vscode-list-activeSelectionForeground)' : '';
-        });
-
-        item.addEventListener('dblclick', () => {
-            const path = (item as HTMLElement).dataset.path;
-            vscode.postMessage({ command: 'openFile', path });
+            cb.checked = !cb.checked;
+            item.classList.toggle('selected', cb.checked);
         });
     });
 }
-
 /** @deprecated Use renderFileSearchResults for list view */
 export function renderFileSearchTree(container: HTMLElement, files: string[]) {
     if (!files || files.length === 0) {
@@ -1271,6 +1365,50 @@ export function renderFileSearchTree(container: HTMLElement, files: string[]) {
 
     container.innerHTML = '';
     renderNode(root, container);
+}
+
+/**
+ * Filters the skills tree based on a search query.
+ */
+export function filterSkillsTree(query: string) {
+    const container = dom.skillsTreeContainer;
+    if (!container) return;
+
+    const searchTerm = query.toLowerCase().trim();
+    const items = container.querySelectorAll('.skills-tree-item');
+
+    if (!searchTerm) {
+        // Reset: Show all and collapse folders
+        items.forEach((item: any) => {
+            item.style.display = '';
+            const details = item.querySelector('details');
+            if (details) details.open = false;
+        });
+        return;
+    }
+
+    // First pass: Hide everything
+    items.forEach((item: any) => item.style.display = 'none');
+
+    // Second pass: Show matches and their parent chains
+    items.forEach((item: any) => {
+        const label = item.textContent?.toLowerCase() || "";
+        if (label.includes(searchTerm)) {
+            let current = item;
+            // Show this item and walk up the tree to show all parents
+            while (current && current !== container) {
+                current.style.display = '';
+                if (current.tagName === 'DETAILS') {
+                    current.open = true;
+                }
+                current = current.parentElement;
+            }
+            
+            // If it's a folder that matched, show all its children too
+            const children = item.querySelectorAll('.skills-tree-item');
+            children.forEach((child: any) => child.style.display = '');
+        }
+    });
 }
 
 export function renderSkillsTree(container: HTMLElement, node: any, activeSkillIds: string[] = []) {

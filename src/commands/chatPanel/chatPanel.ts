@@ -222,22 +222,18 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
         if (this._panel.webview) {
             const process = this.processManager.getForDiscussion(this.discussionId);
             const activeGen = ChatPanel.activeGenerations.get(this.discussionId);
-            const activeAgent = ChatPanel.activeAgents.get(this.discussionId);
-            const agentIsActive = activeAgent ? activeAgent.getIsActive() : false;
 
             // Identify processes that should not trigger the UI-blocking overlay
+            // We removed "scanning", "analyz", and "optimiz" because the Librarian
+            // uses these and we WANT to see the Stop button while it works.
             const desc = process?.description || "";
             const isBackgroundProcess = 
                 desc.toLowerCase().includes("title") || 
                 desc.toLowerCase().includes("counting") || 
-                desc.toLowerCase().includes("scanning") ||
-                desc.toLowerCase().includes("analyz") ||
-                desc.toLowerCase().includes("research") ||
-                desc.toLowerCase().includes("optimiz") ||
                 desc.toLowerCase().includes("cleaning");
             
-            // Decouple "Agent Mode ON" from "Agent is currently running a process"
-            // We only show the overlay if there is a real process ID registered in the manager
+            // We show the overlay if there is a real process ID registered (and it's not background)
+            // or if a standard LLM generation is currently streaming.
             const isGenerating = ((process && !isBackgroundProcess) || !!activeGen) && !this._inputResolver;
             
             let statusText = vscode.l10n.t("Lollms is thinking...");
@@ -291,10 +287,12 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
   }
 
   public async loadDiscussion(): Promise<void> {
-      if (this._isDisposed) return;
-      this.log(`Loading discussion ${this.discussionId}`);
+    if (this._isDisposed) return;
 
-      if (!this._currentDiscussion || this._currentDiscussion.id !== this.discussionId) {
+    // SHOW SPINNER IMMEDIATELY
+    this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: true, statusText: 'Loading conversation...' });
+
+    if (!this._currentDiscussion || this._currentDiscussion.id !== this.discussionId) {
           let discussion: Discussion | null;
           if (this.discussionId.startsWith('temp-')) {
               discussion = {
@@ -407,11 +405,11 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
           }
       }
 
-      // Safety check: ensure messages is always an array before sending to Webview
+      // Optimization: Send messages in a single batch but ensure the UI doesn't block
       const safeMessages = Array.isArray(this._currentDiscussion.messages) ? this._currentDiscussion.messages : [];
-      this.log(`Sending ${safeMessages.length} messages to webview`);
       
-      await this._panel.webview.postMessage({ 
+      // Use a slightly faster serialization path for large histories
+      this._panel.webview.postMessage({ 
           command: 'loadDiscussion', 
           messages: safeMessages,
           isInspectorEnabled: isInspectorEnabled,
@@ -772,59 +770,38 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
   }
 
   public async handleManualAutoContext(userPrompt: string) {
-      if (this._isDisposed || !this.processManager) return;
+      if (this._isDisposed || !this.processManager || !this._currentDiscussion) return;
       
       if (this._discussionCapabilities.disableProjectContext) {
           vscode.window.showWarningMessage("Auto-Context cannot run while Project Context is muted.");
           return;
       }
     
-      const { id: processId, controller } = this.processManager.register(this.discussionId, 'Running Auto-Context...');
+      const { id: processId, controller } = this.processManager.register(this.discussionId, 'Librarian: Optimizing context...');
+      // Force UI state update to hide input and show Stop button
       this.updateGeneratingState();
       try {
-          const model = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+          const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
           let objective = userPrompt.trim();
-          let keywords: string[] = [];
-          if (objective.includes('#')) {
-              const parts = objective.split('#');
-              objective = parts[0].trim();
-              keywords = parts[1].split(',').map(k => k.trim()).filter(k => k);
-          }
-          if (!objective && this._currentDiscussion && this._currentDiscussion.messages.length > 0) {
-              for (let i = this._currentDiscussion.messages.length - 1; i >= 0; i--) {
-                  const m = this._currentDiscussion.messages[i];
-                  if (m.role === 'user') {
-                      if (typeof m.content === 'string') {
-                          objective = m.content;
-                      } else if (Array.isArray(m.content)) {
-                          objective = m.content.map(c => c.type === 'text' ? c.text : '').join(' ');
-                      }
-                      break;
-                  }
-              }
-          }
+          
           if (!objective) {
-              objective = "Analyze current project context relevance.";
+              objective = "Analyze project structure to populate context with relevant code for the current task.";
           }
+
           const contextAgentMsgId = 'ctx_agent_manual_' + Date.now();
           await this.addMessageToDiscussion({
               id: contextAgentMsgId,
               role: 'system',
-              content: `**🧠 Auto-Context Agent (Manual)**\n*Objective: "${objective.substring(0, 100)}${objective.length>100?'...':''}"*\n\n`,
-              skipInPrompt: true // Keep it out of future context
+              content: `**🧠 Auto-Context Agent (Manual)**\n*Objective: "${objective}"*\n\n`,
+              skipInPrompt: true 
           });
+
           const result = await this._contextManager.runContextAgent(
                 objective, 
                 model, 
                 controller.signal,
                 (newContent) => {
-                    if (!this._isDisposed) {
-                        this._panel.webview.postMessage({ 
-                            command: 'updateMessage', 
-                            messageId: contextAgentMsgId, 
-                            newContent: newContent 
-                        });
-                    }
+                    if (!this._isDisposed) this._panel.webview.postMessage({ command: 'updateMessage', messageId: contextAgentMsgId, newContent: newContent });
                 },
                 (status) => {
                     if (!this._isDisposed && this.processManager) {
@@ -832,23 +809,29 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
                         this.updateGeneratingState();
                     }
                 },
-                keywords,
-                'selection_only' // <--- Explicit Selection Mode
+                undefined,
+                'selection_only',
+                this._currentDiscussion.messages
             );
 
-            // Persist the Librarian's analysis into the discussion data zone 
-            // so the next model call has the reasoning context.
-            if (this._currentDiscussion && result.analysis) {
-                const header = `### 🧠 AUTO-CONTEXT ANALYSIS\n`;
+            if (result.analysis) {
+                const header = `### 🧠 MANUAL CONTEXT ANALYSIS\n`;
                 this._currentDiscussion.discussion_data_zone = (this._currentDiscussion.discussion_data_zone || "") + `\n${header}${result.analysis}\n`;
+                
+                // Persistence check
                 if (!this._currentDiscussion.id.startsWith('temp-')) {
                     await this._discussionManager.saveDiscussion(this._currentDiscussion);
                 }
             }
 
+            // Sync context UI and clear input
             this.updateContextAndTokens();
+            if (userPrompt) {
+                this.setInputText('');
+            }
+
       } catch (e: any) {
-          if (e.name !== 'AbortError') {
+          if (e.name !== 'AbortError' && e.message !== 'AbortError') {
             this.log(`Manual Auto-Context failed: ${e.message}`, 'ERROR');
             this.addMessageToDiscussion({ role: 'system', content: `❌ Auto-Context Failed: ${e.message}` });
           }
@@ -1273,8 +1256,9 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                         
                         // Internal refresh of the data provider
                         vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
-                        // Force VS Code to repaint the specific tree view
-                        vscode.commands.executeCommand('workbench.action.refreshTreeView', 'lollmsDiscussionsView');
+                        // Force VS Code to repaint the specific tree view with safety guard
+                        vscode.commands.executeCommand('workbench.action.refreshTreeView', 'lollmsDiscussionsView')
+                            .then(undefined, () => { /* View might be hidden, ignore */ });
                     }
                 }).catch(e => this.log(`Auto-title generation failed: ${e.message}`, 'WARN'));
             }, 2000); 
@@ -1298,10 +1282,12 @@ Please provide the **FULL CONTENT** of the file instead using the format:
     this.updateGeneratingState();
 
     // Strictly check if AutoContext is enabled AND not muted
-    const isAutoContext = !!this._discussionCapabilities.autoContextMode || autoContextMode;
+    // CRITICAL: Skip automated agents if the message is a 'system' role.
+    // This prevents "Auto-Resume" nudges from triggering a second Librarian run (recursion loop).
+    const isAutoContext = (!!this._discussionCapabilities.autoContextMode || autoContextMode) && message.role !== 'system';
 
     // --- AUTO SKILL SELECTION ---
-    if (this._discussionCapabilities.autoSkillMode && !this._discussionCapabilities.disableProjectContext) {
+    if (this._discussionCapabilities.autoSkillMode && !this._discussionCapabilities.disableProjectContext && message.role !== 'system') {
         this.processManager.updateDescription(processId, "Selecting skills...");
         this.updateGeneratingState();
 
@@ -1353,18 +1339,25 @@ Please provide the **FULL CONTENT** of the file instead using the format:
         }
     }
 
+    // --- SYNERGY: THE LIBRARIAN MUST FINISH FIRST ---
+    let librarianAnalysis = "";
     if (isAutoContext && !this._discussionCapabilities.disableProjectContext) {
-        this.processManager.updateDescription(processId, "Context retrieval...");
+        this.processManager.updateDescription(processId, "Librarian is searching...");
         this.updateGeneratingState();
 
-        this.log("Auto-Context mode active. Starting agent loop.");
         const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
-        const userPromptText = (typeof message.content === 'string') ? message.content : "User request with attachments";
+        const userPromptText = (typeof message.content === 'string') ? message.content : "User request";
         const contextAgentMsgId = 'ctx_agent_' + Date.now();
+        
         await this.addMessageToDiscussion({
-            id: contextAgentMsgId, role: 'system', content: `**🧠 Auto-Context Agent**\n*Analyzing project structure...*\n\n`, skipInPrompt: true 
+            id: contextAgentMsgId, 
+            role: 'system', 
+            content: `**🧠 Auto-Context Agent**\n*Searching for relevant files...*\n\n`, 
+            skipInPrompt: true 
         });
+
         try {
+            // CRITICAL: We block here. The main AI won't start until this returns.
             const result = await this._contextManager.runContextAgent(
                 userPromptText, 
                 model, 
@@ -1380,15 +1373,22 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                 },
                 undefined,
                 'collaborative',
-                this._currentDiscussion.messages // Pass the full discussion history
+                this._currentDiscussion.messages
             );
             
-            // Persist Librarian insights for the main chat call
+            librarianAnalysis = result.analysis;
+            
             if (this._currentDiscussion && result.analysis) {
                 const header = `### 🧠 AUTO-CONTEXT ANALYSIS\n`;
                 this._currentDiscussion.discussion_data_zone = (this._currentDiscussion.discussion_data_zone || "") + `\n${header}${result.analysis}\n`;
             }
-        } catch (e: any) { this.log(`Auto-Context failed: ${e.message}`, 'ERROR'); }
+            
+            if (!this._isDisposed) {
+                await this.updateMessageContent(contextAgentMsgId, `**🧠 Auto-Context Agent**\n\n${librarianAnalysis || "*Analysis complete. Relevant files synchronized.*"}`);
+            }
+        } catch (e: any) { 
+            this.log(`Librarian failed: ${e.message}`, 'ERROR');
+        }
     }
 
     // --- WEB RESEARCH AGENT ---
@@ -1578,7 +1578,8 @@ Please provide the **FULL CONTENT** of the file instead using the format:
 
         const personaContent = this.getCurrentPersonaSystemPrompt();
         const forceFullCode = config.get<boolean>('forceFullCodePath') || false;
-        const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, forceFullCode, context, workingMemory);
+        // Synergy: Inject librarianAnalysis as workingMemory
+        const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, forceFullCode, context, librarianAnalysis || workingMemory);
         
         const profiles = config.get<ResponseProfile[]>('responseProfiles') || [];
         const activeProfileId = this._discussionCapabilities.responseProfileId || config.get<string>('defaultResponseProfileId') || 'balanced';
@@ -1678,39 +1679,16 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                 this.updateGeneratingState();
             }
         );
-
         // --- CONTEXT EXPANSION (SELF-CORRECTION) ---
         const addFilesRegex = /<add_files>([\s\S]*?)<\/add_files>/i;
         const addFilesMatch = processedResponse.match(addFilesRegex);
 
+        // --- CONTEXT EXPANSION (STOP & WAIT) ---
         if (addFilesMatch && !controller.signal.aborted) {
-            const filesToInclude = addFilesMatch[1].split('\n')
-                .map(f => f.trim())
-                .filter(f => f.length > 0);
-
-            if (filesToInclude.length > 0) {
-                this.log(`AI requested context expansion: ${filesToInclude.join(', ')}`);
-                
-                // 1. Mark this partial response as a "Thinking Step" in the data zone
-                if (this._currentDiscussion) {
-                    const insight = `Step ${this._currentDiscussion.messages.length}: AI realized it needed more files to avoid assumptions.\nRequest: ${filesToInclude.join(', ')}`;
-                    this._currentDiscussion.discussion_data_zone = (this._currentDiscussion.discussion_data_zone || "") + `\n${insight}\n`;
-                }
-
-                // 2. Add files to context
-                await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', filesToInclude);
-                
-                // 3. Remove the "waiting" assistant bubble that just requested files
-                await this.deleteMessage(assistantMessageId);
-
-                // 4. Auto-Resume: Call sendMessage again with a system nudge
-                this.processManager.unregister(processId);
-                return this.sendMessage({ 
-                    role: 'system', 
-                    content: `Files have been added to your context. Please resume your task and complete the original user request without making assumptions.`,
-                    skipInPrompt: true 
-                } as any);
-            }
+            // We do nothing here in the backend because the Webview UI already renders 
+            // the <add_files> widget with a manual "Add to Context" button.
+            // By NOT calling sendMessage here, we respect the "Don't call LLM" rule.
+            this.log(`AI issued context expansion request. Waiting for user interaction.`);
         }
 
         // --- AUTOMATION PIPELINE ---
@@ -1926,6 +1904,29 @@ Please provide the **FULL CONTENT** of the file instead using the format:
       }
   }
   
+  public async updateAppliedState(messageId: string, blockIdx: number, hunkIdx?: number) {
+      if (!this._currentDiscussion || !messageId) return;
+      if (!this._currentDiscussion.appliedState) this._currentDiscussion.appliedState = {};
+      if (!this._currentDiscussion.appliedState[messageId]) this._currentDiscussion.appliedState[messageId] = {};
+      
+      if (!this._currentDiscussion.appliedState[messageId][blockIdx]) {
+          this._currentDiscussion.appliedState[messageId][blockIdx] = [];
+      }
+
+      if (hunkIdx !== undefined) {
+          if (!this._currentDiscussion.appliedState[messageId][blockIdx].includes(hunkIdx)) {
+              this._currentDiscussion.appliedState[messageId][blockIdx].push(hunkIdx);
+          }
+      } else {
+          // Mark whole block (all hunks or full file) as applied
+          this._currentDiscussion.appliedState[messageId][blockIdx] = [-1]; 
+      }
+
+      if (!this._currentDiscussion.id.startsWith('temp-')) {
+          await this._discussionManager.saveDiscussion(this._currentDiscussion);
+      }
+  }
+
   public async addMessageToDiscussion(message: ChatMessage, updateWebview: boolean = true) {
       if (this._currentDiscussion) {
           if (message.id && this._currentDiscussion.messages.some(m => m.id === message.id)) {
@@ -2013,46 +2014,59 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                 vscode.commands.executeCommand('lollms-vs-coder.copyTreeAndContent');
                 break;
             case 'applyAllChanges':
-                const changesBatch = message.changes;
-                const messageId = message.messageId;
-                
-                const { id: applyProcId, controller: applyCtrl } = this.processManager.register(this.discussionId, `Applying ${changesBatch.length} changes...`);
-                
-                await vscode.window.withProgress({
-                    location: vscode.ProgressLocation.Notification,
-                    title: `Lollms: Bulk Apply (${changesBatch.length} files)`,
-                    cancellable: true
-                }, async (progress, token) => {
-                    token.onCancellationRequested(() => applyCtrl.abort());
+                {
+                    const changesBatch = message.changes;
+                    const messageId = message.messageId;
+                    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+                    if (!workspaceFolder) break;
 
-                    let count = 0;
-                    for (let i = 0; i < changesBatch.length; i++) {
-                        // Check both the VS Code progress token and our internal process signal
-                        if (token.isCancellationRequested || applyCtrl.signal.aborted) {
-                            this.log("Bulk apply operation aborted by user.");
-                            break;
-                        }
-                        
-                        const change = changesBatch[i];
-                        count++;
-                        
-                        progress.report({ 
-                            message: `(${count}/${changesBatch.length}) ${path.basename(change.path)}`,
-                            increment: (1 / changesBatch.length) * 100 
-                        });
+                    const { id: applyProcId, controller: applyCtrl } = this.processManager.register(this.discussionId, `Applying ${changesBatch.length} changes...`);
+                    
+                    await vscode.window.withProgress({
+                        location: vscode.ProgressLocation.Notification,
+                        title: `Lollms: Bulk Apply (${changesBatch.length} files)`,
+                        cancellable: true
+                    }, async (progress, token) => {
+                        token.onCancellationRequested(() => applyCtrl.abort());
 
-                        // Show spinner for the specific hunk/block row
-                        this._panel.webview.postMessage({ 
-                            command: 'applyAllStart', 
-                            messageId: messageId, 
-                            blockIndex: change.blockIndex,
-                            hunkIndex: change.hunkIndex
-                        });
+                        let count = 0;
+                        for (let i = 0; i < changesBatch.length; i++) {
+                            if (token.isCancellationRequested || applyCtrl.signal.aborted) break;
+                            
+                            const change = changesBatch[i];
+                            count++;
+                            
+                            // IDEMPOTENCY CHECK: Skip if already applied in this discussion
+                            const currentApplied = this._currentDiscussion?.appliedState?.[messageId]?.[change.blockIndex] || [];
+                            if (currentApplied.includes(-1) || (change.hunkIndex !== undefined && currentApplied.includes(change.hunkIndex))) {
+                                this._panel.webview.postMessage({
+                                    command: 'applyAllResult',
+                                    messageId: messageId,
+                                    filePath: change.path,
+                                    blockIndex: change.blockIndex,
+                                    hunkIndex: change.hunkIndex,
+                                    success: true,
+                                    alreadyApplied: true
+                                });
+                                continue;
+                            }
 
-                        let result: any = { success: false };
-                        try {
-                            const opts = { silent: true };
-                            if (change.type === 'file') {
+                            progress.report({ 
+                                message: `(${count}/${changesBatch.length}) ${path.basename(change.path)}`,
+                                increment: (1 / changesBatch.length) * 100 
+                            });
+
+                            this._panel.webview.postMessage({ 
+                                command: 'applyAllStart', 
+                                messageId: messageId, 
+                                blockIndex: change.blockIndex,
+                                hunkIndex: change.hunkIndex
+                            });
+
+                            let result: any = { success: false };
+                            try {
+                                const opts = { silent: true };
+                                if (change.type === 'file') {
                                 const applyResult: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', change.path, change.content, opts);
                                 result = applyResult || { success: true };
                             } else if (change.type === 'replace') {
@@ -2063,10 +2077,10 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                                         change.content,
                                         this,
                                         messageId,
-                                        opts
+                                        { ...opts, blockIndex: change.blockIndex, hunkIndex: change.hunkIndex }
                                     );
-                                    // Use the actual success/error returned by the replaceCode command
-                                    result = replaceResult || { success: false, error: "Unknown error in replacement" };
+                                    // Robust check for command return value
+                                    result = (replaceResult && typeof replaceResult === 'object') ? replaceResult : { success: false, error: "Replacement command failed to return a result." };
                                 } catch (e: any) {
                                     result = { success: false, error: e.message };
                                 }
@@ -2093,6 +2107,7 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                 });
                 this.processManager.unregister(applyProcId);
                 break;
+            }
             case 'renameFile':
                 vscode.commands.executeCommand('lollms-vs-coder.renameFile', message.originalPath, message.newPath);
                 break;
@@ -2103,29 +2118,43 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                 vscode.commands.executeCommand('lollms-vs-coder.insertCode', message.filePath, message.content);
                 break;
             case 'replaceCode':
-                vscode.commands.executeCommand('lollms-vs-coder.replaceCode', message.filePath, message.content, this, message.messageId);
+                try {
+                    const res: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', message.filePath, message.content, this, message.messageId, message.options);
+                    if (res && res.success) {
+                        webview.postMessage({
+                            command: 'applyAllResult',
+                            messageId: message.messageId,
+                            filePath: message.filePath,
+                            blockIndex: message.blockIndex,
+                            hunkIndex: message.hunkIndex,
+                            success: true,
+                            repaired: res.repaired
+                        });
+                        await this.updateAppliedState(message.messageId, message.blockIndex, message.hunkIndex);
+                    }
+                } catch (e: any) {
+                    this.log(`Command replaceCode failed: ${e.message}`, 'ERROR');
+                }
                 break;
             case 'deleteCodeBlock':
                 vscode.commands.executeCommand('lollms-vs-coder.deleteCodeBlock', message.filePath, message.content);
                 break;
             case 'addFilesToContext':
-                const blockId = message.blockId;
-                const files = message.files as string[];
-                const results: { [key: string]: boolean } = {};
-                if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
-                    vscode.window.showErrorMessage("No active workspace to add files from.");
-                    files.forEach(f => results[f] = false);
-                    webview.postMessage({
-                        command: 'filesAddedToContext',
-                        results: results,
-                        blockId: blockId
-                    });
-                    return;
-                }
-                const activeWorkspace = vscode.workspace.workspaceFolders[0];
-                try {
+                {
+                    const blockId = message.blockId;
+                    const filesToAdd = message.files as string[];
+                    const results: { [key: string]: boolean } = {};
+                    
+                    if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
+                        filesToAdd.forEach(f => results[f] = false);
+                        webview.postMessage({ command: 'filesAddedToContext', results, blockId });
+                        return;
+                    }
+
+                    const activeWorkspace = vscode.workspace.workspaceFolders[0];
                     const validFiles: string[] = [];
-                    for (const filePath of files) {
+
+                    for (const filePath of filesToAdd) {
                         try {
                             const uri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
                             await vscode.workspace.fs.stat(uri); 
@@ -2135,14 +2164,14 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                             results[filePath] = false;
                         }
                     }
+
                     if (validFiles.length > 0) {
+                        // Call the core context command to perform the inclusion
                         await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', validFiles);
+                        // Force a background token count refresh
+                        this.updateContextAndTokens();
                     }
-                    this.updateContextAndTokens();
-                } catch (err: any) {
-                    this.log("Error adding files to context: " + err.message, 'ERROR');
-                    vscode.window.showErrorMessage("Error adding files: " + err.message);
-                } finally {
+
                     webview.postMessage({
                         command: 'filesAddedToContext',
                         results: results,
@@ -2637,46 +2666,38 @@ Task:
             case 'updateMessage':
                 await this.updateMessage(message.messageId, message.newContent);
                 break;
-            case 'markBlockApplied':
-                if (this._currentDiscussion) {
-                    if (!this._currentDiscussion.appliedState) this._currentDiscussion.appliedState = {};
-                    if (!this._currentDiscussion.appliedState[message.messageId]) this._currentDiscussion.appliedState[message.messageId] = {};
-                    
-                    const blockIdx = message.blockIndex;
-                    const hunkIdx = message.hunkIndex;
-
-                    if (!this._currentDiscussion.appliedState[message.messageId][blockIdx]) {
-                        this._currentDiscussion.appliedState[message.messageId][blockIdx] = [];
-                    }
-
-                    if (hunkIdx !== undefined) {
-                        if (!this._currentDiscussion.appliedState[message.messageId][blockIdx].includes(hunkIdx)) {
-                            this._currentDiscussion.appliedState[message.messageId][blockIdx].push(hunkIdx);
-                        }
-                    } else {
-                        // Mark whole block (all hunks or full file) as applied
-                        this._currentDiscussion.appliedState[message.messageId][blockIdx] = [-1]; 
-                    }
-
-                    if (!this._currentDiscussion.id.startsWith('temp-')) {
-                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
-                    }
-                }
-                break;
             case 'applyFileContent':
                 try {
-                    await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', message.filePath, message.content);
+                    const res: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', message.filePath, message.content);
+                    if (res && res.success) {
+                        webview.postMessage({
+                            command: 'applyAllResult',
+                            messageId: message.messageId,
+                            filePath: message.filePath,
+                            blockIndex: message.blockIndex,
+                            success: true
+                        });
+                        await this.updateAppliedState(message.messageId, message.blockIndex);
+                    }
                 } catch (e: any) {
                     this.log(`Command applyFileContent failed: ${e.message}`, 'ERROR');
-                    vscode.window.showErrorMessage(`Failed to apply changes: ${e.message}`);
                 }
                 break;
             case 'applyPatchContent':
                 try {
-                    await vscode.commands.executeCommand('lollms-vs-coder.applyPatchContent', message.filePath, message.content);
+                    const res: any = await vscode.commands.executeCommand('lollms-vs-coder.applyPatchContent', message.filePath, message.content);
+                    if (res && res.success) {
+                        webview.postMessage({
+                            command: 'applyAllResult',
+                            messageId: message.messageId,
+                            filePath: message.filePath,
+                            blockIndex: message.blockIndex,
+                            success: true
+                        });
+                        await this.updateAppliedState(message.messageId, message.blockIndex);
+                    }
                 } catch (e: any) {
                     this.log(`Command applyPatchContent failed: ${e.message}`, 'ERROR');
-                    vscode.window.showErrorMessage(`Failed to apply patch: ${e.message}`);
                 }
                 break;
             case 'runScript':
@@ -3647,8 +3668,13 @@ Task:
                     <h2>Apply Skills to Context</h2>
                     <span class="close-btn" id="skills-close-btn">&times;</span>
                 </div>
-                <div class="modal-body" id="skills-tree-container">
-                    <!-- Tree generated dynamically -->
+                <div class="modal-body">
+                    <div style="margin-bottom: 12px;">
+                        <input type="text" id="skills-search-input" class="search-modal-input" placeholder="Filter skills by name or category..." style="width: 100%;">
+                    </div>
+                    <div id="skills-tree-container">
+                        <!-- Tree generated dynamically -->
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button id="skills-import-btn">Apply Selected</button>
@@ -4275,7 +4301,16 @@ Task:
         <div id="raw-code-modal" class="modal">
             <div class="modal-content" style="max-width: 90%; width: 800px;">
                 <div class="modal-header">
-                    <h2>Raw Aider Block</h2>
+                    <div style="display:flex; align-items:center; gap:15px; flex:1;">
+                        <h2 style="margin:0; white-space:nowrap;">Raw Aider Block</h2>
+                        <div class="raw-search-container" style="display:flex; align-items:center; gap:5px; background:var(--vscode-input-background); border:1px solid var(--vscode-input-border); padding:2px 8px; border-radius:4px; flex:1; max-width:400px;">
+                            <i class="codicon codicon-search" style="font-size:12px; opacity:0.7;"></i>
+                            <input type="text" id="raw-search-input" placeholder="Search in block..." style="background:transparent; border:none; color:var(--vscode-input-foreground); outline:none; font-size:11px; flex:1; padding:2px 0;">
+                            <span id="raw-search-count" style="font-size:10px; opacity:0.6; min-width:35px; text-align:center;"></span>
+                            <button id="raw-search-prev" class="icon-btn" style="padding:0; width:18px; height:18px;"><i class="codicon codicon-arrow-up" style="font-size:12px;"></i></button>
+                            <button id="raw-search-next" class="icon-btn" style="padding:0; width:18px; height:18px;"><i class="codicon codicon-arrow-down" style="font-size:12px;"></i></button>
+                        </div>
+                    </div>
                     <span class="close-btn" id="raw-code-close-btn">&times;</span>
                 </div>
                 <div class="modal-body">

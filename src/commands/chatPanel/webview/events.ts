@@ -25,7 +25,15 @@ export function initEventHandlers() {
                 planZone.style.width = `${newWidth}px`;
             }
         });
-        window.addEventListener('mouseup', () => {
+        // Handle Space key for Panning mode
+    window.addEventListener('keydown', (e) => {
+        if (e.code === 'Space') (window as any).isSpaceDown = true;
+    });
+    window.addEventListener('keyup', (e) => {
+        if (e.code === 'Space') (window as any).isSpaceDown = false;
+    });
+
+    window.addEventListener('mouseup', () => {
             if (isResizing) {
                 isResizing = false;
                 resizer.classList.remove('resizing');
@@ -663,6 +671,16 @@ export function initEventHandlers() {
     if (dom.skillsCloseBtn) {
         dom.skillsCloseBtn.addEventListener('click', () => {
             dom.skillsModal.classList.remove('visible');
+            if (dom.skillsSearchInput) dom.skillsSearchInput.value = '';
+        });
+    }
+
+    if (dom.skillsSearchInput) {
+        dom.skillsSearchInput.addEventListener('input', (e) => {
+            const query = (e.target as HTMLInputElement).value;
+            if (typeof (window as any).filterSkillsTree === 'function') {
+                (window as any).filterSkillsTree(query);
+            }
         });
     }
 
@@ -693,9 +711,90 @@ export function initEventHandlers() {
         dom.discussionSearchCloseBtn.addEventListener('click', () => dom.discussionSearchModal.classList.remove('visible'));
     }
 
+    // --- Raw Code Modal Search Logic ---
+    let rawMatches: HTMLElement[] = [];
+    let currentRawIdx = -1;
+
+    function clearRawSearch() {
+        rawMatches = [];
+        currentRawIdx = -1;
+        if (dom.rawSearchCount) dom.rawSearchCount.textContent = '';
+        const display = dom.rawCodeDisplay;
+        if (display && display.dataset.rawText) {
+            display.textContent = display.dataset.rawText;
+        }
+    }
+
+    function performRawSearch() {
+        const query = dom.rawSearchInput.value;
+        const display = dom.rawCodeDisplay;
+        if (!query || !display) {
+            clearRawSearch();
+            return;
+        }
+
+        const text = display.dataset.rawText || display.textContent || "";
+        if (!display.dataset.rawText) display.dataset.rawText = text;
+
+        const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(`(${escaped})`, 'gi');
+        
+        display.innerHTML = text.replace(regex, '<mark class="raw-match">$1</mark>');
+        rawMatches = Array.from(display.querySelectorAll('.raw-match'));
+        
+        if (rawMatches.length > 0) {
+            currentRawIdx = 0;
+            updateRawNavigation();
+        } else {
+            currentRawIdx = -1;
+            if (dom.rawSearchCount) dom.rawSearchCount.textContent = '0/0';
+        }
+    }
+
+    function updateRawNavigation() {
+        rawMatches.forEach((m, i) => m.classList.toggle('current-match', i === currentRawIdx));
+        if (dom.rawSearchCount) dom.rawSearchCount.textContent = `${currentRawIdx + 1}/${rawMatches.length}`;
+        if (rawMatches[currentRawIdx]) {
+            rawMatches[currentRawIdx].scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+    }
+
+    if (dom.rawSearchInput) {
+        dom.rawSearchInput.addEventListener('input', performRawSearch);
+        dom.rawSearchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                if (e.shiftKey) {
+                    currentRawIdx = (currentRawIdx - 1 + rawMatches.length) % rawMatches.length;
+                } else {
+                    currentRawIdx = (currentRawIdx + 1) % rawMatches.length;
+                }
+                updateRawNavigation();
+            }
+            if (e.key === 'Escape') {
+                dom.rawCodeModal.classList.remove('visible');
+            }
+        });
+    }
+
+    if (dom.rawSearchNext) dom.rawSearchNext.onclick = () => {
+        if (rawMatches.length === 0) return;
+        currentRawIdx = (currentRawIdx + 1) % rawMatches.length;
+        updateRawNavigation();
+    };
+
+    if (dom.rawSearchPrev) dom.rawSearchPrev.onclick = () => {
+        if (rawMatches.length === 0) return;
+        currentRawIdx = (currentRawIdx - 1 + rawMatches.length) % rawMatches.length;
+        updateRawNavigation();
+    };
+
     // --- Raw Code Modal Events ---
     if (dom.rawCodeCloseBtn) {
-        dom.rawCodeCloseBtn.addEventListener('click', () => dom.rawCodeModal.classList.remove('visible'));
+        dom.rawCodeCloseBtn.addEventListener('click', () => {
+            dom.rawCodeModal.classList.remove('visible');
+            clearRawSearch();
+            if (dom.rawSearchInput) dom.rawSearchInput.value = '';
+        });
     }
 
     if (dom.copyRawBtn) {

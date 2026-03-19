@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.7.13",
+  "version": "0.7.17",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -205,6 +205,11 @@
         "command": "lollms-vs-coder.addSkill",
         "title": "%command.addSkill.title%",
         "icon": "$(add)"
+      },
+      {
+        "command": "lollms-vs-coder.editSkill",
+        "title": "Edit Skill",
+        "icon": "$(edit)"
       },
       {
         "command": "lollms-vs-coder.learnSelectionAsSkill",
@@ -1502,12 +1507,12 @@
           "group": "9_delete"
         },
         {
-          "command": "lollms-vs-coder.exportSkills",
+          "command": "lollms-vs-coder.editSkill",
           "when": "view == lollmsSkillsView && viewItem == 'skill'",
           "group": "inline"
         },
         {
-          "command": "lollms-vs-coder.exportSkills",
+          "command": "lollms-vs-coder.editSkill",
           "when": "view == lollmsSkillsView && viewItem == 'skill'",
           "group": "1_modification"
         }

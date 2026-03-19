@@ -183,16 +183,23 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.copyTreeAndContent', async () => {
-        try {
-            const res = await services.contextManager.getContextContent({
-                includeTree: true,
-                modelName: services.lollmsAPI.getModelName()
-            });
-            const output = `${res.projectTree}\n\n## File Contents\n\n${res.selectedFilesContent}`;
-            await vscode.env.clipboard.writeText(output);
-            vscode.window.showInformationMessage("File tree and selected content copied to clipboard.");
-        } catch (error: any) {
-            vscode.window.showErrorMessage(`Failed to copy: ${error.message}`);
-        }
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Lollms: Preparing data for clipboard...",
+            cancellable: false
+        }, async () => {
+            try {
+                // Use cache if it's recent (within 5 seconds)
+                const res = await services.contextManager.getContextContent({
+                    includeTree: true,
+                    modelName: services.lollmsAPI.getModelName()
+                });
+                const output = `${res.projectTree}\n\n## File Contents\n\n${res.selectedFilesContent}`;
+                await vscode.env.clipboard.writeText(output);
+                vscode.window.showInformationMessage("✅ Project data copied to clipboard.");
+            } catch (error: any) {
+                vscode.window.showErrorMessage(`Failed to copy: ${error.message}`);
+            }
+        });
     }));
 }

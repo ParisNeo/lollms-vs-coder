@@ -238,7 +238,24 @@ body {
 .message-content p { margin-top: 0; margin-bottom: 0.8em; }
 .message-content p:last-child { margin-bottom: 0; }
 .message-content pre { max-height: 500px; overflow-y: auto; }
-.message-actions { position: sticky; top: 6px; align-self: flex-end; margin-bottom: -32px; z-index: 20; display: flex; gap: 4px; background-color: var(--vscode-editor-background); border-radius: 4px; padding: 2px; border: 1px solid var(--vscode-editorGroup-border); box-shadow: 0 2px 4px rgba(0,0,0,0.1); opacity: 0; transition: opacity 0.2s; pointer-events: none; }
+/* Consolidated message-actions to ensure it stays in front of code toolbars */
+.message-actions { 
+    position: absolute; 
+    top: 6px; 
+    right: 6px; 
+    z-index: 10001; /* Higher than .code-summary (500) and other UI elements */
+    display: flex; 
+    gap: 4px; 
+    background-color: var(--vscode-editor-background); 
+    border-radius: 4px; 
+    padding: 4px; 
+    border: 1px solid var(--vscode-widget-border); 
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3); 
+    opacity: 0; 
+    visibility: hidden;
+    transition: opacity 0.15s ease-in-out, visibility 0.15s; 
+    pointer-events: none; 
+}
 .message:hover .message-actions { opacity: 1; pointer-events: auto; }
 .msg-action-btn { background: transparent; border: none; color: var(--vscode-icon-foreground); cursor: pointer; padding: 4px; border-radius: 3px; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; }
 .msg-action-btn:hover { background-color: var(--vscode-toolbar-hoverBackground); color: var(--vscode-foreground); }
@@ -315,11 +332,11 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 .code-action-btn:disabled { opacity: 0.5; cursor: not-allowed; pointer-events: none; filter: grayscale(100%); }
 .code-action-btn.success { background-color: var(--vscode-charts-green) !important; color: white !important; border-color: transparent; transition: all 0.2s ease; }
 .code-action-btn.applied, .apply-all-btn.applied { 
-    background-color: var(--vscode-charts-red) !important; 
+    background-color: var(--vscode-charts-green) !important; 
     color: white !important; 
     border-color: transparent; 
     transition: all 0.2s ease;
-    opacity: 0.8;
+    opacity: 0.9;
 }
 .code-action-btn.applied:hover {
     filter: brightness(1.2);
@@ -366,11 +383,11 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     margin: 0;
     padding: 0;
     overflow-x: auto;
-    max-height: 600px;
+    max-height: 500px; /* Capped height */
     overflow-y: auto;
     width: 100%;
     max-width: 100%;
-    display: flex; /* Support line numbers side-by-side */
+    display: flex;
     background-color: var(--vscode-editor-background);
     box-sizing: border-box;
 }
@@ -1372,13 +1389,7 @@ mark.current-match {
 
 
 
-.plan-wrapper { 
-    margin: 0;
-    width: 100%;
-    animation: fade-in-up 0.3s ease-out; 
-    display: flex;
-    flex-direction: column;
-}
+/* Removed duplicate .plan-wrapper definition */
 
 .plan-global-actions {
     padding: 10px 12px;
@@ -2365,21 +2376,33 @@ details[open] > summary .folder-handle::before {
 }
 
 .file-search-item.already-in-context {
-    background-color: rgba(15, 157, 88, 0.03); /* Extremely faint green tint for the whole row */
+    border-left: 3px solid var(--vscode-charts-green);
+    background-color: rgba(15, 157, 88, 0.05);
+}
+
+.file-search-item.selected {
+    background-color: var(--vscode-list-activeSelectionBackground);
+    color: var(--vscode-list-activeSelectionForeground);
 }
 
 .already-included-badge {
     font-size: 9px;
-    border: 1px solid var(--vscode-charts-green); /* Use border instead of solid block */
     color: var(--vscode-charts-green);
-    padding: 1px 5px;
-    border-radius: 3px;
+    padding: 2px 6px;
+    border-radius: 4px;
     display: flex;
     align-items: center;
-    gap: 3px;
-    font-weight: 500;
-    text-transform: uppercase;
-    opacity: 0.8;
+    gap: 4px;
+    font-weight: 800;
+    background: rgba(15, 157, 88, 0.1);
+}
+
+.search-highlight {
+    background-color: var(--vscode-editor-findMatchHighlightBackground);
+    color: inherit;
+    font-weight: bold;
+    border-radius: 2px;
+    padding: 0 1px;
 }
 
 .file-search-item.already-in-context:hover {

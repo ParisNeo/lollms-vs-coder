@@ -481,36 +481,46 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 const btnId = `btn-${blockId}`;
                 const actionBtn = document.getElementById(btnId) as HTMLButtonElement;
                 if (actionBtn) {
-                    actionBtn.innerHTML = `<span class="codicon codicon-check"></span> Added!`;
-                    actionBtn.classList.add('success');
-                    setTimeout(() => {
-                        actionBtn.innerHTML = `<span class="codicon codicon-add"></span> Add to Context`;
-                        actionBtn.classList.remove('success');
-                        actionBtn.disabled = false;
-                    }, 3000);
+                    actionBtn.innerHTML = `<span class="codicon codicon-check"></span> Added to Context`;
+                    actionBtn.classList.remove('apply-btn');
+                    actionBtn.classList.add('applied'); // Turns Green
+                    actionBtn.disabled = true;
                 }
-                const codeBlock = document.getElementById(blockId);
-                if (codeBlock) {
-                    const originalText = codeBlock.textContent || '';
-                    const lines = originalText.trim().split('\n');
-                    let newHtml = '';
-                    lines.forEach(line => {
-                        const path = line.trim();
-                        if (results[path] === true) {
-                            newHtml += `<div class="select-line-valid">${path}</div>`;
-                        } else if (results[path] === false) {
-                            newHtml += `<div class="select-line-invalid">${path} (Not found)</div>`;
-                        } else {
-                            newHtml += `<div>${path}</div>`;
+
+                // Update the file list visualization within the expansion block
+                const listContainer = document.getElementById(`list-${blockId}`);
+                if (listContainer) {
+                    const items = listContainer.querySelectorAll('.expansion-file-item');
+                    items.forEach((item: any) => {
+                        const pathSpan = item.querySelector('span:last-child');
+                        const path = pathSpan?.textContent?.trim();
+                        if (path && results[path] === true) {
+                            item.style.borderColor = 'var(--vscode-charts-green)';
+                            item.style.background = 'rgba(15, 157, 88, 0.1)';
+                            const icon = item.querySelector('.codicon');
+                            if (icon) {
+                                icon.classList.remove('codicon-file-add');
+                                icon.classList.add('codicon-check');
+                                icon.style.color = 'var(--vscode-charts-green)';
+                            }
+                        } else if (path && results[path] === false) {
+                            item.style.borderColor = 'var(--vscode-charts-red)';
+                            const icon = item.querySelector('.codicon');
+                            if (icon) {
+                                icon.classList.remove('codicon-file-add');
+                                icon.classList.add('codicon-error');
+                                icon.style.color = 'var(--vscode-charts-red)';
+                            }
                         }
                     });
-                    codeBlock.classList.remove('language-select');
-                    codeBlock.innerHTML = newHtml;
                 }
                 break;
             }
             case 'updateGitState': {
                 state.currentBranch = message.branch;
+                if (message.lastHash) {
+                    state.lastCommitHash = message.lastHash;
+                }
                 updateBadges();
                 break;
             }
@@ -668,54 +678,77 @@ export async function handleExtensionMessage(event: MessageEvent) {
             case 'applyAllResult':
                 {
                     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
+                    if (!wrapper) break;
+
+                    // 1. Update the individual code block UI (even if it wasn't part of an "Apply All" run)
+                    const targetBlockId = `block-${message.messageId}-${message.blockIndex}`;
+                    const blockEl = document.getElementById(targetBlockId) as HTMLDetailsElement;
+
+                    if (blockEl && message.success) {
+                        // Handle specific hunk button or main block button
+                        if (message.hunkIndex !== undefined) {
+                            const hunkBubbles = blockEl.querySelectorAll('.aider-hunk-bubble');
+                            const targetHunk = hunkBubbles[message.hunkIndex];
+                            if (targetHunk) {
+                                const hunkBtn = targetHunk.querySelector('.apply-btn');
+                                if (hunkBtn) {
+                                    hunkBtn.classList.add('applied');
+                                    hunkBtn.innerHTML = '<span class="codicon codicon-check"></span>';
+                                }
+                                targetHunk.classList.add('collapsed');
+                            }
+                            
+                            // If all hunks in this block are now applied, mark the main block button too
+                            const totalHunks = hunkBubbles.length;
+                            const appliedHunks = blockEl.querySelectorAll('.aider-hunk-actions .apply-btn.applied').length;
+                            if (appliedHunks === totalHunks) {
+                                const mainApplyBtn = blockEl.querySelector('.code-actions .apply-btn');
+                                if (mainApplyBtn) {
+                                    mainApplyBtn.classList.add('applied');
+                                    mainApplyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
+                                }
+                                blockEl.open = false; // Collapse only when fully finished
+                            }
+                        } else {
+                            // Full block applied successfully
+                            const mainApplyBtn = blockEl.querySelector('.code-actions .apply-btn');
+                            if (mainApplyBtn) {
+                                mainApplyBtn.classList.add('applied');
+                                mainApplyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
+                            }
+                            // Also mark all internal hunks as applied
+                            blockEl.querySelectorAll('.aider-hunk-actions .apply-btn').forEach(btn => {
+                                btn.classList.add('applied');
+                                btn.innerHTML = '<span class="codicon codicon-check"></span>';
+                            });
+                            blockEl.querySelectorAll('.aider-hunk-bubble').forEach(h => h.classList.add('collapsed'));
+                            blockEl.open = false;
+                        }
+                    } else if (blockEl && !message.success) {
+                        // FAILURE CASE: Restore the button so the user can try again
+                        const mainApplyBtn = blockEl.querySelector('.code-actions .apply-btn') as HTMLButtonElement;
+                        if (mainApplyBtn && mainApplyBtn.dataset.originalHtml) {
+                            mainApplyBtn.disabled = false;
+                            mainApplyBtn.innerHTML = mainApplyBtn.dataset.originalHtml;
+                        }
+                    }
+
+                    // 2. Update the "Apply All" list row if it exists
                     const hunkAttr = message.hunkIndex !== undefined ? `[data-hunk-index='${message.hunkIndex}']` : ':not([data-hunk-index])';
-                    const row = wrapper?.querySelector(`.apply-row[data-block-index='${message.blockIndex}']${hunkAttr}`);
+                    const row = wrapper.querySelector(`.apply-row[data-block-index='${message.blockIndex}']${hunkAttr}`) as HTMLElement;
                     
                     if (row && message.success) {
                         const iconEl = row.querySelector('.status-icon');
-                        row.style.background = 'rgba(15, 157, 88, 0.05)';
+                        row.style.background = 'rgba(15, 157, 88, 0.1)'; 
                         
                         if (message.alreadyApplied) {
                             row.style.opacity = '0.6';
                             if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)" title="Already matches file on disk"></span>';
-                            const label = row.querySelector('span:last-of-type');
-                            if (label) label.innerHTML += ' <small style="opacity:0.6">(Already applied)</small>';
                         } else {
-                            // Standard success
                             if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span>';
-                            // If auto-repaired, add a note
-                            if (message.repaired) {
-                                const label = row.querySelector('span:last-of-type');
-                                if (label) label.innerHTML += ' <small style="color:var(--vscode-charts-orange); margin-left:4px;">(Auto-repaired)</small>';
-                            }
-                        }
-                        
-                        // NEW: Find every individual "Apply" and "Apply Hunk" button in this message 
-                        // matching this file path and mark them red immediately.
-                        if (wrapper) {
-                            const relatedBlocks = wrapper.querySelectorAll('details.code-collapsible');
-                            relatedBlocks.forEach(block => {
-                                const langLabel = block.querySelector('.summary-lang-label')?.textContent || "";
-                                if (langLabel.includes(message.filePath)) {
-                                    // Mark block button
-                                    const blockBtn = block.querySelector('.code-actions .apply-btn');
-                                    if (blockBtn) {
-                                        blockBtn.classList.add('applied');
-                                        blockBtn.innerHTML = '<span class="codicon codicon-check"></span>';
-                                    }
-                                    // Mark all hunk buttons inside
-                                    const hunkBtns = block.querySelectorAll('.aider-hunk-actions .apply-btn');
-                                    hunkBtns.forEach(hb => {
-                                        hb.classList.add('applied');
-                                        hb.innerHTML = '<span class="codicon codicon-check"></span>';
-                                    });
-                                    // Collapse the finished block
-                                    (block as HTMLDetailsElement).open = false;
-                                }
-                            });
                         }
                     } else if (row) {
-                        row.style.background = 'rgba(244, 71, 71, 0.05)';
+                        row.style.background = 'rgba(244, 71, 71, 0.15)'; // Error tint
                         const iconEl = row.querySelector('.status-icon');
                         const actionsEl = row.querySelector('.row-actions') as HTMLElement;
 
@@ -742,21 +775,32 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
 
 
-                    // Update main button state if everything is finished
+                    // Update main "Apply All" button state if everything is finished
                     const resultsList = row?.closest('.apply-results-list');
                     if (resultsList) {
                         const stillPending = resultsList.querySelectorAll('.spinner').length;
+                        // If no more items are currently spinning (pending), finalize the button
                         if (stillPending === 0) {
                             const mainBtn = resultsList.previousElementSibling as HTMLButtonElement;
-                            if (mainBtn) {
-                                mainBtn.classList.remove('stop-btn-red'); // Remove stop color
+                            if (mainBtn && mainBtn.classList.contains('stop-btn-red')) {
+                                mainBtn.classList.remove('stop-btn-red');
+                                
                                 const failedCount = resultsList.querySelectorAll('.codicon-error').length;
                                 if (failedCount === 0) {
-                                    mainBtn.innerHTML = '<span class="codicon codicon-check"></span> All Files Applied';
+                                    // FINAL SUCCESS: Button turns Green and is disabled
+                                    mainBtn.innerHTML = '<span class="codicon codicon-check"></span> All Modifications Applied';
                                     mainBtn.classList.add('applied');
+                                    mainBtn.style.backgroundColor = 'var(--vscode-charts-green)'; 
                                     mainBtn.disabled = true;
+                                    
+                                    // Keep list visible for 2 seconds then hide
+                                    setTimeout(() => {
+                                        if (resultsList instanceof HTMLElement) resultsList.style.display = 'none';
+                                    }, 2000);
                                 } else {
-                                    mainBtn.innerHTML = '<span class="codicon codicon-warning"></span> Retry Failed (' + failedCount + ')';
+                                    // ERROR CASE: Turn Red
+                                    mainBtn.innerHTML = `<span class="codicon codicon-warning"></span> Retry Failed (${failedCount})`;
+                                    mainBtn.style.backgroundColor = 'var(--vscode-charts-red)';
                                     mainBtn.disabled = false;
                                 }
                             }

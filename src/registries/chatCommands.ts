@@ -119,24 +119,7 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
         }
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.renameDiscussion', async (item: DiscussionItem) => {
-        const newTitle = await vscode.window.showInputBox({
-            prompt: vscode.l10n.t('prompt.enterNewDiscussionTitle'),
-            value: item.discussion.title
-        });
-
-        if (newTitle !== undefined && newTitle.trim()) {
-            item.discussion.title = newTitle.trim();
-            await services.discussionManager.saveDiscussion(item.discussion);
-            
-            const panel = ChatPanel.panels.get(item.discussion.id);
-            if (panel) {
-                panel._panel.title = item.discussion.title;
-            }
-            
-            services.treeProviders.discussion?.refresh();
-        }
-    }));
+    // Removed duplicate renameDiscussion registration to fix console warning
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateDiscussionTitle', async (item: DiscussionItem) => {
         await vscode.window.withProgress({
@@ -516,27 +499,8 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showFileSearch', async () => {
-        let panel = ChatPanel.currentPanel;
-        
-        // Ensure a discussion is active
-        if (!panel) {
-            if (ChatPanel.panels.size > 0) {
-                panel = ChatPanel.panels.values().next().value;
-            } else {
-                await vscode.commands.executeCommand('lollms-vs-coder.newTempDiscussion');
-                await new Promise(resolve => setTimeout(resolve, 600));
-                panel = ChatPanel.currentPanel;
-            }
-        }
-        
-        if (panel) {
-            panel._panel.reveal();
-            // Trigger the internal search modal in the webview
-            panel._panel.webview.postMessage({ 
-                command: 'executeLollmsCommand', 
-                details: { command: 'search-add-context-btn', params: {} } 
-            });
-        }
+        const { SearchPanel } = await import('../commands/searchPanel');
+        SearchPanel.createOrShow(services.extensionUri, services.contextManager);
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.runScript', async (code: string, language: string) => {

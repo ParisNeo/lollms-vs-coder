@@ -121,9 +121,14 @@ export class LollmsAPI {
 
       if (certPath && fs.existsSync(certPath)) {
           try {
-              const certBuffer = fs.readFileSync(certPath);
-              options.ca = certBuffer;
-              Logger.info(`Loaded custom SSL cert buffer: ${certPath}`);
+              const stat = fs.statSync(certPath);
+              if (stat.isFile()) {
+                  const certBuffer = fs.readFileSync(certPath);
+                  options.ca = certBuffer;
+                  Logger.info(`Loaded custom SSL cert buffer: ${certPath}`);
+              } else {
+                  Logger.warn(`SSL Cert Path is a directory, skipping: ${certPath}`);
+              }
           } catch (e) {
               Logger.error(`Failed to read SSL cert: ${certPath}`, e);
           }
@@ -507,7 +512,31 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
     }));
 
     // Handle Physical Thinking Mode from config/capabilities
+    const controller = new AbortController();
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+    const initialTimeoutDuration = config.get<number>('requestTimeout') || 600000;
+    const interTokenTimeout = 30000; // 30 seconds max between tokens
+    
+    let timedOut = false;
+    let activeTimer: NodeJS.Timeout | undefined;
+
+    const resetTimer = (ms: number) => {
+        if (activeTimer) clearTimeout(activeTimer);
+        activeTimer = setTimeout(() => {
+            timedOut = true;
+            controller.abort();
+        }, ms);
+    };
+
+    // Start initial timeout (Wait for first response/token)
+    resetTimer(initialTimeoutDuration);
+
+    if (signal) {
+        signal.addEventListener('abort', () => {
+            if (activeTimer) clearTimeout(activeTimer);
+            controller.abort();
+        });
+    }
     
     // PRIORITY: 
     // 1. Explicit option passed by ChatPanel (The Badge)
@@ -574,16 +603,7 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
         body = { model, messages: sanitizedMessages, stream };
     }
 
-    const controller = new AbortController();
-    const timeoutDuration = vscode.workspace.getConfiguration('lollmsVsCoder').get<number>('requestTimeout') || 600000;
-    
-    let timedOut = false;
-    const timeout = setTimeout(() => {
-        timedOut = true;
-        controller.abort();
-    }, timeoutDuration);
 
-    if (signal) signal.onabort = () => controller.abort();
 
     try {
         const response = await fetch(url, {
@@ -603,8 +623,15 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
             let fullResponse = '';
             let buffer = '';
             const decoder = new TextDecoder();
+            let isFirstChunk = true;
             
             for await (const chunk of response.body) {
+                // If we are streaming, switch to a shorter "stall" timeout once data starts moving
+                if (isFirstChunk) {
+                    isFirstChunk = false;
+                }
+                resetTimer(interTokenTimeout);
+
                 buffer += decoder.decode(chunk as any, { stream: true });
                 const lines = buffer.split('\n');
                 buffer = lines.pop() || '';
@@ -654,14 +681,15 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
     } catch (error: any) {
         if (error.name === 'AbortError' || error.message === 'AbortError') {
             if (timedOut) {
-              throw new Error(`Request timeout.`);
+              const msg = stream ? "Generation stalled (Inter-token timeout)" : "Request timed out (TTFT)";
+              throw new Error(msg);
             }
             throw error;
         }
         Logger.error("SendChat Failed", error);
         throw error;
     } finally {
-      clearTimeout(timeout);
+      if (activeTimer) clearTimeout(activeTimer);
     }
   }
 }

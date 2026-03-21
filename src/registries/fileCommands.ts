@@ -617,6 +617,36 @@ ${originalContent}
          }
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.verifyHunks', async (changes: any[]): Promise<Record<string, 'applied' | 'ready' | 'incompatible'>> => {
+        const activeWorkspace = getActiveWorkspace();
+        if (!activeWorkspace) return {};
+
+        const results: Record<string, 'applied' | 'ready' | 'incompatible'> = {};
+
+        for (const change of changes) {
+            const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, change.path);
+            const key = `${change.blockIndex}-${change.hunkIndex ?? 'full'}`;
+            try {
+                const bytes = await vscode.workspace.fs.readFile(fileUri);
+                const content = Buffer.from(bytes).toString('utf8');
+
+                const cleanReplace = (change.content || change.replace || "").trim();
+                const cleanSearch = change.search?.trim();
+
+                if (content.includes(cleanReplace) || content.trim() === cleanReplace) {
+                    results[key] = 'applied';
+                } else if (!cleanSearch || content.includes(cleanSearch)) {
+                    results[key] = 'ready';
+                } else {
+                    results[key] = 'incompatible';
+                }
+            } catch {
+                results[key] = 'incompatible';
+            }
+        }
+        return results;
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setEntryPoint', async (targetPath?: string) => {
         const activeWorkspace = getActiveWorkspace();
         if (!activeWorkspace) {

@@ -63,24 +63,25 @@ export class Logger {
     private static log(level: LogLevel, message: string, data?: any) {
         const formatted = this._formatMessage(level, message, data);
 
-        // 1. Output Channel
         if (this.outputChannel) {
             this.outputChannel.appendLine(formatted);
         }
 
-        // 2. In-memory buffer
         this._entries.push(formatted);
         if (this._entries.length > 1000) {
             this._entries.shift();
         }
 
-        // 3. File Log (Best effort)
         if (this.logFilePath) {
             try {
-                // Use appendFileSync for simplicity and to ensure logs are written immediately before a potential crash
+                // Verify path is actually a file before writing to avoid EISDIR
+                if (fs.existsSync(this.logFilePath)) {
+                    const stat = fs.lstatSync(this.logFilePath);
+                    if (!stat.isFile()) return;
+                }
                 fs.appendFileSync(this.logFilePath, formatted + '\n');
             } catch (e) {
-                // Ignore write errors to avoid loop/crash
+                // Ignore write errors
             }
         }
     }

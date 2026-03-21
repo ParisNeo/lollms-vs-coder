@@ -481,38 +481,47 @@ export async function applyDiff(diffContent: string, targetFilePath?: string) {
 }
 
 export async function getProcessedSystemPrompt(
-    promptType: 'chat' | 'agent' | 'inspector' | 'commit', 
+    promptType: 'chat' | 'agent' | 'inspector' | 'commit' | 'surgical_agent', 
     capabilities?: DiscussionCapabilities,
     customPersonaContent?: string,
     memoryManager?: MemoryManager,
     forceFullCode?: boolean,
     context?: { tree: string, files: string, skills: string },
-    workingMemory?: string // Added parameter for pre-processing insights
+    workingMemory?: string
 ): Promise<string> {
     const memory = memoryManager ? await memoryManager.getMemory() : "";
     let finalPersona = customPersonaContent || "";
     
-    // Inject Working Memory (insights from Librarian/Auto-Context) if it exists
+    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+    
+    // Fallback if no custom persona
+    if (!finalPersona) {
+        const key = promptType === 'chat' ? 'chatPersona' :
+                    promptType === 'agent' ? 'agentPersona' :
+                    promptType === 'inspector' ? 'codeInspectorPersona' : 'commitMessagePersona';
+        finalPersona = config.get<string>(key) || "You are an expert software engineer.";
+    }
+
     if (workingMemory) {
-        finalPersona = `### 🧠 LIBRARIAN'S CONTEXT ANALYSIS
-A specialized Librarian agent has pre-scanned the project and synchronized the most relevant files to your context.
-**LIBRARIAN'S FINDINGS & SUGGESTED STRATEGY**:
-${workingMemory}
-
-**MANDATE**: Use the files the Librarian has provided to solve the user request. If a file is mentioned in the analysis but missing from your content, use <add_files> to request it.
-\n\n${finalPersona}`;
+        finalPersona = `### 🧠 LIBRARIAN'S CONTEXT ANALYSIS\n${workingMemory}\n\n${finalPersona}`;
     }
 
-    // --- CASUAL MODE DETECTION ---
     if (context && (!context.files || context.files.trim().length === 0)) {
-        finalPersona = `### 💬 MODE: GENERAL DISCUSSION
-The user has not provided any file context. 
-1. Answer general questions normally.
-2. If asked to modify the project, explain that you need files added to context first.
-3. Use general code snippets without file paths for explanations.\n\n` + finalPersona;
+        finalPersona = `### 💬 MODE: GENERAL DISCUSSION\n(No file context provided)\n\n` + finalPersona;
     }
 
-    return PromptTemplates.getSystemPrompt(promptType, capabilities, finalPersona, memory, forceFullCode, context);
+    const shells = await getAvailableShells();
+
+    // CALL THE TEMPLATE BUILDER
+    return PromptTemplates.build(
+        promptType, 
+        finalPersona, 
+        memory, 
+        shells, 
+        capabilities, 
+        forceFullCode, 
+        context
+    );
 }
 
 export function stripAnsiCodes(text: string): string {

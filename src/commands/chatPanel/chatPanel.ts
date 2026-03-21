@@ -16,6 +16,7 @@ import { GitIntegration } from '../../gitIntegration';
 import { applyDiffToString, applySearchReplace } from '../../utils';
 import { BigDataProcessor } from '../../bigDataProcessing';
 import { AutomationPanel } from '../../panels/automationPanel';
+import { LocalizationManager } from '../../utils/localizationManager';
 
 interface ActiveGeneration {
     messageId: string;
@@ -1044,40 +1045,64 @@ Please provide the **FULL CONTENT** of the file instead using the format:
   }
 
   private async copyFullPromptToClipboard(draftMessage: string) {
-      const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-      const forceFullCode = config.get<boolean>('forceFullCodePath') || false;
+      // 1. Show feedback in Chat Panel immediately
+      this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: true, statusText: 'Assembling full prompt...' });
 
-      const importedIds = this._currentDiscussion?.importedSkills || [];
-      const contextData = await this._contextManager.getContextContent({ 
-          importedSkillIds: importedIds,
-          modelName: this._currentDiscussion?.model || this._lollmsAPI.getModelName()
-      });
-      const context = {
-          tree: contextData.projectTree,
-          files: contextData.selectedFilesContent,
-          skills: contextData.skillsContent
-      };
+      // 2. Use VS Code standard progress notification for long-running tasks
+      await vscode.window.withProgress({
+          location: vscode.ProgressLocation.Notification,
+          title: "Lollms: Preparing context for clipboard...",
+          cancellable: false
+      }, async (progress) => {
+          try {
+              const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+              const forceFullCode = config.get<boolean>('forceFullCodePath') || false;
 
-      const personaContent = this.getCurrentPersonaSystemPrompt();
-      const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, forceFullCode, context);
-      
-      let fullText = `${systemPrompt}\n\n`;
-
-      if (this._currentDiscussion) {
-          fullText += `--- CHAT HISTORY ---\n`;
-          this._currentDiscussion.messages
-              .filter(m => !m.skipInPrompt)
-              .forEach(m => {
-                  const content = Array.isArray(m.content) ? m.content.map(c => c.type === 'text' ? c.text : '[Image]').join('\n') : m.content;
-                  fullText += `${m.role.toUpperCase()}: ${content}\n\n`;
+              const importedIds = this._currentDiscussion?.importedSkills || [];
+              
+              progress.report({ message: "Extracting file contents..." });
+              const contextData = await this._contextManager.getContextContent({ 
+                  importedSkillIds: importedIds,
+                  modelName: this._currentDiscussion?.model || this._lollmsAPI.getModelName()
               });
-      }
-      if (draftMessage && draftMessage.trim()) {
-          fullText += `--- CURRENT PROMPT ---\n`;
-          fullText += `USER: ${draftMessage}\n`;
-      }
-      await vscode.env.clipboard.writeText(fullText);
-      vscode.window.showInformationMessage("Full context and prompt copied to clipboard.");
+              
+              const context = {
+                  tree: contextData.projectTree,
+                  files: contextData.selectedFilesContent,
+                  skills: contextData.skillsContent
+              };
+
+              progress.report({ message: "Processing system prompt..." });
+              const personaContent = this.getCurrentPersonaSystemPrompt();
+              const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, forceFullCode, context);
+              
+              let fullText = `${systemPrompt}\n\n`;
+
+              if (this._currentDiscussion) {
+                  fullText += `--- CHAT HISTORY ---\n`;
+                  this._currentDiscussion.messages
+                      .filter(m => !m.skipInPrompt)
+                      .forEach(m => {
+                          const content = Array.isArray(m.content) ? m.content.map(c => c.type === 'text' ? c.text : '[Image]').join('\n') : m.content;
+                          fullText += `${m.role.toUpperCase()}: ${content}\n\n`;
+                      });
+              }
+              
+              if (draftMessage && draftMessage.trim()) {
+                  fullText += `--- CURRENT PROMPT ---\n`;
+                  fullText += `USER: ${draftMessage}\n`;
+              }
+
+              progress.report({ message: "Writing to clipboard..." });
+              await vscode.env.clipboard.writeText(fullText);
+              vscode.window.showInformationMessage("✅ Full context and prompt copied to clipboard.");
+          } catch (e: any) {
+              vscode.window.showErrorMessage(`Failed to copy: ${e.message}`);
+          } finally {
+              // 3. Dismiss loading states
+              this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: false });
+          }
+      });
   }
   
   private async deleteMessage(messageId: string) {
@@ -2010,8 +2035,21 @@ Please provide the **FULL CONTENT** of the file instead using the format:
             case 'copyFullPrompt':
                 await this.copyFullPromptToClipboard(message.draftMessage);
                 break;
+            case 'copySystemPrompt':
+                await this.copySystemPromptToClipboard();
+                break;
             case 'copyTreeAndContent':
                 vscode.commands.executeCommand('lollms-vs-coder.copyTreeAndContent');
+                break;
+            case 'verifyAllChanges':
+                {
+                    const results: any = await vscode.commands.executeCommand('lollms-vs-coder.verifyHunks', message.changes);
+                    webview.postMessage({
+                        command: 'verifyAllResult',
+                        messageId: message.messageId,
+                        results: results
+                    });
+                }
                 break;
             case 'applyAllChanges':
                 {
@@ -2030,13 +2068,21 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                         token.onCancellationRequested(() => applyCtrl.abort());
 
                         let count = 0;
-                        for (let i = 0; i < changesBatch.length; i++) {
+                        const total = changesBatch.length;
+
+                        for (let i = 0; i < total; i++) {
                             if (token.isCancellationRequested || applyCtrl.signal.aborted) break;
-                            
+
                             const change = changesBatch[i];
+                            const fileName = path.basename(change.path);
                             count++;
-                            
-                            // IDEMPOTENCY CHECK: Skip if already applied in this discussion
+
+                            // Update the UI Overlay with granular details
+                            const hunkInfo = change.hunkIndex !== undefined ? ` (Hunk ${change.hunkIndex + 1})` : "";
+                            this.processManager.updateDescription(applyProcId, `Applying [${count}/${total}]: ${fileName}${hunkInfo}`);
+                            this.updateGeneratingState();
+
+                            // IDEMPOTENCY CHECK
                             const currentApplied = this._currentDiscussion?.appliedState?.[messageId]?.[change.blockIndex] || [];
                             if (currentApplied.includes(-1) || (change.hunkIndex !== undefined && currentApplied.includes(change.hunkIndex))) {
                                 this._panel.webview.postMessage({
@@ -2052,8 +2098,8 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                             }
 
                             progress.report({ 
-                                message: `(${count}/${changesBatch.length}) ${path.basename(change.path)}`,
-                                increment: (1 / changesBatch.length) * 100 
+                                message: `(${count}/${total}) ${fileName}`,
+                                increment: (1 / total) * 100 
                             });
 
                             this._panel.webview.postMessage({ 
@@ -3195,6 +3241,45 @@ Task:
         }
     });
   }
+
+  private async copySystemPromptToClipboard() {
+      this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: true, statusText: 'Assembling system prompt...' });
+
+      await vscode.window.withProgress({
+          location: vscode.ProgressLocation.Notification,
+          title: "Lollms: Preparing system prompt...",
+          cancellable: false
+      }, async (progress) => {
+          try {
+              const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+              const forceFullCode = config.get<boolean>('forceFullCodePath') || false;
+              const importedIds = this._currentDiscussion?.importedSkills || [];
+              
+              progress.report({ message: "Reading context..." });
+              const contextData = await this._contextManager.getContextContent({ 
+                  importedSkillIds: importedIds,
+                  modelName: this._currentDiscussion?.model || this._lollmsAPI.getModelName()
+              });
+              
+              const context = {
+                  tree: contextData.projectTree,
+                  files: contextData.selectedFilesContent,
+                  skills: contextData.skillsContent
+              };
+
+              progress.report({ message: "Generating Persona..." });
+              const personaContent = this.getCurrentPersonaSystemPrompt();
+              const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, forceFullCode, context);
+
+              await vscode.env.clipboard.writeText(systemPrompt);
+              vscode.window.showInformationMessage("✅ System prompt (with context) copied to clipboard.");
+          } catch (e: any) {
+              vscode.window.showErrorMessage(`Failed to copy system prompt: ${e.message}`);
+          } finally {
+              this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: false });
+          }
+      });
+  }
   
   public async handleBulkSummarizeContextFiles(files: string[], instruction: string) {
       if (!vscode.workspace.workspaceFolders || files.length === 0) return;
@@ -3386,18 +3471,7 @@ Task:
     const jsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'webview', 'chatPanel.bundle.js'));
     const lollmsIconUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'lollms-icon.svg'));
 
-    const l10nStrings = {
-        welcomeTitle: vscode.l10n.t("welcome.title"),
-        welcomeItem1: vscode.l10n.t("welcome.item1"),
-        welcomeItem2: vscode.l10n.t("welcome.item2"),
-        welcomeItem3: vscode.l10n.t("welcome.item3"),
-        welcomeItem4: vscode.l10n.t("welcome.item4"),
-        progressLoadingFiles: vscode.l10n.t("progress.loadingFiles"),
-        tooltipRefreshContext: vscode.l10n.t("tooltip.refreshContext"),
-        labelApply: vscode.l10n.t("label.apply"),
-        labelCancel: vscode.l10n.t("label.cancel"),
-        labelSave: vscode.l10n.t("label.save")
-    };
+    const l10nStrings = LocalizationManager.getBundleForWebview();
 
     return `<!DOCTYPE html>
 <html lang="en">
@@ -3469,15 +3543,34 @@ Task:
 
                 <div id="generating-overlay" class="generating-overlay" style="display: none;">
                     <div class="generating-content">
-                        <div class="spinner"></div>
+                        <div class="ai-orb-container">
+                            <div class="orb-ring"></div>
+                            <div class="ai-orb"></div>
+                        </div>
                         <div class="generating-details">
-                            <span id="generating-status-text">Generating...</span>
+                            <span id="generating-status-text">Processing...</span>
+                            <div class="step-timeline" id="step-timeline">
+                                <div class="step-dot active"></div>
+                                <div class="step-dot"></div>
+                                <div class="step-dot"></div>
+                                <div class="step-dot"></div>
+                            </div>
                             <div id="generating-metrics" class="generating-metrics" style="display: none;">
-                                <span id="metrics-tps">0.0</span> tokens/sec
+                                <div class="metric-item">
+                                    <i class="codicon codicon-dashboard"></i>
+                                    <span id="metrics-tps" class="metric-value">0.0</span> <span class="metric-label">t/s</span>
+                                </div>
+                                <div class="metric-item">
+                                    <i class="codicon codicon-symbol-parameter"></i>
+                                    <span id="metrics-count" class="metric-value">0</span> <span class="metric-label">tokens</span>
+                                </div>
                             </div>
                         </div>
                     </div>
-                    <button id="stopButton" class="stop-btn-red">Stop Generation</button>
+                    <button id="stopButton" class="stop-btn-red">
+                        <i class="codicon codicon-primitive-square"></i>
+                        <span>Cancel Task</span>
+                    </button>
                 </div>
 
                 <div class="input-area-wrapper">
@@ -3500,6 +3593,7 @@ Task:
                             <button class="menu-item" id="attachButton"><i class="codicon codicon-add"></i><span>Attach Files</span></button>
                             <button class="menu-item" id="importSkillsButton"><i class="codicon codicon-lightbulb"></i><span>Import Skill</span></button>
                             <button class="menu-item" id="copyFullPromptButton"><i class="codicon codicon-copy"></i><span>Copy Context & Prompt</span></button>
+                            <button class="menu-item" id="copySystemPromptButton"><i class="codicon codicon-shield"></i><span>Copy System Prompt Only</span></button>
                             <button class="menu-item" id="copyTreeAndContentButton"><i class="codicon codicon-clippy"></i><span>Copy Tree & Content</span></button>
                             <button class="menu-item" id="setEntryPointButton"><i class="codicon codicon-target"></i><span>Set Project Entry Point</span></button>
                             <button class="menu-item" id="executeButton"><i class="codicon codicon-play"></i><span>Execute Project</span></button>

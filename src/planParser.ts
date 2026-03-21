@@ -205,28 +205,21 @@ ${memoryBlock}
 
     public async getArchitectSystemPrompt(allowedTools: ToolDefinition[], importedSkillIds?: string[]): Promise<ChatMessage> {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-        const modelPool = config.get<any[]>('herdDynamicModelPool') ||[];
+        const modelPool = config.get<any[]>('herdDynamicModelPool') || [];
         const poolDesc = modelPool.map(m => `- \`${m.model}\`: ${m.description}`).join('\n');
 
-        let skillsDesc = "- No specific skills have been selected by the user for this discussion.";
-        if (this.skillsManager) {
-            const activeProjectSkills = await this.contextManager.getActiveProjectSkills();
-            const allActiveSkillIds = Array.from(new Set([...(importedSkillIds || []), ...activeProjectSkills]));
-            
-            if (allActiveSkillIds.length > 0) {
-                const allSkills = await this.skillsManager.getSkills();
-                const activeSkills = allSkills.filter(s => allActiveSkillIds.includes(s.id));
-                if (activeSkills.length > 0) {
-                    skillsDesc = activeSkills.map(s => `- \`${s.id}\`: ${s.name} (${s.description})`).join('\n');
-                }
-            }
-        }
+        // Fetch Agent Persona directly from config to break the utility loop
+        const agentPersona = config.get<string>('agentPersona') || "You are an autonomous AI Agent.";
+        const baseSystemInfo = await getProcessedSystemPrompt('agent', undefined, agentPersona);
 
-        const baseSystemInfo = await getProcessedSystemPrompt('agent');
         const toolDescriptions = allowedTools.map(tool => {
             const params = tool.parameters.map(p => `"${p.name}" (${p.type}): ${p.description}`).join(', ');
             return `- **${tool.name}**: ${tool.description} (Params: ${params})`;
         }).join('\n');
+
+        const skillsDesc = (importedSkillIds && importedSkillIds.length > 0) 
+            ? importedSkillIds.map(id => `- ${id}`).join('\n')
+            : "- No specific skills imported.";
 
         const content = `${baseSystemInfo}
 

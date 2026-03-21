@@ -106,6 +106,7 @@ export class PersonalityManager {
 
         try {
             // Load existing file
+            console.log(`[Lollms Debug] Reading personalities file: ${this.personalitiesFilePath.fsPath}`);
             const fileContent = await vscode.workspace.fs.readFile(this.personalitiesFilePath);
             this.personalities = JSON.parse(fileContent.toString());
 

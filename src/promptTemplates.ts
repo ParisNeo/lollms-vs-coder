@@ -1,10 +1,12 @@
 import * as vscode from 'vscode';
 import * as os from 'os';
-import { DiscussionCapabilities, getAvailableShells, ResponseProfile, SYSTEM_RESPONSE_PROFILES } from './utils';
+import { DiscussionCapabilities, getAvailableShells, ResponseProfile } from './utils';
+
+import { SYSTEM_RESPONSE_PROFILES } from './registries/profiles';
 
 export class PromptTemplates {
     
-    private static getFormatInstructions(capabilities?: DiscussionCapabilities, forceFullCodeSetting?: boolean): string {
+    private static getFormatInstructions(capabilities?: any, forceFullCodeSetting?: boolean): string {
         const partialFormat = capabilities?.generationFormats?.partialFormat ?? 'aider';
         
         // Priority: Discussion Capability > Global Setting
@@ -95,41 +97,32 @@ export class PromptTemplates {
         return sections.join('\n');
     }
 
-    public static async getSystemPrompt(
+    /**
+     * CORE TEMPLATE BUILDER
+     * Flattened to prevent circular dependencies with utils.ts
+     */
+    public static build(
         promptType: 'chat' | 'agent' | 'inspector' | 'commit' | 'surgical_agent',
+        persona: string,
+        memory: string,
+        shells: string[],
         capabilities?: DiscussionCapabilities,
-        customPersonaContent?: string,
-        memory?: string,
-        forceFullCode?: boolean,
+        forceFullCodeSetting?: boolean,
         context?: { tree: string, files: string, skills: string }
-    ): Promise<string> {
-        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+    ): string {
+        const formatting = this.getFormatInstructions(capabilities, forceFullCodeSetting);
         
-        const configProfiles = config.get<ResponseProfile[]>('responseProfiles') ||[];
-        const activeProfileId = capabilities?.responseProfileId || config.get<string>('defaultResponseProfileId') || 'balanced';
+        // Use static lookup for profiles to avoid config calls here
+        const activeProfileId = capabilities?.responseProfileId || 'balanced';
+        const activeProfile = SYSTEM_RESPONSE_PROFILES.find(p => p.id === activeProfileId) || SYSTEM_RESPONSE_PROFILES[0];
         
-        let activeProfile = SYSTEM_RESPONSE_PROFILES.find(p => p.id === activeProfileId);
-        if (!activeProfile) activeProfile = configProfiles.find(p => p.id === activeProfileId);
-        if (!activeProfile) activeProfile = SYSTEM_RESPONSE_PROFILES[0];
-
-        let persona = customPersonaContent || config.get<string>(
-            promptType === 'chat' ? 'chatPersona' :
-            promptType === 'agent' ? 'agentPersona' :
-            promptType === 'inspector' ? 'codeInspectorPersona' :
-            'commitMessagePersona'
-        ) || "You are an expert software engineer.";
-
-        const formatting = this.getFormatInstructions(capabilities, forceFullCode);
-        const shells = await getAvailableShells();
-
-        const prefix = (activeProfile && activeProfile.prefix) ? activeProfile.prefix + "\n" : "";
+        const prefix = activeProfile.prefix ? activeProfile.prefix + "\n" : "";
 
         const skillsAuthority = context?.skills ? `
 ### 📖 SKILLS AUTHORITY PROTOCOL
-Information provided in the **Active Skills & Protocols** section is your **SOURCE OF TRUTH**.
-1. **NO HALLUCINATIONS**: If a skill defines an API (e.g. safe_store, moltbook), you MUST use the exact parameters, methods, and endpoints defined in that skill.
-2. **OVERRIDE**: Skill documentation overrides your general training data. If your internal knowledge contradicts a skill, the skill is correct.
-3. **STRICT ADHERENCE**: Follow all coding patterns and security rules defined in the skills perfectly.
+The **Active Skills & Protocols** provided below are your **SOURCE OF TRUTH**.
+1. **API ACCURACY**: You MUST use the exact parameters and methods defined in the skills.
+2. **OVERRIDE**: Skill documentation overrides your general training data.
 ` : '';
 
         if (promptType === 'surgical_agent') {
@@ -213,13 +206,15 @@ You MUST adhere to this style for EVERY turn in this conversation:
 ${activeProfile.systemPrompt}
 ` : ""}
 
-### 🚷 ANTI-HALLUCINATION & CONTEXT BOUNDARIES
-1. **NO BLIND EDITS**: You are FORBIDDEN from generating code blocks (edit/create) for files that are NOT present in the "File Contents" section above. If you need to modify a file that is only visible in the Tree, you MUST ask the user to add it to context first (or use \`read_file\` if available).
-   - **CASUAL EXCEPTION**: If the user is asking a general question not related to the specific project files (e.g., "How does a Linked List work?"), you MAY provide general code examples, but do NOT include a \`:path\` header in the code block.
-2. **NO BLIND IMPORTS**: Do not assume a class, function, or variable exists in a file you cannot see. You must verify exports by reading the file before importing.
-3. **EXACT PATHS**: Always use the exact file paths as they appear in the "Project Structure" tree. Do not guess paths or hallucinate files that do not exist in the tree.
-4. **SUBPROJECTS**: If working in a workspace with multiple subprojects, pay strict attention to the root directories shown in the file tree.
-5. **READ BEFORE WRITE**: Always read the current state of a file before attempting to modify it to ensure search blocks match exactly.
+### 🚷 ANTI-HALLUCINATION & CONTEXT BOUNDARIES (STRICT)
+1. **NO GUESSING**: If a file is visible in the **Project Structure** tree but its content is missing from **File Contents**, you MUST NOT assume, guess, or hallucinate its logic.
+2. **STOP & REQUEST**: If you need to know the implementation of a function/class to make a change:
+   - **Case A (Reference Only)**: If you just need the signature (API) to call it correctly, use \`<add_files>\` and specify the file path.
+   - **Case B (Modification)**: If you need to change the file, you MUST have the full content. 
+   - **Action**: Stop generating the answer immediately and issue the \`<add_files>\` tag.
+3. **NO BLIND EDITS**: Generating code blocks (edit/create) for files not present in the "File Contents" is a CRITICAL FAILURE. 
+4. **NO BLIND IMPORTS**: You must verify exports by reading the file content or signatures before importing them into your changes.
+5. **EXACT PATHS**: Always use the exact paths from the tree. Never invent directory structures.
 
 ### 🚫 UNIVERSAL FORBIDDEN PROTOCOL
 - **STRICT NO PLACEHOLDERS**: You are FORBIDDEN from using comments like \`# ...\`, \`// rest of the code\`, \`/* same as before */\`, or any placeholders to skip code. You must always provide the complete logic required by the chosen format.
@@ -248,7 +243,7 @@ You can trigger specialized UI blocks and system actions by using these XML-like
    Format: <generateImage prompt="detailed description" path="relative/path/to/save.png" width="1024" height="1024" />
 
 3. **File Operations**:
-3.  **File Operations**: Propose moving, renaming or deleting files (UI buttons appear).
+   Propose moving, renaming or deleting files (UI buttons appear).
    Formats:
    - Rename/Move: <rename old="path/to/old_file.ext" new="path/to/new_file.ext" />
    - Delete: <delete path="path/to/file_to_remove.ext" />

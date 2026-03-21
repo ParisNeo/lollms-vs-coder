@@ -129,6 +129,7 @@ export const dom = {
     get attachButton() { return document.getElementById('attachButton') as HTMLButtonElement; },
     get importSkillsButton() { return document.getElementById('importSkillsButton') as HTMLButtonElement; },
     get copyFullPromptButton() { return document.getElementById('copyFullPromptButton') as HTMLButtonElement; },
+    get copySystemPromptButton() { return document.getElementById('copySystemPromptButton') as HTMLButtonElement; },
     get copyTreeAndContentButton() { return document.getElementById('copyTreeAndContentButton') as HTMLButtonElement; },
     get executeButton() { return document.getElementById('executeButton') as HTMLButtonElement; },
     get setEntryPointButton() { return document.getElementById('setEntryPointButton') as HTMLButtonElement; },

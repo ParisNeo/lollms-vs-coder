@@ -441,6 +441,13 @@ export function initEventHandlers() {
         });
     }
 
+    if (dom.copySystemPromptButton) {
+        dom.copySystemPromptButton.addEventListener('click', () => {
+            vscode.postMessage({ command: 'copySystemPrompt' });
+            dom.moreActionsMenu.classList.remove('visible');
+        });
+    }
+
     if (dom.copyTreeAndContentButton) {
         dom.copyTreeAndContentButton.addEventListener('click', () => {
             vscode.postMessage({ command: 'copyTreeAndContent' });

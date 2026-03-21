@@ -119,15 +119,16 @@ export async function handleExtensionMessage(event: MessageEvent) {
             case 'updateGenerationMetrics':
                 const metricsEl = document.getElementById('generating-metrics');
                 const tpsEl = document.getElementById('metrics-tps');
+                const countEl = document.getElementById('metrics-count');
                 if (message.reset) {
                     if (metricsEl) metricsEl.style.display = 'none';
                     if (tpsEl) tpsEl.textContent = '0.0';
+                    if (countEl) countEl.textContent = '0';
                     return;
                 }
-                if (metricsEl) metricsEl.style.display = 'block';
-                if (tpsEl && message.tps && !isNaN(parseFloat(message.tps))) {
-                    tpsEl.textContent = message.tps;
-                }
+                if (metricsEl) metricsEl.style.display = 'flex';
+                if (tpsEl && message.tps) tpsEl.textContent = message.tps;
+                if (countEl && message.count) countEl.textContent = message.count;
                 break;
             case 'updateContext':
                 updateContext(message.context, message.files, message.skills, message.diagrams);
@@ -675,6 +676,36 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 }
                 break;
             }
+            case 'verifyAllResult':
+                {
+                    const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
+                    const verifyBtn = wrapper?.querySelector('.apply-all-btn.secondary-btn') as HTMLButtonElement;
+                    if (verifyBtn) {
+                        verifyBtn.disabled = false;
+                        verifyBtn.innerHTML = '<span class="codicon codicon-search"></span> Verify Status';
+                    }
+
+                    const results = message.results; // { "block-hunk": "status" }
+                    const rows = wrapper?.querySelectorAll('.apply-row');
+                    rows?.forEach((row: any) => {
+                        const bIdx = row.dataset.blockIndex;
+                        const hIdx = row.dataset.hunkIndex || 'full';
+                        const status = results[`${bIdx}-${hIdx}`];
+                        const iconEl = row.querySelector('.status-icon');
+
+                        if (status === 'applied') {
+                            row.style.background = 'rgba(15, 157, 88, 0.1)';
+                            iconEl.innerHTML = '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span>';
+                        } else if (status === 'ready') {
+                            row.style.background = 'rgba(0, 122, 204, 0.1)';
+                            iconEl.innerHTML = '<span class="codicon codicon-clock" style="color:var(--vscode-charts-blue)"></span>';
+                        } else {
+                            row.style.background = 'rgba(244, 71, 71, 0.1)';
+                            iconEl.innerHTML = '<span class="codicon codicon-error" style="color:var(--vscode-charts-red)"></span>';
+                        }
+                    });
+                    break;
+                }
             case 'applyAllResult':
                 {
                     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
@@ -758,19 +789,36 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
                         if (actionsEl) {
                             actionsEl.style.display = 'flex';
-                            actionsEl.innerHTML = '<button class="code-action-btn apply-btn retry-row-btn" style="height:20px; font-size:9px; padding:0 6px;">Fix with AI</button>';
-                            const retryBtn = actionsEl.querySelector('.retry-row-btn') as HTMLButtonElement;
-                            retryBtn.onclick = () => {
-                                retryBtn.disabled = true;
-                                retryBtn.innerHTML = '<div class="spinner"></div>';
-                                // Trigger the specialized repair command
-                                vscode.postMessage({ 
-                                    command: 'replaceCode', 
-                                    filePath: message.filePath, 
-                                    content: "REPAIR_REQUESTED", // Placeholder logic
-                                    messageId: message.messageId 
-                                });
-                            };
+                            
+                            // If the extension tells us it's already repairing, show spinner immediately
+                            if (message.repaired === 'in_progress') {
+                                actionsEl.innerHTML = '<button class="code-action-btn apply-btn retry-row-btn" disabled style="height:20px; font-size:9px; padding:0 6px;"><div class="spinner"></div> Repairing...</button>';
+                            } else {
+                                actionsEl.innerHTML = '<button class="code-action-btn apply-btn retry-row-btn" style="height:20px; font-size:9px; padding:0 6px;">Fix with AI</button>';
+                                const retryBtn = actionsEl.querySelector('.retry-row-btn') as HTMLButtonElement;
+                                retryBtn.onclick = () => {
+                                    retryBtn.disabled = true;
+                                    retryBtn.innerHTML = '<div class="spinner"></div> Repairing...';
+                                    
+                                    // Ensure main button doesn't turn green while we fix this hunk
+                                    const btnContainer = resultsList?.previousElementSibling;
+                                    const mainBtn = btnContainer?.querySelector('.apply-all-btn:not(.secondary-btn)') as HTMLButtonElement;
+                                    if (mainBtn) {
+                                        mainBtn.classList.add('stop-btn-red');
+                                        mainBtn.innerHTML = '<span class="codicon codicon-sync spin"></span> Repairing Hunks...';
+                                    }
+
+                                    vscode.postMessage({ 
+                                        command: 'replaceCode', 
+                                        filePath: message.filePath, 
+                                        content: "REPAIR_REQUESTED", 
+                                        messageId: message.messageId,
+                                        blockIndex: message.blockIndex,
+                                        hunkIndex: message.hunkIndex,
+                                        options: { silent: true }
+                                    });
+                                };
+                            }
                         }
                     }
 
@@ -779,33 +827,40 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const resultsList = row?.closest('.apply-results-list');
                     if (resultsList) {
                         const stillPending = resultsList.querySelectorAll('.spinner').length;
-                        // If no more items are currently spinning (pending), finalize the button
                         if (stillPending === 0) {
-                            const mainBtn = resultsList.previousElementSibling as HTMLButtonElement;
-                            if (mainBtn && mainBtn.classList.contains('stop-btn-red')) {
+                            const btnContainer = resultsList.previousElementSibling;
+                            const mainBtn = btnContainer?.querySelector('.apply-all-btn:not(.secondary-btn)') as HTMLButtonElement;
+                            
+                            if (mainBtn && (mainBtn.classList.contains('stop-btn-red') || mainBtn.classList.contains('sequential-applying'))) {
                                 mainBtn.classList.remove('stop-btn-red');
+                                mainBtn.classList.remove('sequential-applying');
                                 
                                 const failedCount = resultsList.querySelectorAll('.codicon-error').length;
                                 if (failedCount === 0) {
-                                    // FINAL SUCCESS: Button turns Green and is disabled
-                                    mainBtn.innerHTML = '<span class="codicon codicon-check"></span> All Modifications Applied';
-                                    mainBtn.classList.add('applied');
-                                    mainBtn.style.backgroundColor = 'var(--vscode-charts-green)'; 
-                                    mainBtn.disabled = true;
-                                    
-                                    // Keep list visible for 2 seconds then hide
-                                    setTimeout(() => {
-                                        if (resultsList instanceof HTMLElement) resultsList.style.display = 'none';
-                                    }, 2000);
+                                    const autoRepairing = resultsList.querySelectorAll('.retry-row-btn:disabled').length;
+                                    if (autoRepairing === 0) {
+                                        mainBtn.innerHTML = '<span class="codicon codicon-check"></span> All Modifications Applied';
+                                        mainBtn.classList.add('applied');
+                                        mainBtn.style.setProperty('background-color', 'var(--vscode-charts-green)', 'important');
+                                        mainBtn.style.setProperty('color', 'white', 'important');
+                                        mainBtn.disabled = true;
+                                    }
                                 } else {
-                                    // ERROR CASE: Turn Red
                                     mainBtn.innerHTML = `<span class="codicon codicon-warning"></span> Retry Failed (${failedCount})`;
-                                    mainBtn.style.backgroundColor = 'var(--vscode-charts-red)';
+                                    mainBtn.style.setProperty('background-color', 'var(--vscode-charts-red)', 'important');
                                     mainBtn.disabled = false;
                                 }
                             }
                         }
                     }
+                }
+                break;
+
+            // Handle direct replaceCode command from the extension
+            case 'replaceCode':
+                {
+                    const { filePath, content, options } = message;
+                    vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, content, this, message.id, options ?? {});
                 }
                 break;
             }

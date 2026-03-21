@@ -339,11 +339,13 @@ function renderDiagram(codeElement: HTMLElement, language: string, container: HT
 }
 
 function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
+    // BUG FIX: Ensure we get the raw content including <think> tags
     let originalContent: any;
     try {
+        // dataset.originalContent stores the rawest form received from the LLM
         originalContent = JSON.parse(messageDiv.dataset.originalContent || '""');
     } catch (e) {
-        console.warn("Failed to parse original content for editing, falling back to empty string.", e);
+        console.warn("Failed to parse original content for editing", e);
         originalContent = "";
     }
 
@@ -351,10 +353,11 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     if (typeof originalContent === 'string') {
         textContent = originalContent;
     } else if (Array.isArray(originalContent)) {
-        textContent = originalContent.map(part => {
-            if (part.type === 'text') return part.text;
-            return ''; 
-        }).join('\n');
+        // Handle Vision/Multipart content by extracting text components
+        textContent = originalContent
+            .filter(part => part.type === 'text')
+            .map(part => part.text)
+            .join('\n');
     }
 
     const contentDiv = messageDiv.querySelector('.message-content') as HTMLElement;
@@ -1186,14 +1189,15 @@ function renderAddFilesBlock(rawContent: string, messageId: string): string {
     const btnDisabled = allIncluded ? 'disabled' : '';
     const btnIcon = allIncluded ? 'codicon-check' : 'codicon-add';
 
+    // We use a data-files attribute to allow the updateContext function to re-verify this block later
     return `
-    <div class="context-expansion-block" id="${blockId}">
+    <div class="context-expansion-block expansion-request-block" id="${blockId}" data-files="${fileListJson.replace(/"/g, '&quot;')}">
         <div class="expansion-header">
             <span class="codicon codicon-library"></span>
-            <span>AI Requested More Context</span>
+            <span>Context Expansion Requested</span>
         </div>
         <div class="expansion-body">
-            <p style="margin-bottom:12px;">To answer accurately, I need to see the content of these files:</p>
+            <p style="margin-bottom:12px; font-size: 11px; opacity: 0.8;">The AI identified that it needs the following files to complete the task without making assumptions:</p>
             <div class="expansion-file-list" id="list-${blockId}" style="margin-bottom:12px;">
                 ${fileItems}
             </div>
@@ -1762,45 +1766,13 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                         return;
                     }
 
+                    // Tag the button so the result handler knows we are in "Sequential mode"
+                    btn.classList.add('sequential-applying');
                     btn.classList.add('stop-btn-red');
                     btn.innerHTML = '<span class="codicon codicon-stop"></span> Stop Applying';
                     resultsList.style.display = 'block';
 
-                    const changes: any[] = [];
-                    const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======[\r\n]*([\s\S]*?)[\r\n]*>>>>>>> REPLACE/gm;
-
-                    actionableBlocks.forEach((b, bIdx) => {
-                        const blockContent = processedContent.substring(b.start, b.end).trim();
-                        const lines = blockContent.split('\n');
-                        const codeOnly = lines.length >= 2 ? lines.slice(1, -1).join('\n') : "";
-
-                        if (b.type === 'replace' || codeOnly.includes('<<<<<<< SEARCH')) {
-                            // Split Aider block into individual hunks
-                            const matches = [...codeOnly.matchAll(aiderRegex)];
-                            if (matches.length > 0) {
-                                matches.forEach((m, hIdx) => {
-                                    changes.push({
-                                        type: 'replace',
-                                        path: b.path,
-                                        content: m[0],
-                                        blockIndex: bIdx,
-                                        hunkIndex: hIdx,
-                                        label: `${b.path} [Hunk ${hIdx + 1}]`
-                                    });
-                                });
-                                return;
-                            }
-                        }
-
-                        // Standard file or diff block
-                        changes.push({
-                            type: b.type === 'file' ? 'file' : (b.type || 'replace'),
-                            path: b.path,
-                            content: codeOnly,
-                            blockIndex: bIdx,
-                            label: b.path
-                        });
-                    });
+                    const changes = gatherChangesFromBlocks(actionableBlocks, processedContent, messageId);
 
                     resultsList.innerHTML = changes.map((c, idx) => {
                         const typeLabel = c.type === 'file' ? 'FULL' : 'PATCH';
@@ -1817,7 +1789,11 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
                     // Add navigation listener to results list
                     resultsList.onclick = (e) => {
-                        const row = (e.target as HTMLElement).closest('.apply-row') as HTMLElement;
+                        const targetElement = e.target as HTMLElement;
+                        // DO NOT scroll if the user clicked a button (like Repair)
+                        if (targetElement.closest('button')) return;
+
+                        const row = targetElement.closest('.apply-row') as HTMLElement;
                         if (row && row.dataset.targetId) {
                             const target = document.getElementById(row.dataset.targetId);
                             if (target) {
@@ -1833,7 +1809,26 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     vscode.postMessage({ command: 'applyAllChanges', changes, messageId });
                 };
 
-                wrapper.appendChild(btn);
+                const verifyBtn = document.createElement('button');
+                verifyBtn.className = 'apply-all-btn secondary-btn'; // Use secondary style
+                verifyBtn.style.width = 'auto';
+                verifyBtn.style.flex = '0 0 auto';
+                verifyBtn.style.margin = '16px 8px 4px 0';
+                verifyBtn.innerHTML = '<span class="codicon codicon-search"></span> Verify Status';
+                
+                verifyBtn.onclick = () => {
+                    verifyBtn.disabled = true;
+                    verifyBtn.innerHTML = '<div class="spinner"></div> Verifying...';
+                    const changes = gatherChangesFromBlocks(actionableBlocks, processedContent, messageId);
+                    vscode.postMessage({ command: 'verifyAllChanges', changes, messageId });
+                };
+
+                const btnContainer = document.createElement('div');
+                btnContainer.style.display = 'flex';
+                btnContainer.appendChild(verifyBtn);
+                btnContainer.appendChild(btn);
+
+                wrapper.appendChild(btnContainer);
                 wrapper.appendChild(resultsList);
                 contentDiv.appendChild(wrapper);
             }
@@ -1843,6 +1838,29 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     }
 
     if (shouldScroll && dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+}
+
+function gatherChangesFromBlocks(actionableBlocks: any[], processedContent: string, messageId: string) {
+    const changes: any[] = [];
+    const container = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
+    if (!container) return changes;
+
+    const pres = container.querySelectorAll('pre');
+    actionableBlocks.forEach((block: any, index: number) => {
+        const pre = pres[index];
+        if (!pre) return;
+        const code = pre.querySelector('code');
+        if (!code) return;
+
+        if (block && block.path && ['file', 'diff', 'insert', 'replace', 'delete', 'file_delete'].includes(block.type || '')) {
+            changes.push({
+                type: block.type === 'file' ? 'file' : (block.type || 'replace'),
+                path: block.path,
+                content: code.innerText
+            });
+        }
+    });
+    return changes;
 }
 
 export function addMessage(message: any, isFinal: boolean = true) {
@@ -1946,7 +1964,7 @@ function addChatMessage(message: any, isFinal: boolean = true) {
     bodyDiv.className = 'message-body';
     messageDiv.appendChild(bodyDiv);
 
-    // BUBBLE TOOLBAR
+     // 1. Create Floating HUD Toolbar
     const actions = document.createElement('div');
     actions.className = 'message-actions';
     
@@ -1965,17 +1983,11 @@ function addChatMessage(message: any, isFinal: boolean = true) {
     }
     
     const copyBtn = createButton('', 'codicon-copy', () => {
-        window.vscode.postMessage({ 
-            command: 'copyToClipboard', 
-            text: textForClipboard 
-        });
-        
+        window.vscode.postMessage({ command: 'copyToClipboard', text: textForClipboard });
         const iconEl = copyBtn.querySelector('.codicon');
         if(iconEl) {
             iconEl.classList.replace('codicon-copy', 'codicon-check');
-            setTimeout(() => {
-                if (iconEl) iconEl.classList.replace('codicon-check', 'codicon-copy');
-            }, 2000);
+            setTimeout(() => { if (iconEl) iconEl.classList.replace('codicon-check', 'codicon-copy'); }, 2000);
         }
     }, 'msg-action-btn', 'Copy Message');
     actions.appendChild(copyBtn);
@@ -1987,7 +1999,9 @@ function addChatMessage(message: any, isFinal: boolean = true) {
     
     actions.appendChild(createButton('', 'codicon-trash', () => vscode.postMessage({ command: 'requestDeleteMessage', messageId: id }), 'msg-action-btn', 'Delete Message'));
 
-    // Insert actions before content
+    // CRITICAL: Inject HUD as the ABSOLUTE FIRST child of the body.
+    // In block layout, the first child being sticky+floated will correctly track the viewport.
+    bodyDiv.innerHTML = ''; // Clear for fresh injection
     bodyDiv.appendChild(actions);
 
     const headerDiv = document.createElement('div');
@@ -2379,6 +2393,47 @@ export function updateContext(contextText: string, files: string[] = [], skills:
             vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'resetContext', params: {} } });
         });
     }
+
+    // --- REACTIVE CONTEXT SYNC FOR EXPANSION BLOCKS ---
+    // Find all <add_files> blocks in the history and update them if files were added elsewhere
+    const expansionBlocks = document.querySelectorAll('.expansion-request-block');
+    expansionBlocks.forEach(block => {
+        try {
+            const blockId = block.id;
+            const blockFiles = JSON.parse(block.getAttribute('data-files') || '[]');
+            const currentFiles = files || [];
+            let allIncluded = true;
+
+            const listContainer = document.getElementById(`list-${blockId}`);
+            if (listContainer) {
+                const items = listContainer.querySelectorAll('.expansion-file-item');
+                items.forEach((item: any, idx) => {
+                    const path = blockFiles[idx];
+                    const isIncluded = currentFiles.includes(path);
+                    if (!isIncluded) allIncluded = false;
+
+                    if (isIncluded) {
+                        item.style.borderColor = 'var(--vscode-charts-green)';
+                        item.style.background = 'rgba(15, 157, 88, 0.1)';
+                        const icon = item.querySelector('.codicon');
+                        if (icon) {
+                            icon.className = 'codicon codicon-check';
+                            icon.style.color = 'var(--vscode-charts-green)';
+                        }
+                    }
+                });
+            }
+
+            const actionBtn = document.getElementById(`btn-${blockId}`) as HTMLButtonElement;
+            if (actionBtn && allIncluded && !actionBtn.classList.contains('applied')) {
+                actionBtn.innerHTML = `<span class="codicon codicon-check"></span> Added to Context`;
+                actionBtn.className = 'code-action-btn applied';
+                actionBtn.disabled = true;
+            }
+        } catch (e) {
+            console.error("Failed to sync expansion block:", e);
+        }
+    });
 
     const muteBtn = document.getElementById('mute-context-btn');
     if (muteBtn) {

@@ -159,6 +159,7 @@ export class SkillsManager {
             for (const [name, type] of entries) {
                 if (type === vscode.FileType.File && name.endsWith('.xml')) {
                     const fileUri = vscode.Uri.joinPath(bootstrapDir, name);
+                    console.log(`[Lollms Debug] Reading bootstrap skill: ${fileUri.fsPath}`);
                     const content = await vscode.workspace.fs.readFile(fileUri);
                     const xmlStr = content.toString();
                     const bootstrapSkill = xmlToSkill(xmlStr, 'global');

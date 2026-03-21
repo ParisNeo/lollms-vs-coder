@@ -40,11 +40,17 @@ import { RLMDatabaseManager } from './rlmDatabaseManager';
 import { RLMDatabaseTreeProvider } from './commands/rlmDatabaseTreeProvider';
 import { InfoPanel } from './commands/infoPanel';
 
+import { LocalizationManager } from './utils/localizationManager';
+
 export async function activate(context: vscode.ExtensionContext) {
-    Logger.initialize(context);
-    
-    // Localization Diagnostic
-    const testTranslation = vscode.l10n.t("displayName");
+    try {
+        console.log("[Lollms Debug] Extension Activate Start");
+        Logger.initialize(context);
+        console.log("[Lollms Debug] Logger Initialized");
+        
+        await LocalizationManager.initialize(context);
+        console.log("[Lollms Debug] LocalizationManager Initialized");
+    const testTranslation = LocalizationManager.t("displayName");
     const isLocalized = !testTranslation.includes("%") && testTranslation !== "displayName";
     Logger.info(`Lollms VS Coder is now active! Locale: ${vscode.env.language}. L10n Status: ${isLocalized ? 'Active' : 'Using Keys (Check Cache)'}`);
     
@@ -72,7 +78,7 @@ export async function activate(context: vscode.ExtensionContext) {
         modelName: config.get<string>('modelName') || 'ollama/mistral',
         disableSslVerification: config.get<boolean>('disableSslVerification') || false,
         sslCertPath: config.get<string>('sslCertPath') || '',
-        backendType: config.get<'lollms' | 'openai' | 'ollama'>('backendType') || 'lollms',
+        backendType: config.get<any>('backendType') || 'lollms',
         useLollmsExtensions: config.get<boolean>('useLollmsExtensions') ?? true
     }, context.globalState);
 
@@ -186,6 +192,8 @@ export async function activate(context: vscode.ExtensionContext) {
         Logger.error("Failed to register CodeActionProvider", e);
     }
 
+    context.subscriptions.push(new SelectionDecorator(context.extensionUri));
+    context.subscriptions.push(vscode.languages.registerCodeLensProvider({ pattern: '**' }, new SelectionCodeLensProvider()));
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, new DebugCodeLensProvider(debugErrorManager)));
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ pattern: '**' }, inlineDiffProvider));
     context.subscriptions.push(vscode.languages.registerHoverProvider({ pattern: '**' }, new SelectionHoverProvider()));
@@ -200,6 +208,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
     // Status Bar
     const statusBar = new LollmsStatusBar(context, lollmsAPI);
+    context.subscriptions.push(statusBar);
 
     // Configuration Listener
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
@@ -274,13 +283,17 @@ export async function activate(context: vscode.ExtensionContext) {
 
     initializeWorkspace();
 
-    // --- FIRST RUN WIZARD ---
+    // --- FIRST RUN & COMPLIANCE WIZARD ---
     const wasConfigured = context.globalState.get<boolean>('lollms.wasConfigured', false);
-    const currentUrl = config.get<string>('apiUrl');
-    
-    // If never configured or URL is default/empty, show the wizard
-    if (!wasConfigured && (currentUrl === 'http://localhost:9642' || !currentUrl)) {
+    const hasCustomKey = config.get<string>('apiKey') !== "";
+    const hasCustomModel = config.get<string>('modelName') !== "ollama/mistral";
+    const hasCustomUrl = config.get<string>('apiUrl') !== "http://localhost:9642";
+
+    // Bug Fix: Don't show if any manual configuration is detected, unless they haven't signed the CoC
+    if (!wasConfigured && !hasCustomKey && !hasCustomModel && !hasCustomUrl) {
         showQuickSetupWizard(context);
+    } else if (!wasConfigured) {
+        showConductWebview(context);
     }
 
     // Event Listeners
@@ -299,6 +312,149 @@ export async function activate(context: vscode.ExtensionContext) {
         statusBar.updateProcesses(processManager.getAll().length);
         ChatPanel.panels.forEach(panel => panel.updateGeneratingState());
     }));
+
+    } catch (e: any) {
+        Logger.error("CRITICAL ERROR during extension activation", e);
+        vscode.window.showErrorMessage(`Lollms failed to activate: ${e.message}`);
+    }
+}
+
+async function showConductWebview(context: vscode.ExtensionContext) {
+    const panel = vscode.window.createWebviewPanel(
+        'lollmsConduct',
+        'Lollms: The Developer Pledge',
+        vscode.ViewColumn.Beside,
+        { enableScripts: true, retainContextWhenHidden: true }
+    );
+
+    const codiconUri = panel.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'out', 'styles', 'codicon.css'));
+
+    panel.webview.html = `
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <link href="${codiconUri}" rel="stylesheet" />
+        <style>
+            :root {
+                --accent: var(--vscode-textLink-foreground);
+                --card-bg: var(--vscode-editor-inactiveSelectionBackground);
+            }
+            body { 
+                font-family: var(--vscode-font-family); 
+                color: var(--vscode-editor-foreground); 
+                background: var(--vscode-editor-background); 
+                padding: 40px; 
+                line-height: 1.6;
+                display: flex;
+                justify-content: center;
+            }
+            .container { max-width: 700px; animation: fadeIn 0.5s ease-out; }
+            @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+            
+            header { text-align: center; margin-bottom: 40px; }
+            h1 { font-size: 2.2em; font-weight: 300; margin-bottom: 10px; }
+            .subtitle { opacity: 0.7; font-size: 1.1em; }
+            
+            .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin: 30px 0; }
+            .card { 
+                background: var(--card-bg); 
+                padding: 20px; 
+                border-radius: 12px; 
+                border: 1px solid var(--vscode-widget-border);
+                transition: border-color 0.3s;
+            }
+            .card:hover { border-color: var(--accent); }
+            .card i { font-size: 24px; color: var(--accent); margin-bottom: 10px; display: block; }
+            .card h3 { margin: 0 0 10px 0; font-size: 1.1em; }
+            .card p { margin: 0; font-size: 0.95em; opacity: 0.85; }
+
+            .eu-notice {
+                display: flex; align-items: center; gap: 15px;
+                padding: 15px; background: rgba(0, 51, 153, 0.1);
+                border-radius: 8px; border: 1px solid rgba(0, 51, 153, 0.3);
+                margin-top: 40px; font-size: 0.9em;
+            }
+            .eu-notice img { width: 30px; }
+
+            .footer { 
+                margin-top: 50px; padding-top: 20px;
+                border-top: 1px solid var(--vscode-widget-border);
+                display: flex; justify-content: space-between; align-items: center;
+            }
+            
+            button { 
+                padding: 10px 30px; border-radius: 6px; cursor: pointer; 
+                border: none; font-weight: 600; font-size: 1em;
+                transition: transform 0.1s, opacity 0.2s;
+            }
+            button:active { transform: scale(0.98); }
+            .btn-primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+            .btn-secondary { background: transparent; color: var(--vscode-editor-foreground); opacity: 0.7; }
+            button:hover { opacity: 0.9; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <header>
+                <h1>The Lollms Pledge</h1>
+                <p class="subtitle">Building the future of software, responsibly.</p>
+            </header>
+
+            <p>AI is a powerful teammate, not a replacement for your expertise. By using Lollms, we join a community of developers committed to these core standards:</p>
+            
+            <div class="grid">
+                <div class="card">
+                    <i class="codicon codicon-eye"></i>
+                    <h3>Transparency</h3>
+                    <p>We believe in honesty. Disclose AI assistance when others expect human-only work.</p>
+                </div>
+                <div class="card">
+                    <i class="codicon codicon-shield"></i>
+                    <h3>Mastery</h3>
+                    <p>You are the pilot. Always review, test, and take ownership of the code you ship.</p>
+                </div>
+                <div class="card">
+                    <i class="codicon codicon-heart"></i>
+                    <h3>Ethical Impact</h3>
+                    <p>Use this power for good. No manipulative, deceptive, or exploitative systems.</p>
+                </div>
+                <div class="card">
+                    <i class="codicon codicon-lock"></i>
+                    <h3>Data Integrity</h3>
+                    <p>Respect privacy and IP. Keep sensitive data out of the prompt window.</p>
+                </div>
+            </div>
+
+            <div class="eu-notice">
+                <span class="codicon codicon-info" style="font-size: 20px; color: #ffcc00;"></span>
+                <span>This pledge aligns your workflow with the <strong>European AI Act</strong> standards for trustworthy and transparent professional AI use.</span>
+            </div>
+
+            <div class="footer">
+                <button class="btn-secondary" onclick="sendMessage('decline')">Maybe Later</button>
+                <button class="btn-primary" onclick="sendMessage('agree')">I'm In, Let's Code</button>
+            </div>
+        </div>
+
+        <script>
+            const vscode = acquireVsCodeApi();
+            function sendMessage(cmd) {
+                vscode.postMessage({ command: cmd });
+            }
+        </script>
+    </body>
+    </html>`;
+
+    panel.webview.onDidReceiveMessage(async (message) => {
+        if (message.command === 'agree') {
+            await context.globalState.update('lollms.wasConfigured', true);
+            vscode.window.showInformationMessage("✅ Commitment recorded. Ethical modules activated.");
+            panel.dispose();
+        } else {
+            vscode.window.showWarningMessage("Compliance required: You must accept the Code of Conduct to use Lollms features.");
+            panel.dispose();
+        }
+    });
 }
 
 async function showQuickSetupWizard(context: vscode.ExtensionContext) {

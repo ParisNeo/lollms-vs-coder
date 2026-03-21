@@ -490,14 +490,26 @@ function showTextInput(x: number, y: number, w: number, h: number, screenPos: an
 }
 
 export function setGeneratingState(isGenerating: boolean, statusText?: string) {
-    // Avoid redundant updates if the state and text haven't changed
     if (state.isGenerating === isGenerating && !statusText) return;
     
     state.isGenerating = isGenerating;
 
-    // Update the status text in the relocated footer and the overlay
-    if (statusText && dom.statusText) {
-        dom.statusText.textContent = statusText;
+    if (statusText) {
+        if (dom.statusText) dom.statusText.textContent = statusText;
+        
+        // --- STEP TIMELINE LOGIC ---
+        const dots = document.querySelectorAll('.step-dot');
+        const lowerStatus = statusText.toLowerCase();
+        let activeIdx = 0;
+
+        if (lowerStatus.includes('plan') || lowerStatus.includes('analyz')) activeIdx = 0;
+        else if (lowerStatus.includes('search') || lowerStatus.includes('librarian') || lowerStatus.includes('web')) activeIdx = 1;
+        else if (lowerStatus.includes('generat') || lowerStatus.includes('writing')) activeIdx = 2;
+        else if (lowerStatus.includes('apply') || lowerStatus.includes('finish')) activeIdx = 3;
+
+        dots.forEach((dot, i) => {
+            dot.classList.toggle('active', i <= activeIdx);
+        });
     }
 
     if (dom.messageInput) {
@@ -520,10 +532,21 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string) {
     if (dom.generatingOverlay) {
         dom.generatingOverlay.style.display = isGenerating ? 'flex' : 'none';
         const statusEl = document.getElementById('generating-status-text');
+        
         if (statusEl && statusText) {
             const emoji = getStatusEmoji(statusText);
             statusEl.textContent = `${emoji} ${statusText}`;
+
+            // Check if we are in an "Application" phase to update the Stop button
+            const isApplying = statusText.includes("Applying") || 
+                               statusText.includes("Repairing") || 
+                               statusText.includes("Librarian");
+            
+            if (dom.stopButton) {
+                dom.stopButton.textContent = isApplying ? "Stop Application" : "Stop Generation";
+            }
         }
+
         // Hide metrics initially when starting a new process (e.g. searching)
         // They will be shown by updateGenerationMetrics once streaming starts
         const metricsEl = document.getElementById('generating-metrics');

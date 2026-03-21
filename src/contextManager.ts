@@ -1,7 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { ContextStateProvider } from './commands/contextStateProvider';
-import Jimp = require('jimp');
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
 import { SkillsManager, Skill } from './skillsManager';
 import { CodeGraphManager } from './codeGraphManager';
@@ -1217,7 +1216,9 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
 3. **NEXT STEP REASONING**: Why your next tool call is the right choice.
 
 **AVAILABLE TOOLS:**
-1. \`add_files(files=[{"path": "p1", "mode": "full|signatures"}])\`: **CRITICAL**: Use this to persistently add files to the AI's memory.
+1. \`add_files(files=[{"path": "p1", "mode": "full|signatures"}])\`: **CRITICAL**: Use this to persistently add files to the AI's memory. 
+   - Use \`signatures\` mode if the file is only needed to understand the API/Structure. 
+   - Use \`full\` mode if the file needs to be read in its entirety for logic analysis or modification.
 2. \`read_file(path="path", start_line=0, end_line=500)\`: Use this to "peek" at a file to decide if it's relevant. Reading a file does NOT add it to the permanent context.
 3. \`search_files(pattern="regex", path=".")\`: SMART SEARCH. Performs a high-speed grep search through the codebase. Use this to find where specific functions or variables are defined across the project.
 4. \`read_code_graph(type="class_diagram|import_graph")\`: Get a structural overview of the project architecture.
@@ -1663,12 +1664,13 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
                 result.selectedFilesContent += `### \`${filePath}\` (Image Muted - Vision Disabled)\n\n`;
                 continue;
             }
-            const image = await Jimp.read(buffer);
-            if (maxImageSize > 0 && (image.getWidth() > maxImageSize || image.getHeight() > maxImageSize)) {
-              image.scaleToFit(maxImageSize, maxImageSize);
-            }
-            const base64Data = await image.getBase64Async(image.getMIME());
-            result.images.push({ filePath, data: base64Data });
+            // Ditching Jimp: Convert buffer to base64 directly. 
+            // AI APIs handle large images automatically.
+            const base64Data = buffer.toString('base64');
+            const mime = ext === '.svg' ? 'image/svg+xml' : `image/${ext.substring(1).replace('jpg', 'jpeg')}`;
+            const dataUrl = `data:${mime};base64,${base64Data}`;
+            
+            result.images.push({ filePath, data: dataUrl });
             result.selectedFilesContent += `### \`${filePath}\` (Image Attached)\n\n`;
             continue; 
           } else {

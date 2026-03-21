@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.7.17",
+  "version": "0.7.22",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -19,19 +19,19 @@
     "Other",
     "Notebooks"
   ],
-  "l10n": "./l10n",
+  "l10n": "./out/l10n",
   "main": "./out/extension.js",
   "activationEvents": [
-  "onStartupFinished",
-  "onDebug",
-  "onCommand:lollms-vs-coder.triggerCodeAction"
-],
+    "onStartupFinished",
+    "onDebug",
+    "onCommand:lollms-vs-coder.triggerCodeAction"
+  ],
   "contributes": {
     "commands": [
-      { 
-        "command": "lollms-vs-coder.viewKnowledge", 
-        "title": "View Knowledge" 
-      },      
+      {
+        "command": "lollms-vs-coder.viewKnowledge",
+        "title": "View Knowledge"
+      },
       {
         "command": "lollms-vs-coder.acceptDiff",
         "title": "Accept AI Changes",
@@ -180,7 +180,6 @@
         "title": "Lollms: Fix All Workspace Errors",
         "icon": "$(zap)"
       },
-
       {
         "command": "lollms-vs-coder.debugErrorWithAI",
         "title": "%command.debugErrorWithAI.title%",
@@ -602,11 +601,23 @@
           "items": {
             "type": "object",
             "properties": {
-              "id": { "type": "string" },
-              "name": { "type": "string" },
-              "description": { "type": "string" },
-              "systemPrompt": { "type": "string", "editPresentation": "multilineText" },
-              "prefix": { "type": "string", "description": "Optional command prefix (e.g. /no_think)" }
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "systemPrompt": {
+                "type": "string",
+                "editPresentation": "multilineText"
+              },
+              "prefix": {
+                "type": "string",
+                "description": "Optional command prefix (e.g. /no_think)"
+              }
             }
           }
         },
@@ -616,54 +627,54 @@
           "description": "The ID of the default response profile to use for new discussions."
         },
         "lollmsVsCoder.remote.server.port": {
-            "type": "number",
-            "default": 3000,
-            "description": "Port for the local webhook server (for Push notifications)."
+          "type": "number",
+          "default": 3000,
+          "description": "Port for the local webhook server (for Push notifications)."
         },
         "lollmsVsCoder.remote.discord.enabled": {
-            "type": "boolean",
-            "default": false,
-            "description": "Enable Discord integration."
+          "type": "boolean",
+          "default": false,
+          "description": "Enable Discord integration."
         },
         "lollmsVsCoder.remote.discord.token": {
-            "type": "string",
-            "default": "",
-            "description": "Discord Bot Token."
+          "type": "string",
+          "default": "",
+          "description": "Discord Bot Token."
         },
         "lollmsVsCoder.remote.slack.enabled": {
-            "type": "boolean",
-            "default": false,
-            "description": "Enable Slack integration."
+          "type": "boolean",
+          "default": false,
+          "description": "Enable Slack integration."
         },
         "lollmsVsCoder.remote.slack.token": {
-            "type": "string",
-            "default": "",
-            "description": "Slack Bot User OAuth Token."
+          "type": "string",
+          "default": "",
+          "description": "Slack Bot User OAuth Token."
         },
         "lollmsVsCoder.remote.slack.signingSecret": {
-            "type": "string",
-            "default": "",
-            "description": "Slack Signing Secret (Required for Push/Events API)."
+          "type": "string",
+          "default": "",
+          "description": "Slack Signing Secret (Required for Push/Events API)."
         },
         "lollmsVsCoder.remote.whatsapp.enabled": {
-            "type": "boolean",
-            "default": false,
-            "description": "Enable WhatsApp integration (Future)."
+          "type": "boolean",
+          "default": false,
+          "description": "Enable WhatsApp integration (Future)."
         },
         "lollmsVsCoder.remote.allowedUsers": {
-            "type": "array",
-            "default": [],
-            "description": "List of User IDs allowed to interact with the bot. Leave empty to allow NO ONE (safe default)."
+          "type": "array",
+          "default": [],
+          "description": "List of User IDs allowed to interact with the bot. Leave empty to allow NO ONE (safe default)."
         },
         "lollmsVsCoder.remote.adminUsers": {
-            "type": "array",
-            "default": [],
-            "description": "List of User IDs allowed to execute dangerous tools (File I/O, Terminal)."
+          "type": "array",
+          "default": [],
+          "description": "List of User IDs allowed to execute dangerous tools (File I/O, Terminal)."
         },
         "lollmsVsCoder.remote.allowedChannels": {
-            "type": "array",
-            "default": [],
-            "description": "List of Channel IDs where the bot is allowed to reply."
+          "type": "array",
+          "default": [],
+          "description": "List of Channel IDs where the bot is allowed to reply."
         },
         "lollmsVsCoder.moltbook.enable": {
           "type": "boolean",
@@ -697,12 +708,36 @@
           },
           "description": "Global permissions for the AI Agent tools.",
           "properties": {
-            "shellExecution": { "type": "boolean", "default": true, "description": "Allow executing terminal commands and scripts." },
-            "filesystemWrite": { "type": "boolean", "default": true, "description": "Allow creating or updating files in the workspace." },
-            "filesystemRead": { "type": "boolean", "default": true, "description": "Allow reading file contents and listing directories." },
-            "internetAccess": { "type": "boolean", "default": true, "description": "Allow web search and website scraping." },
-            "screenCapture": { "type": "boolean", "default": false, "description": "Allow the agent to take screenshots of your desktop. (Privacy Sensitive)" },
-            "webTesting": { "type": "boolean", "default": false, "description": "Allow the agent to browse and screenshot web pages/local servers using a headless browser." }
+            "shellExecution": {
+              "type": "boolean",
+              "default": true,
+              "description": "Allow executing terminal commands and scripts."
+            },
+            "filesystemWrite": {
+              "type": "boolean",
+              "default": true,
+              "description": "Allow creating or updating files in the workspace."
+            },
+            "filesystemRead": {
+              "type": "boolean",
+              "default": true,
+              "description": "Allow reading file contents and listing directories."
+            },
+            "internetAccess": {
+              "type": "boolean",
+              "default": true,
+              "description": "Allow web search and website scraping."
+            },
+            "screenCapture": {
+              "type": "boolean",
+              "default": false,
+              "description": "Allow the agent to take screenshots of your desktop. (Privacy Sensitive)"
+            },
+            "webTesting": {
+              "type": "boolean",
+              "default": false,
+              "description": "Allow the agent to browse and screenshot web pages/local servers using a headless browser."
+            }
           }
         },
         "lollmsVsCoder.agent.useRLM": {
@@ -771,7 +806,6 @@
           "default": false,
           "description": "%config.forceFullCodePath.description%"
         },
-
         "lollmsVsCoder.enableCodeActions": {
           "type": "boolean",
           "default": true,
@@ -1026,20 +1060,24 @@
           "description": "Pool of available models for Dynamic Herd assignment. Each entry is { model: string, description: string }."
         },
         "lollmsVsCoder.git.deleteBranchAfterMerge": {
-            "type": "boolean",
-            "default": true,
-            "description": "Automatically delete the temporary feature branch after merging it into the original branch."
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically delete the temporary feature branch after merging it into the original branch."
         },
         "lollmsVsCoder.git.unstagedChangesBehavior": {
-            "type": "string",
-            "default": "stash",
-            "enum": ["stash", "error", "keep"],
-            "description": "Action to take if unstaged changes exist when creating a new AI branch.",
-            "enumDescriptions": [
-                "Stash changes and pop them after switching (if possible) or keep stashed.",
-                "Abort the operation.",
-                "Keep changes and carry them over to the new branch."
-            ]
+          "type": "string",
+          "default": "stash",
+          "enum": [
+            "stash",
+            "error",
+            "keep"
+          ],
+          "description": "Action to take if unstaged changes exist when creating a new AI branch.",
+          "enumDescriptions": [
+            "Stash changes and pop them after switching (if possible) or keep stashed.",
+            "Abort the operation.",
+            "Keep changes and carry them over to the new branch."
+          ]
         },
         "lollmsVsCoder.systemEnv.showOs": {
           "type": "boolean",
@@ -1074,7 +1112,11 @@
         "lollmsVsCoder.reasoningEffort": {
           "type": "string",
           "default": "medium",
-          "enum": ["low", "medium", "high"],
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
           "description": "Computational depth for OpenAI o1/o3 models."
         },
         "lollmsVsCoder.thinkingBudget": {
@@ -1118,9 +1160,9 @@
           "name": "%view.skills.name%",
           "when": "workspaceFolderCount > 0"
         },
-        { 
-            "id": "lollmsRLMView", 
-            "name": "RLM Knowledge Base" 
+        {
+          "id": "lollmsRLMView",
+          "name": "RLM Knowledge Base"
         },
         {
           "id": "lollmsProcessesView",
@@ -1146,7 +1188,6 @@
           "name": "Workflows",
           "when": "workspaceFolderCount > 0"
         },
-
         {
           "id": "lollmsChatPromptsView",
           "name": "%view.chatPrompts.name%",
@@ -1176,8 +1217,7 @@
           "when": "!resourceIsFolder"
         }
       ],
-
-      "editor/context":[
+      "editor/context": [
         {
           "command": "lollms-vs-coder.learnSelectionAsSkill",
           "when": "editorHasSelection",
@@ -1534,7 +1574,7 @@
         "id": "lollms-vs-coder.terminalSelectionSubmenu",
         "label": "%menu.lollmsTerminalSelection.title%"
       }
-    ]  
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run esbuild-package",
@@ -1543,31 +1583,32 @@
     "compile": "npm run clean && npm run copy-assets && npm run build-webview && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap",
     "watch": "npm run clean && npm run copy-assets && npm run build-webview && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --sourcemap --watch",
     "esbuild-package": "npm run clean && npm run copy-assets && npm run minify-webview && esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020 --minify",
-    "copy-assets": "cpx \"src/commands/chatPanel/webview/*.css\" out/webview && cpx \"media/**\" out/media && cpx \"node_modules/@vscode/codicons/dist/codicon.{css,ttf}\" out/styles && cpx \"node_modules/prismjs/themes/prism-tomorrow.css\" out/styles && cpx \"src/skills/*.xml\" out/skills && cpx \"l10n/*.json\" out/l10n && cpx \"package.nls*.json\" out",
+    "copy-assets": "cpx \"src/commands/chatPanel/webview/*.css\" out/webview && cpx \"media/**\" out/media && cpx \"node_modules/@vscode/codicons/dist/codicon.{css,ttf}\" out/styles && cpx \"node_modules/prismjs/themes/prism-tomorrow.css\" out/styles && cpx \"src/skills/*.xml\" out/skills && cpx \"l10n/*.json\" out/l10n && cpx \"l10n/*.json\" l10n && cpx \"package.nls*.json\" out",
+    "audit-fix": "npm audit fix --audit-level=moderate || echo 'Audit fix finished with remaining issues.'",
     "package": "npm run build-and-package",
-    "build-and-package": "npm run clean && npm run vscode:prepublish && npx @vscode/vsce package",
-    "pretest": "npm run compile && npm audit",
+    "build-and-package": "npm run clean && npm run audit-fix && npm run vscode:prepublish && npx @vscode/vsce package",
+    "pretest": "npm run compile && npm audit --audit-level=moderate",
     "test": "node ./out/test/runTest.js",
     "security-audit": "npm audit --audit-level moderate",
     "clean": "rimraf out"
   },
   "devDependencies": {
     "@types/dompurify": "^3.0.5",
-    "@types/jimp": "^0.2.28",
+    "@types/js-yaml": "^4.0.9",
     "@types/marked": "5.0.2",
     "@types/minimatch": "^5.1.2",
     "@types/node-fetch": "2.6.13",
+    "@types/pdf-parse": "^1.1.1",
     "@types/prismjs": "^1.26.4",
     "@types/vscode": "1.74.0",
     "@vscode/vsce": "^2.26.0",
-    "@types/pdf-parse": "^1.1.1",
-    "@types/js-yaml": "^4.0.9",
     "cpx2": "^4.2.0",
     "esbuild": "^0.25.10",
     "rimraf": "^5.0.5",
     "typescript": "5.9.2"
   },
   "dependencies": {
+    "@vscode/l10n": "^0.0.18",
     "@codemirror/commands": "^6.6.0",
     "@codemirror/lang-markdown": "^6.2.5",
     "@codemirror/search": "^6.5.6",
@@ -1575,29 +1616,29 @@
     "@codemirror/theme-one-dark": "^6.1.2",
     "@codemirror/view": "^6.28.4",
     "@vscode/codicons": "^0.0.35",
+    "cose-base": "^1.0.3",
+    "cytoscape": "^3.28.1",
+    "cytoscape-cose-bilkent": "^4.1.0",
+    "cytoscape-dagre": "^2.5.0",
+    "dagre": "^0.8.5",
     "dompurify": "^3.1.5",
     "exceljs": "^4.4.0",
-    "jimp": "^1.6.0",
+    "js-yaml": "^4.1.0",
+    "layout-base": "^1.0.2",
     "mammoth": "^1.7.2",
     "marked": "16.2.1",
     "mermaid": "^10.9.1",
     "minimatch": "^9.0.5",
     "node-fetch": "2.7.0",
     "pdf-parse": "^1.1.1",
-    "prismjs": "^1.29.0",
-    "js-yaml": "^4.1.0",
-    "cytoscape": "^3.28.1",
-    "dagre": "^0.8.5",
-    "cytoscape-dagre": "^2.5.0",
-    "cytoscape-cose-bilkent": "^4.1.0",
-    "layout-base": "^1.0.2",
-    "cose-base": "^1.0.3"
+    "prismjs": "^1.29.0"
   },
   "overrides": {
     "tough-cookie": "^4.1.3",
     "jpeg-js": "^0.4.4",
     "minimist": "^1.2.8",
     "form-data": "^4.0.0",
+    "file-type": "16.5.4",
     "eslint": {
       "chalk": ">=5.0.0",
       "debug": ">=4.3.5",

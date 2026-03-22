@@ -12,3 +12,19 @@
 - when the llm selects more files, we are loosing the message!! Please make sure when the llm is not operating in auto context mode, if it needs more files, it shows a ui with a add to context button where the user can do it before continuing to prompt the llm
 -   
 - Actual command not found, wanted to execute lollms-vs-coder.editSkill /1505
+
+
+fix search functionality in both discussion and dedicated search view (Webview error: sanitizer is not defined)
+applyall is broken
+librarian integration with the llm is not correct
+add all to conext button is not working
+
+When viewing the hunk original text, show the file name and hunk number.
+Allow editing.
+Add a set as done button.
+Before attempting fix, make sure it is not just a simple indentation incompatibility
+prompt the ai not to add non existing comments to the search code as this would block the application of the hunk
+
+
+OK Fix the surgical update so it doesn't add extra indentation tab to the text when selected and don't show lollms's icon
+OK in discussion when using the auto context badge, don't remove the original prompt, keep it in the input zone.

@@ -9,27 +9,16 @@ export class SelectionDecorator {
         this.extensionUri = extensionUri;
 
         // Create the decoration type with theme-specific overrides
+        // Using only gutter icon - no inline decoration to avoid tab-like appearance
         this.decorationType = vscode.window.createTextEditorDecorationType({
-            // Base properties for the icon inside the text
-            before: {
-                margin: '0 8px 0 0',
-                width: '16px',
-                height: '16px',
-            },
-            // Gutter icon size
+            // Gutter icon only - appears in the left margin, not inline
             gutterIconSize: 'contain',
             // Light theme overrides
             light: {
-                before: {
-                    contentIconPath: vscode.Uri.joinPath(this.extensionUri, 'media', 'lollms-icon-light.svg'),
-                },
                 gutterIconPath: vscode.Uri.joinPath(this.extensionUri, 'media', 'lollms-icon-light.svg'),
             },
             // Dark theme overrides
             dark: {
-                before: {
-                    contentIconPath: vscode.Uri.joinPath(this.extensionUri, 'media', 'lollms-icon-dark.svg'),
-                },
                 gutterIconPath: vscode.Uri.joinPath(this.extensionUri, 'media', 'lollms-icon-dark.svg'),
             },
             rangeBehavior: vscode.DecorationRangeBehavior.ClosedOpen

@@ -825,11 +825,10 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
                 }
             }
 
-            // Sync context UI and clear input
+            // Sync context UI but PRESERVE the original prompt
+            // The user may want to review selected files before sending
             this.updateContextAndTokens();
-            if (userPrompt) {
-                this.setInputText('');
-            }
+            // Note: Intentionally NOT clearing the input - user might want to edit or send after review
 
       } catch (e: any) {
           if (e.name !== 'AbortError' && e.message !== 'AbortError') {

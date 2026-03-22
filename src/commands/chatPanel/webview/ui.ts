@@ -1004,8 +1004,11 @@ export function updateBadges() {
                 vscode.postMessage({ command: 'toggleAutoContext', enabled: !caps.autoContextMode });
             },
             () => {
+                // Execute auto-context with current prompt but PRESERVE it in the input zone
+                // The user may want to review selected files before sending the actual message
                 const prompt = dom.messageInput ? dom.messageInput.value : "";
                 vscode.postMessage({ command: 'runAutoContext', prompt: prompt });
+                // Note: Intentionally NOT clearing dom.messageInput.value - the prompt stays visible
             }
         );
         if (ctxBadge) {

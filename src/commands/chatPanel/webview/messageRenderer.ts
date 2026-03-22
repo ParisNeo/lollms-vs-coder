@@ -1553,11 +1553,10 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 summary.appendChild(actions);
                 details.appendChild(summary);
                 
-                const pre = document.createElement('pre');
-                pre.className = `language-${language}`;
-                pre.style.width = '100%';
-                pre.style.display = 'block'; // Force block display
-                pre.style.maxHeight = 'none';
+        const pre = document.createElement('pre');
+        pre.className = `language-${language}`;
+        pre.style.width = '100%';
+        pre.style.maxHeight = '400px';
 
                 if (isAider) {
                     // Clear pre to prevent raw text or old gutters from leaking into the Aider UI
@@ -1696,6 +1695,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 } else {
                     pre.innerHTML = ''; 
                     pre.style.display = 'flex';
+                    pre.style.overflow = 'auto';
 
                     const gutter = document.createElement('div');
                     gutter.className = 'code-line-gutter';

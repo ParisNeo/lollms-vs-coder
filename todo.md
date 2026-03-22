@@ -25,6 +25,12 @@ Add a set as done button.
 Before attempting fix, make sure it is not just a simple indentation incompatibility
 prompt the ai not to add non existing comments to the search code as this would block the application of the hunk
 
+verify status is not working
+
 
 OK Fix the surgical update so it doesn't add extra indentation tab to the text when selected and don't show lollms's icon
 OK in discussion when using the auto context badge, don't remove the original prompt, keep it in the input zone.
+
+OK Code tags are rendered as long code block. Cap its height adn use scrollbars
+
+usage ui is not working, delete button not working

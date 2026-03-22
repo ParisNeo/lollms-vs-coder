@@ -70,11 +70,13 @@ export class PromptTemplates {
 **RULES:**
 1. **SEARCH BLOCK**: Must contain *exact* lines from the file (including indentation). If it doesn't match, the edit fails.
 2. **REPLACE BLOCK**: Must contain the *entire* replacement code, including the surrounding context lines you matched.
-3. **CONTEXT**: Include 3-4 lines of unchanged context before and after the modification in BOTH blocks.
+3. **CONTEXT**: Include 3-4 lines of unchanged context before and after the modification in BOTH blocks to ensure accurate matching.
 4. **CONTAINMENT**: All code changes must be *inside* the \`=======\` and \`>>>>>>> REPLACE\` markers. Content outside is ignored.
 5. **NO ELLIPSIS**: Do not use "..." to skip code in the SEARCH block.
-6. **NO LINE NUMBERS**: Do not include line numbers.
-7. **ATOMIC EDITS (CRITICAL)**: **NEVER** build a single large block for multiple changes. Split your edits into many small, highly specific SEARCH/REPLACE blocks. A block should ideally target a single function, variable, or logic branch. This ensures maximum matching precision.
+8. **NO LINE NUMBERS**: Do not include line numbers.
+9. **ATOMIC EDITS (CRITICAL)**: **NEVER** build a single large block for multiple changes. Split your edits into many small, highly specific SEARCH/REPLACE blocks. A block should ideally target a single function, variable, or logic branch. This ensures maximum matching precision.
+10. **SEARCH ACCURACY**: The search text MUST match the original block to edit EXACTLY or the application of the hunk will fail. Don't add comments that doesn't exist to the search block and respect same exact indentation of the original code.
+
 `);
         } else if (partialFormat === 'diff') {
             sections.push(`

@@ -437,20 +437,27 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     width: 100%;
 }
 
+/* === CODE BLOCK CONTAINER - CAP HEIGHT AND SCROLL === */
+/* === CODE BLOCK CONTAINER - CAP HEIGHT AND SCROLL === */
 .code-collapsible > pre {
     margin: 0;
     padding: 0;
-    overflow-x: auto;
-    max-height: 500px; /* Capped height */
-    overflow-y: auto;
-    width: 100%;
-    max-width: 100%;
+    /* CAP HEIGHT: Container controls scrollbar and height */
+    max-height: 400px;
+    overflow: auto;
+    
+    /* Flex layout for gutter + code */
     display: flex;
+    flex-direction: row;
+    
+    width: 100%;
     background-color: var(--vscode-editor-background);
     box-sizing: border-box;
 }
 
 .code-line-gutter {
+    flex-shrink: 0;
+    width: 40px;
     text-align: right;
     padding: 12px 8px;
     color: var(--vscode-editorLineNumber-foreground);
@@ -459,12 +466,27 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     font-family: var(--vscode-editor-font-family);
     font-size: var(--vscode-editor-font-size);
     border-right: 1px solid var(--vscode-editorGroup-border);
-    min-width: 35px;
     line-height: 1.5;
-    flex-shrink: 0;
+    /* Keep gutter fixed while code scrolls */
     position: sticky;
     left: 0;
     z-index: 10;
+    /* Ensure gutter stays in view */
+    align-self: flex-start;
+}
+
+.code-collapsible > pre > code {
+    flex: 1;
+    display: block;
+    padding: 12px;
+    font-family: var(--vscode-editor-font-family);
+    font-size: var(--vscode-editor-font-size);
+    white-space: pre;
+    background-color: transparent;
+    box-sizing: border-box;
+    line-height: 1.5;
+    /* NO height限制 - let content grow naturally */
+    min-width: 0;
 }
 
 /* Aider Surgical Diff Styling */
@@ -582,19 +604,6 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 .aider-hunk-actions {
     display: flex;
     gap: 6px;
-}
-
-.code-collapsible > pre > code { 
-    flex: 1;
-    display: block; 
-    padding: 12px; 
-    font-family: var(--vscode-editor-font-family); 
-    font-size: var(--vscode-editor-font-size); 
-    white-space: pre; 
-    background-color: transparent; 
-    box-sizing: border-box;
-    overflow-x: visible; /* Let the parent pre handle the scroll */
-    line-height: 1.5;
 }
 .select-line-valid { color: var(--vscode-charts-green); font-weight: bold; display: block; padding: 2px 0; white-space: pre; }
 .select-line-valid::before { content: '✓ '; font-family: "codicon"; margin-right: 6px; font-weight: normal; }

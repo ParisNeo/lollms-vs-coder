@@ -41,6 +41,8 @@ export interface DiscussionCapabilities {
         delete: boolean;
     };
     responseProfileId: string;
+    language: string;
+    voice: string;
     explainCode: boolean;
     fileRename: boolean;
     fileDelete: boolean;
@@ -298,10 +300,13 @@ export const dom = {
     // Raw Code Preview
     get rawCodeModal() { return document.getElementById('raw-code-modal') as HTMLDivElement; },
     get rawCodeDisplay() { return document.getElementById('raw-code-display') as HTMLElement; },
+    get rawCodeFilename() { return document.getElementById('raw-code-filename') as HTMLElement; },
     get rawCodeCloseBtn() { return document.getElementById('raw-code-close-btn') as HTMLSpanElement; },
     get rawSearchInput() { return document.getElementById('raw-search-input') as HTMLInputElement; },
     get rawSearchCount() { return document.getElementById('raw-search-count') as HTMLElement; },
     get rawSearchPrev() { return document.getElementById('raw-search-prev') as HTMLButtonElement; },
     get rawSearchNext() { return document.getElementById('raw-search-next') as HTMLButtonElement; },
+    get copySearchBtn() { return document.getElementById('copy-search-btn') as HTMLButtonElement; },
+    get copyReplaceBtn() { return document.getElementById('copy-replace-btn') as HTMLButtonElement; },
     get copyRawBtn() { return document.getElementById('copy-raw-btn') as HTMLButtonElement; }
 };

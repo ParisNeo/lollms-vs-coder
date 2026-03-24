@@ -1,5 +1,8 @@
 import { dom, state, vscode } from "./dom.js";
 import { isScrolledToBottom } from "./utils.js";
+import DOMPurify from 'dompurify';
+
+const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
 
 function getStatusEmoji(text: string): string {
     const lower = text.toLowerCase();
@@ -906,7 +909,12 @@ export function updateBadges() {
             // Open the Discussion Settings modal directly
             if (dom.discussionToolsModal) {
                 dom.discussionToolsModal.classList.add('visible');
-                renderProfilesInModal(); // Refresh the list
+                renderProfilesInModal(); // Refresh the profiles list
+                
+                // REFRESH VOICES
+                if (typeof (window as any).refreshVoiceList === 'function') {
+                    (window as any).refreshVoiceList();
+                }
             }
             menu.classList.remove('visible');
         };
@@ -996,7 +1004,7 @@ export function updateBadges() {
         container.appendChild(knowledgeGroup);
 
         const ctxBadge = createToggleBadge(
-            '🧠 AutoCtx',
+            '🧠 Librarian',
             'autocontext', 
             guiState.autoContextBadge, 
             caps.autoContextMode, 
@@ -1004,11 +1012,8 @@ export function updateBadges() {
                 vscode.postMessage({ command: 'toggleAutoContext', enabled: !caps.autoContextMode });
             },
             () => {
-                // Execute auto-context with current prompt but PRESERVE it in the input zone
-                // The user may want to review selected files before sending the actual message
                 const prompt = dom.messageInput ? dom.messageInput.value : "";
                 vscode.postMessage({ command: 'runAutoContext', prompt: prompt });
-                // Note: Intentionally NOT clearing dom.messageInput.value - the prompt stays visible
             }
         );
         if (ctxBadge) {
@@ -1016,22 +1021,20 @@ export function updateBadges() {
             const toggle = ctxBadge.querySelector('.badge-toggle-btn');
 
             if (caps.disableProjectContext) {
-                // PRIORITY 1: MUTED STATE (Red)
                 ctxBadge.classList.remove('inactive');
                 ctxBadge.classList.add('active');
                 ctxBadge.style.setProperty('background-color', 'var(--vscode-charts-red)', 'important');
                 ctxBadge.style.setProperty('color', 'white', 'important');
                 ctxBadge.title = "Context is currently MUTED. Files won't be sent to AI.";
-                if (label) label.textContent = '🧠 Context Muted';
+                if (label) label.textContent = '🧠 Librarian Muted';
                 if (toggle) {
                     toggle.classList.remove('codicon-circle-large-outline', 'codicon-pass-filled');
                     toggle.classList.add('codicon-mute');
                 }
             } else {
-                // PRIORITY 2: NORMAL STATE (Respects toggle)
                 ctxBadge.style.backgroundColor = "";
                 ctxBadge.style.color = "";
-                
+
                 if (caps.autoContextMode) {
                     ctxBadge.classList.remove('inactive');
                     ctxBadge.classList.add('active');
@@ -1048,8 +1051,8 @@ export function updateBadges() {
                     }
                 }
 
-                if (label) label.textContent = '🧠 AutoCtx';
-                ctxBadge.title = caps.autoContextMode ? "Auto-Context Active (Click to disable)" : "Auto-Context Inactive (Click to enable)";
+                if (label) label.textContent = '🧠 Librarian';
+                ctxBadge.title = caps.autoContextMode ? "Librarian Active (Click to disable, Right-click to run manually)" : "Librarian Inactive (Click to enable)";
             }
             knowledgeGroup.appendChild(ctxBadge);
         }
@@ -1726,7 +1729,9 @@ export function renderContextUsage(usage: any[]) {
                                     </div>
                                 </td>
                                 <td style="padding:10px 8px; text-align:right; width:40px;">
-                                    <button class="icon-btn" onclick="window.vscode.postMessage({command:'removeFileFromContext', path:'${item.path}'});" title="Remove"><i class="codicon codicon-trash"></i></button>
+                                    <button class="icon-btn remove-usage-item-btn" data-path="${item.path}" title="Remove from context">
+                                        <i class="codicon codicon-trash"></i>
+                                    </button>
                                 </td>
                             </tr>
                         `).join('')}
@@ -1740,6 +1745,21 @@ export function renderContextUsage(usage: any[]) {
     const extraFiles = usage.filter(f => f.isExtra);
 
     container.innerHTML = html + renderTable(projectFiles, "Project Files", "codicon-root-folder") + renderTable(extraFiles, "Research & External", "codicon-globe");
+
+    // Fix: Add Event Delegation for delete buttons to bypass CSP inline script restrictions
+    container.onclick = (e) => {
+        const target = e.target as HTMLElement;
+        const btn = target.closest('.remove-usage-item-btn') as HTMLButtonElement;
+        if (btn && btn.dataset.path) {
+            vscode.postMessage({
+                command: 'removeFileFromContext',
+                path: btn.dataset.path
+            });
+            // Optimistically hide the row
+            const row = btn.closest('tr');
+            if (row) row.style.opacity = '0.3';
+        }
+    };
 }
 
 export function updateContextFileUsage(filePath: string, tokens: number) {

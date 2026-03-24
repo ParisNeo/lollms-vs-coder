@@ -551,7 +551,10 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
         body = { 
             model, 
             messages: sanitizedMessages, 
-            stream
+            stream,
+            options: {
+                num_predict: 20096 // Increase output limit for complex JSON plans
+            }
         };
         // Only inject the 'think' key if explicitly requested to avoid 500 on standard models
         if (isThinkingActive) {
@@ -577,15 +580,19 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
         }
     } else if (backend === 'openai' || backend === 'lollms') {
         url += '/v1/chat/completions';
-        body = { model, messages: sanitizedMessages, stream };
+        body = { 
+            model, 
+            messages: sanitizedMessages, 
+            stream,
+            max_tokens: 4096 // Ensure long JSON responses aren't truncated
+        };
         if (isThinkingActive) {
             // OpenAI o1/o3 style
+            body.max_completion_tokens = thinkingBudget;
             body.reasoning_effort = reasoningEffort;
-            // DeepSeek Reasoner style (passed via extra_body/direct)
+            // DeepSeek Reasoner style
             body.thinking = { type: "enabled" };
         } else {
-            // Explicitly disable for providers that default to thinking
-            // Some proxies use 'thinking' while others use 'include_reasoning'
             body.include_reasoning = false;
         }
     } else if (backend === 'google') {

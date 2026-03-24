@@ -192,8 +192,15 @@ ${memoryBlock}
         }
 
         // 4. Final attempt: If LLM cut off the closing braces, try to append them
+        // This is a "hail mary" for truncated server responses
         if (!result && startIndex !== -1 && braceCount > 0) {
-            let attempt = cleaned.substring(startIndex) + "}".repeat(braceCount);
+            // If it ends mid-string, try to close the string first
+            let attempt = cleaned.substring(startIndex);
+            if (attempt.split('"').length % 2 === 0) { 
+                attempt += '"'; 
+            }
+            attempt += "}".repeat(braceCount);
+            
             try {
                 JSON.parse(attempt);
                 result = attempt;

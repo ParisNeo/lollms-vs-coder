@@ -162,5 +162,10 @@
     "view.codeGraph.importGraph": "Import Graph",
     "view.codeGraph.classDiagram": "Class Diagram",
     "tooltip.node.type": "Type:",
-    "view.codeGraph.emptyState": "No code structure found or graph has not been built yet. Click the diagram icon in the 'Discussions' view sidebar to build the graph."
+    "view.codeGraph.emptyState": "No code structure found or graph has not been built yet. Click the diagram icon in the 'Discussions' view sidebar to build the graph.",
+    "action.notebook": "Cahier",
+    "action.search": "Rechercher",
+    "action.fixErrors": "Corriger les erreurs",
+    "action.git": "Git",
+    "action.settings": "Paramètres"
 }

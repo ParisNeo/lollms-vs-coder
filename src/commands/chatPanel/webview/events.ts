@@ -179,6 +179,15 @@ export function initEventHandlers() {
 
     if (dom.stopButton) {
         dom.stopButton.addEventListener('click', () => {
+            // Stop any ongoing speech synthesis
+            if (window.speechSynthesis) {
+                window.speechSynthesis.cancel();
+            }
+            // Trigger the global cleanup logic defined in main.ts if it was manual speech
+            if (typeof (window as any).resetActiveSpeakButton === 'function') {
+                (window as any).resetActiveSpeakButton();
+            }
+            
             vscode.postMessage({ command: 'stopGeneration' });
             setGeneratingState(false);
         });
@@ -235,7 +244,13 @@ export function initEventHandlers() {
     bindClick(dom.agentToolsButton, 'requestAvailableTools');
     if (dom.discussionToolsButton) {
         dom.discussionToolsButton.addEventListener('click', () => {
-            if (dom.discussionToolsModal) dom.discussionToolsModal.classList.add('visible');
+            if (dom.discussionToolsModal) {
+                dom.discussionToolsModal.classList.add('visible');
+                // Ensure voices are fresh when entering settings
+                if (typeof (window as any).refreshVoiceList === 'function') {
+                    (window as any).refreshVoiceList();
+                }
+            }
             dom.moreActionsMenu.classList.remove('visible');
         });
     }
@@ -603,6 +618,8 @@ export function initEventHandlers() {
                     partialFormat: partialFormat
                 },
                 responseProfileId: selectedProfileId,
+                language: (document.getElementById('modal-language') as HTMLSelectElement)?.value || 'auto',
+                voice: (document.getElementById('modal-voice') as HTMLSelectElement)?.value || 'default',
                 contextAggression: dom.contextAggressionSelect?.value || 'respect',
                 forceFullCode: dom.capForceFullCode?.checked ?? false,
                 allowedFormats: {
@@ -804,14 +821,48 @@ export function initEventHandlers() {
         });
     }
 
+    const handleRawCopy = (btn: HTMLButtonElement, mode: 'full' | 'search' | 'replace') => {
+        const text = dom.rawCodeDisplay.textContent || '';
+        let textToCopy = text;
+
+        if (mode !== 'full') {
+            // Precise regex for Aider markers
+            const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
+            const matches = [...text.matchAll(aiderRegex)];
+            
+            if (matches.length > 0) {
+                if (mode === 'search') {
+                    textToCopy = matches.map(m => m[1]).join('\n\n');
+                } else if (mode === 'replace') {
+                    textToCopy = matches.map(m => m[2]).join('\n\n');
+                }
+            } else if (mode !== 'full') {
+                // If it's a code block but doesn't have markers, search/replace copy is invalid
+                vscode.postMessage({ command: 'showError', message: 'No SEARCH/REPLACE markers found in this block.' });
+                return;
+            }
+        }
+
+        if (textToCopy) {
+            vscode.postMessage({ command: 'copyToClipboard', text: textToCopy });
+            const originalHtml = btn.innerHTML;
+            btn.innerHTML = '<span class="codicon codicon-check"></span> Copied!';
+            btn.classList.add('success');
+            setTimeout(() => {
+                btn.innerHTML = originalHtml;
+                btn.classList.remove('success');
+            }, 2000);
+        }
+    };
+
     if (dom.copyRawBtn) {
-        dom.copyRawBtn.addEventListener('click', () => {
-            const text = dom.rawCodeDisplay.textContent || '';
-            vscode.postMessage({ command: 'copyToClipboard', text });
-            const originalHtml = dom.copyRawBtn.innerHTML;
-            dom.copyRawBtn.innerHTML = '<span class="codicon codicon-check"></span> Copied!';
-            setTimeout(() => dom.copyRawBtn.innerHTML = originalHtml, 2000);
-        });
+        dom.copyRawBtn.addEventListener('click', () => handleRawCopy(dom.copyRawBtn, 'full'));
+    }
+    if (dom.copySearchBtn) {
+        dom.copySearchBtn.addEventListener('click', () => handleRawCopy(dom.copySearchBtn, 'search'));
+    }
+    if (dom.copyReplaceBtn) {
+        dom.copyReplaceBtn.addEventListener('click', () => handleRawCopy(dom.copyReplaceBtn, 'replace'));
     }
 
     if (dom.searchCloseBtn) dom.searchCloseBtn.addEventListener('click', () => {
@@ -895,7 +946,30 @@ export function initEventHandlers() {
                     buttonId: genImgBtn.id
                 });
                 return;
-            }            
+            }
+
+            // Handle "Add Files to Context" Button (CSP Safe)
+            const addFilesBtn = target.closest('.add-files-to-context-btn') as HTMLButtonElement;
+            if (addFilesBtn) {
+                e.stopPropagation();
+                const filesRaw = addFilesBtn.dataset.files || '[]';
+                const blockId = addFilesBtn.dataset.blockId;
+                
+                try {
+                    const files = JSON.parse(filesRaw);
+                    addFilesBtn.disabled = true;
+                    addFilesBtn.innerHTML = '<div class="spinner"></div> Adding...';
+                    
+                    vscode.postMessage({
+                        command: 'addFilesToContext',
+                        files: files,
+                        blockId: blockId
+                    });
+                } catch (err) {
+                    console.error("Failed to parse file list from button:", err);
+                }
+                return;
+            }
 
             // Save & Retry Params
             const saveRetryBtn = target.closest('.save-retry-params-btn') as HTMLButtonElement;

@@ -4,6 +4,7 @@ import { LollmsAPI, ChatMessage } from './lollmsAPI';
 import { getProcessedSystemPrompt, stripThinkingTags, DiscussionCapabilities, HerdParticipant } from './utils';
 import { ProcessManager } from './processManager';
 import { Plan } from './tools/tool';
+import { Logger } from './logger';
 
 export interface Discussion {
     id: string;
@@ -18,7 +19,8 @@ export interface Discussion {
     gitState?: { originalBranch: string, tempBranch: string };
     importedSkills?: string[];
     activeDiagrams?: string[]; // e.g., ['class_diagram', 'call_graph']
-    appliedState?: Record<string, Record<number, number[]>>;    
+    appliedState?: Record<string, Record<number, number[]>>;
+    discussion_data_zone?: string;
 }
 
 export interface DiscussionGroup {

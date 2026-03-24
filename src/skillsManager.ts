@@ -214,10 +214,17 @@ export class SkillsManager {
         let targetDir = rootDir;
         if (skill.category) {
             const relativeCategory = skill.category.replace(/\\/g, '/');
-            targetDir = vscode.Uri.joinPath(rootDir, ...relativeCategory.split('/'));
-            try {
-                await vscode.workspace.fs.createDirectory(targetDir);
-            } catch (e) {}
+            const segments = relativeCategory.split('/').filter(s => s.length > 0);
+            
+            // Create directories one by one to ensure parent existance
+            let currentDir = rootDir;
+            for (const segment of segments) {
+                currentDir = vscode.Uri.joinPath(currentDir, segment);
+                try {
+                    await vscode.workspace.fs.createDirectory(currentDir);
+                } catch (e) {}
+            }
+            targetDir = currentDir;
         }
 
         const filePath = vscode.Uri.joinPath(targetDir, `${skill.id}.xml`);

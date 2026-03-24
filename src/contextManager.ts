@@ -719,7 +719,8 @@ ${content.substring(0, 20000)}
     model: string,
     signal: AbortSignal,
     currentSkillIds: string[],
-    onUpdate: (content: string) => void
+    onUpdate: (content: string) => void,
+    discussion: any = null
   ): Promise<string[]> {
     if (!this.skillsManager) return currentSkillIds;
 
@@ -779,9 +780,17 @@ Your goal is to optimize the AI's "Skill Context" by selecting specific document
 }
 \`\`\``;
 
+    const fullContext = await this.getContextContent({ includeTree: true, modelName: model, signal });
+
     let chatHistory: ChatMessage[] = [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: `**USER REQUEST:** "${userPrompt}"\n\n**CURRENTLY ACTIVE SKILLS:** ${JSON.stringify(Array.from(selectedIds))}` }
+        { role: 'user', content: `
+# PROJECT CONTEXT
+${fullContext.projectTree}
+${fullContext.selectedFilesContent.substring(0, 5000)}...
+
+**USER REQUEST:** "${userPrompt}"
+**CURRENTLY ACTIVE SKILLS:** ${JSON.stringify(Array.from(selectedIds))}` }
     ];
 
     renderUpdate("Initializing search...");
@@ -872,12 +881,60 @@ Your goal is to optimize the AI's "Skill Context" by selecting specific document
   }
 
   // --- WEB RESEARCH AGENT ---
+  /**
+   * Manages the structured briefing entries stored in the discussion data zone.
+   */
+  private updateBriefingData(discussion: any, action: 'add' | 'amend', id: string, content: string) {
+    if (!discussion) return;
+
+    let entries: Record<string, string> = {};
+    const raw = (discussion.discussion_data_zone || "").trim();
+    
+    try {
+        if (raw.startsWith('{')) {
+            entries = JSON.parse(raw);
+        } else if (raw.length > 0) {
+            // Legacy content migration: move raw text to a 'general' entry
+            entries = { "initial_analysis": raw };
+        }
+    } catch { 
+        entries = {}; 
+    }
+
+    entries[id] = content;
+    discussion.discussion_data_zone = JSON.stringify(entries, null, 2);
+  }
+
+  private renderBriefing(discussion: any): string {
+    const fallback = "Librarian is analyzing project state...";
+    if (!discussion || !discussion.discussion_data_zone) return fallback;
+    
+    try {
+        const raw = discussion.discussion_data_zone.trim();
+        if (!raw.startsWith('{')) return raw || fallback;
+
+        const entries = JSON.parse(raw);
+        const keys = Object.keys(entries);
+        if (keys.length === 0) return fallback;
+        
+        return keys.map(id => {
+            const title = id.replace(/_/g, ' ').toUpperCase();
+            return `**[${title}]**\n${entries[id]}`;
+        }).join('\n\n');
+    } catch { 
+        return discussion.discussion_data_zone || fallback; 
+    }
+  }
+
+  // --- WEB RESEARCH AGENT ---
   public async runWebResearchAgent(
       userPrompt: string,
       model: string,
       signal: AbortSignal,
       onUpdate: (content: string) => void,
-      onOverlayUpdate?: (status: string) => void
+      onOverlayUpdate?: (status: string) => void,
+      discussion: any = null,
+      fullHistory: ChatMessage[] = []
   ): Promise<void> {
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const searchInCache = config.get<boolean>('searchInCacheFirst') ?? true;
@@ -888,25 +945,27 @@ Your goal is to optimize the AI's "Skill Context" by selecting specific document
     // Check if configuration exists for Google
     const canGoogle = searchProvider === 'google_custom_search' && !!apiKey && !!cx;
 
-    const systemPrompt = `You are a Web Research Librarian. 
-Your goal is to check if the user's request requires external knowledge (documentation, libraries, recent events).
-If yes, you must plan searches, execute them, review results, and add valuable content to the context.
+    const systemPrompt = `You are the **Web Research Specialist**. 
+Your goal is to acquire external knowledge (documentation, library APIs, recent bug fixes) that is missing from the local project. 
+You have access to a shared **Team Briefing**; use it to store and correct the team's understanding of external dependencies.
 
-**AVAILABLE TOOLS:**
-1. \`plan_searches(queries=[{"provider": "google|arxiv|wikipedia|stackoverflow", "q": "query string"}])\`: Execute searches in parallel.
-   - Use 'google' for general docs/info (Only if available).
-   - Use 'stackoverflow' for specific coding errors.
-   - Use 'arxiv' for research papers.
-   - Use 'wikipedia' for general concepts.
-2. \`read_and_add(urls=["url1", "url2"])\`: Scrape these URLs and add their content to the project context as files.
-3. \`done()\`: Finish research.
+### 📜 THE RESEARCHER'S CONSTITUTION
+1. **NO REDUNDANCY**: Do not search for information already present in the "EXISTING PROJECT CONTEXT" or "SHARED TEAM BRIEFING".
+2. **DISTILLATION**: When you read a page, extract only the parts relevant to the user's request.
+3. **REPORTING**: Use \`add_briefing_entry\` to inform the Librarian and Worker LLM of your findings.
+4. **BELIEF CORRECTION**: If you find that a previous assumption in the briefing is wrong (e.g., an API version has changed), use \`amend_briefing_entry\` immediately.
 
-**RULES:**
-- Don't search if the request is purely about existing code (e.g. "refactor this function"). Call \`done()\` immediately.
-- Minimise noise. Only add high-quality documentation or solutions.
-- **OUTPUT JSON ONLY**: Reply with a valid JSON object.
+**TEAM COORDINATION TOOLS:**
+1. \`add_briefing_entry(id="unique_id", info="technical details")\`: Record a new technical discovery from the web.
+2. \`amend_briefing_entry(id="existing_id", info="updated details")\`: Correct or expand a previous entry.
+3. \`summon_specialist(agent="librarian|skills", reason="why")\`: Call the Librarian if you discover a local file you need to check, or the Skills agent for protocol help.
 
-**JSON FORMAT:**
+**RESEARCH TOOLS:**
+4. \`plan_searches(queries=[{"provider": "google|arxiv|wikipedia|stackoverflow", "q": "query string"}])\`: Execute searches in parallel.
+5. \`read_and_add(urls=["url1", "url2"])\`: Scrape these URLs and add their content to the project context as research files.
+6. \`done()\`: Finish research mission.
+
+**OUTPUT FORMAT**: JSON only
 \`\`\`json
 {
   "tool": "tool_name",
@@ -915,12 +974,25 @@ If yes, you must plan searches, execute them, review results, and add valuable c
 \`\`\`
 `;
 
+    // Fetch context so the Web Agent knows what we already have
+    const fullContext = await this.getContextContent({ includeTree: true, modelName: model, signal });
+    const sharedKnowledge = this.renderBriefing(discussion);
+
     const actionLog: string[] = [];
     const foundResults: { url: string, title: string, provider: string }[] = [];
     const addedSources: { url: string, title: string }[] = [];
     const chatHistory: ChatMessage[] = [
         { role: 'system', content: systemPrompt },
-        { role: 'user', content: `Request: "${userPrompt}"\n\nGoogle Available: ${canGoogle}` }
+        { role: 'user', content: `
+# EXISTING PROJECT CONTEXT
+${fullContext.projectTree}
+${fullContext.selectedFilesContent}
+
+# SHARED KNOWLEDGE
+${sharedKnowledge}
+
+**USER REQUEST:** "${userPrompt}"
+Google Available: ${canGoogle}` }
     ];
 
     const renderUpdate = (status: string, finished: boolean = false) => {
@@ -955,9 +1027,17 @@ If yes, you must plan searches, execute them, review results, and add valuable c
             spinnerHtml = `<div class="status-line" style="display:flex; align-items:center; gap:8px;"><span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span> <span style="font-weight:600;">Research Complete</span></div>`;
         }
         
-        const fullMessage = `**🌍 Web Research Agent**\n\n${spinnerHtml}\n\n${foundHtml}\n\n${sourcesHtml}\n\n${logSection}`;
+        const currentBriefing = this.renderBriefing(discussion);
+        const briefingHtml = `<div class="technical-briefing-card">
+            <div class="briefing-header"><span class="codicon codicon-note"></span> Team Technical Briefing</div>
+            <div class="briefing-content">${currentBriefing.replace(/\n/g, '<br>')}</div>
+        </div>`;
+
+        const fullMessage = `**🌍 Web Research Agent**\n\n${spinnerHtml}\n\n${briefingHtml}\n\n${foundHtml}\n\n${sourcesHtml}\n\n${logSection}`;
         onUpdate(fullMessage);
     };
+
+    chatHistory.push({ role: 'system', content: `SHARED TEAM KNOWLEDGE:\n${sharedKnowledge}` });
 
     renderUpdate("Analyzing request...");
 
@@ -1160,13 +1240,17 @@ If yes, you must plan searches, execute them, review results, and add valuable c
       // Show immediate intent before starting heavy tree generation
       onUpdate(`**🧠 Auto-Context Agent**\n\n*Initializing Librarian...*`);
 
-      const fileTree = await this.generateProjectTree(signal, (pct) => {
-          const status = pct < 20 ? "Indexing workspace..." : `Building tree: ${pct}%...`;
-          if (onStatusUpdate) onStatusUpdate(status);
-          onUpdate(`**🧠 Auto-Context Agent**\n\n### 📂 Processing Project Structure...\n\n<div class="token-progress-container" style="height:8px; margin-bottom:10px;"><div class="token-progress-bar range-safe" style="width:${pct}%"></div></div>\n\n*${status}*`);
+      // 1. Fetch FULL context (Tree + Selected File Contents) BEFORE starting
+      const fullContext = await this.getContextContent({ 
+          includeTree: true, 
+          modelName: model,
+          signal 
       });
+
       
-      // Get current aggression level from capabilities
+
+      const fileTree = fullContext.projectTree;
+      const currentContents = fullContext.selectedFilesContent;
       const discussion = this.lollmsAPI.globalState?.get<any>(`discussion-${model}`); // Simplified lookup
       const aggression = this.contextStateProvider.context.globalState.get<any>('lollms_last_capabilities')?.contextAggression || 'respect';
 
@@ -1190,56 +1274,62 @@ If yes, you must plan searches, execute them, review results, and add valuable c
       const isCollaborative = mode === 'collaborative';
       const roleTitle = isCollaborative ? "Lead Architect & Librarian" : "Context Librarian";
       
-      const systemPrompt = `You are the **${roleTitle}**.
-Your goal is to prepare the perfect context for the **Lead Persona** to answer the user's request.
+      const systemPrompt = `You are the **Lead Project Librarian**. 
+Your mission is to map the codebase and maintain the shared **Team Briefing** for the Worker Agent. You operate via a strict **Surgical Investigation Protocol**.
 
-### 🤝 TEAM COLLABORATION PROTOCOL
-1. **Context Awareness**: You have been provided with the FULL discussion history. You MUST read back to the very first user message to identify the primary objective.
-2. **Librarian Duty**: Your specific job is to prevent the Lead Persona from working "blind". 
-3. **Collaboration**: ${isCollaborative ? `As you find and read files, analyze the logic. Use your 'scratchpad' to draft the technical solution and identify lines to change. Your analysis will be directly injected into the Lead Persona's working memory.` : `Find and add relevant files based on the history. **IMPORTANT**: In "Selection Only" mode, do NOT attempt to solve the task. Simply identify the correct files and add them.`}
+### 📜 THE LIBRARIAN'S CONSTITUTION
+1.  **NEVER GUESS**: If a file exists in the tree but you haven't read its content, DO NOT assume its implementation.
+2.  **NO REDUNDANT READING**: You can ALREADY see the full content of "Accessible File Contents" below. Do not use \`read_file\` for them.
+3.  **MANDATORY TOOL-USE FOR KNOWLEDGE**: Technical facts (bugs, logic, signatures) MUST be recorded using \`add_briefing_entry\`. 
+    - Writing a bug in your \`scratchpad\` is NOT enough; it will be lost. 
+    - If you find 5 bugs, you must call \`add_briefing_entry\` 5 times (or once with all info) to persist them.
+4.  **AMENDMENTS**: If you discover a previous briefing entry was wrong or incomplete, use \`amend_briefing_entry\` immediately to correct the team's beliefs.
+5.  **SURGICAL PEEKING**: Use \`read_file\` with specific line ranges to verify code logic before adding files to permanent context.
+6.  **DEPENDENCY MAPPING**: If \`File A\` imports \`File B\`, investigate \`File B\` if it impacts the task.
+7.  **NO CODING**: You are a scout. Do not propose code.
 
-### 🧠 STRATEGIC OBJECTIVE
-- Identify the original user intent from the history.
-- Ensure all dependencies and logic files required for that intent are added.
-- If this is a continuation (e.g. "Files have been added"), verify if the context is now sufficient or if more peeking is needed.
+### 🕵️ INVESTIGATION PHASES
+- **PHASE 0: GAP ANALYSIS (MANDATORY)**: Compare "Accessible File Contents" against the "Project State". 
+  - Evaluate if the objective can be solved with ONLY the currently open files.
+  - Respect **AGGRESSION MODE**.
+  - If sufficient, skip to Handover. If not, state exactly what is missing.
+- **PHASE 1: LANDSCAPE SURVEY**: Locate the missing logic in the tree.
+- **PHASE 2: DEEP INSPECTION**: Read file content or search patterns to verify implementation.
+- **PHASE 3: IMPACT ANALYSIS**: Check for dependencies or side effects.
+- **PHASE 4: HANDOVER**: Use \`add_briefing_entry\` to finalize a high-density technical guide.
 
+### 🏆 MISSION SUCCESS CRITERIA
+- The Team Briefing MUST be sufficient for a senior dev to solve the task without opening more files.
+- Never say "Refer to file X". Describe file X's logic yourself in the briefing.
+- You must respect the **AGGRESSION MODE**.
+
+### ⚖️ AGGRESSION MODE
 ${aggressionInstruction}
 
-### 🧠 STATEFUL MEMORY PROTOCOL
-I will track your long-term memory for you. 
-In your 'scratchpad' field, provide ONLY the **newest** observations and conclusions from your last action. 
-I will append these to your "CUMULATIVE BRAIN" and show it to you in the next turn.
+**TEAM COORDINATION TOOLS:**
+1. \`add_briefing_entry(id="unique_id", info="technical details")\`: Record a new technical discovery (classes, logic, patterns).
+2. \`amend_briefing_entry(id="existing_id", info="updated details")\`: Correct or expand a previous discovery.
+3. \`summon_specialist(agent="web|skills", reason="why")\`: Call the Web Research or Skills agent if you need internet docs or library protocols.
 
-**Your Scratchpad Output should focus on:**
-1. **LATEST OBSERVATION**: Specific findings from the last tool result.
-2. **UPDATED VERDICT**: Immediate decision on current file relevance.
-3. **NEXT STEP REASONING**: Why your next tool call is the right choice.
+**INVESTIGATION TOOLS:**
+4. \`add_files(files=[{"path": "p1", "mode": "full|signatures"}])\`: Persistently add files to the AI's permanent memory.
+5. \`read_file(path="path", start_line=0, end_line=500)\`: "Peek" at a file to decide if it's relevant.
+6. \`search_files(pattern="regex", path=".")\`: performs a high-speed grep search through the codebase.
+7. \`read_code_graph(type="class_diagram|import_graph")\`: Get a structural overview of the project architecture.
+8. \`get_file_info(path="path")\`: Returns file size and total line count.
+9. \`done()\`: Finish context selection and mission.
 
-**AVAILABLE TOOLS:**
-1. \`add_files(files=[{"path": "p1", "mode": "full|signatures"}])\`: **CRITICAL**: Use this to persistently add files to the AI's memory. 
-   - Use \`signatures\` mode if the file is only needed to understand the API/Structure. 
-   - Use \`full\` mode if the file needs to be read in its entirety for logic analysis or modification.
-2. \`read_file(path="path", start_line=0, end_line=500)\`: Use this to "peek" at a file to decide if it's relevant. Reading a file does NOT add it to the permanent context.
-3. \`search_files(pattern="regex", path=".")\`: SMART SEARCH. Performs a high-speed grep search through the codebase. Use this to find where specific functions or variables are defined across the project.
-4. \`read_code_graph(type="class_diagram|import_graph")\`: Get a structural overview of the project architecture.
-5. \`get_file_info(path="path")\`: Returns file size and total line count.
-6. \`done()\`: Finish context selection.
+**OUTPUT FORMAT**: You must output a JSON object. 
+- \`scratchpad\`: Your internal thought process for this step.
+- \`tool\`: The tool name.
+- \`params\`: The tool parameters.
 
-**RULES:**
-- **DEDUPLICATION**: DO NOT repeat the same tool call with the same parameters. If a search yields no results, do not try it again; change your keywords.
-- **AUTO-ADD POLICY**: If you use \`read_file\` and confirm the code is relevant to the task, you MUST immediately follow up with \`add_files\`.
-- **THE FINAL LLM IS BLIND**: The LLM that answers the user can ONLY see files you have explicitly added via \`add_files\`. It cannot see what you "read" during this discovery phase.
-- Only add files that are strictly relevant to the user's specific request to save tokens.
-- **OUTPUT JSON ONLY**: Reply with a valid JSON object.
-
-**JSON FORMAT:**
-\`\`\`json
+Example:
 {
-  "scratchpad": "I need to find the authentication logic. I will search for 'login' to locate the correct files.",
-  "tool": "tool_name",
-  "params": { ... }
+  "scratchpad": "Found UserAuth class in auth.ts. It uses a custom JWT decorator. I need to find where that decorator is defined.",
+  "tool": "add_briefing_entry",
+  "params": { "id": "auth_logic", "info": "Authentication uses the UserAuth class which relies on a @verify_token decorator." }
 }
-\`\`\`
 `;
 
       const actionLog: string[] = [];
@@ -1251,7 +1341,21 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
           ? `### 📜 DISCUSSION HISTORY\n${fullHistory.map(m => `**${m.role.toUpperCase()}**: ${typeof m.content === 'string' ? m.content : '[Multipart content]'}`).join('\n\n')}\n\n---\n`
           : "";
 
-      let initialUserContent = `${historyContext}**LATEST PROMPT:** "${userPrompt}"\n\n**Project Structure:**\n${fileTree}`;
+      // 2. Inject previous agent findings (Inter-operability)
+      const sharedKnowledge = fullHistory.length > 0 ? (fullHistory[0] as any).discussion_data_zone || "" : "";
+
+      let initialUserContent = `${historyContext}
+# SHARED TEAM KNOWLEDGE (PREVIOUS AGENTS)
+${sharedKnowledge}
+
+**USER OBJECTIVE:** "${userPrompt}"
+
+# CURRENT PROJECT STATE
+${fileTree}
+
+# ACCESSIBLE FILE CONTENTS (Already Read)
+${currentContents || "No files read yet."}
+`;
       
       if (initialKeywords && initialKeywords.length > 0) {
           const status = `Searching keywords: ${initialKeywords.join(', ')}...`;
@@ -1270,32 +1374,67 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
           { role: 'user', content: initialUserContent }
       ];
 
+      let technicalBriefing = "Librarian is still analyzing the code logic...";
+
       const renderUpdate = (status: string, finished: boolean = false, step: number = 0) => {
           const sortedFiles = Array.from(selectedFiles).sort();
           const filesListItems = sortedFiles.map(f => `<li><span class="codicon codicon-file"></span> ${f}</li>`).join('');
 
           const filesTree = selectedFiles.size > 0 
               ? `<details ${finished ? 'open' : ''}><summary>📂 <strong>Context Files Selected (${selectedFiles.size})</strong></summary><ul class="file-list-tree">${filesListItems}</ul></details>`
-              : `<div style="color:var(--vscode-charts-orange); font-style:italic;">⚠️ Discovery in progress: No files added to context yet...</div>`;
+              : `*No files added yet.*`;
 
-          // FIX: Don't render cumulativeBrain inside the log, use it for the dedicated reasoning section
-          const logMarkdown = actionLog.map(l => `- ${l}`).join('\n');
+          const timelineHtml = actionLog.map((l, i) => {
+            const isLast = i === actionLog.length - 1 && !finished;
+            // Only mark as failed if it's an explicit TOOL error, not just a mention of a bug
+            const isToolFailure = l.includes('❌') || l.includes('Tool execution failed');
+            
+            let stateClass = 'success';
+            let icon = '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span>';
+
+            if (isLast) {
+                stateClass = 'active';
+                icon = '<div class="spinner"></div>';
+            } else if (isToolFailure) {
+                stateClass = 'failed';
+                icon = '<span class="codicon codicon-close" style="color:var(--vscode-charts-red)"></span>';
+            }
+
+            return `
+            <div class="timeline-item ${stateClass}" style="display:flex; align-items:flex-start; gap:10px; margin-bottom:2px;">
+                <div class="timeline-dot" style="flex-shrink:0; margin-top:2px;">${icon}</div>
+                <div class="timeline-content" style="flex:1; font-size:11px; line-height:1.2;">${l}</div>
+            </div>`;
+          }).join('');
+
           const logSection = actionLog.length > 0
-               ? `<details ${finished ? '' : 'open'}><summary>📜 Discovery Log</summary>\n\n<div class="agent-log-container">\n\n${logMarkdown}\n\n</div></details>`
+               ? `<details ${finished ? '' : 'open'}><summary>📜 Mission Timeline</summary><div class="mission-timeline">${timelineHtml}</div></details>`
                : '';
 
-          const scratchpadHtml = cumulativeBrain 
-            ? `<div class="plan-scratchpad" style="margin-top:10px;"><details open><summary class="scratchpad-header">🧠 Librarian Reasoning</summary><div class="scratchpad-content">${cumulativeBrain}</div></details></div>`
-            : '';
+          const currentBriefing = this.renderBriefing(discussion);
+            // Helper to render the briefing data zone
+            const renderDataBriefing = () => {
+                const raw = discussion.discussion_data_zone || "";
+                if (!raw.trim()) return "Librarian is analyzing project state...";
+                try {
+                    if (!raw.startsWith('{')) return raw;
+                    const entries = JSON.parse(raw);
+                    return Object.keys(entries).map(id => {
+                        const title = id.replace(/_/g, ' ').toUpperCase();
+                        return `<strong>[${title}]</strong><br>${entries[id]}`;
+                    }).join('<br><br>');
+                } catch { return raw; }
+            };
 
-          let spinnerHtml = '';
-          if (!finished) {
-              spinnerHtml = `<div class="status-line"><div class="spinner"></div> <span>Step ${step + 1}: ${status}</span></div>`;
-          } else {
-              spinnerHtml = `<div class="status-line"><span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span> <span style="font-weight:bold;">Context Synchronized</span></div>`;
-          }
+            const briefingHtml = `<div class="technical-briefing-card">
+                <div class="briefing-header"><span class="codicon codicon-note"></span> Team Technical Briefing</div>
+                <div class="briefing-content">${renderDataBriefing()}</div>
+            </div>`;
+          let spinnerHtml = finished 
+              ? `<div class="status-line"><span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span> <span style="font-weight:bold;">Context Synchronized</span></div>`
+              : `<div class="status-line"><div class="spinner"></div> <span>Step ${step + 1}: ${status}</span></div>`;
 
-          const fullMessage = `**🧠 Auto-Context Agent**\n\n${spinnerHtml}\n\n${scratchpadHtml}\n\n${filesTree}\n\n${logSection}`;
+          const fullMessage = `**🧠 Librarian Mission Report**\n${spinnerHtml}\n${briefingHtml}\n${filesTree}\n${logSection}`;
           onUpdate(fullMessage);
       };
 
@@ -1370,11 +1509,16 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
               toolName = toolCall?.tool || "";
               params = toolCall?.params || {};
 
-              // Safely handle the scratchpad update here instead of inside renderUpdate
+              // 🧠 Update Internal Reasoning
               if (toolCall?.scratchpad) {
                   const newEntry = toolCall.scratchpad.trim();
                   cumulativeBrain += `\n\n**Insight**: ${newEntry}`;
                   actionLog.push(`🧠 **Insight**: ${newEntry}`);
+              }
+
+              // 📝 Update Technical Briefing (Notes for the Worker)
+              if (toolCall?.briefing) {
+                  technicalBriefing = toolCall.briefing.trim();
               }
 
               // Loop Prevention
@@ -1395,6 +1539,28 @@ I will append these to your "CUMULATIVE BRAIN" and show it to you in the next tu
                   renderUpdate("Context Ready", true, step);
                   break;
               }
+
+          if (toolName === 'add_briefing_entry' || toolName === 'amend_briefing_entry') {
+              this.updateBriefingData(discussion, toolName === 'add_briefing_entry' ? 'add' : 'amend', params.id, params.info);
+              actionLog.push(`📝 **Briefing Updated**: ${params.id}`);
+              renderUpdate("Updating Knowledge Base...", false, step);
+              chatHistory.push({ role: 'system', content: "SUCCESS: Briefing entry updated." });
+              continue;
+          }
+
+          if (toolName === 'summon_specialist') {
+              actionLog.push(`📣 **Summoning ${params.agent}**: ${params.reason}`);
+              renderUpdate(`Waiting for ${params.agent}...`, false, step);
+              
+              if (params.agent === 'web') {
+                  await this.runWebResearchAgent(params.reason, model, signal, onUpdate, onStatusUpdate, discussion, fullHistory);
+              } else if (params.agent === 'skills') {
+                  await this.runSkillSelectionAgent(params.reason, model, signal, [], onUpdate, discussion);
+              }
+              
+              chatHistory.push({ role: 'system', content: `Specialist ${params.agent} has finished. Check the Team Briefing and Project Context for new data.` });
+              continue;
+          }
 
               stepsTaken++;
 

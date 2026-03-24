@@ -78,6 +78,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
 
                     renderMessageContent(message.id, message.fullContent, true);
+                    
+                    // HAL9000: Speak the result
+                    if (typeof (window as any).halSpeak === 'function') {
+                        // Strip markdown for cleaner speech
+                        const plainText = message.fullContent.replace(/[#*`]/g, '');
+                        (window as any).halSpeak(plainText);
+                    }
                 }
                 break;
             case 'updateMessage':
@@ -233,6 +240,14 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     
                     if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = caps.agentMode;
                     if (dom.autoContextCheckbox) dom.autoContextCheckbox.checked = caps.autoContextMode;
+                    
+                    const langSelect = document.getElementById('modal-language') as HTMLSelectElement;
+                    if (langSelect) langSelect.value = caps.language || 'auto';
+
+                    // Trigger a re-population of voices to ensure selection matches
+                    if (typeof window.speechSynthesis.onvoiceschanged === 'function') {
+                        (window.speechSynthesis.onvoiceschanged as any)();
+                    }
                     if (dom.contextAggressionSelect) dom.contextAggressionSelect.value = caps.contextAggression || 'respect';
                     if (dom.herdModeCheckbox) dom.herdModeCheckbox.checked = caps.herdMode;
 
@@ -651,8 +666,11 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 if (dom.skillsModal) {
                     dom.skillsModal.classList.add('visible');
                     if (message.loading) {
-                        dom.skillsTreeContainer.innerHTML = '<div class="big-spinner"></div>';
                         dom.skillsTreeContainer.classList.add('loading');
+                        dom.skillsTreeContainer.innerHTML = `
+                            <div class="big-spinner"></div>
+                            <div class="loading-caption">Indexing Skills Library...</div>
+                        `;
                         dom.skillsImportBtn.disabled = true;
                     } else {
                         dom.skillsTreeContainer.classList.remove('loading');
@@ -762,6 +780,17 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             mainApplyBtn.disabled = false;
                             mainApplyBtn.innerHTML = mainApplyBtn.dataset.originalHtml;
                         }
+                        
+                        // Also restore any individual hunk buttons
+                        if (message.hunkIndex !== undefined) {
+                            const hunkBubbles = blockEl.querySelectorAll('.aider-hunk-bubble');
+                            const targetHunk = hunkBubbles[message.hunkIndex];
+                            const hunkBtn = targetHunk?.querySelector('.apply-btn') as HTMLButtonElement;
+                            if (hunkBtn && hunkBtn.dataset.originalHtml) {
+                                hunkBtn.disabled = false;
+                                hunkBtn.innerHTML = hunkBtn.dataset.originalHtml;
+                            }
+                        }
                     }
 
                     // 2. Update the "Apply All" list row if it exists
@@ -831,7 +860,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             const btnContainer = resultsList.previousElementSibling;
                             const mainBtn = btnContainer?.querySelector('.apply-all-btn:not(.secondary-btn)') as HTMLButtonElement;
                             
-                            if (mainBtn && (mainBtn.classList.contains('stop-btn-red') || mainBtn.classList.contains('sequential-applying'))) {
+                            if (mainBtn) {
                                 mainBtn.classList.remove('stop-btn-red');
                                 mainBtn.classList.remove('sequential-applying');
                                 
@@ -841,8 +870,6 @@ export async function handleExtensionMessage(event: MessageEvent) {
                                     if (autoRepairing === 0) {
                                         mainBtn.innerHTML = '<span class="codicon codicon-check"></span> All Modifications Applied';
                                         mainBtn.classList.add('applied');
-                                        mainBtn.style.setProperty('background-color', 'var(--vscode-charts-green)', 'important');
-                                        mainBtn.style.setProperty('color', 'white', 'important');
                                         mainBtn.disabled = true;
                                     }
                                 } else {

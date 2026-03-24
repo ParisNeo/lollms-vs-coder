@@ -305,10 +305,10 @@ body {
     display: flex; 
     gap: 4px; 
     background-color: var(--vscode-editor-background); 
-    border-radius: 4px; 
-    padding: 4px; 
+    border-radius: 6px; 
+    padding: 4px 6px; 
     border: 1px solid var(--vscode-widget-border); 
-    box-shadow: 0 4px 12px rgba(0,0,0,0.3); 
+    box-shadow: 0 4px 15px rgba(0,0,0,0.4); 
     opacity: 0; 
     visibility: hidden;
     transition: opacity 0.15s ease-in-out, visibility 0.15s; 
@@ -390,11 +390,16 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 .code-action-btn:disabled { opacity: 0.5; cursor: not-allowed; pointer-events: none; filter: grayscale(100%); }
 .code-action-btn.success { background-color: var(--vscode-charts-green) !important; color: white !important; border-color: transparent; transition: all 0.2s ease; }
 .code-action-btn.applied, .apply-all-btn.applied { 
-    background-color: var(--vscode-charts-green) !important; 
-    color: white !important; 
-    border-color: transparent; 
+    background-color: #28a745 !important; /* Vivid Success Green */
+    color: #ffffff !important; 
+    border-color: transparent !important; 
     transition: all 0.2s ease;
-    opacity: 0.9;
+    opacity: 1 !important;
+    cursor: default;
+}
+
+.code-action-btn.applied:hover, .apply-all-btn.applied:hover {
+    filter: brightness(1.1);
 }
 .code-action-btn.applied:hover {
     filter: brightness(1.2);
@@ -406,7 +411,7 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     background-color: var(--vscode-button-background) !important; 
     color: var(--vscode-button-foreground) !important;
     margin: 16px 0 4px 0;
-    width: 100%;
+    flex: 1;
     justify-content: center;
     padding: 8px !important;
     font-size: 12px;
@@ -1634,7 +1639,7 @@ mark.current-match {
     border-top: 1px solid var(--vscode-widget-border);
     background-color: var(--vscode-editor-background);
     border-left: 3px solid var(--thinking-color); 
-    margin-top: 8px;
+    margin-top: 4px;
     border-radius: 4px;
 }
 
@@ -1651,7 +1656,36 @@ mark.current-match {
 
 .scratchpad-content blockquote {
     border-left-color: var(--thinking-color);
-    background-color: rgba(155, 89, 182, 0.05);
+    background-color: rgba(15, 157, 88, 0.05);
+}
+
+.technical-briefing-card {
+    background-color: var(--vscode-editor-inactiveSelectionBackground);
+    border: 1px solid var(--vscode-widget-border);
+    border-left: 4px solid var(--vscode-textLink-foreground);
+    border-radius: 8px;
+    margin: 15px 0;
+    padding: 16px;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+    background-image: linear-gradient(135deg, rgba(0, 122, 204, 0.05) 0%, transparent 100%);
+}
+
+.briefing-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    font-weight: bold;
+    text-transform: uppercase;
+    color: var(--vscode-textLink-foreground);
+    margin-bottom: 8px;
+}
+
+.briefing-content {
+    font-family: var(--vscode-editor-font-family);
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--vscode-editor-foreground);
 }
 
 .agent-log-container { 
@@ -1662,10 +1696,75 @@ mark.current-match {
     border-top: 1px dashed var(--vscode-widget-border);
     font-family: var(--vscode-editor-font-family);
 }
-.agent-log-item {
-    margin-bottom: 4px;
-    border-left: 2px solid var(--vscode-widget-border);
-    padding-left: 8px;
+.mission-timeline {
+    padding: 5px 0 5px 10px;
+    margin: 5px 0;
+    border-left: 1px solid var(--vscode-widget-border);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.timeline-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin-bottom: 2px;
+}
+
+.timeline-dot {
+    width: 16px;
+    height: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.timeline-item.success .timeline-dot {
+    background: var(--vscode-charts-green);
+    border-color: var(--vscode-charts-green);
+    color: white;
+}
+
+.timeline-item.success .timeline-dot .codicon {
+    font-size: 10px;
+    font-weight: bold;
+}
+
+.timeline-item.active .timeline-dot {
+    background: var(--vscode-editor-background);
+    border-color: var(--vscode-charts-blue);
+    box-shadow: 0 0 8px var(--vscode-charts-blue);
+}
+
+.timeline-item.active .timeline-dot .spinner {
+    width: 8px;
+    height: 8px;
+    border: 2px solid var(--vscode-charts-blue);
+    border-bottom-color: transparent;
+}
+
+.timeline-item.failed .timeline-dot {
+    background: var(--vscode-charts-red);
+    border-color: var(--vscode-charts-red);
+    color: white;
+}
+
+.timeline-item.failed .timeline-content {
+    color: var(--vscode-errorForeground);
+    opacity: 1;
+}
+
+.timeline-item.active .timeline-content {
+    font-weight: bold;
+    color: var(--vscode-textLink-foreground);
+}
+
+.timeline-content {
+    font-size: 11px;
+    line-height: 1.4;
+    opacity: 0.9;
 }
 .status-line {
     display: flex;
@@ -1739,26 +1838,74 @@ mark.current-match {
 }
 
 .ai-orb {
-    width: 30px; height: 30px;
-    background: var(--vscode-textLink-foreground);
+    width: 40px; height: 40px;
+    /* HAL9000 Eye Gradient */
+    background: radial-gradient(circle, 
+        #ff0000 0%, 
+        #990000 30%, 
+        #330000 70%, 
+        #000000 100%);
     border-radius: 50%;
-    filter: blur(2px);
-    box-shadow: 0 0 20px var(--vscode-textLink-foreground);
-    animation: orb-float 2s ease-in-out infinite;
+    border: 2px solid #1a1a1a;
+    box-shadow: 
+        0 0 15px #ff0000, 
+        inset 0 0 10px #000;
+    animation: eye-pulse 3s ease-in-out infinite;
+    position: relative;
 }
 
-@keyframes orb-float {
-    0%, 100% { transform: translateY(0) scale(1); filter: blur(2px); }
-    50% { transform: translateY(-5px) scale(1.1); filter: blur(4px); }
+.ai-orb::after {
+    /* The "glint" on the lens */
+    content: '';
+    position: absolute;
+    top: 20%; left: 20%;
+    width: 8px; height: 8px;
+    background: rgba(255, 255, 255, 0.4);
+    border-radius: 50%;
+    filter: blur(1px);
+}
+
+@keyframes eye-pulse {
+    0%, 100% { transform: scale(1); box-shadow: 0 0 15px #ff0000; }
+    50% { transform: scale(1.05); box-shadow: 0 0 30px #ff3300; }
 }
 
 .orb-ring {
     position: absolute;
-    width: 100%; height: 100%;
-    border: 2px dashed var(--vscode-textLink-foreground);
+    width: 120%; height: 120%;
+    border: 1px solid #ff0000;
     border-radius: 50%;
-    opacity: 0.3;
-    animation: lollms-rotation 10s linear infinite;
+    opacity: 0.15;
+    animation: lollms-rotation 20s linear infinite;
+}
+
+#generating-status-text { 
+    font-family: 'Courier New', Courier, monospace;
+    font-weight: bold; 
+    color: #ff0000 !important;
+    text-shadow: 0 0 5px #ff0000;
+    letter-spacing: 2px;
+    -webkit-text-fill-color: initial !important; /* Remove the shimmer from previous version */
+    background: none !important;
+}
+
+/* Voice UI elements */
+.voice-controls {
+    display: flex;
+    gap: 4px;
+    margin-right: 4px; /* Space between voice buttons and send button */
+}
+.voice-btn.active {
+    color: #ff4444 !important; /* Bright red */
+    background-color: rgba(255, 0, 0, 0.1) !important;
+    border-radius: 4px;
+    animation: lollms-pulse 2s infinite;
+}
+
+@keyframes lollms-pulse {
+    0% { opacity: 1; }
+    50% { opacity: 0.5; }
+    100% { opacity: 1; }
 }
 
 .generating-details { 
@@ -1819,9 +1966,10 @@ mark.current-match {
 .metric-value { font-weight: bold; color: var(--vscode-textLink-foreground); }
 
 .stop-btn-red { 
-    background-color: transparent; 
-    color: var(--vscode-errorForeground); 
-    border: 1px solid var(--vscode-errorForeground); 
+    background-color: rgba(255, 0, 0, 0.1); 
+    color: #ff0000; 
+    border: 1px solid #ff0000; 
+    box-shadow: 0 0 10px rgba(255, 0, 0, 0.2);
     padding: 8px 16px; 
     border-radius: 6px; 
     cursor: pointer; 
@@ -2270,14 +2418,34 @@ mark.current-match {
 }
 
 .spinner {
-    width: 14px;
-    height: 14px;
-    border: 2px solid var(--vscode-textLink-foreground);
+    width: 12px;
+    height: 12px;
+    border: 2px solid currentColor;
     border-bottom-color: transparent;
     border-radius: 50%;
     display: inline-block;
-    animation: lollms-rotation 1s linear infinite;
+    animation: lollms-rotation 0.8s linear infinite;
+    vertical-align: middle;
 }
+
+.code-action-btn .spinner, .msg-action-btn .spinner {
+    color: var(--vscode-button-foreground) !important;
+    width: 14px;
+    height: 14px;
+}
+
+.msg-action-btn.speaking {
+    opacity: 1 !important;
+    visibility: visible !important;
+    color: #ff4444 !important; /* Bright red for HAL9000 stop state */
+}
+
+.msg-action-btn.speaking .spinner {
+    width: 14px;
+    height: 14px;
+    border-width: 2px;
+}
+
 
 /* Skills Modal Loading State */
 #skills-tree-container.loading {
@@ -2285,23 +2453,27 @@ mark.current-match {
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    min-height: 200px;
-    opacity: 0.7;
+    min-height: 250px;
+    width: 100%;
+    background: var(--vscode-editor-background);
+    border-radius: 4px;
 }
 
-#skills-tree-container.loading::after {
-    content: "Loading Skills Library...";
-    margin-top: 15px;
+.loading-caption {
+    margin-top: 16px;
     font-size: 12px;
     font-weight: 600;
+    color: var(--vscode-descriptionForeground);
+    letter-spacing: 0.5px;
 }
 
-#skills-tree-container .big-spinner {
-    width: 30px;
-    height: 30px;
+.big-spinner {
+    width: 36px;
+    height: 36px;
     border: 3px solid var(--vscode-textLink-foreground);
     border-bottom-color: transparent;
     border-radius: 50%;
+    display: inline-block;
     animation: lollms-rotation 1s linear infinite;
 }
 
@@ -2609,6 +2781,10 @@ details[open] > summary .folder-handle::before {
 
 #usage-list-container tr:hover {
     background-color: var(--vscode-list-hoverBackground);
+}
+
+.remove-usage-item-btn:hover {
+    color: var(--vscode-errorForeground) !important;
 }
 
 #usage-list-container th {

@@ -193,7 +193,6 @@ export async function activate(context: vscode.ExtensionContext) {
     }
 
     context.subscriptions.push(new SelectionDecorator(context.extensionUri));
-    context.subscriptions.push(vscode.languages.registerCodeLensProvider({ pattern: '**' }, new SelectionCodeLensProvider()));
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, new DebugCodeLensProvider(debugErrorManager)));
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ pattern: '**' }, inlineDiffProvider));
     context.subscriptions.push(vscode.languages.registerHoverProvider({ pattern: '**' }, new SelectionHoverProvider()));
@@ -211,7 +210,14 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(statusBar);
 
     // Configuration Listener
-    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(async e => {
+        if (e.affectsConfiguration('lollmsVsCoder.language')) {
+            await LocalizationManager.initialize(context);
+            actionsTreeProvider.refresh();
+            services.treeProviders.discussion?.refresh();
+            // Re-render open chat panels
+            ChatPanel.panels.forEach(p => p.loadDiscussion());
+        }
         if (e.affectsConfiguration('lollmsVsCoder')) {
             const newConfig = vscode.workspace.getConfiguration('lollmsVsCoder');
             lollmsAPI.updateConfig({

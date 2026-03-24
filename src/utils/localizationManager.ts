@@ -7,79 +7,58 @@ import * as path from 'path';
  * Manages string localization for the extension using the @vscode/l10n standard.
  */
 export class LocalizationManager {
-    private static isInitialized = false;
-    private static currentBundle: Record<string, string> = {};
-
     /**
      * Initializes the l10n sub-system.
-     * @param context The extension context.
+     * VS Code automatically loads translation bundles from the 'l10n' folder 
+     * defined in package.json based on the user's language setting.
      */
     public static async initialize(context: vscode.ExtensionContext): Promise<void> {
-        if (this.isInitialized) return;
-
-        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-        const configLanguage = config.get<string>('language') || 'auto';
-        const locale = configLanguage === 'auto' ? vscode.env.language : configLanguage;
-
-        // Try to find the l10n directory in 'out' or root
-        const possibleDirs = [
-            path.join(context.extensionUri.fsPath, 'out', 'l10n'),
-            path.join(context.extensionUri.fsPath, 'l10n')
-        ];
-
-        let bundleDir = possibleDirs[0];
-        for (const dir of possibleDirs) {
-            if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) {
-                bundleDir = dir;
-                break;
-            }
-        }
-
-        // 1. Initialize official l10n
-        try {
-            await l10n.config({ fsPath: bundleDir });
-        } catch (e) {
-            console.error(`[Lollms Debug] l10n.config failed: ${e}`);
-        }
-
-        // 2. Load manual bundle for Webview
-        // We strip locale variations (e.g. en-us -> en) to find the right file
-        const baseLocale = locale.split('-')[0].toLowerCase();
-        const bundleFiles = [
-            path.join(bundleDir, `bundle.l10n.${locale}.json`),      // e.g. bundle.l10n.zh-cn.json
-            path.join(bundleDir, `bundle.l10n.${baseLocale}.json`),  // e.g. bundle.l10n.en.json
-            path.join(bundleDir, 'bundle.l10n.json')                 // default fallback
-        ];
-
-        for (const bPath of bundleFiles) {
-            try {
-                if (fs.existsSync(bPath) && fs.statSync(bPath).isFile()) {
-                    console.log(`[Lollms Debug] Loading bundle: ${path.basename(bPath)}`);
-                    const content = fs.readFileSync(bPath, 'utf8');
-                    this.currentBundle = JSON.parse(content);
-                    break; // Stop at first valid file found
-                }
-            } catch (e) {
-                console.error(`[Lollms Debug] Error reading ${bPath}:`, e);
-            }
-        }
-
-        this.isInitialized = true;
+        await l10n.config({ extensionUri: context.extensionUri });
     }
 
     /**
      * Translates a key using the VS Code l10n system.
-     * Use this for server-side strings.
+     * Logs a warning if the key is missing from the bundle.
      */
     public static t(key: string, ...args: any[]): string {
-        return l10n.t(key, ...args);
+        const translation = l10n.t(key, ...args);
+        
+        // If the translation matches the key exactly, it wasn't found in any bundle
+        if (translation === key) {
+            console.warn(`[Lollms Localization] Missing translation key: "${key}"`);
+        }
+        
+        return translation;
     }
 
     /**
-     * Returns the entire translation bundle for the current locale.
-     * This is used to pass all translations to the Webview at once.
+     * Helper for Webview.
+     * Loads the current language bundle from disk to pass to the webview.
      */
     public static getBundleForWebview(): Record<string, string> {
-        return this.currentBundle;
+        const lang = vscode.env.language;
+        const extensionPath = vscode.extensions.getExtension('parisneo.lollms-vs-coder')?.extensionPath;
+        
+        if (!extensionPath) {
+            return {};
+        }
+
+        // Priority: 1. language specific bundle, 2. default bundle, 3. empty object
+        const paths = [
+            path.join(extensionPath, 'l10n', `bundle.l10n.${lang}.json`),
+            path.join(extensionPath, 'l10n', `bundle.l10n.json`)
+        ];
+
+        for (const p of paths) {
+            if (fs.existsSync(p)) {
+                try {
+                    return JSON.parse(fs.readFileSync(p, 'utf8'));
+                } catch (e) {
+                    console.error(`[Lollms Localization] Failed to parse bundle at ${p}`, e);
+                }
+            }
+        }
+
+        return {}; 
     }
 }

@@ -75,6 +75,8 @@ export interface DiscussionCapabilities {
         delete: boolean;
     };
     responseProfileId: string;
+    language: string;
+    voice: string;
     explainCode: boolean;
     addPedagogicalInstruction: boolean;
     forceFullCodePath: boolean;
@@ -557,6 +559,8 @@ export interface DiscussionCapabilities {
         delete: boolean;
     };
     responseProfileId: string;
+    language: string;
+    voice: string;
     explainCode: boolean;
     addPedagogicalInstruction: boolean;
     forceFullCodePath: boolean;

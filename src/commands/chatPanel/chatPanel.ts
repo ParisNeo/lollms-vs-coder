@@ -778,22 +778,21 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
           return;
       }
     
-      const { id: processId, controller } = this.processManager.register(this.discussionId, 'Librarian: Optimizing context...');
-      // Force UI state update to hide input and show Stop button
+      const { id: processId, controller } = this.processManager.register(this.discussionId, 'Librarian: Researching project...');
       this.updateGeneratingState();
       try {
           const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
           let objective = userPrompt.trim();
           
           if (!objective) {
-              objective = "Analyze project structure to populate context with relevant code for the current task.";
+              objective = "Assemble context for current task.";
           }
 
           const contextAgentMsgId = 'ctx_agent_manual_' + Date.now();
           await this.addMessageToDiscussion({
               id: contextAgentMsgId,
               role: 'system',
-              content: `**🧠 Auto-Context Agent (Manual)**\n*Objective: "${objective}"*\n\n`,
+              content: `**🧠 Librarian**\n*Scouting for: "${objective}"*\n\n`,
               skipInPrompt: true 
           });
 
@@ -802,7 +801,7 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
                 model, 
                 controller.signal,
                 (newContent) => {
-                    if (!this._isDisposed) this._panel.webview.postMessage({ command: 'updateMessage', messageId: contextAgentMsgId, newContent: newContent });
+                    this.updateMessageContent(contextAgentMsgId, newContent);
                 },
                 (status) => {
                     if (!this._isDisposed && this.processManager) {
@@ -811,7 +810,8 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
                     }
                 },
                 undefined,
-                'selection_only',
+                'collaborative',
+                this._currentDiscussion,
                 this._currentDiscussion.messages
             );
 
@@ -1343,7 +1343,8 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                             newContent: newContent 
                         });
                     }
-                }
+                },
+                this._currentDiscussion
             );
             
             if (this._currentDiscussion && JSON.stringify(newSkills) !== JSON.stringify(this._currentDiscussion.importedSkills)) {
@@ -1381,13 +1382,15 @@ Please provide the **FULL CONTENT** of the file instead using the format:
         });
 
         try {
+            const history = [...this._currentDiscussion.messages];
+
             // CRITICAL: We block here. The main AI won't start until this returns.
             const result = await this._contextManager.runContextAgent(
                 userPromptText, 
                 model, 
                 controller.signal, 
                 (newContent) => {
-                    if (!this._isDisposed) this._panel.webview.postMessage({ command: 'updateMessage', messageId: contextAgentMsgId, newContent });
+                    this.updateMessageContent(contextAgentMsgId, newContent);
                 },
                 (status) => {
                     if (!this._isDisposed && this.processManager) {
@@ -1395,20 +1398,26 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                         this.updateGeneratingState();
                     }
                 },
-                undefined,
-                'collaborative',
-                this._currentDiscussion.messages
+                undefined,           // initialKeywords
+                'collaborative',      // mode
+                this._currentDiscussion, // discussion (8th arg)
+                history              // fullHistory (9th arg)
             );
             
             librarianAnalysis = result.analysis;
             
-            if (this._currentDiscussion && result.analysis) {
-                const header = `### 🧠 AUTO-CONTEXT ANALYSIS\n`;
-                this._currentDiscussion.discussion_data_zone = (this._currentDiscussion.discussion_data_zone || "") + `\n${header}${result.analysis}\n`;
-            }
+            // NOTE: We no longer append result.analysis as a string here.
+            // The Technical Briefing is now managed as structured JSON inside discussion_data_zone
+            // by the add_briefing_entry tool called during runContextAgent.
             
             if (!this._isDisposed) {
-                await this.updateMessageContent(contextAgentMsgId, `**🧠 Auto-Context Agent**\n\n${librarianAnalysis || "*Analysis complete. Relevant files synchronized.*"}`);
+                // The renderUpdate inside ContextManager already generated a rich report.
+                // We don't need to overwrite it with "Analysis complete". 
+                // We trigger a final Token update to ensure the message is saved in its finished state.
+                const finalMsg = this._currentDiscussion?.messages.find(m => m.id === contextAgentMsgId);
+                if (finalMsg) {
+                    await this.updateMessageContent(contextAgentMsgId, String(finalMsg.content));
+                }
             }
         } catch (e: any) { 
             this.log(`Librarian failed: ${e.message}`, 'ERROR');
@@ -2110,26 +2119,20 @@ Please provide the **FULL CONTENT** of the file instead using the format:
 
                             let result: any = { success: false };
                             try {
-                                const opts = { silent: true };
+                                const opts = { 
+                                    silent: true, 
+                                    blockIndex: change.blockIndex, 
+                                    hunkIndex: change.hunkIndex 
+                                };
+
                                 if (change.type === 'file') {
-                                const applyResult: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', change.path, change.content, opts);
-                                result = applyResult || { success: true };
-                            } else if (change.type === 'replace') {
-                                try {
-                                    const replaceResult: any = await vscode.commands.executeCommand(
-                                        'lollms-vs-coder.replaceCode',
-                                        change.path,
-                                        change.content,
-                                        this,
-                                        messageId,
-                                        { ...opts, blockIndex: change.blockIndex, hunkIndex: change.hunkIndex }
-                                    );
-                                    // Robust check for command return value
-                                    result = (replaceResult && typeof replaceResult === 'object') ? replaceResult : { success: false, error: "Replacement command failed to return a result." };
-                                } catch (e: any) {
-                                    result = { success: false, error: e.message };
-                                }
-                            } else if (change.type === 'diff') {
+                                    const applyResult: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', change.path, change.content, opts);
+                                    result = applyResult || { success: true };
+                                } else if (change.type === 'replace' || change.type === 'insert') {
+                                    const cmd = change.type === 'replace' ? 'lollms-vs-coder.replaceCode' : 'lollms-vs-coder.insertCode';
+                                    const res: any = await vscode.commands.executeCommand(cmd, change.path, change.content, this, messageId, opts);
+                                    result = (res && typeof res === 'object') ? res : { success: !!res };
+                                } else if (change.type === 'diff') {
                                 await vscode.commands.executeCommand('lollms-vs-coder.applyPatchContent', change.path, change.content, opts);
                                 result.success = true;
                             }
@@ -2165,20 +2168,22 @@ Please provide the **FULL CONTENT** of the file instead using the format:
             case 'replaceCode':
                 try {
                     const res: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', message.filePath, message.content, this, message.messageId, message.options);
+                    webview.postMessage({
+                        command: 'applyAllResult',
+                        messageId: message.messageId,
+                        filePath: message.filePath,
+                        blockIndex: message.blockIndex,
+                        hunkIndex: message.hunkIndex,
+                        success: res?.success ?? false,
+                        repaired: res?.repaired,
+                        error: res?.error
+                    });
                     if (res && res.success) {
-                        webview.postMessage({
-                            command: 'applyAllResult',
-                            messageId: message.messageId,
-                            filePath: message.filePath,
-                            blockIndex: message.blockIndex,
-                            hunkIndex: message.hunkIndex,
-                            success: true,
-                            repaired: res.repaired
-                        });
                         await this.updateAppliedState(message.messageId, message.blockIndex, message.hunkIndex);
                     }
                 } catch (e: any) {
                     this.log(`Command replaceCode failed: ${e.message}`, 'ERROR');
+                    webview.postMessage({ command: 'applyAllResult', messageId: message.messageId, blockIndex: message.blockIndex, hunkIndex: message.hunkIndex, success: false, error: e.message });
                 }
                 break;
             case 'deleteCodeBlock':
@@ -2464,6 +2469,22 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                     vscode.window.showErrorMessage(`Failed to add web pages: ${e.message}`);
                 }
                 break;
+            case 'syncFilesContext':
+                {
+                    const { add, remove } = message;
+                    if (add && add.length > 0) {
+                        await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', add);
+                    }
+                    if (remove && remove.length > 0) {
+                        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+                        if (workspaceFolder) {
+                            const uris = remove.map((p: string) => vscode.Uri.joinPath(workspaceFolder.uri, p));
+                            await this._contextManager.getContextStateProvider()?.setStateForUris(uris, 'tree-only');
+                        }
+                    }
+                    this.updateContextAndTokens();
+                }
+                break;
             case 'requestAddUrlToContext':
                 const url = await vscode.window.showInputBox({ 
                     prompt: "Enter URL to scrape and add to context",
@@ -2505,6 +2526,9 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                     const uri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, message.path);
                     await this._contextManager.getContextStateProvider()?.setStateForUris([uri], 'tree-only');
                     this.updateContextAndTokens();
+                    
+                    // Re-trigger usage data update if the modal is likely open
+                    await this.handleRequestContextUsage();
                 }
                 break;
             case 'openFile':
@@ -2714,35 +2738,36 @@ Task:
             case 'applyFileContent':
                 try {
                     const res: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', message.filePath, message.content);
+                    webview.postMessage({
+                        command: 'applyAllResult',
+                        messageId: message.messageId,
+                        filePath: message.filePath,
+                        blockIndex: message.blockIndex,
+                        success: res?.success ?? false,
+                        error: res?.error
+                    });
                     if (res && res.success) {
-                        webview.postMessage({
-                            command: 'applyAllResult',
-                            messageId: message.messageId,
-                            filePath: message.filePath,
-                            blockIndex: message.blockIndex,
-                            success: true
-                        });
                         await this.updateAppliedState(message.messageId, message.blockIndex);
                     }
                 } catch (e: any) {
                     this.log(`Command applyFileContent failed: ${e.message}`, 'ERROR');
+                    webview.postMessage({ command: 'applyAllResult', messageId: message.messageId, blockIndex: message.blockIndex, success: false, error: e.message });
                 }
                 break;
             case 'applyPatchContent':
                 try {
                     const res: any = await vscode.commands.executeCommand('lollms-vs-coder.applyPatchContent', message.filePath, message.content);
-                    if (res && res.success) {
-                        webview.postMessage({
-                            command: 'applyAllResult',
-                            messageId: message.messageId,
-                            filePath: message.filePath,
-                            blockIndex: message.blockIndex,
-                            success: true
-                        });
-                        await this.updateAppliedState(message.messageId, message.blockIndex);
-                    }
+                    webview.postMessage({
+                        command: 'applyAllResult',
+                        messageId: message.messageId,
+                        filePath: message.filePath,
+                        blockIndex: message.blockIndex,
+                        success: res?.success ?? true // applyPatchContent command doesn't always return a result object yet
+                    });
+                    await this.updateAppliedState(message.messageId, message.blockIndex);
                 } catch (e: any) {
                     this.log(`Command applyPatchContent failed: ${e.message}`, 'ERROR');
+                    webview.postMessage({ command: 'applyAllResult', messageId: message.messageId, blockIndex: message.blockIndex, success: false, error: e.message });
                 }
                 break;
             case 'runScript':
@@ -3686,6 +3711,9 @@ Task:
                                 <textarea id="messageInput" placeholder="Enter your message (Shift+Enter for new line)..."></textarea>
 
                                 <div class="control-buttons">
+                                    <div class="voice-controls">
+                                        <button id="sttButton" title="Listen (STT)" class="voice-btn"><i class="codicon codicon-mic"></i></button>
+                                    </div>
                                     <button id="sendButton" title="Send Message"><i class="codicon codicon-send"></i></button>
                                 </div>
                             </div>
@@ -3782,6 +3810,30 @@ Task:
                     <span class="close-btn" id="close-discussion-tools-modal">&times;</span>
                 </div>
                 <div class="modal-body">
+
+                    <div class="modal-section">
+                        <h3>Language & Speech</h3>
+                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+                            <div class="form-group">
+                                <label style="font-size: 11px; font-weight:bold;">Response Language</label>
+                                <select id="modal-language" class="menu-select" style="width:100%; margin:4px 0;">
+                                    <option value="auto">Auto-detect</option>
+                                    <option value="en">English</option>
+                                    <option value="fr">French</option>
+                                    <option value="es">Spanish</option>
+                                    <option value="de">German</option>
+                                    <option value="zh-cn">Chinese</option>
+                                    <option value="ar">Arabic</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label style="font-size: 11px; font-weight:bold;">Speaker Voice</label>
+                                <select id="modal-voice" class="menu-select" style="width:100%; margin:4px 0;">
+                                    <option value="default">System Default</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
 
                     <div class="modal-section">
                         <h3>Response Style (Profile)</h3>
@@ -4194,80 +4246,6 @@ Task:
             </div>
         </div>
 
-        <div id="file-search-modal" class="modal">
-            <div class="modal-content" style="max-width: 500px;">
-                <div class="modal-header">
-                    <h2 style="font-size: 14px; font-weight: 600;"><i class="codicon codicon-search" style="margin-right: 8px;"></i>Search & Add Files</h2>
-                    <span class="close-btn" id="file-search-close-btn">&times;</span>
-                </div>
-                <div class="modal-body">
-                    <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:12px;">
-                        <div style="display:flex; justify-content: space-between; align-items: center; background: var(--vscode-editor-inactiveSelectionBackground); padding: 8px; border-radius: 4px; border: 1px solid var(--vscode-widget-border);">
-                            <div style="display:flex; align-items:center; gap:8px;">
-                                <label style="font-size:11px; font-weight: 600; opacity:0.9; margin: 0;">Scope:</label>
-                                <select id="file-search-mode" class="menu-select" style="width: 130px; margin: 0; height: 24px;">
-                                    <option value="content" selected>Code Content</option>
-                                    <option value="path">Filenames</option>
-                                </select>
-                            </div>
-                            <div style="display:flex; gap:12px;">
-                                <div style="display:flex; align-items:center; gap:4px;" title="Match Case">
-                                    <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">Ab</span>
-                                    <label class="switch" style="width: 24px; height: 14px; margin: 0;">
-                                        <input type="checkbox" id="file-search-case">
-                                        <span class="slider" style="border-radius: 14px;"></span>
-                                    </label>
-                                </div>
-                                <div style="display:flex; align-items:center; gap:4px;" title="Match Whole Word">
-                                    <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">\b</span>
-                                    <label class="switch" style="width: 24px; height: 14px; margin: 0;">
-                                        <input type="checkbox" id="file-search-word">
-                                        <span class="slider" style="border-radius: 14px;"></span>
-                                    </label>
-                                </div>
-                                <div style="display:flex; align-items:center; gap:4px;" title="Fuzzy Search (Filename only)">
-                                    <span style="font-size: 10px; font-weight: bold; opacity: 0.8;">~</span>
-                                    <label class="switch" style="width: 24px; height: 14px; margin: 0;">
-                                        <input type="checkbox" id="file-search-fuzzy" checked>
-                                        <span class="slider" style="border-radius: 14px;"></span>
-                                    </label>
-                                </div>
-                            </div>
-                        </div>
-                        <input type="text" id="file-search-input" class="search-modal-input" placeholder="Type query and press Enter..." style="flex:1;">
-                        
-                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 10px;">
-                            <div class="form-group" style="margin:0;">
-                                <label style="font-size: 10px; opacity: 0.7; margin-bottom: 2px;">Include (e.g. src/, *.ts)</label>
-                                <input type="text" id="file-search-include" class="search-modal-input" placeholder="Files to include..." style="font-size: 11px; height: 24px;">
-                            </div>
-                            <div class="form-group" style="margin:0;">
-                                <label style="font-size: 10px; opacity: 0.7; margin-bottom: 2px;">Exclude (e.g. tests/, *.log)</label>
-                                <input type="text" id="file-search-exclude" class="search-modal-input" placeholder="Files to hide..." style="font-size: 11px; height: 24px;">
-                            </div>
-                        </div>
-
-                        <div style="font-size: 10px; opacity: 0.7; display: flex; gap: 10px; flex-wrap: wrap; line-height: 1.5;">
-                            <span>Pro Search:</span>
-                            <code>A B (AND)</code>
-                            <code>A | B (OR)</code>
-                            <code>-ignore (NOT)</code>
-                        </div>
-                    </div>
-                    <div class="checkbox-container" id="file-search-master-container" style="display:none; margin-bottom: 8px; padding-bottom: 4px; border-bottom: 1px solid var(--vscode-widget-border);">
-                        <input type="checkbox" id="file-search-select-all">
-                        <label for="file-search-select-all" style="font-weight: bold; font-size: 11px; cursor: pointer;">Select All Results</label>
-                    </div>
-                    <div id="file-search-results" style="max-height: 350px; overflow-y: auto; border: 1px solid var(--vscode-widget-border); padding: 8px; border-radius: 4px;">
-                        <div style="opacity:0.6; text-align:center; padding: 20px;">Type to start searching...</div>
-                    </div>
-                </div>
-                <div class="modal-footer">
-                    <button id="file-search-add-btn" class="code-action-btn apply-btn" style="width: 100%; justify-content: center;">Add Selected Files</button>
-                </div>
-            </div>
-        </div>
-
         <!-- Web Discovery Modal -->
         <div id="web-modal" class="modal">
             <div class="modal-content" style="max-width: 700px; width: 90%;">
@@ -4395,8 +4373,14 @@ Task:
             <div class="modal-content" style="max-width: 90%; width: 800px;">
                 <div class="modal-header">
                     <div style="display:flex; align-items:center; gap:15px; flex:1;">
-                        <h2 style="margin:0; white-space:nowrap;">Raw Aider Block</h2>
-                        <div class="raw-search-container" style="display:flex; align-items:center; gap:5px; background:var(--vscode-input-background); border:1px solid var(--vscode-input-border); padding:2px 8px; border-radius:4px; flex:1; max-width:400px;">
+                        <div style="display:flex; flex-direction:column; gap:2px;">
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <h2 style="margin:0; white-space:nowrap; font-size: 14px;">Raw Aider Block</h2>
+                                <span id="raw-hunk-id" style="background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 1px 6px; border-radius: 10px; font-size: 10px; font-weight: bold;"></span>
+                            </div>
+                            <span id="raw-code-filename" style="font-size:10px; opacity:0.7; font-family:var(--vscode-editor-font-family); font-weight: bold; color: var(--vscode-textLink-foreground);"></span>
+                        </div>
+                        <div class="raw-search-container" style="display:flex; align-items:center; gap:5px; background:var(--vscode-input-background); border:1px solid var(--vscode-input-border); padding:2px 8px; border-radius:4px; flex:1; max-width:350px;">
                             <i class="codicon codicon-search" style="font-size:12px; opacity:0.7;"></i>
                             <input type="text" id="raw-search-input" placeholder="Search in block..." style="background:transparent; border:none; color:var(--vscode-input-foreground); outline:none; font-size:11px; flex:1; padding:2px 0;">
                             <span id="raw-search-count" style="font-size:10px; opacity:0.6; min-width:35px; text-align:center;"></span>
@@ -4409,8 +4393,10 @@ Task:
                 <div class="modal-body">
                     <pre id="raw-code-display" style="user-select: text; white-space: pre-wrap; word-break: break-all; background: var(--vscode-textCodeBlock-background); padding: 12px; border-radius: 4px; border: 1px solid var(--vscode-widget-border); max-height: 70vh; overflow-y: auto; font-family: var(--vscode-editor-font-family); font-size: 12px;"></pre>
                 </div>
-                <div class="modal-footer">
-                    <button id="copy-raw-btn" class="code-action-btn apply-btn" style="width: 100%; justify-content: center;"><span class="codicon codicon-copy"></span> Copy to Clipboard</button>
+                <div class="modal-footer" style="display:flex; gap:10px;">
+                    <button id="copy-search-btn" class="code-action-btn secondary-btn" style="flex:1; justify-content: center; height: 32px;"><span class="codicon codicon-copy"></span> Copy SEARCH</button>
+                    <button id="copy-replace-btn" class="code-action-btn secondary-btn" style="flex:1; justify-content: center; height: 32px;"><span class="codicon codicon-copy"></span> Copy REPLACE</button>
+                    <button id="copy-raw-btn" class="code-action-btn apply-btn" style="flex:1; justify-content: center; height: 32px;"><span class="codicon codicon-copy"></span> Copy Full Block</button>
                 </div>
             </div>
         </div>
@@ -4500,7 +4486,7 @@ Task:
         } catch (e) {
             console.error("Webview Bootstrap Failed:", e);
         }
-        const l10n = ${JSON.stringify(l10nStrings)};
+        window.l10n = ${JSON.stringify(l10nStrings)};
     </script>
     <script nonce="${nonce}" src="${jsUri}"></script>
 </body>

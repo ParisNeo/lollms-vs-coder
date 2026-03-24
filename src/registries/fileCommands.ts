@@ -193,6 +193,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         } catch (e: any) {
             Logger.error(`Error applying file content: ${e.message}`, e);
             vscode.window.showErrorMessage(`Error applying file content: ${e.message}`);
+            return { success: false, error: e.message };
         }
     }));
 

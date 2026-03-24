@@ -36,19 +36,21 @@ export class ActionsTreeProvider implements vscode.TreeDataProvider<ActionItem> 
 
         const hasWorkspace = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0;
 
+        const { LocalizationManager: l } = require('../utils/localizationManager');
+
         const actions: ActionItem[] = [
-            new ActionItem('Settings', 'lollms-vs-coder.showConfigView', 'gear', 'Open Lollms settings panel'),
-            new ActionItem('Help', 'lollms-vs-coder.showHelp', 'question', 'Show the help panel'),
-            new ActionItem('Show Debug Log', 'lollms-vs-coder.showLog', 'output', 'Show the debug log for the active chat'),
+            new ActionItem(l.t('action.settings'), 'lollms-vs-coder.showConfigView', 'gear', l.t('action.settings.tooltip')),
+            new ActionItem(l.t('action.help'), 'lollms-vs-coder.showHelp', 'question', l.t('action.help.tooltip')),
+            new ActionItem(l.t('action.log'), 'lollms-vs-coder.showLog', 'output', l.t('action.log.tooltip')),
         ];
 
         if (hasWorkspace) {
-            actions.unshift(new ActionItem('Git Dashboard', 'lollms-vs-coder.showGitDashboard', 'git-merge', 'Manage branches, commits, stashes and file states'));
-            actions.unshift(new ActionItem('Fix All Workspace Errors', 'lollms-vs-coder.fixAllErrors', 'zap', 'Iteratively fix every file in the project that contains errors'));
-            actions.unshift(new ActionItem('Direct Search', 'lollms-vs-coder.showFileSearch', 'search', 'Search code content or filenames and add them to context'));
-            actions.unshift(new ActionItem('Generate Educative Notebook', 'lollms-vs-coder.generateEducativeNotebookFromAction', 'book', 'Generate a comprehensive notebook from a prompt'));
-            actions.push(new ActionItem('Show Code Graph', 'lollms-vs-coder.showCodeGraphPanel', 'git-compare', 'Show the interactive code graph'));
-            actions.push(new ActionItem('Auto-Select Context', 'lollms-vs-coder.autoSelectContextFiles', 'wand', 'Let the AI select relevant files for an objective'));
+            actions.unshift(new ActionItem(l.t('action.git'), 'lollms-vs-coder.showGitDashboard', 'git-merge', l.t('action.git.tooltip')));
+            actions.unshift(new ActionItem(l.t('action.fixErrors'), 'lollms-vs-coder.fixAllErrors', 'zap', l.t('action.fixErrors.tooltip')));
+            actions.unshift(new ActionItem(l.t('action.search'), 'lollms-vs-coder.showFileSearch', 'search', l.t('action.search.tooltip')));
+            actions.unshift(new ActionItem(l.t('action.notebook'), 'lollms-vs-coder.generateEducativeNotebookFromAction', 'book', l.t('action.notebook.tooltip')));
+            actions.push(new ActionItem(l.t('action.graph'), 'lollms-vs-coder.showCodeGraphPanel', 'git-compare', l.t('action.graph.tooltip')));
+            actions.push(new ActionItem(l.t('action.autoContext'), 'lollms-vs-coder.autoSelectContextFiles', 'wand', l.t('action.autoContext.tooltip')));
             actions.push(new ActionItem('Export Context', 'lollms-vs-coder.exportContextContent', 'clippy', 'Copy the full project context to the clipboard'));
             actions.push(new ActionItem('Save Context Selection', 'lollms-vs-coder.saveContextSelection', 'save', 'Save the current file selection to a .lollms-ctx file'));
             actions.push(new ActionItem('Load Context Selection', 'lollms-vs-coder.loadContextSelection', 'folder-opened', 'Load a file selection from a .lollms-ctx file'));

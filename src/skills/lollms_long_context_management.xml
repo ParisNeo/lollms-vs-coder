@@ -1,7 +1,7 @@
 <skill id="lollms-long-context">
     <name>Long Context Processing</name>
     <description>Handle documents exceeding context limits with intelligent chunking, synthesis, and recursive analysis.</description>
-    <category>python/lollms_client/long_context</category>
+    <category>ai/lollms/features/long_context</category>
     <language>markdown</language>
     <timestamp>1738425600000</timestamp>
     <content>

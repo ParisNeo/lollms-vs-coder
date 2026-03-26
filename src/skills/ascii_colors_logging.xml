@@ -1,4 +1,4 @@
-<skill title="ASCIIColors Logging" description="Production-grade logging with colors, multiple handlers, JSON output, and context tracking." category="python/ascii_colors/logging" id="ascii-colors-logging" language="markdown" timestamp="1738425600000">
+<skill title="ASCIIColors Logging" description="Production-grade logging with colors, multiple handlers, JSON output, and context tracking." category="development/languages/python/logging/ascii_colors" id="ascii-colors-logging" language="markdown" timestamp="1738425600000">
 # ASCIIColors Logging
 
 Drop-in replacement for Python's `logging` with colors, structured output, and advanced features.

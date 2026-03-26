@@ -961,34 +961,49 @@ export function updateBadges() {
         thinkingGroup.appendChild(thinkBadge);
     }
 
-    if (guiState.agentBadge || guiState.debugBadge || caps.herdMode) {
+    if (guiState.debugBadge || caps.herdMode) {
         const taskGroup = document.createElement('div');
         taskGroup.className = 'badge-group';
         taskGroup.innerHTML = '<span class="badge-group-label">Task</span>';
         container.appendChild(taskGroup);
 
-        const agentBadge = createToggleBadge('🤖 Agent', 'agent', guiState.agentBadge, caps.agentMode, () => {
-            vscode.postMessage({ command: 'toggleAgentMode' });
-        });
-        if (agentBadge) taskGroup.appendChild(agentBadge);
-
-        const debugBadge = createToggleBadge('🐞 Debug', 'thinking', guiState.debugBadge, caps.debugMode, () => {
-            vscode.postMessage({ 
-                command: 'updateDiscussionCapabilitiesPartial', 
-                partial: { debugMode: !caps.debugMode } 
-            });
-        });
+        const debugBadge = createToggleBadge(
+            '🐞 Debug', 
+            'thinking', 
+            guiState.debugBadge, 
+            caps.debugMode, 
+            () => {
+                vscode.postMessage({ 
+                    command: 'updateDiscussionCapabilitiesPartial', 
+                    partial: { debugMode: !caps.debugMode } 
+                });
+            },
+            () => {
+                const prompt = dom.messageInput ? dom.messageInput.value : "";
+                vscode.postMessage({ command: 'runDebugAgent', prompt: prompt });
+            }
+        );
         if (debugBadge) {
             if (caps.debugMode) {
                 debugBadge.style.backgroundColor = 'var(--vscode-charts-red)';
                 debugBadge.style.color = 'white';
-            } else {
-                // Ensure default style if inactive
-                debugBadge.style.backgroundColor = '';
-                debugBadge.style.color = '';
             }
             taskGroup.appendChild(debugBadge);
         }
+
+        const verifierBadge = createToggleBadge(
+            '🛡️ Verifier',
+            'verifier',
+            true, // Always visible if in Task group
+            caps.verifierMode,
+            () => {
+                vscode.postMessage({
+                    command: 'updateDiscussionCapabilitiesPartial',
+                    partial: { verifierMode: !caps.verifierMode }
+                });
+            }
+        );
+        if (verifierBadge) taskGroup.appendChild(verifierBadge);
 
         const herdBadge = createToggleBadge('🐂 Multi-Agent', 'herd', guiState.herdBadge, caps.herdMode, () => {
             vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { herdMode: !caps.herdMode } });

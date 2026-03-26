@@ -115,11 +115,14 @@ export interface DiscussionCapabilities {
 
     agentMode: boolean;
     debugMode: boolean;
+    verifierMode: boolean;
     maxDebugSteps: number;
     autoContextMode: boolean;
     autoSkillMode: boolean;
     contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
     disableProjectContext: boolean;
+    ttftTimeout: number;
+    interTokenTimeout: number;
     guiState?: {
         agentBadge: boolean;
         autoContextBadge: boolean;
@@ -218,11 +221,15 @@ export function applySearchReplace(content: string, searchBlock: string, replace
 
     // 1. Direct match attempt (Fast Path)
     if (normalizedContent.includes(normalizedSearch)) {
-        // Use split/join instead of replace to avoid regex special character issues in the search string
         const parts = normalizedContent.split(normalizedSearch);
-        if (parts.length > 1) {
-            return { success: true, result: parts.join(normalizedReplace) };
-        }
+        return { success: true, result: parts.join(normalizedReplace) };
+    }
+
+    // 1b. Direct match with trimmed search (Handles AI adding/removing trailing newlines)
+    const trimmedSearch = normalizedSearch.trim();
+    if (trimmedSearch.length > 10 && normalizedContent.includes(trimmedSearch)) {
+        const parts = normalizedContent.split(trimmedSearch);
+        return { success: true, result: parts.join(normalizedReplace.trim()) };
     }
 
     // 2. Indentation Fixer & Fuzzy Indent Matching
@@ -508,9 +515,7 @@ export async function getProcessedSystemPrompt(
         finalPersona = `### 🧠 LIBRARIAN'S CONTEXT ANALYSIS\n${workingMemory}\n\n${finalPersona}`;
     }
 
-    if (context && (!context.files || context.files.trim().length === 0)) {
-        finalPersona = `### 💬 MODE: GENERAL DISCUSSION\n(No file context provided)\n\n` + finalPersona;
-    }
+    // Logic moved to dynamic system message for 'chat' and 'agent' types
 
     const shells = await getAvailableShells();
 
@@ -598,11 +603,14 @@ export interface DiscussionCapabilities {
 
     agentMode: boolean;
     debugMode: boolean;
+    verifierMode: boolean;
     maxDebugSteps: number;
     autoContextMode: boolean;
     autoSkillMode: boolean;
     contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
     disableProjectContext: boolean;
+    ttftTimeout: number;
+    interTokenTimeout: number;
     guiState?: {
         agentBadge: boolean;
         autoContextBadge: boolean;

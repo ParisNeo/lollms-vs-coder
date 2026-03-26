@@ -1,7 +1,7 @@
 <skill id="pipmaster-advanced">
     <name>PipMaster Advanced</name>
     <description>Advanced package management: virtual environments, uv backend, portable Python, and custom configurations.</description>
-    <category>python/pipmaster/advanced</category>
+    <category>development/languages/python/package_management</category>
     <language>markdown</language>
     <timestamp>1738425600000</timestamp>
     <content>

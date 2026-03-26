@@ -1,7 +1,7 @@
 <skill id="coding-best-practices">
     <name>General Coding Best Practices</name>
     <description>Fundamental principles for writing clean, maintainable, and testable code across any language.</description>
-    <category>coding/best_practices</category>
+    <category>development/standards/best_practices</category>
     <language>markdown</language>
     <timestamp>1739433600000</timestamp>
     <content>

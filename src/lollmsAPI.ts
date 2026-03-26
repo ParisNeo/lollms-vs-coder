@@ -22,6 +22,7 @@ export interface ChatMessage {
   startTime?: number;
   timestamp?: number;
   model?: string;
+  personalityName?: string; // Add this field
   skipInPrompt?: boolean;
 }
 
@@ -493,7 +494,7 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
     onChunk?: ((chunk: string) => void) | null,
     signal?: AbortSignal,
     modelOverride?: string,
-    options?: { thinking?: boolean }
+    options?: { thinking?: boolean, capabilities?: any }
   ): Promise<string> {
     const backend = this.config.backendType;
     const model = modelOverride || this.config.modelName;
@@ -511,25 +512,50 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
         content: m.content
     }));
 
-    // Handle Physical Thinking Mode from config/capabilities
+    // =========================================================================
+    // 🛡️ FINAL API OUTBOUND LOG (DEBUG)
+    // =========================================================================
+    console.log(`%c[LoLLMs API] >>> Request to Backend (${backend})`, 'color: #00ff00; font-weight: bold;');
+    console.log(`Model: ${model} | Stream: ${!!onChunk}`);
+    console.log(`Total Sequence Length: ${sanitizedMessages.length} messages`);
+    
+    sanitizedMessages.forEach((msg, idx) => {
+        const role = msg.role.toUpperCase();
+        const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+        const len = content.length;
+        
+        if (len > 800) {
+            console.log(`  [${idx}] ${role} (${len} chars): ${content.substring(0, 400)} ... [TRUNCATED] ... ${content.substring(len - 400)}`);
+        } else {
+            console.log(`  [${idx}] ${role} (${len} chars): ${content}`);
+        }
+    });
+    console.log(`%c[LoLLMs API] <<< End of Request Payload`, 'color: #00ff00; font-weight: bold;');
+    // =========================================================================
+
     const controller = new AbortController();
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-    const initialTimeoutDuration = config.get<number>('requestTimeout') || 600000;
-    const interTokenTimeout = 30000; // 30 seconds max between tokens
+    
+    // Resolve timeout values from capabilities or global config
+    // 0 = Infinity (no timer started)
+    const ttftTimeoutValue = options?.capabilities?.ttftTimeout ?? config.get<number>('requestTimeout') ?? 0;
+    const interTokenTimeoutValue = options?.capabilities?.interTokenTimeout ?? 0;
     
     let timedOut = false;
+    let firstTokenReceived = false;
     let activeTimer: NodeJS.Timeout | undefined;
 
     const resetTimer = (ms: number) => {
         if (activeTimer) clearTimeout(activeTimer);
+        if (ms <= 0) return; // Infinity
         activeTimer = setTimeout(() => {
             timedOut = true;
             controller.abort();
         }, ms);
     };
 
-    // Start initial timeout (Wait for first response/token)
-    resetTimer(initialTimeoutDuration);
+    // Start waiting for the very first token
+    resetTimer(ttftTimeoutValue);
 
     if (signal) {
         signal.addEventListener('abort', () => {
@@ -552,9 +578,6 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
             model, 
             messages: sanitizedMessages, 
             stream,
-            options: {
-                num_predict: 20096 // Increase output limit for complex JSON plans
-            }
         };
         // Only inject the 'think' key if explicitly requested to avoid 500 on standard models
         if (isThinkingActive) {
@@ -572,7 +595,6 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
             model,
             messages: sanitizedMessages.filter(m => m.role !== 'system'),
             system: systemMsg ? systemMsg.content : undefined,
-            max_tokens: 128000,
             stream
         };
         if (isThinkingActive) {
@@ -584,7 +606,6 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
             model, 
             messages: sanitizedMessages, 
             stream,
-            max_tokens: 4096 // Ensure long JSON responses aren't truncated
         };
         if (isThinkingActive) {
             // OpenAI o1/o3 style
@@ -630,14 +651,13 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
             let fullResponse = '';
             let buffer = '';
             const decoder = new TextDecoder();
-            let isFirstChunk = true;
             
             for await (const chunk of response.body) {
-                // If we are streaming, switch to a shorter "stall" timeout once data starts moving
-                if (isFirstChunk) {
-                    isFirstChunk = false;
+                if (!firstTokenReceived) {
+                    firstTokenReceived = true;
                 }
-                resetTimer(interTokenTimeout);
+                // Once we have data, switch to inter-token timeout
+                resetTimer(interTokenTimeoutValue);
 
                 buffer += decoder.decode(chunk as any, { stream: true });
                 const lines = buffer.split('\n');
@@ -688,7 +708,9 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
     } catch (error: any) {
         if (error.name === 'AbortError' || error.message === 'AbortError') {
             if (timedOut) {
-              const msg = stream ? "Generation stalled (Inter-token timeout)" : "Request timed out (TTFT)";
+              const msg = firstTokenReceived 
+                ? `Generation stalled (Inter-token timeout: ${interTokenTimeoutValue}ms)` 
+                : `Request timed out waiting for first token (TTFT: ${ttftTimeoutValue}ms)`;
               throw new Error(msg);
             }
             throw error;

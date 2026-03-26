@@ -1,7 +1,7 @@
 <skill id="lollms-code-generation">
     <name>Code Generation & Execution</name>
     <description>Generate, validate, and execute code with LoLLMs — from functions to complete programs with visualization.</description>
-    <category>python/lollms_client/code</category>
+    <category>ai/lollms/features/code_generation</category>
     <language>markdown</language>
     <timestamp>1738425600000</timestamp>
     <content>

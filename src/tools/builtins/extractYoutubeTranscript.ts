@@ -23,89 +23,90 @@ export const extractYoutubeTranscriptTool: ToolDefinition = {
         const videoId = extractVideoId(params.url);
         if (!videoId) return { success: false, output: `Could not parse video ID from: ${params.url}` };
 
-        // Consistent browser-like User-Agent
         const headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-            'Accept': '*/*',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
             'Accept-Language': 'en-US,en;q=0.9',
-            'Cache-Control': 'no-cache',
-            'Pragma': 'no-cache'
+            'Referer': 'https://www.youtube.com/'
         };
 
         try {
-            // 1. Fetch Video Page
-            const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, { headers, signal: signal as any });
-            if (!pageRes.ok) return { success: false, output: `YouTube Page Fetch Failed: HTTP ${pageRes.status}` };
+            // 1. Fetch Video Page to get API Key and metadata
+            const url = params.url.includes('/shorts/') ? params.url : `https://www.youtube.com/watch?v=${videoId}`;
+            const pageRes = await fetch(url, { headers, signal: signal as any });
+            if (!pageRes.ok) return { success: false, output: `YouTube Fetch Failed: HTTP ${pageRes.status}` };
             const html = await pageRes.text();
 
-            // 2. Extract Player Config
-            const jsonMatch = html.match(/ytInitialPlayerResponse\s*=\s*({.+?});/);
-            if (!jsonMatch) {
-                if (html.includes('class="g-recaptcha"')) return { success: false, output: "BOT DETECTION: YouTube blocked the request with a Captcha." };
-                return { success: false, output: "DATA ERROR: Could not find player response data (video may be private or restricted)." };
+            // 2. Extract InnerTube API Key
+            const apiKeyMatch = html.match(/"INNERTUBE_API_KEY":"([^"]+)"/);
+            if (!apiKeyMatch) return { success: false, output: "Could not find InnerTube API key. YouTube may have blocked the request." };
+            const apiKey = apiKeyMatch[1];
+
+            // 3. Extract ytInitialData for the continuation token
+            const dataMatch = html.match(/var ytInitialData = ({.*?});/s);
+            if (!dataMatch) return { success: false, output: "Could not find video data (ytInitialData) on the page." };
+            const ytData = JSON.parse(dataMatch[1]);
+
+            // 4. Find the transcript token (params) recursively
+            const findTranscriptParams = (obj: any): string | null => {
+                if (!obj || typeof obj !== 'object') return null;
+                if (obj.getTranscriptEndpoint && obj.getTranscriptEndpoint.params) return obj.getTranscriptEndpoint.params;
+                for (const key of Object.keys(obj)) {
+                    const result = findTranscriptParams(obj[key]);
+                    if (result) return result;
+                }
+                return null;
+            };
+
+            const transcriptParams = findTranscriptParams(ytData);
+            if (!transcriptParams) return { success: false, output: "Transcripts are not available for this video." };
+
+            // 5. POST to InnerTube get_transcript endpoint
+            const transcriptRes = await fetch(`https://www.youtube.com/youtubei/v1/get_transcript?key=${apiKey}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', ...headers },
+                body: JSON.stringify({
+                    context: { 
+                        client: { 
+                            clientName: "WEB", 
+                            clientVersion: "2.20240325.01.00",
+                            hl: params.language || "en",
+                            originalUrl: url
+                        } 
+                    },
+                    params: transcriptParams
+                }),
+                signal: signal as any
+            });
+
+            if (!transcriptRes.ok) return { success: false, output: `InnerTube API Error: HTTP ${transcriptRes.status}` };
+            const transcriptData: any = await transcriptRes.json();
+
+            // 6. Parse segments from the response (Resilient to layout changes)
+            let segments = [];
+            const action = transcriptData.actions?.find((a: any) => a.updateEngagementPanelAction);
+            if (action) {
+                segments = action.updateEngagementPanelAction.content?.transcriptRenderer?.body?.transcriptBodyRenderer?.cueGroups || [];
+            } else {
+                segments = transcriptData.actions?.[0]?.updateEngagementPanelAction?.content?.transcriptRenderer?.body?.transcriptBodyRenderer?.cueGroups || [];
             }
 
-            const playerResponse = JSON.parse(jsonMatch[1]);
-            const captions = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-
-            if (!captions || captions.length === 0) {
-                return { success: false, output: "AVAILABILITY ERROR: No caption tracks found. This video might not have transcripts." };
-            }
-
-            // 3. Find requested language or fallback to first available
-            const requestedLang = params.language || 'en';
-            let track = captions.find((t: any) => t.languageCode === requestedLang);
-            if (!track) {
-                track = captions[0];
-            }
-            const baseUrl = track.baseUrl;
-
-            // 4. Try JSON3 format first (cleanest)
-            let resultText = "";
-            let json3Status = "not attempted";
-
-            if (params.force_format !== 'xml') {
-                try {
-                    const json3Res = await fetch(`${baseUrl}&fmt=json3`, { headers, signal: signal as any });
-                    json3Status = `HTTP ${json3Res.status}`;
-                    if (json3Res.ok) {
-                        const json = await json3Res.json();
-                        resultText = json.events
-                            ?.filter((e: any) => e.segs)
-                            ?.map((e: any) => e.segs.map((s: any) => s.utf8).join(''))
-                            ?.join(' ') || "";
-                    }
-                } catch (e: any) {
-                    json3Status = `Error: ${e.message}`;
+            const textParts: string[] = [];
+            for (const group of segments) {
+                const cues = group.transcriptCueGroupRenderer?.cues || [];
+                for (const cue of cues) {
+                    const r = cue.transcriptCueRenderer;
+                    const text = r?.cue?.simpleText || r?.cue?.label || "";
+                    if (text) textParts.push(text);
                 }
             }
 
-            // 5. Fallback to XML
-            if (!resultText) {
-                const xmlRes = await fetch(baseUrl, { headers, signal: signal as any });
-                if (xmlRes.ok) {
-                    const xml = await xmlRes.text();
-                    const parts: string[] = [];
-                    const regex = /<text[^>]*>([\s\S]*?)<\/text>/g;
-                    let m;
-                    while ((m = regex.exec(xml)) !== null) {
-                        parts.push(m[1].replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'"));
-                    }
-                    resultText = parts.join(' ');
-                }
+            const finalResult = textParts.join(' ').replace(/\s+/g, ' ').trim();
+            if (!finalResult) return { success: false, output: "Transcript found but extraction returned no text." };
 
-                if (!resultText) {
-                    return { 
-                        success: false, 
-                        output: `TRANSCRIPT ERROR: Server returned 0 bytes for all formats.\n\nDebug Info:\n- JSON3 Attempt: ${json3Status}\n- XML Attempt: HTTP ${xmlRes.status}\n- Video ID: ${videoId}\n- Hint: YouTube likely blocked the IP or session headers.` 
-                    };
-                }
-            }
-
-            return { success: true, output: resultText.replace(/\s+/g, ' ').trim() };
+            return { success: true, output: finalResult };
 
         } catch (e: any) {
-            return { success: false, output: `CRITICAL ERROR: ${e.message}` };
+            return { success: false, output: `Extraction Failed: ${e.message}` };
         }
     }
 };

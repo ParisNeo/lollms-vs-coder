@@ -1,7 +1,7 @@
 <skill id="lollms-chat-mgmt">
     <name>Discussions &amp; Context</name>
     <description>Managing conversation state, memory, and context zones.</description>
-    <category>python/lollms_client/context</category>
+    <category>ai/lollms/client</category>
     <language>markdown</language>
     <timestamp>1738425600000</timestamp>
     <content>

@@ -1,7 +1,7 @@
 <skill id="ascii-colors-rich-integration">
     <name>ASCIIColors: Rich UI Integration</name>
     <description>Advanced terminal output with multicolor, highlighting, spinners, and enhanced tracebacks.</description>
-    <category>python/ascii_colors/rich</category>
+    <category>development/languages/python/ui/ascii_colors</category>
     <language>markdown</language>
     <timestamp>1738425600000</timestamp>
     <content>

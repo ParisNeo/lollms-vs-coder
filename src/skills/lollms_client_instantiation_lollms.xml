@@ -1,7 +1,7 @@
 <skill id="lollms-instantiation-server">
     <name>LoLLMs Client: Native Server Binding</name>
     <description>Initializing LollmsClient with native LoLLMs server binding.</description>
-    <category>python/lollms_client/setup/lollms</category>
+    <category>ai/lollms/client/setup</category>
     <language>markdown</language>
     <timestamp>1738425600000</timestamp>
     <content>

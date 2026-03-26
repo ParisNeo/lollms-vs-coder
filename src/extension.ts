@@ -242,6 +242,12 @@ export async function activate(context: vscode.ExtensionContext) {
 
     // Workspace Switching Logic
     async function switchActiveWorkspace(folder: vscode.WorkspaceFolder) {
+        // Optimization: If we are already in this workspace, don't trigger a destructive reload
+        if (activeWorkspaceFolder?.uri.toString() === folder.uri.toString()) {
+            return;
+        }
+
+        const isInitialLoad = activeWorkspaceFolder === undefined;
         activeWorkspaceFolder = folder;
         statusBar.updateActiveWorkspace(folder);
 
@@ -269,8 +275,12 @@ export async function activate(context: vscode.ExtensionContext) {
             vscode.window.registerTreeDataProvider('lollmsFileTreeView', contextStateProvider);
         }
 
-        ChatPanel.panels.forEach(panel => panel.dispose());
-        vscode.window.showInformationMessage(`Lollms workspace switched to '${folder.name}'.`);
+        // Only dispose panels if this is a manual switch between different folders.
+        // If it's the first time we detect a workspace on startup, leave open panels alone.
+        if (!isInitialLoad) {
+            ChatPanel.panels.forEach(panel => panel.dispose());
+            vscode.window.showInformationMessage(`Lollms workspace switched to '${folder.name}'.`);
+        }
     }
 
     // Initialization logic

@@ -1,4 +1,4 @@
-<skill id="lollms-safestore-rag" title="Lollms + SafeStore RAG Integration" description="Building a complete Retrieval Augmented Generation pipeline combining SafeStore retrieval and LollmsClient generation." category="python/integration/rag">
+<skill id="lollms-safestore-rag" title="Lollms + SafeStore RAG Integration" description="Building a complete Retrieval Augmented Generation pipeline combining SafeStore retrieval and LollmsClient generation." category="ai/knowledge_management/rag">
     <content>
         <![CDATA[
 # 💎 SOURCE OF TRUTH: Lollms & SafeStore Integration

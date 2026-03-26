@@ -1,0 +1,59 @@
+<skill title="Surgical Debugging Methodology" 
+       description="A scientific, iterative framework for diagnosing and fixing complex bugs using strategic instrumentation and hypothesis validation." 
+       category="tools/debugging" 
+       id="surgical-debugging"
+       language="markdown">
+<![CDATA[
+# 🔬 Surgical Debugging Methodology
+
+When facing a difficult task or an elusive bug, do not guess. Follow this iterative, observation-driven protocol.
+
+## 1. The Golden Rule: "Look, Don't Assume"
+Most debugging time is wasted assuming a variable has a certain value or a function is being called. 
+- **Validate Everything**: Use tools to inspect the state.
+- **Isolate the Failure**: Narrow the search area until you find the exact line where reality deviates from expectation.
+
+## 2. Phase 1: Reproduction
+Before attempting a fix, you MUST be able to see the failure.
+- If the code crashes, ensure you can trigger the crash.
+- If the output is wrong, define exactly what "wrong" looks like compared to "right".
+
+## 3. Phase 2: Strategic Instrumentation (The Print Loop)
+If you cannot use an interactive debugger, use the **Print Loop**. Insert `print()` statements to create a "stream of consciousness" for the program.
+
+### Where to place prints:
+- **Function Entry/Exit**: `print(f"> Entering [func_name] with args: {args}")`
+- **Branching Points**: Inside `if/else` blocks to see which path is actually taken.
+- **Data Transformations**: Before and after complex logic or API calls.
+- **Loop Iterations**: Use markers for high-frequency loops: `print(f"--- Loop Index {i} | State: {state} ---")`
+
+### Formatting for clarity:
+- **Add Context**: Never print a raw variable. Always label it: `print(f"DEBUG [UserAuth]: token_val={token}")`.
+- **Type Checking**: If behavior is weird, print the type: `print(f"DEBUG: var={var} type={type(var)}")`.
+- **Breadcrumbs**: Use unique strings to find your place in the logs: `print("!!! REACHED CHECKPOINT B !!!")`.
+
+## 4. Phase 3: Observe & Hypothesize
+Run the code and analyze the output.
+1. **Trace the flow**: Did the program reach your checkpoints in the order you expected?
+2. **Inspect the data**: At what point did a variable become `None`, `NaN`, or an empty string?
+3. **Form a Hypothesis**: "The loop fails at index 5 because the list is shorter than expected."
+
+## 5. Phase 4: The Fix & Verify Loop
+1. **Apply the surgical fix**: Change only what is necessary to validate your hypothesis.
+2. **Verify**: Run the code again. **The prints must stay in place** during verification to prove the logic is now correct.
+3. **Check for regressions**: Ensure your fix didn't break a different part of the sequence.
+
+## 6. Phase 5: Cleanup
+Once the bug is confirmed fixed and verified:
+- Remove all debugging `print()` statements.
+- Replace critical diagnostic prints with proper `logger.debug()` or `logger.info()` calls if the information is valuable for production.
+- Document the root cause in the code if the logic remains non-obvious.
+
+## 🚀 Summary Checklist for the AI:
+- [ ] Can I reproduce the error?
+- [ ] Have I added descriptive prints at the boundaries of the suspected logic?
+- [ ] Did I verify the variable types and values at runtime?
+- [ ] Does my fix resolve the issue in the logs without breaking the flow?
+- [ ] Did I clean up my "scaffolding" (prints) after the fix?
+]]>
+</skill>

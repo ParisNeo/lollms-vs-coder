@@ -1,4 +1,4 @@
-<skill title="Agents & Advanced Reasoning" description="Building agentic workflows with tools, composable answers, self-correction, and recursive reasoning." category="python/lollms_client/agents" id="lollms-agentic" language="markdown" timestamp="1738425600000">
+<skill title="Agents & Advanced Reasoning" description="Building agentic workflows with tools, composable answers, self-correction, and recursive reasoning." category="ai/agents/orchestration" id="lollms-agentic" language="markdown" timestamp="1738425600000">
 # Agentic Workflows with LoLLMs
 
 ## Overview

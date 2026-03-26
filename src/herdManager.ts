@@ -254,45 +254,39 @@ ${poolDesc}
             `> *Leader: \`${leaderModel}\`*\n\n---\n\n`
         );
 
-        // ── STEP 1: PARALLEL SCRATCHPADS ───────────────────────────────────────
-        // Each agent writes privately and simultaneously — no one sees the others.
-        // This prevents anchoring: every agent forms a genuine independent position.
+        // ── PHASE 1: BLIND BRAINSTORMING ───────────────────────────────────────
+        // Agents form independent positions without seeing each other's thoughts.
+        // This eliminates anchoring bias.
 
-        await appendToUI(`#### 🗒️ Private Scratchpads\n\n`);
+        await appendToUI(`<div class="herd-phase-header">🌗 Phase 1: Blind Brainstorming</div>\n\n`);
         
         const isParallel = capabilities?.herdParallelGeneration === true;
         const scratchpadResults: { participant: ResolvedParticipant; content: string }[] = [];
-        const seenScratchpads = new Set<string>(); // Prevent UI duplication
+        const seenScratchpads = new Set<string>();
 
         const handleScratchpadResult = async (p: ResolvedParticipant, content: string) => {
             if (seenScratchpads.has(p.name)) return;
             seenScratchpads.add(p.name);
-            
             scratchpadResults.push({ participant: p, content });
-            await appendToUI(
-`<details>
-<summary>🗒️ ${p.name} — private scratchpad</summary>
-
-${content}
-
-</details>\n`
-            );
+            
+            await appendToUI(`<div class="agent-thought-card" data-agent="${p.name}">
+                <div class="agent-thought-header">🗒️ ${p.name}</div>
+                <div class="agent-thought-body">${content}</div>
+            </div>\n`);
         };
 
         if (isParallel) {
-            safeStatus("Agents brainstorming in parallel...");
-            const promises = discussants.map(async (p) => {
+            safeStatus("Generating blind scratchpads...");
+            await Promise.all(discussants.map(async (p) => {
                 const content = await this.generateScratchpad(p, userPrompt, contextText, signal);
                 await handleScratchpadResult(p, content);
-            });
-            await Promise.all(promises);
+            }));
         } else {
-            for (const participant of discussants) {
+            for (const p of discussants) {
                 if (signal.aborted) break;
-                safeStatus(`${participant.name} is thinking privately...`);
-                const content = await this.generateScratchpad(participant, userPrompt, contextText, signal);
-                await handleScratchpadResult(participant, content);
-                await new Promise(r => setTimeout(r, 800));
+                safeStatus(`${p.name} is brainstorming...`);
+                const content = await this.generateScratchpad(p, userPrompt, contextText, signal);
+                await handleScratchpadResult(p, content);
             }
         }
 
@@ -317,19 +311,19 @@ ${content}
             .map(({ participant, content }) => `**${participant.name}:** ${content}`)
             .join('\n\n');
 
-        // ── STEP 2: OPEN DISCUSSION ─────────────────────────────────────────────
-        // Everyone now sees all scratchpads simultaneously.
-        // Agents react, challenge, build — keeping each turn short.
-
+        // ── PHASE 2: INTENT-DRIVEN COLLABORATION ───────────────────────────────
+        // We use an Intent Agent to decide who should respond next based on the flow.
+        
         if (signal.aborted) return this.buildFinalPrompt(userPrompt, [], "", []);
 
-        await appendToUI(`\n#### 💬 Discussion\n\n`);
+        await appendToUI(`\n<div class="herd-phase-header">💬 Phase 2: Peer Review & Collaboration</div>\n\n`);
 
         const discussionTurns: DiscussionTurn[] = [];
+        let currentBriefing = "Initial analysis complete. Awaiting peer contributions.";
 
         const getDiscussionTurn = async (
             participant: ResolvedParticipant
-        ): Promise<{ content: string; isReady: boolean }> => {
+        ): Promise<{ content: string, briefingUpdate?: string, isReady: boolean }> => {
 
             const transcript = this.renderTranscript(discussionTurns);
 
@@ -382,48 +376,60 @@ ${transcript || "(You are the first to speak after the reveal.)"}
             return { content, isReady };
         };
 
-        // Track consecutive failures per participant — skip those that keep crashing
-        const discussionFailures = new Map<string, number>(discussants.map(p => [p.name, 0]));
-
         for (let round = 1; round <= maxRounds; round++) {
             if (signal.aborted) break;
 
-            let allReady = true;
+            // 1. SPEAKER SELECTION (INTENT AGENT)
+            safeStatus("Determining next speaker...");
+            const nextSpeakerName = await this.determineNextSpeaker(discussants, discussionTurns, userPrompt, signal, leaderModel);
+            const participant = discussants.find(d => d.name === nextSpeakerName) || discussants[0];
 
-            for (const participant of discussants) {
-                if (signal.aborted) break;
+            safeStatus(`${participant.name} is responding...`);
 
-                // Skip participants that have hit the failure threshold
-                if ((discussionFailures.get(participant.name) ?? 0) >= MAX_CONSECUTIVE_FAILS) {
-                    continue;
+            try {
+                const turnResult = await getDiscussionTurn(participant);
+                
+                if (turnResult.briefingUpdate) {
+                    currentBriefing = turnResult.briefingUpdate;
+                    await appendToUI(`<div class="herd-briefing-update">📝 **Briefing Updated by ${participant.name}**</div>\n`);
                 }
 
-                safeStatus(`${participant.name} responding…`);
+                if (turnResult.content) {
+                    discussionTurns.push({ participantName: participant.name, model: participant.model, content: turnResult.content });
+                    await appendToUI(`<div class="discussion-bubble" data-agent="${participant.name}">
+                        <div class="bubble-header">${participant.name}</div>
+                        <div class="bubble-body">${turnResult.content}</div>
+                    </div>\n\n`);
+                }
 
-                // Breathing room between calls — essential for single-threaded backends
-                await new Promise(r => setTimeout(r, API_CALL_DELAY_MS));
+                // 2. CONTEXT COMPRESSION (REPORTER)
+                if (discussionTurns.length > 6) {
+                    safeStatus("Reporter is compressing context...");
+                    const summary = await this.compressHistory(discussionTurns, signal, leaderModel);
+                    discussionTurns.splice(0, discussionTurns.length - 2); // Keep last 2 turns
+                    discussionTurns.unshift({ participantName: "Reporter", model: leaderModel, content: `SUMMARY OF PREVIOUS DEBATE: ${summary}` });
+                    await appendToUI(`<div class="herd-compression-notice">♻️ Context compressed by Reporter.</div>\n`);
+                }
 
-                try {
-                    const { content, isReady } = await getDiscussionTurn(participant);
-                    discussionFailures.set(participant.name, 0); // reset on success
-                    if (!isReady) allReady = false;
-
-                    if (content) {
-                        discussionTurns.push({ participantName: participant.name, model: participant.model, content });
-                        await appendToUI(`**🧠 ${participant.name}:** ${content}\n\n`);
-                    } else if (isReady) {
-                        await appendToUI(`*✅ ${participant.name} has nothing to add.*\n\n`);
+                // 3. CONSENSUS CHECK
+                if (round > 2) {
+                    const consensus = await this.evaluateConsensus(discussionTurns, signal, leaderModel);
+                    if (consensus.reached) {
+                        await appendToUI(`<div class="herd-consensus-reached">🤝 Consensus reached: ${consensus.reason}</div>\n`);
+                        break;
                     }
-                } catch (error: any) {
-                    const fails = (discussionFailures.get(participant.name) ?? 0) + 1;
-                    discussionFailures.set(participant.name, fails);
-                    if (fails >= MAX_CONSECUTIVE_FAILS) {
-                        await appendToUI(`*⚠️ ${participant.name} is unresponsive — skipping for remaining rounds.*\n\n`);
-                    } else {
-                        await appendToUI(`*⚠️ ${participant.name} failed (attempt ${fails}/${MAX_CONSECUTIVE_FAILS}): ${error.message}*\n\n`);
-                    }
+                }
+
+            } catch (error: any) {
+                const fails = (discussionFailures.get(participant.name) ?? 0) + 1;
+                discussionFailures.set(participant.name, fails);
+                if (fails >= MAX_CONSECUTIVE_FAILS) {
+                    await appendToUI(`*⚠️ ${participant.name} is unresponsive — skipping for remaining rounds.*\n\n`);
+                } else {
+                    await appendToUI(`*⚠️ ${participant.name} failed (attempt ${fails}/${MAX_CONSECUTIVE_FAILS}): ${error.message}*\n\n`);
                 }
             }
+            
 
             if (allReady && round > 1) {
                 await appendToUI(`*Discussion closed after ${round} rounds.*\n`);
@@ -654,6 +660,65 @@ ${this.renderTranscript(reviewTurns) || "(none)"}
 **FINAL INSTRUCTION FOR LEADER:**
 Produce the definitive Final Answer incorporating all review points.
 Use standard file creation formats if code is required.`;
+    }
+
+    private async determineNextSpeaker(participants: ResolvedParticipant[], history: DiscussionTurn[], prompt: string, signal: AbortSignal, model: string): Promise<string> {
+        const transcript = this.renderTranscript(history);
+        const speakerList = participants.map(p => p.name).join(', ');
+        
+        const intentPrompt = `You are a Discussion Moderator.
+Participants: ${speakerList}
+Objective: ${prompt}
+
+HISTORY:
+${transcript || "Just starting."}
+
+Which participant should speak next to best advance the technical solution? 
+Choose based on:
+1. Who hasn't spoken in a while.
+2. Who was addressed by name.
+3. Who can provide the most relevant critique or expansion.
+
+Return ONLY the Name of the next speaker.`;
+
+        const response = await this.lollmsAPI.sendChat([
+            { role: 'system', content: intentPrompt }
+        ], null, signal, model, { thinking: false });
+        
+        return response.trim();
+    }
+
+    private async compressHistory(history: DiscussionTurn[], signal: AbortSignal, model: string): Promise<string> {
+        const transcript = this.renderTranscript(history);
+        const compressionPrompt = `You are a Reporter. Summarize the technical progress and disagreements in this debate so far. Be extremely concise. Keep only established facts and unresolved points.
+        
+DEBATE:
+${transcript}`;
+
+        return await this.lollmsAPI.sendChat([
+            { role: 'system', content: compressionPrompt }
+        ], null, signal, model, { thinking: false });
+    }
+
+    private async evaluateConsensus(history: DiscussionTurn[], signal: AbortSignal, model: string): Promise<{ reached: boolean, reason: string }> {
+        const transcript = this.renderTranscript(history);
+        const consensusPrompt = `Analyze this technical discussion. Have the participants reached a definitive consensus on the implementation?
+        
+DISCUSSION:
+${transcript}
+
+Return JSON: {"reached": true/false, "reason": "why"}`;
+
+        const response = await this.lollmsAPI.sendChat([
+            { role: 'system', content: consensusPrompt }
+        ], null, signal, model, { thinking: false });
+
+        try {
+            const jsonMatch = response.match(/\{[\s\S]*\}/);
+            return jsonMatch ? JSON.parse(jsonMatch[0]) : { reached: false, reason: "" };
+        } catch {
+            return { reached: false, reason: "" };
+        }
     }
 
     private formatChatHistory(history: ChatMessage[]): string {

@@ -1,7 +1,7 @@
 <skill id="coding-fullstack">
     <name>Full-Stack Integration</name>
     <description>Best practices for bridging frontend and backend, authentication flows, and deployment.</description>
-    <category>coding/fullstack</category>
+    <category>development/web/fullstack</category>
     <language>markdown</language>
     <timestamp>1739433600000</timestamp>
     <content>

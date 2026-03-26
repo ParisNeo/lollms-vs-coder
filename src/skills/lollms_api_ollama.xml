@@ -1,7 +1,7 @@
 <skill id="lollms-api-ollama">
     <name>LoLLMs Ollama Compatible API</name>
     <description>Interfacing with LoLLMs using the Ollama API structure.</description>
-    <category>lollms/api/ollama</category>
+    <category>ai/lollms/api</category>
     <language>markdown</language>
     <timestamp>1739455500000</timestamp>
     <content>

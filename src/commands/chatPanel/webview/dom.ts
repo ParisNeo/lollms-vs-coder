@@ -308,5 +308,6 @@ export const dom = {
     get rawSearchNext() { return document.getElementById('raw-search-next') as HTMLButtonElement; },
     get copySearchBtn() { return document.getElementById('copy-search-btn') as HTMLButtonElement; },
     get copyReplaceBtn() { return document.getElementById('copy-replace-btn') as HTMLButtonElement; },
-    get copyRawBtn() { return document.getElementById('copy-raw-btn') as HTMLButtonElement; }
+    get copyRawBtn() { return document.getElementById('copy-raw-btn') as HTMLButtonElement; },
+    get markAppliedBtn() { return document.getElementById('mark-applied-btn') as HTMLButtonElement; }
 };

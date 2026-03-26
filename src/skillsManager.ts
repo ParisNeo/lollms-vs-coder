@@ -204,6 +204,10 @@ export class SkillsManager {
             rootDir = this.globalSkillsDir;
         }
 
+        // CRITICAL: Ensure root directory exists before searching or writing. 
+        // Initialization in the constructor is async and might race with this method during startup.
+        try { await vscode.workspace.fs.createDirectory(rootDir); } catch (e) {}
+
         // 2. CRITICAL: Find and delete existing file with this ID to prevent duplicates if category changed
         const existingFile = await this.findSkillFileUri(skill.id, rootDir);
         if (existingFile) {
@@ -216,15 +220,18 @@ export class SkillsManager {
             const relativeCategory = skill.category.replace(/\\/g, '/');
             const segments = relativeCategory.split('/').filter(s => s.length > 0);
             
-            // Create directories one by one to ensure parent existance
             let currentDir = rootDir;
             for (const segment of segments) {
                 currentDir = vscode.Uri.joinPath(currentDir, segment);
-                try {
-                    await vscode.workspace.fs.createDirectory(currentDir);
-                } catch (e) {}
             }
             targetDir = currentDir;
+        }
+
+        // Ensure the full target directory structure is created in one go before writing
+        try {
+            await vscode.workspace.fs.createDirectory(targetDir);
+        } catch (e) {
+            console.error(`[SkillsManager] Failed to create directory ${targetDir.fsPath}`, e);
         }
 
         const filePath = vscode.Uri.joinPath(targetDir, `${skill.id}.xml`);

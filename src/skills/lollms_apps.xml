@@ -1,7 +1,7 @@
 <skill id="lollms-app-building">
     <name>Building Lollms Apps</name>
     <description>Guide for creating FastAPI + Tailwind apps compliant with Lollms discovery and VS Coder features.</description>
-    <category>python/lollms_client/app</category>
+    <category>development/web/lollms_apps</category>
     <language>markdown</language>
     <timestamp>1739433600000</timestamp>
     <content>

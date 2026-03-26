@@ -1,7 +1,7 @@
 <skill id="lollms-api-openai">
     <name>LoLLMs OpenAI Compatible API</name>
     <description>Using LoLLMs as a drop-in replacement for OpenAI V1 API.</description>
-    <category>lollms/api/openai</category>
+    <category>ai/lollms/api</category>
     <language>markdown</language>
     <timestamp>1739455500000</timestamp>
     <content>

@@ -1,7 +1,7 @@
 <skill id="lollms-sqlite-database">
     <name>SQLite Database with LoLLMs</name>
     <description>Building and interacting with SQLite databases using LoLLMs for natural language queries.</description>
-    <category>python/lollms_client/database/sqlite</category>
+    <category>ai/knowledge_management/rag</category>
     <language>markdown</language>
     <timestamp>1738425600000</timestamp>
     <content>

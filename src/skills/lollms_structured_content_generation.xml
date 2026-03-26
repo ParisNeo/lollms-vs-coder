@@ -1,7 +1,7 @@
 <skill id="lollms-structured-content">
     <name>Structured Content Generation</name>
     <description>Reliable JSON/schema output from LLMs using generate_structured_content with validation and recovery.</description>
-    <category>python/lollms_client/structured</category>
+    <category>ai/lollms/features/structured_output</category>
     <language>markdown</language>
     <timestamp>1738425600000</timestamp>
     <content>

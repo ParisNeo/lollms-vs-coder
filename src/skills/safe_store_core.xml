@@ -1,4 +1,4 @@
-<skill id="safe-store-core" title="SafeStore Core Class" description="Primary API for local semantic storage, vectorization, and document management." category="python/safe_store/core">
+<skill id="safe-store-core" title="SafeStore Core Class" description="Primary API for local semantic storage, vectorization, and document management." category="ai/knowledge_management/safe_store">
     <content>
         <![CDATA[
 # 💎 SOURCE OF TRUTH: SafeStore Core API

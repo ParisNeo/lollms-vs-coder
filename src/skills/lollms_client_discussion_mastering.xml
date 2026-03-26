@@ -1,4 +1,4 @@
-<skill title="Mastering LollmsDiscussion: Context &amp; Memory" description="Comprehensive guide to managing conversation state, long-term memory extraction, and aider-style versioned document editing." category="python/lollms/discussion">
+<skill title="Mastering LollmsDiscussion: Context &amp; Memory" description="Comprehensive guide to managing conversation state, long-term memory extraction, and aider-style versioned document editing." category="ai/lollms/client">
 
 ## 1. Data Zones: The Context Layers
 LoLLMs uses a layered context approach. When you call `get_full_data_zone()`, it assembles these layers in specific order:

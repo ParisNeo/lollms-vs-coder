@@ -20,10 +20,14 @@ import { FailureMemory } from './agent/failureHandling';
 // Interface decoupling the UI from the logic
 export interface IAgentUI {
     addMessageToDiscussion(message: ChatMessage): Promise<void>;
+    updateMessageContent?(messageId: string, newContent: string): Promise<void>;
     displayPlan(plan: Plan | null): void;
     updateGeneratingState(): void;
     requestUserInput(question: string, signal: AbortSignal): Promise<string>;
     updateAgentMode(isActive: boolean): void;
+    // New methods to allow the Manager to control the pipeline stages
+    runVerificationAgent(content: string, signal: AbortSignal): Promise<string>;
+    executeAutomationPipeline(content: string, messageId: string, signal: AbortSignal, processId: string): Promise<void>;
 }
 
 export interface UserPermissions {
@@ -189,8 +193,6 @@ export class AgentManager {
         permissions: UserPermissions = { canExecute: true, canRead: true }
     ) {
         const isDebugActive = discussion.capabilities?.debugMode || false;
-        const maxSteps = discussion.capabilities?.maxDebugSteps || 10;
-        if (!this.isActive) this.isActive = true;
         if (!this.processManager) return;
 
         this.currentWorkspaceFolder = workspaceFolder;
@@ -201,43 +203,67 @@ export class AgentManager {
         if (!this.currentPlan) {
             this.failureMemory.clear();
             this.consecutiveTaskFailures.clear();
-            this.completedActionsHistory = []; // Reset on fresh start
+            this.completedActionsHistory = [];
         }
 
-        const { id: processId, controller } = this.processManager.register(discussion.id, `Agent Thinking...`);
-        this.ui.updateGeneratingState();
-
-        try {
-            const hasActivePlan = this.currentPlan && this.currentPlan.tasks.some(t => t.status === 'pending' || t.status === 'in_progress');
-
-            if (hasActivePlan) {
-                this.ui.addMessageToDiscussion({ role: 'system', content: '🔄 **Updating Plan based on user feedback...**' });
-                const result = await this.replan(content, controller.signal);
-                if (result.success) {
-                    await this.executePlan(this.currentTaskIndex, controller.signal, this.currentDiscussion.model);
-                    await this.synthesizeFinalResponse(content, controller.signal, this.currentDiscussion.model);
-                } else {
-                    this.ui.addMessageToDiscussion({ role: 'system', content: `❌ Plan update failed: ${result.output}` });
-                }
-            } else {
-                const objective = content;
-                const plan = await this.runArchitectLoop(objective, controller.signal, this.currentDiscussion.model);
-                
-                if (controller.signal.aborted) return;
-
-                if (!plan) {
-                     const failedPlanState: Plan = {
-                        objective: objective,
-                        scratchpad: `❌ **Planning Failed.** Architect timed out or failed to provide a valid JSON plan.`,
-                        tasks:[]
-                    };
-                    this.displayAndSavePlan(failedPlanState);
+        // --- DEBUG MODE GIT SANDBOX ---
+        if (isDebugActive && workspaceFolder) {
+            const isRepo = await this.gitIntegration.isGitRepo(workspaceFolder);
+            if (isRepo) {
+                const clean = await this.gitIntegration.isClean(workspaceFolder);
+                if (!clean) {
+                    // Logically happens after the prompt is already in history
+                    setTimeout(() => {
+                        this.ui.addMessageToDiscussion({ 
+                            role: 'system', 
+                            content: `🛑 **Debug Mode Blocked:** Your working directory has uncommitted changes. 
+Please commit or stash your work before starting an iterative debug session to ensure we can roll back instrumentation safely.` 
+                        });
+                    }, 100);
+                    this.ui.updateGeneratingState();
                     return;
                 }
                 
-                this.displayAndSavePlan(plan);
-                await this.executePlan(0, controller.signal, this.currentDiscussion.model);
-                await this.synthesizeFinalResponse(objective, controller.signal, this.currentDiscussion.model);
+                const debugBranch = `debug/task-${Date.now()}`;
+                await this.gitIntegration.createAndCheckoutBranch(workspaceFolder, debugBranch);
+                this.ui.addMessageToDiscussion({ 
+                    role: 'system', 
+                    content: `🛡️ **Sandbox Created:** Switched to branch \`${debugBranch}\`. I can now freely add instrumentation and test fixes.` 
+                });
+            }
+        }
+
+        // Register the primary orchestrator process
+        const { id: processId, controller } = this.processManager.register(discussion.id, `Orchestrator: Initializing...`);
+        this.ui.updateGeneratingState();
+
+        try {
+            // --- BLOCKING DEBUG FLOW ---
+            if (isDebugActive) {
+                this.processManager.updateDescription(processId, "🛰️ Orchestrator: Initializing Debug Sandbox...");
+                await this.runDebuggingOrchestrator(content, controller.signal);
+                // After Debug finishes, we synthesize.
+                await this.synthesizeFinalResponse(content, controller.signal, this.currentDiscussion.model);
+                return; 
+            }
+
+            // --- STANDARD AGENT FLOW ---
+            const hasActivePlan = this.currentPlan && this.currentPlan.tasks.some(t => t.status === 'pending' || t.status === 'in_progress');
+
+            if (hasActivePlan) {
+                this.processManager.updateDescription(processId, "🔄 Replanning...");
+                const result = await this.replan(content, controller.signal);
+                if (result.success) {
+                    await this.executePlan(0, controller.signal, this.currentDiscussion.model);
+                    await this.synthesizeFinalResponse(content, controller.signal, this.currentDiscussion.model);
+                }
+            } else {
+                const plan = await this.runArchitectLoop(content, controller.signal, this.currentDiscussion.model);
+                if (plan) {
+                    this.displayAndSavePlan(plan);
+                    await this.executePlan(0, controller.signal, this.currentDiscussion.model);
+                    await this.synthesizeFinalResponse(content, controller.signal, this.currentDiscussion.model);
+                }
             }
 
         } catch (error: any) {
@@ -266,7 +292,7 @@ export class AgentManager {
         return false;
     }
 
-    private async runArchitectLoop(objective: string, signal: AbortSignal, modelOverride?: string): Promise<Plan | null> {
+    private async runArchitectLoop(objective: string, signal: AbortSignal, modelOverride?: string, onChunk?: (chunk: string) => void): Promise<Plan | null> {
          const enabledTools = this.getEnabledTools();
          const systemPromptMsg = await this.planParser.getArchitectSystemPrompt(enabledTools);
          
@@ -286,7 +312,8 @@ export class AgentManager {
              : "";
          
          const failureContext = this.failureMemory.getMemoryContext();
-         
+
+         // --- INJECT LIVING CONTEXT ---
          const historyContext: ChatMessage[] = [
              systemPromptMsg,
              ...this.chatHistory.filter(m => m.role !== 'system'), 
@@ -295,23 +322,58 @@ export class AgentManager {
 
          let loopCount = 0;
          const MAX_LOOPS = 10;
-         
+         const { PromptTemplates } = require('./promptTemplates');
+
          while (loopCount < MAX_LOOPS) {
              if (signal.aborted) return null;
              loopCount++;
              this.ui.updateGeneratingState();
+
+             // --- CRITICAL: REFRESH PROJECT STATE EVERY LOOP ---
+             const contextData = await this.contextManager.getContextContent({ 
+                 includeTree: true, 
+                 modelName: modelOverride || this.currentDiscussion?.model 
+             });
+
+             // Extract Team Briefing from Discussion Data Zone
+             let currentBriefing = "";
+             if (this.currentDiscussion?.discussion_data_zone) {
+                 try {
+                     const parsed = JSON.parse(this.currentDiscussion.discussion_data_zone);
+                     currentBriefing = Object.entries(parsed).map(([k,v]) => `**[${k.toUpperCase()}]**\n${v}`).join('\n\n');
+                 } catch {
+                     currentBriefing = this.currentDiscussion.discussion_data_zone;
+                 }
+             }
+
+             // Update historyContext by replacing the old project state message
+             const stateIdx = historyContext.findIndex(m => m.role === 'system' && m.content.includes('ACTUAL PROJECT STATE'));
+             const newStateMsg: ChatMessage = {
+                 role: 'system',
+                 content: PromptTemplates.buildProjectStateMessage({
+                     tree: contextData.projectTree,
+                     files: contextData.selectedFilesContent,
+                     skills: contextData.skillsContent,
+                     briefing: currentBriefing
+                 })
+             };
+
+             if (stateIdx !== -1) {
+                 historyContext[stateIdx] = newStateMsg;
+             } else {
+                 // Insert before the last message (the objective)
+                 historyContext.splice(historyContext.length - 1, 0, newStateMsg);
+             }
              
              let response = "";
              try {
                 const config = vscode.workspace.getConfiguration('lollmsVsCoder');
                 const architectModel = config.get<string>('architectModelName') || modelOverride || this.currentDiscussion?.model;
+                const options = { thinking: this.currentDiscussion?.capabilities?.thinkingMode };
                 
-                // Pass the current discussion's thinking capability to the Architect
-                const options = { 
-                    thinking: this.currentDiscussion?.capabilities?.thinkingMode 
-                };
-                
-                response = await this.lollmsApi.sendChat(historyContext, null, signal, architectModel, options);
+                response = await this.lollmsApi.sendChat(historyContext, (chunk) => {
+                    if (onChunk) onChunk(chunk);
+                }, signal, architectModel, options);
              } catch(e: any) {
                  return null;
              }
@@ -760,6 +822,19 @@ Please provide a clear, concise final response to the user summarizing the outco
         task.result = result.output;
         task.status = result.success ? 'completed' : 'failed';
         
+        // 📊 DASHBOARD UPDATE
+        if (this.dashboardState && this.dashboardUpdater) {
+            const shortOutput = result.output.length > 500 ? result.output.substring(0, 500) + '...' : result.output;
+            if (task.action.includes('web') || task.action.includes('arxiv') || task.action.includes('scrape') || task.action.includes('research')) {
+                this.dashboardState.web = `**Action:** \`${task.action}\`\n\n**Result:**\n${shortOutput}`;
+            } else if (task.action.includes('skill')) {
+                this.dashboardState.skills = `**Action:** \`${task.action}\`\n\n**Result:**\n${shortOutput}`;
+            } else {
+                this.dashboardState.debugger = `**Task ${task.id} Finished.**\nStatus: ${result.success ? '✅ Success' : '❌ Failed'}\n\n**Output:**\n${shortOutput}`;
+            }
+            this.dashboardUpdater();
+        }
+
         // 📊 STRUCTURED TIMELINE
         // Record the action and the observation for the next prompt iteration.
         // We explicitly prompt the model to compare expectations with reality.
@@ -1018,6 +1093,143 @@ Please provide a clear, concise final response to the user summarizing the outco
         return this.ui.requestUserInput(question, signal);
     }
 
+    /**
+     * The Debugging Orchestrator:
+     * Phase 1: Mandatory Librarian Grounding (Independent)
+     * Phase 2: Architect fixes code based on grounded context.
+     */
+    public async runDebuggingOrchestrator(
+        objective: string, 
+        signal: AbortSignal
+    ): Promise<string> {
+        if (!this.currentWorkspaceFolder || !this.currentDiscussion || !this.processManager) return "No workspace.";
+        const processId = this.processManager.getForDiscussion(this.currentDiscussion.id)?.id || "orchestrator";
+
+        // 0. Cleanup
+        this.displayAndSavePlan(null);
+
+        // 1. Setup Sandbox
+        const isClean = await this.gitIntegration.isClean(this.currentWorkspaceFolder);
+        if (!isClean) {
+            this.ui.addMessageToDiscussion({ role: 'system', content: "❌ **Mission Aborted**: Workspace is dirty. Commit your changes first." });
+            throw new Error("Dirty workspace");
+        }
+        const debugBranch = `debug/sandbox-${Date.now()}`;
+        await this.gitIntegration.createAndCheckoutBranch(this.currentWorkspaceFolder, debugBranch);
+        this.ui.addMessageToDiscussion({ role: 'system', content: `**🛰️ Orchestrator**\n*Sandbox Ready: Switched to branch \`${debugBranch}\`.*` });
+
+        // 2. Step 1: Worker Drafting
+        this.processManager.updateDescription(processId, "Phase 1: Worker drafting solution...");
+        this.ui.updateGeneratingState();
+        
+        const model = this.currentDiscussion.model || this.lollmsApi.getModelName();
+        const workerSystemPrompt = await getProcessedSystemPrompt('chat', this.currentDiscussion.capabilities);
+        const workerResponse = await this.lollmsApi.sendChat([
+            { role: 'system', content: workerSystemPrompt },
+            ...this.chatHistory,
+            { role: 'user', content: `Draft the complete solution for: "${objective}". Use the technical briefing.` }
+        ], null, signal, model);
+
+        // 3. Step 2: Verifier Audit (Guardian)
+        this.processManager.updateDescription(processId, "Phase 2: Verifier auditing logic...");
+        this.ui.updateGeneratingState();
+        const auditedResponse = await this.ui.runVerificationAgent(workerResponse, signal);
+
+        // 4. Step 3: Apply to Disk (Physical Sync)
+        this.processManager.updateDescription(processId, "Phase 2: Applying fixes to disk...");
+        this.ui.updateGeneratingState();
+        
+        const workerMsgId = 'worker_final_' + Date.now();
+        await this.ui.addMessageToDiscussion({
+            id: workerMsgId,
+            role: 'assistant',
+            content: auditedResponse,
+            model: model
+        });
+
+        // We await the actual file writes before starting the debugger
+        await this.ui.executeAutomationPipeline(auditedResponse, workerMsgId, signal, processId);
+
+        // 5. Phase 3: Specialized Debugger Loop (Files are now on disk)
+        if (this.currentDiscussion.capabilities?.debugMode) {
+            this.processManager.updateDescription(processId, "Phase 3: Debugger starting validation...");
+            this.ui.updateGeneratingState();
+            
+            // Re-sync context so Debugger sees the new files
+            await this.contextManager.getContextContent({ includeTree: true, modelName: model, signal });
+
+            return await this.runDebuggerAgent(objective, signal);
+        }
+        
+        return "Complete";
+    }
+
+    /**
+     * Dedicated Debugger Agent Loop (Mirroring the Librarian structure)
+     */
+    public async runDebuggerAgent(objective: string, signal: AbortSignal): Promise<string> {
+        // 1. Initialize Sandbox if workspace is clean
+        if (this.currentWorkspaceFolder) {
+            const isClean = await this.gitIntegration.isClean(this.currentWorkspaceFolder);
+            if (isClean) {
+                const debugBranch = `debug/sandbox-${Date.now()}`;
+                await this.gitIntegration.createAndCheckoutBranch(this.currentWorkspaceFolder, debugBranch);
+                this.ui.addMessageToDiscussion({ 
+                    role: 'system', 
+                    content: `🛡️ **Debugger Sandbox**: Switched to branch \`${debugBranch}\`. I can now safely run instrumentation.` 
+                });
+            }
+        }
+
+        const dbgMsgId = 'debug_report_' + Date.now();
+        await this.addMessageToDiscussion({ 
+            id: dbgMsgId, 
+            role: 'system', 
+            content: `**🧪 Debug Specialist**\n*Starting runtime validation for: "${objective}"*` 
+        });
+
+        const maxSteps = this.currentDiscussion?.capabilities?.maxDebugSteps || 10;
+        const model = this.currentDiscussion?.model || this.lollmsApi.getModelName();
+        const systemPrompt = await getProcessedSystemPrompt('debugger', this.currentDiscussion?.capabilities);
+        
+        // Debugger sees the full story so far
+        const chatHistory: ChatMessage[] = [
+            { role: 'system', content: systemPrompt },
+            ...this.chatHistory,
+            { role: 'user', content: `The files are updated on disk. Verify runtime behavior for: "${objective}". Use tools to run, set stop points, and check variables. End with a report.` }
+        ];
+
+        let step = 0;
+        while (step < maxSteps) {
+            if (signal.aborted) break;
+            step++;
+
+            // Refresh reality
+            const currentData = await this.contextManager.getContextContent({ includeTree: true, modelName: model, signal });
+            chatHistory.push({ role: 'system', content: `[DISK STATE]\n${currentData.projectTree}\n${currentData.selectedFilesContent}`, skipInPrompt: true });
+
+            const response = await this.lollmsApi.sendChat(chatHistory, null, signal, model);
+            chatHistory.push({ role: 'assistant', content: response });
+
+            const cleanResponse = stripThinkingTags(response);
+            const toolMatch = this.parseToolCall(cleanResponse);
+
+            if (toolMatch) {
+                const res = await this.executeTask(toolMatch.name, toolMatch.params, signal);
+                chatHistory.push({ role: 'user', content: `[OBSERVATION]\n${res.output}` });
+                if (this.ui.updateMessageContent) {
+                    this.ui.updateMessageContent(dbgMsgId, `**🧪 Debugger (Step ${step})**\n*Last Action: \`${toolMatch.name}\`*\n\n${res.output.substring(0, 300)}...`);
+                }
+            } else if (cleanResponse.toLowerCase().includes("report") || step === maxSteps) {
+                if (this.ui.updateMessageContent) this.ui.updateMessageContent(dbgMsgId, cleanResponse);
+                return "Complete";
+            } else {
+                chatHistory.push({ role: 'user', content: "Continue your investigation or provide the Final Report." });
+            }
+        }
+        return "Max steps reached";
+    }
+
     private deactivateAgent() {
         this.isActive = false;
         if(this.currentDiscussion && !this.currentDiscussion.id.startsWith('temp-')){
@@ -1027,4 +1239,41 @@ Please provide a clear, concise final response to the user summarizing the outco
         this.currentPlan = null;
         this.ui.updateAgentMode(false);
     }
+    /**
+     * Final Verification Agent.
+     * Performs a logical audit against the original objective.
+     */
+    private async runVerifierAgent(objective: string, signal: AbortSignal): Promise<void> {
+        const verifierMsgId = 'verifier_report_' + Date.now();
+        await this.ui.addMessageToDiscussion({ 
+            id: verifierMsgId, 
+            role: 'system', 
+            content: `**🛡️ Phase 4: Verifier**\n*Performing logical audit...*` 
+        });
+
+        const model = this.currentDiscussion?.model || this.lollmsApi.getModelName();
+        const systemPrompt = `You are the **Senior Quality Verifier**. 
+Your goal is to perform a cold, critical audit of the work done by the Worker and Debugger.
+
+### 🛡️ AUDIT CHECKLIST:
+1. **REQUIREMENT COVERAGE**: Does the final code actually fulfill ALL parts of the original request: "${objective}"?
+2. **LOGIC CONSISTENCY**: Are there any new logical contradictions or edge cases introduced by the fixes?
+3. **REGRESSION CHECK**: Did the fix for the bug accidentally break a different feature?
+4. **COMPLIANCE**: Does the solution follow all the Team Briefing facts?
+
+If you find a logic flaw, you MUST provide a final SEARCH/REPLACE fix.
+If the code is perfect, output a "VERIFICATION PASSED" report.`;
+
+        const chatHistory: ChatMessage[] = [
+            { role: 'system', content: systemPrompt },
+            ...this.chatHistory,
+            { role: 'user', content: "The code is written and verified at runtime. Perform a final logical audit. Does it meet the objective perfectly?" }
+        ];
+
+        const response = await this.lollmsAPI.sendChat(chatHistory, null, signal, model);
+        if (this.ui.updateMessageContent) {
+            this.ui.updateMessageContent(verifierMsgId, response);
+        }
+    }
+   
 }

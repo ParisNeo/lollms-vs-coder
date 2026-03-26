@@ -116,7 +116,11 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
                             newContent: newContent 
                         });
                     },
-                    keywords
+                    undefined,       // onStatusUpdate
+                    keywords,        // initialKeywords
+                    'collaborative', // mode
+                    discussion,
+                    []               // fullHistory
                 );
                 panel.updateContextAndTokens();
             } finally {

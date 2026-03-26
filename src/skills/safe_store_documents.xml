@@ -1,7 +1,7 @@
 <skill id="safe-store-documents">
     <name>safe_store: Document Ingestion & Management</name>
     <description>Adding, updating, and managing documents with metadata and custom processing</description>
-    <category>python/safe_store/documents</category>
+    <category>ai/knowledge_management/safe_store</category>
     <language>markdown</language>
     <timestamp>1740265200000</timestamp>
     <content>

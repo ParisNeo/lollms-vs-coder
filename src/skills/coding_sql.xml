@@ -1,7 +1,7 @@
 <skill id="coding-sql">
     <name>SQL & Database Expert</name>
     <description>Advanced SQL queries, database design, normalization, and performance tuning.</description>
-    <category>coding/database</category>
+    <category>development/data/sql</category>
     <language>markdown</language>
     <timestamp>1739433600000</timestamp>
     <content>

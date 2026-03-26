@@ -1,4 +1,4 @@
-<skill title="RAG Document System" description="Building a complete RAG system with LoLLMs: document ingestion, vectorization, and agentic retrieval from mixed file types." category="python/lollms_client/rag">
+<skill title="RAG Document System" description="Building a complete RAG system with LoLLMs: document ingestion, vectorization, and agentic retrieval from mixed file types." category="ai/knowledge_management/rag">
 # RAG Document System with LoLLMs
 
 ## Overview

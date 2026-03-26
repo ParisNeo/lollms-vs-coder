@@ -1,7 +1,7 @@
 <skill id="lollms-text-gen">
     <name>Text Generation</name>
     <description>Generating text and streaming responses.</description>
-    <category>python/lollms_client/generation</category>
+    <category>ai/lollms/features/text_generation</category>
     <language>markdown</language>
     <timestamp>1738425600000</timestamp>
     <content>

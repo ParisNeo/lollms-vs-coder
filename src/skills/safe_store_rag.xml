@@ -1,4 +1,4 @@
-<skill id="safe-store-rag" title="SafeStore RAG & Hybrid Search" description="Techniques for hybrid semantic/keyword search and pre-processing document chunks." category="python/safe_store/rag">
+<skill id="safe-store-rag" title="SafeStore RAG & Hybrid Search" description="Techniques for hybrid semantic/keyword search and pre-processing document chunks." category="ai/knowledge_management/rag">
     <content>
         <![CDATA[
 # 💎 SOURCE OF TRUTH: safe_store RAG Patterns

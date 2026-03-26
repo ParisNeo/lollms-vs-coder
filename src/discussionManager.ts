@@ -110,6 +110,8 @@ export class DiscussionManager {
             maxDebugSteps: 10,
             autoContextMode: false, 
             autoSkillMode: false,
+            ttftTimeout: 0,
+            interTokenTimeout: 0,
             contextAggression: 'respect',
             disableProjectContext: false,
             gitWorkflow: false,

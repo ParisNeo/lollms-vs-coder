@@ -1,4 +1,4 @@
-<skill id="safe-store-vectorizers" title="SafeStore Vectorizer Configs" description="Specific configurations for different embedding backends (Ollama, OpenAI, ST)." category="python/safe_store/vectorizers">
+<skill id="safe-store-vectorizers" title="SafeStore Vectorizer Configs" description="Specific configurations for different embedding backends (Ollama, OpenAI, ST)." category="ai/knowledge_management/safe_store">
     <content>
         <![CDATA[
 # 💎 SafeStore: Complete Documentation Guide

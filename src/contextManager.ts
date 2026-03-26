@@ -12,7 +12,6 @@ import { promisify } from 'util';
 import * as os from 'os';
 import fetch from 'node-fetch';
 import { URL } from 'url';
-
 const execAsync = promisify(exec);
 
 export interface ContextResult {
@@ -255,6 +254,7 @@ export class ContextManager {
             // 2. Fallback to system tools
             const isWin = process.platform === 'win32';
             let command = "";
+            const pattern = query.replace(/"/g, '\\"');
             
             if (isWin) {
                 // findstr /I = case insensitive. /BE = match start/end (closest to whole word findstr has)
@@ -270,7 +270,6 @@ export class ContextManager {
                 if (options.wholeWord) grepArgs += ` -w`;
                 command = `grep ${grepArgs} "${pattern}" .`;
             }
-            
             try {
                 const res = await execAsync(command, { cwd, maxBuffer: 1024 * 1024 });
                 stdout = res.stdout;
@@ -338,89 +337,31 @@ export class ContextManager {
     return combinedResults;
   }
 
-  private extractVideoId(url: string): string | null {
-      const patterns = [
-          /(?:v=|\/shorts\/|\/embed\/|youtu\.be\/)([^#&?]*)/,
-          /[?&]v=([^#&?]*)/
-      ];
-      for (const p of patterns) {
-          const match = url.match(p);
-          if (match && match[1] && match[1].length === 11) return match[1];
-      }
-      return null;
-  }
 
-private async fetchYoutubeTranscript(videoId: string, languageCode: string = 'en'): Promise<string> {
-      try {
-        const headers = { 
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-            'Accept-Language': 'en-US,en;q=0.9'
-        };
+    private async fetchYoutubeTranscript(videoId: string, languageCode: string = 'en') {
+        try {
+            const transcript = await fetchTranscript(videoId, {
+                lang: languageCode || 'en'
+            });
 
-        // 1. Fetch the video page to get API Key and Initial Data
-        const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, { headers });
-        const html = await pageRes.text();
-        
-        const apiKeyMatch = html.match(/"INNERTUBE_API_KEY":"([^"]+)"/);
-        if (!apiKeyMatch) return "Could not retrieve InnerTube API key.";
-        const apiKey = apiKeyMatch[1];
-
-        // Extract ytInitialData which contains the transcript params
-        const dataMatch = html.match(/var ytInitialData = ({.*?});/);
-        if (!dataMatch) return "Could not find video data on the page.";
-        const ytInitialData = JSON.parse(dataMatch[1]);
-
-        // 2. Locate the transcript params (continuation token)
-        let transcriptParams: string | undefined;
-        const engagementPanels = ytInitialData.engagementPanels || [];
-        for (const panel of engagementPanels) {
-            const renderer = panel.engagementPanelSectionListRenderer;
-            if (renderer?.panelIdentifier === 'engagement-panel-transcript') {
-                transcriptParams = renderer.content?.transcriptRenderer?.params 
-                                || renderer.header?.engagementPanelTitleHeaderRenderer?.menu?.menuRenderer?.items?.[0]?.menuServiceItemRenderer?.serviceEndpoint?.getTranscriptEndpoint?.params;
+            if (!Array.isArray(transcript)) {
+                return { success: false, output: "Unexpected transcript format received from library." };
             }
+
+            const finalResult = transcript
+                .map((part: any) => part.text)
+                .join(' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+
+            if (!finalResult) return { success: false, output: "Library returned empty content for this video ID." };
+
+            return { success: true, output: finalResult };
+
+        } catch (e: any) {
+            return { success: false, output: `Library Extraction Failed: ${e.message}` };
         }
-
-        if (!transcriptParams) return "No transcript available for this video (or it is disabled).";
-
-        // 3. Call the specialized get_transcript endpoint
-        const transcriptUrl = `https://www.youtube.com/youtubei/v1/get_transcript?key=${apiKey}`;
-        const transcriptRes = await fetch(transcriptUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                context: {
-                    client: {
-                        clientName: "WEB",
-                        clientVersion: "2.20240210.05.00"
-                    }
-                },
-                params: transcriptParams
-            })
-        });
-
-        if (!transcriptRes.ok) return `Transcript API Error: ${transcriptRes.status}`;
-        const transcriptData: any = await transcriptRes.json();
-
-        // 4. Parse the segments from the transcript response
-        const panels = transcriptData.actions?.[0]?.updateEngagementPanelAction?.content?.transcriptRenderer?.body?.transcriptBodyRenderer?.cueGroups || [];
-        const textParts: string[] = [];
-        
-        for (const group of panels) {
-            const cues = group.transcriptCueGroupRenderer?.cues || [];
-            for (const cue of cues) {
-                const text = cue.transcriptCueRenderer?.shortId?.simpleText || cue.transcriptCueRenderer?.cue?.simpleText || "";
-                if (text) textParts.push(text);
-            }
-        }
-
-        const finalResult = textParts.join(' ').replace(/\s+/g, ' ').trim();
-        return finalResult || "Extraction failed: The transcript response contained no text segments.";
-
-      } catch(e: any) {
-          return `Error fetching transcript: ${e.message}`;
-      }
-  }
+    }
 
   /**
    * Cleans content from potential prompt injection strings.
@@ -483,7 +424,6 @@ ${content.substring(0, 20000)}
       try { await vscode.workspace.fs.createDirectory(cacheDir); } catch(e) {}
       
       // Basic Detection
-      const isYoutube = url.includes('youtube.com') || url.includes('youtu.be');
       const isArxiv = url.includes('arxiv.org');
       const isWiki = url.includes('wikipedia.org');
       
@@ -492,19 +432,7 @@ ${content.substring(0, 20000)}
       // Use existing tools logic by importing tools dynamically to avoid circular deps or re-implement basic fetch
       // Re-implementing simplified versions here to keep ContextManager independent
       
-      if (isYoutube) {
-          try {
-             const videoId = this.extractVideoId(url);
-             if (videoId) {
-                 const transcript = await this.fetchYoutubeTranscript(videoId, languageCode);
-                 rawContent = `[YouTube Video] ${url}\nVideo ID: ${videoId}\n\n### TRANSCRIPT:\n${transcript}`;
-             } else {
-                 rawContent = `Invalid YouTube URL: ${url}`;
-             }
-          } catch(e) {
-              rawContent = `Failed to load YouTube content: ${e}`;
-          }
-      } else if (isArxiv) {
+      if (isArxiv) {
           // Arxiv API
           try {
               const idMatch = url.match(/abs\/([0-9.]+)/) || url.match(/pdf\/([0-9.]+)/);
@@ -894,18 +822,21 @@ ${fullContext.selectedFilesContent.substring(0, 5000)}...
         if (raw.startsWith('{')) {
             entries = JSON.parse(raw);
         } else if (raw.length > 0) {
-            // Legacy content migration: move raw text to a 'general' entry
-            entries = { "initial_analysis": raw };
+            entries = { "analysis": raw };
         }
     } catch { 
         entries = {}; 
     }
 
-    entries[id] = content;
+    // Clean formatting and accumulate
+    entries[id] = content.trim();
     discussion.discussion_data_zone = JSON.stringify(entries, null, 2);
+    
+    // Explicitly notify the discussion manager to persist this discovery
+    vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
   }
 
-  private renderBriefing(discussion: any): string {
+  public renderBriefing(discussion: any): string {
     const fallback = "Librarian is analyzing project state...";
     if (!discussion || !discussion.discussion_data_zone) return fallback;
     
@@ -1216,7 +1147,9 @@ Google Available: ${canGoogle}` }
       onStatusUpdate?: (status: string) => void,
       initialKeywords?: string[],
       mode: 'selection_only' | 'collaborative' = 'collaborative',
-      fullHistory: ChatMessage[] = []
+      discussion: any = null,
+      fullHistory: ChatMessage[] = [],
+      dashboardMode: boolean = false
   ): Promise<{ context: string, analysis: string }> {
       const MAX_STEPS = 10;
       const MAX_RETRIES = 3;
@@ -1228,9 +1161,9 @@ Google Available: ${canGoogle}` }
 
       const allFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
       if (allFiles.length === 0) {
-          // Instead of breaking, inform the LLM that this is a "Blank State" 
-          // and skip the file selection logic.
-          return { context: "", analysis: "No files found in workspace. Operating in general discussion mode." };
+          actionLog.push("⚠️ No files found in workspace.");
+          onUpdate(`**🧠 Librarian Mission Report**\n\n⚠️ **Blank Workspace**: I couldn't find any visible files in the project. Please ensure you are in the correct folder.`);
+          return { context: "", analysis: "Workspace is empty." };
       }
 
       const currentContextFiles = this.contextStateProvider.getIncludedFiles().map(f => f.path);
@@ -1251,7 +1184,7 @@ Google Available: ${canGoogle}` }
 
       const fileTree = fullContext.projectTree;
       const currentContents = fullContext.selectedFilesContent;
-      const discussion = this.lollmsAPI.globalState?.get<any>(`discussion-${model}`); // Simplified lookup
+      // Removed redundant local declaration of 'discussion' as it is now provided via method parameters
       const aggression = this.contextStateProvider.context.globalState.get<any>('lollms_last_capabilities')?.contextAggression || 'respect';
 
       let aggressionInstruction = "";
@@ -1275,33 +1208,25 @@ Google Available: ${canGoogle}` }
       const roleTitle = isCollaborative ? "Lead Architect & Librarian" : "Context Librarian";
       
       const systemPrompt = `You are the **Lead Project Librarian**. 
-Your mission is to map the codebase and maintain the shared **Team Briefing** for the Worker Agent. You operate via a strict **Surgical Investigation Protocol**.
+Your primary mission is to synchronize the project context for the Worker LLM who will execute the task next.
 
 ### 📜 THE LIBRARIAN'S CONSTITUTION
-1.  **NEVER GUESS**: If a file exists in the tree but you haven't read its content, DO NOT assume its implementation.
-2.  **NO REDUNDANT READING**: You can ALREADY see the full content of "Accessible File Contents" below. Do not use \`read_file\` for them.
-3.  **MANDATORY TOOL-USE FOR KNOWLEDGE**: Technical facts (bugs, logic, signatures) MUST be recorded using \`add_briefing_entry\`. 
-    - Writing a bug in your \`scratchpad\` is NOT enough; it will be lost. 
-    - If you find 5 bugs, you must call \`add_briefing_entry\` 5 times (or once with all info) to persist them.
-4.  **AMENDMENTS**: If you discover a previous briefing entry was wrong or incomplete, use \`amend_briefing_entry\` immediately to correct the team's beliefs.
-5.  **SURGICAL PEEKING**: Use \`read_file\` with specific line ranges to verify code logic before adding files to permanent context.
-6.  **DEPENDENCY MAPPING**: If \`File A\` imports \`File B\`, investigate \`File B\` if it impacts the task.
-7.  **NO CODING**: You are a scout. Do not propose code.
+1.  **FAST-PATH DISCOVERY (CRITICAL)**: Look at the "ACCESSIBLE FILE CONTENTS" section below. If the files required to solve the user's objective are ALREADY fully loaded, you are FORBIDDEN from using \`read_file\` or \`search_files\`. You must immediately output \`add_briefing_entry\` if needed, and then call \`done\`. DO NOT OVERTHINK IT.
+2.  **CONTEXT SYNC IS PRIMARY**: Your most important action is \`add_files\`. If you identify a relevant file missing from the context, you MUST add it. Peeking with \`read_file\` is only for temporary investigation.
+3.  **BRIEFING IS SECONDARY**: Use \`add_briefing_entry\` to record high-level facts (e.g. "Uses TensorFlow 2.x"). Do not solve the coding problem yourself.
+4.  **NO REDUNDANCY**: Do not "read" what you can already "see". If a file is listed in the context, assume you have its full contents.
+5.  **CLEAN THE SLATE**: If approaching the context limit, use \`remove_files\` to eject irrelevant files.
+6.  **NO GHOSTING**: Do not assume the Worker can see what you see. If you find a dependency, add it.
+7.  **EXACT PATHS**: Use the absolute paths provided in the tree. Never guess.
 
-### 🕵️ INVESTIGATION PHASES
-- **PHASE 0: GAP ANALYSIS (MANDATORY)**: Compare "Accessible File Contents" against the "Project State". 
-  - Evaluate if the objective can be solved with ONLY the currently open files.
-  - Respect **AGGRESSION MODE**.
-  - If sufficient, skip to Handover. If not, state exactly what is missing.
-- **PHASE 1: LANDSCAPE SURVEY**: Locate the missing logic in the tree.
-- **PHASE 2: DEEP INSPECTION**: Read file content or search patterns to verify implementation.
-- **PHASE 3: IMPACT ANALYSIS**: Check for dependencies or side effects.
-- **PHASE 4: HANDOVER**: Use \`add_briefing_entry\` to finalize a high-density technical guide.
+### ⚖️ AGGRESSION MODE
+${aggressionInstruction}
 
-### 🏆 MISSION SUCCESS CRITERIA
-- The Team Briefing MUST be sufficient for a senior dev to solve the task without opening more files.
-- Never say "Refer to file X". Describe file X's logic yourself in the briefing.
-- You must respect the **AGGRESSION MODE**.
+### 🕵️ MISSION PHASES
+- **PHASE 1: MAP**: Locate logic in the tree.
+- **PHASE 2: INSPECT**: Read content to verify implementation.
+- **PHASE 3: DOCUMENT**: Use \`add_briefing_entry\` to record discovered architecture or patterns.
+- **PHASE 4: HANDOVER**: Finalize the briefing and ensure the Worker LLM has exactly the files it needs.
 
 ### ⚖️ AGGRESSION MODE
 ${aggressionInstruction}
@@ -1313,7 +1238,8 @@ ${aggressionInstruction}
 
 **INVESTIGATION TOOLS:**
 4. \`add_files(files=[{"path": "p1", "mode": "full|signatures"}])\`: Persistently add files to the AI's permanent memory.
-5. \`read_file(path="path", start_line=0, end_line=500)\`: "Peek" at a file to decide if it's relevant.
+5. \`remove_files(paths=["path1", "path2"])\`: Remove files from the current context to save tokens.
+6. \`read_file(path="path", start_line=0, end_line=500)\`: "Peek" at a file to decide if it's relevant.
 6. \`search_files(pattern="regex", path=".")\`: performs a high-speed grep search through the codebase.
 7. \`read_code_graph(type="class_diagram|import_graph")\`: Get a structural overview of the project architecture.
 8. \`get_file_info(path="path")\`: Returns file size and total line count.
@@ -1414,7 +1340,7 @@ ${currentContents || "No files read yet."}
           const currentBriefing = this.renderBriefing(discussion);
             // Helper to render the briefing data zone
             const renderDataBriefing = () => {
-                const raw = discussion.discussion_data_zone || "";
+                const raw = discussion?.discussion_data_zone || "";
                 if (!raw.trim()) return "Librarian is analyzing project state...";
                 try {
                     if (!raw.startsWith('{')) return raw;
@@ -1427,15 +1353,35 @@ ${currentContents || "No files read yet."}
             };
 
             const briefingHtml = `<div class="technical-briefing-card">
-                <div class="briefing-header"><span class="codicon codicon-note"></span> Team Technical Briefing</div>
-                <div class="briefing-content">${renderDataBriefing()}</div>
+                <details open>
+                    <summary class="briefing-header">
+                        <div style="display:flex; align-items:center; gap:8px; flex:1;">
+                            <span class="codicon codicon-note"></span> Team Technical Briefing
+                        </div>
+                        <div style="display:flex; gap:4px;">
+                            <button class="msg-action-btn" onclick="const text = this.closest('.technical-briefing-card').querySelector('.briefing-content').innerText; vscode.postMessage({command:'copyToClipboard', text: text})" title="Copy Briefing Content" style="opacity:0.6; padding:0; margin:0; height:16px;">
+                                <i class="codicon codicon-copy"></i>
+                            </button>
+                            <button class="msg-action-btn" onclick="vscode.postMessage({command:'updateDiscussionCapabilitiesPartial', partial:{clearBriefing:true}})" title="Clear Technical Briefing" style="opacity:0.6; padding:0; margin:0; height:16px;">
+                                <i class="codicon codicon-trash"></i>
+                            </button>
+                        </div>
+                    </summary>
+                    <div class="briefing-scroll-area">
+                        <div class="briefing-content">${renderDataBriefing()}</div>
+                    </div>
+                </details>
             </div>`;
           let spinnerHtml = finished 
               ? `<div class="status-line"><span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span> <span style="font-weight:bold;">Context Synchronized</span></div>`
               : `<div class="status-line"><div class="spinner"></div> <span>Step ${step + 1}: ${status}</span></div>`;
 
-          const fullMessage = `**🧠 Librarian Mission Report**\n${spinnerHtml}\n${briefingHtml}\n${filesTree}\n${logSection}`;
-          onUpdate(fullMessage);
+          if (dashboardMode) {
+              onUpdate(`${spinnerHtml}\n\n${filesTree}\n\n${logSection}`);
+          } else {
+              const fullMessage = `**🧠 Librarian Mission Report**\n${spinnerHtml}\n${briefingHtml}\n${filesTree}\n${logSection}`;
+              onUpdate(fullMessage);
+          }
       };
 
       if (initialCount > 0) {
@@ -1453,10 +1399,36 @@ ${currentContents || "No files read yet."}
       for (let step = 0; step < MAX_STEPS; step++) {
           if (signal.aborted) throw new Error("Context agent aborted.");
 
-          // Use 'user' role for state updates to avoid multiple 'system' messages which confusion some models
+          // 1. Calculate current Token Load to inform pruning decisions
+          const currentData = await this.getContextContent({ includeTree: true, modelName: model, signal });
+          const tokenCheck = await this.lollmsAPI.tokenize(currentData.text, model);
+          const limitCheck = await this.lollmsAPI.getContextSize(model);
+          
+          const loadStatus = `
+### 🔋 TOKEN LOAD (CRITICAL)
+- Used: ${tokenCheck.count} tokens
+- Max Capacity: ${limitCheck.context_size} tokens
+- Remaining: ${limitCheck.context_size - tokenCheck.count} tokens
+${(tokenCheck.count / limitCheck.context_size) > 0.8 ? "⚠️ WARNING: Context is nearly full. PRUNE irrelevant files now." : ""}
+`.trim();
+
+          // Use 'user' role to provide current reality to the Librarian
           chatHistory.push({ 
               role: 'user', 
-              content: `### 🧠 CUMULATIVE BRAIN (MEMORY)\n${cumulativeBrain || "No observations yet."}\n\n[Status] Selected: ${JSON.stringify(Array.from(selectedFiles))}. Continue or 'done()'.`,
+              content: `${loadStatus}
+
+### 🛠️ ACTUAL PROJECT STATE
+${currentData.projectTree}
+
+### 🧠 CUMULATIVE BRAIN (YOUR NOTES)
+${cumulativeBrain || "No observations yet."}
+
+[Currently Selected Files]: ${JSON.stringify(Array.from(selectedFiles))}
+
+**INSTRUCTION**: Review the load and the tree. 
+- If the context is sufficient, call \`done\`.
+- If a dependency is missing, call \`add_files\`.
+- If context is full, call \`remove_files\`.`,
               skipInPrompt: true 
           });
 
@@ -1593,31 +1565,46 @@ ${currentContents || "No files read yet."}
               } else if (toolName === 'add_files') {
                   const files = params.files;
                   if (Array.isArray(files)) {
+                      const addedPaths: string[] = [];
                       for (const fileItem of files) {
                           const fPath = typeof fileItem === 'string' ? fileItem : fileItem.path;
                           const fMode = typeof fileItem === 'string' ? 'included' : (fileItem.mode === 'signatures' ? 'definitions-only' : 'included');
                           if (allFiles.includes(fPath)) {
                               selectedFiles.add(fPath);
+                              addedPaths.push(fPath);
                               const uri = vscode.Uri.joinPath(workspaceFolder.uri, fPath);
                               await this.contextStateProvider.setStateForUris([uri], fMode);
                           }
                       }
-                      actionLog.push(`➕ Added: ${files.length} file(s).`);
+                      actionLog.push(`➕ **Context Update**: Added \`${addedPaths.join(', ')}\` to context.`);
                       renderUpdate("Updating context...", false, step);
+                  }
+              } else if (toolName === 'remove_files') {
+                  const paths = params.paths || [];
+                  if (Array.isArray(paths)) {
+                      const removed: string[] = [];
+                      for (const p of paths) {
+                          if (selectedFiles.has(p)) {
+                              selectedFiles.delete(p);
+                              removed.push(p);
+                              const uri = vscode.Uri.joinPath(workspaceFolder.uri, p);
+                              await this.contextStateProvider.setStateForUris([uri], 'tree-only');
+                          }
+                      }
+                      actionLog.push(`➖ **Context Pruned**: Removed \`${removed.join(', ')}\`.`);
+                      renderUpdate("Cleaning context...", false, step);
                   }
               } else if (toolName === 'read_file') {
                   const pathArg = params.path || params.file;
                   if (pathArg && allFiles.includes(pathArg)) {
+                      actionLog.push(`🔍 **Peeking**: Inspecting logic in \`${pathArg}\`...`);
                       const uri = vscode.Uri.joinPath(workspaceFolder.uri, pathArg);
-                      selectedFiles.add(pathArg);
-                      await this.contextStateProvider.setStateForUris([uri], 'included');
                       const doc = await vscode.workspace.openTextDocument(uri);
                       const start = params.start_line || 0;
                       const end = params.end_line || Math.min(start + 400, doc.lineCount);
                       const text = doc.getText(new vscode.Range(new vscode.Position(start, 0), new vscode.Position(Math.min(end, doc.lineCount - 1), 1000)));
                       chatHistory.push({ role: 'system', content: `Content of ${pathArg}:\n\`\`\`\n${text}\n\`\`\`` });
-                      actionLog.push(`📖 Read ${pathArg}`);
-                      renderUpdate("Reading file...", false, step);
+                      renderUpdate(`Reading ${pathArg}...`, false, step);
                   }
               } else if (toolName === 'search_keywords') {
                 const keywords = params.keywords || params.query;

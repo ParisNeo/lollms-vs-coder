@@ -86,6 +86,11 @@ export class GitIntegration {
       } catch { return []; }
   }
 
+  public async isClean(folder: vscode.WorkspaceFolder): Promise<boolean> {
+      const status = await this.getGitStatus(folder);
+      return status.staged.length === 0 && status.unstaged.length === 0 && status.untracked.length === 0;
+  }
+
   public async getGitStatus(folder: vscode.WorkspaceFolder): Promise<{ staged: string[], unstaged: string[], untracked: string[] }> {
       if (!folder) return { staged: [], unstaged: [], untracked: [] };
       const staged = await this.getStagedFiles(folder);
@@ -243,9 +248,11 @@ export class GitIntegration {
           await execAsync(`git branch -d "${branchName}"`, { cwd: folder.uri.fsPath });
       } catch (e: any) {
           try {
+              // Fallback to force delete if safe delete fails (e.g. unmerged changes)
               await execAsync(`git branch -D "${branchName}"`, { cwd: folder.uri.fsPath });
-          } catch (e2) {
-              console.error("Failed to delete temp branch", e2);
+          } catch (e2: any) {
+              console.error("Failed to delete branch", e2);
+              throw new Error(e2.message || "Failed to force delete branch.");
           }
       }
   }

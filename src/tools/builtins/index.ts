@@ -72,7 +72,6 @@ export const allTools: ToolDefinition[] = [
     analyzeImageTool,
     moveFileTool,
     storeKnowledgeTool,
-    extractYoutubeTranscriptTool,
     summarizeTextTool,
     searchWikipediaTool,
     searchStackOverflowTool,    

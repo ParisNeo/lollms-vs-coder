@@ -1,7 +1,7 @@
 <skill id="coding-security">
     <name>Security Engineering</name>
     <description>Best practices for writing secure code, managing secrets, and preventing common vulnerabilities (OWASP).</description>
-    <category>coding/security</category>
+    <category>development/standards/security</category>
     <language>markdown</language>
     <timestamp>1739433600000</timestamp>
     <content>

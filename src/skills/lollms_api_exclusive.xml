@@ -1,7 +1,7 @@
 <skill id="lollms-api-exclusive">
     <name>LoLLMs Exclusive API Services</name>
     <description>Advanced features unique to LoLLMs: Tokenizer, TTS, Long Context, RAG, and Image Editing.</description>
-    <category>lollms/api/exclusive</category>
+    <category>ai/lollms/api</category>
     <language>markdown</language>
     <timestamp>1739455500000</timestamp>
     <content>

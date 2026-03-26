@@ -56,6 +56,8 @@ export class SettingsPanel {
     searchProvider: 'google_custom_search',
     searchApiKey: '',
     searchCx: '',
+    halApiKey: '',
+    scopusApiKey: '',
     autoUpdateChangelog: false,
     autoGenerateTitle: true,
     clipboardInsertRole: 'user',
@@ -986,6 +988,12 @@ personalities: this._personalityManager.getPersonalities()
               <input type="text" id="searchApiKey" value="${searchApiKey}" placeholder="Enter API Key" />
               <label for="searchCx">Search Engine ID (CX)</label>
               <input type="text" id="searchCx" value="${searchCx}" placeholder="Enter CX" />
+
+              <label for="halApiKey">HAL API Key (Optional)</label>
+              <input type="text" id="halApiKey" value="${config.halApiKey || ''}" placeholder="Enter HAL API Key" />
+
+              <label for="scopusApiKey">Scopus (Elsevier) API Key</label>
+              <input type="text" id="scopusApiKey" value="${config.scopusApiKey || ''}" placeholder="Enter Scopus API Key" />
               
               <h3>Companion</h3>
               <div class="checkbox-container"><input type="checkbox" id="companionEnableWebSearch" ${companionEnableWebSearch ? 'checked' : ''}><label for="companionEnableWebSearch">Enable Web Search in Companion</label></div>
@@ -1474,7 +1482,7 @@ personalities: this._personalityManager.getPersonalities()
                     }
                 });
             };
-            ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','inspectorModelName','codeInspectorPersona','chatPersona','agentPersona','commitMessagePersona','language','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','clipboardInsertRole','herdRounds','mcpServers','unstagedChangesBehavior','systemCustomInfo','moltbookApiKey','moltbookBotName','moltbookBotPurpose',
+            ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','inspectorModelName','codeInspectorPersona','chatPersona','agentPersona','commitMessagePersona','language','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','halApiKey','scopusApiKey','clipboardInsertRole','herdRounds','mcpServers','unstagedChangesBehavior','systemCustomInfo','moltbookApiKey','moltbookBotName','moltbookBotPurpose',
             'remoteServerPort', 'remoteDiscordToken', 'remoteSlackToken', 'remoteSlackSigningSecret', 'remoteAllowedUsers', 'remoteAdminUsers', 'remoteAllowedChannels'].forEach(k => bind(k, k));
             
             ['disableSsl','enableCodeInspector','verifyAndCorrectCodeBlocks','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','companionEnableWebSearch','companionEnableArxivSearch','herdDynamicMode','enableCodeActions','enableInlineSuggestions','deleteBranchAfterMerge','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess', 'agentScreenCapture', 'agentWebTesting', 'agentUseRLM', 'explainCode', 'moltbookEnable',

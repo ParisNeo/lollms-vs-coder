@@ -1,7 +1,7 @@
 <skill id="lollms-instantiation">
     <name>Client Setup &amp; Bindings</name>
     <description>Complete guide for initializing LollmsClient with any backend.</description>
-    <category>python/lollms_client/setup</category>
+    <category>ai/lollms/client/setup</category>
     <language>markdown</language>
     <timestamp>1738425600000</timestamp>
     <content>

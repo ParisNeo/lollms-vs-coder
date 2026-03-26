@@ -1,7 +1,7 @@
 <skill id="safe-store-search">
     <name>safe_store: Semantic Search & Querying</name>
     <description>All query patterns including similarity search, threshold filtering, and result interpretation</description>
-    <category>python/safe_store/search</category>
+    <category>ai/knowledge_management/safe_store</category>
     <language>markdown</language>
     <timestamp>1740265200000</timestamp>
     <content>

@@ -1,7 +1,7 @@
 <skill id="ascii-colors-rich-ui">
     <name>ASCIIColors Rich UI Components</name>
     <description>Building beautiful terminal interfaces using Panels, Tables, Trees, and Markdown rendering.</description>
-    <category>python/ascii_colors/ui</category>
+    <category>development/languages/python/ui/ascii_colors</category>
     <language>markdown</language>
     <timestamp>1739462400000</timestamp>
     <content>

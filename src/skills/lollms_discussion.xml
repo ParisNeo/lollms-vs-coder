@@ -1,4 +1,4 @@
-<skill title="Mastering LollmsDiscussion: Memory, Data Zones, and Versioned Artefacts" description="Detailed guide on managing conversation state, persistent context layers, and the incremental aider-style document editing system with live UI notifications." category="python/lollms/discussion">
+<skill title="Mastering LollmsDiscussion: Memory, Data Zones, and Versioned Artefacts" description="Detailed guide on managing conversation state, persistent context layers, and the incremental aider-style document editing system with live UI notifications." category="ai/lollms/client">
 
 # lollms_discussion — Developer Reference
 

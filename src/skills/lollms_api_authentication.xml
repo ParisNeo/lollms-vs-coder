@@ -1,7 +1,7 @@
 <skill id="lollms-api-auth">
     <name>LoLLMs API Authentication</name>
     <description>How to generate and use API keys for authenticating with LoLLMs services.</description>
-    <category>lollms/api/auth</category>
+    <category>ai/lollms/api</category>
     <language>markdown</language>
     <timestamp>1739455500000</timestamp>
     <content>

@@ -1,4 +1,4 @@
-<skill title="ASCIIColors Menus" description="Interactive terminal menus with keyboard navigation, submenus, filtering, and multi-select." category="python/ascii_colors/menus" id="ascii-colors-menus" language="markdown" timestamp="1738425600000">
+<skill title="ASCIIColors Menus" description="Interactive terminal menus with keyboard navigation, submenus, filtering, and multi-select." category="development/languages/python/ui/ascii_colors" id="ascii-colors-menus" language="markdown" timestamp="1738425600000">
 # ASCIIColors Menus
 
 Keyboard-navigable interactive menus for building terminal applications.

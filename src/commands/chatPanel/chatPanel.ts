@@ -166,7 +166,36 @@ export class ChatPanel {
       }
   }
   
-  public setAgentManager(agent: AgentManager) {
+    public async executeAutomationPipeline(content: string, messageId: string, signal: AbortSignal, processId: string) {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) return;
+
+        // Extraction & Application
+        const blockRegex = /```(\w+):([^\n\s]+)[\r\n]+([\s\S]+?)[\r\n]+```/g;
+        let match;
+        const modifiedFiles = new Set<string>();
+
+        while ((match = blockRegex.exec(content)) !== null) {
+            const filePath = match[2];
+            const blockContent = match[3];
+            modifiedFiles.add(filePath);
+
+            const opts = { silent: true };
+            if (blockContent.includes('<<<<<<< SEARCH')) {
+                await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, blockContent, this, messageId, opts);
+            } else {
+                await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', filePath, blockContent, opts);
+            }
+        }
+
+        // Auto Fix Loop if enabled
+        if (this._discussionCapabilities.autoFix && modifiedFiles.size > 0) {
+            const urisToFix = Array.from(modifiedFiles).map(fp => vscode.Uri.joinPath(workspaceFolder.uri, fp));
+            await this.repairFilesIteratively(urisToFix, signal, processId, messageId);
+        }
+    }
+
+    public setAgentManager(agent: AgentManager) {
       if (ChatPanel.activeAgents.has(this.discussionId)) {
           this.log(`Reconnecting to EXISTING active agent for discussion ${this.discussionId}`);
           this.agentManager = ChatPanel.activeAgents.get(this.discussionId)!;
@@ -178,45 +207,6 @@ export class ChatPanel {
       }
   }
   
-private async executeAutomationPipeline(content: string, messageId: string, signal: AbortSignal, processId: string) {
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (!workspaceFolder) return;
-
-    // 1. Auto Branching
-    if (this._discussionCapabilities.autoBranch) {
-        this.processManager.updateDescription(processId, "Creating git branch...");
-        await vscode.commands.executeCommand('lollms-vs-coder.createGitBranch', { 
-            branch: `autofix-${Date.now()}` 
-        });
-    }
-
-    // 2. Extraction & Application
-    const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
-    const blockRegex = /```(\w+):([^\n\s]+)[\r\n]+([\s\S]+?)[\r\n]+```/g;
-    let match;
-    const modifiedFiles = new Set<string>();
-
-    while ((match = blockRegex.exec(content)) !== null) {
-        const filePath = match[2];
-        const blockContent = match[3];
-        modifiedFiles.add(filePath);
-
-        this.processManager.updateDescription(processId, `Applying updates to ${path.basename(filePath)}...`);
-        
-        const opts = { silent: true };
-        if (blockContent.includes('<<<<<<< SEARCH')) {
-            await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, blockContent, this, messageId, opts);
-        } else {
-            await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', filePath, blockContent, opts);
-        }
-    }
-
-    // 3. Auto Fix Loop
-    if (this._discussionCapabilities.autoFix && modifiedFiles.size > 0) {
-        const urisToFix = Array.from(modifiedFiles).map(fp => vscode.Uri.joinPath(workspaceFolder.uri, fp));
-        await this.repairFilesIteratively(urisToFix, signal, processId, messageId);
-    }
-}
     public updateGeneratingState() {
         if (this._isDisposed || !this.processManager) return;
 
@@ -406,8 +396,12 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
           }
       }
 
-      // Optimization: Send messages in a single batch but ensure the UI doesn't block
-      const safeMessages = Array.isArray(this._currentDiscussion.messages) ? this._currentDiscussion.messages : [];
+      // Optimization: Enrich historical messages with personality names if missing
+      const currentP = this._personalityManager?.getPersonality(this._currentDiscussion.personalityId || 'default_coder');
+      const safeMessages = (this._currentDiscussion.messages || []).map(m => ({
+          ...m,
+          personalityName: m.role === 'assistant' ? (m.personalityName || currentP?.name || 'Lollms') : undefined
+      }));
       
       // Use a slightly faster serialization path for large histories
       this._panel.webview.postMessage({ 
@@ -809,8 +803,8 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
                         this.updateGeneratingState();
                     }
                 },
-                undefined,
-                'collaborative',
+                undefined,       // initialKeywords
+                'collaborative', // mode
                 this._currentDiscussion,
                 this._currentDiscussion.messages
             );
@@ -906,7 +900,29 @@ private async executeAutomationPipeline(content: string, messageId: string, sign
    * Scans a finished message for partial blocks (Diff/SearchReplace),
    * verifies them against the actual file on disk, and asks AI to fix if broken.
    */
-  private async verifyAndProcessCodeBlocks(messageId: string, fullContent: string, signal: AbortSignal, onStatusUpdate?: (status: string) => void): Promise<string> {
+  /**
+   * Spawns the Verifier Agent (Guardian) to audit logic and fix static issues (imports, linting).
+   * This fusions the Inspector and Verifier into one turn.
+   */
+  public async runVerificationAgent(content: string, signal: AbortSignal): Promise<string> {
+      if (!this._discussionCapabilities.verifierMode) return content;
+
+      const systemPrompt = await getProcessedSystemPrompt('verifier', this._discussionCapabilities);
+
+      try {
+          const result = await this._lollmsAPI.sendChat([
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: content }
+          ], null, signal, this._currentDiscussion?.model);
+
+          if (dashboardUpdater) dashboardUpdater("✅ Inspector: All blocks approved or patched.");
+          return stripThinkingTags(result);
+      } catch (e) {
+          return content; // Fallback
+      }
+  }
+
+  private async verifyAndProcessCodeBlocks(messageId: string, fullContent: string, signal: AbortSignal, onStatusUpdate?: (status: string) => void, dashboardUpdater?: (agent: string, content: string) => void): Promise<string> {
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const shouldVerify = config.get<boolean>('verifyAndCorrectCodeBlocks') ?? false;
     
@@ -1073,23 +1089,40 @@ Please provide the **FULL CONTENT** of the file instead using the format:
 
               progress.report({ message: "Processing system prompt..." });
               const personaContent = this.getCurrentPersonaSystemPrompt();
-              const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, forceFullCode, context);
+              const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, forceFullCode, { ...context, tree: '', files: '' });
               
-              let fullText = `${systemPrompt}\n\n`;
+              let fullText = `
+# 🧊 PROJECT SNAPSHOT FOR EXTERNAL LLM
+The following project state was exported from VS Code. 
+
+## 📜 CORE INSTRUCTIONS & PERSONA
+${systemPrompt}
+
+## 🌳 PROJECT STRUCTURE
+${context.tree || 'No tree provided.'}
+
+## 📄 FILE CONTENTS
+${context.files || 'No files selected.'}
+
+## 🎓 ACTIVE SKILLS
+${context.skills || 'No specialized skills active.'}
+
+---
+
+## 🕒 CHAT HISTORY
+`.trim() + "\n\n";
 
               if (this._currentDiscussion) {
-                  fullText += `--- CHAT HISTORY ---\n`;
                   this._currentDiscussion.messages
                       .filter(m => !m.skipInPrompt)
                       .forEach(m => {
                           const content = Array.isArray(m.content) ? m.content.map(c => c.type === 'text' ? c.text : '[Image]').join('\n') : m.content;
-                          fullText += `${m.role.toUpperCase()}: ${content}\n\n`;
+                          fullText += `### ${m.role.toUpperCase()}\n${content}\n\n`;
                       });
               }
               
               if (draftMessage && draftMessage.trim()) {
-                  fullText += `--- CURRENT PROMPT ---\n`;
-                  fullText += `USER: ${draftMessage}\n`;
+                  fullText += `--- \n\n# 🎯 CURRENT REQUEST\n${draftMessage}\n`;
               }
 
               progress.report({ message: "Writing to clipboard..." });
@@ -1107,14 +1140,25 @@ Please provide the **FULL CONTENT** of the file instead using the format:
   private async deleteMessage(messageId: string) {
     if (this._currentDiscussion) {
         // 1. Force stop and purge before deletion to prevent ghost states
-        ChatPanel.activeGenerations.delete(this.discussionId);
         this.processManager.cancelForDiscussion(this.discussionId);
+        ChatPanel.activeGenerations.delete(this.discussionId);
 
-        this._currentDiscussion.messages = this._currentDiscussion.messages.filter(m => m.id !== messageId);
-        
-        if (!this._currentDiscussion.id.startsWith('temp-')) {
-            await this._discussionManager.saveDiscussion(this._currentDiscussion);
-        }
+        const index = this._currentDiscussion.messages.findIndex(m => m.id === messageId);
+        if (index === -1) return;
+
+        const messageToDelete = this._currentDiscussion.messages[index];
+
+      // If we delete a Librarian report, clear the hidden technical briefing too
+      if (messageToDelete && typeof messageToDelete.content === 'string' && messageToDelete.content.includes('Librarian Mission Report')) {
+          this._currentDiscussion.discussion_data_zone = "";
+          this.log("Librarian message deleted: Clearing Team Technical Briefing state.");
+      }
+
+      this._currentDiscussion.messages = this._currentDiscussion.messages.filter(m => m.id !== messageId);
+
+      if (!this._currentDiscussion.id.startsWith('temp-')) {
+          await this._discussionManager.saveDiscussion(this._currentDiscussion);
+      }
 
         // 2. Reload UI
         await this.loadDiscussion(); 
@@ -1132,9 +1176,26 @@ Please provide the **FULL CONTENT** of the file instead using the format:
       if (!this._currentDiscussion) return;
       const index = this._currentDiscussion.messages.findIndex(m => m.id === messageId);
       if (index === -1) return;
+      
       const messageToResend = this._currentDiscussion.messages[index];
       if (messageToResend.role !== 'user') return;
-      this._currentDiscussion.messages = this._currentDiscussion.messages.slice(0, index); 
+
+      // 1. Stop any current generation to prevent race conditions
+      this.processManager.cancelForDiscussion(this.discussionId);
+      ChatPanel.activeGenerations.delete(this.discussionId);
+
+      // 2. Truncate the history: Keep everything BEFORE this message
+      this._currentDiscussion.messages = this._currentDiscussion.messages.slice(0, index);
+
+      // 3. Persist the truncation to disk immediately
+      if (!this._currentDiscussion.id.startsWith('temp-')) {
+          await this._discussionManager.saveDiscussion(this._currentDiscussion);
+      }
+
+      // 4. Force a UI reload to remove the "future" bubbles from the webview
+      await this.loadDiscussion();
+
+      // 5. Re-send the message as if it were a fresh prompt
       await this.sendMessage(messageToResend);
   }
   
@@ -1240,13 +1301,21 @@ Please provide the **FULL CONTENT** of the file instead using the format:
         return;
     }
 
-    if (this._discussionCapabilities.agentMode && !this.agentManager.getIsActive()) {
-        this.agentManager.toggleAgentMode();
-    } else if (!this._discussionCapabilities.agentMode && this.agentManager.getIsActive()) {
-        this.agentManager.toggleAgentMode();
-    }
-
     await this.addMessageToDiscussion(message);
+
+    if (this.agentManager && this.agentManager.getIsActive()) {
+        if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+             await this.agentManager.handleUserMessage(
+                 typeof message.content === 'string' ? message.content : "User Input", 
+                 this._currentDiscussion, 
+                 vscode.workspace.workspaceFolders[0]
+             );
+        } else {
+             this.addMessageToDiscussion({ role: 'system', content: "Agent requires an active workspace folder." });
+        }
+        // CRITICAL: Stop ChatPanel from processing the standard chat loop!
+        return;
+    }
 
     // --- AUTO TITLE GENERATION ---
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
@@ -1378,7 +1447,7 @@ Please provide the **FULL CONTENT** of the file instead using the format:
             id: contextAgentMsgId, 
             role: 'system', 
             content: `**🧠 Auto-Context Agent**\n*Searching for relevant files...*\n\n`, 
-            skipInPrompt: true 
+            skipInPrompt: false // Worker LLM should see that a scout has run
         });
 
         try {
@@ -1438,7 +1507,7 @@ Please provide the **FULL CONTENT** of the file instead using the format:
             id: webAgentMsgId, 
             role: 'system', 
             content: `**🌍 Web Research Agent**\n*Checking if external info is needed...*\n\n`, 
-            skipInPrompt: true 
+            skipInPrompt: false 
         });
 
         try {
@@ -1462,6 +1531,30 @@ Please provide the **FULL CONTENT** of the file instead using the format:
             
         } catch (e: any) { 
             this.log(`Web Research failed: ${e.message}`, 'ERROR');
+        }
+    }
+
+    // --- DEBUG SANDBOX AGENT ---
+    // --- DEBUG SANDBOX BRANCH CREATION (PRE-WORKER) ---
+    if (this._discussionCapabilities.debugMode && message.role !== 'system') {
+        this.processManager.updateDescription(processId, "🐞 Creating Debug Sandbox...");
+        this.updateGeneratingState();
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (workspaceFolder) {
+            const isClean = await this._gitIntegration.isClean(workspaceFolder);
+            if (isClean) {
+                const debugBranch = `debug/sandbox-${Date.now()}`;
+                await this._gitIntegration.createAndCheckoutBranch(workspaceFolder, debugBranch);
+                await this.addMessageToDiscussion({ 
+                    role: 'system', 
+                    content: `🛡️ **Debugger Sandbox**: Switched to branch \`${debugBranch}\`. I can now safely run instrumentation.` 
+                });
+            } else {
+                await this.addMessageToDiscussion({ 
+                    role: 'system', 
+                    content: `⚠️ **Debugger Warning**: Workspace has uncommitted changes. Proceeding without creating a sandbox branch.` 
+                });
+            }
         }
     }
 
@@ -1609,38 +1702,122 @@ Please provide the **FULL CONTENT** of the file instead using the format:
         this.processManager.updateDescription(processId, "Waiting for model...");
         this.updateGeneratingState();
 
-        const personaContent = this.getCurrentPersonaSystemPrompt();
+        // Identify current personality and its specific prompt
+        const currentP = this._personalityManager?.getPersonality(this._currentDiscussion!.personalityId || 'default_coder');
+        const personaContent = currentP?.systemPrompt || this.getCurrentPersonaSystemPrompt();
+        const personaName = currentP?.name || "Lollms";
+
         const forceFullCode = config.get<boolean>('forceFullCodePath') || false;
-        // Synergy: Inject librarianAnalysis as workingMemory
-        const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, forceFullCode, context, librarianAnalysis || workingMemory);
-        
-        const profiles = config.get<ResponseProfile[]>('responseProfiles') || [];
-        const activeProfileId = this._discussionCapabilities.responseProfileId || config.get<string>('defaultResponseProfileId') || 'balanced';
-        const activeProfile = profiles.find(p => p.id === activeProfileId) || profiles[0];
 
-        let messagesToSend: ChatMessage[] = [{ role: 'system', content: systemPrompt }];
-        // Create a shallow copy of the history to avoid mutating the original discussion messages
-        const history = this._currentDiscussion.messages
-            .filter(m => !m.skipInPrompt)
-            .map(m => ({ ...m }));
+        // 1. Get Base System Instructions (VS Code Interface Tools, Skills, Rules)
+        const baseInstructions = await getProcessedSystemPrompt(
+            'chat', 
+            this._discussionCapabilities, // Ensure pedagogical/structured rules are applied here
+            personaContent, 
+            undefined, 
+            forceFullCode, 
+            { ...context, tree: '', files: '' } 
+        );
+
+        // 2. Prepare the Bundled Project Context Message (User role)
+        // Extract technical briefing from Librarian findings
+        const briefing = this._contextManager.renderBriefing(this._currentDiscussion);
         
-        // Turn reinforcement (Added only to the copy sent to API)
-        if (history.length > 0 && activeProfile && activeProfile.id !== 'silent') {
-            const lastUserMsg = history[history.length - 1];
-            if (lastUserMsg.role === 'user' && typeof lastUserMsg.content === 'string') {
-                lastUserMsg.content += `\n\n(Reminder: Please follow the ${activeProfile.name} response style precisely.)`;
-            }
+        const projectStateText = `
+### 📂 ATTACHED PROJECT CONTEXT
+I am providing you with the current, ground-truth state of my project files and the Librarian's technical briefing. 
+Use this information as your current "vision" of the workspace.
+
+${briefing && briefing !== "Librarian is analyzing project state..." ? `#### 📋 TEAM TECHNICAL BRIEFING\n${briefing}\n` : ""}
+${context.tree ? `#### 🌳 PROJECT STRUCTURE\n${context.tree}\n` : ""}
+${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files currently selected)*"}
+--------------------------------------------------
+`.trim();
+
+        const projectContextUserMessage: ChatMessage = {
+            role: 'user',
+            content: projectStateText
+        };
+
+        // 3. Prepare Chronological History
+        // We isolate the final user prompt to ensure the Bundled Context sits right before it.
+        const allMessages = this._currentDiscussion.messages.filter(m => !m.skipInPrompt);
+        const lastUserIdx = [...allMessages].reverse().findIndex(m => m.role === 'user');
+        const actualLastUserIdx = lastUserIdx === -1 ? -1 : (allMessages.length - 1 - lastUserIdx);
+        
+        let history: ChatMessage[] = [];
+        let currentPromptMessage: ChatMessage | undefined;
+
+        if (actualLastUserIdx !== -1) {
+            currentPromptMessage = { ...allMessages[actualLastUserIdx] };
+            history = allMessages.filter((_, idx) => idx !== actualLastUserIdx);
+        } else {
+            history = allMessages;
         }
 
-        // Reinforce Response Style for long conversations to prevent persona drift (Added only to the copy sent to API)
-        if (history.length > 2 && activeProfile && activeProfile.id !== 'silent') {
-            const lastUserMsg = history[history.length - 1];
-            if (lastUserMsg.role === 'user' && typeof lastUserMsg.content === 'string') {
-                lastUserMsg.content += `\n\n(Style Reminder: You are currently in ${activeProfile.name} mode. Please ensure your response follows the required structure and tone.)`;
+        // 4. Build Final Sequence for the API
+        // Logical Order: [Instructions] -> [Conversational History] -> [Context Data (User)] -> [Actual Instruction (User)]
+        let messagesToSend: ChatMessage[] = [
+            { role: 'system', content: baseInstructions },
+            ...history,
+            projectContextUserMessage
+        ];
+        
+        if (currentPromptMessage) {
+            const activeProfileId = this._discussionCapabilities.responseProfileId || config.get<string>('defaultResponseProfileId') || 'balanced';
+            const profiles = config.get<ResponseProfile[]>('responseProfiles') || [];
+            const activeProfile = profiles.find(p => p.id === activeProfileId) || profiles[0];
+
+            if (typeof currentPromptMessage.content === 'string') {
+                // 1. Inject Response Style (Tone/Layout)
+                if (activeProfile) {
+                    currentPromptMessage.content += `\n\n(Style Directive: Use the ${activeProfile.name} format.)`;
+                }
+
+                // 2. Inject Technical Format Enforcement (The "How" of code blocks)
+                const caps = this._discussionCapabilities;
+                let technicalFormatNote = "";
+
+                if (caps.forceFullCode) {
+                    technicalFormatNote = "STRICT: Provide the 100% COMPLETE file content from line 1 to end for every modification. Never use partial snippets.";
+                } else if (caps.autoApply || caps.generationFormats?.partialFormat === 'aider') {
+                    technicalFormatNote = "STRICT: Use the SEARCH/REPLACE (AIDER) format for all existing file modifications. Ensure your SEARCH block is a literal 1:1 match.";
+                } else if (caps.generationFormats?.partialFormat === 'diff') {
+                    technicalFormatNote = "STRICT: Use the Unified Diff (.patch) format for all existing file modifications.";
+                }
+
+                if (technicalFormatNote) {
+                    currentPromptMessage.content += `\n\n(Format Enforcement: ${technicalFormatNote})`;
+                }
             }
+            messagesToSend.push(currentPromptMessage);
         }
 
-        messagesToSend = [...messagesToSend, ...history];
+        // =========================================================================
+        // DEBUG: LOG THE EXACT PAYLOAD BEING SENT TO THE LLM
+        // =========================================================================
+        const targetModel = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+        console.log(`\n=========================================================================`);
+        console.log(`🚀 SENDING PROMPT TO LLM (Model: ${targetModel})`);
+        console.log(`📝 Total Messages in Payload: ${messagesToSend.length}`);
+        
+        messagesToSend.forEach((msg, idx) => {
+            const role = msg.role.toUpperCase();
+            let contentPrev = typeof msg.content === 'string' ? msg.content : "[Multipart Content]";
+            
+            if (contentPrev.length > 1000) {
+                const head = contentPrev.substring(0, 500);
+                const tail = contentPrev.substring(contentPrev.length - 500);
+                console.log(`\n[MESSAGE ${idx}] ROLE: ${role} | LENGTH: ${contentPrev.length} chars`);
+                console.log(`--- START ---\n${head}\n...\n[TRUNCATED]\n...\n${tail}\n--- END ---`);
+            } else {
+                console.log(`\n[MESSAGE ${idx}] ROLE: ${role} | LENGTH: ${contentPrev.length} chars`);
+                console.log(`--- CONTENT ---\n${contentPrev}\n--- END ---`);
+            }
+        });
+        console.log(`=========================================================================\n`);
+        // =========================================================================
+
         assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
         
         const generationSession: ActiveGeneration = {
@@ -1663,7 +1840,20 @@ Please provide the **FULL CONTENT** of the file instead using the format:
         generationSession.listeners.add(panelListener);
         ChatPanel.activeGenerations.set(this.discussionId, generationSession);
         
-        if (!this._isDisposed) this._panel.webview.postMessage({ command: 'addMessage', message: { id: assistantMessageId, role: 'assistant', content: '', startTime: Date.now(), model: generationSession.model } });
+        if (!this._isDisposed) {
+            this._panel.webview.postMessage({ 
+                command: 'addMessage', 
+                message: { 
+                    id: assistantMessageId, 
+                    role: 'assistant', 
+                    content: '', 
+                    startTime: Date.now(), 
+                    model: generationSession.model,
+                    personalityName: personaName,
+                    timestamp: Date.now()
+                } 
+            });
+        }
 
         let fullResponse = '';
         let firstTokenReceived = false;
@@ -1671,7 +1861,7 @@ Please provide the **FULL CONTENT** of the file instead using the format:
         await this._lollmsAPI.sendChat(messagesToSend, (chunk) => {
             if (!firstTokenReceived) {
                 firstTokenReceived = true;
-                this.processManager.updateDescription(processId, "Generating response...");
+                this.processManager.updateDescription(processId, "Worker: Drafting solution...");
                 this.updateGeneratingState();
             }
 
@@ -1697,15 +1887,25 @@ Please provide the **FULL CONTENT** of the file instead using the format:
 
             generationSession.listeners.forEach(listener => listener(chunk));
         }, controller.signal, this._currentDiscussion.model, { 
-            thinking: this._discussionCapabilities.thinkingMode 
+            thinking: this._discussionCapabilities.thinkingMode,
+            capabilities: this._discussionCapabilities
         });
 
-        this.processManager.updateDescription(processId, "Verifying generated code...");
+        // --- THE VERIFIER (GUARDIAN) ---
+        this.processManager.updateDescription(processId, "Verifier: Performing logical audit & linting...");
+        this.updateGeneratingState();
+
+        const inspectedResponse = await this.runVerificationAgent(
+            fullResponse, 
+            controller.signal
+        );
+
+        this.processManager.updateDescription(processId, "Verifying code block integrity...");
         this.updateGeneratingState();
         
         const processedResponse = await this.verifyAndProcessCodeBlocks(
             assistantMessageId, 
-            fullResponse, 
+            inspectedResponse, 
             controller.signal,
             (status) => {
                 this.processManager.updateDescription(processId, status);
@@ -1729,18 +1929,52 @@ Please provide the **FULL CONTENT** of the file instead using the format:
             await this.executeAutomationPipeline(processedResponse, assistantMessageId, controller.signal, processId);
         }
 
+        // --- PHASE 6: DEBUGGER (THE ITERATIVE LOOP) ---
+        // Runs only after code is written, verified, and applied to disk.
+        if (this._discussionCapabilities.debugMode && !controller.signal.aborted) {
+            this.processManager.updateDescription(processId, "Debugger: Starting runtime validation...");
+            this.updateGeneratingState();
+
+            const debugObjective = typeof message.content === 'string' ? message.content : "Verify implementation.";
+            
+            // We use the existing agentManager loop
+            await (this.agentManager as any).runDebuggerAgent(debugObjective, controller.signal);
+            
+            // Final context refresh after debugger finishes
+            this.updateContextAndTokens();
+        }
+
         const elapsed = (Date.now() - generationSession.startTime) / 1000;
         const finalTps = (generationSession.tokenCount / elapsed).toFixed(1);
 
-        const assistantMessage: ChatMessage = { id: assistantMessageId, role: 'assistant', content: processedResponse, model: generationSession.model };
+        const assistantMessage: ChatMessage = { 
+            id: assistantMessageId, 
+            role: 'assistant', 
+            content: processedResponse, 
+            model: generationSession.model,
+            personalityName: personaName, // Store for future loads
+            timestamp: Date.now()
+        };
         await this.addMessageToDiscussion(assistantMessage, false);
         if (!this._isDisposed) {
             this._panel.webview.postMessage({ 
                 command: 'finalizeMessage', 
                 id: assistantMessageId, 
                 fullContent: processedResponse,
-                tps: finalTps
+                tps: finalTps,
+                personalityName: personaName
             });
+        }
+
+        // --- PHASE 6: DEBUGGER (THE ITERATIVE LOOP) ---
+        // Only trigger the automated debug loop if code was produced and mode is active
+        if (this._discussionCapabilities.debugMode && !controller.signal.aborted) {
+            this.processManager.updateDescription(processId, "Debugger: Starting runtime validation...");
+            this.updateGeneratingState();
+
+            const debugObjective = typeof message.content === 'string' ? message.content : "Verify implementation.";
+            await this.agentManager.runDebuggerAgent(debugObjective, controller.signal);
+            this.updateContextAndTokens();
         }
 
     } catch (error: any) { 
@@ -2128,10 +2362,13 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                                 if (change.type === 'file') {
                                     const applyResult: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', change.path, change.content, opts);
                                     result = applyResult || { success: true };
-                                } else if (change.type === 'replace' || change.type === 'insert') {
-                                    const cmd = change.type === 'replace' ? 'lollms-vs-coder.replaceCode' : 'lollms-vs-coder.insertCode';
-                                    const res: any = await vscode.commands.executeCommand(cmd, change.path, change.content, this, messageId, opts);
+                                } else if (change.type === 'replace') {
+                                    // replaceCode now explicitly handles hunkIndex in its options
+                                    const res: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', change.path, change.content, this, messageId, opts);
                                     result = (res && typeof res === 'object') ? res : { success: !!res };
+                                } else if (change.type === 'insert') {
+                                    const res: any = await vscode.commands.executeCommand('lollms-vs-coder.insertCode', change.path, change.content);
+                                    result = { success: !!res };
                                 } else if (change.type === 'diff') {
                                 await vscode.commands.executeCommand('lollms-vs-coder.applyPatchContent', change.path, change.content, opts);
                                 result.success = true;
@@ -2429,7 +2666,7 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                     try {
                         const loadingMsgId = 'system_web_loading_' + Date.now();
                         
-                        if (action === 'youtube' || action === 'scrape') {
+                        if (action === 'scrape') {
                             const targetUrl = params.url;
                             const lang = params.language || 'en';
                             const depth = params.depth || 0;
@@ -2446,6 +2683,25 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                         } else if (['wiki', 'arxiv', 'google', 'ddg', 'so'].includes(action)) {
                             const query = params.query;
                             const results = await this._contextManager.searchWebInfo(action, query);
+                            webview.postMessage({ command: 'webSearchResults', action, results, query });
+                        } else if (action === 'scrape') {
+                            const targetUrl = params.url;
+                            const lang = params.language || 'en';
+                            const depth = params.depth || 0;
+
+                            await this.addMessageToDiscussion({
+                                id: loadingMsgId,
+                                role: 'system', 
+                                content: `🌐 Processing ${action}: ${targetUrl}...`
+                            });
+
+                            const result = await this._contextManager.processUrl(targetUrl, lang, undefined, undefined, depth);
+                            await this.updateMessageContent(loadingMsgId, `✅ **Web Content Added:** ${targetUrl}\nSaved as: \`${result.filename}\`\n\nPreview:\n> ${result.summary}`);
+                            this.updateContextAndTokens();
+                        } else if (['wiki', 'arxiv', 'google', 'ddg', 'so', 'hal', 'scopus', 'patent'].includes(action)) {
+                            const query = params.query;
+                            const limit = params.limit || 5;
+                            const results = await this._contextManager.searchWebInfo(action, query, undefined, limit);
                             webview.postMessage({ command: 'webSearchResults', action, results, query });
                         }
                     } catch (e: any) {
@@ -2492,15 +2748,6 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                 });
                 if (url) {
                     let language = 'en';
-                    if (url.includes('youtube.com') || url.includes('youtu.be')) {
-                        const langChoice = await vscode.window.showInputBox({
-                            prompt: "YouTube detected. Enter transcript language code (e.g. 'en', 'fr', 'es')",
-                            value: "en"
-                        });
-                        if (langChoice === undefined) return; // User cancelled
-                        language = langChoice || 'en';
-                    }
-
                     try {
                         const loadingMsgId = 'system_url_loading_' + Date.now();
                         await this.addMessageToDiscussion({
@@ -2583,6 +2830,9 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                 break;
             case 'calculateTokens':
                 this.updateContextAndTokens();
+                break;
+            case 'markHunkApplied':
+                await this.updateAppliedState(message.messageId, message.blockIndex, message.hunkIndex);
                 break;
             case 'stopTokenCalculation':
                 if (this._tokenAbortController) {
@@ -2958,6 +3208,13 @@ Task:
                 if (this._discussionCapabilities) {
                     const partial = message.partial;
 
+                    if (partial.clearBriefing && this._currentDiscussion) {
+                        this._currentDiscussion.discussion_data_zone = "";
+                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                        this.updateContextAndTokens();
+                        return;
+                    }
+
                     // Handle specific diagram removal
                     if (partial.removeDiagram && this._currentDiscussion?.activeDiagrams) {
                         this._currentDiscussion.activeDiagrams = this._currentDiscussion.activeDiagrams.filter(d => d !== partial.removeDiagram);
@@ -3212,6 +3469,36 @@ Task:
                     }
                 } finally {
                     this.processManager.unregister(webProcId);
+                    this.updateGeneratingState();
+                }
+                break;
+            case 'runDebugAgent':
+                if (this._isDisposed || !this.processManager || !this.agentManager) break;
+                const { id: dbgProcId, controller: dbgCtrl } = this.processManager.register(this.discussionId, '🐞 Debugging Sandbox...');
+                this.updateGeneratingState();
+                try {
+                    // Turn on debug mode explicitly for this manual run
+                    this._discussionCapabilities.debugMode = true;
+                    
+                    // Create sandbox branch if workspace is clean
+                    if (this.agentManager.currentWorkspaceFolder) {
+                        const isClean = await this._gitIntegration.isClean(this.agentManager.currentWorkspaceFolder);
+                        if (isClean) {
+                            const debugBranch = `debug/sandbox-${Date.now()}`;
+                            await this._gitIntegration.createAndCheckoutBranch(this.agentManager.currentWorkspaceFolder, debugBranch);
+                            await this.addMessageToDiscussion({ 
+                                role: 'system', 
+                                content: `🛡️ **Debugger Sandbox**: Switched to branch \`${debugBranch}\`. I can now safely run instrumentation.` 
+                            });
+                        }
+                    }
+
+                    await this.agentManager.runDebuggerAgent(message.prompt || "Investigate current issues.", dbgCtrl.signal);
+                    this.updateContextAndTokens();
+                } catch (e: any) {
+                    if (e.name !== 'AbortError') this.log(`Debug Sandbox failed: ${e.message}`, 'ERROR');
+                } finally {
+                    this.processManager.unregister(dbgProcId);
                     this.updateGeneratingState();
                 }
                 break;
@@ -3812,6 +4099,21 @@ Task:
                 <div class="modal-body">
 
                     <div class="modal-section">
+                        <h3>Performance & Timeouts</h3>
+                        <p style="font-size: 11px; opacity: 0.8; margin-bottom: 10px;">Set to 0 for Infinity.</p>
+                        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+                            <div class="form-group">
+                                <label style="font-size: 11px; font-weight:bold;">First Token (TTFT) ms</label>
+                                <input type="number" id="modal-ttft-timeout" min="0" step="1000" style="width:100%;">
+                            </div>
+                            <div class="form-group">
+                                <label style="font-size: 11px; font-weight:bold;">Inter-Token ms</label>
+                                <input type="number" id="modal-inter-token-timeout" min="0" step="100" style="width:100%;">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="modal-section">
                         <h3>Language & Speech</h3>
                         <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
                             <div class="form-group">
@@ -4257,49 +4559,69 @@ Task:
                     <button class="web-tab-btn active" data-tab="tab-url">URL / Scrape</button>
                     <button class="web-tab-btn" data-tab="tab-google">Google</button>
                     <button class="web-tab-btn" data-tab="tab-ddg">DuckDuckGo</button>
-                    <button class="web-tab-btn" data-tab="tab-youtube">YouTube</button>
                     <button class="web-tab-btn" data-tab="tab-wiki">Wikipedia</button>
                     <button class="web-tab-btn" data-tab="tab-arxiv">ArXiv</button>
+                    <button class="web-tab-btn" data-tab="tab-hal">HAL</button>
+                    <button class="web-tab-btn" data-tab="tab-scopus">Scopus</button>
+                    <button class="web-tab-btn" data-tab="tab-patent">Patents</button>
                     <button class="web-tab-btn" data-tab="tab-so">StackOverflow</button>
                     <button class="web-tab-btn" data-tab="tab-github">GitHub</button>
                 </div>
                 <div class="modal-body">
                     <!-- URL Tab -->
                     <div id="tab-url" class="web-tab-content active">
-                        <label>URL to Scrape</label>
-                        <input type="text" id="web-url-input" placeholder="https://example.com/docs">
-                        <label>Crawl Depth (0 = this page only)</label>
-                        <input type="number" id="web-url-depth" value="0" min="0" max="3">
-                        <p class="help-text">Depth 1+ will follow internal links found on the page.</p>
-                        <button class="code-action-btn apply-btn web-submit-btn" style="width:100%; margin-top:15px;" data-action="scrape">Scrape Content</button>
+                        <div class="web-form-group">
+                            <label>URL to Scrape</label>
+                            <input type="text" id="web-url-input" placeholder="https://example.com/docs">
+                        </div>
+                        <div class="web-form-group">
+                            <label>Crawl Depth</label>
+                            <div class="web-form-row">
+                                <input type="number" id="web-url-depth" value="0" min="0" max="3" style="width: 60px;">
+                                <span class="help-text">0 = this page only. Max 3.</span>
+                            </div>
+                        </div>
+                        <button class="code-action-btn apply-btn web-submit-btn" data-action="scrape">Scrape Content</button>
                     </div>
 
                     <!-- YouTube Tab -->
                     <div id="tab-youtube" class="web-tab-content">
-                        <label>YouTube Video URL</label>
-                        <input type="text" id="web-yt-url" placeholder="https://youtube.com/watch?v=...">
-                        <label>Transcript Language</label>
-                        <input type="text" id="web-yt-lang" value="en" placeholder="en, fr, es...">
-                        <button class="code-action-btn apply-btn web-submit-btn" style="width:100%; margin-top:15px;" data-action="youtube">Extract Transcript</button>
+                        <div class="web-form-group">
+                            <label>Video URL</label>
+                            <input type="text" id="web-yt-url" placeholder="https://youtube.com/watch?v=...">
+                        </div>
+                        <div class="web-form-group">
+                            <label>Transcript Language</label>
+                            <input type="text" id="web-yt-lang" value="en" placeholder="en, fr, es..." style="width: 80px;">
+                        </div>
+                        <button class="code-action-btn apply-btn web-submit-btn" data-action="youtube">Extract Transcript</button>
                     </div>
 
                     <!-- Wikipedia Tab -->
                     <div id="tab-wiki" class="web-tab-content">
-                        <label>Search Query or Page URL</label>
-                        <div style="display:flex; gap:8px;">
-                            <input type="text" id="web-wiki-input" placeholder="e.g. Quantum Computing" style="flex:1;">
-                            <button class="code-action-btn secondary-btn web-submit-btn" data-action="wiki">Search</button>
+                        <div class="web-form-group">
+                            <label>Topic / Concept</label>
+                            <div class="web-form-row">
+                                <input type="text" id="web-wiki-input" placeholder="e.g. Quantum Computing" style="flex:1;">
+                                <button class="code-action-btn secondary-btn web-submit-btn" data-action="wiki" style="width: 80px;">Search</button>
+                            </div>
                         </div>
                         <div id="web-wiki-results" class="web-search-results"></div>
-                        <button class="code-action-btn apply-btn" id="web-wiki-add-btn" style="width:100%; margin-top:15px; display:none;">Add Selected Page</button>
+                        <button class="code-action-btn apply-btn" id="web-wiki-add-btn" style="display:none;">Add Selected Page</button>
                     </div>
 
                     <!-- ArXiv Tab -->
                     <div id="tab-arxiv" class="web-tab-content">
                         <label>Search Query or Article ID/Link</label>
-                        <div style="display:flex; gap:8px;">
-                            <input type="text" id="web-arxiv-input" placeholder="e.g. 2401.00001 or LLM Safety" style="flex:1;">
-                            <button class="code-action-btn secondary-btn web-submit-btn" data-action="arxiv">Search</button>
+                        <div style="display:flex; gap:8px; flex-direction: column;">
+                            <div style="display:flex; gap:8px;">
+                                <input type="text" id="web-arxiv-input" placeholder="e.g. 2401.00001 or LLM Safety" style="flex:1;">
+                                <button class="code-action-btn secondary-btn web-submit-btn" data-action="arxiv">Search</button>
+                            </div>
+                            <div class="web-form-row">
+                                <label style="margin:0; font-size:10px;">Results Limit:</label>
+                                <input type="number" id="web-arxiv-limit" value="5" min="1" max="50" style="width: 50px;">
+                            </div>
                         </div>
                         <div id="web-arxiv-results" class="web-search-results"></div>
                         <div class="checkbox-container">
@@ -4309,6 +4631,37 @@ Task:
                             <label for="arxiv-full">Full Text (Experimental)</label>
                         </div>
                         <button class="code-action-btn apply-btn" id="web-arxiv-add-btn" style="width:100%; margin-top:15px; display:none;">Add Selected Article</button>
+                    </div>
+
+                    <!-- HAL Tab -->
+                    <div id="tab-hal" class="web-tab-content">
+                        <label>HAL Open Archive Search</label>
+                        <div style="display:flex; gap:8px;">
+                            <input type="text" id="web-hal-input" placeholder="e.g. Deep Learning Physics" style="flex:1;">
+                            <button class="code-action-btn secondary-btn web-submit-btn" data-action="hal">Search</button>
+                        </div>
+                        <div class="web-search-results"></div>
+                    </div>
+
+                    <!-- Scopus Tab -->
+                    <div id="tab-scopus" class="web-tab-content">
+                        <label>Elsevier Scopus Search</label>
+                        <div style="display:flex; gap:8px;">
+                            <input type="text" id="web-scopus-input" placeholder="Search Scopus database..." style="flex:1;">
+                            <button class="code-action-btn secondary-btn web-submit-btn" data-action="scopus">Search</button>
+                        </div>
+                        <p class="help-text">Requires Scopus API Key in Settings.</p>
+                        <div class="web-search-results"></div>
+                    </div>
+
+                    <!-- Patents Tab -->
+                    <div id="tab-patent" class="web-tab-content">
+                        <label>Patent Search (Google Patents)</label>
+                        <div style="display:flex; gap:8px;">
+                            <input type="text" id="web-patent-input" placeholder="e.g. 'lithium battery' 2023" style="flex:1;">
+                            <button class="code-action-btn secondary-btn web-submit-btn" data-action="patent">Search</button>
+                        </div>
+                        <div class="web-search-results"></div>
                     </div>
 
                     <!-- Google Tab -->
@@ -4393,10 +4746,11 @@ Task:
                 <div class="modal-body">
                     <pre id="raw-code-display" style="user-select: text; white-space: pre-wrap; word-break: break-all; background: var(--vscode-textCodeBlock-background); padding: 12px; border-radius: 4px; border: 1px solid var(--vscode-widget-border); max-height: 70vh; overflow-y: auto; font-family: var(--vscode-editor-font-family); font-size: 12px;"></pre>
                 </div>
-                <div class="modal-footer" style="display:flex; gap:10px;">
-                    <button id="copy-search-btn" class="code-action-btn secondary-btn" style="flex:1; justify-content: center; height: 32px;"><span class="codicon codicon-copy"></span> Copy SEARCH</button>
-                    <button id="copy-replace-btn" class="code-action-btn secondary-btn" style="flex:1; justify-content: center; height: 32px;"><span class="codicon codicon-copy"></span> Copy REPLACE</button>
-                    <button id="copy-raw-btn" class="code-action-btn apply-btn" style="flex:1; justify-content: center; height: 32px;"><span class="codicon codicon-copy"></span> Copy Full Block</button>
+                <div class="modal-footer" style="display:flex; gap:10px; flex-wrap: wrap;">
+                    <button id="copy-search-btn" class="code-action-btn secondary-btn" style="flex:1; min-width: 120px; justify-content: center; height: 32px;"><span class="codicon codicon-copy"></span> Copy SEARCH</button>
+                    <button id="copy-replace-btn" class="code-action-btn secondary-btn" style="flex:1; min-width: 120px; justify-content: center; height: 32px;"><span class="codicon codicon-copy"></span> Copy REPLACE</button>
+                    <button id="copy-raw-btn" class="code-action-btn secondary-btn" style="flex:1; min-width: 120px; justify-content: center; height: 32px;"><span class="codicon codicon-copy"></span> Copy Full Block</button>
+                    <button id="mark-applied-btn" class="code-action-btn apply-btn" style="flex:1; min-width: 180px; justify-content: center; height: 32px; background-color: var(--vscode-charts-green) !important;"><span class="codicon codicon-check"></span> Mark as Applied Manually</button>
                 </div>
             </div>
         </div>

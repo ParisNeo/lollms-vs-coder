@@ -1,7 +1,7 @@
 <skill id="coding-documentation">
     <name>Documentation & Knowledge Standards</name>
     <description>Best practices for self-documenting code, API schemas, and README files.</description>
-    <category>coding/documentation</category>
+    <category>development/standards/documentation</category>
     <language>markdown</language>
     <timestamp>1739433600000</timestamp>
     <content>

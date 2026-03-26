@@ -1,4 +1,4 @@
-<skill id="lollms-safestore-formatting" title="RAG Context Formatting & Citations" description="Guidelines for formatting SafeStore chunks for LollmsClient to ensure accurate source attribution." category="python/integration/formatting">
+<skill id="lollms-safestore-formatting" title="RAG Context Formatting & Citations" description="Guidelines for formatting SafeStore chunks for LollmsClient to ensure accurate source attribution." category="ai/knowledge_management/rag">
     <content>
         <![CDATA[
 # 💎 SOURCE OF TRUTH: RAG Context Formatting Protocol

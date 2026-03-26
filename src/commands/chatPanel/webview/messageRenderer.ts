@@ -1155,10 +1155,53 @@ function renderDebugReport(dataStr: string): string {
     }
 }
 
+function renderMissionControl(dataStr: string): string {
+    try {
+        const cleanStr = dataStr.replace(/&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">");
+        const data = JSON.parse(cleanStr);
+        const renderMd = (text: string) => sanitizer.sanitize(marked.parse(text) as string, SANITIZE_CONFIG);
+
+        const agents = [
+            { id: 'librarian', label: 'Librarian', icon: 'library', content: data.librarian },
+            { id: 'inspector', label: 'Inspector', icon: 'search', content: data.inspector },
+            { id: 'debugger', label: 'Debugger', icon: 'debug', content: data.debugger },
+            { id: 'web', label: 'Web Research', icon: 'globe', content: data.web },
+            { id: 'skills', label: 'Skills', icon: 'lightbulb', content: data.skills }
+        ];
+
+        const activeColumns = agents
+            .filter(a => a.content && !a.content.includes('Inactive'))
+            .map(a => `
+                <div class="agent-col">
+                    <div class="agent-col-header"><span class="codicon codicon-${a.icon}"></span> ${a.label}</div>
+                    <div class="agent-col-body markdown-body">${renderMd(a.content)}</div>
+                </div>
+            `).join('');
+
+        return `
+        <div class="mission-control-panel">
+            <div class="technical-briefing-card" style="margin: 0 0 15px 0; border-left-color: var(--vscode-charts-purple);">
+                <div class="briefing-header"><span class="codicon codicon-organization"></span> Team Briefing (Live Sync)</div>
+                <div class="briefing-content">${renderMd(data.briefing)}</div>
+            </div>
+            <div class="mission-control-columns">
+                ${activeColumns}
+            </div>
+        </div>`;
+    } catch(e) {
+        return `<div class="error">Failed to render Mission Control dashboard.</div>`;
+    }
+}
+
 function renderAddFilesBlock(rawContent: string, messageId: string): string {
+    // Sanitize: Ignore comments (#), bullets (-, *), and keep only valid looking paths
     const files = rawContent.split('\n')
         .map(f => f.trim())
-        .filter(f => f.length > 0);
+        .filter(f => f.length > 0 && !f.startsWith('#')) // Ignore comments
+        .map(f => f.replace(/^[-*]\s*/, '').trim()) // Remove bullets
+        .filter(f => f.length > 0 && f.includes('.')); // Keep only lines that look like filenames (have a dot)
+
+    if (files.length === 0) return ""; // Don't show empty widget
 
     const currentFiles = state.lastContextData?.files || [];
     let allIncluded = true;
@@ -1340,7 +1383,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             }
 
             // --- ADD FILES TAG PARSING ---
-            const addFiles: { html: string, start: number, end: number }[] = [];
+            const addFiles: { html: string, start: number, end: number }[] =[];
             const addFilesRegex = /<add_files>([\s\S]*?)<\/add_files>/gi;
             let afMatch;
             while ((afMatch = addFilesRegex.exec(contentWithoutThoughts)) !== null) {
@@ -1363,7 +1406,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             // SURGICAL RENDERING LOGIC
             // 1. Identify all potential UI elements
             const codeBlocks = extractFilePaths(processedContent);
-            const allCandidates = [
+            const allCandidates =[
                 ...codeBlocks.map(b => ({ ...b, elementType: 'code' as const })),
                 ...skills.map(s => ({ start: s.start, end: s.end, html: s.html, elementType: 'skill' as const })),
                 ...images.map(i => ({ start: i.start, end: i.end, html: i.html, elementType: 'image' as const })),
@@ -1372,13 +1415,9 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             ].sort((a, b) => a.start - b.start);
 
             // 2. Filter to keep only TOP-LEVEL elements
-            // This ensures that if a skill tag is inside a code block (or vice versa), 
-            // only the outer container is rendered as a UI component.
             const elements = allCandidates.filter((el, idx) => {
                 return !allCandidates.some((other, oIdx) => {
                     if (idx === oIdx) return false;
-                    // If the current element (el) is physically inside another element (other),
-                    // we skip it to prevent rendering a UI component inside literal code.
                     return el.start >= other.start && el.end <= other.end;
                 });
             });
@@ -1388,11 +1427,9 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
             // 3. Partitioned Rendering
             elements.forEach((el, idx) => {
-                // A. Render the Markdown chunk BEFORE the UI element
                 const textBefore = processedContent.substring(lastIndex, el.start);
-                if (textBefore.length > 0) { // Don't use .trim() here to preserve spacing between blocks
+                if (textBefore.length > 0) { 
                     const textDiv = document.createElement('div');
-                    // We only parse the text that is strictly outside of any UI elements
                     textDiv.innerHTML = sanitizer.sanitize(marked.parse(textBefore) as string, SANITIZE_CONFIG);
                     fragment.appendChild(textDiv);
                 }
@@ -1456,6 +1493,9 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                             const hunkIdEl = document.getElementById('raw-hunk-id');
                             if (hunkIdEl) hunkIdEl.textContent = `ALL HUNKS`;
                             dom.rawCodeDisplay.textContent = codeOnly;
+                            dom.rawCodeDisplay.dataset.messageId = messageId;
+                            dom.rawCodeDisplay.dataset.blockIndex = String(blockIdx);
+                            dom.rawCodeDisplay.dataset.hunkIndex = ""; // Empty means full block
                             dom.rawCodeModal.classList.add('visible');
                         }
                     }, 'code-action-btn', 'View raw SEARCH/REPLACE format');
@@ -1640,6 +1680,9 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                                 const hunkIdEl = document.getElementById('raw-hunk-id');
                                 if (hunkIdEl) hunkIdEl.textContent = `HUNK ${hIdx + 1}`;
                                 dom.rawCodeDisplay.textContent = match[0]; // match[0] is the full block string
+                                dom.rawCodeDisplay.dataset.messageId = messageId;
+                                dom.rawCodeDisplay.dataset.blockIndex = String(blockIdx);
+                                dom.rawCodeDisplay.dataset.hunkIndex = String(hIdx);
                                 dom.rawCodeModal.classList.add('visible');
                             }
                         }, 'code-action-btn', 'View raw SEARCH/REPLACE for this hunk');
@@ -1867,15 +1910,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 contentDiv.appendChild(wrapper);
 
                 // --- INITIAL SYNC ---
-                // Use contentDiv to find all buttons within this specific message
-                const allButtons = Array.from(contentDiv.querySelectorAll('.apply-btn'));
-                const allApplied = allButtons.length > 0 && allButtons.every(b => b.classList.contains('applied'));
-                
-                if (allApplied && actionableBlocks.length > 0) {
-                    btn.classList.add('applied');
-                    btn.innerHTML = '<span class="codicon codicon-check"></span> All Modifications Applied';
-                    btn.disabled = true;
-                }
+                checkAndSyncMessageAppliedState(messageId);
             }
         }
     } catch (e) {
@@ -2021,7 +2056,7 @@ function addAttachment(message: any) {
 }
 
 function addChatMessage(message: any, isFinal: boolean = true) {
-    const { role, id, content: rawContent, startTime, model } = message;
+    const { role, id, content: rawContent, startTime, model, personalityName } = message;
     
     if (!dom.chatMessagesContainer) return;
 
@@ -2036,6 +2071,7 @@ function addChatMessage(message: any, isFinal: boolean = true) {
     messageWrapper.dataset.messageId = id;
     if (startTime) messageWrapper.dataset.startTime = startTime;
     if (model) messageWrapper.dataset.model = model;
+    if (personalityName) messageWrapper.dataset.personalityName = personalityName;
 
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${role}-message`;
@@ -2112,7 +2148,7 @@ function addChatMessage(message: any, isFinal: boolean = true) {
     headerDiv.className = 'message-header';
     let roleDisplay = 'System';
     if (role === 'user') roleDisplay = 'You';
-    else if (role === 'assistant') roleDisplay = 'Lollms';
+    else if (role === 'assistant') roleDisplay = personalityName || 'Lollms';
     
     headerDiv.innerHTML = `<span class="role-name">${roleDisplay}</span>`;
     bodyDiv.appendChild(headerDiv);
@@ -2987,22 +3023,27 @@ export function checkAndSyncMessageAppliedState(messageId: string) {
     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
     if (!wrapper) return;
 
-    const blocks = wrapper.querySelectorAll('details.code-collapsible');
     const applyAllBtn = wrapper.querySelector('.apply-all-btn') as HTMLButtonElement;
     if (!applyAllBtn) return;
 
-    let allApplied = true;
-    blocks.forEach(block => {
-        const mainBtn = block.querySelector('.code-actions .apply-btn');
-        if (mainBtn && !mainBtn.classList.contains('applied')) {
-            allApplied = false;
-        }
-    });
+    // Find all blocks that actually HAVE an Apply button. 
+    // We ignore blocks that are just for display (no path header).
+    const blockButtons = Array.from(wrapper.querySelectorAll('.code-actions .apply-btn'));
+    
+    if (blockButtons.length === 0) return;
 
-    if (allApplied && blocks.length > 0) {
+    const allApplied = blockButtons.every(btn => btn.classList.contains('applied'));
+
+    if (allApplied) {
         applyAllBtn.classList.add('applied');
         applyAllBtn.innerHTML = '<span class="codicon codicon-check"></span> All Changes Applied';
         applyAllBtn.disabled = true;
+        
+        // Also collapse the details if everything is finished to keep the view tidy
+        wrapper.querySelectorAll('details.code-collapsible').forEach(d => (d as HTMLDetailsElement).open = false);
+    } else {
+        applyAllBtn.classList.remove('applied');
+        applyAllBtn.disabled = false;
     }
 }
 

@@ -1,5 +1,5 @@
 import { dom, vscode, state } from './dom.js';
-import { addMessage, renderMessageContent, updateContext, displayPlan, scheduleRender } from './messageRenderer.js';
+import { addMessage, renderMessageContent, updateContext, displayPlan, scheduleRender, checkAndSyncMessageAppliedState } from './messageRenderer.js';
 import { 
     setGeneratingState, 
     updateBadges, 
@@ -32,9 +32,11 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         wrapper.dataset.firstTokenTime = String(Date.now());
                         const waitingAnim = wrapper.querySelector('.waiting-animation');
                         if (waitingAnim) waitingAnim.remove();
+                        
                         const startTime = parseInt(wrapper.dataset.startTime || '0', 10);
                         const ttft = ((Date.now() - startTime) / 1000).toFixed(1);
                         const modelName = wrapper.dataset.model || 'Default';
+                        const personalityName = wrapper.dataset.personalityName;
                         const header = wrapper.querySelector('.message-header');
                         if(header){
                             let annotationSpan = header.querySelector('.generation-stats');
@@ -243,6 +245,12 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     
                     const langSelect = document.getElementById('modal-language') as HTMLSelectElement;
                     if (langSelect) langSelect.value = caps.language || 'auto';
+
+                    const ttftInput = document.getElementById('modal-ttft-timeout') as HTMLInputElement;
+                    if (ttftInput) ttftInput.value = (caps.ttftTimeout ?? 0).toString();
+
+                    const interInput = document.getElementById('modal-inter-token-timeout') as HTMLInputElement;
+                    if (interInput) interInput.value = (caps.interTokenTimeout ?? 0).toString();
 
                     // Trigger a re-population of voices to ensure selection matches
                     if (typeof window.speechSynthesis.onvoiceschanged === 'function') {
@@ -773,6 +781,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             blockEl.querySelectorAll('.aider-hunk-bubble').forEach(h => h.classList.add('collapsed'));
                             blockEl.open = false;
                         }
+
+                        // RE-SYNC main button state for the entire message
+                        checkAndSyncMessageAppliedState(message.messageId);
+
                     } else if (blockEl && !message.success) {
                         // FAILURE CASE: Restore the button so the user can try again
                         const mainApplyBtn = blockEl.querySelector('.code-actions .apply-btn') as HTMLButtonElement;

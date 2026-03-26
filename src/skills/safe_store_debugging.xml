@@ -1,7 +1,7 @@
 <skill id="safe-store-debugging">
     <name>safe_store: Error Handling & Debugging</name>
     <description>Robust error handling, logging, and troubleshooting patterns</description>
-    <category>python/safe_store/debugging</category>
+    <category>ai/knowledge_management/safe_store</category>
     <language>markdown</language>
     <timestamp>1740265200000</timestamp>
     <content>

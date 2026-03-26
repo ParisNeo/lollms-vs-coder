@@ -1,4 +1,4 @@
-<skill id="safe-store-graph" title="SafeStore Knowledge Graph" description="Extracting and querying structured entities and relationships from documents." category="python/safe_store/graph">
+<skill id="safe-store-graph" title="SafeStore Knowledge Graph" description="Extracting and querying structured entities and relationships from documents." category="ai/knowledge_management/knowledge_graph">
     <content>
         <![CDATA[
 # 💎 SOURCE OF TRUTH: safe_store Knowledge Graph (GraphStore)

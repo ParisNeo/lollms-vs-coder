@@ -1,7 +1,7 @@
 <skill id="pipmaster-basics">
     <name>PipMaster Basics</name>
     <description>Essential package management with pipmaster: installation, updates, and environment validation.</description>
-    <category>python/pipmaster/basics</category>
+    <category>development/languages/python/package_management</category>
     <language>markdown</language>
     <timestamp>1738425600000</timestamp>
     <content>

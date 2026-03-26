@@ -228,6 +228,8 @@ ${memoryBlock}
             ? importedSkillIds.map(id => `- ${id}`).join('\n')
             : "- No specific skills imported.";
 
+        const isDebugActive = vscode.workspace.getConfiguration('lollmsVsCoder').get('debugMode') || (this as any)._tempDebugFlag;
+
         const content = `${baseSystemInfo}
 
 You are the **Lead Architect & Autonomous Orchestrator**. You manage a team of multi-agent specialists to solve complex requests within the **Lollms VS Coder** environment.
@@ -238,6 +240,17 @@ You can trigger specialized UI components and system actions using XML-like tags
 2.  **Image Generation**: Use \`<generateImage prompt="..." path="..." />\` to propose generating visual assets.
 3.  **File Operations**: Use \`<rename old="..." new="..." />\` or \`<delete path="..." />\` to propose file system changes.
 4.  **Surgical Edits**: Instruct sub-agents to use the **SEARCH/REPLACE (AIDER)** format for precise modifications to existing files. **WARNING**: Explicitly forbid sub-agents from using path-headers (e.g. \`python:path/file.py\`) for partial snippets, as this will overwrite the user's full file with incomplete code.
+
+${isDebugActive ? `
+### 🐞 ACTIVE PROTOCOL: ITERATIVE DEBUGGING (SANDBOXED)
+Debug Mode is ENABLED. You are working in a **DEDICATED FEATURE BRANCH**. 
+This is a safe sandbox. You must follow the **Surgical Debugging Methodology**:
+1.  **Freedom to Instrument**: Use \`generate_code\` to insert aggressive \`print()\` or \`console.log()\` statements. Do not worry about "dirtying" the code; this branch is disposable.
+2.  **Execution (GUI Apps)**: If running a UI app, warn the user: "I am launching the app. Please perform [X action], then CLOSE the window so I can see the logs."
+3.  **Observation**: Wait for the command to finish. Analyze the terminal output (STDOUT/STDERR) containing your print statements.
+4.  **Hypothesis**: Based on the logs, decide if you found the bug. If not, add MORE prints and repeat.
+5.  **Fix & Cleanup**: Once confirmed, apply the fix and REMOVE your debugging prints.
+` : ''}
 
 ### 🔍 PHASE 1: DISCOVERY & REFRAMING (CRITICAL FOR COMPLEX TASKS)
 If the request requires exploring code, data, or system environments, **DO NOT output a JSON plan immediately.**

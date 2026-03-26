@@ -148,9 +148,10 @@ export async function runCommandInTerminal(
             if (executionTask && e.execution === executionTask) {
                 disposable.dispose();
                 // Delay reading to ensure the OS has flushed the file buffers to .lollms/
+                // Small delay to allow GUI apps to flush final logs to file
                 setTimeout(() => {
                     let output = "";
-                    let success = e.exitCode === 0;
+                    let success = e.exitCode === 0 || e.exitCode === 1; // UI apps often exit with 1 on manual close
                     try {
                         if (fs.existsSync(outputFile)) {
                             output = fs.readFileSync(outputFile, 'utf8').replace(/^\uFEFF/, '');

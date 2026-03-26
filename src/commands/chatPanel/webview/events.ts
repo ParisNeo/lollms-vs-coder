@@ -318,10 +318,17 @@ export function initEventHandlers() {
                     vscode.postMessage({ command: 'showError', message: 'Please enter a search query.' });
                     return;
                 }
+                
+                let limit = 5;
+                if (action === 'arxiv') {
+                    const limitInp = document.getElementById('web-arxiv-limit') as HTMLInputElement;
+                    limit = parseInt(limitInp.value, 10) || 5;
+                }
+
                 btn.innerHTML = '<div class="spinner"></div>';
                 btn.style.width = '80px'; // Maintain layout
                 btn.disabled = true;
-                vscode.postMessage({ command: 'requestWebAction', action, params: { query: input.value } });
+                vscode.postMessage({ command: 'requestWebAction', action, params: { query: input.value, limit: limit } });
             }
         });
     });
@@ -620,6 +627,8 @@ export function initEventHandlers() {
                 responseProfileId: selectedProfileId,
                 language: (document.getElementById('modal-language') as HTMLSelectElement)?.value || 'auto',
                 voice: (document.getElementById('modal-voice') as HTMLSelectElement)?.value || 'default',
+                ttftTimeout: parseInt((document.getElementById('modal-ttft-timeout') as HTMLInputElement)?.value || '0', 10),
+                interTokenTimeout: parseInt((document.getElementById('modal-inter-token-timeout') as HTMLInputElement)?.value || '0', 10),
                 contextAggression: dom.contextAggressionSelect?.value || 'respect',
                 forceFullCode: dom.capForceFullCode?.checked ?? false,
                 allowedFormats: {
@@ -863,6 +872,42 @@ export function initEventHandlers() {
     }
     if (dom.copyReplaceBtn) {
         dom.copyReplaceBtn.addEventListener('click', () => handleRawCopy(dom.copyReplaceBtn, 'replace'));
+    }
+
+    if (dom.markAppliedBtn) {
+        dom.markAppliedBtn.addEventListener('click', () => {
+            const display = dom.rawCodeDisplay;
+            if (!display) return;
+
+            const messageId = display.dataset.messageId;
+            const blockIndex = parseInt(display.dataset.blockIndex || "0", 10);
+            const hunkIndexRaw = display.dataset.hunkIndex;
+            const hunkIndex = hunkIndexRaw === "" ? undefined : parseInt(hunkIndexRaw || "0", 10);
+
+            if (messageId) {
+                // Send signal to extension to update persistent state
+                vscode.postMessage({
+                    command: 'markHunkApplied',
+                    messageId,
+                    blockIndex,
+                    hunkIndex
+                });
+
+                // Immediately update local UI to show success
+                window.dispatchEvent(new MessageEvent('message', {
+                    data: {
+                        command: 'applyAllResult',
+                        messageId,
+                        blockIndex,
+                        hunkIndex,
+                        success: true,
+                        alreadyApplied: true
+                    }
+                }));
+
+                dom.rawCodeModal.classList.remove('visible');
+            }
+        });
     }
 
     if (dom.searchCloseBtn) dom.searchCloseBtn.addEventListener('click', () => {

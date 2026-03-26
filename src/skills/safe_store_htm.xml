@@ -1,4 +1,4 @@
-<skill title="SafeStore PageIndex: Hierarchical Tree Management" description="Implements and manages structural hierarchies (trees) for documents in SafeStore, supporting breadcrumbs, recursive tree retrieval, and automated imports from CSV or Markdown headers." category="programming/python/data-structures">
+<skill title="SafeStore PageIndex: Hierarchical Tree Management" description="Implements and manages structural hierarchies (trees) for documents in SafeStore, supporting breadcrumbs, recursive tree retrieval, and automated imports from CSV or Markdown headers." category="ai/knowledge_management/safe_store">
 
 ### Overview
 The `PageIndex` extension allows `safe_store` to represent documents not just as semantic chunks, but as a navigable hierarchy (e.g., Book -> Chapter -> Section). It supports automatic migration of existing databases and structural parsing.

@@ -1,7 +1,7 @@
 <skill id="ascii-colors-questionary">
     <name>ASCIIColors Questionary</name>
     <description>Interactive user prompts: text, password, confirmation, selection, autocomplete, and forms.</description>
-    <category>python/ascii_colors/questionary</category>
+    <category>development/languages/python/ui/ascii_colors</category>
     <language>markdown</language>
     <timestamp>1738425600000</timestamp>
     <content>

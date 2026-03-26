@@ -151,6 +151,22 @@ export class GitDashboardPanel {
                         await this._git.checkout(folder, msg.branch); 
                         await this.refresh(); 
                         break;
+                    case 'deleteBranch':
+                        const confirm = await vscode.window.showWarningMessage(
+                            `Are you sure you want to delete branch '${msg.branch}'?`,
+                            { modal: true },
+                            "Delete"
+                        );
+                        if (confirm === "Delete") {
+                            try {
+                                await this._git.deleteBranch(folder, msg.branch);
+                                await this.refresh();
+                                vscode.window.showInformationMessage(`Deleted branch '${msg.branch}'.`);
+                            } catch (e: any) {
+                                vscode.window.showErrorMessage(`Failed to delete branch: ${e.message}`);
+                            }
+                        }
+                        break;
                     case 'checkoutPrevious': 
                         await this._git.checkoutPrevious(folder); 
                         await this.refresh(); 
@@ -792,7 +808,8 @@ export class GitDashboardPanel {
                     </div>
                     \${b !== currentBranch ? \`
                     <div class="item-actions">
-                        <button class="btn btn-secondary" onclick="post('switch',{branch:'\${jsEscape(b)}'})"><i class="codicon codicon-arrow-swap"></i> Switch</button>
+                        <button class="btn btn-secondary" onclick="post('switch',{branch:'\${jsEscape(b)}'})" title="Switch to this branch"><i class="codicon codicon-arrow-swap"></i> Switch</button>
+                        <button class="btn btn-danger" onclick="post('deleteBranch',{branch:'\${jsEscape(b)}'})" title="Delete Branch"><i class="codicon codicon-trash"></i></button>
                     </div>\` : ''}
                 </div>
             \`).join('');

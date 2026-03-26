@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-03-25 07:47]
+
+- feat: v0.7.27 - Add debug mode logging and UI refinements
+
 ## [2026-03-24 01:20]
 
 - feat: add settings action and enhance chat panel UI/functionality

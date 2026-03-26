@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { LollmsServices } from '../lollmsContext';
-import { applyDiff } from '../utils';
+import { applyDiff, applySearchReplace } from '../utils';
 import { normalizeToDocument } from '../utils/promptUtils';
 import { Logger } from '../logger';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
@@ -83,9 +83,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         }
         
         const snapshotsDir = vscode.Uri.joinPath(workspaceFolder.uri, '.lollms', 'snapshots');
-        try {
-            await vscode.workspace.fs.createDirectory(snapshotsDir);
-        } catch {} 
+        await vscode.workspace.fs.createDirectory(snapshotsDir).then(undefined, () => {}); 
         
         const fileName = path.basename(fileUri.fsPath);
         const snapshotUri = vscode.Uri.joinPath(snapshotsDir, `${fileName}.orig`);
@@ -143,11 +141,21 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
 
             // --- PLACEHOLDER & SIZE SAFETY CHECK ---
             if (fileExists) {
-                const placeholders = ["...", "// rest", "# rest", "/* same as", "logic goes here"];
-                const hasPlaceholder = placeholders.some(p => content.toLowerCase().includes(p));
+                // Improved detection: Only flag "..." if it's on a line by itself or in a comment, 
+                // not inside a long string like print("Phase 2...")
+                const lines = content.split('\n');
+                const hasPlaceholder = lines.some(line => {
+                    const trimmed = line.trim();
+                    // 1. Line is just "..." or a comment followed by "..." (e.g. # ...)
+                    if (/^(\.{3,}|#\s*\.{3,}|(\/\/|--|;)\s*\.{3,})$/.test(trimmed)) return true;
+                    // 2. Specific "rest of code" markers commonly used by AI
+                    if (/(#|\/\/)\s*\.{3,}\s*(rest|same|logic|etc)/i.test(trimmed)) return true;
+                    return false;
+                });
+
                 const sizeRatio = content.length / (originalContent.length || 1);
 
-                // If content is < 40% of original or has a placeholder string
+                // If content is < 40% of original or has a structural placeholder
                 if (hasPlaceholder || sizeRatio < 0.4) {
                     const warningMsg = hasPlaceholder 
                         ? `The AI generated code contains potential placeholders (like '...') which will break your file.`
@@ -313,17 +321,22 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         );
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string, panel?: any, messageId?: string, options?: { silent?: boolean }): Promise<{ success: boolean, error?: string, repaired?: boolean }> => {
+    
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string, panel?: any, messageId?: string, options?: { silent?: boolean, blockIndex?: number, hunkIndex?: number }): Promise<{ success: boolean, error?: string, repaired?: boolean }> => {
         const activeWorkspace = getActiveWorkspace();
         if (!activeWorkspace) return { success: false, error: "No active workspace" };
 
-        // Use multiline regex but allow flexibility for start-of-line markers
         const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
-        const matches = [...content.matchAll(aiderRegex)];
+        let matches = [...content.matchAll(aiderRegex)];
         
         if (matches.length === 0) {
              if (!options?.silent) vscode.window.showErrorMessage("No valid Search/Replace blocks found. Ensure markers start at the beginning of the line.");
              return { success: false, error: "Invalid Aider block format" };
+        }
+
+        // If a specific hunk is requested (Bulk Apply mode), only process that one
+        if (options?.hunkIndex !== undefined && matches[options.hunkIndex]) {
+            matches = [matches[options.hunkIndex]];
         }
         
         const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
@@ -334,14 +347,12 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             const originalContent = currentContent;
             
             let applyCount = 0;
-            const { applySearchReplace } = await import('../utils');
 
             for (const match of matches) {
                 const searchCode = match[1];
                 const replaceCode = match[2];
                 
-                // Check if this specific hunk is already applied to currentContent
-                // This prevents "Match Failed" errors during sequential Aider runs
+                // Idempotency check: If content is already present, count as success
                 if (currentContent.includes(replaceCode.trim())) {
                     applyCount++;
                     continue; 

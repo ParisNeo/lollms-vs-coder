@@ -1,4 +1,4 @@
-<skill title="ASCIIColors Progress Bars" description="Customizable progress bars with multiple styles, thread safety, and manual control." category="python/ascii_colors/progress" id="ascii-colors-progress-bars" language="markdown" timestamp="1738425600000">
+<skill title="ASCIIColors Progress Bars" description="Customizable progress bars with multiple styles, thread safety, and manual control." category="development/languages/python/ui/ascii_colors" id="ascii-colors-progress-bars" language="markdown" timestamp="1738425600000">
 # ASCIIColors Progress Bars
 
 `tdqm`-like progress bars with custom styles, thread safety, and flexible control.

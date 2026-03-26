@@ -1,7 +1,7 @@
 <skill id="lollms-image-gen">
     <name>Image Generation &amp; Vision</name>
     <description>Generating images and using vision models.</description>
-    <category>python/lollms_client/multimodal</category>
+    <category>ai/lollms/features/multimodal</category>
     <language>markdown</language>
     <timestamp>1738425600000</timestamp>
     <content>

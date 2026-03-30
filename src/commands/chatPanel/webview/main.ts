@@ -99,10 +99,12 @@ const recognition = 'SpeechRecognition' in window || 'webkitSpeechRecognition' i
 if (recognition) {
     // Set to continuous so it stays active until manually stopped
     recognition.continuous = true;
-    recognition.interimResults = true; // Changed to true to provide live feedback in textarea
-    recognition.lang = 'en-US';
+    recognition.interimResults = true;
 
     recognition.onresult = (event: any) => {
+        // Update language based on current capabilities before starting
+        const preferredLang = state.capabilities?.language;
+        recognition.lang = (preferredLang && preferredLang !== 'auto') ? preferredLang : 'en-US';
         let finalTranscript = '';
         for (let i = event.resultIndex; i < event.results.length; ++i) {
             if (event.results[i].isFinal) {
@@ -155,36 +157,48 @@ function resetActiveSpeakButton() {
 (window as any).resetActiveSpeakButton = resetActiveSpeakButton;
 
 function speakText(text: string, force: boolean = false, triggerButton?: HTMLElement) {
-    // 1. If clicking the SAME button that is already speaking, treat as "Stop"
+    // 1. Global deactivation check
+    if (!state.capabilities?.enableTTS && !force) {
+        console.log("TTS is disabled in settings. Skipping speech.");
+        return;
+    }
+
+    // 2. If clicking the SAME button that is already speaking, treat as "Stop"
     if (triggerButton && triggerButton === activeSpeakButton) {
         window.speechSynthesis.cancel();
         resetActiveSpeakButton();
         return;
     }
 
-    // 2. Stop any current speech (global or from other buttons)
+    // 3. Stop any current speech
     window.speechSynthesis.cancel();
     resetActiveSpeakButton();
-    
-    // Check if we are allowed to speak (either globally or via manual button click)
-    if (!isSpeakingEnabled && !force) return;
     
     const utterance = new SpeechSynthesisUtterance(text);
     const voices = window.speechSynthesis.getVoices();
     
-    // 1. Get preferred voice/lang from state
-    const preferredVoiceName = state.capabilities?.voice;
-    const preferredLang = state.capabilities?.language;
+    if (voices.length === 0) {
+        console.warn("TTS: No OS voices available yet.");
+        return;
+    }
 
-    // 2. Select the specific voice
+    const preferredVoiceName = state.capabilities?.voice;
+    const preferredLang = state.capabilities?.language || 'en';
+
+    // 4. Voice Selection Logic
     if (preferredVoiceName && preferredVoiceName !== 'default') {
         const selected = voices.find(v => v.name === preferredVoiceName);
         if (selected) utterance.voice = selected;
-    } else {
-        // Fallback logic
-        utterance.voice = voices.find(v => v.name.includes('Male')) || voices[0];
+    } else if (preferredLang !== 'auto') {
+        // Find best match for the specific language code (e.g., 'en' or 'en-US')
+        const langVoice = voices.find(v => v.lang.toLowerCase().startsWith(preferredLang.toLowerCase()));
+        if (langVoice) {
+            utterance.voice = langVoice;
+            utterance.lang = langVoice.lang;
+        } else {
+            utterance.lang = preferredLang;
+        }
     }
-
     if (preferredLang && preferredLang !== 'auto') {
         utterance.lang = preferredLang;
     }
@@ -255,10 +269,18 @@ if (window.speechSynthesis) {
 
 // Attach listeners
 document.getElementById('sttButton')?.addEventListener('click', () => {
-    if (!recognition) return alert("Speech recognition not supported in this environment.");
+    if (!recognition) {
+        vscode.postMessage({ command: 'showError', message: "Speech recognition is not supported by your OS or VS Code environment." });
+        return;
+    }
     if (isListening) {
+        isListening = false;
         recognition.stop();
     } else {
+        // Ensure language is synced with capability before starting
+        const preferredLang = state.capabilities?.language;
+        recognition.lang = (preferredLang && preferredLang !== 'auto') ? preferredLang : 'en-US';
+        
         isListening = true;
         document.getElementById('sttButton')?.classList.add('active');
         recognition.start();

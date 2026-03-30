@@ -1659,7 +1659,11 @@ ${cumulativeBrain || "No observations yet."}
       }
   }
 
-  public async processFile(fileName: string, base64Data: string): Promise<string> {
+  /**
+   * Process a file and return its text representation. 
+   * If it's a PDF with images, they are added to the 'imagesOut' array.
+   */
+  public async processFile(fileName: string, base64Data: string, imagesOut?: { filePath: string; data: string }[]): Promise<string> {
       const ext = path.extname(fileName).toLowerCase();
       const buffer = Buffer.from(base64Data, 'base64');
 
@@ -1667,8 +1671,27 @@ ${cumulativeBrain || "No observations yet."}
           return `(Binary file ${fileName} content excluded)`;
       }
 
-      if (this.docExtensions.has(ext)) {
+      if (ext === '.pdf' || this.docExtensions.has(ext)) {
           try {
+              // Try visual extraction for PDF
+              if (ext === '.pdf') {
+                  const result = await this.lollmsAPI.extractPDFVisual(base64Data, fileName);
+                  
+                  // Ensure we handle both string content and structured result
+                  const text = typeof result === 'string' ? result : (result.text || "");
+                  const images = (result as any).images || [];
+
+                  if (images.length > 0 && imagesOut) {
+                      images.forEach((img: any) => {
+                          imagesOut.push({
+                              filePath: `${fileName}#${img.name || 'img'}`,
+                              data: img.data.startsWith('data:') ? img.data : `data:image/png;base64,${img.data}`
+                          });
+                      });
+                  }
+                  return text;
+              }
+              // Standard extraction for other docs
               return await this.lollmsAPI.extractText(base64Data, fileName);
           } catch (apiError: any) {
               if (ext === '.pdf') {
@@ -1828,34 +1851,10 @@ ${cumulativeBrain || "No observations yet."}
             continue; 
           } else {
             if (this.docExtensions.has(ext)) {
-                if (useVisualDocs && enableVision) {
-                    try {
-                        // Request backend to convert document to images
-                        const visualData = await this.lollmsAPI.extractVisualText(buffer.toString('base64'), filePath);
-                        if (visualData.images) {
-                            visualData.images.forEach((img: string, idx: number) => {
-                                result.images.push({ filePath: `${filePath}#page${idx+1}`, data: img });
-                            });
-                            fileContent = `[Document converted to ${visualData.images.length} images for Vision analysis]`;
-                        } else {
-                            fileContent = visualData.text || "";
-                        }
-                    } catch (e) {
-                        fileContent = `⚠️ **Visual extraction failed, falling back to text:** ${e}`;
-                        fileContent += await this.lollmsAPI.extractText(buffer.toString('base64'), filePath);
-                    }
-                } else {
-                    try {
-                        fileContent = await this.lollmsAPI.extractText(buffer.toString('base64'), filePath);
-                    } catch (apiError: any) {
-                        if (ext === '.pdf') {
-                            fileContent = await this.parsePdfLocal(buffer);
-                        } else if (ext === '.docx') {
-                            fileContent = await this.parseDocxLocal(buffer);
-                        } else {
-                            fileContent = `⚠️ **Error processing document on backend:** ${apiError.message}`;
-                        }
-                    }
+                try {
+                    fileContent = await this.processFile(filePath, buffer.toString('base64'), result.images);
+                } catch (e: any) {
+                    fileContent = `⚠️ **Extraction failed:** ${e.message}`;
                 }
             } else if (ext === '.ipynb') {
                 try {
@@ -2056,8 +2055,8 @@ Based on the objective and the file tree, which files are the most relevant? Ret
     
     // Enhanced Performance: Crawl files in larger batches but yield strictly
     for (let i = 0; i < effectiveFiles.length; i++) {
-        if (i % 150 === 0) {
-            await new Promise(resolve => setTimeout(resolve, 5)); // Longer sleep to let UI breathe
+        if (i % 50 === 0) {
+            await new Promise(resolve => setTimeout(resolve, 2)); // Frequent yields keep host responsive
             if (onProgress) {
                 const pct = Math.round((i / effectiveFiles.length) * 100);
                 onProgress(pct);
@@ -2065,6 +2064,10 @@ Based on the objective and the file tree, which files are the most relevant? Ret
         }
         
         const filePath = effectiveFiles[i];
+        // Skip absolute paths (Windows drive or root slash) to keep the project tree clean
+        if (filePath.includes(':') || filePath.startsWith('/') || filePath.startsWith('\\')) {
+            continue;
+        }
         const parts = filePath.split(path.sep).filter(part => part.length > 0);
         let current = fileTree;
         

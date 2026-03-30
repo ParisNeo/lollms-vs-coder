@@ -62,6 +62,20 @@ const SANITIZE_CONFIG = {
     ADD_ATTR: ['target', 'allow', 'allowfullscreen', 'frameborder', 'scrolling', 'onclick', 'data-value', 'data-type', 'data-message-id', 'data-pid']
 };
 
+function unescapeXml(safe: string): string {
+    if (!safe) return '';
+    return safe.replace(/&(lt|gt|amp|apos|quot);/g, (match, entity) => {
+        const map: { [key: string]: string } = {
+            'lt': '<',
+            'gt': '>',
+            'amp': '&',
+            'apos': "'",
+            'quot': '"'
+        };
+        return map[entity] || match;
+    });
+}
+
 function createButton(text: string, icon: string, onClick: () => void, className = 'code-action-btn', tooltip?: string): HTMLButtonElement {
     const btn = document.createElement('button');
     btn.className = className;
@@ -194,7 +208,7 @@ function enablePanZoom(container: HTMLElement) {
         const delta = e.deltaY > 0 ? 0.9 : 1.1;
         zoomScale *= delta;
         updateTransform();
-    });
+    }, { passive: false });
 
     container.addEventListener('mousedown', (e) => {
         isDragging = true;
@@ -339,60 +353,75 @@ function renderDiagram(codeElement: HTMLElement, language: string, container: HT
 }
 
 function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
-    // BUG FIX: Ensure we get the raw content including <think> tags
     let originalContent: any;
     try {
-        // dataset.originalContent stores the rawest form received from the LLM
         originalContent = JSON.parse(messageDiv.dataset.originalContent || '""');
     } catch (e) {
-        console.warn("Failed to parse original content for editing", e);
         originalContent = "";
     }
 
     let textContent = "";
+    let localImages: { name: string, data: string }[] = [];
+
     if (typeof originalContent === 'string') {
         textContent = originalContent;
     } else if (Array.isArray(originalContent)) {
-        // Handle Vision/Multipart content by extracting text components
-        textContent = originalContent
-            .filter(part => part.type === 'text')
-            .map(part => part.text)
-            .join('\n');
+        textContent = originalContent.filter(part => part.type === 'text').map(part => part.text).join('\n');
+        localImages = originalContent
+            .filter(part => part.type === 'image_url')
+            .map((part, idx) => ({ name: `image_${idx}.png`, data: part.image_url.url }));
     }
 
     const contentDiv = messageDiv.querySelector('.message-content') as HTMLElement;
     const actionsDiv = messageDiv.querySelector('.message-actions') as HTMLElement;
-
     if (!contentDiv || !actionsDiv) return;
 
     const editOverlay = document.createElement('div');
     editOverlay.className = 'edit-overlay';
 
-    // Reuse the rich toolbar HTML structure
+    // 1. Image Staging Area for Editor
+    const imageStaging = document.createElement('div');
+    imageStaging.className = 'attachment-preview-area';
+    imageStaging.style.display = localImages.length > 0 ? 'flex' : 'none';
+
+    const renderLocalImages = () => {
+        imageStaging.innerHTML = '';
+        localImages.forEach((img, idx) => {
+            const card = document.createElement('div');
+            card.className = 'staged-image-card';
+            card.style.backgroundImage = `url(${img.data})`;
+            
+            const delBtn = document.createElement('div');
+            delBtn.className = 'remove-btn';
+            delBtn.innerHTML = '<span class="codicon codicon-close"></span>';
+            delBtn.onclick = () => { localImages.splice(idx, 1); renderLocalImages(); };
+            
+            card.appendChild(delBtn);
+            imageStaging.appendChild(card);
+        });
+        imageStaging.style.display = localImages.length > 0 ? 'flex' : 'none';
+    };
+
+    // 2. Toolbar with Image Addition
     const toolbar = document.createElement('div');
     toolbar.className = 'rich-input-toolbar';
     toolbar.style.borderRadius = '4px 4px 0 0';
     toolbar.innerHTML = `
-        <button class="toolbar-tool" data-wrap-type="h1"><span>H1</span></button>
-        <button class="toolbar-tool" data-wrap-type="h2"><span>H2</span></button>
-        <button class="toolbar-tool" data-wrap-type="h3"><span>H3</span></button>
+        <button class="toolbar-tool" data-wrap-type="code"><i class="codicon codicon-code"></i></button>
+        <button class="toolbar-tool" id="edit-add-image" title="Add Image"><i class="codicon codicon-file-media"></i></button>
         <div class="toolbar-separator"></div>
-        <button class="toolbar-tool" data-wrap-type="list"><i class="codicon codicon-list-unordered"></i></button>
         <button class="toolbar-tool" data-wrap-type="bold"><i class="codicon codicon-bold"></i></button>
         <button class="toolbar-tool" data-wrap-type="italic"><i class="codicon codicon-italic"></i></button>
-        <button class="toolbar-tool" data-wrap-type="code"><i class="codicon codicon-code"></i></button>
     `;
-    
+
     const editorContainer = document.createElement('div');
     editorContainer.className = 'edit-editor-container';
     
     const buttonsDiv = document.createElement('div');
     buttonsDiv.className = 'edit-buttons';
-    
     const saveBtn = document.createElement('button');
     saveBtn.className = 'edit-save-btn';
     saveBtn.textContent = 'Save';
-    
     const cancelBtn = document.createElement('button');
     cancelBtn.className = 'edit-cancel-btn';
     cancelBtn.textContent = 'Cancel';
@@ -400,9 +429,12 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     buttonsDiv.appendChild(cancelBtn);
     buttonsDiv.appendChild(saveBtn);
     
-    editOverlay.appendChild(toolbar); // Add toolbar to edit overlay
+    editOverlay.appendChild(toolbar);
+    editOverlay.appendChild(imageStaging);
     editOverlay.appendChild(editorContainer);
     editOverlay.appendChild(buttonsDiv);
+
+    renderLocalImages();
 
     // Note: Since Edit Mode uses CodeMirror (EditorView), we need a specific wrapper
     // for CM integration if we want the selection to work exactly like the textarea.
@@ -464,21 +496,69 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     };
 
     saveBtn.onclick = () => {
-        const newContent = editView.state.doc.toString();
-        if (newContent.trim() !== textContent.trim()) {
-            messageDiv.dataset.originalContent = JSON.stringify(newContent);
-            vscode.postMessage({
-                command: 'updateMessage',
-                messageId: messageId,
-                newContent: newContent
+        const newText = editView.state.doc.toString();
+        let finalContent: any = newText;
+
+        if (localImages.length > 0) {
+            finalContent = [];
+            if (newText.trim()) finalContent.push({ type: 'text', text: newText });
+            localImages.forEach(img => {
+                finalContent.push({ type: 'image_url', image_url: { url: img.data } });
             });
-            renderMessageContent(messageId, newContent, true);
-        } else {
-            renderMessageContent(messageId, textContent, true);
         }
+
+        messageDiv.dataset.originalContent = JSON.stringify(finalContent);
+        vscode.postMessage({
+            command: 'updateMessage',
+            messageId: messageId,
+            newContent: finalContent
+        });
+        renderMessageContent(messageId, finalContent, true);
+
         actionsDiv.style.opacity = '';
         actionsDiv.style.pointerEvents = '';
     };
+
+    // Handle Image additions in editor
+    toolbar.querySelector('#edit-add-image')?.addEventListener('click', () => {
+        const input = document.getElementById('fileInput') as HTMLInputElement;
+        const listener = async () => {
+            const files = input.files;
+            if (files) {
+                for (const file of Array.from(files)) {
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        localImages.push({ name: file.name, data: e.target?.result as string });
+                        renderLocalImages();
+                    };
+                    reader.readAsDataURL(file);
+                }
+            }
+            input.removeEventListener('change', listener);
+        };
+        input.addEventListener('change', listener);
+        input.click();
+    });
+
+    // Handle Paste in Editor
+    editorContainer.addEventListener('paste', (e: ClipboardEvent) => {
+        const items = e.clipboardData?.items;
+        if (!items) return;
+        for (const item of Array.from(items)) {
+            if (item.type.indexOf('image') !== -1) {
+                const blob = item.getAsFile();
+                if (blob) {
+                    const reader = new FileReader();
+                    reader.onload = (ev) => {
+                        localImages.push({ name: `pasted_${Date.now()}.png`, data: ev.target?.result as string });
+                        renderLocalImages();
+                    };
+                    reader.readAsDataURL(blob);
+                    e.preventDefault();
+                }
+            }
+        }
+    });
 }
 
 function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' | 'replace' | 'delete' | 'search_replace' | 'rename' | 'select' | 'file_delete' | null, path: string, stripFirstLine: boolean, isClosed: boolean, start: number, end: number })[] {
@@ -1022,9 +1102,10 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
                         const isFull = c.type === 'file';
                         const typeLabel = isFull ? 'FULL' : 'PATCH';
                         const typeColor = isFull ? 'var(--vscode-charts-blue)' : 'var(--vscode-charts-orange)';
+                        const hunkAttr = c.hunkIndex !== undefined ? `data-hunk-index="${c.hunkIndex}"` : '';
                         
                         return `
-                        <div class="apply-row" data-path="${c.path}" data-block-index="${c.blockIndex}" data-hunk-index="${c.hunkIndex ?? ''}" data-target-id="block-${messageId}-${c.blockIndex}" style="display:flex; align-items:center; gap:8px; margin-bottom:6px; padding:4px; border-radius:4px; cursor:pointer;">
+                        <div class="apply-row" data-path="${c.path}" data-block-index="${c.blockIndex}" ${hunkAttr} data-target-id="block-${messageId}-${c.blockIndex}" style="display:flex; align-items:center; gap:8px; margin-bottom:6px; padding:4px; border-radius:4px; cursor:pointer;">
                             <span class="status-icon"><span class="codicon codicon-clock"></span></span>
                             <span style="font-weight:800; font-size:9px; color:${typeColor}; min-width:45px; border:1px solid ${typeColor}; border-radius:3px; text-align:center; padding:0 2px;">${typeLabel}</span>
                             <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px;">${c.label}</span>
@@ -1193,15 +1274,10 @@ function renderMissionControl(dataStr: string): string {
     }
 }
 
-function renderAddFilesBlock(rawContent: string, messageId: string): string {
-    // Sanitize: Ignore comments (#), bullets (-, *), and keep only valid looking paths
-    const files = rawContent.split('\n')
-        .map(f => f.trim())
-        .filter(f => f.length > 0 && !f.startsWith('#')) // Ignore comments
-        .map(f => f.replace(/^[-*]\s*/, '').trim()) // Remove bullets
-        .filter(f => f.length > 0 && f.includes('.')); // Keep only lines that look like filenames (have a dot)
+function renderAddFilesBlock(params: any, messageId: string): string {
+    const files: string[] = Array.isArray(params.paths) ? params.paths : [];
 
-    if (files.length === 0) return ""; // Don't show empty widget
+    if (files.length === 0) return "";
 
     const currentFiles = state.lastContextData?.files || [];
     let allIncluded = true;
@@ -1252,6 +1328,103 @@ function renderAddFilesBlock(rawContent: string, messageId: string): string {
                 data-block-id="${blockId}">
                 <span class="codicon ${btnIcon}"></span> ${btnText}
             </button>
+        </div>
+    </div>`;
+}
+
+function renderFileOpBlock(type: 'delete' | 'move' | 'prune', params: any, messageId: string): string {
+    const blockId = `file-op-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+    let title = "";
+    let icon = "";
+    let detailsHtml = "";
+    let buttonText = "";
+    let command = "";
+    let cmdData = {};
+
+    switch (type) {
+        case 'prune':
+            const prunePaths = Array.isArray(params.paths) ? params.paths : [];
+            title = "Propose Context Pruning";
+            icon = "codicon-clear-all";
+            buttonText = "Remove from Context";
+            detailsHtml = prunePaths.map((p: string) => `<div class="expansion-file-item"><span class="codicon codicon-history"></span> <span>${sanitizer.sanitize(p)}</span></div>`).join('');
+            command = "syncFilesContext";
+            cmdData = { remove: prunePaths };
+            break;
+        case 'delete':
+            const delPaths: string[] = Array.isArray(params.paths) ? params.paths : (params.path ? [params.path] : []);
+            title = "Propose Deletion (Files/Folders)";
+            icon = "codicon-trash";
+            
+            // Generate individual rows with buttons
+            detailsHtml = delPaths.map((p: string, idx: number) => {
+                const safePath = sanitizer.sanitize(p);
+                const rowId = `${blockId}-item-${idx}`;
+                return `
+                <div class="expansion-file-item" id="${rowId}" style="display:flex; justify-content:space-between; align-items:center; gap:10px; padding: 4px 8px;">
+                    <div style="display:flex; align-items:center; gap:8px; flex:1; min-width:0;">
+                        <span class="codicon codicon-file"></span>
+                        <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${safePath}</span>
+                    </div>
+                    <button class="code-action-btn delete-btn delete-single-btn" style="height:20px; font-size:9px; padding:0 6px; flex-shrink:0;"
+                        data-path="${safePath}" data-row-id="${rowId}">
+                        Delete
+                    </button>
+                </div>`;
+            }).join('');
+
+            // Special layout: The "Delete All" button goes in the footer
+            return `
+            <div class="file-operation-block" id="${blockId}">
+                <div class="file-operation-header">
+                    <span class="codicon ${icon}"></span> 
+                    <span>${title}</span>
+                </div>
+                <div class="expansion-body" style="padding: 8px 0;">
+                    <div class="expansion-file-list" style="margin-bottom:8px;">
+                        ${detailsHtml}
+                    </div>
+                    <div class="file-operation-actions" style="padding: 0 12px 8px 12px;">
+                        <button class="code-action-btn apply-btn delete-all-btn" style="width:100%; justify-content:center; background-color:var(--vscode-errorForeground) !important; color:white !important;"
+                            data-paths="${delPaths.join(',')}" data-block-id="${blockId}">
+                            Delete All Selected (${delPaths.length})
+                        </button>
+                    </div>
+                </div>
+            </div>`;
+        case 'move':
+            title = "Propose File Move/Rename";
+            icon = "codicon-move";
+            buttonText = "Apply Move";
+            detailsHtml = `
+                <div class="file-operation-details">
+                    <span class="path-old">${sanitizer.sanitize(params.src || params.source)}</span>
+                    <span class="codicon codicon-arrow-right"></span>
+                    <span class="path-new">${sanitizer.sanitize(params.dest || params.destination)}</span>
+                </div>`;
+            command = "renameFile";
+            cmdData = { originalPath: params.src || params.source, newPath: params.dest || params.destination };
+            break;
+    }
+
+    const safeCmdData = JSON.stringify(cmdData).replace(/"/g, '&quot;');
+    return `
+    <div class="file-operation-block" id="${blockId}">
+        <div class="file-operation-header">
+            <span class="codicon ${icon}"></span> 
+            <span>${title}</span>
+        </div>
+        <div class="expansion-body">
+            <div class="expansion-file-list" style="margin-bottom:12px;">
+                ${detailsHtml}
+            </div>
+            <div class="file-operation-actions">
+                <button class="code-action-btn apply-btn file-op-action-btn" 
+                    data-command="${command}"
+                    data-payload="${safeCmdData}">
+                    ${buttonText}
+                </button>
+            </div>
         </div>
     </div>`;
 }
@@ -1360,16 +1533,17 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
             // --- IMAGE GENERATION TAG PARSING ---
             const images: { html: string, start: number, end: number }[] = [];
-            const imgRegex = /<generateImage\s+([^>]*?)\s*\/>/gi;
+            const imgRegex = /<generate_image\s+([^>]*?)>([\s\S]*?)<\/generate_image>/gi;
             let imgMatch;
             while ((imgMatch = imgRegex.exec(contentWithoutThoughts)) !== null) {
                 const attrStr = imgMatch[1];
+                const prompt = imgMatch[2].trim();
                 const attrs: any = {};
                 const attrRegex = /(\w+)=["']([^"']*)["']/g;
                 let m;
                 while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
 
-                const imgHtml = renderImageGenBlock(attrs.prompt || "", attrs.path || "", attrs.width, attrs.height);
+                const imgHtml = renderImageGenBlock(prompt, attrs.path || "", attrs.width, attrs.height);
                 images.push({ html: imgHtml, start: imgMatch.index, end: imgMatch.index + imgMatch[0].length });
             }
 
@@ -1382,16 +1556,42 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 debugReports.push({ html: dHtml, start: dMatch.index, end: dMatch.index + dMatch[0].length });
             }
 
-            // --- ADD FILES TAG PARSING ---
-            const addFiles: { html: string, start: number, end: number }[] =[];
-            const addFilesRegex = /<add_files>([\s\S]*?)<\/add_files>/gi;
-            let afMatch;
-            while ((afMatch = addFilesRegex.exec(contentWithoutThoughts)) !== null) {
-                const afHtml = renderAddFilesBlock(afMatch[1], messageId);
-                addFiles.push({ html: afHtml, start: afMatch.index, end: afMatch.index + afMatch[0].length });
+            // --- FILE OPERATIONS & CONTEXT TAG PARSING ---
+            const fileOps: { html: string, start: number, end: number }[] = [];
+            const opRegex = /<(move_file|delete_file|add_files_to_context|remove_files_from_context)\s+([^>]*?)\s*\/>/gi;
+            let opMatch;
+            while ((opMatch = opRegex.exec(contentWithoutThoughts)) !== null) {
+                const tagName = opMatch[1].toLowerCase();
+                const attrStr = opMatch[2];
+                const attrs: any = {};
+                // Enhanced attribute regex to handle single/double quotes and escaped sequences
+                const attrRegex = /(\w+)=(['"])([\s\S]*?)\2/g;
+                let m;
+                while ((m = attrRegex.exec(attrStr)) !== null) {
+                    attrs[m[1]] = unescapeXml(m[3]);
+                }
+                
+                // Handle JSON arrays in paths (often wrapped in different quote types)
+                if (attrs.paths && (attrs.paths.trim().startsWith('[') || attrs.paths.trim().startsWith('{'))) {
+                    try { 
+                        // First replace XML entities, then parse
+                        const cleanJson = attrs.paths.replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+                        attrs.paths = JSON.parse(cleanJson); 
+                    } catch(e){
+                        console.error("Failed to parse paths attribute as JSON", e);
+                    }
+                }
+
+                let opType: 'delete' | 'move' | 'prune' | 'add_ctx' = 'delete';
+                if (tagName === 'move_file') opType = 'move';
+                if (tagName === 'remove_files_from_context') opType = 'prune';
+                if (tagName === 'add_files_to_context') opType = 'add_ctx';
+
+                const opHtml = opType === 'add_ctx' ? renderAddFilesBlock(attrs, messageId) : renderFileOpBlock(opType, attrs, messageId);
+                fileOps.push({ html: opHtml, start: opMatch.index, end: opMatch.index + opMatch[0].length });
             }
 
-            messageDiv.querySelectorAll('.plan-scratchpad, .skill-creation-block, .generation-block, .context-expansion-block').forEach(el => el.remove());
+            messageDiv.querySelectorAll('.plan-scratchpad, .skill-creation-block, .generation-block, .context-expansion-block, .file-operation-block').forEach(el => el.remove());
 
             // Render Thoughts
             thoughts.forEach(thought => {
@@ -1406,11 +1606,12 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             // SURGICAL RENDERING LOGIC
             // 1. Identify all potential UI elements
             const codeBlocks = extractFilePaths(processedContent);
+            // --- ALL CANDIDATES SORTING ---
             const allCandidates =[
                 ...codeBlocks.map(b => ({ ...b, elementType: 'code' as const })),
                 ...skills.map(s => ({ start: s.start, end: s.end, html: s.html, elementType: 'skill' as const })),
                 ...images.map(i => ({ start: i.start, end: i.end, html: i.html, elementType: 'image' as const })),
-                ...addFiles.map(a => ({ start: a.start, end: a.end, html: a.html, elementType: 'addFiles' as const })),
+                ...fileOps.map(o => ({ start: o.start, end: o.end, html: o.html, elementType: 'fileOp' as const })),
                 ...debugReports.map(d => ({ start: d.start, end: d.end, html: d.html, elementType: 'debugReport' as const }))
             ].sort((a, b) => a.start - b.start);
 
@@ -1434,8 +1635,8 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     fragment.appendChild(textDiv);
                 }
 
-                // B. Render the UI element (Code Block or Skill or Image or AddFiles or DebugReport)
-                if (el.elementType === 'skill' || el.elementType === 'image' || el.elementType === 'addFiles' || el.elementType === 'debugReport') {
+                // B. Render the UI element (Code Block or Skill or Image or AddFiles or FileOp or DebugReport)
+                if (el.elementType === 'skill' || el.elementType === 'image' || el.elementType === 'addFiles' || el.elementType === 'fileOp' || el.elementType === 'debugReport') {
                     const uiDiv = document.createElement('div');
                     uiDiv.innerHTML = el.html;
                     fragment.appendChild(uiDiv);
@@ -1847,9 +2048,10 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                         const isFull = c.type === 'file';
                         const typeLabel = isFull ? 'FULL' : 'PATCH';
                         const typeColor = isFull ? 'var(--vscode-charts-blue)' : 'var(--vscode-charts-orange)';
+                        const hunkAttr = c.hunkIndex !== undefined ? `data-hunk-index="${c.hunkIndex}"` : '';
                         
                         return `
-                        <div class="apply-row" data-path="${c.path}" data-block-index="${c.blockIndex}" data-hunk-index="${c.hunkIndex ?? ''}" data-target-id="block-${messageId}-${c.blockIndex}" style="display:flex; align-items:center; gap:8px; margin-bottom:6px; padding:4px; border-radius:4px; cursor:pointer;">
+                        <div class="apply-row" data-path="${c.path}" data-block-index="${c.blockIndex}" ${hunkAttr} data-target-id="block-${messageId}-${c.blockIndex}" style="display:flex; align-items:center; gap:8px; margin-bottom:6px; padding:4px; border-radius:4px; cursor:pointer;">
                             <span class="status-icon"><span class="codicon codicon-clock"></span></span>
                             <span style="font-weight:800; font-size:9px; color:${typeColor}; min-width:45px; border:1px solid ${typeColor}; border-radius:3px; text-align:center; padding:0 2px;">${typeLabel}</span>
                             <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px;">${c.label}</span>
@@ -1993,6 +2195,11 @@ function sanitizeForTTS(text: string): string {
 }
 
 export function addMessage(message: any, isFinal: boolean = true) {
+    // Hide welcome message as soon as any content is added
+    if (dom.welcomeMessage) {
+        dom.welcomeMessage.style.display = 'none';
+    }
+
     if (message.role === 'system' && message.content && typeof message.content === 'string' && message.content.startsWith('Attached file:')) {
         addAttachment(message);
     } else {
@@ -2003,50 +2210,77 @@ export function addMessage(message: any, isFinal: boolean = true) {
 function addAttachment(message: any) {
     if (!dom.attachmentsContainer) return;
     const wrapper = dom.attachmentsContainer.closest('.special-zone-message');
-    
     if (wrapper) (wrapper as HTMLElement).style.display = 'flex';
 
-    let fileName = 'file';
-    let contentHtml = '';
-    const nameMatch = message.content.match(/\*\*([^*]+)\*\*/);
-    const codeMatch = message.content.match(/```(?:\w*)\n([\s\S]+?)\n```/);
-    if (nameMatch) fileName = nameMatch[1];
-    if (codeMatch) contentHtml = `<pre>${sanitizer.sanitize(codeMatch[1])}</pre>`;
-    
+    const data = message.attachmentData || {};
+    const fileName = data.name || 'Unknown File';
+    const textContent = data.text || '';
+    const images = data.images || [];
+
     const details = document.createElement('details');
     details.className = 'attachment-item-details';
     details.dataset.messageId = message.id;
 
+    // Create an interleaved preview: Images first as a gallery, then searchable text.
+    // If the data contains page-markers, we could interleave precisely. 
+    // For now, we provide a structured document view.
     const summaryEl = document.createElement('summary');
     summaryEl.className = 'attachment-item-summary';
+    
+    const isPdf = fileName.toLowerCase().endsWith('.pdf');
+    const icon = isPdf ? 'codicon-file-pdf' : 'codicon-file-binary';
+
     summaryEl.innerHTML = `
         <div class="attachment-info">
-            <span class="codicon codicon-file-text"></span> 
-            <span>${fileName}</span>
+            <span class="codicon ${icon}"></span> 
+            <span style="font-weight: 600;">${fileName}</span>
+            <span class="generation-stats" style="margin-left:10px; opacity:0.7;">Imported Data</span>
         </div>
         <div class="attachment-controls">
-            <button class="view-attachment-btn" title="View Content"><i class="codicon codicon-eye"></i></button>
-            <button class="remove-attachment-btn" title="Remove Attachment"><i class="codicon codicon-trash"></i></button>
+            <button class="remove-attachment-btn" title="Delete from Chat"><i class="codicon codicon-trash"></i></button>
         </div>
     `;
+
+    // --- UPDATED IMAGE GALLERY RENDERING ---
+    let bodyHtml = `<div class="attachment-content">`;
     
-    (summaryEl.querySelector('.remove-attachment-btn') as HTMLElement).addEventListener('click', (e) => {
+    if (images && images.length > 0) {
+        const imageCards = images.map((img: any) => {
+            // Ensure we use the proper data URL format
+            const src = img.data.startsWith('data:') ? img.data : `data:image/png;base64,${img.data}`;
+            return `
+                <div class="staged-image-card" style="background-image: url(${src}); width: 140px; height: 140px; flex-shrink: 0; cursor: zoom-in;" 
+                     onclick="const w=window.open(); w.document.write('<img src=\\'${src}\\' style=\\'max-width:100%\\'>')">
+                </div>`;
+        }).join('');
+
+        bodyHtml += `
+            <div style="margin-bottom: 15px;">
+                <div style="font-size: 10px; font-weight: 800; opacity: 0.6; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">
+                    <i class="codicon codicon-device-camera"></i> Extracted Visuals (${images.length})
+                </div>
+                <div style="display: flex; gap: 12px; overflow-x: auto; padding-bottom: 10px; scrollbar-width: thin;">
+                    ${imageCards}
+                </div>
+            </div>`;
+    }
+
+    bodyHtml += `
+        <div style="font-size: 10px; font-weight: 800; opacity: 0.5; margin-bottom: 5px; text-transform: uppercase;">Extracted Text Content</div>
+        <div class="markdown-body" style="font-size: 12px; line-height: 1.6; max-height: 400px; overflow-y: auto; padding: 12px; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px;">
+            ${sanitizer.sanitize(marked.parse(textContent) as string)}
+        </div>
+    </div>`;
+
+    details.innerHTML = bodyHtml;
+    
+    details.prepend(summaryEl);
+
+    summaryEl.querySelector('.remove-attachment-btn')?.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
         vscode.postMessage({ command: 'requestDeleteMessage', messageId: message.id });
     });
-
-    (summaryEl.querySelector('.view-attachment-btn') as HTMLElement).addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        details.open = !details.open;
-    });
-    
-    details.appendChild(summaryEl);
-    const contentDiv = document.createElement('div');
-    contentDiv.className = 'attachment-content';
-    contentDiv.innerHTML = contentHtml;
-    details.appendChild(contentDiv);
 
     dom.attachmentsContainer.appendChild(details);
     
@@ -2104,9 +2338,8 @@ function addChatMessage(message: any, isFinal: boolean = true) {
         : (typeof rawContent === 'string' ? rawContent : '');
 
     if (role !== 'system') {
-        if (!isMultipart) {
-            actions.appendChild(createButton('', 'codicon-edit', () => startEdit(messageDiv, id, role), 'msg-action-btn', 'Edit Message'));
-        }
+        actions.appendChild(createButton('', 'codicon-edit', () => startEdit(messageDiv, id, role), 'msg-action-btn', 'Edit Message'));
+        
         if (role === 'user') {
             actions.appendChild(createButton('', 'codicon-sync', () => vscode.postMessage({ command: 'regenerateFromMessage', messageId: id }), 'msg-action-btn', 'Regenerate Response'));
         }
@@ -2122,15 +2355,17 @@ function addChatMessage(message: any, isFinal: boolean = true) {
     }, 'msg-action-btn', 'Copy Message');
     actions.appendChild(copyBtn);
 
-    const speakBtn = createButton('', 'codicon-megaphone', (e) => {
-        const textToRead = sanitizeForTTS(textForClipboard);
-        if (typeof (window as any).halSpeak === 'function') {
-            // Pass the button element (e.currentTarget) to show the spinner
-            const btn = (e.currentTarget as HTMLElement);
-            (window as any).halSpeak(textToRead, true, btn);
-        }
-    }, 'msg-action-btn', 'Read Explanation');
-    actions.appendChild(speakBtn);
+    // Only add megaphone if TTS is enabled
+    if (state.capabilities?.enableTTS) {
+        const speakBtn = createButton('', 'codicon-megaphone', (e) => {
+            const textToRead = sanitizeForTTS(textForClipboard);
+            if (typeof (window as any).halSpeak === 'function') {
+                const btn = (e.currentTarget as HTMLElement);
+                (window as any).halSpeak(textToRead, true, btn);
+            }
+        }, 'msg-action-btn', 'Read Explanation');
+        actions.appendChild(speakBtn);
+    }
 
     if (role === 'assistant') {
         actions.appendChild(createButton('', 'codicon-save', () => vscode.postMessage({ command: 'saveMessageAsPrompt', content: textForClipboard }), 'msg-action-btn', 'Save as Prompt'));
@@ -2192,9 +2427,18 @@ export function updateContext(contextText: string, files: string[] = [], skills:
     const displayContent = contextText || (files.length > 0 ? "_Loading project content..._" : "");
     const renderedMarkdown = displayContent ? sanitizer.sanitize(marked.parse(displayContent) as string, SANITIZE_CONFIG) : "";
 
-    const isExternal = (f: string) => f.includes('.lollms/web_cache') || f.includes('.lollms/temp_scripts') || f.startsWith('http');
-    const externalFiles = files.filter(isExternal);
-    const projectFiles = files.filter(f => !isExternal(f));
+    // Categorize as external if it's in the cache, a web URL, or an absolute path (outside workspace)
+    // Strictly define what belongs in the "Project Files" list
+    // Only relative paths that don't belong to the internal cache are allowed.
+    const isProjectFile = (f: string) => {
+        const isAbsolute = f.includes(':') || f.startsWith('/') || f.startsWith('\\');
+        const isInternal = f.includes('.lollms/') || f.startsWith('http');
+        return !isAbsolute && !isInternal;
+    };
+
+    const projectFiles = files.filter(isProjectFile);
+    // Everything else (Cache, Absolute paths, Web) is External/Research
+    const externalFiles = files.filter(f => !isProjectFile(f));
 
     const renderFileList = (list: string[], emptyMsg: string, allowSummarize: boolean = false) => {
         if (!list || list.length === 0) return `<div class="empty-context-msg">${emptyMsg}</div>`;

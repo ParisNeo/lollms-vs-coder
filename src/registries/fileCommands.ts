@@ -365,8 +365,17 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                     applyCount++;
                 } else {
                     const fixBtn = "Fix with AI";
-                    // If in silent mode (e.g. Workspace Repair Engine), we auto-select "Fix with AI" 
-                    // instead of blocking the execution with a UI dialog.
+                    const isAutoFixEnabled = panel?._discussionCapabilities?.autoFix !== false;
+
+                    // 1. If AutoFix is disabled, just report the error and stop.
+                    if (!isAutoFixEnabled) {
+                        if (!options?.silent) {
+                            vscode.window.showErrorMessage(`Failed to apply patch to ${filePath}: ${result.error}`);
+                        }
+                        return { success: false, error: result.error };
+                    }
+
+                    // 2. If enabled, proceed with the UI prompt or silent repair
                     const selection = options?.silent ? fixBtn : await vscode.window.showErrorMessage(
                         `Could not apply search/replace block in ${filePath}: ${result.error}`,
                         fixBtn, "Cancel"

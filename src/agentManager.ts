@@ -4,7 +4,7 @@ import { ContextManager } from './contextManager';
 import { GitIntegration } from './gitIntegration';
 import { InfoPanel } from './commands/infoPanel';
 import { PlanParser } from './planParser';
-import { stripThinkingTags } from './utils';
+import { stripThinkingTags, getProcessedSystemPrompt } from './utils';
 import { ProcessManager } from './processManager';
 import { DiscussionManager, Discussion } from './discussionManager';
 import * as fs from 'fs/promises';
@@ -56,7 +56,7 @@ export class AgentManager {
     private processManager?: ProcessManager;
     public currentWorkspaceFolder?: vscode.WorkspaceFolder;
     private currentTaskIndex: number = 0;
-    private currentDiscussion?: Discussion;
+    public currentDiscussion?: Discussion;
     private toolManager: ToolManager;
     private codeGraphManager: CodeGraphManager;
     private skillsManager: SkillsManager;
@@ -1102,7 +1102,9 @@ Please provide a clear, concise final response to the user summarizing the outco
         objective: string, 
         signal: AbortSignal
     ): Promise<string> {
-        if (!this.currentWorkspaceFolder || !this.currentDiscussion || !this.processManager) return "No workspace.";
+        if (!this.currentWorkspaceFolder || !this.currentDiscussion || !this.processManager) {
+            throw new Error("Debugger context missing (workspace or discussion).");
+        }
         const processId = this.processManager.getForDiscussion(this.currentDiscussion.id)?.id || "orchestrator";
 
         // 0. Cleanup
@@ -1111,19 +1113,58 @@ Please provide a clear, concise final response to the user summarizing the outco
         // 1. Setup Sandbox
         const isClean = await this.gitIntegration.isClean(this.currentWorkspaceFolder);
         if (!isClean) {
-            this.ui.addMessageToDiscussion({ role: 'system', content: "❌ **Mission Aborted**: Workspace is dirty. Commit your changes first." });
-            throw new Error("Dirty workspace");
+            const message = `🛑 **Debug Mission Blocked**
+
+I cannot start an autonomous debug mission while you have uncommitted changes. 
+
+**Why?** 
+I will be creating a sandbox branch and applying surgical patches. To ensure you can roll back safely, your workspace must be clean.
+
+**To continue:**
+- Run: \`git add . && git commit -m "save before debug"\`
+- Or: \`git stash\`
+- Then click the **Debug** badge again.`;
+
+            await this.ui.addMessageToDiscussion({ 
+                role: 'system', 
+                content: message 
+            });
+            
+            // Unregister immediately to stop the UI overlay
+            this.processManager.unregister(processId);
+            this.ui.updateGeneratingState();
+            return "Workspace dirty";
         }
         const debugBranch = `debug/sandbox-${Date.now()}`;
         await this.gitIntegration.createAndCheckoutBranch(this.currentWorkspaceFolder, debugBranch);
         this.ui.addMessageToDiscussion({ role: 'system', content: `**🛰️ Orchestrator**\n*Sandbox Ready: Switched to branch \`${debugBranch}\`.*` });
 
-        // 2. Step 1: Worker Drafting
+        // 2. Step 1: Worker Drafting (Grounded in context)
         this.processManager.updateDescription(processId, "Phase 1: Worker drafting solution...");
         this.ui.updateGeneratingState();
         
         const model = this.currentDiscussion.model || this.lollmsApi.getModelName();
-        const workerSystemPrompt = await getProcessedSystemPrompt('chat', this.currentDiscussion.capabilities);
+        
+        // Fetch current context so the worker can actually see the code
+        const contextData = await this.contextManager.getContextContent({ 
+            includeTree: true, 
+            modelName: model,
+            signal
+        });
+
+        const workerSystemPrompt = await getProcessedSystemPrompt(
+            'chat', 
+            this.currentDiscussion.capabilities,
+            undefined,
+            undefined,
+            false,
+            {
+                tree: contextData.projectTree,
+                files: contextData.selectedFilesContent,
+                skills: contextData.skillsContent
+            }
+        );
+
         const workerResponse = await this.lollmsApi.sendChat([
             { role: 'system', content: workerSystemPrompt },
             ...this.chatHistory,
@@ -1165,38 +1206,50 @@ Please provide a clear, concise final response to the user summarizing the outco
     }
 
     /**
-     * Dedicated Debugger Agent Loop (Mirroring the Librarian structure)
+     * Dedicated Debugger Agent Loop: Iterative Fix & Verify
      */
     public async runDebuggerAgent(objective: string, signal: AbortSignal): Promise<string> {
-        // 1. Initialize Sandbox if workspace is clean
-        if (this.currentWorkspaceFolder) {
-            const isClean = await this.gitIntegration.isClean(this.currentWorkspaceFolder);
-            if (isClean) {
-                const debugBranch = `debug/sandbox-${Date.now()}`;
-                await this.gitIntegration.createAndCheckoutBranch(this.currentWorkspaceFolder, debugBranch);
-                this.ui.addMessageToDiscussion({ 
-                    role: 'system', 
-                    content: `🛡️ **Debugger Sandbox**: Switched to branch \`${debugBranch}\`. I can now safely run instrumentation.` 
-                });
-            }
-        }
+        if (!this.currentWorkspaceFolder || !this.currentDiscussion) return "No context.";
 
         const dbgMsgId = 'debug_report_' + Date.now();
-        await this.addMessageToDiscussion({ 
+        let fullDebugHistoryDisplay: string[] = [];
+
+        await this.ui.addMessageToDiscussion({ 
             id: dbgMsgId, 
             role: 'system', 
-            content: `**🧪 Debug Specialist**\n*Starting runtime validation for: "${objective}"*` 
+            content: `**🧪 Debug Specialist**\n*Objective: "${objective}"*\n\nInitializing...` 
         });
 
-        const maxSteps = this.currentDiscussion?.capabilities?.maxDebugSteps || 10;
-        const model = this.currentDiscussion?.model || this.lollmsApi.getModelName();
-        const systemPrompt = await getProcessedSystemPrompt('debugger', this.currentDiscussion?.capabilities);
+        const maxSteps = this.currentDiscussion.capabilities?.maxDebugSteps || 10;
+        const model = this.currentDiscussion.model || this.lollmsApi.getModelName();
+        const enabledTools = this.getEnabledTools();
+        const toolDescriptions = enabledTools.map(t => `- ${t.name}: ${t.description}`).join('\n');
         
-        // Debugger sees the full story so far
-        const chatHistory: ChatMessage[] = [
+        const systemPrompt = `You are the **Autonomous Debugging Engine**. Your mission: "${objective}".
+You MUST reach the goal by iterating: Run -> Observe -> Fix -> Verify.
+
+### 🧪 SURGICAL REPAIR PROTOCOL:
+1. **Reproduction**: Run the code immediately to identify the failure.
+2. **Fixing**: Use SEARCH/REPLACE (AIDER) blocks or full file writes.
+3. **Validation**: After every fix, you MUST run the code again to verify the fix works.
+4. **Conclusion**: Only stop when the code runs without errors AND the objective is met.
+
+### 🛠️ TOOLS AVAILABLE:
+${toolDescriptions}
+
+OUTPUT JSON ONLY for tool calls.
+\`\`\`json
+{
+  "thought": "Reasoning...",
+  "tool": "tool_name",
+  "params": { ... }
+}
+\`\`\``;
+
+        // Maintain internal loop history to prevent amnesia
+        const loopHistory: ChatMessage[] = [
             { role: 'system', content: systemPrompt },
-            ...this.chatHistory,
-            { role: 'user', content: `The files are updated on disk. Verify runtime behavior for: "${objective}". Use tools to run, set stop points, and check variables. End with a report.` }
+            ...this.chatHistory.slice(-3) // Keep some recent context
         ];
 
         let step = 0;
@@ -1204,29 +1257,62 @@ Please provide a clear, concise final response to the user summarizing the outco
             if (signal.aborted) break;
             step++;
 
-            // Refresh reality
+            // 1. Provide Current State (Disk is truth)
             const currentData = await this.contextManager.getContextContent({ includeTree: true, modelName: model, signal });
-            chatHistory.push({ role: 'system', content: `[DISK STATE]\n${currentData.projectTree}\n${currentData.selectedFilesContent}`, skipInPrompt: true });
+            const diskStateMsg: ChatMessage = { 
+                role: 'system', 
+                content: `[CURRENT DISK STATE]\n${currentData.projectTree}\n${currentData.selectedFilesContent}`, 
+                skipInPrompt: true 
+            };
 
-            const response = await this.lollmsApi.sendChat(chatHistory, null, signal, model);
-            chatHistory.push({ role: 'assistant', content: response });
+            // Prepare prompt for this specific step
+            const currentStepPrompt: ChatMessage[] = [
+                ...loopHistory,
+                diskStateMsg,
+                { role: 'user', content: step === 1 ? `Begin the debug mission.` : `Previous tool result received. Analyze and decide next step (Step ${step}/${maxSteps}).` }
+            ];
+
+            // 2. Generate Next Action
+            const response = await this.lollmsApi.sendChat(currentStepPrompt, null, signal, model);
+            loopHistory.push({ role: 'assistant', content: response });
 
             const cleanResponse = stripThinkingTags(response);
             const toolMatch = this.parseToolCall(cleanResponse);
 
             if (toolMatch) {
+                // 3. Execute Action
                 const res = await this.executeTask(toolMatch.name, toolMatch.params, signal);
-                chatHistory.push({ role: 'user', content: `[OBSERVATION]\n${res.output}` });
+                
+                // Record observation in history
+                loopHistory.push({ role: 'user', content: `[OBSERVATION]\n${res.output}` });
+                fullDebugHistoryDisplay.push(`**Step ${step}:** \`${toolMatch.name}\`\n${res.output}`);
+
+                // 4. Update UI
                 if (this.ui.updateMessageContent) {
-                    this.ui.updateMessageContent(dbgMsgId, `**🧪 Debugger (Step ${step})**\n*Last Action: \`${toolMatch.name}\`*\n\n${res.output.substring(0, 300)}...`);
+                    const logContent = fullDebugHistoryDisplay.map((entry, i) => {
+                        const title = entry.split('\n')[0];
+                        return `<details><summary>${title}</summary>\n\n${entry}\n\n</details>`;
+                    }).join('\n');
+                    
+                    await this.ui.updateMessageContent(dbgMsgId, `**🧪 Debug Specialist**\n*Objective: "${objective}"*\n\n${logContent}`);
                 }
-            } else if (cleanResponse.toLowerCase().includes("report") || step === maxSteps) {
-                if (this.ui.updateMessageContent) this.ui.updateMessageContent(dbgMsgId, cleanResponse);
+
+                // 5. If disk was touched, force a context refresh for next loop iteration
+                if (['generate_code', 'replaceCode', 'applyFileContent', 'delete_file', 'move_file'].includes(toolMatch.name)) {
+                    await this.contextManager.getContextContent({ includeTree: true, modelName: model, signal });
+                }
+            } else if (cleanResponse.toLowerCase().includes("mission accomplished") || cleanResponse.toLowerCase().includes("verified")) {
+                if (this.ui.updateMessageContent) {
+                    this.ui.updateMessageContent(dbgMsgId, `**🧪 Debug Specialist**\n\n${cleanResponse}`);
+                }
                 return "Complete";
             } else {
-                chatHistory.push({ role: 'user', content: "Continue your investigation or provide the Final Report." });
+                loopHistory.push({ role: 'user', content: "No tool call detected. You must use a tool to progress or state 'Mission Accomplished'." });
             }
         }
+        
+        const finalReport = `🛑 **Debugger Stopped**: Reached maximum iteration limit (${maxSteps} steps) without reaching a verified conclusion.`;
+        if (this.ui.updateMessageContent) this.ui.updateMessageContent(dbgMsgId, finalReport);
         return "Max steps reached";
     }
 

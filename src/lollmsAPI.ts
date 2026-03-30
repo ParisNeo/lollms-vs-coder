@@ -382,13 +382,17 @@ export class LollmsAPI {
     }
   }
 
-  async extractText(base64Data: string, fileName: string): Promise<string> {
+  /**
+   * Enhanced extraction that returns both text and a list of extracted images (base64).
+   */
+  async extractPDFVisual(base64Data: string, fileName: string): Promise<{ text: string, images?: { name: string, data: string }[] }> {
     if (!this.config.useLollmsExtensions) {
-        return "[Lollms extensions disabled]";
+        throw new Error("Lollms extensions disabled");
     }
 
-    const extractUrl = `${this.baseUrl}/v1/extract_text`;
+    const extractUrl = `${this.baseUrl}/v1/extract_pdf_full`; // Correct Lollms v1 extension endpoint
     const isHttps = extractUrl.startsWith('https');
+    
     const options: RequestInit = {
         method: 'POST',
         headers: {
@@ -397,21 +401,38 @@ export class LollmsAPI {
         },
         body: JSON.stringify({
             file: base64Data,
-            filename: fileName
+            filename: fileName,
+            extract_images: true
         }),
     };
-
-    if (isHttps) {
-        options.agent = this.httpsAgent;
-    }
 
     const response = await fetch(extractUrl, {
         ...options,
         agent: isHttps ? this.httpsAgent : undefined
     });
+
     if (!response.ok) {
-        throw new Error(`Failed to extract text: ${response.status}`);
+        // Fallback to standard text extraction if visual one fails
+        const text = await this.extractText(base64Data, fileName);
+        return { text };
     }
+
+    return await response.json();
+  }
+
+  async extractText(base64Data: string, fileName: string): Promise<string> {
+    if (!this.config.useLollmsExtensions) return "[Lollms extensions disabled]";
+
+    const extractUrl = `${this.baseUrl}/v1/extract_text`;
+    const isHttps = extractUrl.startsWith('https');
+    const options: RequestInit = {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.config.apiKey}` },
+        body: JSON.stringify({ file: base64Data, filename: fileName }),
+    };
+
+    const response = await fetch(extractUrl, { ...options, agent: isHttps ? this.httpsAgent : undefined });
+    if (!response.ok) throw new Error(`Failed to extract text: ${response.status}`);
     const data = await response.json();
     return data.text || '';
   }
@@ -494,7 +515,7 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
     onChunk?: ((chunk: string) => void) | null,
     signal?: AbortSignal,
     modelOverride?: string,
-    options?: { thinking?: boolean, capabilities?: any }
+    options?: { thinking?: boolean, capabilities?: any, temperature?: number }
   ): Promise<string> {
     const backend = this.config.backendType;
     const model = modelOverride || this.config.modelName;
@@ -578,6 +599,9 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
             model, 
             messages: sanitizedMessages, 
             stream,
+            options: {
+                temperature: options?.temperature
+            }
         };
         // Only inject the 'think' key if explicitly requested to avoid 500 on standard models
         if (isThinkingActive) {
@@ -606,6 +630,7 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
             model, 
             messages: sanitizedMessages, 
             stream,
+            temperature: options?.temperature
         };
         if (isThinkingActive) {
             // OpenAI o1/o3 style

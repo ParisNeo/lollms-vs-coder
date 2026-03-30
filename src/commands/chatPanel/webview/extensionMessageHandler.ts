@@ -81,10 +81,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
                     renderMessageContent(message.id, message.fullContent, true);
                     
-                    // HAL9000: Speak the result
-                    if (typeof (window as any).halSpeak === 'function') {
-                        // Strip markdown for cleaner speech
-                        const plainText = message.fullContent.replace(/[#*`]/g, '');
+                    // HAL9000: Speak the result only if enabled in capabilities
+                    if (state.capabilities?.enableTTS && typeof (window as any).halSpeak === 'function') {
+                        // Strip markdown and code blocks for cleaner speech
+                        const plainText = message.fullContent.replace(/```[\s\S]*?```/g, '').replace(/[#*`]/g, '');
                         (window as any).halSpeak(plainText);
                     }
                 }
@@ -175,6 +175,14 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (dom.welcomeMessage) {
                         dom.welcomeMessage.style.display = hasChatContent ? 'none' : 'block';
                     }
+
+                    if (dom.attachmentsContainer) {
+                        const wrapper = dom.attachmentsContainer.closest('.special-zone-message');
+                        if (wrapper) {
+                            (wrapper as HTMLElement).style.display = dom.attachmentsContainer.children.length > 0 ? 'flex' : 'none';
+                        }
+                    }
+
                     setGeneratingState(false);
                     if(dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
                 }
@@ -252,6 +260,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const interInput = document.getElementById('modal-inter-token-timeout') as HTMLInputElement;
                     if (interInput) interInput.value = (caps.interTokenTimeout ?? 0).toString();
 
+                    const tempInput = document.getElementById('modal-temperature') as HTMLInputElement;
+                    const tempVal = document.getElementById('modal-temperature-val');
+                    if (tempInput) {
+                        tempInput.value = (caps.temperature ?? 0.7).toString();
+                        if (tempVal) tempVal.textContent = tempInput.value;
+                    }
+
                     // Trigger a re-population of voices to ensure selection matches
                     if (typeof window.speechSynthesis.onvoiceschanged === 'function') {
                         (window.speechSynthesis.onvoiceschanged as any)();
@@ -269,7 +284,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
 
                     if (dom.capDebugMode) dom.capDebugMode.checked = !!caps.debugMode;
-                    if (dom.capMaxDebugSteps) dom.capMaxDebugSteps.value = caps.maxDebugSteps || 10;
+                    if (dom.capMaxDebugSteps) dom.capMaxDebugSteps.value = (caps.maxDebugSteps || 10).toString();
 
                     if (dom.activeToolsIndicator) {
                         dom.activeToolsIndicator.innerHTML = '';

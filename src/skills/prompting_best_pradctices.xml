@@ -1,0 +1,129 @@
+<skill id="safe-store-core" title="SafeStore Core Class" description="Primary API for local semantic storage, vectorization, and document management." category="ai/knowledge_management/safe_store">
+    <content>
+        <![CDATA[    
+# Artifact System Skill – Best Practices (2026 Edition)
+
+**Purpose**: Teach the model how to correctly use persistent **Artifacts** while avoiding common failure modes (especially nesting `<artifact>` inside markdown code blocks and type anchoring).
+
+## Core Concept
+
+Artifacts are **persistent, version-controlled** objects (code files, documents, notes, skills, prompts, etc.).  
+They are **completely separate** from temporary markdown code blocks.
+
+### Critical Distinction (Always Emphasize First)
+
+- **Markdown code blocks** (` ```python ... ``` `) → **Temporary display** only. Use them to show code to the user.
+- **Artifacts** (`<artifact>...</artifact>` XML tags) → **Persistent storage** with automatic versioning.
+
+**❌ NEVER do this** (this mistake breaks artifact creation):
+
+```xml
+<artifact name="example.ext" type="type">
+...
+</artifact>
+```
+
+**✅ Correct way**: Output the `<artifact>` tag **directly** as raw XML in the response, never inside any markdown fence.
+
+## Key Prompting Principles Applied (2026 Best Practices)
+
+- **Primacy Effect**: Place the most critical guardrails (distinction + anti-pattern) at the very beginning.
+- **Recency Effect**: Reinforce the most important rules at the end.
+- **Avoid Anchoring Bias**: Use neutral examples and explicitly instruct against defaulting to one type (e.g., python).
+- **Clarity & Structure**: Use clear sections, ❌/✅ pairs, and consistent formatting.
+- **Output Contract**: Always require a short human-readable explanation outside the XML tag.
+- **Lost-in-the-Middle Avoidance**: Keep instructions focused and well-delimited.
+
+## Supported Artifact Types
+(Insert your actual list here, e.g.:)
+`python, javascript, typescript, html, css, markdown, text, json, yaml, toml, sql, prompt, skill, ...`
+
+**Rule**: Always choose the **most accurate type** for the content. Never default to any single language.
+
+## How to Use Artifacts
+
+You **MUST** always add a short, natural explanation **outside** the XML tag explaining what you did and why.  
+Never respond with only XML tags.
+
+### Option A: CREATE or REPLACE (Full Content)
+
+```xml
+<artifact name="filename.ext" type="appropriate_type">
+Full content of the artifact goes here...
+</artifact>
+```
+
+### Option B: HANDLE (Reference previous code block – no duplication)
+
+Use when you already showed code in a markdown block earlier in the conversation.
+
+```xml
+<artifact name="filename.ext" type="appropriate_type" handle="msg_idx:block_idx" />
+```
+
+- `msg_idx`: 0-based index of the message
+- `block_idx`: 0-based index of the fenced code block inside that message
+
+### Option C: PATCH (Targeted Search/Replace Updates)
+
+Best for small, precise changes.
+
+```xml
+<artifact name="filename.ext" type="appropriate_type">
+<<<<<<< SEARCH
+exact old lines here (copy verbatim)
+=======
+new lines here
+>>>>>>> REPLACE
+
+<<<<<<< SEARCH
+another exact section
+=======
+replacement text
+>>>>>>> REPLACE
+</artifact>
+```
+
+**Patch Rules**:
+- Keep each SEARCH block short (ideally 1–5 lines)
+- SEARCH must match **exactly** (character by character)
+- You can have multiple SEARCH/REPLACE blocks in one tag
+- Always end with `>>>>>>> REPLACE`
+
+### Option D: RENAME + UPDATE
+
+```xml
+<artifact name="new_name.ext" type="appropriate_type" rename="old_name.ext">
+... full content or SEARCH/REPLACE blocks ...
+</artifact>
+```
+
+### Option E: REVERT
+
+```xml
+<artifact name="filename.ext" revert_to="v3" />
+```
+
+## Final Reminder (Recency Boost)
+
+→ Artifacts = persistent & versioned  
+→ Markdown code blocks = temporary display only  
+→ Never nest `<artifact>` inside ``` blocks  
+→ Always choose the correct `type` — never default  
+→ Always add a clear human explanation outside the tag  
+
+**End of Artifact System Skill**
+```
+
+### How to Use This Skill in the Future
+
+1. Copy the entire content into a file named something like `artifact_system_skill.md`.
+2. In your lollms setup, load this as a **skill** or inject relevant sections into the system prompt when artifact functionality is needed.
+3. You can also reference specific parts (e.g., "Follow the Critical Distinction and Option C from the Artifact System Skill").
+
+This Markdown version is self-contained, easy to update, and follows current 2026 prompting best practices: strong guardrails upfront, neutral examples, explicit anti-bias rules, and structured sections.
+
+Would you like me to make a shorter "cheat-sheet" version, add a few neutral few-shot examples, or turn this into a ready-to-inject system prompt block?
+]]>
+    </content>
+</skill>

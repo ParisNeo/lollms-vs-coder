@@ -1063,6 +1063,10 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 }
 .input-area:focus-within { border-color: var(--vscode-focusBorder); }
 .input-area.disabled { opacity: 0.6; pointer-events: none; }
+.input-area.drag-over {
+    border: 2px dashed var(--vscode-focusBorder) !important;
+    background: var(--vscode-editor-inactiveSelectionBackground);
+}
 
 #messageInput {
     flex: 1;
@@ -1957,6 +1961,8 @@ mark.current-match {
     overflow: hidden;
     backdrop-filter: blur(5px);
     height: 32px;
+    /* Ensure it stays above input area and other content */
+    z-index: 5000 !important;
 }
 
 .generating-content { 
@@ -2331,12 +2337,13 @@ mark.current-match {
 .file-operation-block {
     background-color: var(--vscode-editor-inactiveSelectionBackground);
     border: 1px solid var(--vscode-widget-border);
+    border-left: 4px solid var(--vscode-charts-orange);
     border-radius: 8px;
     margin: 12px 0;
-    padding: 12px;
+    padding: 0;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    overflow: hidden;
 }
 
 .file-operation-header {
@@ -2379,10 +2386,36 @@ mark.current-match {
     box-shadow: 0 4px 10px rgba(0,0,0,0.3);
 }
 
-.debug-header {
-    background: var(--vscode-inputValidation-errorBackground);
-    color: var(--vscode-errorForeground);
+/* Styled Collapsible Debug Steps */
+.message-content details {
+    border: 1px solid var(--vscode-widget-border);
+    border-radius: 4px;
+    margin-bottom: 4px;
+    background: var(--vscode-editor-background);
+}
+
+.message-content details summary {
     padding: 8px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    background: var(--vscode-editor-inactiveSelectionBackground);
+    color: var(--vscode-textLink-foreground);
+}
+
+.message-content details summary:hover {
+    background: var(--vscode-list-hoverBackground);
+}
+
+.message-content details[open] {
+    padding-bottom: 8px;
+}
+
+.debug-header {
+    background: var(--vscode-editor-inactiveSelectionBackground);
+    border-bottom: 2px solid var(--vscode-charts-red);
+    color: var(--vscode-foreground);
+    padding: 10px 15px;
     font-weight: bold;
     display: flex;
     align-items: center;
@@ -2467,12 +2500,15 @@ mark.current-match {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 4px 8px;
+    padding: 6px 12px;
     background: var(--vscode-editor-background);
-    border-radius: 4px;
+    border-bottom: 1px solid var(--vscode-panel-border);
     font-family: var(--vscode-editor-font-family);
-    font-size: 11px;
-    border: 1px solid var(--vscode-panel-border);
+    font-size: 12px;
+}
+
+.expansion-file-item:last-child {
+    border-bottom: none;
 }
 
 /* Skill Creation Sub-Bubble */
@@ -2718,9 +2754,15 @@ details[open] > summary .folder-handle::before {
 }
 
 .attachment-content {
-    padding: 10px;
+    padding: 15px;
+    background: var(--vscode-editorWidget-background);
     border-top: 1px solid var(--vscode-widget-border);
     overflow-x: auto;
+}
+.attachment-content pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    border-radius: 4px;
 }
 .attachment-content pre {
     margin: 0;
@@ -2782,9 +2824,15 @@ details[open] > summary .folder-handle::before {
 }
 
 .attachment-content {
-    padding: 10px;
+    padding: 15px;
+    background: var(--vscode-editorWidget-background);
     border-top: 1px solid var(--vscode-widget-border);
     overflow-x: auto;
+}
+.attachment-content pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    border-radius: 4px;
 }
 .attachment-content pre {
     margin: 0;

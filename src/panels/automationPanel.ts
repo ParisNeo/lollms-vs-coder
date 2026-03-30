@@ -32,9 +32,26 @@ export class AutomationPanel {
         this._panel = panel;
         this._panel.webview.html = this._getHtmlForWebview();
         
-        this._panel.webview.onDidReceiveMessage(msg => {
-            if (msg.command === 'cancel') {
-                this._onDidCancel.fire();
+        this._panel.webview.onDidReceiveMessage(async msg => {
+            switch (msg.command) {
+                case 'cancel':
+                    this._onDidCancel.fire();
+                    break;
+                case 'copyToClipboard':
+                    if (msg.text) {
+                        await vscode.env.clipboard.writeText(msg.text);
+                        vscode.window.showInformationMessage("Error list copied to clipboard.");
+                    }
+                    break;
+                case 'startChatWithErrors':
+                    if (msg.text) {
+                        const prompt = `Fix these workspace errors:\n\n${msg.text}`;
+                        // We use the existing utility to start a discussion
+                        await vscode.commands.executeCommand('lollms-vs-coder.newDiscussionFromClipboard', prompt);
+                        // Optional: close repair panel if moving to chat
+                        // this.dispose();
+                    }
+                    break;
             }
         }, null, this._disposables);
 
@@ -106,6 +123,8 @@ export class AutomationPanel {
                 <div class="header-row">
                     <h3>🛠️ Workspace Repair Engine</h3>
                     <div style="display: flex; gap: 8px;">
+                        <button class="stop-btn" id="copy-errors-btn" style="background: var(--vscode-button-secondaryBackground);" title="Copy all error messages to clipboard">Copy Errors</button>
+                        <button class="stop-btn" id="chat-errors-btn" style="background: var(--vscode-button-secondaryBackground);" title="Start a new chat to fix these errors">Fix in Chat</button>
                         <button class="stop-btn" id="export-btn" style="background: var(--vscode-button-secondaryBackground);">Export Log</button>
                         <button class="stop-btn" onclick="vscode.postMessage({command:'cancel'})">Stop All</button>
                     </div>
@@ -147,6 +166,46 @@ export class AutomationPanel {
                     discovery: [],
                     timeline: [],
                     systemLogs: []
+                };
+
+                const getErrorSummary = () => {
+                    let summary = "Workspace Errors Discovery:\n\n";
+                    sessionData.discovery.forEach(f => {
+                        summary += \`File: \${f.path}\n\`;
+                        f.errors.forEach(e => {
+                            summary += \`- [Line \${e.line}] \${e.message}\n\`;
+                        });
+                        summary += "\n";
+                    });
+                    return summary;
+                };
+
+                document.getElementById('copy-errors-btn').onclick = () => {
+                    vscode.postMessage({ command: 'copyToClipboard', text: getErrorSummary() });
+                };
+
+                document.getElementById('chat-errors-btn').onclick = () => {
+                    vscode.postMessage({ command: 'startChatWithErrors', text: getErrorSummary() });
+                };
+
+                const getErrorSummary = () => {
+                    let summary = "Workspace Errors Discovery:\n\n";
+                    sessionData.discovery.forEach(f => {
+                        summary += \`File: \${f.path}\n\`;
+                        f.errors.forEach(e => {
+                            summary += \`- [Line \${e.line}] \${e.message}\n\`;
+                        });
+                        summary += "\n";
+                    });
+                    return summary;
+                };
+
+                document.getElementById('copy-errors-btn').onclick = () => {
+                    vscode.postMessage({ command: 'copyToClipboard', text: getErrorSummary() });
+                };
+
+                document.getElementById('chat-errors-btn').onclick = () => {
+                    vscode.postMessage({ command: 'startChatWithErrors', text: getErrorSummary() });
                 };
 
                 document.getElementById('export-btn').onclick = () => {

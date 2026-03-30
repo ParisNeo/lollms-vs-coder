@@ -95,13 +95,13 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
         await panel.loadDiscussion();
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussionFromClipboard', async () => {
-        const clipboardText = await vscode.env.clipboard.readText();
-        if (!clipboardText) {
-            vscode.window.showWarningMessage('Clipboard is empty.');
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussionFromClipboard', async (textOverride?: string) => {
+        const textToUse = textOverride || await vscode.env.clipboard.readText();
+        if (!textToUse) {
+            vscode.window.showWarningMessage('No text found to start discussion.');
             return;
         }
-        await startDiscussionWithInitialPrompt(services, clipboardText, getActiveWorkspace(), false);
+        await startDiscussionWithInitialPrompt(services, textToUse, getActiveWorkspace(), false);
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deleteDiscussion', async (item: DiscussionItem) => {
@@ -119,7 +119,28 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
         }
     }));
 
-    // Removed duplicate renameDiscussion registration to fix console warning
+    // Centralized renameDiscussion registration
+    // Check if command is already registered to avoid console warnings
+    const cmdId = 'lollms-vs-coder.renameDiscussion';
+    const registerRename = () => {
+        return vscode.commands.registerCommand(cmdId, async (item: DiscussionItem) => {
+            const newTitle = await vscode.window.showInputBox({ 
+                prompt: vscode.l10n.t('Enter new title for this discussion'), 
+                value: item.discussion.title 
+            });
+        
+        if (newTitle && newTitle !== item.discussion.title) {
+            item.discussion.title = newTitle;
+            await services.discussionManager.saveDiscussion(item.discussion);
+            
+            const panel = ChatPanel.panels.get(item.discussion.id);
+            if (panel) {
+                panel._panel.title = newTitle;
+            }
+            
+            services.treeProviders.discussion?.refresh();
+        }
+    })};
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateDiscussionTitle', async (item: DiscussionItem) => {
         await vscode.window.withProgress({

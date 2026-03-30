@@ -176,6 +176,7 @@ export class ChatPanel {
         const modifiedFiles = new Set<string>();
 
         while ((match = blockRegex.exec(content)) !== null) {
+            if (signal.aborted) break;
             const filePath = match[2];
             const blockContent = match[3];
             modifiedFiles.add(filePath);
@@ -218,10 +219,11 @@ export class ChatPanel {
             // We removed "scanning", "analyz", and "optimiz" because the Librarian
             // uses these and we WANT to see the Stop button while it works.
             const desc = process?.description || "";
+            // title and counting are fine to hide, but we MUST show 
+            // the overlay for everything else (searching, importing, writing)
             const isBackgroundProcess = 
                 desc.toLowerCase().includes("title") || 
-                desc.toLowerCase().includes("counting") || 
-                desc.toLowerCase().includes("cleaning");
+                desc.toLowerCase().includes("counting");
             
             // We show the overlay if there is a real process ID registered (and it's not background)
             // or if a standard LLM generation is currently streaming.
@@ -249,6 +251,21 @@ export class ChatPanel {
     if (this._panel.webview) {
         this._panel.webview.postMessage({ command: 'updateAgentMode', isActive });
     }
+  }
+
+  /**
+   * Externally update discussion capabilities and sync with UI/Disk.
+   */
+  public async updateCapabilities(partial: Partial<DiscussionCapabilities>) {
+    if (this._isDisposed) return;
+    this._discussionCapabilities = { ...this._discussionCapabilities, ...partial };
+    
+    // Persist and Notify
+    await this.saveCapabilities();
+    this._panel.webview.postMessage({ 
+        command: 'updateDiscussionCapabilities', 
+        capabilities: this._discussionCapabilities 
+    });
   }
   
   public displayPlan(plan: any | null): void {
@@ -915,7 +932,6 @@ export class ChatPanel {
               { role: 'user', content: content }
           ], null, signal, this._currentDiscussion?.model);
 
-          if (dashboardUpdater) dashboardUpdater("✅ Inspector: All blocks approved or patched.");
           return stripThinkingTags(result);
       } catch (e) {
           return content; // Fallback
@@ -1138,39 +1154,56 @@ ${context.skills || 'No specialized skills active.'}
   }
   
   private async deleteMessage(messageId: string) {
-    if (this._currentDiscussion) {
-        // 1. Force stop and purge before deletion to prevent ghost states
-        this.processManager.cancelForDiscussion(this.discussionId);
-        ChatPanel.activeGenerations.delete(this.discussionId);
-
-        const index = this._currentDiscussion.messages.findIndex(m => m.id === messageId);
-        if (index === -1) return;
-
-        const messageToDelete = this._currentDiscussion.messages[index];
-
-      // If we delete a Librarian report, clear the hidden technical briefing too
-      if (messageToDelete && typeof messageToDelete.content === 'string' && messageToDelete.content.includes('Librarian Mission Report')) {
-          this._currentDiscussion.discussion_data_zone = "";
-          this.log("Librarian message deleted: Clearing Team Technical Briefing state.");
-      }
-
-      this._currentDiscussion.messages = this._currentDiscussion.messages.filter(m => m.id !== messageId);
-
-      if (!this._currentDiscussion.id.startsWith('temp-')) {
-          await this._discussionManager.saveDiscussion(this._currentDiscussion);
-      }
-
-        // 2. Reload UI
-        await this.loadDiscussion(); 
-        
-        // 3. Explicitly signal to the webview that generation has stopped
-        this._panel.webview.postMessage({ 
-            command: 'setGeneratingState', 
-            isGenerating: false 
-        });
-        this.updateGeneratingState();
+    if (!this._currentDiscussion) {
+        this.log("Delete failed: No active discussion.", 'ERROR');
+        return;
     }
-}
+
+    // Find the message index
+    const index = this._currentDiscussion.messages.findIndex(m => m.id === messageId);
+    
+    if (index === -1) {
+        this.log(`Delete failed: Message ID ${messageId} not found in discussion.`, 'WARN');
+        // Fallback: Just reload the UI to sync state
+        await this.loadDiscussion();
+        return;
+    }
+
+    // 1. Ask for confirmation (Ensure this is awaited and modal)
+    const confirm = await vscode.window.showWarningMessage(
+        `Delete this message and all subsequent messages? This cannot be undone.`,
+        { modal: true },
+        'Delete All'
+    );
+
+    if (confirm !== 'Delete All') {
+        this.log("Delete cancelled by user.");
+        return;
+    }
+
+    // 2. Perform the deletion
+    // If it's an attachment, we only remove that specific message
+    const targetMsg = this._currentDiscussion.messages[index];
+    if (targetMsg.id?.startsWith('attachment_')) {
+        this._currentDiscussion.messages.splice(index, 1);
+        this.log(`Deleted specific attachment: ${targetMsg.id}`);
+    } else {
+        // Otherwise, truncate from index onwards (Standard chat behavior)
+        this._currentDiscussion.messages.splice(index);
+        this.log(`Deleted messages starting from index ${index}.`);
+    }
+
+    // 3. Persist to disk
+    if (!this._currentDiscussion.id.startsWith('temp-')) {
+        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+    }
+
+    // 4. Refresh UI
+    await this.loadDiscussion();
+    
+    // 5. Refresh sidebar tree
+    vscode.commands.executeCommand('lollms-vs-coder.refreshDiscussions');
+  }
   
   private async regenerateFromMessage(messageId: string) {
       if (!this._currentDiscussion) return;
@@ -1234,26 +1267,53 @@ ${context.skills || 'No specialized skills active.'}
       }
   }
   
+  /**
+   * Processes an external file (PDF, DOCX, Image) and adds it specifically
+   * to the current discussion as an attachment metadata block.
+   */
   private async _handleFileAttachment(name: string, content: string, isImage: boolean) {
-      if (isImage) {
-          const msg: ChatMessage = {
-              id: 'user_img_' + Date.now() + Math.random().toString(36).substring(2),
-              role: 'user',
-              content: [
-                  { type: 'text', text: `Attached image: ${name}` },
-                  { type: 'image_url', image_url: { url: content } }
-              ]
-          };
-          this.addMessageToDiscussion(msg);
-      } else {
-          const base64 = content.split(',')[1];
-          const text = await this._contextManager.processFile(name, base64);
-          const systemMsg: ChatMessage = {
-              id: 'system_file_' + Date.now() + Math.random().toString(36).substring(2),
-              role: 'system',
-              content: `Attached file: **${name}**\n\`\`\`\n${text}\n\`\`\`\n`
-          };
-          this.addMessageToDiscussion(systemMsg);
+      try {
+          // Note: We DO NOT add to ContextStateProvider here. 
+          // These files are discussion-local "Imported Data".
+          if (isImage) {
+              const msg: ChatMessage = {
+                  id: 'user_img_' + Date.now() + Math.random().toString(36).substring(2),
+                  role: 'user',
+                  content: [
+                      { type: 'text', text: `Attached image: ${name}` },
+                      { type: 'image_url', image_url: { url: content } }
+                  ]
+              };
+              await this.addMessageToDiscussion(msg);
+          } else {
+              const base64 = content.split(',')[1];
+              const extractedImages: { filePath: string; data: string }[] = [];
+              
+              // This is the heavy lifting (parsing PDFs etc)
+              const text = await this._contextManager.processFile(name, base64, extractedImages);
+              
+              const systemMsg: ChatMessage = {
+                  id: 'attachment_' + Date.now() + Math.random().toString(36).substring(2),
+                  role: 'system',
+                  // We embed metadata in the message object so the renderer can build the rich collapsible
+                  content: `Attached file: **${name}**`,
+                  // @ts-ignore - custom metadata for the renderer
+                  attachmentData: {
+                      name,
+                      text,
+                      images: extractedImages
+                  }
+              };
+              await this.addMessageToDiscussion(systemMsg);
+          }
+      } catch (e: any) {
+          this.log(`File attachment failed: ${e.message}`, 'ERROR');
+          vscode.window.showErrorMessage(`Failed to attach ${name}: ${e.message}`);
+      } finally {
+          // CRITICAL: Stop the spinner in the UI
+          this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: false });
+          // Update tokens as context has changed
+          this.updateContextAndTokens();
       }
   }
   
@@ -1888,7 +1948,8 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
             generationSession.listeners.forEach(listener => listener(chunk));
         }, controller.signal, this._currentDiscussion.model, { 
             thinking: this._discussionCapabilities.thinkingMode,
-            capabilities: this._discussionCapabilities
+            capabilities: this._discussionCapabilities,
+            temperature: this._discussionCapabilities.temperature
         });
 
         // --- THE VERIFIER (GUARDIAN) ---
@@ -2313,7 +2374,11 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                         const total = changesBatch.length;
 
                         for (let i = 0; i < total; i++) {
-                            if (token.isCancellationRequested || applyCtrl.signal.aborted) break;
+                            // High priority check for user Stop button
+                            if (token.isCancellationRequested || applyCtrl.signal.aborted) {
+                                Logger.info("Bulk apply halted by user signal.");
+                                break;
+                            }
 
                             const change = changesBatch[i];
                             const fileName = path.basename(change.path);
@@ -2397,7 +2462,9 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                 vscode.commands.executeCommand('lollms-vs-coder.renameFile', message.originalPath, message.newPath);
                 break;
             case 'deleteFile':
-                vscode.commands.executeCommand('lollms-vs-coder.deleteFile', message.filePaths);
+                // Check if it's an array from the new tag or a string from legacy UI
+                const pathsToDelete = Array.isArray(message.filePaths) ? message.filePaths.join(',') : message.filePaths;
+                vscode.commands.executeCommand('lollms-vs-coder.deleteFile', pathsToDelete);
                 break;
             case 'insertCode':
                 vscode.commands.executeCommand('lollms-vs-coder.insertCode', message.filePath, message.content);
@@ -2568,6 +2635,41 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                     webview.postMessage({ command: 'fileSearchResults', results: resultsWithMetadata, query, mode: searchMode });
                 }
                 break;
+            case 'requestAddFileToContext':
+                const uris = await vscode.window.showOpenDialog({
+                    canSelectMany: true,
+                    openLabel: 'Add to AI Context',
+                    filters: { 
+                        'Documents': ['pdf', 'docx', 'pptx', 'xlsx', 'msg'],
+                        'Images': ['png', 'jpg', 'jpeg', 'webp', 'bmp'],
+                        'Code/Text': ['*']
+                    }
+                });
+                if (uris && uris.length > 0) {
+                    // Show progress immediately
+                    this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: true, statusText: 'Processing documents...' });
+                    
+                    for (const uri of uris) {
+                        const ext = path.extname(uri.fsPath).toLowerCase();
+                        // If it's a complex document or image, treat it as a rich attachment
+                        if (['.pdf', '.docx', '.pptx', '.xlsx', '.msg', '.png', '.jpg', '.jpeg', '.webp'].includes(ext)) {
+                            try {
+                                const bytes = await vscode.workspace.fs.readFile(uri);
+                                const base64 = Buffer.from(bytes).toString('base64');
+                                const isImage = ['.png', '.jpg', '.jpeg', '.webp', '.bmp'].includes(ext);
+                                await this._handleFileAttachment(path.basename(uri.fsPath), isImage ? `data:image/${ext.substring(1)};base64,${base64}` : `data:application/octet-stream;base64,${base64}`, isImage);
+                            } catch (e: any) {
+                                vscode.window.showErrorMessage(`Failed to attach ${path.basename(uri.fsPath)}: ${e.message}`);
+                            }
+                        } else {
+                            // Standard text/code file: add to background project context
+                            await vscode.commands.executeCommand('lollms-vs-coder.setContextIncluded', uri, [uri]);
+                        }
+                    }
+                    this.updateContextAndTokens();
+                    this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: false });
+                }
+                break;
             case 'performDeepDiscussionSearch':
                 const query = message.query.trim();
                 if (!query) return;
@@ -2632,17 +2734,8 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                     vscode.window.showErrorMessage("Deep Search failed: " + e.message);
                 }
                 break;
-            case 'requestAddFileToContext':
-                const uris = await vscode.window.showOpenDialog({
-                    canSelectMany: true,
-                    openLabel: 'Add to Context'
-                });
-                if (uris && uris.length > 0) {
-                    const paths = uris.map(u => vscode.workspace.asRelativePath(u));
-                    await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', paths);
-                    this.updateContextAndTokens();
-                }
-                break;
+            // requestAddFileToContext removed - now handled by webview file input
+            // to ensure files are treated as discussion attachments.
             case 'requestAddDiagramToContext':
                 const diagType = await vscode.window.showQuickPick([
                     { label: 'Inheritance Diagram', id: 'class_diagram' },
@@ -2734,7 +2827,10 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                     if (remove && remove.length > 0) {
                         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
                         if (workspaceFolder) {
-                            const uris = remove.map((p: string) => vscode.Uri.joinPath(workspaceFolder.uri, p));
+                            const uris = remove.map((p: string) => {
+                                const isAbsolute = p.includes(':') || p.startsWith('/') || p.startsWith('\\');
+                                return isAbsolute ? vscode.Uri.file(p) : vscode.Uri.joinPath(workspaceFolder.uri, p);
+                            });
                             await this._contextManager.getContextStateProvider()?.setStateForUris(uris, 'tree-only');
                         }
                     }
@@ -2770,7 +2866,12 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                 break;
             case 'removeFileFromContext':
                 if (this._contextManager && vscode.workspace.workspaceFolders) {
-                    const uri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, message.path);
+                    // Check if path is absolute (Windows drive or Unix root)
+                    const isAbsolute = message.path.includes(':') || message.path.startsWith('/') || message.path.startsWith('\\');
+                    const uri = isAbsolute 
+                        ? vscode.Uri.file(message.path) 
+                        : vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, message.path);
+                        
                     await this._contextManager.getContextStateProvider()?.setStateForUris([uri], 'tree-only');
                     this.updateContextAndTokens();
                     
@@ -3473,30 +3574,26 @@ Task:
                 }
                 break;
             case 'runDebugAgent':
-                if (this._isDisposed || !this.processManager || !this.agentManager) break;
-                const { id: dbgProcId, controller: dbgCtrl } = this.processManager.register(this.discussionId, '🐞 Debugging Sandbox...');
-                this.updateGeneratingState();
-                try {
-                    // Turn on debug mode explicitly for this manual run
-                    this._discussionCapabilities.debugMode = true;
-                    
-                    // Create sandbox branch if workspace is clean
-                    if (this.agentManager.currentWorkspaceFolder) {
-                        const isClean = await this._gitIntegration.isClean(this.agentManager.currentWorkspaceFolder);
-                        if (isClean) {
-                            const debugBranch = `debug/sandbox-${Date.now()}`;
-                            await this._gitIntegration.createAndCheckoutBranch(this.agentManager.currentWorkspaceFolder, debugBranch);
-                            await this.addMessageToDiscussion({ 
-                                role: 'system', 
-                                content: `🛡️ **Debugger Sandbox**: Switched to branch \`${debugBranch}\`. I can now safely run instrumentation.` 
-                            });
-                        }
-                    }
+                if (this._isDisposed || !this.processManager || !this.agentManager || !this._currentDiscussion) break;
+                
+                // 1. Sync state and register process
+                this._discussionCapabilities.debugMode = true;
+                const { id: dbgProcId, controller: dbgCtrl } = this.processManager.register(this.discussionId, '🛰️ Orchestrator: Initializing Debug Sandbox...');
+                const manualPrompt = message.prompt || "Improve project quality and ensure stability.";
 
-                    await this.agentManager.runDebuggerAgent(message.prompt || "Investigate current issues.", dbgCtrl.signal);
+                try {
+                    // 2. Synchronize Manager with UI Context
+                    this.agentManager.currentDiscussion = this._currentDiscussion;
+                    this.agentManager.chatHistory = [...this._currentDiscussion.messages];
+
+                    // 3. Trigger Orchestrator linked to the UI Stop button
+                    await this.agentManager.runDebuggingOrchestrator(manualPrompt, dbgCtrl.signal);
                     this.updateContextAndTokens();
                 } catch (e: any) {
-                    if (e.name !== 'AbortError') this.log(`Debug Sandbox failed: ${e.message}`, 'ERROR');
+                    if (e.name !== 'AbortError') {
+                        this.log(`Debug Mission failed: ${e.message}`, 'ERROR');
+                        this.addMessageToDiscussion({ role: 'system', content: `❌ **Debug Mission Failed:** ${e.message}` });
+                    }
                 } finally {
                     this.processManager.unregister(dbgProcId);
                     this.updateGeneratingState();
@@ -4099,15 +4196,24 @@ Task:
                 <div class="modal-body">
 
                     <div class="modal-section">
-                        <h3>Performance & Timeouts</h3>
-                        <p style="font-size: 11px; opacity: 0.8; margin-bottom: 10px;">Set to 0 for Infinity.</p>
+                        <h3>Performance & Creativity</h3>
+                        <div style="margin-bottom: 15px;">
+                            <div style="display:flex; justify-content: space-between;">
+                                <label style="font-size: 11px; font-weight:bold;">Temperature (Creativity)</label>
+                                <span id="modal-temperature-val" style="font-size: 11px; opacity: 0.8;">0.7</span>
+                            </div>
+                            <input type="range" id="modal-temperature" min="0" max="2" step="0.1" style="width:100%; margin: 8px 0;">
+                            <p style="font-size: 10px; opacity: 0.7; margin:0;">0.0 = Precise/Deterministic, 1.0+ = Creative/Random.</p>
+                        </div>
+                        
+                        <p style="font-size: 11px; opacity: 0.8; margin-bottom: 10px;">Timeouts (ms). Set to 0 for Infinity.</p>
                         <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
                             <div class="form-group">
-                                <label style="font-size: 11px; font-weight:bold;">First Token (TTFT) ms</label>
+                                <label style="font-size: 11px; font-weight:bold;">First Token (TTFT)</label>
                                 <input type="number" id="modal-ttft-timeout" min="0" step="1000" style="width:100%;">
                             </div>
                             <div class="form-group">
-                                <label style="font-size: 11px; font-weight:bold;">Inter-Token ms</label>
+                                <label style="font-size: 11px; font-weight:bold;">Inter-Token</label>
                                 <input type="number" id="modal-inter-token-timeout" min="0" step="100" style="width:100%;">
                             </div>
                         </div>
@@ -4115,6 +4221,16 @@ Task:
 
                     <div class="modal-section">
                         <h3>Language & Speech</h3>
+                        <div class="checkbox-grid" style="margin-bottom: 12px;">
+                            <div class="checkbox-container">
+                                <label class="switch"><input type="checkbox" id="cap-enableTTS"><span class="slider"></span></label>
+                                <label for="cap-enableTTS">Enable TTS (Megaphone)</label>
+                            </div>
+                            <div class="checkbox-container">
+                                <label class="switch"><input type="checkbox" id="cap-enableSTT"><span class="slider"></span></label>
+                                <label for="cap-enableSTT">Enable STT (Microphone)</label>
+                            </div>
+                        </div>
                         <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
                             <div class="form-group">
                                 <label style="font-size: 11px; font-weight:bold;">Response Language</label>
@@ -4247,11 +4363,15 @@ Task:
 
                         <h3 style="margin-top:20px; color:var(--vscode-charts-orange);">🚀 Automation</h3>
                         <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-autoFix" checked><span class="slider"></span></label>
+                            <label for="cap-autoFix"><strong>Auto Fix:</strong> Autonomous repair of failed patches</label>
+                        </div>
+                        <div class="checkbox-container">
                             <label class="switch"><input type="checkbox" id="cap-autoApply"><span class="slider"></span></label>
                             <label for="cap-autoApply"><strong>Auto Apply:</strong> Automatically apply code blocks</label>
                         </div>
                         <div id="automation-sub-options" style="margin-left: 25px; opacity: 0.5; pointer-events: none;">
-                            <div class="checkbox-container">
+ù                            <div class="checkbox-container">
                                 <label class="switch"><input type="checkbox" id="cap-autoBranch"><span class="slider"></span></label>
                                 <label for="cap-autoBranch">Auto Branch (Git)</label>
                             </div>

@@ -87,6 +87,8 @@ export interface DiscussionCapabilities {
     fileReset: boolean;
     imageGen: boolean;
     enableImages: boolean;
+    enableTTS: boolean;
+    enableSTT: boolean;
     useImageModeForDocs: boolean;
     webSearch: boolean;
     distillWebResults: boolean;
@@ -121,6 +123,7 @@ export interface DiscussionCapabilities {
     autoSkillMode: boolean;
     contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
     disableProjectContext: boolean;
+    temperature: number;
     ttftTimeout: number;
     interTokenTimeout: number;
     guiState?: {
@@ -575,6 +578,8 @@ export interface DiscussionCapabilities {
     fileReset: boolean;
     imageGen: boolean;
     enableImages: boolean;
+    enableTTS: boolean;
+    enableSTT: boolean;
     useImageModeForDocs: boolean;
     webSearch: boolean;
     distillWebResults: boolean;
@@ -609,6 +614,7 @@ export interface DiscussionCapabilities {
     autoSkillMode: boolean;
     contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
     disableProjectContext: boolean;
+    temperature: number;
     ttftTimeout: number;
     interTokenTimeout: number;
     guiState?: {

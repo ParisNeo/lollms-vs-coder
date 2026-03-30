@@ -3,12 +3,12 @@ import { ToolDefinition, ToolExecutionEnv } from '../tool';
 
 export const deleteFileTool: ToolDefinition = {
     name: "delete_file",
-    description: "Deletes one or more files from the workspace. Use with caution.",
+    description: "Deletes one or more files or folders from the workspace recursively. Use with caution.",
     isAgentic: true,
     isDefault: true,
     permissionGroup: 'filesystem_write',
     parameters: [
-        { name: "paths", type: "array", description: "An array of relative file paths to delete.", required: true }
+        { name: "paths", type: "array", description: "An array of relative paths (files or directories) to delete.", required: true }
     ],
     async execute(params: { paths: string[] }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
         if (!env.workspaceRoot) return { success: false, output: "No workspace." };

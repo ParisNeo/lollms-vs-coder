@@ -71,6 +71,14 @@ export function registerDebugCommands(context: vscode.ExtensionContext, services
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.debugErrorWithAI', async () => {
         const error = debugErrorManager.lastError;
         if (!error) return;
+
+        // 1. Deactivate the debugger
+        await vscode.commands.executeCommand('workbench.action.debug.stop');
+
+        // 2. Deactivate the debug badge if it's active
+        if (ChatPanel.currentPanel) {
+            await ChatPanel.currentPanel.updateCapabilities({ debugMode: false });
+        }
         
         const includedFiles = services.contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || [];
         

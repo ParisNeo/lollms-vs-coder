@@ -104,16 +104,12 @@ export async function runCommandInTerminal(
 
         if (isWin) {
             if (shellType === 'powershell') {
-                // Execute command and capture output manually to ensure we bypass terminal buffer limits
-                const psCommand = `& { ${sanitizedCommand} } > "${relOutputFile}" 2>&1; $LASTEXITCODE | Out-File -FilePath "${relExitCodeFile}" -Encoding utf8`;
-
-                execution = new vscode.ShellExecution(
-                    "powershell.exe",["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psCommand], 
-                    { cwd }
-                );
+                // Use Tee-Object to show output to user AND save to file
+                const psCommand = `& { ${sanitizedCommand} } | Tee-Object -FilePath "${relOutputFile}"; $LASTEXITCODE | Out-File -FilePath "${relExitCodeFile}" -Encoding utf8`;
+                execution = new vscode.ShellExecution("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psCommand], { cwd });
             } else if (shellType === 'cmd') {
-                // Force UTF-8 in CMD as well
-                const cmdCommand = `chcp 65001 > nul && ${sanitizedCommand} > "${relOutputFile}" 2>&1 & echo %errorlevel% > "${relExitCodeFile}"`;
+                // CMD doesn't have native Tee. We use a trick: execute via powershell wrapper but inside CMD environment
+                const cmdCommand = `powershell -Command "${sanitizedCommand} | Tee-Object -FilePath '${relOutputFile}'" & echo %errorlevel% > "${relExitCodeFile}"`;
                 execution = new vscode.ShellExecution("cmd.exe", ["/c", cmdCommand], { cwd });
             } else {
                 const shCommand = `export LANG=en_US.UTF-8; (${sanitizedCommand}) 2>&1 | tee '${relOutputFile}'; echo $? > '${relExitCodeFile}'`;

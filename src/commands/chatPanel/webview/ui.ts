@@ -256,7 +256,7 @@ function initCanvasEvents() {
     if (!canvas || !canvasCtx) return;
 
     // --- ZOOM LOGIC (Wheel) ---
-    canvas.onwheel = (e) => {
+    canvas.addEventListener('wheel', (e: WheelEvent) => {
         e.preventDefault();
         const zoomSpeed = 0.0015;
         const delta = -e.deltaY;
@@ -271,8 +271,7 @@ function initCanvasEvents() {
         viewState.scale = newScale;
 
         redrawCanvas();
-    };
-
+    }, { passive: false });
     canvas.onmousedown = (e) => {
         // Middle button (1) or Space+Left triggers Pan
         if (e.button === 1 || (e.button === 0 && (window as any).isSpaceDown)) {
@@ -845,9 +844,23 @@ export function updateBadges() {
     if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = !!caps.agentMode;
     if (dom.autoContextCheckbox) dom.autoContextCheckbox.checked = !!caps.autoContextMode;
     if (dom.contextAggressionSelect) dom.contextAggressionSelect.value = caps.contextAggression || 'respect';
+    if (dom.capGitWorkflow) dom.capGitWorkflow.checked = !!caps.gitWorkflow;
+    if (dom.capEnableTTS) dom.capEnableTTS.checked = !!caps.enableTTS;
+    if (dom.capEnableSTT) dom.capEnableSTT.checked = !!caps.enableSTT;
     if (dom.herdModeCheckbox) dom.herdModeCheckbox.checked = !!caps.herdMode;
     if (dom.herdConfigSection) {
         dom.herdConfigSection.style.display = caps.herdMode ? 'block' : 'none';
+    }
+
+    // Initialize TTS/STT capability UI elements
+    const ttsCheck = document.getElementById('cap-enableTTS') as HTMLInputElement;
+    if (ttsCheck) ttsCheck.checked = !!caps.enableTTS;
+    const sttCheck = document.getElementById('cap-enableSTT') as HTMLInputElement;
+    if (sttCheck) sttCheck.checked = !!caps.enableSTT;
+
+    const sttBtn = document.getElementById('sttButton');
+    if (sttBtn) {
+        sttBtn.style.display = caps.enableSTT ? 'flex' : 'none';
     }
 
     // Render Dynamic Model Pool Selection inside herd config (if present)

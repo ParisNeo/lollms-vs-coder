@@ -181,7 +181,12 @@ export class SkillsManager {
     private async findSkillFileUri(skillId: string, root: vscode.Uri): Promise<vscode.Uri | null> {
         const walk = async (uri: vscode.Uri): Promise<vscode.Uri | null> => {
             let entries;
-            try { entries = await vscode.workspace.fs.readDirectory(uri); } catch (e) { return null; }
+            try { 
+                // Verify path exists before reading to avoid FileSystemError: EntryNotFound
+                await vscode.workspace.fs.stat(uri);
+                entries = await vscode.workspace.fs.readDirectory(uri); 
+            } catch (e) { return null; }
+            
             for (const [name, type] of entries) {
                 const entryUri = vscode.Uri.joinPath(uri, name);
                 if (type === vscode.FileType.Directory) {
@@ -204,8 +209,7 @@ export class SkillsManager {
             rootDir = this.globalSkillsDir;
         }
 
-        // CRITICAL: Ensure root directory exists before searching or writing. 
-        // Initialization in the constructor is async and might race with this method during startup.
+        // Ensure base directory exists
         try { await vscode.workspace.fs.createDirectory(rootDir); } catch (e) {}
 
         // 2. CRITICAL: Find and delete existing file with this ID to prevent duplicates if category changed
@@ -214,24 +218,30 @@ export class SkillsManager {
             try { await vscode.workspace.fs.delete(existingFile); } catch (e) {}
         }
 
-        // 3. Construct new path
+        // 3. Construct new path using Uri.joinPath for safe cross-platform joining
         let targetDir = rootDir;
         if (skill.category) {
             const relativeCategory = skill.category.replace(/\\/g, '/');
             const segments = relativeCategory.split('/').filter(s => s.length > 0);
             
-            let currentDir = rootDir;
             for (const segment of segments) {
-                currentDir = vscode.Uri.joinPath(currentDir, segment);
+                targetDir = vscode.Uri.joinPath(targetDir, segment);
             }
-            targetDir = currentDir;
         }
 
-        // Ensure the full target directory structure is created in one go before writing
+        // Ensure the full target directory structure is created recursively
         try {
-            await vscode.workspace.fs.createDirectory(targetDir);
+            // Use standard node path to ensure subfolders are created correctly if Uri scheme is file
+            if (targetDir.scheme === 'file') {
+                const fs = require('fs');
+                if (!fs.existsSync(targetDir.fsPath)) {
+                    fs.mkdirSync(targetDir.fsPath, { recursive: true });
+                }
+            } else {
+                await vscode.workspace.fs.createDirectory(targetDir);
+            }
         } catch (e) {
-            console.error(`[SkillsManager] Failed to create directory ${targetDir.fsPath}`, e);
+            console.error(`[SkillsManager] Failed to create directory ${targetDir.toString()}`, e);
         }
 
         const filePath = vscode.Uri.joinPath(targetDir, `${skill.id}.xml`);

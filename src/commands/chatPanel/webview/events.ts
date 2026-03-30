@@ -137,6 +137,43 @@ export function initEventHandlers() {
         });
     });
 
+    // --- GLOBAL DRAG & DROP HANDLERS ---
+    const chatContainer = document.querySelector('.chat-container') as HTMLElement;
+    const inputArea = dom.inputArea;
+    
+    if (chatContainer) {
+        // We use { capture: true } and stopImmediatePropagation to prevent VS Code 
+        // workbench from intercepting the file drop and opening it in a new tab.
+        ['dragenter', 'dragover'].forEach(eventName => {
+            window.addEventListener(eventName, (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                inputArea.classList.add('drag-over');
+            }, true);
+        });
+
+        ['dragleave'].forEach(eventName => {
+            window.addEventListener(eventName, (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                // Only remove if we actually leave the window
+                if (e.relatedTarget === null) {
+                    inputArea.classList.remove('drag-over');
+                }
+            }, true);
+        });
+
+        window.addEventListener('drop', (e: DragEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            inputArea.classList.remove('drag-over');
+            handleFileImport(e.dataTransfer?.files || null);
+        }, false);
+    }
+
     if (dom.messageInput) {
         dom.messageInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -242,6 +279,7 @@ export function initEventHandlers() {
     };
 
     bindClick(dom.agentToolsButton, 'requestAvailableTools');
+    // Removed old attachButton bindClick as it's now handled with processing state
     if (dom.discussionToolsButton) {
         dom.discussionToolsButton.addEventListener('click', () => {
             if (dom.discussionToolsModal) {
@@ -265,7 +303,54 @@ export function initEventHandlers() {
         });
     }
 
-    bindClick(dom.attachButton, 'requestAddFileToContext'); 
+    // This handler is now the single source of truth for both the + File button
+    // and the Drag & Drop functionality.
+    const handleFileImport = (files: FileList | null) => {
+        if (!files || files.length === 0) return;
+        
+        setGeneratingState(true, "Importing data...");
+        
+        for (const file of Array.from(files)) {
+            const reader = new FileReader();
+            const isImage = file.type.startsWith('image/');
+            
+            reader.onload = (event) => {
+                const content = event.target?.result as string;
+                if (isImage) {
+                    state.pendingImages.push({ name: file.name, data: content });
+                    renderPendingImages();
+                    setGeneratingState(false);
+                } else {
+                    // This message triggers _handleFileAttachment in the extension
+                    // which creates the "Imported Data" bubble in the chat.
+                    vscode.postMessage({
+                        command: 'loadFile',
+                        file: { name: file.name, content: content, isImage: false }
+                    });
+                }
+            };
+            reader.readAsDataURL(file);
+        }
+    };
+
+    // Listen for file selection from the hidden input (triggered by + File button)
+    if (dom.fileInput) {
+        dom.fileInput.addEventListener('change', () => {
+            handleFileImport(dom.fileInput.files);
+            // Reset the input so the same file can be re-imported if needed
+            dom.fileInput.value = '';
+        });
+    }
+
+    // Redirection: The + File button now triggers the browser file picker
+    // instead of the VS Code system picker to ensure it follows the "Imported Data" logic.
+    if (dom.attachButton) {
+        dom.attachButton.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dom.fileInput.click();
+        });
+    }
 
     // Web Discovery Modal
     if (dom.webContextBtn) {
@@ -607,6 +692,13 @@ export function initEventHandlers() {
         });
     }
     
+    // Live update of temperature label
+    const tempRange = document.getElementById('modal-temperature') as HTMLInputElement;
+    const tempLabel = document.getElementById('modal-temperature-val');
+    if (tempRange && tempLabel) {
+        tempRange.oninput = () => { tempLabel.textContent = tempRange.value; };
+    }
+
     if (dom.saveDiscussionToolsBtn) {
         dom.saveDiscussionToolsBtn.addEventListener('click', () => {
             const partialFormat = (document.querySelector('input[name="cap-partialFormat"]:checked') as HTMLInputElement)?.value || 'aider';
@@ -627,6 +719,7 @@ export function initEventHandlers() {
                 responseProfileId: selectedProfileId,
                 language: (document.getElementById('modal-language') as HTMLSelectElement)?.value || 'auto',
                 voice: (document.getElementById('modal-voice') as HTMLSelectElement)?.value || 'default',
+                temperature: parseFloat((document.getElementById('modal-temperature') as HTMLInputElement)?.value || '0.7'),
                 ttftTimeout: parseInt((document.getElementById('modal-ttft-timeout') as HTMLInputElement)?.value || '0', 10),
                 interTokenTimeout: parseInt((document.getElementById('modal-inter-token-timeout') as HTMLInputElement)?.value || '0', 10),
                 contextAggression: dom.contextAggressionSelect?.value || 'respect',
@@ -638,6 +731,7 @@ export function initEventHandlers() {
                     delete: dom.fmtDelete?.checked ?? true
                 },
                 explainCode: dom.capExplainCode?.checked ?? true,
+                autoFix: dom.capAutoFix?.checked ?? true,
                 addPedagogicalInstruction: dom.capAddPedagogicalInstruction?.checked ?? false,
                 forceFullCodePath: dom.capForceFullCodePath?.checked ?? false,
                 fileRename: dom.capFileRename?.checked ?? true,
@@ -657,6 +751,8 @@ export function initEventHandlers() {
                     github: (document.getElementById('src-github') as HTMLInputElement)?.checked ?? false
                 },
                 gitWorkflow: dom.capGitWorkflow?.checked ?? false,
+                enableTTS: (document.getElementById('cap-enableTTS') as HTMLInputElement)?.checked ?? true,
+                enableSTT: (document.getElementById('cap-enableSTT') as HTMLInputElement)?.checked ?? true,
                 herdMode: dom.capHerdMode?.checked ?? false,
                 herdParallelGeneration: dom.capHerdParallelGeneration?.checked ?? false,
                 herdOrchestratorModel: dom.capHerdOrchestrator?.value || undefined,
@@ -927,7 +1023,8 @@ export function initEventHandlers() {
             }
         });
     }
-    
+    if (dom.capAutoFix && state.capabilities) dom.capAutoFix.checked = state.capabilities.autoFix !== false;
+    if (dom.capAutoBranch && state.capabilities) dom.capAutoBranch.checked = !!state.capabilities.autoBranch;
     if (dom.refreshContextBtn) dom.refreshContextBtn.addEventListener('click', () => {
         vscode.postMessage({ command: 'calculateTokens' });
     });
@@ -1012,6 +1109,73 @@ export function initEventHandlers() {
                     });
                 } catch (err) {
                     console.error("Failed to parse file list from button:", err);
+                }
+                return;
+            }
+
+            // Handle File Deletion (Single)
+            const delSingleBtn = target.closest('.delete-single-btn') as HTMLButtonElement;
+            if (delSingleBtn) {
+                e.stopPropagation();
+                const path = delSingleBtn.dataset.path;
+                const rowId = delSingleBtn.dataset.rowId;
+                
+                vscode.postMessage({ command: 'deleteFile', filePaths: path });
+                
+                delSingleBtn.disabled = true;
+                delSingleBtn.textContent = 'Deleted';
+                const row = document.getElementById(rowId!);
+                if (row) {
+                    row.style.color = 'var(--vscode-errorForeground)';
+                    row.style.opacity = '0.7';
+                }
+                return;
+            }
+
+            // Handle File Deletion (All)
+            const delAllBtn = target.closest('.delete-all-btn') as HTMLButtonElement;
+            if (delAllBtn) {
+                e.stopPropagation();
+                const paths = delAllBtn.dataset.paths;
+                const blockId = delAllBtn.dataset.blockId;
+
+                vscode.postMessage({ command: 'deleteFile', filePaths: paths });
+
+                delAllBtn.disabled = true;
+                delAllBtn.innerHTML = '<span class="codicon codicon-check"></span> All Files Deleted';
+                
+                // Update the visual state of all individual rows in this block
+                const container = document.getElementById(blockId!);
+                if (container) {
+                    const items = container.querySelectorAll('.expansion-file-item');
+                    items.forEach((row: any) => {
+                        row.style.color = 'var(--vscode-errorForeground)';
+                        row.style.opacity = '0.7';
+                        const btn = row.querySelector('button');
+                        if (btn) {
+                            btn.disabled = true;
+                            btn.textContent = 'Deleted';
+                        }
+                    });
+                }
+                return;
+            }
+
+            // Handle File Move / Prune Actions
+            const fileOpBtn = target.closest('.file-op-action-btn') as HTMLButtonElement;
+            if (fileOpBtn) {
+                e.stopPropagation();
+                const command = fileOpBtn.dataset.command;
+                const payloadRaw = fileOpBtn.dataset.payload || '{}';
+                
+                try {
+                    const payload = JSON.parse(payloadRaw);
+                    vscode.postMessage({ command, ...payload });
+                    
+                    fileOpBtn.disabled = true;
+                    fileOpBtn.innerHTML = '<span class="codicon codicon-check"></span> Applied';
+                } catch (err) {
+                    console.error("Failed to parse file operation payload:", err);
                 }
                 return;
             }

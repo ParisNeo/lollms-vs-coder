@@ -49,6 +49,8 @@ export interface DiscussionCapabilities {
     fileSelect: boolean;
     fileReset: boolean;
     imageGen: boolean;
+    enableTTS: boolean;
+    enableSTT: boolean;
     webSearch: boolean;
     distillWebResults: boolean;
     antiPromptInjection: boolean;
@@ -71,10 +73,18 @@ export interface DiscussionCapabilities {
     herdCriticEnabled?: boolean;
     agentMode: boolean;
     debugMode: boolean;
+    verifierMode: boolean;
     maxDebugSteps: number;
+    autoFix: boolean;
+    autoBranch: boolean;
+    maxFixRetries: number;
+    autoApply: boolean;
     autoContextMode: boolean;
     autoSkillMode: boolean;
     disableProjectContext: boolean;
+    ttftTimeout: number;
+    interTokenTimeout: number;
+    contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
     guiState?: {
         agentBadge: boolean;
         debugBadge: boolean;
@@ -211,10 +221,17 @@ export const dom = {
     get capForceFullCode() { return document.getElementById('cap-forceFullCode') as HTMLInputElement; },
     get capAllowFullFallback() { return document.getElementById('cap-allowFullFallback') as HTMLInputElement; },
     get capExplainCode() { return document.getElementById('cap-explainCode') as HTMLInputElement; },
+    get capAutoFix() { return document.getElementById('cap-autoFix') as HTMLInputElement; },
+    get capAutoApply() { return document.getElementById('cap-autoApply') as HTMLInputElement; },
+    get capAutoBranch() { return document.getElementById('cap-autoBranch') as HTMLInputElement; },
     get capAddPedagogicalInstruction() { return document.getElementById('cap-addPedagogicalInstruction') as HTMLInputElement; },
     get capForceFullCodePath() { return document.getElementById('cap-forceFullCodePath') as HTMLInputElement; },
+    get capDebugMode() { return document.getElementById('cap-debugMode') as HTMLInputElement; },
+    get capMaxDebugSteps() { return document.getElementById('cap-maxDebugSteps') as HTMLInputElement; },
 
+    get allowedFormats() { return document.querySelector('.checkbox-grid') as HTMLElement; },
     get fmtFullFile() { return document.getElementById('fmt-fullFile') as HTMLInputElement; },
+
     get fmtInsert() { return document.getElementById('fmt-insert') as HTMLInputElement; },
     get fmtReplace() { return document.getElementById('fmt-replace') as HTMLInputElement; },
     get fmtDelete() { return document.getElementById('fmt-delete') as HTMLInputElement; },

@@ -13,6 +13,7 @@ import { ProcessTreeProvider } from '../commands/processTreeProvider';
 export function registerViews(context: vscode.ExtensionContext, services: LollmsServices) {
     // Actions
     const actionsTreeProvider = new ActionsTreeProvider();
+    services.treeProviders.actions = actionsTreeProvider;
     context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsActionsView', actionsTreeProvider));
     
     // Prompts

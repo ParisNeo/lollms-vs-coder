@@ -326,6 +326,13 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         const activeWorkspace = getActiveWorkspace();
         if (!activeWorkspace) return { success: false, error: "No active workspace" };
 
+        // Ensure we aren't working on a stale version of the file
+        const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
+        const openDoc = vscode.workspace.textDocuments.find(d => d.uri.toString() === fileUri.toString());
+        if (openDoc && openDoc.isDirty) {
+            await openDoc.save();
+        }
+
         const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
         let matches = [...content.matchAll(aiderRegex)];
         
@@ -339,19 +346,39 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             matches = [matches[options.hunkIndex]];
         }
         
-        const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
-        
         try {
-            const document = await vscode.workspace.openTextDocument(fileUri);
-            let currentContent = document.getText();
+            let currentContent = "";
+            let fileExists = false;
+            try {
+                await vscode.workspace.fs.stat(fileUri);
+                const document = await vscode.workspace.openTextDocument(fileUri);
+                currentContent = document.getText();
+                fileExists = true;
+            } catch {
+                currentContent = "";
+                fileExists = false;
+            }
+
             const originalContent = currentContent;
-            
             let applyCount = 0;
 
             for (const match of matches) {
                 const searchCode = match[1];
                 const replaceCode = match[2];
                 
+                // --- SPECIAL CASE: EMPTY SEARCH BLOCK ---
+                // If search is empty, treat as "Create File" if new, or "Append" if existing.
+                if (searchCode.trim() === "") {
+                    if (!fileExists && applyCount === 0) {
+                        currentContent = replaceCode;
+                    } else {
+                        const eol = currentContent.includes('\r\n') ? '\r\n' : '\n';
+                        currentContent = currentContent.trimEnd() + eol + replaceCode;
+                    }
+                    applyCount++;
+                    continue;
+                }
+
                 // Idempotency check: If content is already present, count as success
                 if (currentContent.includes(replaceCode.trim())) {
                     applyCount++;
@@ -460,19 +487,18 @@ ${originalContent}
             }
 
             if (applyCount > 0) {
-                const edit = new vscode.WorkspaceEdit();
-                const fullRange = new vscode.Range(new vscode.Position(0, 0), document.lineAt(document.lineCount - 1).range.end);
-                edit.replace(fileUri, fullRange, currentContent);
-                const applied = await vscode.workspace.applyEdit(edit);
+                // Ensure directory exists for new files
+                const parentDir = vscode.Uri.joinPath(fileUri, '..');
+                await vscode.workspace.fs.createDirectory(parentDir);
+
+                // Atomic write via FileSystem API (handles creation or overwrite)
+                await vscode.workspace.fs.writeFile(fileUri, Buffer.from(currentContent, 'utf8'));
                 
-                if (applied) {
-                    await document.save();
-                    if (!options?.silent) {
-                        // Open diff in background so it doesn't block the logic return
-                        openDiffView(fileUri, originalContent).catch(() => {});
-                    }
-                    return { success: true };
+                if (!options?.silent) {
+                    // Open diff in background so it doesn't block the logic return
+                    openDiffView(fileUri, originalContent).catch(() => {});
                 }
+                return { success: true };
             }
             return { success: false, error: "Failed to apply edits to document." };
 

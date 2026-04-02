@@ -82,6 +82,7 @@ export class GitDashboardPanel {
 
             console.log('[GitDashboard] Fetching heavy data...');
             const stashes = await this._git.getStashList(folder).catch((e: any) => { console.error('[GitDashboard] getStashList failed:', e); return []; });
+            const tags = await this._git.getTags(folder).catch((e: any) => { console.error('[GitDashboard] getTags failed:', e); return []; });
             const submodules = await this._git.getSubmodules(folder).catch((e: any) => { console.error('[GitDashboard] getSubmodules failed:', e); return []; });
             const history = await this._git.getCommitHistory(folder, 15).catch((e: any) => { console.error('[GitDashboard] getCommitHistory failed:', e); return []; });
             const graph = await this._git.getGitGraph(folder, graphLimit, skip).catch((e: any) => { console.error('[GitDashboard] getGitGraph failed:', e); return null; });
@@ -92,7 +93,7 @@ export class GitDashboardPanel {
 
             this._panel.webview.postMessage({ 
                 command: appendGraph ? 'appendGraph' : 'update', 
-                data: { status, branches, currentBranch, stashes, history, graph: graph ?? '', submodules } 
+                data: { status, branches, currentBranch, stashes, tags, history, graph: graph ?? '', submodules } 
             });
             console.log('[GitDashboard] postMessage(update) sent');
 
@@ -193,13 +194,51 @@ export class GitDashboardPanel {
                         const doc = await vscode.workspace.openTextDocument({ content: fullDiff, language: 'diff' });
                         await vscode.window.showTextDocument(doc, { preview: false });
                         break;
-                    case 'stash': 
-                        await this._git.stash(folder, "Manual Stash"); 
-                        await this.refresh(); 
-                        break;
                     case 'stashApply': 
                         await this._git.applyStash(folder, msg.index); 
                         await this.refresh(); 
+                        break;
+                    case 'dropStash': 
+                        await this._git.dropStash(folder, msg.index); 
+                        await this.refresh(); 
+                        break;
+                    case 'createTag':
+                        const rawTagName = await vscode.window.showInputBox({ 
+                            prompt: "New Tag Name (Spaces will be replaced with '-')", 
+                            placeHolder: "v1.0.0" 
+                        });
+                        
+                        if (rawTagName) {
+                            // Sanitize: replace spaces with hyphens, remove other illegal git ref chars
+                            const sanitizedName = rawTagName.trim()
+                                .replace(/\s+/g, '-')
+                                .replace(/[~^:?*\[\\]/g, '');
+
+                            if (!sanitizedName) {
+                                vscode.window.showErrorMessage("Invalid tag name.");
+                                break;
+                            }
+
+                            const tagMsg = await vscode.window.showInputBox({ 
+                                prompt: "Tag Message (Optional)", 
+                                placeHolder: "Release description..." 
+                            });
+
+                            try {
+                                await this._git.createTag(folder, sanitizedName, tagMsg);
+                                await this.refresh();
+                                vscode.window.showInformationMessage(`Tag '${sanitizedName}' created.`);
+                            } catch (e: any) {
+                                vscode.window.showErrorMessage(`Git Error: ${e.message}`);
+                            }
+                        }
+                        break;
+                    case 'deleteTag':
+                        const tagConfirm = await vscode.window.showWarningMessage(`Delete tag '${msg.name}'?`, { modal: true }, "Delete");
+                        if (tagConfirm === "Delete") {
+                            await this._git.deleteTag(folder, msg.name);
+                            await this.refresh();
+                        }
                         break;
                     case 'commit': 
                         if (msg.message) { 
@@ -544,6 +583,17 @@ export class GitDashboardPanel {
                 </div>
             </div>
 
+            <!-- Tags -->
+            <div class="card flex-1">
+                <div class="card-header">
+                    <h2><i class="codicon codicon-tag"></i> Tags</h2>
+                    <button class="icon-btn" onclick="post('createTag')" title="Create Tag"><i class="codicon codicon-add"></i></button>
+                </div>
+                <div class="card-body" id="tags">
+                    <div style="opacity:0.5; padding:20px; text-align:center;"><i class="codicon codicon-sync spinner"></i> Loading tags...</div>
+                </div>
+            </div>
+
             <!-- Stashes -->
             <div class="card flex-1">
                 <div class="card-header">
@@ -838,6 +888,22 @@ export class GitDashboardPanel {
             \`).join('') || '<div style="opacity:0.5; font-size:11px; padding:10px; text-align:center;">No stashes found.</div>';
         }
 
+        function renderTags(tags) {
+            document.getElementById('tags').innerHTML = tags.map(t => \`
+                <div class="list-row">
+                    <div class="item-label" title="\${escapeHtml(t.message)}">
+                        <i class="codicon codicon-tag"></i> 
+                        <span style="font-weight:bold; color:var(--vscode-charts-orange)">\${escapeHtml(t.name)}</span>
+                        <small style="opacity:0.5; margin-left:5px;">\${escapeHtml(t.date)}</small>
+                    </div>
+                    <div class="item-actions">
+                        <button class="icon-btn" onclick="post('checkoutRef',{ref:'\${jsEscape(t.name)}'})" title="Checkout Tag"><i class="codicon codicon-target"></i></button>
+                        <button class="icon-btn" style="color:var(--vscode-errorForeground)" onclick="post('deleteTag',{name:'\${jsEscape(t.name)}'})" title="Delete Tag"><i class="codicon codicon-trash"></i></button>
+                    </div>
+                </div>
+            \`).join('') || '<div style="opacity:0.5; font-size:11px; padding:10px; text-align:center;">No tags.</div>';
+        }
+
         // Accumulated graph state for appendGraph support
         let accumulatedGraph = '';
 
@@ -870,7 +936,7 @@ export class GitDashboardPanel {
                 return;
             }
 
-            const { status, branches, currentBranch, stashes, graph, submodules } = msg.data;
+            const { status, branches, currentBranch, stashes, tags, graph, submodules } = msg.data;
 
             if (msg.command === 'appendGraph') {
                 // Append new commits to the existing graph
@@ -885,6 +951,7 @@ export class GitDashboardPanel {
             renderGraph(accumulatedGraph);
             renderSubmodules(submodules);
             renderStashes(stashes);
+            if (tags) renderTags(tags);
         });
 
         // The extension drives the initial refresh via setTimeout after setting HTML.

@@ -1,5 +1,6 @@
 {
     "displayName": "Lollms VS Coder",
+    "welcomeTitle": "Welcome to Lollms VS Coder",
     "action.settings": "Settings",
     "action.settings.tooltip": "Open Lollms Configuration",
     "action.help": "Help",

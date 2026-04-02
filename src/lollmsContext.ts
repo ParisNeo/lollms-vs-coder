@@ -35,9 +35,11 @@ export interface LollmsServices {
     inlineDiffProvider: InlineDiffProvider;
     diffManager: DiffManager;
     herdManager: HerdManager;
-    rlmDb: RLMDatabaseManager; // Added here
+    rlmDb: RLMDatabaseManager; 
+    projectMemoryManager: any; // Added here
     
     treeProviders: {
+        actions?: any;
         discussion?: any;
         discussionSearch?: any;
         chatPrompt?: any;

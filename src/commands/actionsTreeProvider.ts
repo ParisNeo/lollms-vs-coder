@@ -44,6 +44,7 @@ export class ActionsTreeProvider implements vscode.TreeDataProvider<ActionItem> 
         ];
 
         if (hasWorkspace) {
+            actions.unshift(new ActionItem('Project Memory', 'lollms-vs-coder.manageProjectMemory', 'chip', 'Manage AI project knowledge'));
             actions.unshift(new ActionItem(l.t('Git Dashboard'), 'lollms-vs-coder.showGitDashboard', 'git-merge', 'Manage Git repository'));
             actions.unshift(new ActionItem(l.t('Fix Errors'), 'lollms-vs-coder.fixAllErrors', 'zap', 'Iteratively repair project errors'));
             actions.unshift(new ActionItem(l.t('Deep Search'), 'lollms-vs-coder.showFileSearch', 'search', 'Power search across project content'));

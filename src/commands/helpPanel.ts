@@ -166,7 +166,8 @@ export class HelpPanel {
                     <div class="nav-item" onclick="showSection('context')"><i class="codicon codicon-layers"></i> Smart Context</div>
                     <div class="nav-item" onclick="showSection('graph')"><i class="codicon codicon-graph"></i> Code Graph</div>
                     <div class="nav-item" onclick="showSection('profiles')"><i class="codicon codicon-settings-gear"></i> Response Styles</div>
-                    <div class="nav-item" onclick="showSection('skills')"><i class="codicon codicon-lightbulb"></i> Skills & Memory</div>
+                    <div class="nav-item" onclick="showSection('memory')"><i class="codicon codicon-chip"></i> Project Memory</div>
+                    <div class="nav-item" onclick="showSection('skills')"><i class="codicon codicon-lightbulb"></i> Skills & Library</div>
                 </div>
             </div>
 
@@ -467,6 +468,46 @@ export class HelpPanel {
                 <li><strong>Security Export:</strong> Once an analysis is generated in the Commit Inspector, you can <strong>Copy</strong> it to your report, <strong>Save</strong> it as a Markdown file, or <strong>Send to Chat</strong>.</li>
                 <li><strong>Discussion Loop:</strong> Sending an analysis to chat creates a new discussion where the AI "remembers" the security audit, allowing you to ask follow-up questions like <em>"Is this fix sufficient for CVE-2024-XXX?"</em>.</li>
             </ul>
+        </section>
+
+        <!-- PROJECT MEMORY -->
+        <section id="memory">
+            <h1>🧠 Project Memory</h1>
+            <p>Project Memory is a dedicated long-term storage system that allows the AI to "remember" critical facts, constraints, and decisions specific to your current workspace. Unlike chat history, which eventually scrolls away, Memory is injected into <strong>every single prompt</strong> as a primary source of truth.</p>
+
+            <div class="card">
+                <h3>Coherent Project Management</h3>
+                <p>Modern software development involves hundreds of micro-decisions. Project Memory ensures the AI doesn't suffer from "session amnesia":</p>
+                <ul>
+                    <li><strong>Coding Standards:</strong> "Use 2 spaces for indentation and camelCase for private members."</li>
+                    <li><strong>Architectural Bounds:</strong> "We use FastAPI for backend; do not suggest Flask."</li>
+                    <li><strong>Bug History:</strong> "The race condition in <code>auth.ts</code> was fixed by a mutex; never revert to the stateless version."</li>
+                    <li><strong>User Preferences:</strong> "I prefer descriptive variable names even if they are long."</li>
+                </ul>
+            </div>
+
+            <h2>How it Works</h2>
+            <div class="feature-grid">
+                <div class="feature-item">
+                    <i class="codicon codicon-pass-filled"></i>
+                    <strong>Autonomous Learning</strong>
+                    <p>When the AI discovers a new rule or fixes a recurring issue, it uses the <code>&lt;project_memory&gt;</code> tag to save the fact silently while chatting with you.</p>
+                </div>
+                <div class="feature-item">
+                    <i class="codicon codicon-shield"></i>
+                    <strong>Permanent Context</strong>
+                    <p>Saved memories are stored in <code>.lollms/project_memory.json</code> and appear at the very top of the system prompt in all future discussions.</p>
+                </div>
+                <div class="feature-item">
+                    <i class="codicon codicon-edit"></i>
+                    <strong>Manual CRUD</strong>
+                    <p>You have full control. Use the <strong>Project Memory</strong> sidebar view to edit, rename, or delete facts the AI has learned.</p>
+                </div>
+            </div>
+
+            <div class="tip">
+                <strong>Pro Tip:</strong> If the AI keeps making the same mistake, don't just fix it in the code. Tell the AI: "Remember this fix in our project memory." It will write a new entry and never repeat that mistake again.
+            </div>
         </section>
 
         <!-- SKILLS -->

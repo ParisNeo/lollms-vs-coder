@@ -45,21 +45,28 @@ export async function buildCodeActionPrompt(
     let contextText = '';
     let contextResult: any = { text: '', images: [], projectTree: '', selectedFilesContent: '', skillsContent: '', importedSkills: [] };
 
-    if (useContext) {
-        // --- UPGRADE: MINIMAL INITIAL CONTEXT ---
-        const tree = await contextManager.getContextStateProvider()?.getAllVisibleFiles();
-        const skills = await contextManager.skillsManager?.getSkills();
-        const topCategories = Array.from(new Set(skills?.map(s => s.category?.split('/')[0]).filter(Boolean)));
+    const currentFileText = document.getText();
+    const relPath = vscode.workspace.asRelativePath(document.uri);
 
-        contextText = `\n\n### PROJECT STRUCTURE:\n${tree?.join('\n')}\n\n### AVAILABLE SKILL CATEGORIES:\n${topCategories.join(', ')}\n`;
+    if (useContext) {
+        // --- LEAN INITIAL CONTEXT ---
+        // We only provide the file PATHS (tree), not the content.
+        const tree = await contextManager.getContextStateProvider()?.getAllVisibleFiles();
+        contextText = `\n\n### PROJECT STRUCTURE (PATHS ONLY):\n${tree?.join('\n')}\n`;
         
-        // Include current file content as essential minimal context
-        const currentFileText = document.getText();
-        const relPath = vscode.workspace.asRelativePath(document.uri);
-        contextText += `\n### CURRENT FILE: ${relPath}\n\`\`\`${languageId}\n${currentFileText}\n\`\`\`\n`;
+        const skills = await contextManager.skillsManager?.getSkills();
+        if (skills && skills.length > 0) {
+            const skillSummaries = skills.map(s => `- ${s.id}: ${s.description}`).join('\n');
+            contextText += `\n### AVAILABLE SKILLS (IDs):\n${skillSummaries}\n`;
+        }
     }
 
-    let userPrompt = `I am working on the file \`${fileName}\` which is a \`${languageId}\` file.\n\nHere is the code selection:\n\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\nINSTRUCTION: **${userInstruction}**${contextText}`;
+    let userPrompt = `### CURRENT FILE: ${relPath}\n` +
+                     `\`\`\`${languageId}\n${currentFileText}\n\`\`\`\n\n` +
+                     `### SELECTED CODE (Lines ${selection.start.line + 1}-${selection.end.line + 1}):\n` +
+                     `\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\n` +
+                     `**USER INSTRUCTION:** ${userInstruction}\n` +
+                     `${contextText}`;
 
     let systemPrompt = '';
 

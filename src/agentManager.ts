@@ -67,6 +67,7 @@ export class AgentManager {
 
     private failureMemory: FailureMemory = new FailureMemory();
     private isDebugging: boolean = false;
+    public projectMemoryManager?: any; // Required for ChatPanel to process memory tags
     
     /**
      * Explicitly track completed actions for prompt injection to prevent
@@ -75,12 +76,17 @@ export class AgentManager {
     private completedActionsHistory: string[] = [];
 
     public rlmDb?: RLMDatabaseManager;
+    /**
+     * Chapter 2: State Management Layers
+     * Explicit tracking of different time horizons for the agent.
+     */
     public sessionState: {
         activeEnv?: string;
         replVariables: Record<string, any>; 
         installedPackages: string[];
         environmentHistory: string[];
-        workingMemory: string[]; 
+        workingMemory: string[]; // Ephemeral State (current session)
+        projectMemory: string[]; // Project State (persists in .lollms)
     } = {
         replVariables: {},
         installedPackages: [],
@@ -151,7 +157,10 @@ export class AgentManager {
     public toggleAgentMode() {
         this.isActive = !this.isActive;
         if (this.isActive) {
-            this.ui.addMessageToDiscussion({ role: 'system', content: `🤖 **Agent Mode Activated.** Architect is ready.` });
+            this.ui.addMessageToDiscussion({ 
+                role: 'system', 
+                content: `🛰️ **Autonomous Agent Mode Engaged.** I am now operating as the **Leader Architect**. I will analyze the objective, create a multi-step plan, and execute tools autonomously.` 
+            });
         } else {
             this.ui.addMessageToDiscussion({ role: 'system', content: '🤖 **Agent Mode Deactivated.**' });
             this.currentPlan = null;

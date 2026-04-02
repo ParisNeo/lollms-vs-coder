@@ -115,6 +115,7 @@ export class DiscussionManager {
             interTokenTimeout: 0,
             contextAggression: 'respect',
             disableProjectContext: false,
+            projectMemoryEnabled: true,
             gitWorkflow: false,
             autoApply: false,
             autoFix: true,
@@ -353,9 +354,16 @@ export class DiscussionManager {
         const firstUserMessage = discussion.messages.find(m => m.role === 'user');
         if (!firstUserMessage) return null;
 
-        let contentSnippet = typeof firstUserMessage.content === 'string' 
-            ? firstUserMessage.content.substring(0, 2000) 
-            : firstUserMessage.content.filter(part => part.type === 'text').map(part => part.text).join('\n').substring(0, 2000);
+        let contentSnippet = "";
+        if (typeof firstUserMessage.content === 'string') {
+            contentSnippet = firstUserMessage.content.substring(0, 2000);
+        } else if (Array.isArray(firstUserMessage.content)) {
+            contentSnippet = firstUserMessage.content
+                .filter((part: any) => part && part.type === 'text')
+                .map((part: any) => part.text || "")
+                .join('\n')
+                .substring(0, 2000);
+        }
     
         const systemPrompt: ChatMessage = {
             role: 'system',

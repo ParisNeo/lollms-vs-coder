@@ -105,6 +105,12 @@ export async function activate(context: vscode.ExtensionContext) {
     const rlmProvider = new RLMDatabaseTreeProvider(rlmDb);
     vscode.window.registerTreeDataProvider('lollmsRLMView', rlmProvider);
 
+    // Initialize Project Memory
+    const { ProjectMemoryManager } = require('./projectMemoryManager');
+    const projectMemoryManager = new ProjectMemoryManager(context);
+    const projectMemoryProvider = new (require('./commands/projectMemoryTreeProvider').ProjectMemoryTreeProvider)(projectMemoryManager);
+    vscode.window.registerTreeDataProvider('lollmsProjectMemoryView', projectMemoryProvider);
+
     contextManager.setSkillsManager(skillsManager);
     contextManager.setCodeGraphManager(codeGraphManager);
 
@@ -121,7 +127,8 @@ export async function activate(context: vscode.ExtensionContext) {
         personalityManager, skillsManager, codeGraphManager, notebookManager,
         gitIntegration, scriptRunner, quickEditManager, workflowManager,
         inlineDiffProvider, diffManager, herdManager,
-        rlmDb, // Injected RLM Database
+        rlmDb,
+        projectMemoryManager: projectMemoryManager, // MUST be here for uiCommands
         treeProviders: {}
     };
 
@@ -213,7 +220,7 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(async e => {
         if (e.affectsConfiguration('lollmsVsCoder.language')) {
             await LocalizationManager.initialize(context);
-            actionsTreeProvider.refresh();
+            services.treeProviders.actions?.refresh();
             services.treeProviders.discussion?.refresh();
             // Re-render open chat panels
             ChatPanel.panels.forEach(p => p.loadDiscussion());
@@ -262,6 +269,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
         // Switch RLM DB Workspace
         await rlmDb.switchWorkspace(folder.uri);
+
+        // Switch Project Memory Workspace
+        await projectMemoryManager.switchWorkspace(folder.uri);
         
         if (contextStateProvider) {
             await contextStateProvider.switchWorkspace(folder.uri.fsPath);

@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.7.33",
+  "version": "0.7.35",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -41,6 +41,27 @@
         "command": "lollms-vs-coder.rejectDiff",
         "title": "Reject AI Changes",
         "icon": "$(close)"
+      },
+      {
+        "command": "lollms-vs-coder.newAgentDiscussion",
+        "title": "New Agent Discussion",
+        "category": "Lollms",
+        "icon": "$(robot)"
+      },
+      {
+        "command": "lollms-vs-coder.manageProjectMemory",
+        "title": "Lollms: Manage Project Memory",
+        "icon": "$(chip)"
+      },
+      {
+        "command": "lollms-vs-coder.addProjectMemory",
+        "title": "Lollms: Add Project Memory",
+        "icon": "$(add)"
+      },
+      {
+        "command": "lollms-vs-coder.deleteProjectMemory",
+        "title": "Lollms: Delete Project Memory",
+        "icon": "$(trash)"
       },
       {
         "command": "lollms-vs-coder.startChat",
@@ -1165,6 +1186,11 @@
           "name": "RLM Knowledge Base"
         },
         {
+          "id": "lollmsProjectMemoryView",
+          "name": "Project Memory",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
           "id": "lollmsProcessesView",
           "name": "%view.processes.name%",
           "when": "workspaceFolderCount > 0"
@@ -1319,11 +1345,26 @@
         }
       ],
       "view/title": [
-        {
-          "command": "lollms-vs-coder.saveContextSelection",
-          "when": "view == lollmsFileTreeView",
-          "group": "navigation@1"
-        },
+          {
+              "command": "lollms-vs-coder.manageProjectMemory",
+              "when": "view == lollmsProjectMemoryView",
+              "group": "navigation@1"
+          },
+          {
+              "command": "lollms-vs-coder.newAgentDiscussion",
+              "when": "view == lollmsDiscussionsView",
+              "group": "navigation@1"
+          },          
+          {
+              "command": "lollms-vs-coder.addProjectMemory",
+              "when": "view == lollmsProjectMemoryView",
+              "group": "navigation@2"
+          },
+          {
+              "command": "lollms-vs-coder.refreshDiscussions",
+              "when": "view == lollmsDiscussionsView",
+              "group": "navigation"
+          },
         {
           "command": "lollms-vs-coder.loadContextSelection",
           "when": "view == lollmsFileTreeView",
@@ -1451,11 +1492,16 @@
         }
       ],
       "view/item/context": [
-        {
-          "command": "lollms-vs-coder.cancelProcess",
-          "when": "view == lollmsProcessesView && viewItem == 'process'",
-          "group": "inline"
-        },
+          {
+              "command": "lollms-vs-coder.deleteProjectMemory",
+              "when": "view == lollmsProjectMemoryView && viewItem == projectMemory",
+              "group": "inline"
+          },
+          {
+              "command": "lollms-vs-coder.renameDiscussion",
+              "when": "view == lollmsDiscussionsView && viewItem == discussion",
+              "group": "inline"
+          },
         {
           "command": "lollms-vs-coder.renameDiscussion",
           "when": "view == lollmsDiscussionsView && viewItem == 'discussion'",

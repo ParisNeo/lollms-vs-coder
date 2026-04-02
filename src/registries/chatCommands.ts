@@ -7,7 +7,7 @@ import { AgentManager } from '../agentManager';
 import { AutomationPanel } from '../panels/automationPanel';
 import { getProcessedSystemPrompt, stripThinkingTags } from '../utils';
 
-export function registerChatCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
+export async function registerChatCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
     
     // Explicitly register the refresh command to avoid "command not found" errors
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refreshDiscussions', () => {
@@ -57,6 +57,7 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
             services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
             services.rlmDb 
         );
+        agent.projectMemoryManager = services.projectMemoryManager;
         agent.setProcessManager(services.processManager);
         panel.setAgentManager(agent);
 
@@ -68,6 +69,40 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
         await panel.loadDiscussion();
         services.treeProviders.discussion?.refresh();
     }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newAgentDiscussion', async (item?: DiscussionGroupItem) => {
+        const groupId = item instanceof DiscussionGroupItem ? item.group.id : null;
+        const discussion = services.discussionManager.createNewDiscussion(groupId);
+        
+        // --- FORCE AGENT MODE ---
+        if (discussion.capabilities) {
+            discussion.capabilities.agentMode = true;
+        }
+        
+        await services.discussionManager.saveDiscussion(discussion);
+        
+        const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussion.id, services.gitIntegration, services.skillsManager);
+        
+        const agent = new AgentManager(
+            panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
+            services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
+            services.rlmDb
+        );
+        agent.setProcessManager(services.processManager);
+        
+        // Explicitly activate the agent instance immediately
+        agent.toggleAgentMode(); 
+        
+        panel.setAgentManager(agent);
+        panel.setProcessManager(services.processManager);
+        panel.setContextManager(services.contextManager);
+        panel.setPersonalityManager(services.personalityManager);
+        panel.setHerdManager(services.herdManager);
+
+        await panel.loadDiscussion();
+        services.treeProviders.discussion?.refresh();
+    }));
+    
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newTempDiscussion', async () => {
         const tempId = 'temp-' + Date.now().toString() + Math.random().toString(36).substring(2);
         
@@ -101,7 +136,8 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
             vscode.window.showWarningMessage('No text found to start discussion.');
             return;
         }
-        await startDiscussionWithInitialPrompt(services, textToUse, getActiveWorkspace(), false);
+        // Changed last argument to 'true' to allow immediate execution with context
+        await startDiscussionWithInitialPrompt(services, textToUse, getActiveWorkspace(), true);
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deleteDiscussion', async (item: DiscussionItem) => {
@@ -119,16 +155,12 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
         }
     }));
 
-    // Centralized renameDiscussion registration
-    // Check if command is already registered to avoid console warnings
-    const cmdId = 'lollms-vs-coder.renameDiscussion';
-    const registerRename = () => {
-        return vscode.commands.registerCommand(cmdId, async (item: DiscussionItem) => {
-            const newTitle = await vscode.window.showInputBox({ 
-                prompt: vscode.l10n.t('Enter new title for this discussion'), 
-                value: item.discussion.title 
-            });
-        
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.renameDiscussion', async (item: DiscussionItem) => {
+        const newTitle = await vscode.window.showInputBox({ 
+            prompt: vscode.l10n.t('Enter new title for this discussion'), 
+            value: item.discussion.title 
+        });
+    
         if (newTitle && newTitle !== item.discussion.title) {
             item.discussion.title = newTitle;
             await services.discussionManager.saveDiscussion(item.discussion);
@@ -140,7 +172,7 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
             
             services.treeProviders.discussion?.refresh();
         }
-    })};
+    }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateDiscussionTitle', async (item: DiscussionItem) => {
         await vscode.window.withProgress({
@@ -189,6 +221,7 @@ export function registerChatCommands(context: vscode.ExtensionContext, services:
                 services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
                 services.rlmDb 
             );
+            agent.projectMemoryManager = services.projectMemoryManager;
             agent.setProcessManager(services.processManager);
             panel.setAgentManager(agent);
         }

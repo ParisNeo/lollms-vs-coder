@@ -177,19 +177,35 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
             return;
         }
 
-        const unstaged = await services.gitIntegration.hasUnstagedChanges(folder);
-        if (unstaged) {
-            const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-            const behavior = config.get<string>('git.unstagedChangesBehavior') || 'stash';
-            
-            if (behavior === 'error') {
-                vscode.window.showErrorMessage("Cannot start AI feature branch: You have unstaged changes. Please commit or stash them first.");
-                return;
+        const status = await services.gitIntegration.getGitStatus(folder);
+        const isDirty = status.staged.length > 0 || status.unstaged.length > 0 || status.untracked.length > 0;
+
+        if (isDirty) {
+            const choices = ["📦 Stash and Create", "💾 Commit and Create", "⏩ Carry Over", "Cancel"];
+            const result = await vscode.window.showWarningMessage(
+                `You have uncommitted changes. How would you like to handle them before creating the new branch?`,
+                { modal: true },
+                ...choices
+            );
+
+            if (result === "Cancel" || !result) return;
+
+            if (result === "📦 Stash and Create") {
+                await services.gitIntegration.stash(folder, `Auto-stash before branch: ${params?.branch || 'new-branch'}`);
+                vscode.window.showInformationMessage("Uncommitted changes have been stashed.");
+            } else if (result === "💾 Commit and Create") {
+                const msg = await services.gitIntegration.generateCommitMessage(folder);
+                if (!msg) return; // User cancelled inside commit flow
+                
+                const finalMsg = await vscode.window.showInputBox({
+                    prompt: "Confirm AI-generated commit message",
+                    value: msg
+                });
+                
+                if (!finalMsg) return;
+                await services.gitIntegration.commitWithMessage(finalMsg, folder);
             }
-            if (behavior === 'stash') {
-                await services.gitIntegration.stash(folder, `Auto-stash before AI branch: ${params?.branch}`);
-                vscode.window.showInformationMessage("Unstaged changes were stashed.");
-            }
+            // "Carry Over" simply proceeds without stashing/committing
         }
 
         const discussionPanel = ChatPanel.currentPanel;

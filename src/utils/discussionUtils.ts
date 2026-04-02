@@ -48,12 +48,29 @@ export async function startDiscussionWithInitialPrompt(
     await panel.loadDiscussion();
 
     if (autoExecute) {
+        // --- IMAGE SUPPORT: Fetch images from project context ---
+        const contextData = await services.contextManager.getContextContent({ 
+            includeTree: false,
+            modelName: discussion.model || services.lollmsAPI.getModelName()
+        });
+
+        let finalContent: any = prompt;
+        
+        // If we have images in the project context, convert to Multipart message
+        if (contextData.images && contextData.images.length > 0) {
+            const parts: any[] = [{ type: 'text', text: prompt }];
+            contextData.images.forEach(img => {
+                parts.push({ type: 'image_url', image_url: { url: img.data } });
+            });
+            finalContent = parts;
+        }
+
         const userMessage: ChatMessage = {
             id: 'user_' + Date.now().toString() + Math.random().toString(36).substring(2),
             role: 'user',
-            content: prompt
+            content: finalContent
         };
-        // The panel's sendMessage method handles adding and saving internally
+        
         await panel.sendMessage(userMessage); 
     } else {
         // Handle "Paste as Message" without execution

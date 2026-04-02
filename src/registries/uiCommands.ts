@@ -40,6 +40,32 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
         await vscode.commands.executeCommand('lollms-vs-coder.triggerCodeAction', { isCustom: true });
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.manageProjectMemory', () => {
+        const { ProjectMemoryPanel } = require('../commands/projectMemoryPanel');
+        ProjectMemoryPanel.createOrShow(services.extensionUri, (services as any).projectMemoryManager);
+    }));
+
+    // Support clicking a memory item in the tree to open the manager
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.viewMemory', (item: any) => {
+        const { ProjectMemoryPanel } = require('../commands/projectMemoryPanel');
+        ProjectMemoryPanel.createOrShow(services.extensionUri, (services as any).projectMemoryManager);
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.addProjectMemory', async () => {
+        const title = await vscode.window.showInputBox({ prompt: "Memory Title", placeHolder: "e.g., Coding Standards" });
+        if (!title) return;
+        const id = 'mem_' + Date.now();
+        await (services as any).projectMemoryManager.updateMemory('add', id, title, "Enter facts for the AI to remember here...");
+        vscode.commands.executeCommand('lollms-vs-coder.manageProjectMemory');
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deleteProjectMemory', async (item: any) => {
+        const confirm = await vscode.window.showWarningMessage(`Delete memory "${item.memory.title}"?`, { modal: true }, "Delete");
+        if (confirm === "Delete") {
+            await (services as any).projectMemoryManager.updateMemory('delete', item.memory.id);
+        }
+    }));
+
     // Register the missing "selectModel" command
     registerSelectModelCommand(context, services);
 }

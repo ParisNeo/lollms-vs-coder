@@ -841,8 +841,9 @@ export function updateBadges() {
     if (dom.capHerdMode) dom.capHerdMode.checked = caps.herdMode || false;
     if (dom.capHerdParallelGeneration) dom.capHerdParallelGeneration.checked = !!caps.herdParallelGeneration;
     if (dom.capHerdRounds) dom.capHerdRounds.value = caps.herdRounds?.toString() || '2';
-    if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = !!caps.agentMode;
-    if (dom.autoContextCheckbox) dom.autoContextCheckbox.checked = !!caps.autoContextMode;
+                    if (dom.capProjectMemory) dom.capProjectMemory.checked = caps.projectMemoryEnabled !== false;
+                    if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = caps.agentMode;
+                    if (dom.autoContextCheckbox) dom.autoContextCheckbox.checked = caps.autoContextMode;
     if (dom.contextAggressionSelect) dom.contextAggressionSelect.value = caps.contextAggression || 'respect';
     if (dom.capGitWorkflow) dom.capGitWorkflow.checked = !!caps.gitWorkflow;
     if (dom.capEnableTTS) dom.capEnableTTS.checked = !!caps.enableTTS;
@@ -1031,8 +1032,21 @@ export function updateBadges() {
         knowledgeGroup.innerHTML = '<span class="badge-group-label">Knowledge</span>';
         container.appendChild(knowledgeGroup);
 
+        const memBadge = createToggleBadge(
+            '🧠 Memory', 
+            'thinking', 
+            true, 
+            caps.projectMemoryEnabled, 
+            () => {
+                vscode.postMessage({ 
+                    command: 'updateDiscussionCapabilitiesPartial', 
+                    partial: { projectMemoryEnabled: !caps.projectMemoryEnabled } 
+                });
+            }
+        );
+        if (memBadge) knowledgeGroup.appendChild(memBadge);
+
         const ctxBadge = createToggleBadge(
-            '🧠 Librarian',
             'autocontext', 
             guiState.autoContextBadge, 
             caps.autoContextMode, 

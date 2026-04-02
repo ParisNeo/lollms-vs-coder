@@ -1663,7 +1663,7 @@ ${cumulativeBrain || "No observations yet."}
    * Process a file and return its text representation. 
    * If it's a PDF with images, they are added to the 'imagesOut' array.
    */
-  public async processFile(fileName: string, base64Data: string, imagesOut?: { filePath: string; data: string }[]): Promise<string> {
+  public async processFile(fileName: string, base64Data: string, imagesOut?: { filePath: string; data: string }[], mode?: string): Promise<string> {
       const ext = path.extname(fileName).toLowerCase();
       const buffer = Buffer.from(base64Data, 'base64');
 
@@ -1673,30 +1673,18 @@ ${cumulativeBrain || "No observations yet."}
 
       if (ext === '.pdf' || this.docExtensions.has(ext)) {
           try {
-              // Try visual extraction for PDF
               if (ext === '.pdf') {
-                  const result = await this.lollmsAPI.extractPDFVisual(base64Data, fileName);
-                  
-                  // Ensure we handle both string content and structured result
-                  const text = typeof result === 'string' ? result : (result.text || "");
-                  const images = (result as any).images || [];
-
-                  if (images.length > 0 && imagesOut) {
-                      images.forEach((img: any) => {
-                          imagesOut.push({
-                              filePath: `${fileName}#${img.name || 'img'}`,
-                              data: img.data.startsWith('data:') ? img.data : `data:image/png;base64,${img.data}`
-                          });
-                      });
+                  // For text extraction, try backend, fallback to local pdf-parse
+                  try {
+                      return await this.lollmsAPI.extractText(base64Data, fileName);
+                  } catch (e) {
+                      return await this.parsePdfLocal(buffer);
                   }
-                  return text;
               }
               // Standard extraction for other docs
               return await this.lollmsAPI.extractText(base64Data, fileName);
           } catch (apiError: any) {
-              if (ext === '.pdf') {
-                  return await this.parsePdfLocal(buffer);
-              } else if (ext === '.docx') {
+              if (ext === '.docx') {
                   return await this.parseDocxLocal(buffer);
               }
               return `⚠️ **Error processing document:** ${(apiError as Error).message}`;
@@ -1801,6 +1789,7 @@ ${cumulativeBrain || "No observations yet."}
         result.selectedFilesContent += `\n**INSTRUCTIONS:**\n- Use \`read_file\` to peek at specific files.\n- Use \`search_files\` to find code.\n- Use \`rlm_repl\` to maintain state and memory.\n\n`;
         result.selectedFilesContent += `### RLM MEMORY\n- **Front Memory (Scratchpad):** [Empty]\n- **Back Memory (Persistent):** [Empty]\n`;
     } else if (includedFiles.length > 0) {
+      result.selectedFilesContent += `### 📑 INDEX OF LOADED FILES:\n${includedFiles.map(f => `- ${f.path}`).join('\n')}\n\n`;
       for (let i = 0; i < includedFiles.length; i++) {
         const fileEntry = includedFiles[i];
 

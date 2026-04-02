@@ -226,6 +226,7 @@ export const dom = {
     get capAutoBranch() { return document.getElementById('cap-autoBranch') as HTMLInputElement; },
     get capAddPedagogicalInstruction() { return document.getElementById('cap-addPedagogicalInstruction') as HTMLInputElement; },
     get capForceFullCodePath() { return document.getElementById('cap-forceFullCodePath') as HTMLInputElement; },
+    get capProjectMemory() { return document.getElementById('cap-projectMemoryEnabled') as HTMLInputElement; },
     get capDebugMode() { return document.getElementById('cap-debugMode') as HTMLInputElement; },
     get capMaxDebugSteps() { return document.getElementById('cap-maxDebugSteps') as HTMLInputElement; },
 

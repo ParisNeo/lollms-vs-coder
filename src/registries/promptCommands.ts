@@ -131,6 +131,14 @@ export function registerPromptCommands(context: vscode.ExtensionContext, service
                                     continue;
                                 }
 
+                                if (action.tool === 'get_project_tree') {
+                                    progress.report({ message: `🚀 Agent: Mapping project structure...` });
+                                    const contextData = await services.contextManager.getContextContent({ includeTree: true });
+                                    history.push({ role: 'assistant', content: response });
+                                    history.push({ role: 'system', content: `FULL PROJECT STRUCTURE:\n${contextData.projectTree}` });
+                                    continue;
+                                }
+
                                 if (action.tool === 'read_skills' && action.params?.skill_ids) {
                                     const allSkills = await services.skillsManager.getSkills();
                                     const selected = allSkills.filter(s => action.params.skill_ids.includes(s.id));

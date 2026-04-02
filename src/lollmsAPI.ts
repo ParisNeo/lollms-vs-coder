@@ -385,7 +385,7 @@ export class LollmsAPI {
   /**
    * Enhanced extraction that returns both text and a list of extracted images (base64).
    */
-  async extractPDFVisual(base64Data: string, fileName: string): Promise<{ text: string, images?: { name: string, data: string }[] }> {
+  async extractPDFVisual(base64Data: string, fileName: string, extractImages: boolean = true, allPagesAsImages: boolean = false): Promise<{ text: string, images?: { name: string, data: string }[] }> {
     if (!this.config.useLollmsExtensions) {
         throw new Error("Lollms extensions disabled");
     }
@@ -402,7 +402,8 @@ export class LollmsAPI {
         body: JSON.stringify({
             file: base64Data,
             filename: fileName,
-            extract_images: true
+            extract_images: extractImages,
+            all_pages_as_images: allPagesAsImages
         }),
     };
 
@@ -413,6 +414,9 @@ export class LollmsAPI {
 
     if (!response.ok) {
         // Fallback to standard text extraction if visual one fails
+        if (allPagesAsImages) {
+            throw new Error(`Server returned ${response.status}. Ensure Lollms backend is updated and supports 'extract_pdf_full'.`);
+        }
         const text = await this.extractText(base64Data, fileName);
         return { text };
     }

@@ -64,6 +64,7 @@ export class ChatPanel {
   // Track active listeners to prevent duplication
   private _activeGenerationListener?: (chunk: string) => void;
   private _activeGenerationCompleteListener?: (fullContent: string) => void;
+  private pdfExtractionPromises: Record<string, { resolve: (val: string[]) => void, reject: (err: Error) => void, timeout: NodeJS.Timeout }> = {};
 
   public static createOrShow(extensionUri: vscode.Uri, lollmsAPI: LollmsAPI, discussionManager: DiscussionManager, discussionId: string, gitIntegration: GitIntegration, skillsManager?: SkillsManager): ChatPanel {
     const column = vscode.window.activeTextEditor ? vscode.window.activeTextEditor.viewColumn : undefined;
@@ -675,13 +676,31 @@ export class ChatPanel {
             
             if (this._isDisposed || signal.aborted || !tokenizeResponse || !contextSizeResponse) return;
 
+            // --- IMAGE TOKEN CALCULATION ---
+            // 1. Images in Project Context
+            let imageCount = context.images.length;
+            
+            // 2. Images in Chat History (Attachments)
+            this._currentDiscussion.messages.forEach(m => {
+                if (Array.isArray(m.content)) {
+                    imageCount += m.content.filter(part => part.type === 'image_url').length;
+                }
+                // Handle complex document attachments that have images
+                if ((m as any).attachmentData?.images) {
+                    imageCount += (m as any).attachmentData.images.length;
+                }
+            });
+
+            const imageTokens = imageCount * 250;
+            const totalTokens = tokenizeResponse.count + imageTokens;
+
             let ctxSize = contextSizeResponse.context_size || 0;
             const isApproximate = tokenizeResponse.isEstimation || contextSizeResponse.isEstimation;
 
             if (this._panel && this._panel.webview) {
                 this._panel.webview.postMessage({
                     command: 'updateTokenProgress',
-                    totalTokens: tokenizeResponse.count,
+                    totalTokens: totalTokens,
                     contextSize: ctxSize,
                     isApproximate: isApproximate
                 });
@@ -921,7 +940,25 @@ export class ChatPanel {
    * Spawns the Verifier Agent (Guardian) to audit logic and fix static issues (imports, linting).
    * This fusions the Inspector and Verifier into one turn.
    */
-  public async runVerificationAgent(content: string, signal: AbortSignal): Promise<string> {
+  private async processProjectMemoryTags(content: string) {
+        const memoryRegex = /<project_memory\s+([^>]*?)>([\s\S]*?)<\/project_memory>/gi;
+        let match;
+        while ((match = memoryRegex.exec(content)) !== null) {
+            const attrStr = match[1];
+            const memoryContent = match[2].trim();
+            const attrs: any = {};
+            const attrRegex = /(\w+)=["']([^"']*)["']/g;
+            let m;
+            while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
+
+            const { action, id, title } = attrs;
+            if (action && id && this.agentManager.projectMemoryManager) {
+                await this.agentManager.projectMemoryManager.updateMemory(action as any, id, title, memoryContent);
+            }
+        }
+    }
+
+    public async runVerificationAgent(content: string, signal: AbortSignal): Promise<string> {
       if (!this._discussionCapabilities.verifierMode) return content;
 
       const systemPrompt = await getProcessedSystemPrompt('verifier', this._discussionCapabilities);
@@ -1271,7 +1308,26 @@ ${context.skills || 'No specialized skills active.'}
    * Processes an external file (PDF, DOCX, Image) and adds it specifically
    * to the current discussion as an attachment metadata block.
    */
-  private async _handleFileAttachment(name: string, content: string, isImage: boolean) {
+  private async extractPdfImagesViaWebview(base64Data: string): Promise<string[]> {
+      return new Promise((resolve, reject) => {
+          const requestId = Date.now().toString() + Math.random().toString(36).substring(2);
+          
+          const timeout = setTimeout(() => {
+              delete this.pdfExtractionPromises[requestId];
+              reject(new Error("PDF rendering timed out."));
+          }, 60000);
+
+          this.pdfExtractionPromises[requestId] = { resolve, reject, timeout };
+
+          this._panel.webview.postMessage({
+              command: 'extractPdfPages',
+              requestId: requestId,
+              base64Data: base64Data
+          });
+      });
+  }
+
+  private async _handleFileAttachment(name: string, content: string, isImage: boolean, mode?: string) {
       try {
           // Note: We DO NOT add to ContextStateProvider here. 
           // These files are discussion-local "Imported Data".
@@ -1279,7 +1335,7 @@ ${context.skills || 'No specialized skills active.'}
               const msg: ChatMessage = {
                   id: 'user_img_' + Date.now() + Math.random().toString(36).substring(2),
                   role: 'user',
-                  content: [
+                  content:[
                       { type: 'text', text: `Attached image: ${name}` },
                       { type: 'image_url', image_url: { url: content } }
                   ]
@@ -1287,10 +1343,35 @@ ${context.skills || 'No specialized skills active.'}
               await this.addMessageToDiscussion(msg);
           } else {
               const base64 = content.split(',')[1];
-              const extractedImages: { filePath: string; data: string }[] = [];
+              const extractedImages: { filePath: string; data: string }[] =[];
+              let text = "";
               
-              // This is the heavy lifting (parsing PDFs etc)
-              const text = await this._contextManager.processFile(name, base64, extractedImages);
+              // Local Webview PDF Page Rendering
+              if (name.toLowerCase().endsWith('.pdf') && (mode === 'images' || mode === 'mixed')) {
+                  this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: true, statusText: 'Rendering PDF pages locally...' });
+                  try {
+                      const pageImages = await this.extractPdfImagesViaWebview(base64);
+                      pageImages.forEach((imgDataUrl, idx) => {
+                          extractedImages.push({
+                              filePath: `${name}#page_${idx+1}`,
+                              data: imgDataUrl
+                          });
+                      });
+                      if (mode === 'images') {
+                          text = ""; // Visuals only
+                      } else {
+                          // Mixed mode requires text extraction as well
+                          text = await this._contextManager.processFile(name, base64,[]);
+                      }
+                  } catch (e: any) {
+                      throw new Error(`Failed to render PDF pages locally: ${e.message}`);
+                  } finally {
+                      this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: false });
+                  }
+              } else {
+                  // Standard text extraction
+                  text = await this._contextManager.processFile(name, base64, extractedImages, mode);
+              }
               
               const systemMsg: ChatMessage = {
                   id: 'attachment_' + Date.now() + Math.random().toString(36).substring(2),
@@ -1985,6 +2066,16 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
             this.log(`AI issued context expansion request. Waiting for user interaction.`);
         }
 
+        // --- PROJECT MEMORY PROCESSING ---
+        if (this._discussionCapabilities.projectMemoryEnabled !== false && !controller.signal.aborted) {
+            await this.processProjectMemoryTags(processedResponse);
+        }
+
+        // Initialize the Agentic Systems Code Book in Memory if it's a new project
+        if (message.role === 'user' && this._currentDiscussion?.messages.length === 1) {
+             await this.processProjectMemoryTags(`<project_memory action="add" id="core_manifesto" title="Agentic Systems Code Book">The project follows the 10 core principles of the Agentic Systems Code Book, prioritizing composition, explicit tool use, and safety.</project_memory>`);
+        }
+
         // --- AUTOMATION PIPELINE ---
         if (this._discussionCapabilities.autoApply && !controller.signal.aborted) {
             await this.executeAutomationPipeline(processedResponse, assistantMessageId, controller.signal, processId);
@@ -2640,8 +2731,8 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                     canSelectMany: true,
                     openLabel: 'Add to AI Context',
                     filters: { 
-                        'Documents': ['pdf', 'docx', 'pptx', 'xlsx', 'msg'],
-                        'Images': ['png', 'jpg', 'jpeg', 'webp', 'bmp'],
+                        'Documents':['pdf', 'docx', 'pptx', 'xlsx', 'msg'],
+                        'Images':['png', 'jpg', 'jpeg', 'webp', 'bmp'],
                         'Code/Text': ['*']
                     }
                 });
@@ -2651,15 +2742,34 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                     
                     for (const uri of uris) {
                         const ext = path.extname(uri.fsPath).toLowerCase();
+                        const fileName = path.basename(uri.fsPath);
+
                         // If it's a complex document or image, treat it as a rich attachment
                         if (['.pdf', '.docx', '.pptx', '.xlsx', '.msg', '.png', '.jpg', '.jpeg', '.webp'].includes(ext)) {
                             try {
                                 const bytes = await vscode.workspace.fs.readFile(uri);
                                 const base64 = Buffer.from(bytes).toString('base64');
                                 const isImage = ['.png', '.jpg', '.jpeg', '.webp', '.bmp'].includes(ext);
-                                await this._handleFileAttachment(path.basename(uri.fsPath), isImage ? `data:image/${ext.substring(1)};base64,${base64}` : `data:application/octet-stream;base64,${base64}`, isImage);
+
+                                let importMode: string | undefined = undefined;
+                                if (ext === '.pdf') {
+                                    const choices =[
+                                        { label: 'Text (Markdown)', mode: 'text', detail: 'Extract text content only.' },
+                                        { label: 'Text + Images', mode: 'mixed', detail: 'Extract text and include embedded images.' },
+                                        { label: 'Images only', mode: 'images', detail: 'Convert every page of the PDF into an image for visual analysis.' }
+                                    ];
+                                    const choice = await vscode.window.showQuickPick(choices, { placeHolder: `How should I import ${fileName}?` });
+                                    
+                                    if (!choice) {
+                                        this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: false });
+                                        continue; // User cancelled
+                                    }
+                                    importMode = choice.mode;
+                                }
+
+                                await this._handleFileAttachment(fileName, isImage ? `data:image/${ext.substring(1)};base64,${base64}` : `data:application/octet-stream;base64,${base64}`, isImage, importMode);
                             } catch (e: any) {
-                                vscode.window.showErrorMessage(`Failed to attach ${path.basename(uri.fsPath)}: ${e.message}`);
+                                vscode.window.showErrorMessage(`Failed to attach ${fileName}: ${e.message}`);
                             }
                         } else {
                             // Standard text/code file: add to background project context
@@ -2835,6 +2945,20 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                         }
                     }
                     this.updateContextAndTokens();
+                }
+                break;
+            case 'pdfPagesExtracted':
+                if (this.pdfExtractionPromises[message.requestId]) {
+                    clearTimeout(this.pdfExtractionPromises[message.requestId].timeout);
+                    this.pdfExtractionPromises[message.requestId].resolve(message.images);
+                    delete this.pdfExtractionPromises[message.requestId];
+                }
+                break;
+            case 'pdfPagesExtractionFailed':
+                if (this.pdfExtractionPromises[message.requestId]) {
+                    clearTimeout(this.pdfExtractionPromises[message.requestId].timeout);
+                    this.pdfExtractionPromises[message.requestId].reject(new Error(message.error));
+                    delete this.pdfExtractionPromises[message.requestId];
                 }
                 break;
             case 'requestAddUrlToContext':
@@ -3058,8 +3182,25 @@ Task:
                 }
                 break;
             case 'loadFile':
-                const { name: fileName2, content: fileContent2, isImage: isImage2 } = message.file;
-                await this._handleFileAttachment(fileName2, fileContent2, isImage2);
+                {
+                    const { name: fileName2, content: fileContent2, isImage: isImage2 } = message.file;
+                    let importMode: string | undefined = undefined;
+                    if (fileName2.toLowerCase().endsWith('.pdf')) {
+                        const choices =[
+                            { label: 'Text (Markdown)', mode: 'text', detail: 'Extract text content only.' },
+                            { label: 'Text + Images', mode: 'mixed', detail: 'Extract text and include embedded images.' },
+                            { label: 'Images only', mode: 'images', detail: 'Convert every page of the PDF into an image for visual analysis.' }
+                        ];
+                        const choice = await vscode.window.showQuickPick(choices, { placeHolder: `How should I import ${fileName2}?` });
+                        
+                        if (!choice) {
+                            this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: false });
+                            break; // User cancelled
+                        }
+                        importMode = choice.mode;
+                    }
+                    await this._handleFileAttachment(fileName2, fileContent2, isImage2, importMode);
+                }
                 break;
             case 'requestDeleteMessage':
                 await this.deleteMessage(message.messageId);
@@ -3889,11 +4030,20 @@ Task:
         default-src 'none';
         style-src ${webview.cspSource} 'unsafe-inline';
         font-src ${webview.cspSource};
-        img-src ${webview.cspSource} data:;
-        script-src 'nonce-${nonce}' 'unsafe-eval';
+        img-src ${webview.cspSource} data: blob:;
+        script-src 'nonce-${nonce}' 'unsafe-eval' https://cdnjs.cloudflare.com;
+        worker-src 'self' blob: https://cdnjs.cloudflare.com;
     ">
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Lollms Chat</title>
+    <!-- PDF.js for local rendering (Pure TS/JS, no backend required) -->
+    <script nonce="${nonce}" src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script nonce="${nonce}">
+        // Disable worker to avoid cross-origin/blob CSP issues in VS Code webview
+        if (typeof pdfjsLib !== 'undefined') {
+            pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+        }
+    </script>
     <link href="${codiconsUri}" rel="stylesheet" />
     <link href="${cssUri}" rel="stylesheet" />
     <link href="${prismThemeUri}" rel="stylesheet" />
@@ -4305,6 +4455,10 @@ Task:
                                 <option value="signatures">Smart Signatures (Full for Edit, Defs for Context)</option>
                             </select>
                             <p style="font-size: 10px; opacity: 0.7; margin-top: 4px;">Controls how many files the Auto-Context agent tries to pack into the prompt.</p>
+                        </div>
+                        <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-projectMemoryEnabled"><span class="slider"></span></label>
+                            <label for="cap-projectMemoryEnabled"><strong>🧠 Project Memory:</strong> Discreetly save technical facts.</label>
                         </div>
                         <div class="checkbox-container">
                             <label class="switch"><input type="checkbox" id="cap-debugMode"><span class="slider"></span></label>

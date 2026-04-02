@@ -37,14 +37,14 @@ export const SYSTEM_RESPONSE_PROFILES: ResponseProfile[] = [
         id: "balanced",
         name: "Balanced (Default)",
         description: "Natural technical flow: Brief explanation followed by implementation.",
-        systemPrompt: "### RESPONSE STYLE: BALANCED\n- **Logic**: Briefly explain the technical approach or reasoning behind your solution.\n- **Implementation**: Provide the code or perform the actions immediately after the explanation.\n- **Tone**: Professional, helpful, and direct. Avoid rigid headers like 'Problem' or 'Hypothesis' unless explicitly asked.",
+        systemPrompt: "### RESPONSE STYLE: BALANCED\n- **Logic**: Briefly explain the technical approach or reasoning behind your solution.\n- **Implementation**: Provide the code or tags (e.g., <project_memory>) immediately after the explanation.\n- **Constraint**: Do not wrap your entire response in a code block. Use standard markdown for text and only use code blocks for actual source code.\n- **Tone**: Professional, helpful, and direct.",
         prefix: ""
     },
     {
         id: "structured",
         name: "Structured (Analytical)",
         description: "Formal Problem/Hypothesis/Fix breakdown.",
-        systemPrompt: "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this three-part structure for every response:\n  1. **Problem**: Identify what is being asked or what issue was found.\n  2. **Hypothesis**: Describe the technical path chosen and why.\n  3. **Fix**: Provide the actual implementation or code.",
+        systemPrompt: "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this three-part structure for every response:\n  1. **Problem**: Identify what is being asked or what issue was found.\n  2. **Hypothesis**: Describe the technical path chosen and why.\n  3. **Fix**: Provide the actual implementation or code.\n\n- **STRICT FORMATTING**: Use standard Markdown (bolding, lists) for these sections. Do NOT wrap these text sections in triple backticks.\n- **AUTONOMOUS ACTIONS**: If you need to use a tool or save a memory, do so at the END of your 'Fix' section. Tags like <project_memory> are mandatory for persistence.",
         prefix: ""
     },
     {
@@ -123,6 +123,8 @@ export interface DiscussionCapabilities {
     autoSkillMode: boolean;
     contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
     disableProjectContext: boolean;
+    projectMemoryEnabled: boolean;
+    projectMemoryEnabled: boolean;
     temperature: number;
     ttftTimeout: number;
     interTokenTimeout: number;
@@ -614,6 +616,8 @@ export interface DiscussionCapabilities {
     autoSkillMode: boolean;
     contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
     disableProjectContext: boolean;
+    projectMemoryEnabled: boolean;
+    projectMemoryEnabled: boolean;
     temperature: number;
     ttftTimeout: number;
     interTokenTimeout: number;

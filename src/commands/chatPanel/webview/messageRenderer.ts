@@ -236,6 +236,34 @@ function enablePanZoom(container: HTMLElement) {
 
     window.addEventListener('mouseup', stopDrag);
 }
+/**
+ * Renders a visual block indicating a fact has been saved to Project Memory.
+ */
+function renderMemoryTag(id: string, title: string, content: string): string {
+    return `
+    <div class="project-memory-block">
+        <div class="memory-header">
+            <div class="memory-icon-container">
+                <span class="codicon codicon-chip"></span>
+            </div>
+            <div class="memory-title-info">
+                <div class="memory-label">KNOWLEDGE COMMIT</div>
+                <div class="memory-title">${sanitizer.sanitize(title)}</div>
+            </div>
+            <div class="memory-id-badge">
+                ${sanitizer.sanitize(id)}
+            </div>
+        </div>
+        <div class="memory-content">
+            ${sanitizer.sanitize(content)}
+        </div>
+        <div class="memory-status-line">
+            <span class="codicon codicon-pass-filled"></span>
+            Synced to .lollms/project_memory.json
+        </div>
+    </div>`;
+}
+
 // Helper to render skill creation blocks
 function renderSkillBlock(rawContent: string, attrs: { title?: string, description?: string, category?: string }, messageId: string): string {
     let title = attrs.title || "New Skill";
@@ -588,6 +616,15 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
             }
 
             if (match) {
+                // Peek at the block content to avoid rendering empty "plaintext" placeholders
+                const nextLine = lines[i+1] ? lines[i+1].trim() : "";
+                const isClosingNext = nextLine.startsWith('```');
+                if (isClosingNext) {
+                    // Skip empty block detection
+                    currentOffset += lineWithNewline.length;
+                    continue;
+                }
+
                 inBlock = true;
                 fenceLength = match[2].length;
                 depth = 1;
@@ -1556,6 +1593,28 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 debugReports.push({ html: dHtml, start: dMatch.index, end: dMatch.index + dMatch[0].length });
             }
 
+            // --- PROJECT MEMORY TAG PARSING ---
+            const memTags: { html: string, start: number, end: number }[] = [];
+            const pMemRegex = /<project_memory\s+([^>]*?)>([\s\S]*?)<\/project_memory>/gi;
+            let pMemMatch;
+            while ((pMemMatch = pMemRegex.exec(contentWithoutThoughts)) !== null) {
+                const attrStr = pMemMatch[1];
+                const memContent = pMemMatch[2].trim();
+                const attrs: any = {};
+                const attrRegex = /(\w+)=["']([^"']*)["']/g;
+                let m;
+                while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
+                
+                if (attrs.action !== 'delete') {
+                    const html = renderMemoryTag(attrs.id, attrs.title || attrs.id, memContent);
+                    memTags.push({ html, start: pMemMatch.index, end: pMemMatch.index + pMemMatch[0].length });
+                } else {
+                    // Deleted memories show a small strike-through notification
+                    const html = `<div class="project-memory-block" style="opacity:0.6; text-decoration:line-through;">Removed Memory: ${attrs.id}</div>`;
+                    memTags.push({ html, start: pMemMatch.index, end: pMemMatch.index + pMemMatch[0].length });
+                }
+            }
+
             // --- FILE OPERATIONS & CONTEXT TAG PARSING ---
             const fileOps: { html: string, start: number, end: number }[] = [];
             const opRegex = /<(move_file|delete_file|add_files_to_context|remove_files_from_context)\s+([^>]*?)\s*\/>/gi;
@@ -1612,6 +1671,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 ...skills.map(s => ({ start: s.start, end: s.end, html: s.html, elementType: 'skill' as const })),
                 ...images.map(i => ({ start: i.start, end: i.end, html: i.html, elementType: 'image' as const })),
                 ...fileOps.map(o => ({ start: o.start, end: o.end, html: o.html, elementType: 'fileOp' as const })),
+                ...memTags.map(m => ({ start: m.start, end: m.end, html: m.html, elementType: 'projectMemory' as const })),
                 ...debugReports.map(d => ({ start: d.start, end: d.end, html: d.html, elementType: 'debugReport' as const }))
             ].sort((a, b) => a.start - b.start);
 
@@ -2144,20 +2204,18 @@ function gatherChangesFromBlocks(messageId: string) {
         const isAider = codeText.includes('<<<<<<< SEARCH');
 
         if (isAider) {
-            const hunkBubbles = block.querySelectorAll('.aider-hunk-bubble');
-            hunkBubbles.forEach((hunk: any, hIdx: number) => {
-                const applyBtn = hunk.querySelector('.apply-btn') as HTMLButtonElement;
-                if (applyBtn && !applyBtn.classList.contains('applied')) {
-                    changes.push({
-                        type: 'replace',
-                        path: path,
-                        content: codeText, 
-                        label: `${path} (Hunk ${hIdx + 1})`,
-                        blockIndex: blockIndex,
-                        hunkIndex: hIdx
-                    });
-                }
-            });
+            // Grouped Aider Application: If a block has multiple hunks, 
+            // apply them as one operation to prevent context-shift errors.
+            const applyBtn = block.querySelector('.code-actions .apply-btn') as HTMLButtonElement;
+            if (applyBtn && !applyBtn.classList.contains('applied')) {
+                changes.push({
+                    type: 'replace',
+                    path: path,
+                    content: codeText,
+                    label: `${path} (${block.querySelectorAll('.aider-hunk-bubble').length} hunks)`,
+                    blockIndex: blockIndex
+                });
+            }
         } else {
             const applyBtn = block.querySelector('.code-actions .apply-btn') as HTMLButtonElement;
             if (applyBtn && !applyBtn.classList.contains('applied')) {
@@ -2246,10 +2304,9 @@ function addAttachment(message: any) {
     
     if (images && images.length > 0) {
         const imageCards = images.map((img: any) => {
-            // Ensure we use the proper data URL format
             const src = img.data.startsWith('data:') ? img.data : `data:image/png;base64,${img.data}`;
             return `
-                <div class="staged-image-card" style="background-image: url(${src}); width: 140px; height: 140px; flex-shrink: 0; cursor: zoom-in;" 
+                <div class="staged-image-card" style="background-image: url(${src});" 
                      onclick="const w=window.open(); w.document.write('<img src=\\'${src}\\' style=\\'max-width:100%\\'>')">
                 </div>`;
         }).join('');
@@ -2257,20 +2314,23 @@ function addAttachment(message: any) {
         bodyHtml += `
             <div style="margin-bottom: 15px;">
                 <div style="font-size: 10px; font-weight: 800; opacity: 0.6; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">
-                    <i class="codicon codicon-device-camera"></i> Extracted Visuals (${images.length})
+                    <i class="codicon codicon-device-camera"></i> Extracted Pages/Visuals (${images.length})
                 </div>
-                <div style="display: flex; gap: 12px; overflow-x: auto; padding-bottom: 10px; scrollbar-width: thin;">
+                <div class="image-grid">
                     ${imageCards}
                 </div>
             </div>`;
     }
 
-    bodyHtml += `
-        <div style="font-size: 10px; font-weight: 800; opacity: 0.5; margin-bottom: 5px; text-transform: uppercase;">Extracted Text Content</div>
-        <div class="markdown-body" style="font-size: 12px; line-height: 1.6; max-height: 400px; overflow-y: auto; padding: 12px; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px;">
-            ${sanitizer.sanitize(marked.parse(textContent) as string)}
-        </div>
-    </div>`;
+    if (textContent && textContent.trim().length > 0) {
+        bodyHtml += `
+            <div style="font-size: 10px; font-weight: 800; opacity: 0.5; margin-bottom: 5px; text-transform: uppercase;">Extracted Text Content</div>
+            <div class="markdown-body" style="font-size: 12px; line-height: 1.6; max-height: 400px; overflow-y: auto; padding: 12px; background: var(--vscode-editor-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px;">
+                ${sanitizer.sanitize(marked.parse(textContent) as string)}
+            </div>`;
+    }
+    
+    bodyHtml += `</div>`;
 
     details.innerHTML = bodyHtml;
     
@@ -2379,11 +2439,18 @@ function addChatMessage(message: any, isFinal: boolean = true) {
     bodyDiv.innerHTML = ''; // Clear for fresh injection
     bodyDiv.appendChild(actions);
 
+    const isAgent = state.capabilities?.agentMode && role === 'assistant';
+    if (isAgent) {
+        messageDiv.classList.add('agent-mode-message');
+    }
+
     const headerDiv = document.createElement('div');
     headerDiv.className = 'message-header';
     let roleDisplay = 'System';
     if (role === 'user') roleDisplay = 'You';
-    else if (role === 'assistant') roleDisplay = personalityName || 'Lollms';
+    else if (role === 'assistant') {
+        roleDisplay = isAgent ? '🛰️ Leader Architect' : (personalityName || 'Lollms');
+    }
     
     headerDiv.innerHTML = `<span class="role-name">${roleDisplay}</span>`;
     bodyDiv.appendChild(headerDiv);

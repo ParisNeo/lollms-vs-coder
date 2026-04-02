@@ -70,6 +70,34 @@ export class GitIntegration {
       }
   }
 
+  public async getTags(folder: vscode.WorkspaceFolder): Promise<{name: string, date: string, message: string}[]> {
+      try {
+          const { stdout } = await execAsync('git --no-pager tag -l --format="%(refname:short)|%(creatordate:relative)|%(contents:subject)"', { 
+              cwd: folder.uri.fsPath, 
+              timeout: 10000 
+          });
+          return stdout.split('\n')
+              .filter(line => line.trim())
+              .map(line => {
+                  const [name, date, message] = line.split('|');
+                  return { name, date, message };
+              })
+              .reverse(); // Newest first
+      } catch {
+          return [];
+      }
+  }
+
+  public async createTag(folder: vscode.WorkspaceFolder, name: string, message?: string): Promise<void> {
+      const msgArg = message ? ` -m "${message.replace(/"/g, '\\"')}"` : '';
+      const flag = message ? '-a' : '';
+      await execAsync(`git tag ${flag} "${name}" ${msgArg}`, { cwd: folder.uri.fsPath });
+  }
+
+  public async deleteTag(folder: vscode.WorkspaceFolder, name: string): Promise<void> {
+      await execAsync(`git tag -d "${name}"`, { cwd: folder.uri.fsPath });
+  }
+
   public async hasUnstagedChanges(folder: vscode.WorkspaceFolder): Promise<boolean> {
       try {
           const { stdout } = await execAsync('git --no-pager status --porcelain', { cwd: folder.uri.fsPath, timeout: 10000 });

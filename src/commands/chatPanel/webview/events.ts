@@ -731,6 +731,7 @@ export function initEventHandlers() {
                     delete: dom.fmtDelete?.checked ?? true
                 },
                 explainCode: dom.capExplainCode?.checked ?? true,
+                projectMemoryEnabled: dom.capProjectMemory?.checked ?? true,
                 autoFix: dom.capAutoFix?.checked ?? true,
                 addPedagogicalInstruction: dom.capAddPedagogicalInstruction?.checked ?? false,
                 forceFullCodePath: dom.capForceFullCodePath?.checked ?? false,

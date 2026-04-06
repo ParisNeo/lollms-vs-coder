@@ -10,7 +10,34 @@ import { WorkflowsTreeProvider } from '../commands/workflowsTreeProvider';
 import { DiscussionTreeProvider, DiscussionSearchProvider } from '../commands/discussionTreeProvider';
 import { ProcessTreeProvider } from '../commands/processTreeProvider';
 
+export class TabsTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem> {
+    private _onDidChangeTreeData = new vscode.EventEmitter<vscode.TreeItem | undefined>();
+    readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+
+    constructor(private context: vscode.ExtensionContext) {}
+
+    refresh() { this._onDidChangeTreeData.fire(undefined); }
+
+    getTreeItem(element: vscode.TreeItem): vscode.TreeItem { return element; }
+
+    async getChildren(): Promise<vscode.TreeItem[]> {
+        const activeTab = this.context.globalState.get('lollms.activeTab', 'chat');
+        const { TabItem } = require('../commands/treeItems');
+        
+        return [
+            new TabItem("Chat & Discussions", "chat", "comment-discussion", activeTab === 'chat'),
+            new TabItem("Librarian (Knowledge)", "librarian", "library", activeTab === 'librarian'),
+            new TabItem("The Lab (Tools/Graph)", "lab", "beaker", activeTab === 'lab')
+        ];
+    }
+}
+
 export function registerViews(context: vscode.ExtensionContext, services: LollmsServices) {
+    // Tabs
+    const tabsProvider = new TabsTreeProvider(context);
+    services.treeProviders.tabs = tabsProvider;
+    context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsTabsView', tabsProvider));
+
     // Actions
     const actionsTreeProvider = new ActionsTreeProvider();
     services.treeProviders.actions = actionsTreeProvider;

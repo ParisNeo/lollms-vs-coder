@@ -177,6 +177,7 @@ export class HelpPanel {
                     <div class="nav-item" onclick="showSection('agent')"><i class="codicon codicon-robot"></i> Agent Mode</div>
                     <div class="nav-item" onclick="showSection('automation')"><i class="codicon codicon-zap"></i> Auto-Repair</div>
                     <div class="nav-item" onclick="showSection('advanced-debug')"><i class="codicon codicon-bug"></i> Live Debugging</div>
+                    <div class="nav-item" onclick="showSection('manual-stitching')"><i class="codicon codicon-tools"></i> Manual Stitching</div>
                 </div>
             </div>
 
@@ -556,6 +557,32 @@ export class HelpPanel {
 
             <h3>Using Skills</h3>
             <p>In a chat, click the <strong>Import Skill</strong> button (paperclip menu) to select from your library. The content is injected into the system prompt, teaching the AI exactly how you like things done.</p>
+        </section>
+
+        <!-- MANUAL STITCHING -->
+        <section id="manual-stitching">
+            <h1>🛠️ Manual Stitching Workflow</h1>
+            <p>Sometimes an automated patch fails because the file on disk has changed significantly. In these cases, use the <b>Raw Aider Block</b> view for a surgical manual fix.</p>
+            
+            <div class="card">
+                <h3>High-Speed Patching Loop</h3>
+                <ol>
+                    <li>Open the <b>Raw</b> view from the code block header.</li>
+                    <li>Highlight a unique piece of code in the <code>SEARCH</code> section.</li>
+                    <li>Click <b>Search Selection</b>. Results will appear in the right sidebar.</li>
+                    <li><b>The Magic Move:</b> Click a search result. Lollms will:
+                        <ul>
+                            <li>Automatically copy the <code>REPLACE</code> block to your clipboard.</li>
+                            <li>Open the target file and highlight the match.</li>
+                        </ul>
+                    </li>
+                    <li>Simply press <span class="badge">Ctrl+V</span> (Paste) to apply the fix.</li>
+                </ol>
+            </div>
+            
+            <div class="tip">
+                <strong>Why use this?</strong> It allows you to apply "broken" AI patches in seconds without manually navigating folders or switching between the chat and your code.
+            </div>
         </section>
 
         <!-- CUSTOM -->

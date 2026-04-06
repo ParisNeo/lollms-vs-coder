@@ -85,6 +85,7 @@ export interface DiscussionCapabilities {
     ttftTimeout: number;
     interTokenTimeout: number;
     contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
+    clipboardInsertRole: 'user' | 'assistant';
     guiState?: {
         agentBadge: boolean;
         debugBadge: boolean;
@@ -229,6 +230,7 @@ export const dom = {
     get capProjectMemory() { return document.getElementById('cap-projectMemoryEnabled') as HTMLInputElement; },
     get capDebugMode() { return document.getElementById('cap-debugMode') as HTMLInputElement; },
     get capMaxDebugSteps() { return document.getElementById('cap-maxDebugSteps') as HTMLInputElement; },
+    get capClipboardRole() { return document.getElementById('cap-clipboardInsertRole') as HTMLSelectElement; },
 
     get allowedFormats() { return document.querySelector('.checkbox-grid') as HTMLElement; },
     get fmtFullFile() { return document.getElementById('fmt-fullFile') as HTMLInputElement; },
@@ -327,5 +329,7 @@ export const dom = {
     get copySearchBtn() { return document.getElementById('copy-search-btn') as HTMLButtonElement; },
     get copyReplaceBtn() { return document.getElementById('copy-replace-btn') as HTMLButtonElement; },
     get copyRawBtn() { return document.getElementById('copy-raw-btn') as HTMLButtonElement; },
-    get markAppliedBtn() { return document.getElementById('mark-applied-btn') as HTMLButtonElement; }
+    get markAppliedBtn() { return document.getElementById('mark-applied-btn') as HTMLButtonElement; },
+    get searchSelectionBtn() { return document.getElementById('search-selection-btn') as HTMLButtonElement; },
+    get rawSearchResultsMini() { return document.getElementById('raw-search-results') as HTMLDivElement; }
 };

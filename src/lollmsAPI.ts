@@ -11,7 +11,7 @@ export interface LollmsConfig {
   modelName: string;
   disableSslVerification: boolean;
   sslCertPath?: string;
-  backendType: 'lollms' | 'openai' | 'ollama' | 'anthropic' | 'google' | 'groq' | 'grok' | 'novitai' | 'openwebui' | 'openrouter';
+  backendType: 'lollms' | 'openai' | 'ollama' | 'anthropic' | 'google' | 'groq' | 'grok' | 'novitai' | 'openwebui' | 'openrouter' | 'perplexity' | 'together';
   useLollmsExtensions: boolean;
 }
 
@@ -235,6 +235,8 @@ export class LollmsAPI {
 
     if (backend === 'ollama') {
         url += '/api/tags';
+    } else if (backend === 'openwebui') {
+        url += '/models';
     } else if (backend === 'google') {
         url = `https://generativelanguage.googleapis.com/v1beta/models?key=${this.config.apiKey}`;
         headers = {};
@@ -288,51 +290,41 @@ export class LollmsAPI {
   }
 
   public async tokenize(text: string, model?: string): Promise<TokenizeResponse> {
-    const useExtensions = this.config.useLollmsExtensions && this.config.backendType === 'lollms';
+    const backend = this.config.backendType;
+    const modelName = model || this.config.modelName;
+
+    // 1. High-Precision Lollms Tokenizer API
+    if (this.config.useLollmsExtensions && backend === 'lollms') {
+        const tokenizeUrl = `${this.baseUrl}/lollms/v1/tokenize`;
+        const isHttps = tokenizeUrl.startsWith('https');
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 5000);
+
+        try {
+            const response = await fetch(tokenizeUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.config.apiKey}` },
+                body: JSON.stringify({ model: modelName, text: text }),
+                signal: controller.signal,
+                agent: isHttps ? this.httpsAgent : undefined
+            });
+            if (response.ok) {
+                return await response.json() as TokenizeResponse;
+            }
+        } catch (e) { } finally { clearTimeout(timeout); }
+    }
+
+    // 2. Advanced Heuristic Estimation
+    // Code often uses more tokens (approx 2.5-3 chars/token) than prose (approx 4 chars/token).
+    // We scan for common code indicators.
+    const hasCode = text.includes('{') || text.includes('def ') || text.includes('function ') || text.includes('import ');
+    const multiplier = hasCode ? 0.35 : 0.28; // Inverse of chars/token
     
-    if (!useExtensions) {
-        return { count: Math.ceil(text.length / 4), tokens: [], isEstimation: true };
-    }
+    const count = Math.ceil(text.length * multiplier);
 
-    const tokenizeUrl = `${this.baseUrl}/lollms/v1/tokenize`;
-    const isHttps = tokenizeUrl.startsWith('https');
-
-    const modelToSend = model || this.config.modelName;
-    const body: any = { text: text };
-    if (modelToSend) {
-        body.model = modelToSend;
-    }
-
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000); 
-
-    const options: RequestInit = {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${this.config.apiKey}`
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal
-    };
-
-    if (isHttps) {
-        options.agent = this.httpsAgent;
-    }
-
-    try {
-        const response = await fetch(tokenizeUrl, options);
-        if (!response.ok) {
-            throw new Error(`Status ${response.status}`);
-        }
-        const data = await response.json() as TokenizeResponse;
-        return { ...data, isEstimation: false };
-    } catch (e: any) {
-        return { count: Math.ceil(text.length / 4), tokens: [], isEstimation: true };
-    } finally {
-        clearTimeout(timeout);
-    }
+    return { count, tokens: [], isEstimation: true };
   }
+
 
   public async getContextSize(model?: string): Promise<ContextSizeResponse> {
     const useExtensions = this.config.useLollmsExtensions && this.config.backendType === 'lollms';
@@ -546,13 +538,15 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
     
     sanitizedMessages.forEach((msg, idx) => {
         const role = msg.role.toUpperCase();
-        const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
-        const len = content.length;
+        // Fixed: If content is already an object/array (multipart), don't stringify it here, 
+        // just get a preview for the logs.
+        const contentPreview = typeof msg.content === 'string' ? msg.content : "[Multipart/Vision Content]";
+        const len = typeof msg.content === 'string' ? msg.content.length : 0;
         
-        if (len > 800) {
-            console.log(`  [${idx}] ${role} (${len} chars): ${content.substring(0, 400)} ... [TRUNCATED] ... ${content.substring(len - 400)}`);
+        if (len > 800 && typeof msg.content === 'string') {
+            console.log(`  [${idx}] ${role} (${len} chars): ${msg.content.substring(0, 400)} ... [TRUNCATED] ... ${msg.content.substring(len - 400)}`);
         } else {
-            console.log(`  [${idx}] ${role} (${len} chars): ${content}`);
+            console.log(`  [${idx}] ${role} (${len} chars): ${contentPreview}`);
         }
     });
     console.log(`%c[LoLLMs API] <<< End of Request Payload`, 'color: #00ff00; font-weight: bold;');
@@ -655,6 +649,24 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
                 parts: [{ text: m.content }]
             }))
         };
+
+        // --- GOOGLE SEARCH GROUNDING ---
+        if (options?.capabilities?.webSearch) {
+            body.tools = [{ googleSearchRetrieval: {} }];
+        }
+    } else if (backend === 'perplexity') {
+        // Perplexity uses OpenAI-compatible endpoint but distinct URL
+        url = 'https://api.perplexity.ai/chat/completions';
+        headers = { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${this.config.apiKey}` 
+        };
+        body = { model, messages: sanitizedMessages, stream };
+    } else if (backend === 'openwebui') {
+        // OpenWebUI serves OpenAI API at /api/chat/completions
+        // We assume the user provides the base URL ending in /api
+        url += '/chat/completions';
+        body = { model, messages: sanitizedMessages, stream };
     } else {
         url += '/v1/chat/completions';
         body = { model, messages: sanitizedMessages, stream };

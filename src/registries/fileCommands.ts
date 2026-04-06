@@ -367,12 +367,13 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 const replaceCode = match[2];
                 
                 // --- SPECIAL CASE: EMPTY SEARCH BLOCK ---
-                // If search is empty, treat as "Create File" if new, or "Append" if existing.
+                // If search is empty, treat as "Create File" if new, or "Append to end" if existing.
                 if (searchCode.trim() === "") {
+                    const eol = currentContent.includes('\r\n') ? '\r\n' : '\n';
                     if (!fileExists && applyCount === 0) {
                         currentContent = replaceCode;
                     } else {
-                        const eol = currentContent.includes('\r\n') ? '\r\n' : '\n';
+                        // Append to the very end of the current content
                         currentContent = currentContent.trimEnd() + eol + replaceCode;
                     }
                     applyCount++;

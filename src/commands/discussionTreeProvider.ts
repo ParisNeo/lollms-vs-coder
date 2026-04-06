@@ -10,7 +10,12 @@ export class DiscussionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
     constructor(
         private discussionManager: DiscussionManager,
         private extensionUri: vscode.Uri
-    ) {}
+    ) {
+        // Automatically refresh tree whenever the manager signals a state change
+        this.discussionManager.onDidChangeDiscussions(() => {
+            this.refresh();
+        });
+    }
 
     refresh(): void {
         this._onDidChangeTreeData.fire();
@@ -31,7 +36,18 @@ export class DiscussionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
     }
 
     async getChildren(element?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
-        const allDiscussions = await this.discussionManager.getAllDiscussions();
+        let allDiscussions: Discussion[] = [];
+        try {
+            allDiscussions = await this.discussionManager.getAllDiscussions();
+        } catch (e) {
+            return [new vscode.TreeItem("Error loading discussions.", vscode.TreeItemCollapsibleState.None)];
+        }
+
+        if (allDiscussions.length === 0 && !element) {
+            const item = new vscode.TreeItem("No discussions yet. Click + to start.", vscode.TreeItemCollapsibleState.None);
+            item.iconPath = new vscode.ThemeIcon('info');
+            return [item];
+        }
 
         // If we are searching, we flatten the view to show only matches
         if (this.filterQuery) {
@@ -83,7 +99,11 @@ export class DiscussionItem extends vscode.TreeItem {
             title: 'Switch Discussion',
             arguments: [this.id]
         };
-        this.iconPath = vscode.Uri.joinPath(this.extensionUri, 'media', 'lollms-icon.svg');
+
+        const isAgent = discussion.capabilities?.agentMode === true;
+        this.iconPath = isAgent 
+            ? new vscode.ThemeIcon('robot') 
+            : vscode.Uri.joinPath(this.extensionUri, 'media', 'lollms-icon.svg');
     }
 }
 

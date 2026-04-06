@@ -47,6 +47,24 @@ export class PromptGroupItem extends vscode.TreeItem {
     }
 }
 
+export class TabItem extends vscode.TreeItem {
+    constructor(
+        public readonly label: string,
+        public readonly tabId: 'chat' | 'librarian' | 'lab',
+        public readonly icon: string,
+        public readonly isActive: boolean
+    ) {
+        super(label, vscode.TreeItemCollapsibleState.None);
+        this.iconPath = new vscode.ThemeIcon(icon, isActive ? new vscode.ThemeColor('textLink.foreground') : undefined);
+        this.description = isActive ? "(Active)" : "";
+        this.contextValue = isActive ? 'activeTab' : 'inactiveTab';
+        this.command = {
+            command: `lollms-vs-coder.show${tabId.charAt(0).toUpperCase() + tabId.slice(1)}Tab`,
+            title: `Switch to ${label}`
+        };
+    }
+}
+
 export class ProcessItem extends vscode.TreeItem {
     constructor(
         public readonly process: RunningProcess

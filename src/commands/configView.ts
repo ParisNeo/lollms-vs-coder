@@ -36,6 +36,8 @@ export class SettingsPanel {
     contextFileExceptions: [] as string[],
     language: 'auto',
     
+    connectionProfiles: [] as any[],
+
     // REPLACED OLD MODES WITH PROFILES
     responseProfiles: [] as ResponseProfile[],
     defaultResponseProfileId: 'balanced',
@@ -159,6 +161,8 @@ export class SettingsPanel {
     this._pendingConfig.contextFileExceptions = config.get<string[]>('contextFileExceptions') || [];
     this._pendingConfig.language = config.get<string>('language') || 'auto';
     
+    this._pendingConfig.connectionProfiles = config.get<any[]>('connectionProfiles') || [];
+
     // NEW PROFILES CONFIG
     this._pendingConfig.responseProfiles = config.get<ResponseProfile[]>('responseProfiles') || [];
     this._pendingConfig.defaultResponseProfileId = config.get<string>('defaultResponseProfileId') || 'balanced';
@@ -258,7 +262,8 @@ export class SettingsPanel {
     });
 
     if (uris && uris[0]) {
-        const fileContent = (await vscode.workspace.fs.readFile(uris[0])).toString();
+        const fileData = await vscode.workspace.fs.readFile(uris[0]);
+        const fileContent = Buffer.from(fileData).toString('utf8');
         const ext = path.extname(uris[0].fsPath).toLowerCase();
         let imported: any = {};
 
@@ -280,7 +285,16 @@ export class SettingsPanel {
                     }
                 });
             } else if (ext === '.json') {
-                imported = JSON.parse(fileContent);
+                const data = JSON.parse(fileContent);
+                // Support both flat JSON and our YAML-style mapping
+                imported = {
+                    backendType: data.backend || data.backendType,
+                    apiUrl: data.host || data.apiUrl,
+                    apiKey: data.key || data.apiKey,
+                    modelName: data.model || data.modelName,
+                    sslCertPath: data.cert_path || data.sslCertPath,
+                    disableSslVerification: data.verify_ssl !== undefined ? !data.verify_ssl : data.disableSslVerification
+                };
             } else {
                 const yaml = require('js-yaml');
                 const rawYaml = yaml.load(fileContent);
@@ -480,6 +494,10 @@ export class SettingsPanel {
                     .trim();
                 }
 
+                // Sync the local state to match the new pending config
+                // This ensures that after save, 'initialState' logic on frontend can reset correctly
+                const updatedConfig = { ...this._pendingConfig };
+
                 const config = vscode.workspace.getConfiguration('lollmsVsCoder');
                 const failures: { key: string; error: string }[] = [];
 
@@ -527,6 +545,7 @@ export class SettingsPanel {
                   ['commitMessagePersona', this._pendingConfig.commitMessagePersona],
                   ['contextFileExceptions', this._pendingConfig.contextFileExceptions],
                   ['language', this._pendingConfig.language],
+                  ['connectionProfiles', this._pendingConfig.connectionProfiles],
                   
                   // NEW PROFILES
                   ['responseProfiles', this._pendingConfig.responseProfiles],
@@ -593,7 +612,12 @@ export class SettingsPanel {
                   );
                   Logger.info('Configuration saved successfully.');
                   await vscode.commands.executeCommand('lollmsApi.recreateClient');
-                  SettingsPanel.currentPanel?.dispose();
+                  
+                  // REFRESH: Send signal to webview that save is complete
+                  this._panel.webview.postMessage({ 
+                    command: 'configSaved', 
+                    newConfig: updatedConfig 
+                  });
                 } else {
                   const errorDetails = failures.map(f => `  • ${f.key}: ${f.error}`).join('\n');
                   const failMsg = `Configuration saved with ${failures.length} error(s):\n\n${errorDetails}`;
@@ -683,6 +707,16 @@ export class SettingsPanel {
                 const logContent = Logger.getLogContent();
                 this._panel.webview.postMessage({ command: 'logData', content: logContent });
                 return;
+
+            case 'requestProfileName':
+                const name = await vscode.window.showInputBox({
+                    prompt: "Enter a name for this connection profile",
+                    placeHolder: "e.g., Home Office, Production API"
+                });
+                if (name) {
+                    this._panel.webview.postMessage({ command: 'profileNameProvided', name });
+                }
+                return;
           }
         },
         undefined,
@@ -722,6 +756,61 @@ personalities: this._personalityManager.getPersonalities()
                 --border-radius: 6px; 
                 --border-radius-sm: 3px; 
                 --transition: all 0.2s ease; 
+              }
+
+              .connection-warning-banner {
+                background: var(--vscode-inputValidation-warningBackground);
+                border: 1px solid var(--vscode-inputValidation-warningBorder);
+                color: var(--vscode-foreground);
+                padding: 10px 15px;
+                border-radius: var(--border-radius);
+                margin-bottom: 20px;
+                display: none; /* Reactive */
+                align-items: flex-start;
+                gap: 12px;
+                animation: slideDown 0.3s ease-out;
+              }
+
+              .connection-warning-banner.visible {
+                display: flex;
+              }
+
+              .connection-warning-banner i {
+                color: var(--warning-color);
+                font-size: 18px;
+                margin-top: 2px;
+              }
+
+              .connection-warning-text {
+                flex: 1;
+                font-size: 12px;
+              }
+
+              @keyframes slideDown {
+                from { opacity: 0; transform: translateY(-10px); }
+                to { opacity: 1; transform: translateY(0); }
+              }
+
+              .save-success-toast {
+                position: fixed;
+                bottom: 30px;
+                right: 30px;
+                background: var(--success-color);
+                color: white;
+                padding: 10px 20px;
+                border-radius: 30px;
+                font-weight: bold;
+                box-shadow: 0 10px 25px rgba(0,0,0,0.4);
+                display: none; /* Controlled by JS */
+                align-items: center;
+                gap: 10px;
+                z-index: 10000;
+                animation: popIn 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+              }
+
+              @keyframes popIn {
+                from { opacity: 0; transform: translateY(20px) scale(0.8); }
+                to { opacity: 1; transform: translateY(0) scale(1); }
               }
               body, html { height: 100%; width:100%; margin: 0; padding: 0; font-family: var(--vscode-font-family); background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); font-size: 13px; line-height: 1.4; }
               .container { padding: 20px; height: 100%; box-sizing: border-box; display: flex; flex-direction: column; max-width: 1000px; margin: 0 auto; }
@@ -771,6 +860,13 @@ personalities: this._personalityManager.getPersonalities()
         </head>
         <body>
           <div class="container">
+            <div id="connectionWarning" class="connection-warning-banner">
+                <i class="codicon codicon-warning"></i>
+                <div class="connection-warning-text">
+                    <strong>Connection Settings Modified.</strong><br>
+                    You must <b>Save Changes</b> before the model lists and connection tests can be accurately refreshed.
+                </div>
+            </div>          
             <div class="header-row">
               <div class="toolbar">
                 <button class="toolbar-btn save" id="saveToolbar" title="Save Configuration"><svg viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v13a2 2 0 0 1-2 2z"></path><polyline points="17 21 17 13 7 13 7 21"></polyline><polyline points="7 3 7 8 15 8"></polyline></svg></button>
@@ -791,14 +887,35 @@ personalities: this._personalityManager.getPersonalities()
               <button class="tab-link" onclick="openTab(event, 'TabLog')">📋 Log</button>
             </div>
 
-    <!-- TabApi Content -->
+            <div id="saveToast" class="save-success-toast">
+                <i class="codicon codicon-check"></i> Saved Successfully
+            </div>
+
     <div id="TabApi" class="tab-content active">
+        
         <div style="display:flex; justify-content: space-between; align-items: center;">
             <h2 style="margin:0; border:none; padding:0;">${t('config.section.apiAndModel', 'API & Model')}</h2>
             <div style="display:flex; gap:8px;">
-                <button id="importConfig" class="secondary-button" style="margin:0;"><i class="codicon codicon-cloud-upload"></i> Import</button>
-                <button id="exportConfig" class="secondary-button" style="margin:0;"><i class="codicon codicon-cloud-download"></i> Export</button>
+                <button id="importConfig" class="secondary-button" style="margin:0;" title="Import from .env/JSON"><i class="codicon codicon-cloud-upload"></i> Import</button>
+                <button id="exportConfig" class="secondary-button" style="margin:0;" title="Export to .env/JSON"><i class="codicon codicon-cloud-download"></i> Export</button>
             </div>
+        </div>
+
+        <!-- CONNECTION PROFILES SECTION -->
+        <div class="card" style="margin-top: 15px; padding: 12px; border-style: dashed; background: var(--vscode-editor-inactiveSelectionBackground);">
+            <label style="margin-top:0; font-size: 11px;">🚀 Connection Profiles</label>
+            <div class="input-group" style="margin-top:5px;">
+                <select id="connectionProfileSelect" style="flex:1;">
+                    <option value="">-- Select a Saved Environment --</option>
+                </select>
+                <button id="saveCurrentAsProfile" class="icon-btn" title="Save current settings as new profile"><i class="codicon codicon-save"></i></button>
+                <button id="deleteProfile" class="icon-btn remove-btn" title="Delete selected profile"><i class="codicon codicon-trash"></i></button>
+            </div>
+            <p class="help-text">Quickly switch between local (Ollama) and cloud (OpenAI/Anthropic) setups.</p>
+        </div>
+
+        <div id="saveToast" class="save-success-toast">
+            <i class="codicon codicon-check"></i> Saved Successfully
         </div>
 
         <label for="backendType">Backend Type</label>
@@ -879,6 +996,14 @@ personalities: this._personalityManager.getPersonalities()
               <div class="checkbox-container"><input type="checkbox" id="enableInlineSuggestions" ${enableInlineSuggestions ? 'checked' : ''}><label for="enableInlineSuggestions">Enable Inline Ghost Text Suggestions</label></div>
 
               <div class="checkbox-container"><input type="checkbox" id="autoGenerateTitle" ${autoGenerateTitle ? 'checked' : ''}><label for="autoGenerateTitle">Auto-generate discussion titles</label></div>
+              
+              <label for="clipboardInsertRole">Clipboard Paste Role</label>
+              <select id="clipboardInsertRole">
+                <option value="user" ${clipboardInsertRole === 'user' ? 'selected' : ''}>User (Prompt)</option>
+                <option value="assistant" ${clipboardInsertRole === 'assistant' ? 'selected' : ''}>AI (Reference Content)</option>
+              </select>
+              <p class="help-text">Determines the default role when creating a new discussion from clipboard.</p>
+
               <div class="checkbox-container"><input type="checkbox" id="addPedagogicalInstruction" ${addPedagogicalInstruction ? 'checked' : ''}><label for="addPedagogicalInstruction">Add Pedagogical Instruction (Hidden)</label></div>
 
               <h3>Response Profiles</h3>
@@ -1145,20 +1270,24 @@ personalities: this._personalityManager.getPersonalities()
         
           <script>
             const vscode = acquireVsCodeApi();
-            const initialState = ${jsonState};
-            const config = initialState.config;
-            const personalities = initialState.personalities;
-            let herdPre = initialState.herdPre;
-            let herdPost = initialState.herdPost;
-            let herdPool = initialState.herdPool;
+            let stateData = ${jsonState};
+            let config = stateData.config;
+            let connectionProfiles = config.connectionProfiles || [];
+            let personalities = stateData.personalities || [];
             let loadedModels = [];
-            
-            // PROFILES STATE
+
+            // Profiles State
             let profiles = config.responseProfiles || [];
             let defaultId = config.defaultResponseProfileId || 'balanced';
             let editingIndex = -1;
 
-            function safeSet(id, value, isCheck) {
+            // Connection-critical field mapping for reactivity
+            const connectionFields = [
+                'apiUrl', 'apiKey', 'backendType', 'useLollmsExtensions', 
+                'sslCertPath', 'disableSsl'
+            ];
+
+            function safeSet(id, value, isCheck = false) {
                 const el = document.getElementById(id);
                 if(el) {
                     if(isCheck) el.checked = !!value;
@@ -1171,221 +1300,157 @@ personalities: this._personalityManager.getPersonalities()
                 if(el) el.addEventListener(event, callback);
             }
 
-            function renderProfiles() {
-                const container = document.getElementById('profiles-container');
-                const selector = document.getElementById('defaultProfileSelect');
-                if (!container || !selector) return;
+            function checkReactivity() {
+                const warning = document.getElementById('connectionWarning');
+                const refreshBtn = document.getElementById('refreshModels');
+                const testBtn = document.getElementById('testConnection');
                 
-                container.innerHTML = '';
-                selector.innerHTML = '';
-
-                profiles.forEach((p, idx) => {
-                    // Populate Selector
-                    const opt = new Option(p.name + (p.id === defaultId ? " (Default)" : ""), p.id);
-                    opt.selected = p.id === defaultId;
-                    selector.appendChild(opt);
-
-                    // Populate List
-                    const item = document.createElement('div');
-                    item.className = 'participant-row';
-                    item.innerHTML = \`
-                        <div style="flex:1">
-                            <strong>\${p.name}</strong> <small>(\${p.id})</small><br>
-                            <span style="opacity:0.8; font-size:0.9em">\${p.description}</span>
-                        </div>
-                        <button id="edit-profile-\${idx}" class="icon-btn"><i class="codicon codicon-edit"></i></button>
-                        <button id="del-profile-\${idx}" class="icon-btn remove-btn"><i class="codicon codicon-trash"></i></button>
-                    \`;
-                    container.appendChild(item);
-                    
-                    document.getElementById('edit-profile-'+idx).onclick = () => editProfile(idx);
-                    document.getElementById('del-profile-'+idx).onclick = () => deleteProfile(idx);
-                });
-                
-                vscode.postMessage({ command: 'updateProfiles', profiles, defaultId });
-            }
-
-            function editProfile(index) {
-                editingIndex = index;
-                openEditor(profiles[index]);
-            }
-
-            function deleteProfile(index) {
-                if(confirm("Delete this profile?")) {
-                    if (profiles[index].id === defaultId) {
-                        alert("Cannot delete the default profile. Please change the default first.");
-                        return;
-                    }
-                    profiles.splice(index, 1);
-                    renderProfiles();
-                }
-            }
-
-            function openEditor(p) {
-                document.getElementById('p_id').value = p.id;
-                document.getElementById('p_id').disabled = editingIndex !== -1;
-                document.getElementById('p_name').value = p.name;
-                document.getElementById('p_desc').value = p.description;
-                document.getElementById('p_prefix').value = p.prefix || '';
-                document.getElementById('p_prompt').value = p.systemPrompt;
-                document.getElementById('profile-editor').style.display = 'block';
-                document.getElementById('profiles-container').style.display = 'none';
-            }
-
-            document.getElementById('defaultProfileSelect').addEventListener('change', (e) => {
-                defaultId = e.target.value;
-                renderProfiles();
-            });
-
-            document.getElementById('addProfileBtn').addEventListener('click', () => {
-                editingIndex = -1;
-                openEditor({ id: 'new_mode', name: 'New Mode', description: '', systemPrompt: '', prefix: '' });
-            });
-
-            document.getElementById('p_cancel').addEventListener('click', () => {
-                document.getElementById('profile-editor').style.display = 'none';
-                document.getElementById('profiles-container').style.display = 'flex';
-            });
-
-            document.getElementById('p_save').addEventListener('click', () => {
-                const newP = {
-                    id: document.getElementById('p_id').value,
-                    name: document.getElementById('p_name').value,
-                    description: document.getElementById('p_desc').value,
-                    prefix: document.getElementById('p_prefix').value,
-                    systemPrompt: document.getElementById('p_prompt').value
-                };
-
-                if (!newP.id || !newP.name) {
-                    alert("ID and Name are required");
-                    return;
+                let isDirty = false;
+                for (const field of connectionFields) {
+                    const el = document.getElementById(field);
+                    if (!el) continue;
+                    const currentValue = el.type === 'checkbox' ? el.checked : el.value;
+                    const savedValue = config[field === 'disableSsl' ? 'disableSslVerification' : field];
+                    if (currentValue !== savedValue) { isDirty = true; break; }
                 }
 
-                if (editingIndex === -1) {
-                    if (profiles.find(x => x.id === newP.id)) {
-                        alert("ID already exists");
-                        return;
-                    }
-                    profiles.push(newP);
+                if (isDirty) {
+                    warning.classList.add('visible');
+                    if (refreshBtn) refreshBtn.classList.add('disabled');
                 } else {
-                    profiles[editingIndex] = newP;
+                    warning.classList.remove('visible');
+                    if (refreshBtn) refreshBtn.classList.remove('disabled');
                 }
+            }
 
-                document.getElementById('profile-editor').style.display = 'none';
-                document.getElementById('profiles-container').style.display = 'flex';
-                renderProfiles();
-            });
+            function postTempUpdate(key, value) { 
+                vscode.postMessage({ command: 'updateTempValue', key, value }); 
+            }
 
-            document.getElementById('exportProfileBtn').addEventListener('click', () => vscode.postMessage({ command: 'exportProfiles' }));
-            document.getElementById('importProfileBtn').addEventListener('click', () => vscode.postMessage({ command: 'importProfiles' }));
+            const bind = (id, key) => {
+                const el = document.getElementById(id);
+                if(!el) return;
+                const event = el.type === 'checkbox' ? 'change' : 'input';
+                el.addEventListener(event, () => {
+                    let val = el.type === 'checkbox' ? el.checked : el.value;
+                    if(el.type === 'number') val = parseInt(val);
+                    if(['contextFileExceptions', 'remoteAllowedUsers', 'remoteAdminUsers', 'remoteAllowedChannels'].includes(key)) {
+                        val = val.split('\\n').map(s=>s.trim()).filter(Boolean);
+                    }
+                    postTempUpdate(key, val);
+                    if (connectionFields.includes(id)) checkReactivity();
+                });
+            };
+
+            function renderConnectionProfiles() {
+                const select = document.getElementById('connectionProfileSelect');
+                if (!select) return;
+                select.innerHTML = '<option value="">-- Select a Saved Environment --</option>';
+                connectionProfiles.forEach((p, idx) => {
+                    select.appendChild(new Option(p.name, idx));
+                });
+            }
 
             function initializeForm() {
-                try {
-                    safeSet('apiKey', config.apiKey);
-                    safeSet('apiUrl', config.apiUrl);
-                    safeSet('backendType', config.backendType);
-                    safeSet('useLollmsExtensions', config.useLollmsExtensions, true);
-                    safeSet('requestTimeout', config.requestTimeout);
-                    safeSet('agentMaxRetries', config.agentMaxRetries);
-                    safeSet('verifyAndCorrectCodeBlocks', config.verifyAndCorrectCodeBlocks, true);
-                    safeSet('maxImageSize', config.maxImageSize);
-                    safeSet('disableSsl', config.disableSslVerification, true);
-                    safeSet('sslCertPath', config.sslCertPath);
-                    safeSet('language', config.language);
-                    safeSet('autoGenerateTitle', config.autoGenerateTitle, true);
-                    safeSet('addPedagogicalInstruction', config.addPedagogicalInstruction, true);
-                    
-                    if (config.generationFormats) {
-                        safeSet('gen-full', config.generationFormats.fullFile, true);
-                        safeSet('gen-diff', config.generationFormats.diff, true);
-                        safeSet('gen-aider', config.generationFormats.aider, true);
-                    }
-                    
-                    safeSet('explainCode', config.explainCode, true);
-                    
-                    if (config.allowedFileFormats) {
-                        safeSet('fmt-fullFile', config.allowedFileFormats.fullFile, true);
-                        safeSet('fmt-insert', config.allowedFileFormats.insert, true);
-                        safeSet('fmt-replace', config.allowedFileFormats.replace, true);
-                        safeSet('fmt-delete', config.allowedFileFormats.delete, true);
-                    }
-                    
-                    safeSet('failsafeContextSize', config.failsafeContextSize);
-                    if(document.getElementById('contextFileExceptions') && Array.isArray(config.contextFileExceptions)) 
-                        document.getElementById('contextFileExceptions').value = config.contextFileExceptions.join('\\n');
-                    safeSet('showOs', config.showOs, true);
-                    safeSet('showIp', config.showIp, true);
-                    safeSet('showShells', config.showShells, true);
-                    safeSet('systemCustomInfo', config.systemCustomInfo);
-                    safeSet('agentShellExecution', config.agentShellExecution, true);
-                    safeSet('agentFilesystemWrite', config.agentFilesystemWrite, true);
-                    safeSet('agentFilesystemRead', config.agentFilesystemRead, true);
-                    safeSet('agentInternetAccess', config.agentInternetAccess, true);
-                    safeSet('agentScreenCapture', config.agentScreenCapture, true);
-                    safeSet('agentWebTesting', config.agentWebTesting, true);
-                    safeSet('agentUseRLM', config.agentUseRLM, true);
-                    safeSet('enableCodeInspector', config.enableCodeInspector, true);
-                    safeSet('codeInspectorPersona', config.codeInspectorPersona);
-                    safeSet('chatPersona', config.chatPersona);
-                    safeSet('agentPersona', config.agentPersona);
-                    safeSet('commitMessagePersona', config.commitMessagePersona);
-                    safeSet('searchApiKey', config.searchApiKey);
-                    safeSet('searchCx', config.searchCx);
-                    safeSet('companionEnableWebSearch', config.companionEnableWebSearch, true);
-                    safeSet('companionEnableArxivSearch', config.companionEnableArxivSearch, true);
-                    safeSet('mcpServers', config.mcpServers);
-                    safeSet('autoUpdateChangelog', config.autoUpdateChangelog, true);
-                    safeSet('deleteBranchAfterMerge', config.deleteBranchAfterMerge, true);
-                    safeSet('unstagedChangesBehavior', config.unstagedChangesBehavior);
-                    safeSet('userInfoName', config.userInfoName);
-                    safeSet('userInfoEmail', config.userInfoEmail);
-                    safeSet('userInfoLicense', config.userInfoLicense);
-                    safeSet('userInfoCodingStyle', config.userInfoCodingStyle);
-                    safeSet('moltbookEnable', config.moltbookEnable, true);
-                    safeSet('moltbookApiKey', config.moltbookApiKey);
-                    safeSet('moltbookBotName', config.moltbookBotName);
-                    safeSet('moltbookBotPurpose', config.moltbookBotPurpose);
-                    
-                    // Remote Settings
-                    safeSet('remoteServerPort', config.remoteServerPort);
-                    safeSet('remoteDiscordEnabled', config.remoteDiscordEnabled, true);
-                    safeSet('remoteDiscordToken', config.remoteDiscordToken);
-                    safeSet('remoteSlackEnabled', config.remoteSlackEnabled, true);
-                    safeSet('remoteSlackToken', config.remoteSlackToken);
-                    safeSet('remoteSlackSigningSecret', config.remoteSlackSigningSecret);
-                    
-                    if(document.getElementById('remoteAllowedUsers') && Array.isArray(config.remoteAllowedUsers)) 
-                        document.getElementById('remoteAllowedUsers').value = config.remoteAllowedUsers.join('\\n');
-                    if(document.getElementById('remoteAdminUsers') && Array.isArray(config.remoteAdminUsers)) 
-                        document.getElementById('remoteAdminUsers').value = config.remoteAdminUsers.join('\\n');
-                    if(document.getElementById('remoteAllowedChannels') && Array.isArray(config.remoteAllowedChannels)) 
-                        document.getElementById('remoteAllowedChannels').value = config.remoteAllowedChannels.join('\\n');
-
-                    populateModelDropdown(document.getElementById('modelSelect'), config.modelName);
-                    populateModelDropdown(document.getElementById('architectModelSelect'), config.architectModelName);
-                    populateModelDropdown(document.getElementById('inspectorModelName'), config.inspectorModelName);
-                    updatePersonaSelects();
-                    renderProfiles(); // Init Profiles
+                safeSet('apiKey', config.apiKey);
+                safeSet('apiUrl', config.apiUrl);
+                safeSet('backendType', config.backendType);
+                safeSet('useLollmsExtensions', config.useLollmsExtensions, true);
+                safeSet('requestTimeout', config.requestTimeout);
+                safeSet('agentMaxRetries', config.agentMaxRetries);
+                safeSet('verifyAndCorrectCodeBlocks', config.verifyAndCorrectCodeBlocks, true);
+                safeSet('maxImageSize', config.maxImageSize);
+                safeSet('disableSsl', config.disableSslVerification, true);
+                safeSet('sslCertPath', config.sslCertPath);
+                safeSet('language', config.language);
+                safeSet('autoGenerateTitle', config.autoGenerateTitle, true);
+                safeSet('addPedagogicalInstruction', config.addPedagogicalInstruction, true);
+                safeSet('explainCode', config.explainCode, true);
+                safeSet('failsafeContextSize', config.failsafeContextSize);
+                safeSet('showOs', config.showOs, true);
+                safeSet('showIp', config.showIp, true);
+                safeSet('showShells', config.showShells, true);
+                safeSet('systemCustomInfo', config.systemCustomInfo);
+                safeSet('agentShellExecution', config.agentShellExecution, true);
+                safeSet('agentFilesystemWrite', config.agentFilesystemWrite, true);
+                safeSet('agentFilesystemRead', config.agentFilesystemRead, true);
+                safeSet('agentInternetAccess', config.agentInternetAccess, true);
+                safeSet('agentScreenCapture', config.agentScreenCapture, true);
+                safeSet('agentWebTesting', config.agentWebTesting, true);
+                safeSet('agentUseRLM', config.agentUseRLM, true);
+                safeSet('enableCodeInspector', config.enableCodeInspector, true);
+                safeSet('codeInspectorPersona', config.codeInspectorPersona);
+                safeSet('chatPersona', config.chatPersona);
+                safeSet('agentPersona', config.agentPersona);
+                safeSet('commitMessagePersona', config.commitMessagePersona);
+                safeSet('searchApiKey', config.searchApiKey);
+                safeSet('searchCx', config.searchCx);
+                safeSet('companionEnableWebSearch', config.companionEnableWebSearch, true);
+                safeSet('companionEnableArxivSearch', config.companionEnableArxivSearch, true);
+                safeSet('mcpServers', config.mcpServers);
+                safeSet('autoUpdateChangelog', config.autoUpdateChangelog, true);
+                safeSet('deleteBranchAfterMerge', config.deleteBranchAfterMerge, true);
+                safeSet('unstagedChangesBehavior', config.unstagedChangesBehavior);
+                safeSet('userInfoName', config.userInfoName);
+                safeSet('userInfoEmail', config.userInfoEmail);
+                safeSet('userInfoLicense', config.userInfoLicense);
+                safeSet('userInfoCodingStyle', config.userInfoCodingStyle);
+                safeSet('moltbookEnable', config.moltbookEnable, true);
+                safeSet('moltbookApiKey', config.moltbookApiKey);
+                safeSet('moltbookBotName', config.moltbookBotName);
+                safeSet('moltbookBotPurpose', config.moltbookBotPurpose);
+                safeSet('remoteServerPort', config.remoteServerPort);
+                safeSet('remoteDiscordEnabled', config.remoteDiscordEnabled, true);
+                safeSet('remoteDiscordToken', config.remoteDiscordToken);
+                safeSet('remoteSlackEnabled', config.remoteSlackEnabled, true);
+                safeSet('remoteSlackToken', config.remoteSlackToken);
+                safeSet('remoteSlackSigningSecret', config.remoteSlackSigningSecret);
                 
-                } catch(e) {
-                    console.error("[WEBVIEW] Error initializing form:", e);
-                }
+                if(config.contextFileExceptions) document.getElementById('contextFileExceptions').value = config.contextFileExceptions.join('\\n');
+                if(config.remoteAllowedUsers) document.getElementById('remoteAllowedUsers').value = config.remoteAllowedUsers.join('\\n');
+                if(config.remoteAdminUsers) document.getElementById('remoteAdminUsers').value = config.remoteAdminUsers.join('\\n');
+                if(config.remoteAllowedChannels) document.getElementById('remoteAllowedChannels').value = config.remoteAllowedChannels.join('\\n');
+
+                renderProfiles();
+                renderConnectionProfiles();
+                updatePersonaSelects();
+                refreshModelsList(false);
             }
 
             function openTab(evt, tabName) {
-                var i, tabcontent, tablinks;
-                tabcontent = document.getElementsByClassName("tab-content");
-                for (i = 0; i < tabcontent.length; i++) { tabcontent[i].style.display = "none"; tabcontent[i].classList.remove("active"); }
-                tablinks = document.getElementsByClassName("tab-link");
-                for (i = 0; i < tablinks.length; i++) { tablinks[i].className = tablinks[i].className.replace(" active", ""); }
+                const contents = document.getElementsByClassName("tab-content");
+                for (let i = 0; i < contents.length; i++) { 
+                    contents[i].style.display = "none"; 
+                    contents[i].classList.remove("active"); 
+                }
+                const links = document.getElementsByClassName("tab-link");
+                for (let i = 0; i < links.length; i++) { 
+                    links[i].className = links[i].className.replace(" active", ""); 
+                }
                 document.getElementById(tabName).style.display = "block";
                 document.getElementById(tabName).classList.add("active");
                 if(evt) evt.currentTarget.className += " active";
-                else document.querySelector(".tab-link").className += " active"; 
                 if (tabName === 'TabLog') vscode.postMessage({ command: 'requestLog' });
             }
 
-            function postTempUpdate(key, value) { vscode.postMessage({ command: 'updateTempValue', key, value }); }
+            function populateModelDropdown(selectElement, selectedValue, error) {
+                if(!selectElement) return;
+                selectElement.innerHTML = '';
+                if (error) { selectElement.appendChild(new Option("Error: " + error, "")); return; }
+                if (loadedModels.length > 0) {
+                    if (['inspectorModelName', 'architectModelSelect'].includes(selectElement.id)) {
+                        selectElement.appendChild(new Option("Same as Chat Model (Default)", ""));
+                    }
+                    loadedModels.forEach(model => selectElement.appendChild(new Option(model.id, model.id)));
+                    if (selectedValue) selectElement.value = selectedValue;
+                } else {
+                    selectElement.appendChild(new Option(selectedValue ? selectedValue + " (Cached)" : "No models found", selectedValue || ""));
+                }
+            }
+
+            function refreshModelsList(force) {
+                vscode.postMessage({ command: 'fetchModels', value: force });
+            }
 
             function updatePersonaSelects() {
                 document.querySelectorAll('.persona-select').forEach(sel => {
@@ -1397,7 +1462,7 @@ personalities: this._personalityManager.getPersonalities()
                         opt.dataset.prompt = p.systemPrompt;
                         sel.appendChild(opt);
                     });
-                    sel.onchange = (e) => {
+                    sel.onchange = () => {
                          const opt = sel.options[sel.selectedIndex];
                          if(opt && targetEl) {
                              targetEl.value = opt.dataset.prompt || '';
@@ -1407,231 +1472,124 @@ personalities: this._personalityManager.getPersonalities()
                 });
             }
 
-            function populateModelDropdown(selectElement, selectedValue, error) {
-                selectElement.innerHTML = '';
-                if (error) { selectElement.appendChild(new Option("Error: " + error, "")); return; }
-                if (loadedModels.length > 0) {
-                    if (selectElement.id === 'inspectorModelName' || selectElement.id === 'architectModelSelect') {
-                        selectElement.appendChild(new Option("Same as Chat Model (Default)", ""));
-                    }
-                    loadedModels.forEach(model => selectElement.appendChild(new Option(model.id, model.id)));
-                    if (selectedValue) selectElement.value = selectedValue;
-                } else {
-                    const placeholder = selectedValue ? selectedValue + " (Cached)" : "No models found";
-                    selectElement.appendChild(new Option(placeholder, selectedValue));
+            function renderProfiles() {
+                const container = document.getElementById('profiles-container');
+                const selector = document.getElementById('defaultProfileSelect');
+                if (!container || !selector) return;
+                container.innerHTML = '';
+                selector.innerHTML = '';
+                profiles.forEach((p, idx) => {
+                    const opt = new Option(p.name + (p.id === defaultId ? " (Default)" : ""), p.id);
+                    opt.selected = (p.id === defaultId);
+                    selector.appendChild(opt);
+                    const item = document.createElement('div');
+                    item.className = 'participant-row';
+                    item.innerHTML = \`
+                        <div style="flex:1"><strong>\${p.name}</strong> <small>(\${p.id})</small><br><span style="opacity:0.8; font-size:0.9em">\${p.description}</span></div>
+                        <button class="icon-btn" onclick="editProfile(\${idx})"><i class="codicon codicon-edit"></i></button>
+                        <button class="icon-btn remove-btn" onclick="deleteProfile(\${idx})"><i class="codicon codicon-trash"></i></button>\`;
+                    container.appendChild(item);
+                });
+            }
+
+            function editProfile(index) {
+                editingIndex = index;
+                const p = profiles[index];
+                document.getElementById('p_id').value = p.id;
+                document.getElementById('p_id').disabled = true;
+                document.getElementById('p_name').value = p.name;
+                document.getElementById('p_desc').value = p.description;
+                document.getElementById('p_prefix').value = p.prefix || '';
+                document.getElementById('p_prompt').value = p.systemPrompt;
+                document.getElementById('profile-editor').style.display = 'block';
+                document.getElementById('profiles-container').style.display = 'none';
+            }
+
+            function deleteProfile(index) {
+                if(confirm("Delete this profile?")) {
+                    if (profiles[index].id === defaultId) return alert("Change default before deleting.");
+                    profiles.splice(index, 1);
+                    renderProfiles();
+                    vscode.postMessage({ command: 'updateProfiles', profiles, defaultId });
                 }
             }
 
-            function renderParticipantsList(containerId, list, keyName) {
-                const container = document.getElementById(containerId);
-                container.innerHTML = '';
-                list.forEach((p, index) => {
-                    const row = document.createElement('div');
-                    row.className = 'participant-row';
-                    const modelSelect = document.createElement('select');
-                    populateModelDropdown(modelSelect, p.model);
-                    modelSelect.onchange = (e) => { list[index].model = e.target.value; postTempUpdate(keyName, list); };
-                    const personaSelect = document.createElement('select');
-                    personalities.forEach(person => personaSelect.appendChild(new Option(person.name, person.id)));
-                    personaSelect.value = p.personality;
-                    personaSelect.onchange = (e) => { list[index].personality = e.target.value; postTempUpdate(keyName, list); };
-                    const removeBtn = document.createElement('button');
-                    removeBtn.className = 'remove-btn icon-btn';
-                    removeBtn.innerHTML = '<i class="codicon codicon-trash"></i>';
-                    removeBtn.onclick = () => { list.splice(index, 1); renderParticipantsList(containerId, list, keyName); postTempUpdate(keyName, list); };
-                    row.appendChild(modelSelect); row.appendChild(personaSelect); row.appendChild(removeBtn);
-                    container.appendChild(row);
-                });
-            }
+            // --- GLOBAL LISTENERS ---
+            document.getElementById('saveToolbar').onclick = () => vscode.postMessage({ command: 'saveConfig' });
+            document.getElementById('resetToolbar').onclick = () => vscode.postMessage({ command: 'resetConfig' });
+            document.getElementById('closeToolbar').onclick = () => vscode.postMessage({ command: 'closePanel' });
+            document.getElementById('testConnection').onclick = () => vscode.postMessage({ command: 'testConnection' });
+            document.getElementById('refreshModels').onclick = () => refreshModelsList(true);
+            document.getElementById('saveCurrentAsProfile').onclick = () => vscode.postMessage({ command: 'requestProfileName' });
+            document.getElementById('importConfig').onclick = () => vscode.postMessage({ command: 'importConnectionConfig' });
+            document.getElementById('exportConfig').onclick = () => vscode.postMessage({ command: 'exportConnectionConfig' });
 
-            function renderPoolList() {
-                const container = document.getElementById('herd-pool-list');
-                container.innerHTML = '';
-                herdPool.forEach((item, index) => {
-                    const row = document.createElement('div');
-                    row.className = 'participant-row';
-                    const modelSelect = document.createElement('select');
-                    populateModelDropdown(modelSelect, item.model);
-                    modelSelect.onchange = (e) => { herdPool[index].model = e.target.value; postTempUpdate('herdDynamicModelPool', herdPool); };
-                    const descInput = document.createElement('input');
-                    descInput.type = 'text';
-                    descInput.value = item.description || '';
-                    descInput.oninput = (e) => { herdPool[index].description = e.target.value; postTempUpdate('herdDynamicModelPool', herdPool); };
-                    const removeBtn = document.createElement('button');
-                    removeBtn.className = 'remove-btn icon-btn';
-                    removeBtn.innerHTML = '<i class="codicon codicon-trash"></i>';
-                    removeBtn.onclick = () => { herdPool.splice(index, 1); renderPoolList(); postTempUpdate('herdDynamicModelPool', herdPool); };
-                    row.appendChild(modelSelect); row.appendChild(descInput); row.appendChild(removeBtn);
-                    container.appendChild(row);
-                });
-            }
-
-            initializeForm();
-            openTab(null, 'TabApi');
-
-            const bind = (id, key) => {
-                safeListen(id, document.getElementById(id)?.type === 'checkbox' ? 'change' : 'input', () => {
-                    const el = document.getElementById(id);
-                    if(el) {
-                        let val = el.type === 'checkbox' ? el.checked : el.value;
-                        if(el.type === 'number') val = parseInt(val);
-                        if(key === 'contextFileExceptions' || key === 'remoteAllowedUsers' || key === 'remoteAdminUsers' || key === 'remoteAllowedChannels') {
-                            val = val.split('\\n').map(s=>s.trim()).filter(Boolean);
-                        }
-                        postTempUpdate(key, val);
-                    }
+            document.getElementById('connectionProfileSelect').onchange = (e) => {
+                const p = connectionProfiles[e.target.value];
+                if (!p) return;
+                safeSet('apiUrl', p.apiUrl);
+                safeSet('apiKey', p.apiKey);
+                safeSet('backendType', p.backendType);
+                safeSet('modelSelect', p.modelName);
+                safeSet('disableSsl', p.disableSslVerification, true);
+                safeSet('sslCertPath', p.sslCertPath);
+                
+                checkReactivity();
+                
+                // Batch notify backend
+                connectionFields.forEach(f => {
+                    const el = document.getElementById(f);
+                    postTempUpdate(f === 'disableSsl' ? 'disableSslVerification' : f, el.type === 'checkbox' ? el.checked : el.value);
                 });
             };
-            ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','inspectorModelName','codeInspectorPersona','chatPersona','agentPersona','commitMessagePersona','language','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','halApiKey','scopusApiKey','clipboardInsertRole','herdRounds','mcpServers','unstagedChangesBehavior','systemCustomInfo','moltbookApiKey','moltbookBotName','moltbookBotPurpose',
-            'remoteServerPort', 'remoteDiscordToken', 'remoteSlackToken', 'remoteSlackSigningSecret', 'remoteAllowedUsers', 'remoteAdminUsers', 'remoteAllowedChannels'].forEach(k => bind(k, k));
-            
-            ['disableSsl','enableCodeInspector','verifyAndCorrectCodeBlocks','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','companionEnableWebSearch','companionEnableArxivSearch','herdDynamicMode','enableCodeActions','enableInlineSuggestions','deleteBranchAfterMerge','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess', 'agentScreenCapture', 'agentWebTesting', 'agentUseRLM', 'explainCode', 'moltbookEnable',
-            'remoteDiscordEnabled', 'remoteSlackEnabled'].forEach(id => {
-                const map = { 
-                    'disableSsl': 'disableSslVerification', 'deleteBranchAfterMerge': 'git.deleteBranchAfterMerge', 
-                    'showOs': 'systemEnv.showOs', 'showIp': 'systemEnv.showIp', 'showShells': 'systemEnv.showShells', 
-                    'systemCustomInfo': 'systemEnv.customInfo', 'moltbookEnable': 'moltbookEnable',
-                    'remoteDiscordEnabled': 'remoteDiscordEnabled', 'remoteSlackEnabled': 'remoteSlackEnabled',
-                    'agentUseRLM': 'agent.useRLM'
-                };
-                const key = map[id] || id; 
-                if(id==='companionEnableWebSearch') bind(id, 'companion.enableWebSearch');
-                else if(id==='companionEnableArxivSearch') bind(id, 'companion.enableArxivSearch');
-                else bind(id, key);
+
+            document.getElementById('deleteProfile').onclick = () => {
+                const idx = document.getElementById('connectionProfileSelect').value;
+                if (idx !== "" && confirm("Delete this profile?")) {
+                    connectionProfiles.splice(idx, 1);
+                    postTempUpdate('connectionProfiles', connectionProfiles);
+                    renderConnectionProfiles();
+                }
+            };
+
+            // Bind inputs
+            ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','language','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','halApiKey','scopusApiKey','clipboardInsertRole','mcpServers','unstagedChangesBehavior','systemCustomInfo','moltbookApiKey','moltbookBotName','moltbookBotPurpose','remoteServerPort','remoteDiscordToken','remoteSlackToken','remoteSlackSigningSecret'].forEach(k => bind(k, k));
+            ['disableSsl','enableCodeInspector','verifyAndCorrectCodeBlocks','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','companionEnableWebSearch','companionEnableArxivSearch','enableCodeActions','enableInlineSuggestions','deleteBranchAfterMerge','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','agentScreenCapture','agentWebTesting','agentUseRLM','explainCode','moltbookEnable','remoteDiscordEnabled','remoteSlackEnabled'].forEach(id => {
+                const map = { 'disableSsl': 'disableSslVerification', 'deleteBranchAfterMerge': 'git.deleteBranchAfterMerge', 'showOs': 'systemEnv.showOs', 'showIp': 'systemEnv.showIp', 'showShells': 'systemEnv.showShells', 'systemCustomInfo': 'systemEnv.customInfo', 'agentUseRLM': 'agent.useRLM' };
+                bind(id, map[id] || id);
             });
 
-            safeListen('formatMcpBtn', 'click', () => {
-                const area = document.getElementById('mcpServers');
-                try {
-                    const parsed = JSON.parse(area.value);
-                    area.value = JSON.stringify(parsed, null, 2);
-                    postTempUpdate('mcpServers', area.value);
-                } catch (e) {
-                    alert('Invalid JSON: ' + e.message);
+            window.addEventListener('message', e => {
+                const m = e.data;
+                if (m.command === 'modelsList') {
+                    loadedModels = m.models || [];
+                    populateModelDropdown(document.getElementById('modelSelect'), config.modelName, m.error);
+                    populateModelDropdown(document.getElementById('architectModelSelect'), config.architectModelName, m.error);
+                    populateModelDropdown(document.getElementById('inspectorModelName'), config.inspectorModelName, m.error);
+                } else if (m.command === 'configSaved') {
+                    config = m.newConfig;
+                    checkReactivity();
+                    const toast = document.getElementById('saveToast');
+                    toast.style.display = 'flex';
+                    setTimeout(() => toast.style.display = 'none', 3000);
+                } else if (m.command === 'profileNameProvided') {
+                    connectionProfiles.push({
+                        name: m.name,
+                        apiUrl: document.getElementById('apiUrl').value,
+                        apiKey: document.getElementById('apiKey').value,
+                        backendType: document.getElementById('backendType').value,
+                        modelName: document.getElementById('modelSelect').value,
+                        disableSslVerification: document.getElementById('disableSsl').checked,
+                        sslCertPath: document.getElementById('sslCertPath').value
+                    });
+                    postTempUpdate('connectionProfiles', connectionProfiles);
+                    renderConnectionProfiles();
+                } else if (m.command === 'logData') {
+                    document.getElementById('logContent').textContent = m.content;
                 }
             });
 
-            safeListen('unstagedChangesBehavior', 'change', (e) => {
-                postTempUpdate('git.unstagedChangesBehavior', e.target.value);
-            });
-
-            safeListen('forceFullCode', 'change', (e) => {
-                const val = e.target.checked;
-                document.getElementById('partial-strategy-zone').style.display = val ? 'none' : 'block';
-                postTempUpdate('forceFullCode', val);
-            });
-
-            safeListen('partialFormat', 'change', (e) => {
-                const fmt = e.target.value;
-                config.generationFormats.partialFormat = fmt;
-                vscode.postMessage({ command: 'updateGenerationFormat', key: 'partialFormat', value: fmt });
-            });
-
-            safeListen('gen-full', 'change', (e) => {
-                vscode.postMessage({ command: 'updateGenerationFormat', key: 'fullFile', value: e.target.checked });
-            });
-
-            ['fullFile','insert','replace','delete'].forEach(k => {
-                safeListen('fmt-'+k, 'change', (e) => {
-                    vscode.postMessage({ command: 'updateFormatValue', key: k, value: e.target.checked });
-                });
-            });
-
-            const chatModelSelect = document.getElementById('modelSelect');
-            const inspectorModelSelect = document.getElementById('inspectorModelName');
-            const architectModelSelect = document.getElementById('architectModelSelect');
-            
-            safeListen('modelSelect', 'change', () => postTempUpdate('modelName', chatModelSelect.value));
-            safeListen('inspectorModelName', 'change', () => postTempUpdate('inspectorModelName', inspectorModelSelect.value));
-            safeListen('architectModelSelect', 'change', () => postTempUpdate('architectModelName', architectModelSelect.value));
-
-            safeListen('herdDynamicMode', 'change', () => {
-                 const isDynamic = document.getElementById('herdDynamicMode').checked;
-                 document.getElementById('static-herd-config').style.display = isDynamic ? 'none' : 'block';
-                 document.getElementById('dynamic-herd-config').style.display = isDynamic ? 'block' : 'none';
-            });
-
-            safeListen('addPreParticipantBtn', 'click', () => {
-                herdPre.push({ model: config.modelName, personality: 'default_coder' });
-                renderParticipantsList('herd-pre-list', herdPre, 'herdPreAnswerParticipants');
-                postTempUpdate('herdPreAnswerParticipants', herdPre);
-            });
-            safeListen('addPostParticipantBtn', 'click', () => {
-                herdPost.push({ model: config.modelName, personality: 'code_reviewer' });
-                renderParticipantsList('herd-post-list', herdPost, 'herdPostAnswerParticipants');
-                postTempUpdate('herdPostAnswerParticipants', herdPost);
-            });
-            
-            safeListen('addPoolModelBtn', 'click', () => {
-                herdPool.push({ model: config.modelName, description: 'General purpose model' });
-                renderPoolList();
-                postTempUpdate('herdDynamicModelPool', herdPool);
-            });
-
-            safeListen('refreshModels', 'click', () => refreshModelsList(true));
-            safeListen('refreshInspectorModels', 'click', () => refreshModelsList(true));
-
-            safeListen('toggleApiKey', 'click', () => {
-                const input = document.getElementById('apiKey');
-                const icon = document.querySelector('#toggleApiKey i');
-                if (input.type === 'password') {
-                    input.type = 'text';
-                    icon.classList.replace('codicon-eye', 'codicon-eye-closed');
-                } else {
-                    input.type = 'password';
-                    icon.classList.replace('codicon-eye-closed', 'codicon-eye');
-                }
-            });
-
-            safeListen('copyApiKey', 'click', () => {
-                const val = document.getElementById('apiKey').value;
-                vscode.postMessage({ command: 'copyToClipboard', value: val });
-            });
-
-            safeListen('copyModelName', 'click', () => {
-                const val = document.getElementById('modelSelect').value;
-                vscode.postMessage({ command: 'copyToClipboard', value: val });
-            });
-
-            safeListen('exportConfig', 'click', () => vscode.postMessage({ command: 'exportConnectionConfig' }));
-            safeListen('importConfig', 'click', () => vscode.postMessage({ command: 'importConnectionConfig' }));
-            safeListen('saveToolbar', 'click', () => vscode.postMessage({ command: 'saveConfig' }));
-            safeListen('resetToolbar', 'click', () => vscode.postMessage({ command: 'resetConfig' }));
-            safeListen('closeToolbar', 'click', () => vscode.postMessage({ command: 'closePanel' }));
-            safeListen('testConnection', 'click', () => vscode.postMessage({ command: 'testConnection' }));
-            safeListen('browseCertPath', 'click', () => vscode.postMessage({ command: 'browseCertPath' }));
-            safeListen('createPersonalityBtn', 'click', () => vscode.postMessage({ command: 'createPersonality' }));
-            safeListen('editPromptsBtn', 'click', () => vscode.postMessage({ command: 'editPrompts' }));
-
-            function refreshModelsList(force) {
-                const loadingOption = new Option("Loading...", "");
-                document.getElementById('modelSelect').innerHTML = ''; document.getElementById('modelSelect').appendChild(loadingOption.cloneNode(true));
-                vscode.postMessage({ command: 'fetchModels', value: force });
-            }
-
-            window.addEventListener('message', event => {
-                const message = event.data;
-                if (message.command === 'modelsList') {
-                    loadedModels = message.models || [];
-                    populateModelDropdown(document.getElementById('modelSelect'), config.modelName, message.error);
-                    populateModelDropdown(document.getElementById('architectModelSelect'), config.architectModelName, message.error);
-                    populateModelDropdown(document.getElementById('inspectorModelName'), config.inspectorModelName, message.error);
-                } else if (message.command === 'refreshForm') {
-                    const newConfig = message.config;
-                    // Update the local script config object
-                    Object.assign(config, newConfig);
-                    // Re-initialize the UI fields
-                    initializeForm();
-                } else if (message.command === 'updateCertPath') {
-                    document.getElementById('sslCertPath').value = message.path;
-                    postTempUpdate('sslCertPath', message.path);
-                } else if (message.command === 'logData') {
-                    document.getElementById('logContent').textContent = message.content || 'No log data.';
-                } else if (message.command === 'refreshProfiles') {
-                    profiles = message.profiles;
-                    renderProfiles();
-                }
-            });
+            initializeForm();
           </script>
         </body>
         </html>`;

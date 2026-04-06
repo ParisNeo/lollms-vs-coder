@@ -381,7 +381,7 @@ export class ChatPanel {
 
       if (this._contextManager) {
           const cachedContext = this._contextManager.getLastContext();
-          const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || [];
+          const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles()?.map(f => f.path) || [];
           const projectSkills = await this._contextManager.getActiveProjectSkills();
           const discussionSkills = this._currentDiscussion.importedSkills || [];
           
@@ -618,7 +618,7 @@ export class ChatPanel {
 
             if (this._isDisposed) return;
 
-            const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || [];
+            const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles()?.map(f => f.path) || [];
             
             // Aggressive truncation for Webview UI to prevent IPC Channel Closure
             const UI_PREVIEW_LIMIT = 10000; 
@@ -872,6 +872,53 @@ export class ChatPanel {
   }
 
   // --- REPLACED: NEW HIERARCHICAL IMPORT LOGIC ---
+
+  private async handleInferPrompt(messageId: string) {
+      if (!this._currentDiscussion || !this.processManager) return;
+
+      const msgIndex = this._currentDiscussion.messages.findIndex(m => m.id === messageId);
+      if (msgIndex === -1) return;
+
+      const nextMsg = this._currentDiscussion.messages[msgIndex + 1];
+      if (!nextMsg || nextMsg.role !== 'assistant') {
+          vscode.window.showErrorMessage("No assistant response found after this message to infer from.");
+          await this.loadDiscussion(); // Reset UI button state
+          return;
+      }
+
+      const { id: processId, controller } = this.processManager.register(this.discussionId, 'Inferring prompt...');
+      this.updateGeneratingState();
+
+      try {
+          let assistantContent = "";
+          if (typeof nextMsg.content === 'string') {
+              assistantContent = nextMsg.content;
+          } else if (Array.isArray(nextMsg.content)) {
+              assistantContent = nextMsg.content.map(c => c.type === 'text' ? c.text : '[Image]').join('\n');
+          }
+          
+          const systemPrompt = "You are a prompt engineering assistant. Your task is to look at an AI's response and reverse-engineer the most likely, concise user prompt that would have generated this exact response. Output ONLY the inferred user prompt text. Do not add quotes, explanations, or conversational filler.";
+          const userPrompt = `AI Response:\n\`\`\`\n${assistantContent.substring(0, 3000)}\n\`\`\`\n\nInfer the user prompt:`;
+
+          const inferredPrompt = await this._lollmsAPI.sendChat([
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt }
+          ], null, controller.signal, this._currentDiscussion.model);
+
+          const cleanPrompt = stripThinkingTags(inferredPrompt).trim();
+          
+          await this.updateMessageContent(messageId, cleanPrompt);
+
+      } catch (error: any) {
+          if (error.name !== 'AbortError') {
+              vscode.window.showErrorMessage(`Failed to infer prompt: ${error.message}`);
+          }
+          await this.loadDiscussion(); // Reset UI
+      } finally {
+          this.processManager.unregister(processId);
+          this.updateGeneratingState();
+      }
+  }
 
   private async handleImportSkills() {
     // 1. Show the UI immediately with loading state
@@ -1728,14 +1775,16 @@ ${context.skills || 'No specialized skills active.'}
             contextData.text += `### ${d.type.replace('_', ' ').toUpperCase()}\n\`\`\`mermaid\n${d.mermaid}\n\`\`\`\n\n`;
         }
     }
+    const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && this.agentManager.projectMemoryManager)
+    ? await this.agentManager.projectMemoryManager.getFormattedMemoryBlock()
+    : "";
 
     const context = { 
         tree: isContextMuted ? "## Project Structure\n(Muted by user for this turn)" : contextData.projectTree, 
         files: isContextMuted ? "## File Contents\n(Muted by user for this turn)" : contextData.selectedFilesContent, 
-        skills: contextData.skillsContent 
+        skills: contextData.skillsContent,
+        memory: projectMemory
     };
-
-    const workingMemory = this._currentDiscussion?.discussion_data_zone || "";
 
     if (this._discussionCapabilities.herdMode && this.herdManager) {
         this.processManager.updateDescription(processId, "🐂 Planning herd...");
@@ -2632,7 +2681,7 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                     let results: any[] = [];
 
                     const includedFiles = new Set(
-                        this._contextManager.getContextStateProvider()?.getIncludedFiles().map(f => f.path) || []
+                        this._contextManager.getContextStateProvider()?.getIncludedFiles()?.map(f => f.path) || []
                     );
 
                     if (searchMode === 'content') {
@@ -4553,6 +4602,18 @@ Task:
                     </div>
 
                     <div class="modal-section">
+                        <h3>📋 Clipboard Management</h3>
+                        <div class="form-group">
+                            <label style="font-size: 11px; font-weight: bold;">New Chat Entry Role</label>
+                            <select id="cap-clipboardInsertRole" class="menu-select" style="width: 100%; margin: 0;">
+                                <option value="user">User (Prompt)</option>
+                                <option value="assistant">AI (Reference Response)</option>
+                            </select>
+                            <p style="font-size: 10px; opacity: 0.7; margin-top: 4px;">Determines the role used for content when starting a new discussion from the clipboard.</p>
+                        </div>
+                    </div>
+
+                    <div class="modal-section">
                         <h3>Allowed UI Actions</h3>
                         <div class="checkbox-grid">
                             <div class="checkbox-container">
@@ -4997,19 +5058,22 @@ Task:
 
         <!-- NEW: Raw Code Preview Modal -->
         <div id="raw-code-modal" class="modal">
-            <div class="modal-content" style="max-width: 90%; width: 800px;">
+            <div class="modal-content" style="max-width: 95%; width: 1100px;">
                 <div class="modal-header">
                     <div style="display:flex; align-items:center; gap:15px; flex:1;">
                         <div style="display:flex; flex-direction:column; gap:2px;">
                             <div style="display:flex; align-items:center; gap:8px;">
                                 <h2 style="margin:0; white-space:nowrap; font-size: 14px;">Raw Aider Block</h2>
                                 <span id="raw-hunk-id" style="background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 1px 6px; border-radius: 10px; font-size: 10px; font-weight: bold;"></span>
+                                <button class="icon-btn" id="raw-stitch-help-btn" title="How to stitch manually?">
+                                    <i class="codicon codicon-question" style="font-size: 12px;"></i>
+                                </button>
                             </div>
                             <span id="raw-code-filename" style="font-size:10px; opacity:0.7; font-family:var(--vscode-editor-font-family); font-weight: bold; color: var(--vscode-textLink-foreground);"></span>
                         </div>
                         <div class="raw-search-container" style="display:flex; align-items:center; gap:5px; background:var(--vscode-input-background); border:1px solid var(--vscode-input-border); padding:2px 8px; border-radius:4px; flex:1; max-width:350px;">
                             <i class="codicon codicon-search" style="font-size:12px; opacity:0.7;"></i>
-                            <input type="text" id="raw-search-input" placeholder="Search in block..." style="background:transparent; border:none; color:var(--vscode-input-foreground); outline:none; font-size:11px; flex:1; padding:2px 0;">
+                            <input type="text" id="raw-search-input" placeholder="Search for manual stitch site..." style="background:transparent; border:none; color:var(--vscode-input-foreground); outline:none; font-size:11px; flex:1; padding:2px 0;">
                             <span id="raw-search-count" style="font-size:10px; opacity:0.6; min-width:35px; text-align:center;"></span>
                             <button id="raw-search-prev" class="icon-btn" style="padding:0; width:18px; height:18px;"><i class="codicon codicon-arrow-up" style="font-size:12px;"></i></button>
                             <button id="raw-search-next" class="icon-btn" style="padding:0; width:18px; height:18px;"><i class="codicon codicon-arrow-down" style="font-size:12px;"></i></button>
@@ -5017,10 +5081,12 @@ Task:
                     </div>
                     <span class="close-btn" id="raw-code-close-btn">&times;</span>
                 </div>
-                <div class="modal-body">
-                    <pre id="raw-code-display" style="user-select: text; white-space: pre-wrap; word-break: break-all; background: var(--vscode-textCodeBlock-background); padding: 12px; border-radius: 4px; border: 1px solid var(--vscode-widget-border); max-height: 70vh; overflow-y: auto; font-family: var(--vscode-editor-font-family); font-size: 12px;"></pre>
+                <div class="modal-body" style="display:flex; gap:10px; height: 60vh; padding: 10px;">
+                    <pre id="raw-code-display" style="flex: 2; margin: 0; user-select: text; white-space: pre-wrap; word-break: break-all; background: var(--vscode-textCodeBlock-background); padding: 12px; border-radius: 4px; border: 1px solid var(--vscode-widget-border); overflow-y: auto; font-family: var(--vscode-editor-font-family); font-size: 12px;"></pre>
+                    <div id="raw-search-results" class="search-results-mini" style="flex: 1; display: none; flex-direction: column; overflow-y: auto; background: var(--vscode-sideBar-background); border: 1px solid var(--vscode-widget-border); border-radius: 4px; padding: 5px;"></div>
                 </div>
                 <div class="modal-footer" style="display:flex; gap:10px; flex-wrap: wrap;">
+                    <button id="search-selection-btn" class="code-action-btn secondary-btn" style="flex:1; min-width: 150px; justify-content: center; height: 32px; border-color: var(--vscode-charts-blue);"><span class="codicon codicon-search"></span> Search Selection</button>
                     <button id="copy-search-btn" class="code-action-btn secondary-btn" style="flex:1; min-width: 120px; justify-content: center; height: 32px;"><span class="codicon codicon-copy"></span> Copy SEARCH</button>
                     <button id="copy-replace-btn" class="code-action-btn secondary-btn" style="flex:1; min-width: 120px; justify-content: center; height: 32px;"><span class="codicon codicon-copy"></span> Copy REPLACE</button>
                     <button id="copy-raw-btn" class="code-action-btn secondary-btn" style="flex:1; min-width: 120px; justify-content: center; height: 32px;"><span class="codicon codicon-copy"></span> Copy Full Block</button>
@@ -5276,4 +5342,5 @@ Provide SEARCH/REPLACE blocks to resolve these specific errors. Use Aider format
             this.processManager.unregister(processId);
         }
     }
+
 }

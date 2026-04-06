@@ -102,9 +102,41 @@ export class ContextManager {
   private static PROJECT_SKILLS_KEY = 'lollms_project_active_skills';
   private static TOKEN_CACHE_KEY = 'lollms_token_cache';
 
+  // --- GLOBAL CACHE STATE ---
+  private _cachedTreeString: string | null = null;
+  private _isTreeDirty: boolean = true;
+  private _fileContentCache!: Map<string, { content: string, state: ContextState }>;
+
   constructor(context: vscode.ExtensionContext, lollmsAPI: LollmsAPI) {
     this.context = context;
     this.lollmsAPI = lollmsAPI;
+    this._fileContentCache = new Map();
+  }
+
+  /**
+   * Invalidates the entire tree cache (e.g. on file create/delete/rename)
+   */
+  public markTreeDirty() {
+    this._isTreeDirty = true;
+    this._cachedTreeString = null;
+  }
+
+  /**
+   * Invalidates the content of a specific file in the cache.
+   * Called when a file is saved or deleted.
+   */
+  public refreshFileInCache(uri: vscode.Uri) {
+    const relPath = this.normalize(vscode.workspace.asRelativePath(uri, false));
+    this._fileContentCache?.delete(relPath);
+  }
+
+  /**
+   * Resets all caches (e.g. on workspace switch)
+   */
+  public clearAllCaches() {
+    this._cachedTreeString = null;
+    this._isTreeDirty = true;
+    this._fileContentCache?.clear();
   }
   
   public setContextStateProvider(provider: ContextStateProvider | undefined) {
@@ -126,7 +158,9 @@ export class ContextManager {
   public getLastContext(): ContextResult | null {
       return this._lastContext;
   }
-
+  private normalize(p: string): string {
+      return p.replace(/\\/g, '/');
+  }
   private isBinary(buffer: Buffer): boolean {
       const chunk = buffer.slice(0, Math.min(buffer.length, 1024));
       return chunk.includes(0);
@@ -1774,7 +1808,11 @@ ${cumulativeBrain || "No observations yet."}
 
     if (includeTree) {
         if (signal?.aborted) throw new Error("Operation cancelled");
-        result.projectTree = await this.generateProjectTree(signal, options?.onProgress);
+        if (this._isTreeDirty || !this._cachedTreeString) {
+            this._cachedTreeString = await this.generateProjectTree(signal, options?.onProgress);
+            this._isTreeDirty = false;
+        }
+        result.projectTree = this._cachedTreeString;
     }
 
     const includedFiles = contextFiles.filter(f => !f.path.endsWith(path.sep));
@@ -1820,54 +1858,67 @@ ${cumulativeBrain || "No observations yet."}
               continue;
           }
 
-          const fileBytes = await vscode.workspace.fs.readFile(fullPath);
-          const buffer = Buffer.from(fileBytes);
           let fileContent = '';
 
-          if (this.imageExtensions.has(ext)) {
-            if (!enableVision) {
-                result.selectedFilesContent += `### \`${filePath}\` (Image Muted - Vision Disabled)\n\n`;
-                continue;
-            }
-            // Ditching Jimp: Convert buffer to base64 directly. 
-            // AI APIs handle large images automatically.
-            const base64Data = buffer.toString('base64');
-            const mime = ext === '.svg' ? 'image/svg+xml' : `image/${ext.substring(1).replace('jpg', 'jpeg')}`;
-            const dataUrl = `data:${mime};base64,${base64Data}`;
-            
-            result.images.push({ filePath, data: dataUrl });
-            result.selectedFilesContent += `### \`${filePath}\` (Image Attached)\n\n`;
-            continue; 
-          } else {
-            if (this.docExtensions.has(ext)) {
-                try {
-                    fileContent = await this.processFile(filePath, buffer.toString('base64'), result.images);
-                } catch (e: any) {
-                    fileContent = `⚠️ **Extraction failed:** ${e.message}`;
-                }
-            } else if (ext === '.ipynb') {
-                try {
-                    const notebookJson = JSON.parse(buffer.toString('utf8'));
-                    if (notebookJson.cells && Array.isArray(notebookJson.cells)) {
-                        notebookJson.cells.forEach((cell: any, index: number) => {
-                            const source = Array.isArray(cell.source) ? cell.source.join('') : '';
-                            if (cell.cell_type === 'code') {
-                                fileContent += `--- Cell ${index + 1} (code) ---\n\`\`\`python\n${source}\n\`\`\`\n\n`;
-                            } else if (cell.cell_type === 'markdown') {
-                                fileContent += `--- Cell ${index + 1} (markdown) ---\n${source}\n\n`;
-                            }
-                        });
-                    }
-                } catch (e: any) {
-                    fileContent = `⚠️ **Error parsing Jupyter Notebook:** ${e.message}`;
-                }
-            } else {
-                if (this.isBinary(buffer)) {
-                    result.selectedFilesContent += `\`\`\`${this.getLanguageId(filePath)}:${filePath}\n(Binary content detected and excluded)\n\`\`\`\n\n`;
-                    continue;
-                }
-                fileContent = buffer.toString('utf8');
-            }
+          // 1. Try State-Aware Cache First
+          const cached = this._fileContentCache.get(filePath);
+          if (cached && cached.state === contextState) {
+              fileContent = cached.content;
+          } 
+          // 2. Read from disk and process based on type
+          else {
+              const fileBytes = await vscode.workspace.fs.readFile(fullPath);
+              const fileBuffer = Buffer.from(fileBytes);
+
+              if (this.imageExtensions.has(ext)) {
+                  if (!enableVision) {
+                      result.selectedFilesContent += `### \`${filePath}\` (Image Muted - Vision Disabled)\n\n`;
+                      continue;
+                  }
+                  const base64Data = fileBuffer.toString('base64');
+                  const mime = ext === '.svg' ? 'image/svg+xml' : `image/${ext.substring(1).replace('jpg', 'jpeg')}`;
+                  const dataUrl = `data:${mime};base64,${base64Data}`;
+                  
+                  result.images.push({ filePath, data: dataUrl });
+                  result.selectedFilesContent += `### \`${filePath}\` (Image Attached)\n\n`;
+                  continue; 
+              }
+
+              if (this.isBinary(fileBuffer)) {
+                  result.selectedFilesContent += `\`\`\`${this.getLanguageId(filePath)}:${filePath}\n(Binary content detected and excluded)\n\`\`\`\n\n`;
+                  continue;
+              }
+              
+              if (this.docExtensions.has(ext)) {
+                  try {
+                      fileContent = await this.processFile(filePath, fileBuffer.toString('base64'), result.images);
+                  } catch (e: any) {
+                      fileContent = `⚠️ **Extraction failed:** ${e.message}`;
+                  }
+              } else if (ext === '.ipynb') {
+                  try {
+                      const notebookJson = JSON.parse(fileBuffer.toString('utf8'));
+                      if (notebookJson.cells && Array.isArray(notebookJson.cells)) {
+                          notebookJson.cells.forEach((cell: any, index: number) => {
+                              const source = Array.isArray(cell.source) ? cell.source.join('') : '';
+                              if (cell.cell_type === 'code') {
+                                  fileContent += `--- Cell ${index + 1} (code) ---\n\`\`\`python\n${source}\n\`\`\`\n\n`;
+                              } else if (cell.cell_type === 'markdown') {
+                                  fileContent += `--- Cell ${index + 1} (markdown) ---\n${source}\n\n`;
+                              }
+                          });
+                      }
+                  } catch (e: any) {
+                      fileContent = `⚠️ **Error parsing Jupyter Notebook:** ${e.message}`;
+                  }
+              } else {
+                  fileContent = fileBuffer.toString('utf8');
+              }
+              
+              // Only cache text content to avoid bloating memory with large base64 strings
+              if (fileContent.length < 500000) { // 500kb limit per file in cache
+                  this._fileContentCache.set(filePath, { content: fileContent, state: contextState });
+              }
           }
           
           result.selectedFilesContent += `\`\`\`${this.getLanguageId(filePath)}:${filePath}\n${fileContent}\n\`\`\`\n\n`;

@@ -39,16 +39,16 @@ export class ActionsTreeProvider implements vscode.TreeDataProvider<ActionItem> 
 
         const actions: ActionItem[] = [
             new ActionItem(l.t('Settings'), 'lollms-vs-coder.showConfigView', 'gear', 'Open Lollms Configuration'),
-            new ActionItem(l.t('Help'), 'lollms-vs-coder.showHelp', 'question', 'View Documentation'),
-            new ActionItem(l.t('Log'), 'lollms-vs-coder.showLog', 'output', 'Show Internal Logs'),
         ];
 
         if (hasWorkspace) {
-            actions.unshift(new ActionItem('Project Memory', 'lollms-vs-coder.manageProjectMemory', 'chip', 'Manage AI project knowledge'));
-            actions.unshift(new ActionItem(l.t('Git Dashboard'), 'lollms-vs-coder.showGitDashboard', 'git-merge', 'Manage Git repository'));
-            actions.unshift(new ActionItem(l.t('Fix Errors'), 'lollms-vs-coder.fixAllErrors', 'zap', 'Iteratively repair project errors'));
-            actions.unshift(new ActionItem(l.t('Deep Search'), 'lollms-vs-coder.showFileSearch', 'search', 'Power search across project content'));
-            actions.unshift(new ActionItem(l.t('Generate Notebook'), 'lollms-vs-coder.generateEducativeNotebookFromAction', 'book', 'Create a pedagogical tutorial notebook'));
+            actions.push(new ActionItem(l.t('Fix Errors'), 'lollms-vs-coder.fixAllErrors', 'zap', 'Iteratively repair project errors'));
+            actions.push(new ActionItem(l.t('Deep Search'), 'lollms-vs-coder.showFileSearch', 'search', 'Power search across project content'));
+            actions.push(new ActionItem(l.t('Git Dashboard'), 'lollms-vs-coder.showGitDashboard', 'git-merge', 'Manage Git repository'));
+            actions.push(new ActionItem('Project Memory', 'lollms-vs-coder.manageProjectMemory', 'chip', 'Manage AI project knowledge'));
+            actions.push(new ActionItem(l.t('Generate Notebook'), 'lollms-vs-coder.generateEducativeNotebookFromAction', 'book', 'Create a pedagogical tutorial notebook'));
+            actions.push(new ActionItem(l.t('Log'), 'lollms-vs-coder.showLog', 'output', 'Show Internal Logs'));
+            actions.push(new ActionItem(l.t('Help'), 'lollms-vs-coder.showHelp', 'question', 'View Documentation'));
             actions.push(new ActionItem(l.t('Architecture Graph'), 'lollms-vs-coder.showCodeGraphPanel', 'git-compare', 'Visualize code structure'));
             actions.push(new ActionItem(l.t('Auto Context'), 'lollms-vs-coder.autoSelectContextFiles', 'wand', 'AI-assisted context gathering'));
             actions.push(new ActionItem('Export Context', 'lollms-vs-coder.exportContextContent', 'clippy', 'Copy the full project context to the clipboard'));

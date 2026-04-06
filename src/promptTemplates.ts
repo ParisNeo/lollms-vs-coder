@@ -93,6 +93,8 @@ Format:
 6. NO LINE NUMBERS.
 7. ATOMIC EDITS: Never build a single large block for multiple changes. Split into many small, highly specific SEARCH/REPLACE blocks.
 8. SEARCH must match the original content EXACTLY (character by character, including indentation).
+9. APPENDING: To append code to the end of a file, use an empty SEARCH block.
+10. SYNTAX INTEGRITY: You MUST include all three markers (SEARCH, divider, REPLACE) for every block. Truncated blocks will fail.
 `);
         }
 
@@ -106,7 +108,8 @@ Format:
         tree: string; 
         files: string; 
         skills: string; 
-        briefing?: string 
+        briefing?: string;
+        memory?: string;
     }): string {
         return `
 # 🛠️ ACTUAL PROJECT STATE (LIVING CONTEXT)
@@ -115,7 +118,7 @@ The following blocks represent the project exactly as it is on the user's disk a
 Use this as the reference for any SEARCH/REPLACE operations.
 
 ${context.briefing ? `## 📋 TEAM BRIEFING (LIBRARIAN NOTES)\n${context.briefing}\n` : ''}
-
+${context.memory || ''}
 ${context.tree || ''}
 ${context.files || ''}
 `.trim();
@@ -252,7 +255,7 @@ ${activeProfile.systemPrompt}
 ### 🎨 INTEGRATED UI COMPONENTS
 You can trigger UI actions using these tags. Note the consistent parameter usage for file operations:
 
-- **Library & Content**:
+- **Library & Content** (NEVER wrap these tags in markdown code blocks/backticks):
   - \`<skill title="..." description="..." category="...">[SKILL_CODE_OR_DOCS]</skill>\`
   - \`<generate_image path="..." width="..." height="...">[LONG_IMAGE_PROMPT]</generate_image>\`
 
@@ -268,8 +271,9 @@ You can trigger UI actions using these tags. Note the consistent parameter usage
 ### 🧠 PROJECT MEMORY PROTOCOL
 When the user asks you to "remember" a fact, "take note" of a requirement, or when you discover a critical project constraint (e.g., "this is a research project for self-enhancing AI"):
 1. **COMMIT**: You MUST use the \`<project_memory>\` tag. 
-2. **PERSIST**: Do NOT just confirm it in text. Committing it to memory ensures it is loaded in every future conversation in this workspace.
-3. **FORMAT**: Ensure you provide a unique \`id\` (snake_case) and a descriptive \`title\`.
+2. **NO BACKTICKS**: Do NOT wrap this tag in triple backticks or any other markdown code blocks. It must be standalone in your response.
+3. **PERSIST**: Do NOT just confirm it in text. Committing it to memory ensures it is loaded in every future conversation in this workspace.
+4. **FORMAT**: Ensure you provide a unique \`id\` (snake_case) and a descriptive \`title\`.
 
 ### ⚡ IMMEDIATE TRIGGER RULES
 - User says: "Remember X" or "Note that Y" or "This is a Z project".

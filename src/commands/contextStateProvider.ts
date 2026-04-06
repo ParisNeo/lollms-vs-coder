@@ -35,6 +35,19 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     private _onDidChangeTreeData: vscode.EventEmitter<ContextItem | undefined | null | void> = new vscode.EventEmitter<ContextItem | undefined | null | void>();
     readonly onDidChangeTreeData: vscode.Event<ContextItem | undefined | null | void> = this._onDidChangeTreeData.event;
 
+    private static readonly DEPTH_THRESHOLD = 5;
+    private static readonly MUTE_DEEP_WARNING_KEY = 'lollms.muteDeepFolderWarning';
+    
+    private static readonly BUILD_DEBUG_PATTERNS = [
+        'build', 'dist', 'out', 'bin', 'obj', 'target', 'debug', 'release', 
+        'node_modules', 'cmake-build-debug', 'cmake-build-release', 'vendor',
+        'pkg', 'artifacts'
+    ];
+
+    private static readonly VENV_PATTERNS = [
+        'venv', 'env', '.venv', '.env', 'conda-env', 'pypy', 'virtualenv'
+    ];
+
     private _onDidChangeFileDecorations: vscode.EventEmitter<vscode.Uri | vscode.Uri[]> = new vscode.EventEmitter<vscode.Uri | vscode.Uri[]>();
     readonly onDidChangeFileDecorations: vscode.Event<vscode.Uri | vscode.Uri[]> = this._onDidChangeFileDecorations.event;
 
@@ -84,6 +97,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     private normalize(p: string): string {
         return p.replace(/\\/g, '/');
     }
+
 
     private async migrateDefaultCollapsedFolders(): Promise<void> {
         const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
@@ -160,6 +174,11 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             return [];
         }
 
+        // --- SMART FOLDER SCOUTING ---
+        if (element && element.isDirectory) {
+            this.scoutFolderForCollapsing(element);
+        }
+
         const parentUri = element ? element.resourceUri : vscode.Uri.file(this.workspaceRoot);
         const entries = await vscode.workspace.fs.readDirectory(parentUri);
         
@@ -198,8 +217,10 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         const relativePath = this.normalize(path.relative(workspaceFolder.uri.fsPath, uri.fsPath));
         const segments = relativePath.split('/');
 
-        // Always exclude .lollms folder and __pycache__ anywhere in path
-        if (segments.includes('.lollms') || segments.includes('__pycache__')) {
+        // Always exclude __pycache__ anywhere in path. 
+        // Note: .lollms and other dot-folders are no longer hard-excluded here 
+        // so that they can be visible in the tree via the collapsed logic.
+        if (segments.includes('__pycache__')) {
             return true;
         }
     
@@ -232,14 +253,15 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             if (parentState === 'fully-excluded') return 'fully-excluded';
             if (parentState === 'collapsed') return 'collapsed';
             
-            // Also check default collapsed folders for parents
-            if (this.defaultCollapsedFolders.has(path.basename(currentPath))) {
+            // Also check default collapsed folders and dot-folders for parents
+            const parentBasename = path.basename(currentPath);
+            if (this.defaultCollapsedFolders.has(parentBasename) || parentBasename.startsWith('.')) {
                 return 'collapsed';
             }
         }
 
         const basename = path.basename(uri.fsPath);
-        if (this.defaultCollapsedFolders.has(basename)) {
+        if (this.defaultCollapsedFolders.has(basename) || basename.startsWith('.')) {
             return 'collapsed';
         }
 
@@ -444,5 +466,43 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         await this.context.workspaceState.update(this.stateKey, newState);
         this.refresh();
         this._onDidChangeFileDecorations.fire(undefined);
+    }
+
+    /**
+     * Scouts a folder during expansion to see if it should be suggested for collapsing.
+     */
+    private async scoutFolderForCollapsing(item: ContextItem) {
+        const isMuted = this.context.globalState.get<boolean>(ContextStateProvider.MUTE_DEEP_WARNING_KEY, false);
+        if (isMuted) return;
+
+        // If the folder is already explicitly collapsed or excluded, don't nag
+        const currentState = this.getStateForUri(item.resourceUri);
+        if (currentState === 'collapsed' || currentState === 'fully-excluded') return;
+
+        const folderName = path.basename(item.resourceUri.fsPath).toLowerCase();
+        const relPath = this.normalize(vscode.workspace.asRelativePath(item.resourceUri, false));
+        const depth = relPath.split('/').length;
+
+        let reason = "";
+        if (ContextStateProvider.BUILD_DEBUG_PATTERNS.includes(folderName)) {
+            reason = `looks like a build or debug artifact folder`;
+        } else if (ContextStateProvider.VENV_PATTERNS.includes(folderName) || folderName.includes('venv')) {
+            reason = `appears to be a virtual environment`;
+        } else if (depth >= ContextStateProvider.DEPTH_THRESHOLD) {
+            reason = `is quite deep (${depth} levels)`;
+        }
+
+        if (reason) {
+            const message = `The folder "${path.basename(item.resourceUri.fsPath)}" ${reason}. Including its content might bloat the AI context. Would you like to set it to Collapsed (C)?`;
+            const choices = ["Collapse Folder", "Ignore", "Don't Ask Again"];
+            
+            vscode.window.showInformationMessage(message, ...choices).then(async selection => {
+                if (selection === "Collapse Folder") {
+                    await this.setStateForUri(item.resourceUri, 'collapsed');
+                } else if (selection === "Don't Ask Again") {
+                    await this.context.globalState.update(ContextStateProvider.MUTE_DEEP_WARNING_KEY, true);
+                }
+            });
+        }
     }
 }

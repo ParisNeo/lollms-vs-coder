@@ -1,5 +1,8 @@
 import { dom, vscode, state } from './dom.js';
+import DOMPurify from 'dompurify';
 import { addMessage, renderMessageContent, updateContext, displayPlan, scheduleRender, checkAndSyncMessageAppliedState } from './messageRenderer.js';
+
+const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
 import { 
     setGeneratingState, 
     updateBadges, 
@@ -250,6 +253,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     
                     if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = caps.agentMode;
                     if (dom.autoContextCheckbox) dom.autoContextCheckbox.checked = caps.autoContextMode;
+                    if (dom.capClipboardRole) dom.capClipboardRole.value = caps.clipboardInsertRole || 'user';
                     
                     const langSelect = document.getElementById('modal-language') as HTMLSelectElement;
                     if (langSelect) langSelect.value = caps.language || 'auto';
@@ -656,6 +660,36 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 updateBadges();
                 break;
             case 'fileSearchResults':
+                // Check if the Raw Code Modal is open, if so, route results there
+                if (dom.rawCodeModal.classList.contains('visible') && dom.rawSearchResultsMini) {
+                    dom.rawSearchResultsMini.style.display = 'flex';
+                    if (message.results.length === 0) {
+                        dom.rawSearchResultsMini.innerHTML = '<div style="padding:20px; opacity:0.6; text-align:center;"><i class="codicon codicon-search-stop" style="font-size:20px;"></i><br>No cross-file matches found for this selection.</div>';
+                    } else {
+                        dom.rawSearchResultsMini.innerHTML = `
+                            <div style="font-size: 10px; font-weight: bold; opacity: 0.6; padding: 8px; border-bottom: 1px solid var(--vscode-widget-border); margin-bottom: 5px;">
+                                <i class="codicon codicon-info"></i> CLICK TO COPY & OPEN
+                            </div>
+                            ` + message.results.map((res: any) => {
+                            const safeSnippet = sanitizer.sanitize(res.snippet);
+                            
+                            return `
+                            <div class="mini-search-item raw-stitch-result-item" 
+                                 style="flex-direction:column; align-items:flex-start; gap:4px; padding: 8px; border-bottom: 1px solid var(--vscode-widget-border); cursor:pointer;" 
+                                 data-path="${res.path}" 
+                                 data-query="${message.query.replace(/"/g, '&quot;')}"
+                                 data-line="${res.line}">
+                                <div style="display:flex; justify-content:space-between; width:100%; font-size: 11px; pointer-events:none;">
+                                    <span style="font-weight:bold; color: var(--vscode-textLink-foreground);">${res.path.split('/').pop()}</span>
+                                    <span style="opacity:0.5; font-size:9px;">L${res.line}</span>
+                                </div>
+                                <div style="pointer-events:none; font-size:10px; opacity:0.8; font-family:var(--vscode-editor-font-family); white-space:pre; overflow:hidden; text-overflow:ellipsis; width:100%; background:rgba(0,0,0,0.2); padding:2px 4px; border-radius:2px;">${safeSnippet}</div>
+                            </div>
+                        `}).join('');
+                    }
+                    return;
+                }
+
                 if (dom.fileSearchResults) {
                     const masterContainer = document.getElementById('file-search-master-container');
                     if (masterContainer) {

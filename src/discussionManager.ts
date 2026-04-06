@@ -37,6 +37,9 @@ export class DiscussionManager {
     private processManager: ProcessManager;
     private context: vscode.ExtensionContext;
 
+    private _onDidChangeDiscussions = new vscode.EventEmitter<void>();
+    public readonly onDidChangeDiscussions = this._onDidChangeDiscussions.event;
+
     constructor(lollmsAPI: LollmsAPI, processManager: ProcessManager, context: vscode.ExtensionContext) {
         this.lollmsAPI = lollmsAPI;
         this.processManager = processManager;
@@ -47,6 +50,7 @@ export class DiscussionManager {
         this.discussionsDir = vscode.Uri.joinPath(workspaceRoot, '.lollms', 'discussions');
         this.groupsFile = vscode.Uri.joinPath(workspaceRoot, '.lollms', 'discussion_groups.json');
         await this.initialize();
+        this._onDidChangeDiscussions.fire();
     }
 
     private async initialize() {
@@ -90,6 +94,7 @@ export class DiscussionManager {
             distillWebResults: config.get<boolean>('distillWebResults') ?? true,
             antiPromptInjection: config.get<boolean>('antiPromptInjection') ?? true,
             searchInCacheFirst: config.get<boolean>('searchInCacheFirst') ?? true,
+            clipboardInsertRole: config.get<string>('clipboardInsertRole') as 'user' | 'assistant' || 'user',
             searchSources: {
                 google: true,
                 arxiv: true,
@@ -173,6 +178,7 @@ export class DiscussionManager {
         if (discussion.id.startsWith('temp-') || discussion.id.startsWith('remote-')) return;
         
         const filePath = vscode.Uri.joinPath(this.discussionsDir, `${discussion.id}.json`);
+        this._onDidChangeDiscussions.fire();
         const tempPath = vscode.Uri.joinPath(this.discussionsDir, `${discussion.id}.tmp`);
         
         // Use a background task to avoid blocking the UI thread for large files
@@ -236,21 +242,39 @@ export class DiscussionManager {
     }
 
     async getAllDiscussions(): Promise<Discussion[]> {
+        if (!this.discussionsDir) return [];
+
         try {
+            // 1. Pre-check: Ensure directory exists
+            try {
+                await vscode.workspace.fs.stat(this.discussionsDir);
+            } catch {
+                await vscode.workspace.fs.createDirectory(this.discussionsDir);
+                return []; 
+            }
+
             const entries = await vscode.workspace.fs.readDirectory(this.discussionsDir);
-            const jsonFiles = entries.filter(([name, type]) => type === vscode.FileType.File && name.endsWith('.json'));
+            // Relaxed filter: Allow any non-directory entry ending in .json
+            const jsonFiles = entries.filter(([name, type]) => 
+                type !== vscode.FileType.Directory && name.endsWith('.json')
+            );
             
             const results: Discussion[] = [];
             for (const [name] of jsonFiles) {
-                const discussion = await this.getDiscussion(path.parse(name).name);
-                if (discussion) {
-                    results.push(discussion);
+                try {
+                    const id = path.parse(name).name;
+                    const discussion = await this.getDiscussion(id);
+                    if (discussion && discussion.messages) {
+                        results.push(discussion);
+                    }
+                } catch (err) {
+                    console.error(`[DiscussionManager] Skipping corrupt discussion: ${name}`, err);
                 }
             }
-            return results
-                .filter((d): d is Discussion => d !== null)
-                .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+            
+            return results.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
         } catch (error) {
+            Logger.error("Failed to fetch discussions", error);
             return [];
         }
     }
@@ -307,7 +331,10 @@ export class DiscussionManager {
     async deleteDiscussion(id: string): Promise<void> {
         this.processManager.cancelForDiscussion(id);
         const filePath = vscode.Uri.joinPath(this.discussionsDir, `${id}.json`);
-        try { await vscode.workspace.fs.delete(filePath); } catch (error) {}
+        try { 
+            await vscode.workspace.fs.delete(filePath); 
+            this._onDidChangeDiscussions.fire();
+        } catch (error) {}
     }
 
     async cleanEmptyDiscussions(): Promise<number> {

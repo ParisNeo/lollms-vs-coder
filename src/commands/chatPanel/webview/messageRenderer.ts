@@ -238,29 +238,51 @@ function enablePanZoom(container: HTMLElement) {
 }
 /**
  * Renders a visual block indicating a fact has been saved to Project Memory.
+ * Now collapsible and action-aware.
  */
-function renderMemoryTag(id: string, title: string, content: string): string {
+function renderMemoryTag(action: string, id: string, title: string, content: string): string {
+    const isDelete = action === 'delete';
+    const actionLabel = isDelete ? 'REMOVED FROM' : (action === 'update' ? 'UPDATED IN' : 'ADDED TO');
+    const headerTitle = `AI ${actionLabel} MEMORY: ${sanitizer.sanitize(id)}`;
+    const iconClass = isDelete ? 'codicon-trash' : 'codicon-chip';
+    const blockClass = isDelete ? 'memory-deleted' : '';
+
+    const safeContent = encodeURIComponent(content);
+    const safeTitle = encodeURIComponent(title);
+
     return `
-    <div class="project-memory-block">
-        <div class="memory-header">
-            <div class="memory-icon-container">
-                <span class="codicon codicon-chip"></span>
+    <div class="project-memory-block ${blockClass}" data-mem-id="${id}">
+        <details>
+            <summary class="memory-summary">
+                <div style="display:flex; align-items:center; gap:10px; flex:1;">
+                    <span class="codicon ${iconClass}"></span>
+                    <span class="memory-summary-text">${headerTitle}</span>
+                </div>
+                <button class="msg-action-btn sync-memory-btn" 
+                        data-action="${action}" 
+                        data-id="${id}" 
+                        data-title="${safeTitle}" 
+                        data-content="${safeContent}"
+                        title="Manually apply/sync this fact to project memory">
+                    <i class="codicon codicon-sync"></i>
+                </button>
+            </summary>
+            <div class="memory-expanded-content">
+                <div class="memory-header">
+                    <div class="memory-title-info">
+                        <div class="memory-label">KNOWLEDGE CONTENT</div>
+                        <div class="memory-title">${sanitizer.sanitize(title || id)}</div>
+                    </div>
+                </div>
+                <div class="memory-content">
+                    ${sanitizer.sanitize(content)}
+                </div>
+                <div class="memory-status-line">
+                    <span class="codicon codicon-pass-filled"></span>
+                    Synced to .lollms/project_memory.json
+                </div>
             </div>
-            <div class="memory-title-info">
-                <div class="memory-label">KNOWLEDGE COMMIT</div>
-                <div class="memory-title">${sanitizer.sanitize(title)}</div>
-            </div>
-            <div class="memory-id-badge">
-                ${sanitizer.sanitize(id)}
-            </div>
-        </div>
-        <div class="memory-content">
-            ${sanitizer.sanitize(content)}
-        </div>
-        <div class="memory-status-line">
-            <span class="codicon codicon-pass-filled"></span>
-            Synced to .lollms/project_memory.json
-        </div>
+        </details>
     </div>`;
 }
 
@@ -616,6 +638,7 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
             }
 
             if (match) {
+                inBlock = true;
                 // Peek at the block content to avoid rendering empty "plaintext" placeholders
                 const nextLine = lines[i+1] ? lines[i+1].trim() : "";
                 const isClosingNext = nextLine.startsWith('```');
@@ -1524,6 +1547,18 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     const shouldScroll = isScrolledToBottom(dom.messagesDiv);
 
     try {
+        const isUser = messageDiv.classList.contains('user-message');
+        const isEmpty = !rawContent || 
+                        (typeof rawContent === 'string' && rawContent.trim() === '') || 
+                        (Array.isArray(rawContent) && rawContent.length === 0);
+
+        if (isUser && isEmpty) {
+            contentDiv.innerHTML = `<div style="opacity: 0.7; font-style: italic; margin-bottom: 8px;">Empty message</div>
+            <button class="code-action-btn apply-btn infer-prompt-btn" data-message-id="${messageId}"><span class="codicon codicon-wand"></span> Infer Prompt</button>`;
+            if (shouldScroll && dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+            return;
+        }
+
         if (Array.isArray(rawContent)) {
             // Handle Multipart
             let html = '';
@@ -1605,14 +1640,8 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 let m;
                 while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
                 
-                if (attrs.action !== 'delete') {
-                    const html = renderMemoryTag(attrs.id, attrs.title || attrs.id, memContent);
-                    memTags.push({ html, start: pMemMatch.index, end: pMemMatch.index + pMemMatch[0].length });
-                } else {
-                    // Deleted memories show a small strike-through notification
-                    const html = `<div class="project-memory-block" style="opacity:0.6; text-decoration:line-through;">Removed Memory: ${attrs.id}</div>`;
-                    memTags.push({ html, start: pMemMatch.index, end: pMemMatch.index + pMemMatch[0].length });
-                }
+                const html = renderMemoryTag(attrs.action || 'add', attrs.id, attrs.title || attrs.id, memContent);
+                memTags.push({ html, start: pMemMatch.index, end: pMemMatch.index + pMemMatch[0].length });
             }
 
             // --- FILE OPERATIONS & CONTEXT TAG PARSING ---
@@ -1679,6 +1708,14 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const elements = allCandidates.filter((el, idx) => {
                 return !allCandidates.some((other, oIdx) => {
                     if (idx === oIdx) return false;
+                    
+                    // If 'el' is a standard code block and 'other' is a custom UI tag inside it, 
+                    // we want to discard the code block and keep the UI tag.
+                    if (el.elementType === 'code' && other.elementType !== 'code') {
+                        if (other.start >= el.start && other.end <= el.end) return false;
+                    }
+
+                    // Standard containment check
                     return el.start >= other.start && el.end <= other.end;
                 });
             });
@@ -1695,10 +1732,11 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     fragment.appendChild(textDiv);
                 }
 
-                // B. Render the UI element (Code Block or Skill or Image or AddFiles or FileOp or DebugReport)
-                if (el.elementType === 'skill' || el.elementType === 'image' || el.elementType === 'addFiles' || el.elementType === 'fileOp' || el.elementType === 'debugReport') {
+                // B. Render the UI element (Code Block or Skill or Image or AddFiles or FileOp or DebugReport or ProjectMemory)
+                const uiTypes = ['skill', 'image', 'addFiles', 'fileOp', 'projectMemory', 'debugReport'];
+                if (uiTypes.includes(el.elementType)) {
                     const uiDiv = document.createElement('div');
-                    uiDiv.innerHTML = el.html;
+                    uiDiv.innerHTML = (el as any).html;
                     fragment.appendChild(uiDiv);
                     lastIndex = el.end;
                     return;
@@ -1720,9 +1758,16 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======[\r\n]*([\s\S]*?)[\r\n]*>>>>>>> REPLACE/gm;
                 const aiderMatches = [...codeOnly.matchAll(aiderRegex)];
                 const isAider = aiderMatches.length > 0;
+                
+                // MALFORMED DETECTION: Check if block contains bits of Aider but isn't valid
+                const hasAiderStart = codeOnly.includes('<<<<<<< SEARCH');
+                const hasAiderMid = codeOnly.includes('=======');
+                const hasAiderEnd = codeOnly.includes('>>>>>>> REPLACE');
+                const isMalformed = (hasAiderStart || hasAiderMid || hasAiderEnd) && !isAider;
 
                 const details = document.createElement('details');
                 details.className = 'code-collapsible';
+                if (isMalformed) details.classList.add('malformed');
                 details.open = true;
 
                 const summary = document.createElement('summary');
@@ -1731,9 +1776,29 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 const langLabel = document.createElement('span');
                 langLabel.className = 'summary-lang-label';
                 langLabel.textContent = `${language}${block.path ? ' : ' + block.path : ''}`;
+                
+                if (isMalformed) {
+                    const badge = document.createElement('span');
+                    badge.className = 'malformed-badge';
+                    badge.textContent = 'Malformed Block';
+                    langLabel.appendChild(badge);
+                }
 
                 const actions = document.createElement('div');
                 actions.className = 'code-actions';
+
+                if (isMalformed) {
+                    const fixBtn = createButton('Manual Fix', 'codicon-edit', () => {
+                        const msgWrapper = details.closest('.message-wrapper') as HTMLElement;
+                        const msgId = msgWrapper?.dataset.messageId;
+                        const msgDiv = msgWrapper?.querySelector('.message') as HTMLElement;
+                        if (msgDiv && msgId) {
+                            // Trigger the global edit function defined in messageRenderer
+                            startEdit(msgDiv, msgId, 'assistant');
+                        }
+                    }, 'code-action-btn apply-btn', 'The AI generated broken syntax. Click to edit and fix the markers manually.');
+                    actions.appendChild(fixBtn);
+                }
 
                 // Copy All button
                 const copyBtn = createButton('Copy All', 'codicon-copy', () => {
@@ -2449,7 +2514,7 @@ function addChatMessage(message: any, isFinal: boolean = true) {
     let roleDisplay = 'System';
     if (role === 'user') roleDisplay = 'You';
     else if (role === 'assistant') {
-        roleDisplay = isAgent ? '🛰️ Leader Architect' : (personalityName || 'Lollms');
+        roleDisplay = isAgent ? '🛰️ Leader Architect' : (personalityName || message.personalityName || 'Lollms');
     }
     
     headerDiv.innerHTML = `<span class="role-name">${roleDisplay}</span>`;
@@ -2547,10 +2612,17 @@ export function updateContext(contextText: string, files: string[] = [], skills:
         : '<div class="empty-context-msg">No skills learned.</div>';
 
     const isMuted = state.capabilities?.disableProjectContext;
+    const isAgentActive = state.capabilities?.agentMode === true;
+    
+    const themeClass = isAgentActive ? 'agent-mode-bubble' : '';
+    const muteClass = isMuted ? 'muted-bubble' : '';
+
     const innerHTML = `
-    <div class="message special-zone-message context-message ${isMuted ? 'muted-bubble' : ''}">
+    <div class="message special-zone-message context-message ${themeClass} ${muteClass}">
         <div class="message-avatar">
-            <span class="codicon codicon-library"></span>
+            ${isAgentActive 
+                ? '<div class="agent-active-indicator" title="Autonomous Agent Mode Active"><span class="codicon codicon-robot"></span></div>' 
+                : '<span class="codicon codicon-library"></span>'}
         </div>
         <div class="message-body">
             <div class="message-header" style="display: flex; justify-content: space-between; align-items: flex-start; width: 100%; margin-bottom: 10px; flex-wrap: wrap; gap: 10px;">

@@ -94,6 +94,7 @@ export interface DiscussionCapabilities {
     distillWebResults: boolean;
     antiPromptInjection: boolean;
     searchInCacheFirst: boolean;
+    clipboardInsertRole: 'user' | 'assistant';
     searchSources: {
         google: boolean;
         arxiv: boolean;
@@ -104,6 +105,7 @@ export interface DiscussionCapabilities {
     };
     gitWorkflow: boolean;
     gitCommit?: boolean;
+    clipboardInsertRole: 'user' | 'assistant';
     
     // --- UPDATED HERD CONFIG ---
     herdMode: boolean;
@@ -224,7 +226,18 @@ export function applySearchReplace(content: string, searchBlock: string, replace
         normalizedReplace = normalizedReplace.replace(/^\n+|\n+$/g, '');
     }
 
-    // 1. Direct match attempt (Fast Path)
+    // 1. Special Case: Empty Search Block (Append to end)
+    // If the AI sends an empty search block, it signifies an intention to append to the end.
+    if (normalizedSearch.trim() === "") {
+        const eol = normalizedContent.includes('\r\n') ? '\r\n' : '\n';
+        // If content is empty, just use replace block, else append with a newline
+        const result = normalizedContent.length === 0 
+            ? normalizedReplace 
+            : normalizedContent.trimEnd() + eol + normalizedReplace;
+        return { success: true, result };
+    }
+
+    // 2. Direct match attempt (Fast Path)
     if (normalizedContent.includes(normalizedSearch)) {
         const parts = normalizedContent.split(normalizedSearch);
         return { success: true, result: parts.join(normalizedReplace) };
@@ -500,7 +513,7 @@ export async function getProcessedSystemPrompt(
     customPersonaContent?: string,
     memoryManager?: MemoryManager,
     forceFullCode?: boolean,
-    context?: { tree: string, files: string, skills: string },
+    context?: { tree: string, files: string, skills: string, memory?: string },
     workingMemory?: string
 ): Promise<string> {
     const memory = memoryManager ? await memoryManager.getMemory() : "";
@@ -539,6 +552,48 @@ export async function getProcessedSystemPrompt(
 export function stripAnsiCodes(text: string): string {
     // eslint-disable-next-line no-control-regex
     return text.replace(/[\u001b\u009b][[()#;?]*(?:[a-zA-Z\d]*(?:;[-a-zA-Z\d\/#&.:=?%@~]*)*)?\u0007?/g, '');
+}
+
+/**
+ * Known context window sizes for major LLM providers.
+ * Updated as of early 2025.
+ */
+export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
+    'gpt-4o': 128000,
+    'gpt-4-turbo': 128000,
+    'gpt-3.5-turbo': 16385,
+    'claude-3-5': 200000,
+    'claude-3-opus': 200000,
+    'claude-3-haiku': 200000,
+    'gemini-1.5-pro': 2000000,
+    'gemini-1.5-flash': 1000000,
+    'gemini-pro': 32768,
+    'sonar': 128000, // Perplexity standard
+    'llama3': 8192,
+    'llama-3.1': 128000,
+    'llama-3.2': 128000,
+    'mistral-large': 128000,
+    'mixtral-8x7b': 32768,
+    'deepseek-v3': 64000,
+    'deepseek-r1': 64000,
+    'phi3': 128000,
+    'command-r': 128000
+};
+
+/**
+ * Heuristic to detect context size based on model ID string.
+ */
+export function getContextLimitForModel(modelName: string): number {
+    const lower = modelName.toLowerCase();
+    for (const [key, limit] of Object.entries(MODEL_CONTEXT_LIMITS)) {
+        if (lower.includes(key)) return limit;
+    }
+    // Default fallback for unknown cloud models
+    if (lower.startsWith('gpt-')) return 128000;
+    if (lower.startsWith('claude-')) return 200000;
+    if (lower.startsWith('gemini-')) return 1000000;
+    
+    return 128000; // General safe default
 }
 
 export function stripThinkingTags(responseText: string): string {
@@ -587,6 +642,7 @@ export interface DiscussionCapabilities {
     distillWebResults: boolean;
     antiPromptInjection: boolean;
     searchInCacheFirst: boolean;
+    clipboardInsertRole: 'user' | 'assistant';
     searchSources: {
         google: boolean;
         arxiv: boolean;
@@ -597,6 +653,7 @@ export interface DiscussionCapabilities {
     };
     gitWorkflow: boolean;
     gitCommit?: boolean;
+    clipboardInsertRole: 'user' | 'assistant';
     
     // --- UPDATED HERD CONFIG ---
     herdMode: boolean;

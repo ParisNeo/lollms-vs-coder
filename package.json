@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.7.35",
+  "version": "0.7.38",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -551,6 +551,21 @@
         "command": "lollms-vs-coder.switchGitBranch",
         "title": "Lollms: Switch Branch",
         "icon": "$(arrow-swap)"
+      },
+      {
+        "command": "lollms-vs-coder.showChatTab",
+        "title": "Chat Discussions",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "lollms-vs-coder.showLibrarianTab",
+        "title": "Librarian (Files/Memory)",
+        "icon": "$(library)"
+      },
+      {
+        "command": "lollms-vs-coder.showLabTab",
+        "title": "The Lab (Workflows/Tools)",
+        "icon": "$(beaker)"
       }
     ],
     "keybindings": [
@@ -642,6 +657,11 @@
             }
           }
         },
+        "lollmsVsCoder.connectionProfiles": {
+          "type": "array",
+          "default": [],
+          "description": "Saved connection environments (URL, Key, Model, etc.) for quick switching."
+        },        
         "lollmsVsCoder.defaultResponseProfileId": {
           "type": "string",
           "default": "balanced",
@@ -1161,7 +1181,7 @@
       "activitybar": [
         {
           "id": "lollms",
-          "title": "%views.container.title%",
+          "title": "LoLLMs",
           "icon": "media/lollms-icon.svg"
         }
       ]
@@ -1169,60 +1189,69 @@
     "views": {
       "lollms": [
         {
-          "id": "lollmsActionsView",
-          "name": "%view.actions.name%"
+          "id": "lollmsTabsView",
+          "name": "Navigation",
+          "visibility": "visible"
         },
         {
           "id": "lollmsDiscussionsView",
-          "name": "%view.discussions.name%"
+          "name": "Discussions",
+          "when": "lollms:activeTab == chat"
+        },
+        {
+          "id": "lollmsProcessesView",
+          "name": "Active Processes",
+          "when": "lollms:activeTab == chat && workspaceFolderCount > 0"
+        },
+        {
+          "id": "lollmsFileTreeView",
+          "name": "Project Files (Context)",
+          "when": "lollms:activeTab == librarian && workspaceFolderCount > 0"
         },
         {
           "id": "lollmsSkillsView",
-          "name": "%view.skills.name%",
-          "when": "workspaceFolderCount > 0"
-        },
-        {
-          "id": "lollmsRLMView",
-          "name": "RLM Knowledge Base"
+          "name": "Skills Library",
+          "when": "lollms:activeTab == librarian && workspaceFolderCount > 0"
         },
         {
           "id": "lollmsProjectMemoryView",
           "name": "Project Memory",
-          "when": "workspaceFolderCount > 0"
-        },
-        {
-          "id": "lollmsProcessesView",
-          "name": "%view.processes.name%",
-          "when": "workspaceFolderCount > 0"
-        },
-        {
-          "id": "lollmsFileTreeView",
-          "name": "%view.fileTreeView.name%",
-          "when": "workspaceFolderCount > 0"
-        },
-        {
-          "id": "lollmsPersonalitiesView",
-          "name": "Personalities"
+          "when": "lollms:activeTab == librarian && workspaceFolderCount > 0"
         },
         {
           "id": "lollmsCodeExplorerView",
-          "name": "%view.codeExplorer.name%",
-          "when": "workspaceFolderCount > 0"
+          "name": "Architecture Graph",
+          "when": "lollms:activeTab == lab && workspaceFolderCount > 0"
+        },
+        {
+          "id": "lollmsPersonalitiesView",
+          "name": "Expert Personas",
+          "when": "lollms:activeTab == lab"
         },
         {
           "id": "lollmsWorkflowsView",
           "name": "Workflows",
-          "when": "workspaceFolderCount > 0"
+          "when": "lollms:activeTab == lab && workspaceFolderCount > 0"
         },
         {
           "id": "lollmsChatPromptsView",
-          "name": "%view.chatPrompts.name%",
-          "when": "workspaceFolderCount > 0"
+          "name": "Chat Prompts",
+          "when": "lollms:activeTab == lab && workspaceFolderCount > 0"
         },
         {
           "id": "lollmsCodeActionsView",
-          "name": "%view.codeActions.name%",
-          "when": "workspaceFolderCount > 0"
+          "name": "Code Actions",
+          "when": "lollms:activeTab == lab && workspaceFolderCount > 0"
+        },
+        {
+          "id": "lollmsRLMView",
+          "name": "RLM Database",
+          "when": "lollms:activeTab == lab"
+        },
+        {
+          "id": "lollmsActionsView",
+          "name": "Quick Actions",
+          "when": "lollms:activeTab == lab"
         }
       ]
     },
@@ -1345,6 +1374,26 @@
         }
       ],
       "view/title": [
+          {
+            "command": "lollms-vs-coder.showChatTab",
+            "when": "view == lollmsTabsView && lollms:activeTab != chat",
+            "group": "navigation@1"
+          },
+          {
+            "command": "lollms-vs-coder.showLibrarianTab",
+            "when": "view == lollmsTabsView && lollms:activeTab != librarian",
+            "group": "navigation@2"
+          },
+          {
+            "command": "lollms-vs-coder.showLabTab",
+            "when": "view == lollmsTabsView && lollms:activeTab != lab",
+            "group": "navigation@3"
+          },
+          {
+            "command": "lollms-vs-coder.showConfigView",
+            "when": "view == lollmsTabsView",
+            "group": "navigation@4"
+          },
           {
               "command": "lollms-vs-coder.manageProjectMemory",
               "when": "view == lollmsProjectMemoryView",

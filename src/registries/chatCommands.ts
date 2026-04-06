@@ -9,12 +9,12 @@ import { getProcessedSystemPrompt, stripThinkingTags } from '../utils';
 
 export async function registerChatCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
     
-    // Explicitly register the refresh command to avoid "command not found" errors
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refreshDiscussions', () => {
-        if (services.treeProviders.discussion) {
-            services.treeProviders.discussion.refresh();
-        }
-    }));
+    // Ensure we don't double-register refresh
+    if (!vscode.commands.getCommands(true).then(cmds => cmds.includes('lollms-vs-coder.refreshDiscussions'))) {
+        context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refreshDiscussions', () => {
+            services.treeProviders.discussion?.refresh();
+        }));
+    }
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.searchDiscussions', async () => {
         const panel = ChatPanel.currentPanel;

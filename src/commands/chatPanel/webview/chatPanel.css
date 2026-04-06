@@ -198,6 +198,34 @@ body {
     color: var(--vscode-charts-red) !important;
 }
 
+/* 🤖 AGENT MODE RED UI THEME */
+.context-message.agent-mode-bubble {
+    border-color: var(--vscode-charts-red) !important;
+    background-image: linear-gradient(135deg, rgba(244, 71, 71, 0.1) 0%, transparent 100%) !important;
+    box-shadow: 0 0 15px rgba(244, 71, 71, 0.2) !important;
+}
+
+.agent-mode-bubble .role-name {
+    color: var(--vscode-charts-red) !important;
+}
+
+.agent-mode-bubble .apply-btn {
+    background-color: var(--vscode-charts-red) !important;
+    color: white !important;
+}
+
+.agent-mode-bubble .apply-btn:hover {
+    filter: brightness(1.2);
+}
+
+.agent-mode-bubble .token-progress-bar.range-safe {
+    background-color: var(--vscode-charts-red) !important;
+}
+
+.agent-mode-bubble .info-collapsible summary {
+    color: var(--vscode-charts-red) !important;
+}
+
 /* --- UPDATED MESSAGE BODY FOR STICKY TOOLBAR --- */
 .message-body {
     flex: 1;
@@ -404,7 +432,28 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 .code-action-btn:hover { background-color: var(--vscode-button-secondaryHoverBackground); }
 .code-action-btn:disabled { opacity: 0.5; cursor: not-allowed; pointer-events: none; filter: grayscale(100%); }
 .code-action-btn.success { background-color: var(--vscode-charts-green) !important; color: white !important; border-color: transparent; transition: all 0.2s ease; }
-.code-action-btn.applied, .apply-all-btn.applied { 
+.code-collapsible.malformed {
+    border: 1px solid var(--vscode-errorForeground) !important;
+    background-color: rgba(244, 71, 71, 0.05) !important;
+}
+
+.code-collapsible.malformed .summary-lang-label {
+    color: var(--vscode-errorForeground) !important;
+    font-weight: bold;
+}
+
+.malformed-badge {
+    background: var(--vscode-errorForeground);
+    color: white;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 9px;
+    font-weight: 800;
+    margin-left: 8px;
+    text-transform: uppercase;
+}
+
+.code-collapsible.applied, .apply-all-btn.applied { 
     background-color: #28a745 !important; /* Vivid Success Green */
     color: #ffffff !important; 
     border-color: transparent !important; 
@@ -1984,6 +2033,25 @@ mark.current-match {
 .status-label.error { background-color: var(--vscode-inputValidation-errorBackground); border: 1px solid var(--vscode-inputValidation-errorBorder); }
 .status-label .spinner { width: 10px; height: 10px; border: 2px solid currentColor; border-bottom-color: transparent; border-radius: 50%; animation: lollms-rotation 1s linear infinite; }
 
+.agent-active-indicator {
+    border: 2px solid var(--vscode-charts-red);
+    border-radius: 50%;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--vscode-charts-red);
+    animation: pulse-red-border 2s infinite;
+    background: rgba(244, 71, 71, 0.1);
+}
+
+@keyframes pulse-red-border {
+    0% { box-shadow: 0 0 0 0 rgba(244, 71, 71, 0.4); }
+    70% { box-shadow: 0 0 0 8px rgba(244, 71, 71, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(244, 71, 71, 0); }
+}
+
 .token-counting-overlay {
     position: absolute; bottom: 0; left: 0; right: 0; height: 100px;
     background-color: var(--vscode-sideBar-background); border-top: 1px solid var(--vscode-panel-border);
@@ -3122,21 +3190,65 @@ details[open] > summary .folder-handle::before {
     font-weight: 600;
 }
 .project-memory-block {
-    border: 1px solid var(--vscode-charts-purple);
-    background: linear-gradient(135deg, var(--vscode-editor-inactiveSelectionBackground) 0%, rgba(155, 89, 182, 0.05) 100%);
-    margin: 20px 0;
-    border-radius: 8px;
+    border: 1px solid var(--vscode-widget-border);
+    background: var(--vscode-editor-inactiveSelectionBackground);
+    margin: 12px 0;
+    border-radius: 6px;
     overflow: hidden;
-    box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-    animation: fade-in-up 0.4s cubic-bezier(0.23, 1, 0.32, 1);
+    transition: border-color 0.2s;
+}
+
+.project-memory-block:hover {
+    border-color: var(--vscode-charts-purple);
+}
+
+.memory-summary {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    cursor: pointer;
+    user-select: none;
+    background: rgba(155, 89, 182, 0.05);
+    outline: none;
+}
+
+.memory-summary::-webkit-details-marker {
+    display: none;
+}
+
+.memory-summary .codicon {
+    color: var(--vscode-charts-purple);
+    font-size: 16px;
+}
+
+.memory-summary-text {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    opacity: 0.8;
+}
+
+.memory-expanded-content {
+    border-top: 1px solid var(--vscode-widget-border);
+    padding-top: 10px;
+    animation: slideDown 0.2s ease-out;
+}
+
+.project-memory-block.memory-deleted {
+    opacity: 0.7;
+    border-left: 4px solid var(--vscode-charts-red);
+}
+
+.project-memory-block.memory-deleted .codicon {
+    color: var(--vscode-charts-red);
 }
 
 .memory-header {
     display: flex;
     align-items: center;
-    padding: 12px 16px;
-    background: rgba(155, 89, 182, 0.1);
-    border-bottom: 1px solid rgba(155, 89, 182, 0.2);
+    padding: 8px 16px;
     gap: 12px;
 }
 
@@ -3181,4 +3293,41 @@ details[open] > summary .folder-handle::before {
     opacity: 0.6;
     background: rgba(0,0,0,0.05);
     font-style: italic;
+}
+
+#raw-code-filename { 
+    font-size:10px; 
+    opacity:0.7; 
+    font-family:var(--vscode-editor-font-family); 
+    font-weight: bold; 
+    color: var(--vscode-textLink-foreground); 
+    cursor: pointer;
+    text-decoration: none;
+}
+#raw-code-filename:hover {
+    text-decoration: underline;
+    opacity: 1;
+}
+
+.search-results-mini {
+    margin-top: 10px;
+    border: 1px solid var(--vscode-widget-border);
+    border-radius: 4px;
+    max-height: 150px;
+    overflow-y: auto;
+    background: var(--vscode-editor-background);
+    display: none;
+}
+
+.mini-search-item {
+    padding: 4px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--vscode-panel-border);
+    display: flex;
+    justify-content: space-between;
+}
+
+.mini-search-item:hover {
+    background: var(--vscode-list-hoverBackground);
 }

@@ -187,6 +187,26 @@ export async function activate(context: vscode.ExtensionContext) {
         InfoPanel.createOrShow(context.extensionUri, `Knowledge: ${title}`, content);
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.openAndSelect', async (params: { path: string, text: string }) => {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) return;
+
+        const uri = vscode.Uri.joinPath(workspaceFolder.uri, params.path);
+        const doc = await vscode.workspace.openTextDocument(uri);
+        const editor = await vscode.window.showTextDocument(doc);
+
+        const content = doc.getText();
+        const index = content.indexOf(params.text);
+
+        if (index !== -1) {
+            const start = doc.positionAt(index);
+            const end = doc.positionAt(index + params.text.length);
+            editor.selection = new vscode.Selection(start, end);
+            editor.revealRange(new vscode.Range(start, end), vscode.TextEditorRevealType.InCenter);
+            vscode.window.showInformationMessage("Text found. Replacement code is in your clipboard.");
+        }
+    }));
+
     // Register Providers
     try {
         const caProvider = new LollmsCodeActionProvider(promptManager);
@@ -215,6 +235,16 @@ export async function activate(context: vscode.ExtensionContext) {
     // Status Bar
     const statusBar = new LollmsStatusBar(context, lollmsAPI);
     context.subscriptions.push(statusBar);
+
+    // --- CACHE INVALIDATION LISTENERS ---
+    // Invalidate context cache when files are modified on disk
+    context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(doc => {
+        contextManager.refreshFileInCache(doc.uri);
+    }));
+
+    context.subscriptions.push(vscode.workspace.onDidDeleteFiles(e => {
+        e.files.forEach(uri => contextManager.refreshFileInCache(uri));
+    }));
 
     // Configuration Listener
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(async e => {
@@ -254,13 +284,13 @@ export async function activate(context: vscode.ExtensionContext) {
             return;
         }
 
+        contextManager.clearAllCaches(); // WIPE CACHE FOR NEW FOLDER
+
         const isInitialLoad = activeWorkspaceFolder === undefined;
         activeWorkspaceFolder = folder;
         statusBar.updateActiveWorkspace(folder);
 
         await discussionManager.switchWorkspace(folder.uri);
-        services.treeProviders.discussion?.refresh();
-        
         await skillsManager.switchWorkspace(folder.uri, context.extensionUri);
         services.treeProviders.skills?.refresh();
         

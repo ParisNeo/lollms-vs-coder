@@ -47,66 +47,81 @@ export async function startDiscussionWithInitialPrompt(
 
     await panel.loadDiscussion();
 
-    if (autoExecute) {
-        // --- IMAGE SUPPORT: Fetch images from project context ---
-        const contextData = await services.contextManager.getContextContent({ 
-            includeTree: false,
-            modelName: discussion.model || services.lollmsAPI.getModelName()
-        });
+    // Handle "Paste as Message" without execution
+    // Priority: Last used Discussion Capability -> Global Config -> Default 'user'
+    const lastCaps = services.discussionManager.getLastCapabilities();
+    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+    
+    const role = lastCaps.clipboardInsertRole || config.get<string>('clipboardInsertRole') || 'user'; 
 
-        let finalContent: any = prompt;
-        
-        // If we have images in the project context, convert to Multipart message
-        if (contextData.images && contextData.images.length > 0) {
-            const parts: any[] = [{ type: 'text', text: prompt }];
-            contextData.images.forEach(img => {
-                parts.push({ type: 'image_url', image_url: { url: img.data } });
-            });
-            finalContent = parts;
-        }
+    // Fetch identity metadata for the assistant role to ensure the UI renders correctly
+    let personalityName = undefined;
+    let model = undefined;
 
+    if (role === 'assistant') {
+        const currentP = services.personalityManager.getPersonality(discussion.personalityId || 'default_coder');
+        personalityName = currentP?.name || 'Lollms';
+        model = discussion.model || services.lollmsAPI.getModelName();
+    }
+
+    // When pasting as assistant message, we need to add an empty user message first
+    // to create the proper conversation flow for title generation
+    if (role === 'assistant') {
+        const userMsgId = 'user_' + Date.now().toString() + Math.random().toString(36).substring(2);
         const userMessage: ChatMessage = {
-            id: 'user_' + Date.now().toString() + Math.random().toString(36).substring(2),
+            id: userMsgId,
             role: 'user',
-            content: finalContent
+            content: '',
+            timestamp: Date.now(),
+            personalityName: personalityName,
+            model: model
         };
-        
-        await panel.sendMessage(userMessage); 
-    } else {
-        // Handle "Paste as Message" without execution
-        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-        const role = config.get<string>('clipboardInsertRole') || 'user'; 
+        await panel.addMessageToDiscussion(userMessage);
 
+        const aiMsgId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
+        const aiMessage: ChatMessage = {
+            id: aiMsgId,
+            role: 'assistant',
+            content: prompt,
+            timestamp: Date.now(),
+            personalityName: personalityName,
+            model: model
+        };
+        // Add to UI and CRITICAL: Wait for the save operation to finish
+        await panel.addMessageToDiscussion(aiMessage);
+    } else {
         const message: ChatMessage = {
             id: role + '_' + Date.now().toString() + Math.random().toString(36).substring(2),
             role: role as 'user' | 'assistant',
             content: prompt,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            personalityName: personalityName,
+            model: model
         };
-
         // Add to UI and CRITICAL: Wait for the save operation to finish
         await panel.addMessageToDiscussion(message);
+    }
 
-        // If auto-title is enabled, generate title based on the draft content
-        if (config.get<boolean>('autoGenerateTitle')) {
-             // Create a temporary mock discussion to pass to the title generator
-             const mockDiscussion = {
-                ...discussion,
-                messages: [{ role: 'user', content: prompt } as ChatMessage]
-             };
-             
-             // We use the existing manager to generate the title
-             const newTitle = await services.discussionManager.generateDiscussionTitle(mockDiscussion);
-             if (newTitle) {
-                 discussion.title = newTitle;
-                 await services.discussionManager.saveDiscussion(discussion);
-                 services.treeProviders.discussion?.refresh();
-                 
-                 // Update the panel title if it's currently open
-                 if (ChatPanel.currentPanel && ChatPanel.currentPanel === panel) {
-                     panel._panel.title = newTitle;
-                 }
-             }
-        }
+    // If auto-title is enabled, generate title based on the draft content
+    if (config.get<boolean>('autoGenerateTitle')) {
+            // Create a temporary mock discussion to pass to the title generator
+            // Use empty string for user content since we added an empty user message
+            const mockDiscussion = {
+            ...discussion,
+            messages: [{ role: 'user', content: role === 'assistant' ? '' : prompt } as ChatMessage]
+            };
+            
+            // We use the existing manager to generate the title
+            const newTitle = await services.discussionManager.generateDiscussionTitle(mockDiscussion);
+            if (newTitle) {
+                discussion.title = newTitle;
+                await services.discussionManager.saveDiscussion(discussion);
+                services.treeProviders.discussion?.refresh();
+                
+                // Update the panel title if it's currently open
+                if (ChatPanel.currentPanel && ChatPanel.currentPanel === panel) {
+                    panel._panel.title = newTitle;
+                }
+            }
     }
 }

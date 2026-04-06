@@ -732,6 +732,7 @@ export function initEventHandlers() {
                 },
                 explainCode: dom.capExplainCode?.checked ?? true,
                 projectMemoryEnabled: dom.capProjectMemory?.checked ?? true,
+                clipboardInsertRole: dom.capClipboardRole?.value || 'user',
                 autoFix: dom.capAutoFix?.checked ?? true,
                 addPedagogicalInstruction: dom.capAddPedagogicalInstruction?.checked ?? false,
                 forceFullCodePath: dom.capForceFullCodePath?.checked ?? false,
@@ -922,9 +923,83 @@ export function initEventHandlers() {
     if (dom.rawCodeCloseBtn) {
         dom.rawCodeCloseBtn.addEventListener('click', () => {
             dom.rawCodeModal.classList.remove('visible');
+            dom.rawSearchResultsMini.style.display = 'none';
             clearRawSearch();
             if (dom.rawSearchInput) dom.rawSearchInput.value = '';
         });
+    }
+
+    // --- MANUAL STITCHING SECURE HANDLERS ---
+    const helpBtn = document.getElementById('raw-stitch-help-btn');
+    if (helpBtn) {
+        helpBtn.onclick = () => {
+            vscode.postMessage({
+                command:'executeLollmsCommand', 
+                details:{command:'lollms-vs-coder.showHelp', params:{section:'manual-stitching'}}
+            });
+        };
+    }
+
+    // Delegated listener for search results in Raw Block Modal
+    if (dom.rawSearchResultsMini) {
+        dom.rawSearchResultsMini.addEventListener('click', (e) => {
+            const item = (e.target as HTMLElement).closest('.raw-stitch-result-item') as HTMLElement;
+            if (!item) return;
+
+            const path = item.dataset.path;
+            const query = item.dataset.query;
+            const fullText = dom.rawCodeDisplay.textContent || "";
+            
+            // 1. Extract and Copy REPLACE block
+            const replaceMatch = fullText.match(/=======[\r\n]*([\s\S]*?)[\r\n]*>>>>>>> REPLACE/);
+            if (replaceMatch) {
+                vscode.postMessage({ command: 'copyToClipboard', text: replaceMatch[1].trim() });
+            }
+
+            // 2. Open and Select target
+            vscode.postMessage({
+                command:'executeLollmsCommand', 
+                details:{
+                    command:'lollms-vs-coder.openAndSelect', 
+                    params:{ path, text: query }
+                }
+            });
+        });
+    }
+
+    if (dom.rawCodeFilename) {
+        dom.rawCodeFilename.onclick = () => {
+            const path = dom.rawCodeFilename.textContent;
+            if (path) vscode.postMessage({ command: 'openFile', path });
+        };
+    }
+
+    if (dom.searchSelectionBtn) {
+        dom.searchSelectionBtn.onclick = () => {
+            const selection = window.getSelection()?.toString().trim();
+            if (!selection) {
+                vscode.postMessage({ command: 'showError', message: 'Please select some text in the code block first.' });
+                return;
+            }
+
+            // 1. Automatically copy the REPLACE part of the current block to clipboard
+            const fullText = dom.rawCodeDisplay.textContent || "";
+            const replaceMatch = fullText.match(/=======[\r\n]*([\s\S]*?)[\r\n]*>>>>>>> REPLACE/);
+            if (replaceMatch) {
+                vscode.postMessage({ command: 'copyToClipboard', text: replaceMatch[1].trim() });
+            }
+
+            // 2. Perform project-wide search
+            dom.rawSearchResultsMini.style.display = 'block';
+            dom.rawSearchResultsMini.innerHTML = '<div style="padding:10px; opacity:0.6;"><div class="spinner"></div> Searching workspace...</div>';
+            
+            vscode.postMessage({ 
+                command: 'requestFileSearch', 
+                query: selection, 
+                mode: 'content',
+                options: { matchCase: true, wholeWord: false }
+            });
+        };
     }
 
     const handleRawCopy = (btn: HTMLButtonElement, mode: 'full' | 'search' | 'replace') => {
@@ -1177,6 +1252,49 @@ export function initEventHandlers() {
                     fileOpBtn.innerHTML = '<span class="codicon codicon-check"></span> Applied';
                 } catch (err) {
                     console.error("Failed to parse file operation payload:", err);
+                }
+                return;
+            }
+
+            // Handle Manual Memory Sync
+            const syncMemBtn = target.closest('.sync-memory-btn') as HTMLButtonElement;
+            if (syncMemBtn) {
+                e.stopPropagation();
+                const { action, id, title, content } = syncMemBtn.dataset;
+                
+                syncMemBtn.disabled = true;
+                syncMemBtn.innerHTML = '<i class="codicon codicon-loading spin"></i>';
+
+                vscode.postMessage({
+                    command: 'executeLollmsCommand',
+                    details: {
+                        command: 'lollms-vs-coder.applyMemoryTag',
+                        params: { 
+                            action, 
+                            id, 
+                            title: decodeURIComponent(title || ''), 
+                            content: decodeURIComponent(content || '') 
+                        }
+                    }
+                });
+
+                setTimeout(() => {
+                    syncMemBtn.disabled = false;
+                    syncMemBtn.innerHTML = '<i class="codicon codicon-check"></i>';
+                    setTimeout(() => { syncMemBtn.innerHTML = '<i class="codicon codicon-sync"></i>'; }, 2000);
+                }, 1000);
+                return;
+            }
+
+            // Infer Prompt Button
+            const inferPromptBtn = target.closest('.infer-prompt-btn') as HTMLButtonElement;
+            if (inferPromptBtn) {
+                e.stopPropagation();
+                const msgId = inferPromptBtn.dataset.messageId;
+                if (msgId) {
+                    inferPromptBtn.disabled = true;
+                    inferPromptBtn.innerHTML = '<div class="spinner"></div> Inferring...';
+                    vscode.postMessage({ command: 'inferPrompt', messageId: msgId });
                 }
                 return;
             }

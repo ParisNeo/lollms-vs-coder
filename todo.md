@@ -38,3 +38,4 @@ usage ui is not working, delete button not working
 Surgical updates MUST be fast. So no heavy computations, just the current file and the selection. The LLM may beed more fiels and trigger more files selection but in a single shot (not a complex librarian way, just say I need these, we add them and rerun) It must be as fast as possible.
 
 Add a fast librarian mode (single shot, just take a look at the current task and the tree and infer the files that need to be added)
+Make skills md with claude style

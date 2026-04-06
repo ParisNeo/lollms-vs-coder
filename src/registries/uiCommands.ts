@@ -16,6 +16,22 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showLog', () => 
         Logger.show()));
 
+    // --- TAB NAVIGATION LOGIC ---
+    const setTab = (tabName: 'chat' | 'librarian' | 'lab') => {
+        vscode.commands.executeCommand('setContext', 'lollms:activeTab', tabName);
+        context.globalState.update('lollms.activeTab', tabName);
+        // Refresh the header view to update "Active" indicators
+        services.treeProviders.tabs?.refresh();
+    };
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showChatTab', () => setTab('chat')));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showLibrarianTab', () => setTab('librarian')));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showLabTab', () => setTab('lab')));
+
+    // Initialize default tab
+    const savedTab = context.globalState.get<'chat' | 'librarian' | 'lab'>('lollms.activeTab', 'chat');
+    vscode.commands.executeCommand('setContext', 'lollms:activeTab', savedTab);
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showRunningProcesses', () => {
         // Reveal the processes view in the sidebar
         vscode.commands.executeCommand('lollmsProcessesView.focus');
@@ -63,6 +79,18 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
         const confirm = await vscode.window.showWarningMessage(`Delete memory "${item.memory.title}"?`, { modal: true }, "Delete");
         if (confirm === "Delete") {
             await (services as any).projectMemoryManager.updateMemory('delete', item.memory.id);
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyMemoryTag', async (params: { action: string, id: string, title: string, content: string }) => {
+        if (services.projectMemoryManager) {
+            await services.projectMemoryManager.updateMemory(
+                params.action as any, 
+                params.id, 
+                params.title, 
+                params.content
+            );
+            vscode.window.showInformationMessage(`Lollms: Fact "${params.id}" synced to Project Memory.`);
         }
     }));
 

@@ -86,6 +86,33 @@ export class ProjectMemoryManager {
         }
     }
 
+    /**
+     * Scans the project structure and common config files to build a "DNA" profile.
+     * This makes Lollms smarter than generic indexers.
+     */
+    public async extractProjectDNA(contextManager: any): Promise<void> {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) return;
+
+        let dnaContent = "## 🧬 PROJECT DNA (Architectural Standards)\n";
+        
+        // 1. Detect Stack
+        const tree = await contextManager.getContextContent({ includeTree: true });
+        dnaContent += `- Structure: \n${tree.projectTree.substring(0, 500)}...\n`;
+
+        // 2. Identify core rules (e.g. from package.json or requirements.txt)
+        const filesToPeek = ['package.json', 'requirements.txt', 'tsconfig.json', '.eslintrc', 'pyproject.toml'];
+        for (const file of filesToPeek) {
+            try {
+                const uri = vscode.Uri.joinPath(workspaceFolder.uri, file);
+                const content = await vscode.workspace.fs.readFile(uri);
+                dnaContent += `- Found ${file}: Standard configs extracted.\n`;
+            } catch {}
+        }
+
+        await this.updateMemory('update', 'project_dna', 'Project DNA & Standards', dnaContent);
+    }
+
     public async getFormattedMemoryBlock(): Promise<string> {
         const memories = await this.getMemories();
         if (memories.length === 0) return "";

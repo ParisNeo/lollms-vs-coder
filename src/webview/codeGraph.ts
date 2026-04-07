@@ -35,22 +35,33 @@ let currentGraphData: any = null;
 let currentClassDiagram: string = '';
 let currentFunctionSignatures: string = '';
 let cyInstance: cytoscape.Core | null = null;
+let currentConfig = { zoomSensitivity: 0.5, panningEnabled: true, zoomToCursor: true };
 
 // Event Listeners
 window.addEventListener('message', event => {
     const message = event.data;
     
     if (message.command === 'graph') {
-        const { graph, state, lastError, classDiagram, functionSignatures } = message;
+        const { graph, state, lastError, classDiagram, functionSignatures, config } = message;
+        if (config) currentConfig = config;
         
         // Update Status UI
         if (state === 'building') {
-            if (loadingOverlay) loadingOverlay.style.display = 'flex';
+            if (loadingOverlay) {
+                loadingOverlay.style.display = 'flex';
+                // Also hide the graph area while building to prevent showing stale data
+                if (cyContainer) cyContainer.style.opacity = '0.3';
+                if (mermaidContainer) mermaidContainer.style.opacity = '0.3';
+            }
             if (rebuildBtn) rebuildBtn.style.display = 'none';
             if (stopBtn) stopBtn.style.display = 'inline-block';
             if (statusLabel) statusLabel.textContent = 'Building...';
         } else {
-            if (loadingOverlay) loadingOverlay.style.display = 'none';
+            if (loadingOverlay) {
+                loadingOverlay.style.display = 'none';
+                if (cyContainer) cyContainer.style.opacity = '1';
+                if (mermaidContainer) mermaidContainer.style.opacity = '1';
+            }
             if (rebuildBtn) rebuildBtn.style.display = 'inline-block';
             if (stopBtn) stopBtn.style.display = 'none';
             if (statusLabel) {
@@ -240,10 +251,27 @@ function enablePanZoom(container: HTMLElement) {
 
     container.onwheel = (e) => {
         e.preventDefault();
-        const delta = e.deltaY > 0 ? 0.9 : 1.1;
-        zoomScale = Math.min(Math.max(0.05, zoomScale * delta), 10); 
+        const intensity = currentConfig.zoomSensitivity * 0.2;
+        const delta = e.deltaY > 0 ? -intensity : intensity;
+        const factor = Math.exp(delta);
+        
+        const newScale = Math.min(Math.max(0.01, zoomScale * factor), 20);
+        
+        if (currentConfig.zoomToCursor) {
+            const rect = container.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+            panX = mouseX - (mouseX - panX) * (newScale / zoomScale);
+            panY = mouseY - (mouseY - panY) * (newScale / zoomScale);
+        }
+        
+        zoomScale = newScale;
         updateTransform();
     };
+
+    if (!currentConfig.panningEnabled) {
+        container.onmousedown = null;
+    }
 
     container.onmousedown = (e) => {
         isDragging = true;
@@ -335,27 +363,34 @@ function renderCytoscapeView(viewType: string) {
         elements: elements,
         style: getCyStyle(),
         layout: isLarge ? {
-            name: 'dagre', // Faster non-physics layout for large graphs
+            name: 'dagre',
             rankDir: 'LR',
-            nodeSep: 50,
-            rankSep: 100,
+            nodeSep: 40,
+            rankSep: 80,
             animate: false
         } : {
             name: 'cose-bilkent',
-            quality: 'proof',
+            quality: 'proof',           // Highest quality for best packing
             nodeDimensionsIncludeLabels: true,
-            randomize: false,
+            randomize: false,           // Deterministic layout is less messy
             fit: true,
             padding: 30,
-            nodeRepulsion: 8500,
-            idealEdgeLength: 120,
-            animate: false,
-            numIter: 2500,
-            tile: true
+            // --- ULTRA-COMPACT PACKING ---
+            nodeRepulsion: 2500,        // Drastically lower to let nodes huddle
+            idealEdgeLength: 30,        // Very short connections
+            edgeElasticity: 0.55,       // Very strong pull on edges
+            nestingFactor: 0.05,        // Tighten the bounds around children
+            gravity: 2.5,               // Strong pull to center
+            numIter: 5000,
+            tile: true,                 // Aggressively tile orphans
+            tilingPaddingVertical: 20,
+            tilingPaddingHorizontal: 20,
+            animate: false
         } as any,
-        minZoom: 0.01, // Allow zooming out further for large graphs
-        maxZoom: 4.0,
-        wheelSensitivity: 0.1
+        minZoom: 0.005,
+        maxZoom: 10.0,
+        wheelSensitivity: currentConfig.zoomSensitivity,
+        userPanningEnabled: currentConfig.panningEnabled
     });
 
     if (isLarge) {
@@ -405,12 +440,16 @@ function getCyStyle() {
                 'text-valign': 'top',
                 'text-halign': 'center',
                 'background-color': '#ffffff',
-                'background-opacity': 0.03,
+                'background-opacity': 0.05,
                 'border-color': '#ffffff',
-                'border-opacity': 0.1,
+                'border-opacity': 0.2,
                 'border-width': 1,
-                'border-style': 'dashed',
-                'padding': '5px'  // Reduced padding significantly for tighter boxes
+                'border-style': 'solid',
+                'padding': '15px',
+                'shape': 'roundrectangle',
+                'font-size': '12px',
+                'font-weight': 'bold',
+                'text-margin-y': '-8px'
             }
         },
         {

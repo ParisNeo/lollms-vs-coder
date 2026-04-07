@@ -10,7 +10,11 @@ export class ToolManager {
 
     constructor() {
         this.loadTools();
-        this.loadMcpTools();
+        // Load MCP tools asynchronously so we don't block tool manager init
+        this.loadMcpTools().then(() => {
+            // Trigger a refresh of the agent's available tools
+            vscode.commands.executeCommand('lollms-vs-coder.refreshTools');
+        });
         this.setDefaultEnabledTools();
     }
 

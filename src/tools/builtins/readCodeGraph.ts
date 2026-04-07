@@ -2,7 +2,7 @@ import { ToolDefinition, ToolExecutionEnv } from '../tool';
 
 export const readCodeGraphTool: ToolDefinition = {
     name: "read_code_graph",
-    description: "Reads the current project's code structure graph (e.g., class diagrams, imports) as text (Mermaid format).",
+    description: "Reads the current project's code structure graph (e.g., class diagrams, imports) as text (Mermaid format). If you have recently changed files, use 'update_code_graph' first.",
     isAgentic: false,
     isDefault: true,
     parameters: [

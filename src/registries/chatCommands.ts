@@ -130,13 +130,18 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         await panel.loadDiscussion();
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussionFromClipboard', async (textOverride?: string) => {
-        const textToUse = textOverride || await vscode.env.clipboard.readText();
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussionFromClipboard', async (textOverride?: any) => {
+        // Only use textOverride if it is strictly a string. 
+        // If triggered from UI menus, VS Code passes a context object which we should ignore.
+        const inputContent = (typeof textOverride === 'string') ? textOverride : await vscode.env.clipboard.readText();
+        const textToUse = inputContent?.trim();
+
         if (!textToUse) {
-            vscode.window.showWarningMessage('No text found to start discussion.');
+            vscode.window.showWarningMessage('Your clipboard is empty or does not contain text.');
             return;
         }
-        // Changed last argument to 'true' to allow immediate execution with context
+        
+        // autoExecute=true triggers the LLM immediately if the role is 'user'
         await startDiscussionWithInitialPrompt(services, textToUse, getActiveWorkspace(), true);
     }));
 

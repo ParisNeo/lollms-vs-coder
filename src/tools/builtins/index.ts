@@ -12,6 +12,7 @@ import { installPythonDependenciesTool } from './installPythonDependencies';
 import { listFilesTool } from './listFiles';
 import { deleteFileTool } from './deleteFile';
 import { readCodeGraphTool } from './readCodeGraph';
+import { updateCodeGraphTool } from './updateCodeGraph';
 import { readFileTool } from './readFile';
 import { requestUserInputTool } from './requestUserInput';
 import { rlmReplTool } from './rlmRepl';
@@ -53,6 +54,7 @@ export const allTools: ToolDefinition[] = [
     installPythonDependenciesTool,
     listFilesTool,
     readCodeGraphTool,
+    updateCodeGraphTool,
     readFileTool,
     requestUserInputTool,
     rlmReplTool,

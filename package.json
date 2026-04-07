@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.7.38",
+  "version": "0.7.42",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -561,6 +561,16 @@
         "command": "lollms-vs-coder.showLibrarianTab",
         "title": "Librarian (Files/Memory)",
         "icon": "$(library)"
+      },
+      {
+        "command": "lollms-vs-coder.showGitTab",
+        "title": "Git Manager",
+        "icon": "$(git-merge)"
+      },
+      {
+        "command": "lollms-vs-coder.showGraphTab",
+        "title": "Architecture Graph",
+        "icon": "$(graph)"
       },
       {
         "command": "lollms-vs-coder.showLabTab",
@@ -1174,6 +1184,21 @@
           "type": "boolean",
           "default": true,
           "description": "When doing a web search, check the .lollms cache first to avoid redownloading known information."
+        },
+        "lollmsVsCoder.graph.zoomSensitivity": {
+          "type": "number",
+          "default": 0.5,
+          "description": "Controls how fast the Architecture Graph zooms in/out."
+        },
+        "lollmsVsCoder.graph.panningEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable or disable dragging/panning the graph."
+        },
+        "lollmsVsCoder.graph.zoomToCursor": {
+          "type": "boolean",
+          "default": true,
+          "description": "If enabled, zooming will center on the mouse cursor position."
         }
       }
     },
@@ -1220,7 +1245,7 @@
         },
         {
           "id": "lollmsCodeExplorerView",
-          "name": "Architecture Graph",
+          "name": "Architecture Graph (Tree)",
           "when": "lollms:activeTab == lab && workspaceFolderCount > 0"
         },
         {
@@ -1385,9 +1410,19 @@
             "group": "navigation@2"
           },
           {
+            "command": "lollms-vs-coder.showGitTab",
+            "when": "view == lollmsTabsView && lollms:activeTab != git",
+            "group": "navigation@3"
+          },
+          {
+            "command": "lollms-vs-coder.showGraphTab",
+            "when": "view == lollmsTabsView && lollms:activeTab != graph",
+            "group": "navigation@4"
+          },
+          {
             "command": "lollms-vs-coder.showLabTab",
             "when": "view == lollmsTabsView && lollms:activeTab != lab",
-            "group": "navigation@3"
+            "group": "navigation@5"
           },
           {
             "command": "lollms-vs-coder.showConfigView",

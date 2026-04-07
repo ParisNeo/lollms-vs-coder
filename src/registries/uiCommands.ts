@@ -17,7 +17,7 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
         Logger.show()));
 
     // --- TAB NAVIGATION LOGIC ---
-    const setTab = (tabName: 'chat' | 'librarian' | 'lab') => {
+    const setTab = (tabName: 'chat' | 'librarian' | 'git' | 'graph' | 'lab') => {
         vscode.commands.executeCommand('setContext', 'lollms:activeTab', tabName);
         context.globalState.update('lollms.activeTab', tabName);
         // Refresh the header view to update "Active" indicators
@@ -26,10 +26,18 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showChatTab', () => setTab('chat')));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showLibrarianTab', () => setTab('librarian')));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showGitTab', () => {
+        setTab('git');
+        vscode.commands.executeCommand('lollms-vs-coder.showGitDashboard');
+    }));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showGraphTab', () => {
+        setTab('graph');
+        vscode.commands.executeCommand('lollms-vs-coder.showCodeGraphPanel');
+    }));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showLabTab', () => setTab('lab')));
 
     // Initialize default tab
-    const savedTab = context.globalState.get<'chat' | 'librarian' | 'lab'>('lollms.activeTab', 'chat');
+    const savedTab = context.globalState.get<'chat' | 'librarian' | 'git' | 'graph' | 'lab'>('lollms.activeTab', 'chat');
     vscode.commands.executeCommand('setContext', 'lollms:activeTab', savedTab);
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showRunningProcesses', () => {
@@ -80,6 +88,17 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
         if (confirm === "Delete") {
             await (services as any).projectMemoryManager.updateMemory('delete', item.memory.id);
         }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.extractProjectDNA', async () => {
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Lollms: Extracting Project DNA...",
+            cancellable: false
+        }, async () => {
+            await services.projectMemoryManager.extractProjectDNA(services.contextManager);
+            vscode.window.showInformationMessage("✅ Project DNA extracted. I now understand your architectural standards.");
+        });
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyMemoryTag', async (params: { action: string, id: string, title: string, content: string }) => {

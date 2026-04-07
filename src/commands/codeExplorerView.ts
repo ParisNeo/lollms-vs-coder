@@ -48,8 +48,16 @@ export class CodeExplorerPanel {
     private listen() {
         this.panel.webview.onDidReceiveMessage(async msg => {
             if (msg.command === 'ready') {
+                // Ensure manager is synchronized with the actual workspace root before building
+                const folders = vscode.workspace.workspaceFolders;
+                if (folders && folders.length > 0) {
+                    this.graphManager.setWorkspaceRoot(folders[0].uri);
+                }
+
                 const activeEditor = vscode.window.activeTextEditor;
-                const focusPath = activeEditor ? vscode.workspace.asRelativePath(activeEditor.document.uri) : undefined;
+                const focusPath = (activeEditor && activeEditor.document.uri.scheme === 'file') 
+                    ? vscode.workspace.asRelativePath(activeEditor.document.uri) 
+                    : undefined;
 
                 if (this.graphManager.getGraphData().nodes.length === 0 && this.graphManager.getBuildState() === 'idle') {
                     // Start build asynchronously, focusing on current file if possible
@@ -87,18 +95,24 @@ export class CodeExplorerPanel {
 
             if (msg.command === 'addToChat') {
                 const mermaid = this.graphManager.generateMermaid(msg.view);
+                const prompt = `Here is the current code structure for analysis:\n\n\`\`\`mermaid\n${mermaid}\n\`\`\``;
+                
+                // 1. Switch sidebar focus to Chat
+                vscode.commands.executeCommand('lollms-vs-coder.showChatTab');
+
                 if (ChatPanel.currentPanel) {
+                    // 2a. Add to existing chat
                     ChatPanel.currentPanel.addMessageToDiscussion({
                         role: 'user',
-                        content: `Here is the code structure:\n\`\`\`mermaid\n${mermaid}\n\`\`\``
+                        content: prompt
                     });
-                    
-                    // Reveal the chat panel so the user sees the added graph immediately
                     ChatPanel.currentPanel._panel.reveal();
-                    
-                    vscode.window.showInformationMessage("Graph added to chat.");
+                    vscode.window.showInformationMessage("Architecture graph added to active chat.");
                 } else {
-                    vscode.window.showErrorMessage("No active chat to add graph to.");
+                    // 2b. Create new chat and inject content
+                    // We use the existing command that handles creation and initial prompt injection
+                    vscode.commands.executeCommand('lollms-vs-coder.newDiscussionFromClipboard', prompt);
+                    vscode.window.showInformationMessage("Starting new discussion with architecture graph.");
                 }
             }
 
@@ -158,8 +172,14 @@ export class CodeExplorerPanel {
     }
 
     private update() {
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         this.panel.webview.postMessage({
             command: 'graph',
+            config: {
+                zoomSensitivity: config.get('graph.zoomSensitivity', 0.5),
+                panningEnabled: config.get('graph.panningEnabled', true),
+                zoomToCursor: config.get('graph.zoomToCursor', true)
+            },
             graph: this.graphManager.getGraphData(),
             state: this.graphManager.getBuildState(),
             lastError: this.graphManager.getLastError(),
@@ -253,11 +273,19 @@ export class CodeExplorerPanel {
         gap: 10px;
     }
     .spinner {
-        width: 20px; height: 20px;
-        border: 2px solid white;
+        width: 40px; height: 40px;
+        border: 4px solid var(--vscode-button-background);
         border-top-color: transparent;
         border-radius: 50%;
-        animation: spin 1s linear infinite;
+        animation: spin 1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+        box-shadow: 0 0 15px var(--vscode-button-background);
+    }
+    #loading span {
+        font-weight: 600;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        font-size: 11px;
+        margin-top: 15px;
     }
     @keyframes spin { 100% { transform: rotate(360deg); } }
     

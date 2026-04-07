@@ -330,7 +330,11 @@ export async function activate(context: vscode.ExtensionContext) {
             vscode.commands.executeCommand('setContext', 'lollms:hasWorkspace', false);
             return;
         }
+        
+        // Critical: Set context and sync graph manager root before anything else
         vscode.commands.executeCommand('setContext', 'lollms:hasWorkspace', true);
+        codeGraphManager.setWorkspaceRoot(folders[0].uri);
+
         const initial = activeWorkspaceFolder 
             ? (folders.find(f => f.uri.toString() === activeWorkspaceFolder!.uri.toString()) || folders[0]) 
             : folders[0];

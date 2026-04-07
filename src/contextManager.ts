@@ -1963,20 +1963,18 @@ ${cumulativeBrain || "No observations yet."}
         }
     }
     result.text = `# 📂 PROJECT: ${path.basename(workspaceFolder.uri.fsPath)}\n`;
-    result.text += `**Sandbox Protocol:** You are restricted to this project folder. Use ONLY relative paths (e.g., \`src/main.ts\`) for all file operations.\n`;
+    result.text += `**Sandbox Protocol:** You are restricted to this project folder. Use ONLY relative paths for all file operations.\n`;
     result.text += `**Active Context:** ${includedFiles.length} Files | ${allSkillIds.length} Skills\n\n`;
 
     if (result.skillsContent) {
-        result.text += `## Active Skills & Protocols\n${result.skillsContent}---\n\n`;
+        result.text += `## 🎓 ACTIVE SKILLS\n${result.skillsContent}---\n\n`;
     }
 
     if (result.projectTree) {
         result.text += `${result.projectTree}\n`;
     }
     if (result.selectedFilesContent) {
-        result.text += `## File Contents\n\n${result.selectedFilesContent}`;
-    } else {
-        result.text += '## File Contents\n\n**No files are currently included in the context.**\n\n';
+        result.text += result.selectedFilesContent;
     }
 
     this._lastContext = result;
@@ -2096,7 +2094,7 @@ Based on the objective and the file tree, which files are the most relevant? Ret
     // Enhanced Performance: Crawl files in larger batches but yield strictly
     for (let i = 0; i < effectiveFiles.length; i++) {
         if (i % 50 === 0) {
-            await new Promise(resolve => setTimeout(resolve, 2)); // Frequent yields keep host responsive
+            await new Promise(resolve => setTimeout(resolve, 2)); 
             if (onProgress) {
                 const pct = Math.round((i / effectiveFiles.length) * 100);
                 onProgress(pct);
@@ -2104,13 +2102,27 @@ Based on the objective and the file tree, which files are the most relevant? Ret
         }
         
         const filePath = effectiveFiles[i];
-        // Skip absolute paths (Windows drive or root slash) to keep the project tree clean
         if (filePath.includes(':') || filePath.startsWith('/') || filePath.startsWith('\\')) {
             continue;
         }
+
         const parts = filePath.split(path.sep).filter(part => part.length > 0);
-        let current = fileTree;
         
+        // --- PRUNING LOGIC: Skip children of collapsed folders ---
+        let isCollapsedByParent = false;
+        let currentPathAcc = "";
+        for (let j = 0; j < parts.length - 1; j++) {
+            currentPathAcc = currentPathAcc ? path.join(currentPathAcc, parts[j]) : parts[j];
+            const parentUri = vscode.Uri.joinPath(workspaceFolder.uri, currentPathAcc);
+            if (this.contextStateProvider?.getStateForUri(parentUri) === 'collapsed') {
+                isCollapsedByParent = true;
+                break;
+            }
+        }
+        if (isCollapsedByParent) continue;
+        // ---------------------------------------------------------
+
+        let current = fileTree;
         parts.forEach((part, index) => {
             if (!current[part]) {
                 current[part] = index === parts.length - 1 ? null : {};
@@ -2137,9 +2149,10 @@ Based on the objective and the file tree, which files are the most relevant? Ret
         
         let displayKey = key;
         const fullPath = currentPath ? path.join(currentPath, key) : key;
+        const isDirectory = obj[key] !== null;
         
         let isCollapsed = false;
-        if (this.contextStateProvider && workspaceFolder) {
+        if (this.contextStateProvider && workspaceFolder && isDirectory) {
             const uri = vscode.Uri.joinPath(workspaceFolder.uri, fullPath);
             const state = this.contextStateProvider.getStateForUri(uri);
             if (state === 'collapsed') {
@@ -2148,12 +2161,14 @@ Based on the objective and the file tree, which files are the most relevant? Ret
         }
 
         if (isCollapsed) {
-             displayKey += ' (Content Hidden)';
+             // Stop here for this branch
+             result += prefix + connector + displayKey + '/ (Collapsed)\n';
+             return; 
         }
         
-        result += prefix + connector + displayKey + '\n';
+        result += prefix + connector + displayKey + (isDirectory ? '/' : '') + '\n';
 
-        if (obj[key] !== null) {
+        if (isDirectory) {
           const newPrefix = prefix + (isLastItem ? '    ' : '│   ');
           result += generateTreeString(obj[key], newPrefix, isLastItem, fullPath);
         }

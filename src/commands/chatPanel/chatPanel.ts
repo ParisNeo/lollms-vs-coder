@@ -1201,11 +1201,9 @@ ${systemPrompt}
 ## 🌳 PROJECT STRUCTURE
 ${context.tree || 'No tree provided.'}
 
-## 📄 FILE CONTENTS
-${context.files || 'No files selected.'}
+${context.files || '## 📄 FILE CONTENTS\nNo files selected.'}
 
-## 🎓 ACTIVE SKILLS
-${context.skills || 'No specialized skills active.'}
+${context.skills ? `## 🎓 ACTIVE SKILLS\n${context.skills}` : ''}
 
 ---
 

@@ -78,9 +78,15 @@ export class CodeGraphManager {
         // Cancel any existing operation
         this.cancel();
 
+        // JIT Resolution: If root is not set, try to grab it from current VS Code state
         if (!this.workspaceRoot) {
-            this.fail('Workspace root not defined');
-            return;
+            const folders = vscode.workspace.workspaceFolders;
+            if (folders && folders.length > 0) {
+                this.workspaceRoot = folders[0].uri;
+            } else {
+                this.fail('Workspace root not defined. Please open a project folder.');
+                return;
+            }
         }
 
         this.buildState = 'building';

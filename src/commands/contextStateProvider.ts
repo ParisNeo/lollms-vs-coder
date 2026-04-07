@@ -390,9 +390,28 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const exceptions = config.get<string[]>('contextFileExceptions') || [];
         
-        // 1. Build a combined exclusion pattern for findFiles
-        // We add node_modules and .git explicitly as safety
-        const excludePattern = `{${exceptions.join(',')},**/node_modules/**,**/.git/**}`;
+        // 1. Build a robust combined exclusion pattern for native findFiles
+        // We exclude hidden folders, environment folders, and common build artifacts
+        const standardExcludes = [
+            '**/.*/**',           // Any hidden folder/file (.git, .vscode, .idea, etc.)
+            '**/node_modules/**',
+            '**/__pycache__/**',
+            '**/venv/**',
+            '**/.venv/**',
+            '**/env/**',
+            '**/dist/**',
+            '**/build/**',
+            '**/out/**',
+            '**/target/**',
+            '**/*.pyc',
+            '**/*.exe',
+            '**/*.dll',
+            '**/*.obj'
+        ];
+
+        // Combine user-defined exceptions with our robust defaults
+        const combinedExcludes = Array.from(new Set([...exceptions, ...standardExcludes]));
+        const excludePattern = `{${combinedExcludes.join(',')}}`;
 
         // 2. Use VS Code's native C++ multi-threaded file finder
         // This is significantly faster than manual recursion.

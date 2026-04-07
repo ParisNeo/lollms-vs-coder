@@ -91,6 +91,9 @@ export class SettingsPanel {
     agentScreenCapture: false,
     agentWebTesting: false,
     agentUseRLM: false,
+    graphZoomSensitivity: 0.5,
+    graphPanningEnabled: true,
+    graphZoomToCursor: true,
     distillWebResults: true,
     antiPromptInjection: true,
     searchInCacheFirst: true,
@@ -213,6 +216,9 @@ export class SettingsPanel {
     this._pendingConfig.agentScreenCapture = agentPerms.screenCapture === true;
     this._pendingConfig.agentWebTesting = agentPerms.webTesting === true;
     this._pendingConfig.agentUseRLM = config.get<boolean>('agent.useRLM') || false;
+    this._pendingConfig.graphZoomSensitivity = config.get<number>('graph.zoomSensitivity') || 0.5;
+    this._pendingConfig.graphPanningEnabled = config.get<boolean>('graph.panningEnabled') ?? true;
+    this._pendingConfig.graphZoomToCursor = config.get<boolean>('graph.zoomToCursor') ?? true;
     this._pendingConfig.distillWebResults = config.get<boolean>('distillWebResults') ?? true;
     this._pendingConfig.antiPromptInjection = config.get<boolean>('antiPromptInjection') ?? true;
     this._pendingConfig.searchInCacheFirst = config.get<boolean>('searchInCacheFirst') ?? true;
@@ -884,6 +890,7 @@ personalities: this._personalityManager.getPersonalities()
               <button class="tab-link" onclick="openTab(event, 'TabRemote')">📡 Remote</button>
               <button class="tab-link" onclick="openTab(event, 'TabGit')">🐙 Git</button>
               <button class="tab-link" onclick="openTab(event, 'TabPersonas')">🎭 Personas</button>
+              <button class="tab-link" onclick="openTab(event, 'TabUi')">🎨 UI & Graph</button>
               <button class="tab-link" onclick="openTab(event, 'TabLog')">📋 Log</button>
             </div>
 
@@ -1136,11 +1143,21 @@ personalities: this._personalityManager.getPersonalities()
                 <div class="mcp-example">"memory": "python -m mcp_server_memory"</div>
               </div>
 
-              <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-top: 15px;">
-                <label for="mcpServers" style="margin:0;">MCP Servers (JSON)</label>
-                <button id="formatMcpBtn" class="secondary-button" style="margin:0; padding: 4px 8px;">Prettify JSON</button>
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 24px; border-top: 1px solid var(--primary-accent); padding-top: 15px;">
+                <h3 style="margin:0; border:none; padding:0;">🔌 MCP Servers</h3>
+                <button id="addMcpBtn" class="secondary-button"><i class="codicon codicon-add"></i> Add Server</button>
               </div>
-              <textarea id="mcpServers" rows="8" placeholder='{"server-name": "command arg1 arg2"}' style="font-family: monospace; margin-top: 5px;">${mcpServers}</textarea>
+              <p class="help-text">Connect to external tools using the Model Context Protocol (MCP). Agents can use these for web search, memory, or file system access.</p>
+              
+              <div id="mcp-servers-list" style="margin-top: 10px; display: flex; flex-direction: column; gap: 8px;">
+                  <!-- MCP Rows injected here -->
+              </div>
+
+              <!-- Hidden Raw Access for Debug -->
+              <details style="margin-top: 15px; opacity: 0.6;">
+                  <summary style="font-size: 11px; cursor: pointer;">Advanced: Raw MCP Config (JSON)</summary>
+                  <textarea id="mcpServers" rows="4" style="font-family: monospace; font-size: 11px; margin-top: 5px;">${mcpServers}</textarea>
+              </details>
             </div>
 
             <!-- TabRemote (NEW) -->
@@ -1260,6 +1277,26 @@ personalities: this._personalityManager.getPersonalities()
               <textarea id="userInfoCodingStyle" rows="3">${userInfoCodingStyle}</textarea>
             </div>
 
+            <!-- TabUi -->
+            <div id="TabUi" class="tab-content">
+                <h2>User Interface & Graphs</h2>
+                
+                <h3>Architecture Graph</h3>
+                <label for="graphZoomSensitivity">Zoom Sensitivity</label>
+                <input type="number" id="graphZoomSensitivity" step="0.1" min="0.1" max="2.0">
+                <p class="help-text">Default is 0.5. Increase for faster zooming.</p>
+
+                <div class="checkbox-container">
+                    <input type="checkbox" id="graphPanningEnabled">
+                    <label for="graphPanningEnabled">Enable Panning (Drag to move)</label>
+                </div>
+
+                <div class="checkbox-container">
+                    <input type="checkbox" id="graphZoomToCursor">
+                    <label for="graphZoomToCursor">Zoom Toward Mouse Cursor</label>
+                </div>
+            </div>
+
             <!-- TabLog -->
             <div id="TabLog" class="tab-content">
               <h2>Log</h2>
@@ -1342,6 +1379,55 @@ personalities: this._personalityManager.getPersonalities()
                 });
             };
 
+            function renderMcpServers() {
+                const container = document.getElementById('mcp-servers-list');
+                const rawInput = document.getElementById('mcpServers');
+                if (!container || !rawInput) return;
+
+                let mcpData = {};
+                try { mcpData = JSON.parse(rawInput.value || '{}'); } catch(e) {}
+
+                container.innerHTML = '';
+                Object.entries(mcpData).forEach(([name, command]) => {
+                    const row = document.createElement('div');
+                    row.className = 'participant-row';
+                    row.innerHTML = \`
+                        <div style="flex:1; min-width:0;">
+                            <div style="font-weight:bold; font-size:12px;">\${name}</div>
+                            <div style="font-size:10px; opacity:0.7; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">\${command}</div>
+                        </div>
+                        <button class="icon-btn remove-mcp-btn" data-name="${name}" style="color:var(--error-color)"><i class="codicon codicon-trash"></i></button>
+                    \`;
+                    container.appendChild(row);
+                });
+
+                container.querySelectorAll('.remove-mcp-btn').forEach(btn => {
+                    btn.onclick = () => {
+                        const name = btn.dataset.name;
+                        delete mcpData[name];
+                        rawInput.value = JSON.stringify(mcpData, null, 2);
+                        postTempUpdate('mcpServers', rawInput.value);
+                        renderMcpServers();
+                    };
+                });
+            }
+
+            document.getElementById('addMcpBtn').onclick = () => {
+                const name = prompt("Enter a unique name for the MCP server:");
+                if (!name) return;
+                const cmd = prompt("Enter the full execution command (e.g. 'npx -y @modelcontextprotocol/server-filesystem /path'):");
+                if (!cmd) return;
+
+                const rawInput = document.getElementById('mcpServers');
+                let mcpData = {};
+                try { mcpData = JSON.parse(rawInput.value || '{}'); } catch(e) {}
+                mcpData[name] = cmd;
+                
+                rawInput.value = JSON.stringify(mcpData, null, 2);
+                postTempUpdate('mcpServers', rawInput.value);
+                renderMcpServers();
+            };
+
             function renderConnectionProfiles() {
                 const select = document.getElementById('connectionProfileSelect');
                 if (!select) return;
@@ -1413,6 +1499,7 @@ personalities: this._personalityManager.getPersonalities()
 
                 renderProfiles();
                 renderConnectionProfiles();
+                renderMcpServers();
                 updatePersonaSelects();
                 refreshModelsList(false);
             }

@@ -250,6 +250,12 @@ export class GitDashboardPanel {
                         const message = await this._git.generateCommitMessage(folder);
                         this._panel.webview.postMessage({ command: 'setMessage', message });
                         break;
+                    case 'copyToClipboard':
+                        if (msg.text) {
+                            await vscode.env.clipboard.writeText(msg.text);
+                            vscode.window.showInformationMessage(`Copied to clipboard: ${msg.text.substring(0, 7)}`);
+                        }
+                        break;
                     case 'openGitManager':
                         vscode.commands.executeCommand('lollms-vs-coder.gitManager');
                         break;

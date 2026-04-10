@@ -1,0 +1,35 @@
+---
+name: coding-best-practices
+description: >
+  No description provided.
+author: Lollms User
+version: 1.0.0
+category: general
+created: 2026-04-09
+---
+
+# Professional Coding Standards
+
+## The Clean Code Manifesto
+- **Meaningful Names**: Variables and functions should reveal intent without comments.
+- **Functions**: Small, single-purpose, and limited arguments (prefer < 3).
+- **Comments**: Code should be self-documenting. Use comments only to explain the "why", not the "how".
+
+## SOLID Principles
+- **S**: Single Responsibility Principle.
+- **O**: Open/Closed Principle (Open for extension, closed for modification).
+- **L**: Liskov Substitution Principle.
+- **I**: Interface Segregation Principle.
+- **D**: Dependency Inversion Principle (Depend on abstractions, not concretions).
+
+## Design Patterns & Mantras
+- **DRY**: Don't Repeat Yourself (Abstract common logic).
+- **KISS**: Keep It Simple, Stupid.
+- **YAGNI**: You Ain't Gonna Need It (Avoid premature abstraction).
+- **Boy Scout Rule**: Leave the code cleaner than you found it.
+
+## Testing & Quality
+1. **TDD (Test Driven Development)**: Red -> Green -> Refactor cycle.
+2. **Unit vs Integration**: Unit tests isolate logic; Integration tests verify parts work together.
+3. **Refactoring**: Regularly improve internal structure without changing external behavior.
+4. **Code Reviews**: Look for readability, edge cases, and architectural alignment.

@@ -163,6 +163,7 @@ export class HelpPanel {
             <div class="nav-group open">
                 <div class="nav-group-header" onclick="toggleGroup(this)">Fundamentals <i class="codicon codicon-chevron-right chevron"></i></div>
                 <div class="nav-group-content">
+                    <div class="nav-item" onclick="showSection('hud')"><i class="codicon codicon-symbol-method"></i> Surgical HUD</div>
                     <div class="nav-item" onclick="showSection('context')"><i class="codicon codicon-layers"></i> Smart Context</div>
                     <div class="nav-item" onclick="showSection('graph')"><i class="codicon codicon-graph"></i> Code Graph</div>
                     <div class="nav-item" onclick="showSection('profiles')"><i class="codicon codicon-settings-gear"></i> Response Styles</div>
@@ -307,6 +308,38 @@ export class HelpPanel {
                 <strong>Example Query:</strong><br>
                 <code>auth service -test ext:ts</code>
                 <p style="margin-top:5px; font-size: 0.9em; opacity: 0.8;">This finds TypeScript files containing "auth" and "service", but excludes any file containing "test".</p>
+            </div>
+        </section>
+
+        <!-- SURGICAL HUD -->
+        <section id="hud">
+            <h1>✨ Surgical HUD (Fast-Path Intelligence)</h1>
+            <p>The Surgical HUD provides immediate, symbol-level intelligence directly in your editor. It is designed for "Small-Step" engineering where you need to verify logic without the overhead of a full chat session.</p>
+            
+            <div class="card">
+                <h3>How to trigger</h3>
+                <p>Look for the <strong>✨ Lollms HUD: Analyze [Name]</strong> text appearing above your class, interface, or function definitions (CodeLens).</p>
+                <div class="tip">
+                    <strong>Visibility Tip:</strong> If you don't see the HUD, ensure your file has no syntax errors and that you've hovered your cursor over the function name for a second. It requires VS Code to index the file's symbols.
+                </div>
+                <ul>
+                    <li><strong>Architectural Audit</strong>: Checks if the function violates your Project DNA.</li>
+                    <li><strong>Bug Pre-check</strong>: Scans for common logical pitfalls in the specific symbol.</li>
+                    <li><strong>Surgical Improvement</strong>: Suggests one immediate refactor for the code.</li>
+                </ul>
+            </div>
+
+            <h2>🚀 Handover: Promote to Discussion</h2>
+            <p>If an HUD insight reveals a deeper problem that requires multi-file planning or an autonomous worker, click <strong>Promote to Discussion</strong>.</p>
+            <p>Lollms will automatically:</p>
+            <ol>
+                <li>Open a new discussion in the sidebar.</li>
+                <li>Inject the symbol's code and the initial HUD findings as the starting context.</li>
+                <li>Allow the **Lead Architect** to take over for a full-scale mission.</li>
+            </ol>
+            
+            <div class="tip">
+                <strong>Why use the HUD?</strong> It consumes significantly fewer tokens and provides faster responses than a full chat, making it ideal for checking dependencies as you type.
             </div>
         </section>
 

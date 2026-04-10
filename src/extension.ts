@@ -180,7 +180,12 @@ export async function activate(context: vscode.ExtensionContext) {
             vscode.window.showErrorMessage('Code Graph Manager not initialized.');
         }
     });
-    context.subscriptions.push(showCodeGraphPanelCommand);    
+    context.subscriptions.push(showCodeGraphPanelCommand);
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.findInGraph', (params: { label: string, type: string }) => {
+        CodeExplorerPanel.createOrShow(context.extensionUri, services.codeGraphManager);
+        CodeExplorerPanel.currentPanel?.focusSymbol(params.label, params.type);
+    }));
 
     // View Knowledge Command (for RLM entries)
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.viewKnowledge', (title, content) => {
@@ -219,6 +224,7 @@ export async function activate(context: vscode.ExtensionContext) {
         Logger.error("Failed to register CodeActionProvider", e);
     }
 
+    // HUD Logic moved to Hover Provider in SelectionDecorator
     context.subscriptions.push(new SelectionDecorator(context.extensionUri));
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ scheme: 'file' }, new DebugCodeLensProvider(debugErrorManager)));
     context.subscriptions.push(vscode.languages.registerCodeLensProvider({ pattern: '**' }, inlineDiffProvider));

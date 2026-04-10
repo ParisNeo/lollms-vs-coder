@@ -596,7 +596,7 @@ function createToggleBadge(
     span.className = `mode-badge ${activeClass} ${isActive ? 'active' : 'inactive'} clickable`;
     
     if (isActive && onExecute) {
-        span.title = `${text}: Click checkmark to Deactivate.\nClick badge to Execute with current input.`;
+        span.title = `${text}: Click to Deactivate.\nRight-click to Execute immediately.`;
     } else {
         span.title = isActive ? `${text} Mode Active (Click to disable)` : `${text} Mode Inactive (Click to enable)`;
     }
@@ -604,23 +604,35 @@ function createToggleBadge(
     const toggle = document.createElement('span');
     toggle.className = `badge-toggle-btn codicon ${isActive ? 'codicon-pass-filled' : 'codicon-circle-large-outline'}`;
     
-    const label = document.createElement('span');
-    label.className = 'badge-label';
-    label.textContent = text;
-    
     toggle.onclick = (e) => {
         e.stopPropagation();
         onToggle();
     };
 
+    // Standard Left Click: Always Toggle
     span.onclick = (e) => {
         e.stopPropagation();
-        if (isActive && onExecute) {
-            onExecute();
-        } else {
-            onToggle();
-        }
+        onToggle();
     };
+
+    // Right Click: Execute Shortcut (if available)
+    if (onExecute) {
+        span.oncontextmenu = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (isActive) {
+                onExecute();
+            } else {
+                // If inactive, activate AND execute
+                onToggle();
+                setTimeout(onExecute, 50);
+            }
+        };
+    }
+
+    const label = document.createElement('span');
+    label.className = 'badge-label';
+    label.textContent = text;
 
     span.appendChild(toggle);
     span.appendChild(label);
@@ -927,7 +939,7 @@ export function updateBadges() {
                 
                 // REFRESH VOICES
                 if (typeof (window as any).refreshVoiceList === 'function') {
-                    (window as any).refreshVoiceList();
+          (window as any).refreshVoiceList();
                 }
             }
             menu.classList.remove('visible');
@@ -975,7 +987,7 @@ export function updateBadges() {
         thinkingGroup.appendChild(thinkBadge);
     }
 
-    if (guiState.debugBadge || caps.herdMode) {
+      if (guiState.debugBadge || caps.herdMode) {
         const taskGroup = document.createElement('div');
         taskGroup.className = 'badge-group';
         taskGroup.innerHTML = '<span class="badge-group-label">Task</span>';
@@ -1025,7 +1037,7 @@ export function updateBadges() {
         if (herdBadge) taskGroup.appendChild(herdBadge);
     }
 
-    // --- THEME: KNOWLEDGE & RESEARCH ---
+    // --- THEME: KNOWLEDGE & RESEARCH    
     if (guiState.autoContextBadge || guiState.autoSkillBadge !== false || guiState.webSearchBadge !== false) {
         const knowledgeGroup = document.createElement('div');
         knowledgeGroup.className = 'badge-group';
@@ -1047,9 +1059,10 @@ export function updateBadges() {
         if (memBadge) knowledgeGroup.appendChild(memBadge);
 
         const ctxBadge = createToggleBadge(
-            'autocontext', 
-            guiState.autoContextBadge, 
-            caps.autoContextMode, 
+            '🧠 Librarian',
+            'autocontext',
+            guiState.autoContextBadge,
+            caps.autoContextMode,
             () => {
                 vscode.postMessage({ command: 'toggleAutoContext', enabled: !caps.autoContextMode });
             },
@@ -1437,7 +1450,6 @@ export function renderFileSearchTree(container: HTMLElement, files: string[]) {
     container.innerHTML = '';
     renderNode(root, container);
 }
-
 /**
  * Filters the skills tree based on a search query.
  */

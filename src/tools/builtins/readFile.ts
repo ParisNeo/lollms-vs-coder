@@ -21,18 +21,27 @@ export const readFileTool: ToolDefinition = {
         let filePath = params.path.trim();
         if (filePath.startsWith('/') || filePath.startsWith('\\')) filePath = filePath.substring(1);
 
-        try {
-            const fileUri = vscode.Uri.joinPath(env.workspaceRoot.uri, filePath);
-            const fileContent = await vscode.workspace.fs.readFile(fileUri);
-            
-            // Auto-add the read file to the global context so the Architect and other agents have permanent access to it
-            if (env.contextManager.getContextStateProvider()) {
-                await env.contextManager.getContextStateProvider()!.addFilesToContext([filePath]);
-            }
+        const fileUri = vscode.Uri.joinPath(env.workspaceRoot.uri, filePath);
+        let retries = 3;
+        let lastError = "";
 
-            return { success: true, output: Buffer.from(fileContent).toString('utf8') };
-        } catch (error: any) {
-            return { success: false, output: `Error reading file ${filePath}: ${error.message}` };
+        while (retries > 0) {
+            try {
+                const fileContent = await vscode.workspace.fs.readFile(fileUri);
+                
+                if (env.contextManager.getContextStateProvider()) {
+                    await env.contextManager.getContextStateProvider()!.addFilesToContext([filePath]);
+                }
+
+                return { success: true, output: Buffer.from(fileContent).toString('utf8') };
+            } catch (error: any) {
+                lastError = error.message;
+                retries--;
+                if (retries > 0) {
+                    await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1s for FS
+                }
+            }
         }
+        return { success: false, output: `Error reading file ${filePath} after retries: ${lastError}` };
     }
 };

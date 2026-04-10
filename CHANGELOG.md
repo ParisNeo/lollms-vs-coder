@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-04-10 01:04]
+
+- feat: enhance code graph analysis and agent message handling
+
 ## [2026-04-07 10:07]
 
 - feat: enhance context management and chat panel with improved system prompts

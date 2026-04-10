@@ -143,7 +143,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 if (countEl && message.count) countEl.textContent = message.count;
                 break;
             case 'updateContext':
-                updateContext(message.context, message.files, message.skills, message.diagrams);
+                updateContext(message.context, message.files, message.skills, message.diagrams, message.briefing);
                 break;
             case 'displayPlan':
                 displayPlan(message.plan);
@@ -817,7 +817,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             }
                         } else {
                             // Full block applied successfully
-                            const mainApplyBtn = blockEl.querySelector('.code-actions .apply-btn');
+                            const mainApplyBtn = document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`);
                             if (mainApplyBtn) {
                                 mainApplyBtn.classList.add('applied');
                                 mainApplyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
@@ -836,7 +836,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
                     } else if (blockEl && !message.success) {
                         // FAILURE CASE: Restore the button so the user can try again
-                        const mainApplyBtn = blockEl.querySelector('.code-actions .apply-btn') as HTMLButtonElement;
+                        const mainApplyBtn = document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`) as HTMLButtonElement;
                         if (mainApplyBtn && mainApplyBtn.dataset.originalHtml) {
                             mainApplyBtn.disabled = false;
                             mainApplyBtn.innerHTML = mainApplyBtn.dataset.originalHtml;
@@ -860,13 +860,17 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     
                     if (row && message.success) {
                         const iconEl = row.querySelector('.status-icon');
-                        row.style.background = 'rgba(15, 157, 88, 0.1)'; 
                         
                         if (message.alreadyApplied) {
-                            row.style.opacity = '0.6';
-                            if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)" title="Already matches file on disk"></span>';
+                            // Indicate it's already done but keep it green
+                            row.style.background = 'rgba(15, 157, 88, 0.05)'; 
+                            row.style.opacity = '0.7';
+                            if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-check-all" style="color:var(--vscode-charts-green)" title="Already applied to disk"></span>';
                         } else {
-                            if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span>';
+                            // Fresh apply
+                            row.style.background = 'rgba(15, 157, 88, 0.15)'; 
+                            row.style.opacity = '1';
+                            if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)" title="Applied successfully"></span>';
                         }
                     } else if (row) {
                         row.style.background = 'rgba(244, 71, 71, 0.15)'; // Error tint
@@ -917,7 +921,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const resultsList = row?.closest('.apply-results-list');
                     if (resultsList) {
                         const stillPending = resultsList.querySelectorAll('.spinner').length;
-                        if (stillPending === 0) {
+                        const autoRepairing = resultsList.querySelectorAll('.retry-row-btn:disabled').length;
+                        
+                        // Only finalize the header if no background tasks are running for this block
+                        if (stillPending === 0 && autoRepairing === 0) {
                             const btnContainer = resultsList.previousElementSibling;
                             const mainBtn = btnContainer?.querySelector('.apply-all-btn:not(.secondary-btn)') as HTMLButtonElement;
                             
@@ -927,15 +934,15 @@ export async function handleExtensionMessage(event: MessageEvent) {
                                 
                                 const failedCount = resultsList.querySelectorAll('.codicon-error').length;
                                 if (failedCount === 0) {
-                                    const autoRepairing = resultsList.querySelectorAll('.retry-row-btn:disabled').length;
-                                    if (autoRepairing === 0) {
-                                        mainBtn.innerHTML = '<span class="codicon codicon-check"></span> All Modifications Applied';
-                                        mainBtn.classList.add('applied');
-                                        mainBtn.disabled = true;
-                                    }
+                                    // SUCCESS: No more errors! Flip to Green.
+                                    mainBtn.innerHTML = '<span class="codicon codicon-check"></span> All Modifications Applied';
+                                    mainBtn.classList.add('applied');
+                                    mainBtn.style.removeProperty('background-color');
+                                    mainBtn.disabled = true;
                                 } else {
+                                    // STILL FAILED: Update count in orange bar
                                     mainBtn.innerHTML = `<span class="codicon codicon-warning"></span> Retry Failed (${failedCount})`;
-                                    mainBtn.style.setProperty('background-color', 'var(--vscode-charts-red)', 'important');
+                                    mainBtn.style.setProperty('background-color', 'var(--vscode-charts-orange)', 'important');
                                     mainBtn.disabled = false;
                                 }
                             }

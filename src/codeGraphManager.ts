@@ -244,15 +244,33 @@ export class CodeGraphManager {
                                     // Capture full Python method signature
                                     methodMatch = line.match(/^\s+def\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*->\s*([^:]+))?\s*:/);
                                     if (methodMatch) {
-                                        const sig = `${methodMatch[1]}(${methodMatch[2].trim()}) -> ${methodMatch[3]?.trim() || 'None'}`;
-                                        currentClass.methods?.push(sig);
+                                        const methodName = methodMatch[1];
+                                        const methodNodeId = `method_${nodeId++}`;
+                                        nodes.push({
+                                            id: methodNodeId,
+                                            label: methodName,
+                                            type: 'method',
+                                            filePath: relativePath,
+                                            startLine: index,
+                                            signature: `${methodName}(${methodMatch[2].trim()}) -> ${methodMatch[3]?.trim() || 'None'}`
+                                        });
+                                        edges.push({ id: `edge_${edgeId++}`, source: currentClass.id, target: methodNodeId, label: 'contains' });
                                     }
                                 } else {
                                     // Capture TS/JS method signature
                                     methodMatch = line.match(/(?:public|private|protected|static|async|\s)*\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)(?:\s*:\s*([^\{]+))?/);
                                     if (methodMatch && !['if', 'for', 'while', 'switch', 'catch', 'constructor'].includes(methodMatch[1])) {
-                                        const sig = `${methodMatch[1]}(${methodMatch[2].trim()}) : ${methodMatch[3]?.trim() || 'any'}`;
-                                        currentClass.methods?.push(sig);
+                                        const methodName = methodMatch[1];
+                                        const methodNodeId = `method_${nodeId++}`;
+                                        nodes.push({
+                                            id: methodNodeId,
+                                            label: methodName,
+                                            type: 'method',
+                                            filePath: relativePath,
+                                            startLine: index,
+                                            signature: `${methodName}(${methodMatch[2].trim()}) : ${methodMatch[3]?.trim() || 'any'}`
+                                        });
+                                        edges.push({ id: `edge_${edgeId++}`, source: currentClass.id, target: methodNodeId, label: 'contains' });
                                     }
                                 }
 
@@ -449,8 +467,16 @@ export class CodeGraphManager {
         const imports: string[] = [];
         if (['ts', 'js', 'tsx', 'jsx'].includes(ext)) {
             let match;
-            const esImportRegex = /import\s+(?:[\w\s{},*]+from\s+)?['"]([^'"]+)['"]/g;
-            while ((match = esImportRegex.exec(text)) !== null) imports.push(match[1]);
+            // Enhanced Regex: Handles standard imports, 'import type', and 'export ... from'
+            const esImportRegex = /(?:import|export)\s+(?:type\s+)?(?:[\w\s{},*]+from\s+)?['"]([^'"]+)['"]/g;
+            while ((match = esImportRegex.exec(text)) !== null) {
+                imports.push(match[1]);
+            }
+            // Dynamic imports: import('./path')
+            const dynamicImportRegex = /import\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
+            while ((match = dynamicImportRegex.exec(text)) !== null) {
+                imports.push(match[1]);
+            }
             const requireRegex = /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
             while ((match = requireRegex.exec(text)) !== null) imports.push(match[1]);
         } else if (ext === 'py') {

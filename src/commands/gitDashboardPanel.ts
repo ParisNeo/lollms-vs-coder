@@ -545,12 +545,24 @@ export class GitDashboardPanel {
         .branch-tag.head { background: var(--vscode-charts-blue); color: white; }
         .branch-tag.remote { background: var(--vscode-charts-purple); color: white; }
         
-        .badge-status {
-            width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex-shrink: 0;
+        .file-status-badge {
+            width: 18px; height: 18px; border-radius: 3px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 10px; font-weight: 800; flex-shrink: 0;
+            user-select: none;
         }
-        .badge-status.staged { background: var(--vscode-charts-green); box-shadow: 0 0 4px var(--vscode-charts-green); }
-        .badge-status.unstaged { background: var(--vscode-charts-orange); }
-        .badge-status.untracked { background: transparent; border: 1px solid var(--vscode-disabledForeground); }
+        .status-M { color: var(--vscode-gitDecoration-modifiedResourceForeground); background: rgba(230, 180, 0, 0.1); }
+        .status-A { color: var(--vscode-gitDecoration-addedResourceForeground); background: rgba(0, 200, 0, 0.1); }
+        .status-D { color: var(--vscode-gitDecoration-deletedResourceForeground); background: rgba(200, 0, 0, 0.1); }
+        .status-U { color: var(--vscode-gitDecoration-untrackedResourceForeground); background: rgba(100, 100, 100, 0.1); }
+
+        .list-row {
+            cursor: pointer;
+            transition: all 0.1s ease;
+        }
+        .list-row:active { transform: scale(0.98); }
+        
+        .bulk-actions { display: flex; gap: 4px; }
         
         .spinner { display: inline-block; animation: spin 1s linear infinite; }
         @keyframes spin { 100% { transform: rotate(360deg); } }
@@ -564,7 +576,11 @@ export class GitDashboardPanel {
             <div class="card flex-2">
                 <div class="card-header">
                     <h2><i class="codicon codicon-folder"></i> Working Tree</h2>
-                    <button class="icon-btn" onclick="post('refresh')" title="Refresh"><i class="codicon codicon-refresh"></i></button>
+                    <div class="bulk-actions">
+                        <button class="icon-btn" onclick="post('stageAll')" title="Stage All Changes"><i class="codicon codicon-checklist"></i></button>
+                        <button class="icon-btn" onclick="post('unstageAll')" title="Unstage All Changes"><i class="codicon codicon-history"></i></button>
+                        <button class="icon-btn" onclick="post('refresh')" title="Refresh"><i class="codicon codicon-refresh"></i></button>
+                    </div>
                 </div>
                 <div class="card-body" id="files">
                     <div style="opacity:0.5; padding:20px; text-align:center;"><i class="codicon codicon-sync spinner"></i> Loading files...</div>
@@ -799,7 +815,7 @@ export class GitDashboardPanel {
 
                     htmlRows += \`
                         <div class="graph-html-row" style="top: \${y}px; left: \${maxCols * charW + 10}px; height: \${charH}px;">
-                            \${hash ? \`<button class="graph-hash-btn" onclick="post('inspectCommit', {hash: '\${jsEscape(hash)}'})" title="Inspect Commit with AI">\${hash}</button>\` : ''}
+                            \${hash ? \`<button class="graph-hash-btn" onclick="post('inspectCommit', {hash: '\${jsEscape(hash)}'})" title="Inspect Commit with AI">\${hash.substring(0, 8)}</button>\` : ''}
                             <span class="graph-msg" title="\${escapeHtml(message)}">\${escapeHtml(message)}</span>
                             <span class="graph-author" title="Author: \${escapeHtml(author)}">\${escapeHtml(author)}</span>
                             <span class="graph-date">\${escapeHtml(date)}</span>
@@ -830,30 +846,51 @@ export class GitDashboardPanel {
         }
 
         function renderFiles(status) {
-            document.getElementById('files').innerHTML = [
-                ...status.staged.map(f => \`
-                    <div class="list-row">
-                        <div class="item-label" title="\${escapeHtml(f)}"><span class="badge-status staged"></span> \${escapeHtml(f)}</div>
-                        <div class="item-actions">
-                            <button class="btn btn-secondary" onclick="post('unstage',{path:'\${jsEscape(f)}'})"><i class="codicon codicon-remove"></i> Unstage</button>
-                        </div>
-                    </div>\`),
-                ...status.unstaged.map(f => \`
-                    <div class="list-row">
-                        <div class="item-label" title="\${escapeHtml(f)}"><span class="badge-status unstaged"></span> \${escapeHtml(f)}</div>
-                        <div class="item-actions">
-                            <button class="btn btn-secondary" onclick="post('stage',{path:'\${jsEscape(f)}'})"><i class="codicon codicon-add"></i> Stage</button>
-                            <button class="btn btn-danger" onclick="post('discard',{path:'\${jsEscape(f)}'})"><i class="codicon codicon-discard"></i> Discard</button>
-                        </div>
-                    </div>\`),
-                ...status.untracked.map(f => \`
-                    <div class="list-row">
-                        <div class="item-label" title="\${escapeHtml(f)}"><span class="badge-status untracked"></span> \${escapeHtml(f)}</div>
-                        <div class="item-actions">
-                            <button class="btn btn-secondary" onclick="post('stage',{path:'\${jsEscape(f)}'})"><i class="codicon codicon-add"></i> Track</button>
-                        </div>
-                    </div>\`)
-            ].join('') || '<div style="opacity:0.5; padding:20px; text-align:center;">Clean working tree ✨</div>';
+            const container = document.getElementById('files');
+            container.innerHTML = '';
+
+            const createRow = (file, type, isStaged) => {
+                const row = document.createElement('div');
+                row.className = 'list-row';
+                const statusChar = isStaged ? (type === 'untracked' ? 'A' : 'M') : (type === 'untracked' ? 'U' : 'M');
+                
+                row.innerHTML = \`
+                    <div class="item-label" title="\${escapeHtml(file)}">
+                        <div class="file-status-badge status-\${statusChar}">\${statusChar}</div>
+                        \${escapeHtml(file)}
+                    </div>
+                    <div class="item-actions">
+                        <button class="icon-btn" onclick="event.stopPropagation(); post('openFile',{path:'\${jsEscape(file)}'})" title="Open File"><i class="codicon codicon-go-to-file"></i></button>
+                        \${isStaged ? 
+                            \`<button class="icon-btn" onclick="event.stopPropagation(); post('unstage',{path:'\${jsEscape(file)}'})" title="Unstage"><i class="codicon codicon-remove"></i></button>\` :
+                            \`<button class="icon-btn" onclick="event.stopPropagation(); post('stage',{path:'\${jsEscape(file)}'})" title="Stage"><i class="codicon codicon-add"></i></button>\`
+                        }
+                        \${!isStaged ? \`<button class="icon-btn" style="color:var(--vscode-errorForeground)" onclick="event.stopPropagation(); post('discard',{path:'\${jsEscape(file)}'})" title="Discard"><i class="codicon codicon-discard"></i></button>\` : ''}
+                    </div>
+                \`;
+                row.onclick = () => post('openDiff', { path: file, isStaged });
+                return row;
+            };
+
+            const sections = [
+                { title: 'Staged Changes', files: status.staged, type: 'staged', staged: true },
+                { title: 'Changes', files: status.unstaged, type: 'unstaged', staged: false },
+                { title: 'Untracked', files: status.untracked, type: 'untracked', staged: false }
+            ];
+
+            sections.forEach(sec => {
+                if (sec.files.length > 0) {
+                    const header = document.createElement('div');
+                    header.style = 'display:flex; justify-content:space-between; align-items:center; padding: 10px 8px 4px 8px; font-size:10px; font-weight:bold; opacity:0.6; text-transform:uppercase;';
+                    header.innerHTML =\`<span>\${sec.title}</span> <span>\${sec.files.length}</span>\`;
+                    container.appendChild(header);
+                    sec.files.forEach(f => container.appendChild(createRow(f, sec.type, sec.staged)));
+                }
+            });
+
+            if (container.innerHTML === '') {
+                container.innerHTML = '<div style="opacity:0.5; padding:40px; text-align:center;"><i class="codicon codicon-check" style="font-size:30px; display:block; margin-bottom:10px;"></i>Everything is up to date.</div>';
+            }
         }
 
         function renderBranches(branches, currentBranch) {

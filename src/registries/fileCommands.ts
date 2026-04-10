@@ -136,7 +136,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                     const doc = await vscode.workspace.openTextDocument(fileUri);
                     await vscode.window.showTextDocument(doc);
                 }
-                return;
+                return { success: true, alreadyApplied: false };
             }
 
             // --- PLACEHOLDER & SIZE SAFETY CHECK ---
@@ -184,6 +184,12 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             }
 
             const document = await vscode.workspace.openTextDocument(fileUri);
+            
+            // Real-time Disk Verification: Is the content already there?
+            if (document.getText() === content) {
+                return { success: true, alreadyApplied: true };
+            }
+
             const fullRange = new vscode.Range(new vscode.Position(0, 0), document.lineAt(document.lineCount - 1).range.end);
             const edit = new vscode.WorkspaceEdit();
             edit.replace(fileUri, fullRange, content);
@@ -194,9 +200,9 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 if (!options?.silent) {
                     await openDiffView(fileUri, originalContent);
                 }
-                return { success: true };
+                return { success: true, alreadyApplied: false };
             }
-            return { success: false, error: "Failed to apply edit" };
+            return { success: false, error: "VS Code failed to apply the WorkspaceEdit. The file might be locked or read-only." };
 
         } catch (e: any) {
             Logger.error(`Error applying file content: ${e.message}`, e);
@@ -326,11 +332,18 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         const activeWorkspace = getActiveWorkspace();
         if (!activeWorkspace) return { success: false, error: "No active workspace" };
 
-        // Ensure we aren't working on a stale version of the file
         const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
-        const openDoc = vscode.workspace.textDocuments.find(d => d.uri.toString() === fileUri.toString());
-        if (openDoc && openDoc.isDirty) {
-            await openDoc.save();
+
+        // CRITICAL: Force VS Code to provide the absolute current state of the document
+        // This prevents "Apply All" from failing due to stale text buffers.
+        let document: vscode.TextDocument;
+        try {
+            document = await vscode.workspace.openTextDocument(fileUri);
+            if (document.isDirty) {
+                await document.save();
+            }
+        } catch (e) {
+            return { success: false, error: `Could not open file ${filePath}` };
         }
 
         const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
@@ -414,8 +427,11 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                         return await vscode.window.withProgress({
                             location: vscode.ProgressLocation.Notification,
                             title: `Lollms: Repairing block for ${filePath}...`,
-                            cancellable: false
-                        }, async () => {
+                            cancellable: true
+                        }, async (progress, token) => {
+                            const abortController = new AbortController();
+                            token.onCancellationRequested(() => abortController.abort());
+
                             const repairPrompt = `### 🛑 SEARCH/REPLACE FAILURE REPORT
 The following block failed to apply to \`${filePath}\`.
 
@@ -443,7 +459,9 @@ ${originalContent}
                                 const response = await panel._lollmsAPI.sendChat([
                                     { role: 'system', content: "You are a surgical code repair engine. You only output valid Aider-style Search/Replace blocks." },
                                     { role: 'user', content: repairPrompt }
-                                ]);
+                                ], null, abortController.signal);
+
+                                if (token.isCancellationRequested) return { success: false, error: "Cancelled" };
 
                                 // Robust Block Extraction
                                 let fixedBlock = "";
@@ -469,6 +487,8 @@ ${originalContent}
                                     }
 
                                     // 2. Automatically retry applying the NEW content
+                                    if (token.isCancellationRequested) return { success: false, error: "Cancelled" };
+                                    
                                     vscode.window.showInformationMessage(vscode.l10n.t("Block repaired. Retrying apply..."));
                                     return await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, fixedBlock, panel, messageId, { silent: true });
                                 } else {
@@ -488,18 +508,19 @@ ${originalContent}
             }
 
             if (applyCount > 0) {
-                // Ensure directory exists for new files
-                const parentDir = vscode.Uri.joinPath(fileUri, '..');
-                await vscode.workspace.fs.createDirectory(parentDir);
+                const wasActuallyModified = currentContent !== originalContent;
 
-                // Atomic write via FileSystem API (handles creation or overwrite)
+                const parentDir = path.dirname(filePath);
+                const parentUri = vscode.Uri.joinPath(activeWorkspace.uri, parentDir);
+                // Fix: ensure the directory creation actually happens
+                await vscode.workspace.fs.createDirectory(parentUri);
+
                 await vscode.workspace.fs.writeFile(fileUri, Buffer.from(currentContent, 'utf8'));
                 
-                if (!options?.silent) {
-                    // Open diff in background so it doesn't block the logic return
+                if (!options?.silent && wasActuallyModified) {
                     openDiffView(fileUri, originalContent).catch(() => {});
                 }
-                return { success: true };
+                return { success: true, alreadyApplied: !wasActuallyModified };
             }
             return { success: false, error: "Failed to apply edits to document." };
 
@@ -674,19 +695,55 @@ ${originalContent}
         for (const change of changes) {
             const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, change.path);
             const key = `${change.blockIndex}-${change.hunkIndex ?? 'full'}`;
+            
             try {
-                const bytes = await vscode.workspace.fs.readFile(fileUri);
-                const content = Buffer.from(bytes).toString('utf8');
+                const doc = await vscode.workspace.openTextDocument(fileUri);
+                const currentContent = doc.getText();
+                const normalizedDoc = currentContent.replace(/\s+/g, ' ').trim();
 
-                const cleanReplace = (change.content || change.replace || "").trim();
-                const cleanSearch = change.search?.trim();
+                const rawContent = change.content || "";
+                const isAider = rawContent.includes('<<<<<<< SEARCH');
 
-                if (content.includes(cleanReplace) || content.trim() === cleanReplace) {
-                    results[key] = 'applied';
-                } else if (!cleanSearch || content.includes(cleanSearch)) {
-                    results[key] = 'ready';
+                if (isAider) {
+                    const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
+                    const matches = [...rawContent.matchAll(aiderRegex)];
+                    
+                    // If verifying a specific hunk from the list
+                    if (change.hunkIndex !== undefined && matches[change.hunkIndex]) {
+                        const searchPart = matches[change.hunkIndex][1].replace(/\s+/g, ' ').trim();
+                        const replacePart = matches[change.hunkIndex][2].replace(/\s+/g, ' ').trim();
+
+                        if (normalizedDoc.includes(replacePart)) {
+                            results[key] = 'applied';
+                        } else if (normalizedDoc.includes(searchPart) || searchPart === "") {
+                            results[key] = 'ready';
+                        } else {
+                            results[key] = 'incompatible';
+                        }
+                    } else {
+                        // Verifying whole block: all hunks must be applied to be 'applied'
+                        let allApplied = true;
+                        let allReady = true;
+
+                        for (const match of matches) {
+                            const s = match[1].replace(/\s+/g, ' ').trim();
+                            const r = match[2].replace(/\s+/g, ' ').trim();
+                            if (!normalizedDoc.includes(r)) allApplied = false;
+                            if (!normalizedDoc.includes(s) && s !== "") allReady = false;
+                        }
+
+                        if (allApplied) results[key] = 'applied';
+                        else if (allReady) results[key] = 'ready';
+                        else results[key] = 'incompatible';
+                    }
                 } else {
-                    results[key] = 'incompatible';
+                    // Full file or snippet check
+                    const cleanTarget = rawContent.replace(/```\w*\n?/, '').replace(/\n?```$/, '').replace(/\s+/g, ' ').trim();
+                    if (normalizedDoc.includes(cleanTarget)) {
+                        results[key] = 'applied';
+                    } else {
+                        results[key] = 'ready'; // Snippets are usually ready to be inserted
+                    }
                 }
             } catch {
                 results[key] = 'incompatible';

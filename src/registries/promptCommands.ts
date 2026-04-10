@@ -166,6 +166,11 @@ export function registerPromptCommands(context: vscode.ExtensionContext, service
 
                     if (signal.aborted || !finalCode) return;
 
+                    // Scan response for memory tags (e.g. AI wants to remember a specific refactor rule)
+                    if (services.projectMemoryManager) {
+                        await services.projectMemoryManager.processTags(lastResponse);
+                    }
+
                     // --- CLEANUP LOGIC ---
                     let cleanText = finalCode.trim();
                     const originalDocText = editor.document.getText();

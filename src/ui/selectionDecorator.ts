@@ -72,13 +72,35 @@ export class SelectionHoverProvider implements vscode.HoverProvider {
         
         if (diag) {
             contents.appendMarkdown(`### 👑 Lollms AI\n\n`);
-            // Serialize the position as an argument to the command
             const args = encodeURIComponent(JSON.stringify([position]));
             contents.appendMarkdown(`[✨ **Fix this issue with Lollms**](command:lollms-vs-coder.fixDiagnosticAtPosition?${args})\n\n`);
             shouldShow = true;
         }
 
-        // 2. Fallback to existing selection logic if mouse is over a selection
+        // 2. Check for Symbol Definition (The New Hover HUD)
+        // We look for words that look like class/function definitions on the current line
+        const lineText = document.lineAt(position.line).text;
+        const symbolMatch = lineText.match(/(?:class|function|def)\s+([a-zA-Z0-9_]+)/);
+        const wordRange = document.getWordRangeAtPosition(position);
+        
+        if (symbolMatch && wordRange && symbolMatch[0].includes(document.getText(wordRange))) {
+            if (!shouldShow) contents.appendMarkdown(`### 👑 Lollms AI\n\n`);
+            const symbolName = symbolMatch[1];
+            // Mocking the symbol info for the existing command
+            const symbolInfo = { 
+                name: symbolName, 
+                location: { range: new vscode.Range(position.line, 0, position.line, lineText.length) } 
+            };
+            const args = encodeURIComponent(JSON.stringify([document.uri, symbolInfo]));
+            const graphArgs = encodeURIComponent(JSON.stringify([{ label: symbolName, type: symbolMatch[0].split(' ')[0] }]));
+            
+            contents.appendMarkdown(`[✨ **Lollms HUD: Analyze ${symbolName}**](command:lollms-vs-coder.triggerSurgicalInsight?${args})\n\n`);
+            contents.appendMarkdown(`[📊 **Locate in Architecture Graph**](command:lollms-vs-coder.findInGraph?${graphArgs})\n\n`);
+            
+            shouldShow = true;
+        }
+
+        // 3. Fallback to selection logic
         const editor = vscode.window.activeTextEditor;
         if (editor && !editor.selection.isEmpty && editor.selection.contains(position)) {
             if (!shouldShow) contents.appendMarkdown(`### 👑 Lollms AI\n\n`);

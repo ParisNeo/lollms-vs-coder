@@ -124,4 +124,29 @@ export class ProjectMemoryManager {
         });
         return block;
     }
+
+    /**
+     * Scans text for <project_memory> tags and performs the requested actions.
+     */
+    public async processTags(content: string): Promise<void> {
+        const memoryRegex = /<project_memory\s+([^>]*?)>([\s\S]*?)<\/project_memory>/gi;
+        let match;
+        while ((match = memoryRegex.exec(content)) !== null) {
+            const attrStr = match[1];
+            const memoryContent = match[2].trim();
+            const attrs: any = {};
+            
+            // Flexible attribute parsing (handles spaces and different quotes)
+            const attrRegex = /(\w+)\s*=\s*["']([^"']*)["']/g;
+            let m;
+            while ((m = attrRegex.exec(attrStr)) !== null) {
+                attrs[m[1]] = m[2];
+            }
+
+            const { action, id, title } = attrs;
+            if (action && id) {
+                await this.updateMemory(action as any, id, title || id, memoryContent);
+            }
+        }
+    }
 }

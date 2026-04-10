@@ -943,27 +943,29 @@ export function initEventHandlers() {
     // Delegated listener for search results in Raw Block Modal
     if (dom.rawSearchResultsMini) {
         dom.rawSearchResultsMini.addEventListener('click', (e) => {
-            const item = (e.target as HTMLElement).closest('.raw-stitch-result-item') as HTMLElement;
+            const item = (e.target as HTMLElement).closest('.mini-search-item') as HTMLElement;
             if (!item) return;
 
             const path = item.dataset.path;
             const query = item.dataset.query;
-            const fullText = dom.rawCodeDisplay.textContent || "";
             
-            // 1. Extract and Copy REPLACE block
-            const replaceMatch = fullText.match(/=======[\r\n]*([\s\S]*?)[\r\n]*>>>>>>> REPLACE/);
+            // 1. Extract and Copy REPLACE block from the Modal Display
+            const fullText = dom.rawCodeDisplay.textContent || "";
+            const replaceMatch = fullText.match(/=======[\r\n]*([\s\S]*?)[\r\n]*>>>>>>> REPLACE/s);
             if (replaceMatch) {
                 vscode.postMessage({ command: 'copyToClipboard', text: replaceMatch[1].trim() });
             }
 
-            // 2. Open and Select target
-            vscode.postMessage({
-                command:'executeLollmsCommand', 
-                details:{
-                    command:'lollms-vs-coder.openAndSelect', 
-                    params:{ path, text: query }
-                }
-            });
+            // 2. Open and Select target using the main lollms command
+            if (path && query) {
+                vscode.postMessage({
+                    command: 'executeLollmsCommand',
+                    details: {
+                        command: 'lollms-vs-coder.openAndSelect',
+                        params: { path, text: query }
+                    }
+                });
+            }
         });
     }
 

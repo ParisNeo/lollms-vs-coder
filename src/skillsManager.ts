@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as yaml from 'js-yaml';
 
 export interface Skill {
     id: string;
@@ -9,10 +10,67 @@ export interface Skill {
     language?: string;
     timestamp: number;
     category?: string;
-    scope: 'global' | 'local'; // Added scope
+    scope: 'global' | 'local';
+    author?: string;
+    version?: string;
+    tags?: string[];
+    icon?: string;
 }
 
-// --- XML Helpers ---
+// --- Markdown & YAML Helpers ---
+
+export function parseSkillMd(content: string, defaultId: string, scope: 'global' | 'local'): Skill {
+    const parts = content.split(/^---\s*$/m);
+    let frontmatter: any = {};
+    let body = content;
+    
+    if (parts.length >= 3 && content.trim().startsWith('---')) {
+        try {
+            frontmatter = yaml.load(parts[1]) || {};
+            body = parts.slice(2).join('---').trim();
+        } catch (e) {
+            console.warn("Failed to parse YAML frontmatter", e);
+        }
+    }
+    
+    let tags = frontmatter.tags || [];
+    if (typeof tags === 'string') {
+        tags = tags.split(',').map((t: string) => t.trim());
+    }
+
+    return {
+        id: frontmatter.name || defaultId,
+        name: frontmatter.name || defaultId,
+        description: frontmatter.description || '',
+        category: frontmatter.category || 'general',
+        author: frontmatter.author || '',
+        version: frontmatter.version || '1.0.0',
+        tags: tags,
+        icon: frontmatter.icon || '',
+        content: body,
+        scope: scope,
+        timestamp: frontmatter.created ? new Date(frontmatter.created).getTime() : Date.now(),
+        language: 'markdown'
+    };
+}
+
+export function skillToMd(skill: Skill): string {
+    const fm: any = {
+        name: skill.id || skill.name.toLowerCase().replace(/[^a-z0-9-]/g, '-'),
+        description: skill.description,
+        author: skill.author || 'Lollms User',
+        version: skill.version || '1.0.0',
+        category: skill.category || 'general',
+    };
+    if (skill.tags && skill.tags.length > 0) fm.tags = skill.tags;
+    if (skill.icon) fm.icon = skill.icon;
+    fm.created = new Date(skill.timestamp).toISOString().split('T')[0];
+    
+    const yamlStr = yaml.dump(fm);
+    return `---\n${yamlStr}---\n\n${skill.content}`;
+}
+
+// --- Legacy XML Helpers ---
 
 function escapeXml(unsafe: string): string {
     if (!unsafe) return '';
@@ -123,9 +181,17 @@ export class SkillsManager {
     private localSkillsDir: vscode.Uri | undefined;
     private extensionUri?: vscode.Uri;
 
+    private cachedGlobalSkills: Skill[] | null = null;
+    private cachedLocalSkills: Skill[] | null = null;
+
     constructor(globalStorageUri: vscode.Uri) {
         this.globalSkillsDir = vscode.Uri.joinPath(globalStorageUri, 'skills');
         this.initializeGlobalStorage();
+    }
+
+    public invalidateCache(scope?: 'global' | 'local') {
+        if (!scope || scope === 'global') this.cachedGlobalSkills = null;
+        if (!scope || scope === 'local') this.cachedLocalSkills = null;
     }
 
     private async initializeGlobalStorage() {
@@ -137,6 +203,7 @@ export class SkillsManager {
     public async switchWorkspace(workspaceRoot: vscode.Uri, extensionUri: vscode.Uri) {
         this.localSkillsDir = vscode.Uri.joinPath(workspaceRoot, '.lollms', 'skills');
         this.extensionUri = extensionUri;
+        this.invalidateCache('local');
         
         try {
             if (this.localSkillsDir) {
@@ -150,28 +217,46 @@ export class SkillsManager {
     private async ensureBootstrapSkills() {
         if (!this.extensionUri) return;
 
-        // Use 'out/skills' and look for .xml files
         const bootstrapDir = vscode.Uri.joinPath(this.extensionUri, 'out', 'skills');
-        try {
-            const entries = await vscode.workspace.fs.readDirectory(bootstrapDir);
-            const currentGlobalSkills = await this.getGlobalSkills();
+        const currentGlobalSkills = await this.getGlobalSkills();
 
+        const walk = async (uri: vscode.Uri) => {
+            let entries;
+            try { entries = await vscode.workspace.fs.readDirectory(uri); } catch(e) { return; }
+            
             for (const [name, type] of entries) {
-                if (type === vscode.FileType.File && name.endsWith('.xml')) {
-                    const fileUri = vscode.Uri.joinPath(bootstrapDir, name);
-                    console.log(`[Lollms Debug] Reading bootstrap skill: ${fileUri.fsPath}`);
-                    const content = await vscode.workspace.fs.readFile(fileUri);
-                    const xmlStr = content.toString();
-                    const bootstrapSkill = xmlToSkill(xmlStr, 'global');
-
-                    // Only add if not exists in Global
-                    if (!currentGlobalSkills.some(s => s.id === bootstrapSkill.id)) {
-                        await this.writeSkillToFile(bootstrapSkill);
+                const entryUri = vscode.Uri.joinPath(uri, name);
+                if (type === vscode.FileType.Directory) {
+                    await walk(entryUri);
+                } else if (type === vscode.FileType.File) {
+                    if (name.endsWith('.xml') || name.endsWith('.md')) {
+                        try {
+                            const contentBytes = await vscode.workspace.fs.readFile(entryUri);
+                            const contentStr = contentBytes.toString();
+                            let skill: Skill;
+                            
+                            if (name.endsWith('.xml')) {
+                                skill = xmlToSkill(contentStr, 'global');
+                            } else {
+                                const skillId = name.toLowerCase() === 'skill.md' ? path.basename(uri.fsPath) : name.replace(/\.md$/, '');
+                                skill = parseSkillMd(contentStr, skillId, 'global');
+                            }
+                            
+                            if (!currentGlobalSkills.some(s => s.id === skill.id)) {
+                                await this.writeSkillToFile(skill);
+                            }
+                        } catch (e) {
+                            console.warn("Failed to load bootstrap skill", entryUri.fsPath, e);
+                        }
                     }
                 }
             }
+        };
+        
+        try {
+            await walk(bootstrapDir);
         } catch (e) {
-            console.warn("No bootstrap skills found in 'out/skills' or error loading them.", e);
+            console.warn("Error exploring bootstrap skills directory.", e);
         }
     }
 
@@ -182,18 +267,25 @@ export class SkillsManager {
         const walk = async (uri: vscode.Uri): Promise<vscode.Uri | null> => {
             let entries;
             try { 
-                // Verify path exists before reading to avoid FileSystemError: EntryNotFound
                 await vscode.workspace.fs.stat(uri);
                 entries = await vscode.workspace.fs.readDirectory(uri); 
             } catch (e) { return null; }
             
+            // Check Format A (Folder format)
+            if (path.basename(uri.fsPath) === skillId) {
+                const hasSkillMd = entries.find(([n, t]) => n.toLowerCase() === 'skill.md');
+                if (hasSkillMd) return vscode.Uri.joinPath(uri, hasSkillMd[0]);
+            }
+
             for (const [name, type] of entries) {
                 const entryUri = vscode.Uri.joinPath(uri, name);
                 if (type === vscode.FileType.Directory) {
                     const found = await walk(entryUri);
                     if (found) return found;
-                } else if (type === vscode.FileType.File && name === `${skillId}.xml`) {
-                    return entryUri;
+                } else if (type === vscode.FileType.File) {
+                    if (name === `${skillId}.md` || name === `${skillId}.xml`) {
+                        return entryUri;
+                    }
                 }
             }
             return null;
@@ -202,51 +294,48 @@ export class SkillsManager {
     }
 
     private async writeSkillToFile(skill: Skill): Promise<void> {
-        // 1. Determine target directory based on scope and category
         let rootDir = skill.scope === 'global' ? this.globalSkillsDir : this.localSkillsDir;
         if (!rootDir) {
             if (skill.scope === 'local') throw new Error("No active workspace for local skill.");
             rootDir = this.globalSkillsDir;
         }
 
-        // Ensure base directory exists
         try { await vscode.workspace.fs.createDirectory(rootDir); } catch (e) {}
 
-        // 2. CRITICAL: Find and delete existing file with this ID to prevent duplicates if category changed
-        const existingFile = await this.findSkillFileUri(skill.id, rootDir);
-        if (existingFile) {
-            try { await vscode.workspace.fs.delete(existingFile); } catch (e) {}
+        const existingUri = await this.findSkillFileUri(skill.id, rootDir);
+        if (existingUri) {
+            try { 
+                if (existingUri.fsPath.toLowerCase().endsWith('skill.md')) {
+                    await vscode.workspace.fs.delete(vscode.Uri.joinPath(existingUri, '..'), { recursive: true, useTrash: false });
+                } else {
+                    await vscode.workspace.fs.delete(existingUri, { useTrash: false }); 
+                }
+            } catch (e) {}
         }
 
-        // 3. Construct new path using Uri.joinPath for safe cross-platform joining
         let targetDir = rootDir;
         if (skill.category) {
-            const relativeCategory = skill.category.replace(/\\/g, '/');
-            const segments = relativeCategory.split('/').filter(s => s.length > 0);
-            
+            const segments = skill.category.replace(/\\/g, '/').split('/').filter(s => s.length > 0);
             for (const segment of segments) {
                 targetDir = vscode.Uri.joinPath(targetDir, segment);
             }
         }
 
-        // Ensure the full target directory structure is created recursively
         try {
-            // Use standard node path to ensure subfolders are created correctly if Uri scheme is file
-            if (targetDir.scheme === 'file') {
-                const fs = require('fs');
-                if (!fs.existsSync(targetDir.fsPath)) {
-                    fs.mkdirSync(targetDir.fsPath, { recursive: true });
-                }
-            } else {
-                await vscode.workspace.fs.createDirectory(targetDir);
-            }
-        } catch (e) {
-            console.error(`[SkillsManager] Failed to create directory ${targetDir.toString()}`, e);
-        }
+            await vscode.workspace.fs.createDirectory(rootDir);
+            await vscode.workspace.fs.createDirectory(targetDir);
+            
+            // Create the skill folder (Format A)
+            const skillFolder = vscode.Uri.joinPath(targetDir, skill.id);
+            await vscode.workspace.fs.createDirectory(skillFolder);
 
-        const filePath = vscode.Uri.joinPath(targetDir, `${skill.id}.xml`);
-        const xmlContent = skillToXml(skill);
-        await vscode.workspace.fs.writeFile(filePath, Buffer.from(xmlContent, 'utf8'));
+            const filePath = vscode.Uri.joinPath(skillFolder, `SKILL.md`);
+            const mdContent = skillToMd(skill);
+            await vscode.workspace.fs.writeFile(filePath, Buffer.from(mdContent, 'utf8'));
+            this.invalidateCache(skill.scope);
+        } catch (e) {
+            console.error(`[SkillsManager] Failed to create directory hierarchy or file`, e);
+        }
     }
 
     private async loadSkillsFromDir(dir: vscode.Uri, scope: 'global' | 'local'): Promise<Skill[]> {
@@ -255,10 +344,41 @@ export class SkillsManager {
             let entries;
             try { entries = await vscode.workspace.fs.readDirectory(uri); } catch (e) { return; }
 
-            for (const [name, type] of entries) {
+            const hasSkillMd = entries.find(([n, t]) => n.toLowerCase() === 'skill.md' && t === vscode.FileType.File);
+            if (hasSkillMd) {
+                try {
+                    const content = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(uri, hasSkillMd[0]));
+                    const skillId = path.basename(uri.fsPath);
+                    const skill = parseSkillMd(content.toString(), skillId, scope);
+                    skills.push(skill);
+                } catch (e) {}
+                return;
+            }
+
+            const promises = entries.map(async ([name, type]) => {
                 const entryUri = vscode.Uri.joinPath(uri, name);
                 if (type === vscode.FileType.Directory) {
-                    await walk(entryUri);
+                    // Check if this directory is actually a Format A skill itself
+                    const subEntries = await vscode.workspace.fs.readDirectory(entryUri);
+                    const hasInnerSkillMd = subEntries.find(([n, t]) => n.toLowerCase() === 'skill.md');
+                    
+                    if (hasInnerSkillMd) {
+                        try {
+                            const content = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(entryUri, hasInnerSkillMd[0]));
+                            const skillId = name;
+                            skills.push(parseSkillMd(content.toString(), skillId, scope));
+                        } catch (e) {}
+                    } else {
+                        // It's a category folder, descend
+                        await walk(entryUri);
+                    }
+                } else if (type === vscode.FileType.File && name.endsWith('.md') && name.toLowerCase() !== 'skill.md') {
+                    try {
+                        const content = await vscode.workspace.fs.readFile(entryUri);
+                        const skillId = name.replace(/\.md$/, '');
+                        const skill = parseSkillMd(content.toString(), skillId, scope);
+                        skills.push(skill);
+                    } catch (e) {}
                 } else if (type === vscode.FileType.File && name.endsWith('.xml')) {
                     try {
                         const content = await vscode.workspace.fs.readFile(entryUri);
@@ -266,8 +386,11 @@ export class SkillsManager {
                         skills.push(skill);
                     } catch (e) {}
                 }
-            }
+            });
+            
+            await Promise.all(promises);
         };
+        
         await walk(dir);
         return skills;
     }
@@ -332,20 +455,31 @@ export class SkillsManager {
     }
 
     public async getGlobalSkills(): Promise<Skill[]> {
-        return this.loadSkillsFromDir(this.globalSkillsDir, 'global');
+        if (this.cachedGlobalSkills) return this.cachedGlobalSkills;
+        this.cachedGlobalSkills = await this.loadSkillsFromDir(this.globalSkillsDir, 'global');
+        return this.cachedGlobalSkills;
     }
 
     public async getLocalSkills(): Promise<Skill[]> {
         if (!this.localSkillsDir) return [];
-        return this.loadSkillsFromDir(this.localSkillsDir, 'local');
+        if (this.cachedLocalSkills) return this.cachedLocalSkills;
+        this.cachedLocalSkills = await this.loadSkillsFromDir(this.localSkillsDir, 'local');
+        return this.cachedLocalSkills;
     }
 
     public async getSkills(): Promise<Skill[]> {
         const global = await this.getGlobalSkills();
         const local = await this.getLocalSkills();
         
-        // Return combined, sorting by timestamp
-        return [...global, ...local].sort((a, b) => b.timestamp - a.timestamp);
+        // Deduplicate by ID: Project-local skills override Global skills
+        const deduplicated = new Map<string, Skill>();
+        
+        // Process global first
+        global.forEach(s => deduplicated.set(s.id, s));
+        // Local overrides global
+        local.forEach(s => deduplicated.set(s.id, s));
+        
+        return Array.from(deduplicated.values()).sort((a, b) => b.timestamp - a.timestamp);
     }
 
     public async addSkill(skillData: Omit<Skill, 'timestamp'>): Promise<Skill> {
@@ -364,24 +498,18 @@ export class SkillsManager {
     public async deleteSkill(skillId: string, scope: 'global' | 'local'): Promise<void> {
         const targetRoot = scope === 'global' ? this.globalSkillsDir : this.localSkillsDir;
         if (!targetRoot) return;
-
-        const walkAndDelete = async (uri: vscode.Uri): Promise<boolean> => {
-            let entries;
-            try { entries = await vscode.workspace.fs.readDirectory(uri); } catch (e) { return false; }
-
-            for (const [name, type] of entries) {
-                const entryUri = vscode.Uri.joinPath(uri, name);
-                if (type === vscode.FileType.Directory) {
-                    if (await walkAndDelete(entryUri)) return true;
-                } else if (type === vscode.FileType.File && name === `${skillId}.xml`) {
-                    await vscode.workspace.fs.delete(entryUri);
-                    return true;
+        
+        const existingUri = await this.findSkillFileUri(skillId, targetRoot);
+        if (existingUri) {
+            try {
+                if (existingUri.fsPath.toLowerCase().endsWith('skill.md')) {
+                    await vscode.workspace.fs.delete(vscode.Uri.joinPath(existingUri, '..'), { recursive: true, useTrash: false });
+                } else {
+                    await vscode.workspace.fs.delete(existingUri, { useTrash: false });
                 }
-            }
-            return false;
-        };
-
-        await walkAndDelete(targetRoot);
+                this.invalidateCache(scope);
+            } catch (e) {}
+        }
     }
 
     public async deleteAllSkills(): Promise<void> {
@@ -399,6 +527,7 @@ export class SkillsManager {
                 await vscode.workspace.fs.createDirectory(this.localSkillsDir);
             } catch {}
         }
+        this.invalidateCache();
     }
 
     public async getSkillsInBundle(categoryPath: string): Promise<Skill[]> {
@@ -413,24 +542,10 @@ export class SkillsManager {
     }
 
     /**
-     * Converts a Lollms Skill to Claude Code Markdown format.
+     * Converts a Lollms Skill to Claude Code Markdown format (alias for skillToMd).
      */
     public skillToClaudeMarkdown(skill: Skill): string {
-        const frontmatter = [
-            '---',
-            `name: ${skill.name}`,
-            `version: 1.0.0`,
-            `description: |`,
-            `  ${skill.description.replace(/\n/g, '\n  ')}`,
-            'allowed-tools:',
-            '  - Read',
-            '  - Write',
-            '  - Edit',
-            '---',
-            '',
-            skill.content
-        ].join('\n');
-        return frontmatter;
+        return skillToMd(skill);
     }
 
     /**

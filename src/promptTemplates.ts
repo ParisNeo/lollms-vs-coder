@@ -22,79 +22,61 @@ export class PromptTemplates {
 
         const sections: string[] = [];
 
-        // ── CRITICAL DISTINCTION (Primacy) ───────────────────────────────────
+        // ── ZERO-PLACEHOLDER MANDATE (HIGH PRIORITY) ────────────────────────
         sections.push(`
-### 🚨 CRITICAL DISTINCTION — CODE OUTPUT FORMATS
-
-Markdown code blocks and file modification formats serve completely different purposes:
-
-- \`\`\`language
-  → Temporary display / explanation only (never applies to disk)
-
-- \`\`\`language:path/to/file.ext
-  → FULL FILE REPLACE (Apply button will overwrite the entire file)
-
-- \`<<<<<<< SEARCH ... >>>>>>> REPLACE\` (Aider style)
-  → Surgical / Partial Edit (recommended for existing files)
+### 🛑 THE ZERO-PLACEHOLDER MANDATE
+**Strict Prohibition**: You are FORBIDDEN from using placeholders, ellipses, or comments to skip code (e.g., \`# ... rest of code\`, \`// existing logic\`, \`/* ... */\`). 
+- If providing a Full File, it MUST be 100% complete from the first line to the last.
+- If providing a Search/Replace block, the content inside \`REPLACE\` must be complete and functional.
+- **Consequence**: Partial code or placeholders will corrupt the user's project and are considered a failure.
 `);
 
-        if (isAutoApply) {
-            sections.push(`
-### ⚡ AUTOMATION MODE — SEARCH/REPLACE ONLY (AUTO-APPLY ENABLED)
+        // ── CODE OUTPUT SELECTION LOGIC ──────────────────────────────────────
+        sections.push(`
+    ### 🚦 CODE GENERATION DECISION LOGIC
+    1. **CREATE NEW FILE**: You MUST provide the **FULL FILE** content. You are FORBIDDEN from using SEARCH/REPLACE markers for new files.
+    2. **MODIFY EXISTING FILE**: Use the **SEARCH/REPLACE (AIDER)** format. This is the only way to apply surgical patches.
+    3. **FULL REWRITE**: Use the **FULL FILE** format (no markers) only if you are overwriting >80% of an existing file.
 
-CRITICAL: Auto-apply is ENABLED. You MUST provide changes using ONLY the SEARCH/REPLACE format.
-1. Do NOT output full files.
-2. Ensure your SEARCH block is a 1:1 literal match of the file's current content.
-3. Keep blocks small and specific.
+    **CRITICAL**: If you provide SEARCH/REPLACE markers for a file that does not exist in the "PROJECT STRUCTURE", the operation will fail.
+    `);
+
+        // ── FORMAT 1: FULL FILE (OVERWRITE) ──────────────────────────────────
+        sections.push(`
+### 📄 FORMAT 1: FULL FILE CONTENT (OVERWRITE)
+**Header**: \`\`\`language:path/to/file.ext\`\`\`
+**Usage**: Replaces the **entire** file on disk.
+- **Requirement**: The block MUST contain the complete, 1:1 content of the file.
+- **Warning**: Do NOT use this header for snippets or partial code. If you use this header, you MUST provide the whole file.
 `);
-        } else if (isForcedFull) {
-            sections.push(`
-### 📄 FORMAT: FULL FILE CONTENT (ENFORCED)
 
-You must always provide the complete file content. Partial updates are disabled.
-`);
-        } else {
-            sections.push(`
-### 🚦 CODE GENERATION DECISION LOGIC (CRITICAL SAFETY)
-
-1. **NEW FILE**: Use the FULL FILE format with \`language:path\` header.
-2. **EXISTING FILE (Surgical Edit)**: Use SEARCH/REPLACE (Aider) format.
-3. **EXISTING FILE (Full Rewrite)**: Use FULL FILE only if rewriting >80% of the logic.
-
-### 📄 THE "FULL FILE" SAFETY PROTOCOL
-- When using \`language:path\` header, the UI provides an Apply button that replaces the entire file.
-- Never output a snippet or partial code using a path-header.
-- Never use placeholders like \`# ... rest of code\` inside a path-header block.
-`);
-        }
-
-        // ── Aider Format (kept all original important rules) ────────────────
+        // ── FORMAT 2: SEARCH/REPLACE (SURGICAL PATCH) ───────────────────────
         if (partialFormat === 'aider') {
             sections.push(`
-### ⚡ FORMAT: SEARCH/REPLACE (AIDER STYLE)
-
-Use for: Standard edits (less than 50% of file changed).
-
-Format:
-\`\`\`python:src/utils.py
+### ⚡ FORMAT 2: SEARCH/REPLACE (Surgical Patch)
+**Header**: \`\`\`language:path/to/file.ext\`\`\`
+**Structure**:
+\`\`\`
 <<<<<<< SEARCH
-[EXACT content to find including context]
+[EXACT current lines from the file]
 =======
-[NEW content to replace with including context]
+[NEW lines to replace them with]
 >>>>>>> REPLACE
 \`\`\`
 
-**STRICT RULES:**
-1. SEARCH block must contain *exact* lines from the file (including indentation).
-2. REPLACE block must contain the *entire* replacement code, including surrounding context.
-3. Include 3-4 lines of unchanged context before and after the modification in BOTH blocks.
-4. All code changes must be inside the \`=======\` and \`>>>>>>> REPLACE\` markers.
-5. NO ELLIPSIS: Do not use "..." to skip code in the SEARCH block.
-6. NO LINE NUMBERS.
-7. ATOMIC EDITS: Never build a single large block for multiple changes. Split into many small, highly specific SEARCH/REPLACE blocks.
-8. SEARCH must match the original content EXACTLY (character by character, including indentation).
-9. APPENDING: To append code to the end of a file, use an empty SEARCH block.
-10. SYNTAX INTEGRITY: You MUST include all three markers (SEARCH, divider, REPLACE) for every block. Truncated blocks will fail.
+**STRICT RULES FOR PATCHING:**
+1. **LITERAL MATCH**: The \`SEARCH\` block must be a character-for-character match of the existing code, including all indentation, spaces, and blank lines.
+2. **UNIQUE CONTEXT**: Always include 3-4 lines of unchanged code before and after the change in the \`SEARCH\` block to ensure the patcher finds the correct location.
+3. **NO FRAGMENTS**: Do not use \`...\` inside the \`SEARCH\` block to skip lines. If lines are in the middle of your match, you must include them.
+4. **ATOMIC BLOCKS**: If you are changing multiple functions or distant parts of a file, use **multiple separate** SEARCH/REPLACE blocks.
+5. **APPENDING**: To add code to the end of a file, use an empty \`SEARCH\` block (\`<<<<<<< SEARCH\` followed immediately by \`=======\`).
+`);
+        }
+
+        if (isAutoApply) {
+            sections.push(`
+### ⚡ AUTOMATION MODE (AUTO-APPLY ENABLED)
+Your changes will be applied to the disk automatically. You MUST use the **SEARCH/REPLACE** format for all modifications to minimize context usage and prevent errors.
 `);
         }
 
@@ -108,8 +90,8 @@ Format:
         tree: string; 
         files: string; 
         skills: string; 
-        briefing?: string;
-        memory?: string;
+        briefing?: string; // This is the Mission Briefing
+        memory?: string;   // This contains Project DNA
     }): string {
         return `
 # 🛠️ ACTUAL PROJECT STATE (LIVING CONTEXT)
@@ -117,8 +99,13 @@ Format:
 The following blocks represent the project exactly as it is on the user's disk at THIS MOMENT.
 Use this as the reference for any SEARCH/REPLACE operations.
 
-${context.briefing ? `## 📋 TEAM BRIEFING (LIBRARIAN NOTES)\n${context.briefing}\n` : ''}
-${context.memory || ''}
+### 🎯 MISSION BRIEFING (Current Task Instructions)
+${context.briefing || 'No specific task-level briefing provided.'}
+
+### 🧬 PROJECT DNA (Global Standards)
+${context.memory || 'No global standards defined yet.'}
+
+### 🌳 PROJECT STRUCTURE
 ${context.tree || ''}
 ${context.files || ''}
 `.trim();
@@ -231,7 +218,14 @@ ${persona}
 
 ${memory ? `### LONG-TERM MEMORY\n${memory}\n` : ''}
 ${skillsAuthority}
-${context?.tree || ''}
+${context?.tree ? `
+### 🌳 PROJECT STRUCTURE LEGEND
+- **[C]**: Full Content is loaded in the "FILE CONTENTS" section below. You can read and edit this file.
+- **[D]**: Only Class/Function Definitions are loaded. You see the structure but not the implementation.
+- **No Tag**: Only the path is known to you.
+
+${context.tree}` : ''}
+
 ${context?.files || ''}
 
 # 🧠 BEHAVIOR & STYLE
@@ -245,6 +239,11 @@ ${activeProfile.systemPrompt}
 2. **THINK**: Formulate a hypothesis or next step based on the Agentic Systems Code Book.
 3. **ACT**: Execute a tool call with an explicit contract.
 4. **REFLECT**: After a tool returns, evaluate if the result matches your expectation.
+
+### 🛡️ GUARDIAN PROTOCOL (AUTONOMOUS INTEGRITY)
+1. **VERIFICATION LOOP**: Note that every file you write will be immediately audited by a system linter/compiler. 
+2. **ZERO-ERROR MANDATE**: Your task is not complete until the "Guardian" reports 0 errors. 
+3. **SELF-HEALING**: If you are prompted with a "REPAIR MISSION," you have failed the first pass. Analyze the error trace carefully and fix the logic.
 
 ### 🚷 ANTI-HALLUCINATION & CONTEXT BOUNDARIES (STRICT)
 1. NO GUESSING: If a file is visible in the tree but its content is missing from File Contents, you MUST NOT assume or hallucinate.

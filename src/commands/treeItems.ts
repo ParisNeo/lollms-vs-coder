@@ -50,7 +50,7 @@ export class PromptGroupItem extends vscode.TreeItem {
 export class TabItem extends vscode.TreeItem {
     constructor(
         public readonly label: string,
-        public readonly tabId: 'chat' | 'librarian' | 'git' | 'graph' | 'lab',
+        public readonly tabId: 'chat' | 'librarian' | 'git' | 'graph' | 'lab' | 'memory' | 'fix',
         public readonly icon: string,
         public readonly isActive: boolean
     ) {

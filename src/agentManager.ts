@@ -195,6 +195,10 @@ export class AgentManager {
         this.currentPlan.attempts.push(archive);
     }
 
+    /**
+     * Handles user messages with enhanced "Briefing" (Prime Directive) priority.
+     * The briefing acts as the 'extra argument' ensuring architectural compliance.
+     */
     public async handleUserMessage(
         content: string, 
         discussion: Discussion, 
@@ -322,15 +326,22 @@ Please commit or stash your work before starting an iterative debug session to e
          
          const failureContext = this.failureMemory.getMemoryContext();
 
+         // --- INJECT PRIME DIRECTIVE (The Extra Argument) ---
+         const technicalBriefing = this.currentDiscussion?.discussion_data_zone 
+            ? `\n### 🛡️ PRIME DIRECTIVE (MANDATORY CONSTRAINTS)\n${this.currentDiscussion.discussion_data_zone}\n`
+            : "";
+
          // --- INJECT LIVING CONTEXT ---
          const historyContext: ChatMessage[] = [
              systemPromptMsg,
              ...this.chatHistory.filter(m => m.role !== 'system'), 
-             { role: 'user', content: `Objective: ${objective}\n${workingMemoryContext}\n${failureContext}` }
+             { role: 'user', content: `${technicalBriefing}\nObjective: ${objective}\n${workingMemoryContext}\n${failureContext}` }
          ];
 
          let loopCount = 0;
-         const MAX_LOOPS = 10;
+         let investigationCount = 0;
+         const MAX_LOOPS = 15;
+         const INVESTIGATION_LIMIT = 5; // Force a plan after 5 discovery steps
          const { PromptTemplates } = require('./promptTemplates');
 
          while (loopCount < MAX_LOOPS) {
@@ -344,16 +355,16 @@ Please commit or stash your work before starting an iterative debug session to e
                  modelName: modelOverride || this.currentDiscussion?.model 
              });
 
-             // Extract Team Briefing from Discussion Data Zone
-             let currentBriefing = "";
-             if (this.currentDiscussion?.discussion_data_zone) {
-                 try {
-                     const parsed = JSON.parse(this.currentDiscussion.discussion_data_zone);
-                     currentBriefing = Object.entries(parsed).map(([k,v]) => `**[${k.toUpperCase()}]**\n${v}`).join('\n\n');
-                 } catch {
-                     currentBriefing = this.currentDiscussion.discussion_data_zone;
-                 }
+             // RE-FETCH the latest discussion data from disk/manager to ensure briefing updates are caught
+             if (this.currentDiscussion?.id) {
+                const latestDisc = await this.discussionManager.getDiscussion(this.currentDiscussion.id);
+                if (latestDisc) {
+                    this.currentDiscussion.discussion_data_zone = latestDisc.discussion_data_zone;
+                }
              }
+
+             // Extract Mission Briefing from Discussion Data Zone
+             const currentBriefing = this.currentDiscussion?.discussion_data_zone || "";
 
              // Update historyContext by replacing the old project state message
              const stateIdx = historyContext.findIndex(m => m.role === 'system' && m.content.includes('ACTUAL PROJECT STATE'));
@@ -370,8 +381,19 @@ Please commit or stash your work before starting an iterative debug session to e
              if (stateIdx !== -1) {
                  historyContext[stateIdx] = newStateMsg;
              } else {
-                 // Insert before the last message (the objective)
                  historyContext.splice(historyContext.length - 1, 0, newStateMsg);
+             }
+
+             // --- LOOP BREAKER: INJECT ULTIMATUM ---
+             if (investigationCount >= INVESTIGATION_LIMIT) {
+                 historyContext.push({ 
+                     role: 'system', 
+                     content: `🚨 **ARCHITECT CRITICAL WARNING**: You have performed ${investigationCount} investigation steps. 
+                     
+You are now FORBIDDEN from using any more single tool calls. You have enough information. 
+You MUST now output a multi-step **OPTION B: EXECUTION PLAN** to fulfill the user's request. 
+Failure to provide a Plan JSON now will result in task termination.` 
+                 });
              }
              
              let response = "";
@@ -404,12 +426,33 @@ Please commit or stash your work before starting an iterative debug session to e
                  try {
                      const plan = JSON.parse(jsonStr) as Plan;
                      this.planParser.validateAndInitializePlan(plan, enabledTools);
+                     
+                     // --- ANTI-LAZY ENFORCER ---
+                     // Prevent the Architect from using the Plan phase just to look around.
+                     const readOnlyTools = ['list_files', 'read_file', 'read_code_graph', 'search_files', 'get_environment_details'];
+                     const isOnlyReading = plan.tasks.every(t => readOnlyTools.includes(t.action));
+                     
+                     if (isOnlyReading) {
+                         historyContext.push({ role: 'assistant', content: response });
+                         historyContext.push({ 
+                             role: 'system', 
+                             content: "🛑 PLAN REJECTED: Your plan only consists of discovery tasks. Do NOT use the Plan JSON for discovery. Use OPTION A (Single Tool Call) to explore. Only create a Plan when you are ready to modify code, run execution tests, or use submit_response." 
+                         });
+                         continue;
+                     }
+                     
                      return plan;
                  } catch(e) {}
              }
              
              const toolMatch = this.parseToolCall(cleanResponse);
              if (toolMatch) {
+                 // REJECT conversation if we are in discovery phase
+                 if (toolMatch.name === 'submit_response' && loopCount < 3) {
+                     historyContext.push({ role: 'system', content: "CRITICAL: You are attempting to finish too early. You have not verified the code logic or environment yet. Continue investigating or perform the requested task." });
+                     continue;
+                 }
+
                  // Add to Investigation History
                  const invEntry = {
                      action: toolMatch.name,
@@ -418,9 +461,14 @@ Please commit or stash your work before starting an iterative debug session to e
                      result: null as string | null
                  };
                  investigationHistory.push(invEntry);
+                 
+                 const statusMsg = toolMatch.scratchpad 
+                     ? `🧠 ${toolMatch.scratchpad}\n\nExecuting: ${toolMatch.name}`
+                     : `🧠 Architect is exploring: ${toolMatch.name}`;
+
                  await this.displayAndSavePlan({
                      objective,
-                     scratchpad: "🧠 Architect is exploring the environment...",
+                     scratchpad: statusMsg,
                      tasks:[],
                      investigation: investigationHistory,
                      attempts: existingHistory
@@ -436,6 +484,7 @@ Please commit or stash your work before starting an iterative debug session to e
                  }
 
                  // Execution logic...
+                 // Save the investigation result into the history so the next turn sees it
                  historyContext.push({ role: 'assistant', content: response });
                  const tempEnv = {
                      workspaceRoot: this.currentWorkspaceFolder,
@@ -456,6 +505,7 @@ Please commit or stash your work before starting an iterative debug session to e
                      historyContext.push({ role: 'user', content: `Tool Output: ${res.output}` });
                      invEntry.status = res.success ? 'completed' : 'failed';
                      invEntry.result = res.output;
+                     investigationCount++; // Increment the discovery counter
                  } catch(e: any) {
                      historyContext.push({ role: 'user', content: `Tool Error: ${e.message}` });
                      invEntry.status = 'failed';
@@ -465,7 +515,7 @@ Please commit or stash your work before starting an iterative debug session to e
                  // Update the plan with the tool execution result
                  await this.displayAndSavePlan({
                      objective,
-                     scratchpad: "🧠 Architect is exploring the environment...",
+                     scratchpad: `🧠 Architect is exploring: ${toolMatch.name}(${JSON.stringify(toolMatch.params)})`,
                      tasks:[],
                      investigation: investigationHistory,
                      attempts: existingHistory
@@ -488,20 +538,25 @@ Please commit or stash your work before starting an iterative debug session to e
                  // If we have history of messages, assume the last response might be conversational.
                  // We push it to history so the model knows what it said.
                  historyContext.push({ role: 'assistant', content: response });
-                 // If no JSON plan and no tool, force a prompt
-                 historyContext.push({ role: 'user', content: "Please provide a valid JSON plan using the specified format." });
+                 // If no JSON plan and no tool, force a prompt and explicitly remind the agent about its objective
+                 historyContext.push({ 
+                     role: 'user', 
+                     content: `I see your thoughts, but you haven't provided a JSON tool call or a multi-step Plan JSON yet. 
+                     
+**STRICT REMINDER**: To fulfill the objective "${objective}", you must actually use tools to verify the code and state. Do not provide a final answer in prose yet. Please provide a valid JSON plan or tool call.` 
+                 });
              }
          }
          return null;
     }
     
-    private parseToolCall(content: string): { name: string, params: any } | null {
+    private parseToolCall(content: string): { name: string, params: any, scratchpad?: string } | null {
         // 1. Try Markdown Code Block
         const match = content.match(/```json\s*(\{[\s\S]*?"tool"[\s\S]*?\})\s*```/);
         if (match) {
             try {
                 const obj = JSON.parse(match[1]);
-                if (obj.tool) return { name: obj.tool, params: obj.params || {} };
+                if (obj.tool) return { name: obj.tool, params: obj.params || {}, scratchpad: obj.scratchpad };
             } catch (e) { }
         }
 
@@ -526,7 +581,7 @@ Please commit or stash your work before starting an iterative debug session to e
         for (const json of jsonObjects) {
             try {
                 const obj = JSON.parse(json);
-                if (obj.tool) return { name: obj.tool, params: obj.params || {} };
+                if (obj.tool) return { name: obj.tool, params: obj.params || {}, scratchpad: obj.scratchpad };
             } catch (e) { }
         }
 
@@ -588,23 +643,33 @@ Please commit or stash your work before starting an iterative debug session to e
         const task = this.currentPlan.tasks.find(t => t.id === taskId);
         if (!task) return;
 
+        // Force reset the task
         task.parameters = newParams;
         task.status = 'pending';
+        task.result = null; // Clear previous error
         task.retries = 0;
         task.can_retry = false;
 
-        this.ui.addMessageToDiscussion({ role: 'system', content: `🔄 **Manual Override:** Restarting Task ${taskId} with updated parameters.` });
+        this.isActive = true; // Reactive visual state
+        this.ui.addMessageToDiscussion({ 
+            role: 'system', 
+            content: `🔄 **Manual Override:** Resetting Task ${taskId}. Params: \`${JSON.stringify(newParams)}\`` 
+        });
         
         await this.displayAndSavePlan(this.currentPlan);
 
-        // Resume execution
+        // Register new process linked to this retry
         const { id: processId, controller } = this.processManager.register(this.currentDiscussion.id, `Agent: Retrying task ${taskId}...`);
         this.ui.updateGeneratingState();
 
         try {
+            // Re-run the execution loop starting from the beginning (to catch dependencies)
             await this.executePlan(0, controller.signal, this.currentDiscussion.model);
             await this.synthesizeFinalResponse("Retry task execution", controller.signal, this.currentDiscussion.model);
+        } catch (e: any) {
+            console.error("Retry failed", e);
         } finally {
+            this.isActive = false;
             this.processManager.unregister(processId);
             this.ui.updateGeneratingState();
         }
@@ -660,6 +725,12 @@ Please provide a clear, concise final response to the user summarizing the outco
             ], null, signal, architectModel);
 
             const msgId = `agent_synthesis_${Date.now()}`;
+            
+            // Scan the final summary for memory updates
+            if (this.projectMemoryManager) {
+                await this.projectMemoryManager.processTags(response);
+            }
+
             await this.ui.addMessageToDiscussion({
                 id: msgId,
                 role: 'assistant',
@@ -860,6 +931,11 @@ Please provide a clear, concise final response to the user summarizing the outco
             this.failureMemory.recordFailure(task.action, resolvedParams, result.output);
         }
         
+        // Scan task output for memory updates
+        if (this.projectMemoryManager) {
+            await this.projectMemoryManager.processTags(result.output);
+        }
+
         await this.displayAndSavePlan(this.currentPlan);
         return result;
     }
@@ -1185,8 +1261,8 @@ I will be creating a sandbox branch and applying surgical patches. To ensure you
         this.ui.updateGeneratingState();
         const auditedResponse = await this.ui.runVerificationAgent(workerResponse, signal);
 
-        // 4. Step 3: Apply to Disk (Physical Sync)
-        this.processManager.updateDescription(processId, "Phase 2: Applying fixes to disk...");
+        // 4. Step 3: Apply to Disk (Guardian Shield Enabled)
+        this.processManager.updateDescription(processId, "Phase 2: Applying fixes & verifying integrity...");
         this.ui.updateGeneratingState();
         
         const workerMsgId = 'worker_final_' + Date.now();
@@ -1197,7 +1273,7 @@ I will be creating a sandbox branch and applying surgical patches. To ensure you
             model: model
         });
 
-        // We await the actual file writes before starting the debugger
+        // executeAutomationPipeline now internally runs the "Guardian" repair loop
         await this.ui.executeAutomationPipeline(auditedResponse, workerMsgId, signal, processId);
 
         // 5. Phase 3: Specialized Debugger Loop (Files are now on disk)

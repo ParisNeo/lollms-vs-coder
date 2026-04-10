@@ -141,8 +141,8 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
             return;
         }
         
-        // autoExecute=true triggers the LLM immediately if the role is 'user'
-        await startDiscussionWithInitialPrompt(services, textToUse, getActiveWorkspace(), true);
+        // autoExecute=false ensures the user can modify the prompt before calling the AI.
+        await startDiscussionWithInitialPrompt(services, textToUse, getActiveWorkspace(), false);
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.deleteDiscussion', async (item: DiscussionItem) => {
@@ -160,24 +160,10 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         }
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.renameDiscussion', async (item: DiscussionItem) => {
-        const newTitle = await vscode.window.showInputBox({ 
-            prompt: vscode.l10n.t('Enter new title for this discussion'), 
-            value: item.discussion.title 
-        });
+    // REMOVED: Duplicate registration of lollms-vs-coder.renameDiscussion. 
+    // This command is now centrally managed in another registry to prevent collisions.
     
-        if (newTitle && newTitle !== item.discussion.title) {
-            item.discussion.title = newTitle;
-            await services.discussionManager.saveDiscussion(item.discussion);
-            
-            const panel = ChatPanel.panels.get(item.discussion.id);
-            if (panel) {
-                panel._panel.title = newTitle;
-            }
-            
-            services.treeProviders.discussion?.refresh();
-        }
-    }));
+
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateDiscussionTitle', async (item: DiscussionItem) => {
         await vscode.window.withProgress({
@@ -580,6 +566,23 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
             await services.scriptRunner.runScript(code, language, panel, workspaceFolder);
         } catch (error: any) {
             vscode.window.showErrorMessage(`Failed to run script: ${error.message}`);
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.runFile', async (filePath: string) => {
+        const workspaceFolder = getActiveWorkspace();
+        if (!workspaceFolder) return;
+
+        try {
+            const uri = vscode.Uri.joinPath(workspaceFolder.uri, filePath);
+            const doc = await vscode.workspace.openTextDocument(uri);
+            const code = doc.getText();
+            const language = doc.languageId;
+            
+            // Re-use runScript command logic
+            await vscode.commands.executeCommand('lollms-vs-coder.runScript', code, language);
+        } catch (e: any) {
+            vscode.window.showErrorMessage(`Failed to run file ${filePath}: ${e.message}`);
         }
     }));
 }

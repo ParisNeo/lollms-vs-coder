@@ -1,0 +1,226 @@
+---
+name: mycanvas
+description: >
+  Quick reference for terminal colors, styles, and output with ASCIIColors.
+author: Lollms User
+version: 1.0.0
+category: development/languages/python/ui/ascii_colors
+created: 2026-04-09
+---
+
+# Skill: litegraphjs
+
+## Purpose
+Help the user build, debug, and integrate LiteGraph.js-based node editors and workflow runtimes in browser or Node.js projects. LiteGraph.js provides a graph engine (`LGraph`), a canvas editor (`LGraphCanvas`), node registration via `LiteGraph.registerNodeType(...)`, widgets via `addWidget(...)`, and save/load through graph serialization and configuration. [web:1][web:2][web:4][web:28]
+
+## When to use
+Use this skill when the user wants to:
+- Create a node-based editor with LiteGraph.js. [web:2][web:4]
+- Add custom nodes, inputs, outputs, properties, or widgets. [web:1][web:2]
+- Save, load, export, or restore graph workflows. [web:28]
+- Embed LiteGraph in a web app such as plain JS, Vite, React, or Vue. [web:2]
+- Build workflow tooling, automation UIs, visual scripting tools, or graph-based AI pipelines. [web:4]
+
+Do not use this skill when:
+- The user wants a React Flow, Rete, JointJS, or Cytoscape solution instead of LiteGraph. [web:2]
+- The user needs a DOM-based graph editor rather than a Canvas2D node editor. [web:2]
+- The task is unrelated to visual graph/workflow systems. [web:2]
+
+## Core concepts
+LiteGraph separates runtime and UI: `LGraph` holds nodes, execution, and serialization, while `LGraphCanvas` renders and manages editor interaction. [web:2][web:4] A custom node is created as a constructor/class, given inputs and outputs, and registered under a path like `basic/sum` using `LiteGraph.registerNodeType(...)`. [web:1][web:2]
+
+Node values flow through links by writing with `this.setOutputData(slot, value)` and reading with `this.getInputData(slot)`. [web:1] Widgets such as `number`, `slider`, `combo`, `text`, `toggle`, and `button` are added with `addWidget(...)`, but their values are not persisted unless the node enables `serialize_widgets = true` or binds the widget to `this.properties`. [web:1][web:25][web:28]
+
+## Standard workflow
+When helping a user, follow this sequence:
+1. Create the base LiteGraph environment: include `litegraph.js`, include `litegraph.css`, create a `<canvas>`, instantiate `new LGraph()`, then instantiate `new LGraphCanvas("#canvas", graph)`. [web:2][web:4]
+2. Add or register nodes before trying to instantiate custom node types with `LiteGraph.createNode(...)`. [web:2][web:29]
+3. Put graph logic in node lifecycle callbacks such as `onExecute`, `onAction`, `onPropertyChanged`, `onSerialize`, or `onConfigure`. [web:1][web:28]
+4. Save graphs with `graph.serialize()` and restore them with `graph.configure(data)`. [web:28]
+5. If widgets must persist, bind them to properties or set `serialize_widgets = true`. [web:1][web:25][web:28]
+
+## What to generate
+Depending on the request, generate one of these:
+- A minimal HTML example with a working graph and canvas. [web:2][web:4]
+- A custom node definition and registration snippet. [web:1][web:2]
+- A reusable node pack file such as `registerNodes.js`. [web:1][web:2]
+- A persistence layer using `serialize()` and `configure()`. [web:28]
+- A framework wrapper component that mounts the canvas and manages cleanup. [web:2]
+
+## Canonical starter
+Use this pattern as the default starting point:
+
+```html
+<link rel="stylesheet" href="litegraph.css">
+<script src="litegraph.js"></script>
+
+<canvas id="mycanvas" width="1024" height="720"></canvas>
+<script>
+  const graph = new LGraph();
+  const canvas = new LGraphCanvas("#mycanvas", graph);
+
+  const nodeConst = LiteGraph.createNode("basic/const");
+  nodeConst.pos = ;
+  nodeConst.setValue(4.5);
+  graph.add(nodeConst);
+
+  const nodeWatch = LiteGraph.createNode("basic/watch");
+  nodeWatch.pos = ;
+  graph.add(nodeWatch);
+
+  nodeConst.connect(0, nodeWatch, 0);
+  graph.start();
+</script>
+```
+
+This pattern matches the documented quick-start flow in the LiteGraph README and demo material. [web:2][web:4]
+
+## Canonical custom node
+Use this as the base template for a new node:
+
+```js
+function SumNode() {
+  this.addInput("A", "number");
+  this.addInput("B", "number");
+  this.addOutput("A+B", "number");
+  this.properties = { precision: 1 };
+}
+SumNode.title = "Sum";
+
+SumNode.prototype.onExecute = function () {
+  let A = this.getInputData(0);
+  let B = this.getInputData(1);
+  if (A === undefined) A = 0;
+  if (B === undefined) B = 0;
+  this.setOutputData(0, A + B);
+};
+
+LiteGraph.registerNodeType("basic/sum", SumNode);
+```
+
+This is the documented node-authoring pattern and should be preferred unless the user has a reason to use ES6 classes or a custom abstraction layer. [web:2][web:6]
+
+## Widgets pattern
+When a node needs inline controls, use `addWidget(...)` in the constructor. [web:1][web:25] If the widget value must survive reloads, either bind it to `this.properties` or set `this.serialize_widgets = true`. [web:1][web:25][web:28]
+
+Example:
+
+```js
+function ConfigNode() {
+  this.properties = {
+    threshold: 0.5,
+    mode: "fast"
+  };
+
+  this.addWidget("slider", "Threshold", 0.5, null, {
+    min: 0,
+    max: 1,
+    property: "threshold"
+  });
+
+  this.addWidget("combo", "Mode", "fast", null, {
+    values: ["fast", "safe"],
+    property: "mode"
+  });
+
+  this.serialize_widgets = true;
+}
+ConfigNode.title = "Config";
+LiteGraph.registerNodeType("app/config", ConfigNode);
+```
+
+## Event pattern
+When the user needs trigger-style behavior rather than plain dataflow, use LiteGraph event/action slots and `onAction`. LiteGraph exposes dedicated action/event slot types for this workflow model. [web:1]
+
+Example:
+
+```js
+function TriggerNode() {
+  this.addInput("fire", LiteGraph.ACTION);
+  this.addOutput("done", LiteGraph.EVENT);
+}
+TriggerNode.title = "Trigger";
+
+TriggerNode.prototype.onAction = function (action, param) {
+  this.triggerSlot(0, { ok: true, payload: param });
+};
+
+LiteGraph.registerNodeType("flow/trigger", TriggerNode);
+```
+
+## Persistence pattern
+Use this save/load approach whenever the user asks for export, autosave, project files, or workflow restore. LiteGraph nodes support serialization hooks, and the graph itself can be serialized and configured from saved JSON. [web:28]
+
+```js
+function saveGraph(graph) {
+  return JSON.stringify(graph.serialize(), null, 2);
+}
+
+function loadGraph(graph, jsonText) {
+  const data = JSON.parse(jsonText);
+  graph.clear();
+  graph.configure(data);
+}
+```
+
+If a node stores custom runtime state, implement `onSerialize(o)` and optionally `onConfigure(info)` to extend restore behavior. [web:28]
+
+## Integration rules
+When integrating LiteGraph into a larger app:
+- Keep one `LGraph` instance as the source of truth. [web:2][web:28]
+- Mount one `LGraphCanvas` per visual editor surface. [web:2][web:4]
+- Register all custom node types before calling `LiteGraph.createNode("your/type")`, because unregistered types return `null`. [web:29]
+- Do not rely on widget defaults for persistence; persist explicit state. [web:1][web:25]
+- Separate node definitions from UI mount code so node packs stay reusable. [web:1][web:2]
+
+## Recommended folder layout
+Use this structure for medium or large projects:
+
+```text
+src/
+  litegraph/
+    registerNodes.js
+    persistence.js
+    createEditor.js
+    nodepacks/
+      basic/
+      flow/
+      ai/
+      io/
+  components/
+    LiteGraphCanvas.jsx
+  styles/
+    litegraph.css
+```
+
+This structure follows LiteGraph’s conceptual separation between graph logic, node registration, and canvas/editor integration. [web:1][web:2]
+
+## Troubleshooting rules
+If something fails, check these first:
+- Blank or broken editor layout, make sure `litegraph.css` is included. [web:2]
+- `createNode(...)` returns `null`, the node type was not registered under that exact path. [web:29]
+- Values disappear after reload, widget state was not serialized or bound to properties. [web:1][web:25][web:28]
+- Graph loads but custom behavior is missing, the node may need `onConfigure(...)` or `onSerialize(...)` for extra state restoration. [web:28]
+- The graph runs but nothing updates, verify `graph.start()` is called and `onExecute` writes outputs with `setOutputData(...)`. [web:1][web:2]
+
+## Response behavior
+When answering with this skill:
+- Prefer complete working examples over abstract explanations. [web:2]
+- Generate code that uses the documented LiteGraph APIs directly. [web:1][web:2]
+- Use category/type paths like `basic/sum`, `flow/trigger`, or `ai/prompt_template` for node registration. [web:2]
+- Mention persistence explicitly whenever widgets or editable node state are involved. [web:1][web:25][web:28]
+- If the user mentions React/Vue, wrap mount/unmount around the same core `LGraph` + `LGraphCanvas` pattern instead of inventing a new architecture. [web:2]
+
+## Good default node templates
+Offer these first when the user wants examples:
+- `math/sum`, demonstrates typed numeric inputs and outputs. [web:2]
+- `flow/trigger`, demonstrates ACTION/EVENT behavior. [web:1]
+- `app/config`, demonstrates widgets and persisted properties. [web:1][web:25]
+- `debug/watch` or `basic/watch`, demonstrates observing output values in a graph. [web:2]
+
+## Guardrails
+Avoid these mistakes:
+- Do not invent undocumented LiteGraph core APIs if standard callbacks already cover the task. [web:1][web:28]
+- Do not assume widget state persists automatically. [web:1][web:25]
+- Do not instantiate custom node types before registration. [web:29]
+- Do not mix DOM-based UI assumptions with the default canvas-based editor model. [web:2]

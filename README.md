@@ -1,51 +1,56 @@
-# Lollms VS Coder
+# Lollms VS Coder: The Autonomous Engineering Command Center
 
 [![Version](https://img.shields.io/github/v/release/ParisNeo/lollms-vs-coder?logo=github&style=flat-square)](https://github.com/ParisNeo/lollms-vs-coder/releases) 
 [![License](https://img.shields.io/github/license/ParisNeo/lollms-vs-coder?style=flat-square)](https://github.com/ParisNeo/lollms-vs-coder/blob/main/LICENSE) 
 [![Languages](https://img.shields.io/github/languages/top/ParisNeo/lollms-vs-coder?style=flat-square)](https://github.com/ParisNeo/lollms-vs-coder) 
-[![Stars](https://img.shields.io/github/stars/ParisNeo/lollms-vs-coder?style=social)](https://github.com/ParisNeo/lollms-vs-coder/stargazers) 
 
-**Lollms VS Coder** is a powerful, AI-powered Visual Studio Code extension that brings a suite of intelligent tools directly into your editor. It leverages any Lollms-compatible API (local or remote) to provide advanced code assistance, autonomous agent capabilities, context-aware chat, inline autocompletion, diagram rendering, and much more.
+**Lollms VS Coder** is a private, local-first (hybrid) AI engineering suite integrated deeply into VS Code. It transforms the AI from a simple "Chatbot" into a **Verifiable Engineering Operator** that plans, executes, and self-heals your code.
 
 Now available in **English, French, Spanish, German, Arabic, and Chinese (Simplified)**! 🌍
 
 ---
 
-## ⚔️ The 2026 Engineering Landscape: Lollms vs. Others
+## ⚔️ The 2026 Landscape: Lollms vs. The World
 
-In an era where every tool has an "Agent," the difference lies in **Autonomy, Vision, and Sovereignty**. Lollms VS Coder isn't just a plugin; it's a private command center for autonomous software engineering.
+In an era of generic AI "Copilots," Lollms provides **Sovereignty, Structural Intelligence, and Verifiable Autonomy**.
 
-| Feature | Lollms VS Coder | Continue.dev | GitHub Copilot (Pro+) |
+| Feature | Lollms VS Coder | Cursor / Windsurf | GitHub Copilot |
 | :--- | :--- | :--- | :--- |
-| **Autonomy** | **Full** (Architect/Worker Loop) | **High** (Slash Agents) | **High** (Copilot Workspace) |
-| **Compute Liberty** | ☁️/🏠 **Hybrid (Local + Remote)** | ✅ Flexible | ☁️ Cloud Only |
-| **Model Agnostic** | 🔓 **Absolute** (Any binding) | ✅ Flexible | 🔒 Locked to MS/OpenAI |
-| **Digital Sovereignty**| 🔒 **100% Local/Private** | ⚠️ Config Dependent | ❌ Cloud Mandatory |
-| **Structural Vision** | ✅ **Integrated Visual Graphs** | ❌ Text/Code Only | ❌ Chat-based diagrams |
-| **Collective IQ** | ✅ **Hybrid Herd Mode** | ❌ Single Model | ⚠️ Cloud "Squads" |
-| **Project Memory** | ✅ **Long-term Project Facts** | ❌ Session-based | ⚠️ Org-level only |
+| **Philosophy** | **Operator** (Verify & Fix) | Assistant (Suggest) | Assistant (Suggest) |
+| **Compute** | 🏠/☁️ **Hybrid (Ollama/Groq)** | ☁️ Cloud (MANDATORY) | ☁️ Cloud (MANDATORY) |
+| **Vision** | 📊 **Interactive Call Graphs** | ❌ Text only | ❌ Text only |
+| **Data Privacy** | 🔒 **Zero Telemetry** | ⚠️ "Privacy Mode" opt-in | ❌ High Telemetry |
+| **Protocol** | 🛡️ **Guardian (Self-Healing)** | ❌ Manual Fixes | ❌ Manual Fixes |
+| **Memory** | 🧠 **Infinite Project DNA** | ⚠️ RAG Indexing only | ⚠️ Org-level only |
 
 ---
 
-## 🚀 The Lollms Edge: Why we stan better
+## 🚀 The Lollms Edge: Why choose us?
 
-### 1. Visual Structural Intelligence (The HUD)
-While other tools treat your project as a giant text file, Lollms builds a **Live Architecture Graph**. It provides a visual Head-Up Display (HUD) of your function calls and class hierarchies. Both you and the AI "see" the structural impact of changes in real-time, preventing the "spaghetti code" common with blind AI generation.
+### 1. 🎭 Expert Personalities (The Digital Twin)
+Lollms doesn't just "chat." It allows you to inhabit a specific **Expert Persona**. Need a deep security audit? Switch to the **Security Auditor**. Refactoring a complex backend? Invoke the **Senior Architect**. These aren't just labels; they are deep behavioral overrides that change how the AI plans, critiques, and writes code. You can even build your own custom personas using the built-in **Personality Builder**.
 
-### 2. The "Hybrid Herd" Advantage
-Don't trust one model? Lollms orchestrates a **Cross-Provider Debate**. You can have a fast **Ollama** model handle the boilerplate, a **Groq**-powered model critique the logic, and a **DeepSeek** or **Claude** instance finalize the architecture. This multi-perspective verification is the gold standard for mission-critical code.
+### 2. 💎 Modular Skills (The Source of Truth)
+Stop relying on the AI's "hallucination-prone" general knowledge. **Lollms Skills** are atomic, verified knowledge capsules. 
+- **Diamond Protocol**: When a skill is active (e.g., "FastAPI 2026 standards"), the AI prioritizes the skill's documentation over its internal training data.
+- **Global & Local**: Keep project-specific protocols (e.g., "Our Team's naming convention") in your local library, and share core coding patterns across all your projects via the global library.
+- **Agent Integration**: When the Lead Architect delegates tasks, it can explicitly "equip" sub-agents with specific skills to ensure perfect compliance.
 
-### 3. 100% Sovereignty & AI Act Compliance
-Lollms is built on the philosophy of **Digital Independence**. It doesn't just "support" local models; it was born for them. By design, there is zero telemetry and zero hidden data exfiltration. Whether you are running a 100% air-gapped **Ollama** instance or connecting to high-performance **Remote APIs** like Groq or Anthropic, your project orchestration remains private and local. It is the only professional tool fully aligned with **European AI Act** transparency and data residency standards.
+### 3. 🛡️ The "Guardian" Protocol (Self-Healing Code)
+Lollms doesn't just write code and hope it works. When the **Architect** applies changes, the **Guardian** immediately scans for functional errors using the VS Code engine. If an error is found, the AI spawns a **Repair Mission** autonomously, fixing logic or "ghost" imports *before* you even review the result.
 
-### 4. The "Best of Both Worlds" Infrastructure
-Lollms gives you the power to optimize for **Cost, Speed, or Intelligence**. 
-- **Stay Local**: Use **Llama.cpp** or **Ollama** for total privacy and zero cost.
-- **Go Remote**: Connect to **OpenAI, Anthropic, Google Gemini, or Groq** for state-of-the-art reasoning.
-- **Mix & Match**: Configure your **Herd** to use local models for review and remote models for drafting.
+### 2. 📊 Structural Intelligence (The HUD & The Graph)
+Stop navigating blindly. Lollms provides two layers of structural vision:
+- **The Visual Graph**: A full-project map with SPARQL query support to analyze deep dependencies.
+- **The Surgical HUD**: A high-speed, inline analyzer. Click the ✨ **Lollms HUD** button above any function to instantly see its architectural risks and potential bugs without leaving the code.
+- **SPARQL Queries**: Run queries like `SELECT ?x WHERE { ?x imports 'auth.ts' }` to understand impact.
+- **Isolate View**: One click to hide everything except the file you're refactoring and its direct neighbors.
 
-### 5. Project-Specific Long-Term Memory
-Ever notice how AI assistants repeat the same naming or logic mistakes every day? Lollms uses **Project Memory** to save technical constraints, architectural decisions, and bug-fix patterns permanently within your `.lollms` folder. It learns your project’s unique "DNA" and never forgets it.
+### 3. 🎯 Mission Briefing (Prime Directive)
+Standard AI chat suffers from "context drift." Lollms introduces the **Mission Briefing**. Pin specific constraints (e.g., *"Must use Python 3.12, No external libraries"*) to a dedicated briefing zone. These rules are treated as the **Prime Directive**, remaining the AI's highest priority regardless of how long the chat becomes.
+
+### 4. 🧬 Project DNA (Automated Standards)
+Lollms can extract a "DNA" profile of your project (naming conventions, folder patterns, tech stack). It saves this to **Project Memory**, ensuring the AI understands your project's unique identity across all discussions.
 
 ---
 
@@ -53,11 +58,14 @@ Ever notice how AI assistants repeat the same naming or logic mistakes every day
 
 | Feature                  | Description                                                                                                                                                             |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 🎭 **Expert Personas**     | Over 10+ built-in professional roles (Architect, Embedded Expert, Security Lead, etc.) that change the AI's logic, tone, and technical priorities.                      |
+| 💎 **Skills Library**      | A modular library of verified code patterns, API docs, and standards. Acts as a "Source of Truth" that overrides generic model behavior.                                |
 | 🤖 **Autonomous Agent**      | Give the AI a complex objective, and it will generate and execute a multi-step plan, including creating files, writing code, running commands, and self-correcting.      |
+| 📊 **Architecture Graph**  | Visualize your project structure with interactive call graphs and class diagrams. Supports SPARQL queries for deep dependency analysis.                               |
+| 🛡️ **Guardian Audit**       | Background self-healing loop. The AI automatically detects and repairs linting or import errors in generated code before finalizing tasks.                             |
 | ⚡ **Quick Edit Companion**  | A lightweight, floating window for fast code edits, explanations, or questions without leaving your current context (Ctrl+Shift+L).                                     |
-| 🧠 **Smart Context**         | A sidebar file tree lets you precisely control which files and folders the AI can "see." Includes an AI-powered auto-selection tool to find relevant context for any task. |
-| 📝 **Smart Edits**           | Apply AI-generated code directly to your files with a single click, supporting both full-file updates and diff patching.                                                |
-| 🎭 **Personalities**         | Switch between specialized AI personas like "Python Expert", "Senior Architect", or "Security Reviewer" to tailor the AI's behavior to your current task.               |
+| 🧠 **Smart Context**         | A sidebar file tree lets you precisely control which files the AI can "see." Includes **🔍 Definitions-Only** mode to save tokens while keeping API visibility. |
+| 📝 **Smart Edits**           | Apply AI-generated code directly to your files with a single click, supporting both full-file updates and Aider-style SEARCH/REPLACE patching.                        |
 | 🕵️ **Commit Inspector**      | Analyze git commits for security vulnerabilities, bugs, and code quality issues with a single click.                                                                    |
 | 📓 **Jupyter Integration**   | Enhance your data science workflow with tools to generate, explain, visualize, and fix notebook cells.                                                                  |
 
@@ -67,8 +75,8 @@ Ever notice how AI assistants repeat the same naming or logic mistakes every day
 
 1.  Install [lollms-vs-coder](https://marketplace.visualstudio.com/items?itemName=parisneo.lollms-vs-coder) from the Visual Studio Marketplace.
 2.  Open the Lollms sidebar in VS Code (click the Lollms icon in the activity bar).
-3.  In the **Actions** view, click the **<span class="codicon codicon-gear"></span> Settings** item to open the configuration panel.
-4.  Enter your Lollms API Host (e.g., `http://localhost:9642`) and select your desired model.
+3.  In the **Navigation** view, click the **<span class="codicon codicon-gear"></span> Settings** item to open the configuration panel.
+4.  Enter your Lollms API Host (e.g., `http://localhost:9642` or your local Ollama address) and select your desired model.
 
 ---
 
@@ -79,8 +87,10 @@ The **Lollms Chat** is your central hub for interacting with the AI.
 *   **Start a Chat**: Click the `+` icon in the **Discussions** sidebar view.
 *   **Manage Context**: Use the **AI Context Files** view to control what the AI sees:
     *   **✅ Included**: The AI reads the full file content.
+    *   **🔍 Definitions**: The AI sees the file structure (classes/functions) but not implementation details.
     *   **📄 Tree-Only**: The AI sees the file path but not the content (saves tokens).
     *   **🚫 Excluded**: The file is hidden from the AI.
+*   **Mission Briefing**: Use the **🛡️ Briefing** button to set task-specific constraints that stay at the top of the AI's memory.
 *   **Attach Files**: Click the paperclip icon or drag & drop images and documents directly into the chat area.
 
 ---
@@ -92,14 +102,10 @@ Customize how the AI behaves for each specific discussion by clicking the **Disc
 ### 🧠 Activate Thinking Mode
 For complex tasks requiring logic and reasoning, enable **Thinking Mode**.
 1.  Open **Discussion Settings**.
-2.  Select a **Reasoning Strategy**:
-    *   **Chain of Thought**: Forces the AI to show its step-by-step reasoning.
-    *   **Plan and Solve**: Creates a plan before executing.
-    *   **Self-Critique**: The AI checks its own answer for errors before responding.
-    *   **No Think**: Disables reasoning for faster, direct answers.
+2.  Select a **Reasoning Strategy** (e.g. Chain of Thought, Plan and Solve).
 
-### 🌐 Web Search
-Toggle **Web Search** in the settings to allow the AI to browse the internet for up-to-date information (requires Google Custom Search configuration).
+### 🌍 Web Search & Research Agent
+Toggle **Web Search** in the settings to allow the AI to browse the internet. When enabled, Lollms spawns a specialized **Research Librarian** to verify facts or read library documentation.
 
 ---
 
@@ -112,10 +118,10 @@ If the AI generates a `File: path/to/file.ext` block:
 *   Click **⚙️ Apply to File**.
 *   A diff view will open, allowing you to review the changes before saving.
 
-### 2. Diff / Patching
-If the AI generates a `Diff:` or patch block:
+### 2. Diff / Patching (Aider Format)
+Lollms excels at **SEARCH/REPLACE** blocks. This is the safest way to modify existing files without losing your local changes.
 *   Click **⚙️ Apply Patch**.
-*   The extension attempts to intelligently apply the diff to the target file.
+*   The **Guardian Protocol** will automatically verify the change doesn't introduce syntax errors.
 
 ### 3. Insert / Replace
 *   **Insert**: Inserts the code block at your current cursor position in the active editor.
@@ -129,7 +135,6 @@ Press `Ctrl+Shift+L` (or `Cmd+Shift+L` on Mac) to open the **Companion Panel**. 
 
 *   **Context Aware**: Automatically tracks your active editor selection.
 *   **Attach/Detach**: Pin the companion to a specific file or selection to keep the context fixed while you navigate other files.
-*   **History**: Keeps a local history of your quick interactions.
 
 ---
 
@@ -139,8 +144,6 @@ Lollms VS Coder supercharges your `.ipynb` notebooks with context-aware AI tools
 
 *   **$(book) Educative Notebook**: Generates a comprehensive, step-by-step notebook on a topic.
 *   **$(sparkle) Enhance**: Refactors and improves the code in the current cell.
-*   **$(wand) Generate Next**: Reads the current cell and generates the logical next step.
-*   **$(info) Explain**: Adds a markdown cell explaining the logic of the code cell.
 *   **$(graph) Visualize**: Generates code to visualize the data in the cell's output.
 *   **$(debug-restart) Fix Error**: If a cell execution fails, a "Fix with Lollms" button appears to analyze and fix the error.
 
@@ -152,19 +155,19 @@ When in **Agent Mode**, the AI can autonomously use tools to complete complex ob
 
 | Tool Category | Tools |
 | :--- | :--- |
-| **File Operations** | `read_file`, `generate_code` (create/overwrite), `list_files`, `search_files` |
-| **Execution** | `execute_command` (Shell), `execute_python_script` |
-| **Research** | `search_web` (Google), `search_arxiv` (Papers), `scrape_website` |
-| **Python** | `create_python_environment`, `install_python_dependencies`, `set_vscode_python_interpreter` |
-| **Planning** | `edit_plan` (Dynamic self-correction) |
-| **Context** | `auto_select_context_files`, `read_code_graph`, `request_user_input` |
-| **Creative** | `generate_image` |
+| **File Operations** | `read_file`, `generate_code`, `delete_file`, `move_file` |
+| **Execution** | `execute_command`, `run_file`, `run_tests_and_fix` |
+| **Architecture** | `update_code_graph`, `read_code_graph` |
+| **Knowledge** | `store_knowledge` (RLM), `extract_project_dna` |
+| **Research** | `search_web`, `search_arxiv`, `search_wikipedia`, `scrape_website` |
+| **Communication** | `moltbook_action` (Agent Social Network), `submit_response` |
+| **Planning** | `edit_plan` (Self-Correction), `wait` |
 
 ---
 
 ## Contributing
 
-Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](https://github.com/ParisNeo/lollms-vs-coder/issues).
+Contributions, issues, and feature requests are welcome! Feel free to check the [issues page](https://github.com/parisneo/lollms-vs-coder/issues).
 
 ---
 

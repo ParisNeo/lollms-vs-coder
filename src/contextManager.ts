@@ -1256,12 +1256,29 @@ Your primary mission is to synchronize the project context for the Worker LLM wh
 ### ⚖️ AGGRESSION MODE
 ${aggressionInstruction}
 
-### 🕵️ MISSION PHASES
-- **PHASE 1: MAP**: Locate logic in the tree.
-- **PHASE 2: INSPECT**: Read content to verify implementation.
-- **PHASE 3: DOCUMENT**: Use \`add_briefing_entry\` to record discovered architecture or patterns.
-- **PHASE 4: HANDOVER**: Finalize the briefing and ensure the Worker LLM has exactly the files it needs.
+### 🏗️ THE OPERATOR'S PROTOCOL (AUTONOMY MANDATE)
+You are an **Autonomous Software Engineer**, not a consultant. Your goal is to deliver a finished, verified result.
 
+**PHASE 0: HYGIENE & SAFETY (MANDATORY)**
+- Before any change: Check \`git status\`.
+- If there are uncommitted changes, use \`request_user_input\` to ask: "Workspace is dirty. Should I commit/stash or continue anyway?".
+- Create a dedicated feature branch for the task (e.g., \`ai/test-trm-logic\`).
+
+**PHASE 1: DEEP DISCOVERY**
+- Read relevant source code. Do NOT guess logic from filenames.
+- Identify how to run the current training/test suite.
+
+**PHASE 2: EMPIRICAL VERIFICATION**
+- Run the code. Capture the failure or the baseline performance.
+- Only propose enhancements AFTER you have seen the current code run and fail (or provide metrics).
+
+**PHASE 3: IMPLEMENTATION & SELF-HEAL**
+- Apply changes.
+- Run tests again. If they fail, fix them immediately in a loop.
+
+**PHASE 4: DEFINITION OF DONE**
+- The task is ONLY complete when the code runs without errors AND meets the objective.
+- Only then, provide your final synthesis.
 ### ⚖️ AGGRESSION MODE
 ${aggressionInstruction}
 
@@ -1819,15 +1836,11 @@ ${cumulativeBrain || "No observations yet."}
     
     if (useRLM) {
         result.selectedFilesContent += `### 🐢 LONG CONTEXT MODE (RLM ACTIVATED)\n`;
-        result.selectedFilesContent += `The total size of selected files exceeds 70% of the context window. Content is hidden.\n\n`;
-        result.selectedFilesContent += `**AVAILABLE FILES:**\n`;
-        for (const f of includedFiles) {
-            result.selectedFilesContent += `- ${f.path}\n`;
-        }
-        result.selectedFilesContent += `\n**INSTRUCTIONS:**\n- Use \`read_file\` to peek at specific files.\n- Use \`search_files\` to find code.\n- Use \`rlm_repl\` to maintain state and memory.\n\n`;
+        result.selectedFilesContent += `Context limit reached. Contents are hidden. Refer to the tree for files marked [C].\n\n`;
+        result.selectedFilesContent += `**INSTRUCTIONS:**\n- Use \`read_file\` to peek at specific files.\n- Use \`search_files\` to find code.\n- Use \`rlm_repl\` to maintain state and memory.\n\n`;
         result.selectedFilesContent += `### RLM MEMORY\n- **Front Memory (Scratchpad):** [Empty]\n- **Back Memory (Persistent):** [Empty]\n`;
     } else if (includedFiles.length > 0) {
-      result.selectedFilesContent += `### 📑 INDEX OF LOADED FILES:\n${includedFiles.map(f => `- ${f.path}`).join('\n')}\n\n`;
+      // Redundant Index removed. Markers are now in the Project Structure tree.
       for (let i = 0; i < includedFiles.length; i++) {
         const fileEntry = includedFiles[i];
 
@@ -2058,6 +2071,8 @@ Based on the objective and the file tree, which files are the most relevant? Ret
       return '## Project Structure\n\n*No project structure available - no workspace folder found.*\n';
     }
 
+    const contextFiles = this.contextStateProvider.getIncludedFiles();
+
     // 1. Update UI to show we are scanning, not just "Building"
     if (onProgress) onProgress(5); 
 
@@ -2106,13 +2121,14 @@ Based on the objective and the file tree, which files are the most relevant? Ret
             continue;
         }
 
-        const parts = filePath.split(path.sep).filter(part => part.length > 0);
+        // FIX: Split on both slashes to avoid flattening on Windows
+        const parts = filePath.split(/[\\/]/).filter(part => part.length > 0);
         
         // --- PRUNING LOGIC: Skip children of collapsed folders ---
         let isCollapsedByParent = false;
         let currentPathAcc = "";
         for (let j = 0; j < parts.length - 1; j++) {
-            currentPathAcc = currentPathAcc ? path.join(currentPathAcc, parts[j]) : parts[j];
+            currentPathAcc = currentPathAcc ? currentPathAcc + '/' + parts[j] : parts[j];
             const parentUri = vscode.Uri.joinPath(workspaceFolder.uri, currentPathAcc);
             if (this.contextStateProvider?.getStateForUri(parentUri) === 'collapsed') {
                 isCollapsedByParent = true;
@@ -2133,7 +2149,12 @@ Based on the objective and the file tree, which files are the most relevant? Ret
         });
     }
 
-    const generateTreeString = (obj: any, prefix: string = '', isLast: boolean = true, currentPath: string = ''): string => {
+    // Create a map for quick state lookup during tree construction
+    const stateMap = new Map<string, string>();
+    contextFiles.forEach(f => stateMap.set(this.normalize(f.path), f.state));
+
+    // Token-efficient YAML-style tree generation
+    const generateTreeString = (obj: any, indentLevel: number = 0, currentPath: string = ''): string => {
       let result = '';
       const keys = Object.keys(obj).sort((a, b) => {
         const aIsDir = obj[a] !== null;
@@ -2143,34 +2164,39 @@ Based on the objective and the file tree, which files are the most relevant? Ret
         return a.localeCompare(b);
       });
 
-      keys.forEach((key, index) => {
-        const isLastItem = index === keys.length - 1;
-        const connector = isLastItem ? '└── ' : '├── ';
-        
-        let displayKey = key;
-        const fullPath = currentPath ? path.join(currentPath, key) : key;
+      const indent = '  '.repeat(indentLevel);
+
+      keys.forEach((key) => {
+        const fullPath = currentPath ? currentPath + '/' + key : key;
+        const normalizedPath = this.normalize(fullPath);
         const isDirectory = obj[key] !== null;
         
+        let suffix = "";
         let isCollapsed = false;
-        if (this.contextStateProvider && workspaceFolder && isDirectory) {
+
+        if (this.contextStateProvider && workspaceFolder) {
             const uri = vscode.Uri.joinPath(workspaceFolder.uri, fullPath);
-            const state = this.contextStateProvider.getStateForUri(uri);
+            const state = isDirectory ? this.contextStateProvider.getStateForUri(uri) : stateMap.get(normalizedPath);
+            
             if (state === 'collapsed') {
                 isCollapsed = true;
+                suffix = " (Collapsed)";
+            } else if (state === 'included') {
+                suffix = " [C]"; // Content Loaded
+            } else if (state === 'definitions-only') {
+                suffix = " [D]"; // Definitions Only
             }
         }
 
         if (isCollapsed) {
-             // Stop here for this branch
-             result += prefix + connector + displayKey + '/ (Collapsed)\n';
+             result += indent + key + '/' + suffix + '\n';
              return; 
         }
         
-        result += prefix + connector + displayKey + (isDirectory ? '/' : '') + '\n';
+        result += indent + key + (isDirectory ? '/' : '') + suffix + '\n';
 
         if (isDirectory) {
-          const newPrefix = prefix + (isLastItem ? '    ' : '│   ');
-          result += generateTreeString(obj[key], newPrefix, isLastItem, fullPath);
+          result += generateTreeString(obj[key], indentLevel + 1, fullPath);
         }
       });
 

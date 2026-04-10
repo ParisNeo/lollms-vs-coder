@@ -1,0 +1,69 @@
+---
+name: ascii-colors-live-displays
+description: >
+  Real-time terminal updates using Status spinners and Live display contexts.
+author: Lollms User
+version: 1.0.0
+category: development/languages/python/ui/ascii_colors
+created: 2025-02-13
+---
+
+# ASCIIColors Live & Status
+
+## Status Spinners
+Use spinners for tasks with unknown duration.
+
+```python
+from ascii_colors import ASCIIColors
+import time
+
+# Default dots spinner
+with ASCIIColors.status("Connecting to database...") as status:
+    time.sleep(2)
+    status.update("Authenticating...")
+    time.sleep(1)
+    # Block exits, spinner stops
+```
+
+### Spinner Styles
+Common styles: `dots`, `line`, `arrow`, `pulse`, `star`, `moon`.
+
+```python
+with ASCIIColors.status("Processing...", spinner="moon", spinner_style="bold magenta") as status:
+    do_work()
+```
+
+## Live Displays
+A "Live" context allows you to update a specific area of the terminal continuously.
+
+```python
+from ascii_colors import ASCIIColors
+from ascii_colors.rich import Text
+import time
+
+with ASCIIColors.live("Initializing...") as live:
+    for i in range(1, 11):
+        time.sleep(0.3)
+        live.update(Text(f"Task {i}/10 in progress..."))
+    
+    live.update(Text("[bold green]✓ All Tasks Complete[/bold green]"))
+```
+
+## Animated Execution
+A high-level helper that wraps a function call with a spinner.
+
+```python
+from ascii_colors import ASCIIColors
+
+def long_calculation():
+    import time
+    time.sleep(3)
+    return 42
+
+result = ASCIIColors.execute_with_animation(
+    "Calculating meaning of life...",
+    long_calculation,
+    color=ASCIIColors.color_cyan
+)
+# Automatically shows ⠋ ... → ✓ on success or ✗ on failure
+```

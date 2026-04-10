@@ -237,7 +237,13 @@ export function applySearchReplace(content: string, searchBlock: string, replace
         return { success: true, result };
     }
 
-    // 2. Direct match attempt (Fast Path)
+    // 2. Idempotency Check (NEW): If the replacement is already there, we win.
+    // This prevents errors if the user applies the same hunk twice or fixes it manually.
+    if (normalizedContent.includes(normalizedReplace.trim())) {
+        return { success: true, result: normalizedContent };
+    }
+
+    // 3. Direct match attempt (Fast Path)
     if (normalizedContent.includes(normalizedSearch)) {
         const parts = normalizedContent.split(normalizedSearch);
         return { success: true, result: parts.join(normalizedReplace) };

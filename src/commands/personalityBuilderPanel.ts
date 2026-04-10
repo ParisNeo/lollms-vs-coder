@@ -200,10 +200,13 @@ export class PersonalityBuilderPanel {
     private _getHtmlForWebview(personality?: Personality): string {
         const codiconUri = this._panel.webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'codicon.css'));
         
-        // FIX: Do NOT use .replace(/"/g, '&quot;') for script injection. 
-        // Use standard JSON stringify which is valid JS object syntax.
-        // We replace < to \u003c to prevent script injection attacks.
-        const initialData = personality ? JSON.stringify(personality).replace(/</g, '\\u003c') : 'null';
+        // Securely serialize the object for injection into a <script> tag.
+        // We escape the forward slash and the opening angle bracket to prevent </script> injection.
+        const initialData = personality ? 
+            JSON.stringify(personality)
+                .replace(/</g, '\\u003c')
+                .replace(/\//g, '\\/') : 
+            'null';
 
         return `<!DOCTYPE html>
         <html lang="en">

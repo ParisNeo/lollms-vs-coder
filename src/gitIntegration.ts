@@ -602,7 +602,7 @@ export class GitIntegration {
   public async getGitGraph(folder: vscode.WorkspaceFolder, count: number = 30, skip: number = 0): Promise<string | null> {
       try {
           const { stdout } = await execAsync(
-              `git --no-pager log --graph --all --pretty=format:"%h|%ar|%an|%d|%s" --color=never --max-count=${count} --skip=${skip}`,
+              `git --no-pager log --graph --all --pretty=format:"%H|%ar|%an|%d|%s" --color=never --max-count=${count} --skip=${skip}`,
               { cwd: folder.uri.fsPath, timeout: 10000 }
           );
           // Return null if git gave us nothing (empty repo, no commits)

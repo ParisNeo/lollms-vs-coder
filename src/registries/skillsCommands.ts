@@ -106,20 +106,40 @@ export function registerSkillsCommands(context: vscode.ExtensionContext, service
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.exportSkills', async (item?: any) => {
         const skillId = item?.skill?.id || item?.id;
         
-        const formatChoice = await vscode.window.showQuickPick([
-            { label: 'LoLLMs XML (.xml)', value: 'lollms', description: 'Native Lollms format' },
-            { label: 'Claude Markdown (.md)', value: 'claude', description: 'Claude Code compatible format' }
-        ], { placeHolder: 'Select export format' });
+        const allSkills = await services.skillsManager.getSkills();
+        const toExport = skillId 
+            ? allSkills.filter(s => s.id === skillId)
+            : allSkills;
 
-        if (!formatChoice) return;
+        if (toExport.length === 0) {
+            vscode.window.showInformationMessage("No skills selected for export.");
+            return;
+        }
 
-        await services.skillsManager.exportSkills(
-            skillId ? [skillId] : undefined, 
-            formatChoice.value as 'lollms' | 'claude'
-        );
+        const folderUri = await vscode.window.showOpenDialog({
+            title: "Select Folder to Export Skills",
+            canSelectFiles: false,
+            canSelectFolders: true,
+            canSelectMany: false
+        });
+
+        if (folderUri && folderUri[0]) {
+            for (const skill of toExport) {
+                // Export as Format A: Folder with SKILL.md
+                const skillFolder = vscode.Uri.joinPath(folderUri[0], skill.id);
+                await vscode.workspace.fs.createDirectory(skillFolder);
+                const fileUri = vscode.Uri.joinPath(skillFolder, 'SKILL.md');
+                
+                const fileContent = services.skillsManager.skillToClaudeMarkdown(skill);
+
+                await vscode.workspace.fs.writeFile(fileUri, Buffer.from(fileContent, 'utf8'));
+            }
+            vscode.window.showInformationMessage(`Exported ${toExport.length} skills to ${folderUri[0].fsPath}`);
+        }
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refreshSkills', () => {
+        services.skillsManager.invalidateCache();
         services.treeProviders.skills?.refresh();
     }));
 }

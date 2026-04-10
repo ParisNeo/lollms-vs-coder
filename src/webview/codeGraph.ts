@@ -23,6 +23,10 @@ const vscode = acquireVsCodeApi();
 const cyContainer = document.getElementById('cy') as HTMLDivElement;
 const mermaidContainer = document.getElementById('mermaid-container') as HTMLDivElement;
 const viewSelect = document.getElementById('view') as HTMLSelectElement;
+const symbolSearch = document.getElementById('symbol-search') as HTMLInputElement;
+const symbolList = document.getElementById('symbols-list') as HTMLDataListElement;
+const runBtn = document.getElementById('run') as HTMLButtonElement;
+const exampleSelect = document.getElementById('sparql-examples') as HTMLSelectElement;
 const rebuildBtn = document.getElementById('rebuild') as HTMLButtonElement;
 const addChatBtn = document.getElementById('add') as HTMLButtonElement;
 const exportBtn = document.getElementById('export') as HTMLButtonElement;
@@ -36,6 +40,47 @@ let currentClassDiagram: string = '';
 let currentFunctionSignatures: string = '';
 let cyInstance: cytoscape.Core | null = null;
 let currentConfig = { zoomSensitivity: 0.5, panningEnabled: true, zoomToCursor: true };
+
+// SPARQL-lite Logic
+function runGraphQuery(query: string) {
+    if (!cyInstance) return;
+    
+    // Reset visibility
+    cyInstance.elements().removeClass('highlighted hidden');
+    
+    const lowerQuery = query.toLowerCase().trim();
+    if (!lowerQuery) return;
+
+    // 1. Handle "Isolate" command
+    if (lowerQuery.startsWith('isolate ')) {
+        const target = lowerQuery.replace('isolate ', '');
+        const roots = cyInstance.nodes().filter(n => n.data('label').toLowerCase().includes(target));
+        const neighborhood = roots.neighborhood().add(roots);
+        cyInstance.elements().not(neighborhood).addClass('hidden');
+        return;
+    }
+
+    // 2. Handle SPARQL-lite: "SELECT ?x WHERE { ?x imports 'target' }"
+    const sparqlMatch = lowerQuery.match(/select\s+\?(\w+)\s+where\s+\{\s*\?\w+\s+(\w+)\s+['"]([^'"]+)['"]\s*\}/i);
+    if (sparqlMatch) {
+        const [_, variable, relation, target] = sparqlMatch;
+        const targetNodes = cyInstance.nodes().filter(n => n.data('label').toLowerCase().includes(target.toLowerCase()));
+        
+        if (relation === 'imports' || relation === 'depends') {
+            const dependents = targetNodes.incomers('edge[label="imports"]').sources();
+            dependents.addClass('highlighted');
+            cyInstance.elements().not(dependents.add(targetNodes).add(dependents.edgesWith(targetNodes))).addClass('hidden');
+        }
+        return;
+    }
+
+    // 3. Default: Simple Search & Center
+    const matches = cyInstance.nodes().filter(n => n.data('label').toLowerCase().includes(lowerQuery));
+    if (matches.length > 0) {
+        cyInstance.animate({ center: { eles: matches }, zoom: 1 });
+        matches.addClass('highlighted');
+    }
+}
 
 // Event Listeners
 window.addEventListener('message', event => {
@@ -71,7 +116,16 @@ window.addEventListener('message', event => {
         }
 
         // Store Data
-        if (graph) currentGraphData = graph;
+        if (graph) {
+            currentGraphData = graph;
+            // Update Autocomplete
+            if (symbolList) {
+                symbolList.innerHTML = graph.nodes
+                    .filter((n: any) => n.type !== 'file')
+                    .map((n: any) => `<option value="${n.label}">${n.type}</option>`)
+                    .join('');
+            }
+        }
         if (classDiagram) currentClassDiagram = classDiagram;
         if (functionSignatures) currentFunctionSignatures = functionSignatures;
 
@@ -79,10 +133,154 @@ window.addEventListener('message', event => {
         if (state === 'ready' || (graph && graph.nodes.length > 0)) {
             render();
         }
+    } else if (message.command === 'focusNode') {
+        handleFocusNode(message.label, message.type);
     } else if (message.command === 'triggerExport') {
         exportVisualGraph(message.format, message.view);
     }
 });
+
+if (runBtn) {
+    runBtn.addEventListener('click', () => {
+        const query = symbolSearch.value.trim();
+        if (!query) return;
+
+        if (query.toUpperCase().startsWith('SELECT')) {
+            executeSparql(query);
+        } else {
+            vscode.postMessage({ command: 'runSymbol', symbol: query });
+        }
+    });
+}
+
+if (exampleSelect) {
+    exampleSelect.addEventListener('change', () => {
+        if (exampleSelect.value) {
+            symbolSearch.value = exampleSelect.value;
+            exampleSelect.value = "";
+        }
+    });
+}
+
+function executeSparql(query: string) {
+    if (!cyInstance || !currentGraphData) return;
+    
+    console.log("[Graph] Executing SPARQL:", query);
+
+    // 1. Reset current state
+    cyInstance.elements().removeClass('highlight');
+
+    // 2. Improved Regex: Supports variables (?x) or literals ('file.py', "MyClass")
+    const match = query.match(/SELECT\s+(\?\w+)\s+WHERE\s*\{\s*(\S+)\s+(\S+)\s+(\S+)\s*\}/i);
+    
+    if (!match) {
+        statusLabel.textContent = "Query syntax error. Use: SELECT ?x WHERE { ?x type 'class' }";
+        statusLabel.style.color = 'var(--vscode-errorForeground)';
+        return;
+    }
+
+    const [,, subject, predicate, object] = match;
+    const selectVar = match[1];
+    const clean = (s: string) => s.replace(/['"]/g, '');
+
+    // 3. Triple Matching logic
+    const matchingElements = cyInstance.collection();
+
+    cyInstance.edges().forEach(edge => {
+        const source = edge.source();
+        const target = edge.target();
+        const edgeLabel = edge.data('label');
+
+        if (edgeLabel === clean(predicate)) {
+            // Check if Subject or Object match (either literal match or variable)
+            const subjectMatches = subject.startsWith('?') || source.data('label') === clean(subject);
+            const objectMatches = object.startsWith('?') || target.data('label') === clean(object);
+
+            if (subjectMatches && objectMatches) {
+                matchingElements.merge(edge);
+                
+                // Map the SELECT variable back to the correct part of the triple
+                if (subject === selectVar) matchingElements.merge(source);
+                if (object === selectVar) matchingElements.merge(target);
+                
+                // Also highlight literals for context
+                if (!subject.startsWith('?')) matchingElements.merge(source);
+                if (!object.startsWith('?')) matchingElements.merge(target);
+            }
+        }
+    });
+
+    // Special case for node-only metadata (e.g. type)
+    if (clean(predicate) === 'type') {
+        cyInstance.nodes().forEach(node => {
+            if (node.data('type') === clean(object)) {
+                matchingElements.merge(node);
+            }
+        });
+    }
+
+    // 4. Update UI and Zoom
+    if (matchingElements.length > 0) {
+        matchingElements.addClass('highlight');
+        statusLabel.textContent = `Found ${matchingElements.nodes().length} matches`;
+        statusLabel.style.color = 'inherit';
+        
+        cyInstance.animate({
+            fit: { eles: matchingElements, padding: 80 },
+            duration: 500
+        });
+    } else {
+        statusLabel.textContent = "No matches found.";
+        statusLabel.style.color = 'var(--vscode-charts-orange)';
+    }
+}
+
+async function handleFocusNode(label: string, type: string) {
+    // 1. Auto-switch view based on symbol type
+    const isClass = (type || '').includes('class');
+    const targetView = isClass ? 'class_diagram' : 'call_graph';
+    
+    if (viewSelect.value !== targetView) {
+        viewSelect.value = targetView;
+        render();
+        await new Promise(resolve => setTimeout(resolve, 600));
+    }
+
+    // 2. Perform search/focus
+    if (viewSelect.value === 'class_diagram' || viewSelect.value === 'function_signatures') {
+        const textNodes = Array.from(mermaidContainer.querySelectorAll('text, .nodeLabel'));
+        const match = textNodes.find(n => n.textContent?.trim() === label || n.textContent?.includes(label));
+        if (match) {
+            match.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            (match as HTMLElement).style.filter = 'drop-shadow(0 0 10px #ff9d00)';
+            setTimeout(() => { (match as HTMLElement).style.filter = ''; }, 3000);
+        }
+    } else if (cyInstance) {
+        const node = cyInstance.nodes().filter(n => n.data('label') === label || n.data('id') === label);
+        
+        if (node.length > 0) {
+            cyInstance.elements().removeClass('highlight');
+            
+            // HIGHLIGHT NODE + NEIGHBORHOOD (Connections)
+            const neighborhood = node.closedNeighborhood();
+            neighborhood.addClass('highlight');
+            
+            // Ensure parents (file boxes) are visible but not blocking
+            node.parents().style('background-opacity', 0.05);
+
+            cyInstance.animate({
+                zoom: 1.2, // Slightly out to see connections
+                center: { eles: node },
+                duration: 800,
+                easing: 'ease-in-out-quint'
+            });
+            
+            statusLabel.textContent = `Focused on ${label}`;
+        }
+    }
+    
+    if (symbolSearch) symbolSearch.value = label;
+}
 
 if (rebuildBtn) {
     rebuildBtn.addEventListener('click', () => {
@@ -365,8 +563,8 @@ function renderCytoscapeView(viewType: string) {
         layout: isLarge ? {
             name: 'dagre',
             rankDir: 'LR',
-            nodeSep: 40,
-            rankSep: 80,
+            nodeSep: 120, // Increased spacing
+            rankSep: 200, // Increased spacing
             animate: false
         } : {
             name: 'cose-bilkent',
@@ -398,6 +596,27 @@ function renderCytoscapeView(viewType: string) {
         statusLabel.style.color = 'var(--vscode-charts-orange)';
     }
 
+    // CRITICAL FIX: Ensure container is ready and force a spread-out layout
+    setTimeout(() => {
+        if (!cyInstance) return;
+        cyInstance.resize();
+        cyInstance.layout(isLarge ? {
+            name: 'dagre',
+            rankDir: 'LR',
+            nodeSep: 200, // Even wider
+            rankSep: 350, // Even deeper
+            animate: true,
+            animationDuration: 400
+        } : {
+            name: 'cose-bilkent',
+            animate: true,
+            nodeRepulsion: 25000, // Massive repulsion to prevent packing
+            idealEdgeLength: 200,   // Longer connections
+            nodeDimensionsIncludeLabels: true
+        } as any).run();
+        cyInstance.fit(undefined, 60);
+    }, 150);
+
     // Node Interaction
     cyInstance.on('tap', 'node', function(evt) {
         const node = evt.target;
@@ -420,52 +639,64 @@ function getCyStyle() {
                 'label': 'data(label)',
                 'color': '#ffffff',
                 'font-size': '10px',
-                'text-valign': 'bottom',
+                'text-valign': 'center', // Labels moved inside
                 'text-halign': 'center',
-                'text-margin-y': '4px',
+                'text-wrap': 'wrap',
+                'text-max-width': '80px',
                 'background-color': '#3c3c3c',
-                'border-width': 2,
-                'border-color': '#555',
-                'width': '15px',
-                'height': '15px',
+                'border-width': 1.5,
+                'border-color': '#ffffff',
+                'width': '60px', // Larger nodes to fit text
+                'height': '60px',
                 'shape': 'ellipse',
+                'text-outline-color': '#1e1e1e', // Contrast for readability
+                'text-outline-width': 2,
                 'overlay-opacity': 0,
                 'transition-property': 'background-color, line-color, target-arrow-color',
                 'transition-duration': '0.2s'
             }
         },
         {
-            selector: ':parent', 
+            selector: ':parent', // This represents FILES
             style: {
                 'text-valign': 'top',
                 'text-halign': 'center',
-                'background-color': '#ffffff',
-                'background-opacity': 0.05,
-                'border-color': '#ffffff',
-                'border-opacity': 0.2,
-                'border-width': 1,
+                'background-color': '#569cd6',
+                'background-opacity': 0.03,
+                'border-color': '#569cd6',
+                'border-opacity': 0.4,
+                'border-width': 2,
                 'border-style': 'solid',
-                'padding': '15px',
+                'padding': '40px', // More space inside files
                 'shape': 'roundrectangle',
-                'font-size': '12px',
+                'font-size': '14px',
                 'font-weight': 'bold',
-                'text-margin-y': '-8px'
+                'text-margin-y': '-15px'
             }
         },
         {
             selector: '.node-class',
             style: {
-                'background-color': '#1e4e3c',
-                'border-color': '#4ec9b0',
-                'shape': 'cut-rectangle'
+                'background-color': '#4ec9b0', // Teal
+                'border-color': '#ffffff',
+                'shape': 'rectangle',
+                'width': '80px'
             }
         },
         {
             selector: '.node-function',
             style: {
-                'background-color': '#4d3b1e',
-                'border-color': '#dcdcaa',
+                'background-color': '#dcdcaa', // Yellow
+                'border-color': '#ffffff',
                 'shape': 'ellipse'
+            }
+        },
+        {
+            selector: 'node[type="method"]',
+            style: {
+                'background-color': '#ce9178', // Orange/Brown
+                'border-color': '#ffffff',
+                'shape': 'round-rectangle'
             }
         },
         {
@@ -500,8 +731,34 @@ function getCyStyle() {
         {
             selector: 'edge.imports',
             style: {
-                'line-color': '#569cd6',
-                'target-arrow-color': '#569cd6'
+                'target-arrow-color': '#569cd6',
+                'target-arrow-shape': 'triangle'
+            }
+        },
+        {
+            selector: 'node.highlight',
+            style: {
+                'background-color': '#ff9d00',
+                'transition-property': 'background-color, width, height',
+                'transition-duration': '0.3s',
+                'width': '35px',
+                'height': '35px',
+                'border-width': 4,
+                'border-color': '#ffffff',
+                'font-size': '14px',
+                'font-weight': 'bold',
+                'z-index': 9999
+            }
+        },
+        {
+            selector: 'edge.highlight',
+            style: {
+                'line-color': '#ff9d00',
+                'target-arrow-color': '#ff9d00',
+                'width': '4px',
+                'arrow-scale': 1.5,
+                'z-index': 9998,
+                'opacity': 1
             }
         }
     ];

@@ -2259,28 +2259,29 @@ function gatherChangesFromBlocks(messageId: string) {
         if (blockIdParts.length < 3) return;
         const blockIndex = parseInt(blockIdParts[2], 10);
         
-        // Retrieve preserved raw code
         const codeText = block.dataset.rawCode || "";
         const summaryText = block.querySelector('.summary-lang-label')?.textContent || "";
         const parts = summaryText.split(' : ');
         const path = parts.length > 1 ? parts[1].replace('Diff: ', '').trim() : "";
         if (!path) return;
 
-        const isAider = codeText.includes('<<<<<<< SEARCH');
+        const hunkBubbles = block.querySelectorAll('.aider-hunk-bubble');
 
-        if (isAider) {
-            // Grouped Aider Application: If a block has multiple hunks, 
-            // apply them as one operation to prevent context-shift errors.
-            const applyBtn = block.querySelector('.code-actions .apply-btn') as HTMLButtonElement;
-            if (applyBtn && !applyBtn.classList.contains('applied')) {
-                changes.push({
-                    type: 'replace',
-                    path: path,
-                    content: codeText,
-                    label: `${path} (${block.querySelectorAll('.aider-hunk-bubble').length} hunks)`,
-                    blockIndex: blockIndex
-                });
-            }
+        if (hunkBubbles.length > 0) {
+            // Aider Multi-Hunk: Send each hunk separately for verification/application
+            hunkBubbles.forEach((hunk: any, hIdx: number) => {
+                const hunkBtn = hunk.querySelector('.apply-btn');
+                if (hunkBtn && !hunkBtn.classList.contains('applied')) {
+                    changes.push({
+                        type: 'replace',
+                        path: path,
+                        content: codeText, // Backend will use hunkIndex to pick the right part
+                        label: `${path} (Hunk ${hIdx + 1})`,
+                        blockIndex: blockIndex,
+                        hunkIndex: hIdx
+                    });
+                }
+            });
         } else {
             const applyBtn = block.querySelector('.code-actions .apply-btn') as HTMLButtonElement;
             if (applyBtn && !applyBtn.classList.contains('applied')) {
@@ -2549,7 +2550,7 @@ function addChatMessage(message: any, isFinal: boolean = true) {
 
 
 
-export function updateContext(contextText: string, files: string[] = [], skills: any[] = [], diagrams: any[] = []) {
+export function updateContext(contextText: string, files: string[] = [], skills: any[] = [], diagrams: any[] = [], briefing: string = "") {
     if(!dom.contextContainer) return;
 
     // Cache the data so we can re-render if capabilities (like Mute) change
@@ -2617,6 +2618,19 @@ export function updateContext(contextText: string, files: string[] = [], skills:
     const themeClass = isAgentActive ? 'agent-mode-bubble' : '';
     const muteClass = isMuted ? 'muted-bubble' : '';
 
+    const renderDataBriefing = () => {
+        const raw = briefing || "";
+        if (!raw.trim()) return "Librarian is analyzing project state...";
+        try {
+            if (!raw.startsWith('{')) return raw;
+            const entries = JSON.parse(raw);
+            return Object.keys(entries).map(id => {
+                const title = id.replace(/_/g, ' ').toUpperCase();
+                return `<strong>[${title}]</strong><br>${entries[id]}`;
+            }).join('<br><br>');
+        } catch { return raw; }
+    };
+
     const innerHTML = `
     <div class="message special-zone-message context-message ${themeClass} ${muteClass}">
         <div class="message-avatar">
@@ -2662,6 +2676,9 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                     <button id="web-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Web Discovery (URL, YouTube, Wiki, etc.)">
                         <span class="codicon codicon-globe"></span> Web
                     </button>
+                    <button id="edit-briefing-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0; border-color: var(--vscode-charts-purple);" title="Set the Technical Briefing (Prime Directive)">
+                        <span class="codicon codicon-shield"></span> Briefing
+                    </button>
                     <button id="add-diagram-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Add Architecture Diagram to Context">
                         <span class="codicon codicon-graph"></span> Diagram
                     </button>
@@ -2684,6 +2701,14 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                 </div>
             </div>
             <div class="message-content">
+                <details class="info-collapsible" style="margin-bottom: 6px; border-left: 4px solid var(--vscode-charts-purple);">
+                    <summary>Team Technical Briefing</summary>
+                    <div class="collapsible-content">
+                        <div class="briefing-content" style="padding: 10px; font-size: 12px; line-height: 1.5;">
+                            ${renderDataBriefing()}
+                        </div>
+                    </div>
+                </details>
                 <details class="info-collapsible" style="margin-bottom: 6px;">
                     <summary>Selected Files (${files.length})</summary>
                     <div class="collapsible-content" style="padding-top: 8px;">
@@ -2894,6 +2919,14 @@ export function updateContext(contextText: string, files: string[] = [], skills:
             vscode.postMessage({ command: 'requestViewFullContext' });
         });
     }
+
+    const briefingBtn = document.getElementById('edit-briefing-btn');
+    if (briefingBtn) {
+        briefingBtn.addEventListener('click', () => {
+            vscode.postMessage({ command: 'requestMissionBriefing' });
+        });
+    }
+
 
     const usageBtn = document.getElementById('view-usage-context-btn');
     if (usageBtn) {

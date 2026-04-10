@@ -57,11 +57,14 @@ export class ProjectMemoryPanel {
     }
 
     private async _update() {
+        // Show loading state first
+        this._panel.webview.html = this._getHtml([], true);
+        
         const memories = await this.manager.getMemories();
-        this._panel.webview.html = this._getHtml(memories);
+        this._panel.webview.html = this._getHtml(memories, false);
     }
 
-    private _getHtml(memories: MemoryEntry[]) {
+    private _getHtml(memories: MemoryEntry[], isLoading: boolean = false) {
         const escape = (str: string) => str.replace(/[&<>"']/g, (m) => ({
             '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
         }[m] || m));
@@ -76,6 +79,11 @@ export class ProjectMemoryPanel {
                 .memory-card { background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border); padding: 15px; border-radius: 8px; margin-bottom: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
                 .new-card { border: 2px dashed var(--vscode-focusBorder); display: none; margin-bottom: 25px; animation: slideDown 0.2s ease-out; }
                 @keyframes slideDown { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+                
+                .loading-overlay { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 50px; opacity: 0.7; }
+                .spinner { width: 40px; height: 40px; border: 4px solid var(--vscode-button-secondaryBackground); border-top: 4px solid var(--vscode-button-background); border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 15px; }
+                @keyframes spin { 100% { transform: rotate(360deg); } }
+
                 label { display: block; font-size: 11px; font-weight: bold; opacity: 0.7; margin-bottom: 4px; text-transform: uppercase; }
                 input, textarea { width: 100%; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 8px; margin-bottom: 12px; border-radius: 4px; font-family: inherit; box-sizing: border-box; }
                 input:focus, textarea:focus { outline: 1px solid var(--vscode-focusBorder); border-color: transparent; }
@@ -108,8 +116,13 @@ export class ProjectMemoryPanel {
             </div>
             
             <div id="list">
-                ${memories.length === 0 ? '<div class="empty-state">No memories saved yet. The AI will add facts here as you work.</div>' : ''}
-                ${memories.map(m => `
+                ${isLoading ? `
+                    <div class="loading-overlay">
+                        <div class="spinner"></div>
+                        <div>Retrieving Knowledge Base...</div>
+                    </div>` : ''}
+                ${!isLoading && memories.length === 0 ? '<div class="empty-state">No memories saved yet. The AI will add facts here as you work.</div>' : ''}
+                ${!isLoading ? memories.map(m => `
                     <div class="memory-card" data-id="${m.id}">
                         <label>Title / Identifier</label>
                         <input type="text" class="title-input" value="${escape(m.title)}">
@@ -120,7 +133,7 @@ export class ProjectMemoryPanel {
                             <button class="save-btn" data-id="${m.id}">Save Changes</button>
                         </div>
                     </div>
-                `).join('')}
+                `).join('') : ''}
             </div>
 
             <script>

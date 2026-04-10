@@ -385,12 +385,12 @@ export class ChatPanel {
           const projectSkills = await this._contextManager.getActiveProjectSkills();
           const discussionSkills = this._currentDiscussion.importedSkills || [];
           
-          // Merge metadata for immediate display
           const allSkillIds = Array.from(new Set([...projectSkills, ...discussionSkills]));
+          const UI_PREVIEW_LIMIT = 10000; // Aligned with updateContextAndTokens for consistency
 
           if (cachedContext) {
-              const contextTextToSend = cachedContext.text.length > 50000 
-                  ? `# Context Hidden (Too Large for Preview)\n\nThe full context (${cachedContext.text.length} chars) is loaded in backend memory for AI usage, but is hidden from this preview to improve UI performance.`
+              const contextTextToSend = cachedContext.text.length > UI_PREVIEW_LIMIT 
+                  ? cachedContext.text.substring(0, UI_PREVIEW_LIMIT) + `\n\n... [Preview truncated for UI performance. Total: ${cachedContext.text.length} chars]`
                   : cachedContext.text;
 
             this._panel.webview.postMessage({ 
@@ -398,7 +398,8 @@ export class ChatPanel {
                 context: contextTextToSend,
                 files: includedFiles,
                 skills: cachedContext.importedSkills || [],
-                diagrams: cachedContext.diagrams || []
+                diagrams: cachedContext.diagrams || [],
+                briefing: this._currentDiscussion?.discussion_data_zone || "" // Sync briefing immediately
             });
             this._panel.webview.postMessage({ command: 'updateImageContext', images: cachedContext.images });
           } else {
@@ -407,9 +408,9 @@ export class ChatPanel {
                 command: 'updateContext', 
                 context: '', 
                 files: includedFiles,
-                // Create skeleton skill objects so the count is correct
                 skills: allSkillIds.map(id => ({ id, name: '...' })),
-                diagrams: this._currentDiscussion.activeDiagrams?.map(type => ({ type, mermaid: '' })) || []
+                diagrams: (this._currentDiscussion.activeDiagrams || []).map(type => ({ type, mermaid: '' })),
+                briefing: this._currentDiscussion?.discussion_data_zone || ""
             });
           }
       }
@@ -632,7 +633,8 @@ export class ChatPanel {
                     context: contextTextForUI,
                     files: includedFiles,
                     skills: context.importedSkills || [],
-                    diagrams: context.diagrams || []
+                    diagrams: context.diagrams || [],
+                    briefing: this._currentDiscussion?.discussion_data_zone || ""
                 });
             }
             this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
@@ -988,20 +990,8 @@ export class ChatPanel {
    * This fusions the Inspector and Verifier into one turn.
    */
   private async processProjectMemoryTags(content: string) {
-        const memoryRegex = /<project_memory\s+([^>]*?)>([\s\S]*?)<\/project_memory>/gi;
-        let match;
-        while ((match = memoryRegex.exec(content)) !== null) {
-            const attrStr = match[1];
-            const memoryContent = match[2].trim();
-            const attrs: any = {};
-            const attrRegex = /(\w+)=["']([^"']*)["']/g;
-            let m;
-            while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
-
-            const { action, id, title } = attrs;
-            if (action && id && this.agentManager.projectMemoryManager) {
-                await this.agentManager.projectMemoryManager.updateMemory(action as any, id, title, memoryContent);
-            }
+        if (this.agentManager?.projectMemoryManager) {
+            await this.agentManager.projectMemoryManager.processTags(content);
         }
     }
 
@@ -1468,26 +1458,29 @@ ${context.skills ? `## 🎓 ACTIVE SKILLS\n${context.skills}` : ''}
 
   public async sendMessage(message: ChatMessage, autoContextMode: boolean = false) {
     if (this._isDisposed) return;
+    
+    // --- 1. PRESERVE USER CONTENT IMMEDIATELY ---
+    // Create a fresh copy to prevent any mutation issues
+    const userMessage: ChatMessage = { 
+        ...message, 
+        id: message.id || 'user_' + Date.now() + Math.random().toString(36).substring(2),
+        timestamp: Date.now()
+    };
+
     if (!this._currentDiscussion) {
-        await this.waitForWebviewReady();
-        if (!this._currentDiscussion) {
-            vscode.window.showErrorMessage("No active discussion found.");
-            return;
-        }
-    } else {
         await this.waitForWebviewReady();
     }
 
     if (this._inputResolver) {
-        const text = (typeof message.content === 'string') ? message.content : "User provided input.";
+        const text = (typeof userMessage.content === 'string') ? userMessage.content : "User provided input.";
         const resolver = this._inputResolver;
         this._inputResolver = null;
-        await this.addMessageToDiscussion(message);
+        await this.addMessageToDiscussion(userMessage);
         resolver(text);
         return;
     }
 
-    await this.addMessageToDiscussion(message);
+    await this.addMessageToDiscussion(userMessage);
 
     if (this.agentManager && this.agentManager.getIsActive()) {
         if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
@@ -2177,16 +2170,26 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
         }
 
     } catch (error: any) { 
+        // 1. Force cleanup of the generation registry
+        ChatPanel.activeGenerations.delete(this.discussionId);
+
         if (error.name === 'AbortError' || error.message === 'AbortError') {
-            const session = ChatPanel.activeGenerations.get(this.discussionId);
-            // If the user stopped it but NO text was generated yet, remove the empty bubble.
-            // Since it hasn't been added to the discussion.messages array yet, 
-            // reloading the discussion will clear the optimistic UI state in the webview.
-            if (session && (!session.buffer || session.buffer.trim().length === 0)) {
-                await this.loadDiscussion(); 
-            }
+            await this.loadDiscussion(); 
         } else {
-            this.addMessageToDiscussion({ role: 'system', content: `**Error:** ${error.message}` }); 
+            this.log(`Message delivery failed: ${error.message}`, 'ERROR');
+
+            // 2. Add the system error to the message history
+            await this.addMessageToDiscussion({ 
+                id: 'error_' + Date.now(),
+                role: 'system', 
+                content: `### 🔌 Connection Error\nLollms could not reach the server at \`${this._lollmsAPI.config.apiUrl}\`.\n\n**Reason:** ${error.message}\n\n*Please check if your Lollms/Ollama server is running and try again.*`,
+                timestamp: Date.now()
+            }); 
+
+            // 3. CRITICAL: Force a full UI reload. 
+            // This removes the "Thinking..." placeholder and ensures the error is rendered 
+            // as a separate bubble, leaving the user's original prompt untouched above it.
+            await this.loadDiscussion();
         }
     }
     finally { 
@@ -2196,10 +2199,12 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
         this._activeGenerationListener = undefined;
         this._activeGenerationCompleteListener = undefined;
 
-        this.processManager.unregister(processId); 
+        if (processId) {
+            this.processManager.unregister(processId); 
+        }
         
         // Reset metrics in the UI
-        if (!this._isDisposed) {
+        if (!this._isDisposed && this._panel.webview) {
             this._panel.webview.postMessage({
                 command: 'updateGenerationMetrics',
                 tps: "0.0",
@@ -2208,6 +2213,7 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
             });
         }
 
+        // Authoritatively clear the generating state
         this.updateGeneratingState(); 
         this.updateContextAndTokens(); 
     }
@@ -2372,20 +2378,26 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
   
   public async updateAppliedState(messageId: string, blockIdx: number, hunkIdx?: number) {
       if (!this._currentDiscussion || !messageId) return;
+      
+      // Lazily initialize persistent state containers
       if (!this._currentDiscussion.appliedState) this._currentDiscussion.appliedState = {};
       if (!this._currentDiscussion.appliedState[messageId]) this._currentDiscussion.appliedState[messageId] = {};
       
-      if (!this._currentDiscussion.appliedState[messageId][blockIdx]) {
-          this._currentDiscussion.appliedState[messageId][blockIdx] = [];
+      const msgState = this._currentDiscussion.appliedState[messageId];
+
+      if (!msgState[blockIdx]) {
+          msgState[blockIdx] = [];
       }
 
       if (hunkIdx !== undefined) {
-          if (!this._currentDiscussion.appliedState[messageId][blockIdx].includes(hunkIdx)) {
-              this._currentDiscussion.appliedState[messageId][blockIdx].push(hunkIdx);
+          // Add specific hunk to the list for this block
+          if (!msgState[blockIdx].includes(hunkIdx)) {
+              msgState[blockIdx].push(hunkIdx);
           }
       } else {
-          // Mark whole block (all hunks or full file) as applied
-          this._currentDiscussion.appliedState[messageId][blockIdx] = [-1]; 
+          // No hunk index means the whole block (all hunks or a full file) was applied
+          // We use -1 as a special marker for "Full Block Complete"
+          msgState[blockIdx] = [-1]; 
       }
 
       if (!this._currentDiscussion.id.startsWith('temp-')) {
@@ -2527,20 +2539,8 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                             this.processManager.updateDescription(applyProcId, `Applying [${count}/${total}]: ${fileName}${hunkInfo}`);
                             this.updateGeneratingState();
 
-                            // IDEMPOTENCY CHECK
-                            const currentApplied = this._currentDiscussion?.appliedState?.[messageId]?.[change.blockIndex] || [];
-                            if (currentApplied.includes(-1) || (change.hunkIndex !== undefined && currentApplied.includes(change.hunkIndex))) {
-                                this._panel.webview.postMessage({
-                                    command: 'applyAllResult',
-                                    messageId: messageId,
-                                    filePath: change.path,
-                                    blockIndex: change.blockIndex,
-                                    hunkIndex: change.hunkIndex,
-                                    success: true,
-                                    alreadyApplied: true
-                                });
-                                continue;
-                            }
+                            // Removed memory-based idempotency check. 
+                            // We now always call the command to let it verify the actual DISK state.
 
                             progress.report({ 
                                 message: `(${count}/${total}) ${fileName}`,
@@ -2565,20 +2565,23 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                                 if (change.type === 'file') {
                                     const applyResult: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', change.path, change.content, opts);
                                     result = applyResult || { success: true };
+                                    if (result.success) await this.updateAppliedState(messageId, change.blockIndex);
                                 } else if (change.type === 'replace') {
-                                    // replaceCode now explicitly handles hunkIndex in its options
                                     const res: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', change.path, change.content, this, messageId, opts);
                                     result = (res && typeof res === 'object') ? res : { success: !!res };
+                                    if (result.success) await this.updateAppliedState(messageId, change.blockIndex, change.hunkIndex);
                                 } else if (change.type === 'insert') {
                                     const res: any = await vscode.commands.executeCommand('lollms-vs-coder.insertCode', change.path, change.content);
                                     result = { success: !!res };
+                                    if (result.success) await this.updateAppliedState(messageId, change.blockIndex);
                                 } else if (change.type === 'diff') {
-                                await vscode.commands.executeCommand('lollms-vs-coder.applyPatchContent', change.path, change.content, opts);
-                                result.success = true;
+                                    await vscode.commands.executeCommand('lollms-vs-coder.applyPatchContent', change.path, change.content, opts);
+                                    result.success = true;
+                                    await this.updateAppliedState(messageId, change.blockIndex);
+                                }
+                            } catch (e: any) {
+                                result = { success: false, error: e.message };
                             }
-                        } catch (e: any) {
-                            result = { success: false, error: e.message };
-                        }
                         
                         this._panel.webview.postMessage({
                             command: 'applyAllResult',
@@ -2683,7 +2686,12 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                     );
 
                     if (searchMode === 'content') {
-                        results = await this._contextManager.searchWorkspaceContent(query, options);
+                        // Advanced content search: only search files visible in the tree (skips excluded/collapsed)
+                        const visibleFiles = await this._contextManager.getWorkspaceFilePaths();
+                        results = await this._contextManager.searchWorkspaceContent(query, {
+                            ...options,
+                            include: visibleFiles.join(',')
+                        });                        
                     } else {
                         let allFiles = await this._contextManager.getWorkspaceFilePaths();
 
@@ -3726,6 +3734,9 @@ Task:
                 break;
             case 'requestContextUsage':
                 await this.handleRequestContextUsage();
+                break;
+            case 'requestMissionBriefing':
+                vscode.commands.executeCommand('lollms-vs-coder.setMissionBriefing');
                 break;
             case 'internetHelpSearch':
                 // Execute ONLY the web research agent loop. 
@@ -5187,6 +5198,7 @@ Task:
     
     /**
      * Core loop that fixes errors in a set of files using Aider blocks.
+     * UPGRADED: Now uses the "Guardian Protocol" to ensure zero-error handover.
      */
     public async repairFilesIteratively(fileUris: vscode.Uri[], signal: AbortSignal, processId: string, messageId: string) {
         const max = this._discussionCapabilities.maxFixRetries || 3;
@@ -5194,6 +5206,9 @@ Task:
         for (const fileUri of fileUris) {
             const relativePath = vscode.workspace.asRelativePath(fileUri);
             let retries = 0;
+            
+            // Give VS Code a moment to update diagnostics after the file write
+            await new Promise(r => setTimeout(r, 1000));
 
             while (retries < max) {
                 if (signal.aborted) break;
@@ -5212,17 +5227,22 @@ Task:
                 const errorReport = diagnostics.map(d => `[Line ${d.range.start.line + 1}] ${d.message}`).join('\n');
                 const doc = await vscode.workspace.openTextDocument(fileUri);
                 
-                const repairPrompt = `### 🛑 ERRORS DETECTED IN \`${relativePath}\`
-The following errors must be fixed:
+                const repairPrompt = `### 🛡️ GUARDIAN PROTOCOL: REPAIR MISSION
+I have detected ${diagnostics.length} functional error(s) in your previous output for \`${relativePath}\`. 
+
+**LINE-BY-LINE ERRORS:**
 ${errorReport}
 
-**FILE CONTENT:**
+**CURRENT FILE STATE:**
 \`\`\`${doc.languageId}
 ${doc.getText()}
 \`\`\`
 
-**INSTRUCTION:**
-Provide SEARCH/REPLACE blocks to resolve these specific errors. Use Aider format ONLY.`;
+**STRICT INSTRUCTIONS:**
+1. Fix the specific lines reported above.
+2. If an import is missing, find the correct library name from the Project DNA or search the web.
+3. Use **AIDER SEARCH/REPLACE** format.
+4. Output ONLY the code blocks. No chatter.`;
 
                 const systemPrompt = "You are a surgical code repair expert. Output only Aider SEARCH/REPLACE blocks to fix the requested errors.";
                 

@@ -177,37 +177,36 @@ Select up to 10 relevant files. Return ONLY a valid JSON array of strings. Do NO
         
         // Aider regex (strict start/end)
         const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
-        const hasAiderBlocks = existingContent && aiderRegex.test(responseText);
+        const matches = [...responseText.matchAll(aiderRegex)];
         
-        if (hasAiderBlocks && existingContent) {
-            // Reset regex
-            aiderRegex.lastIndex = 0;
-            let modifiedContent = existingContent;
-            const matches = [...responseText.matchAll(aiderRegex)];
-            
-            if (matches.length > 0) {
-                 for (const match of matches) {
-                     const searchBlock = match[1];
-                     const replaceBlock = match[2];
-                     const result = applySearchReplace(modifiedContent, searchBlock, replaceBlock);
-                     if (result.success) {
-                         modifiedContent = result.result;
-                     } else {
-                         return { success: false, output: `Coder agent failed to apply SEARCH/REPLACE block:\n${result.error}\n\nBlock attempted:\n${match[0]}` };
-                     }
-                 }
-                 finalFileContent = modifiedContent;
+        if (matches.length > 0) {
+            if (existingContent) {
+                // --- CASE 1: SURGICAL UPDATE ---
+                let modifiedContent = existingContent;
+                for (const match of matches) {
+                    const result = applySearchReplace(modifiedContent, match[1], match[2]);
+                    if (result.success) {
+                        modifiedContent = result.result;
+                    } else {
+                        return { success: false, output: `Specialist Error: Failed to apply edit to existing file.\nError: ${result.error}` };
+                    }
+                }
+                finalFileContent = modifiedContent;
             } else {
-                 finalFileContent = existingContent;
+                // --- CASE 2: ACCIDENTAL AIDER ON NEW FILE (Self-Healing) ---
+                // The AI used markers for a new file. We interpret the REPLACE blocks as the file content.
+                finalFileContent = matches.map(m => m[2]).join('\n').trim();
+                env.agentManager?.sessionState.workingMemory.push(`Note: Corrected a formatting error where the specialist used Aider markers for a new file (${filePath}).`);
             }
         } else {
-            // Fallback to full file extraction
+            // --- CASE 3: FULL CONTENT GENERATION ---
             const codeBlockRegex = /```(?:[^\n]*)\n([\s\S]+?)\n```/s;
             const match = responseText.match(codeBlockRegex);
             const generatedCode = match ? match[1].trim() : responseText.trim();
             
-            if (!generatedCode || (generatedCode === responseText && !responseText.includes('def ') && !responseText.includes('class ') && !responseText.includes('import '))) {
-                 return { success: false, output: `Coder agent failed to produce a valid code block.` };
+            // Basic validation to ensure we didn't just get conversational text
+            if (!generatedCode || generatedCode.length < 5) {
+                 return { success: false, output: `Specialist Error: Failed to produce valid code content.` };
             }
             finalFileContent = generatedCode;
         }

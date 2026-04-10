@@ -88,7 +88,10 @@ export class SkillEditorPanel {
             name: data.name,
             description: data.description || '',
             category: data.category || '',
-            language: data.language || 'markdown',
+            author: data.author || '',
+            version: data.version || '1.0.0',
+            tags: data.tags || [],
+            language: 'markdown',
             content: data.content,
             scope: scope,
             timestamp: Date.now()
@@ -156,14 +159,19 @@ export class SkillEditorPanel {
                     <input type="text" id="category" placeholder="e.g., programming/python">
                 </div>
                 <div class="form-group">
-                    <label>Language</label>
-                    <select id="language">
-                        <option value="markdown">Markdown / Text</option>
-                        <option value="python">Python</option>
-                        <option value="javascript">JavaScript</option>
-                        <option value="typescript">TypeScript</option>
-                        <option value="json">JSON / Skill</option>
-                    </select>
+                    <label>Tags (comma separated)</label>
+                    <input type="text" id="tags" placeholder="react, frontend, api">
+                </div>
+            </div>
+
+            <div class="row">
+                <div class="form-group">
+                    <label>Author</label>
+                    <input type="text" id="author" placeholder="Your Name">
+                </div>
+                <div class="form-group">
+                    <label>Version</label>
+                    <input type="text" id="version" placeholder="1.0.0">
                 </div>
             </div>
 
@@ -179,20 +187,31 @@ export class SkillEditorPanel {
 
             <script>
                 const vscode = acquireVsCodeApi();
-                const fields = ['name', 'description', 'category', 'language', 'content'];
+                const fields = ['name', 'description', 'category', 'tags', 'author', 'version', 'content'];
 
                 window.addEventListener('message', event => {
                     if (event.data.command === 'load') {
                         const skill = event.data.skill;
                         fields.forEach(f => {
-                            document.getElementById(f).value = skill[f] || '';
+                            if (f === 'tags' && skill.tags) {
+                                document.getElementById(f).value = skill.tags.join(', ');
+                            } else {
+                                document.getElementById(f).value = skill[f] || '';
+                            }
                         });
                     }
                 });
 
                 document.getElementById('saveBtn').onclick = () => {
                     const data = {};
-                    fields.forEach(f => data[f] = document.getElementById(f).value);
+                    fields.forEach(f => {
+                        if (f === 'tags') {
+                            const val = document.getElementById(f).value;
+                            data[f] = val ? val.split(',').map(t => t.trim()).filter(t => t) : [];
+                        } else {
+                            data[f] = document.getElementById(f).value;
+                        }
+                    });
                     vscode.postMessage({ command: 'save', data });
                 };
 

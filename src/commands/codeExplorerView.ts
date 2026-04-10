@@ -14,8 +14,6 @@ export class CodeExplorerPanel {
 
         if (CodeExplorerPanel.currentPanel) {
             CodeExplorerPanel.currentPanel.panel.reveal(column);
-            // Trigger update on reveal
-            CodeExplorerPanel.currentPanel.update();
             return;
         }
 
@@ -35,6 +33,10 @@ export class CodeExplorerPanel {
         CodeExplorerPanel.currentPanel = new CodeExplorerPanel(panel, extensionUri, graphManager);
     }
 
+    public focusSymbol(label: string, type: string) {
+        this.panel.webview.postMessage({ command: 'focusNode', label, type });
+    }
+
     private constructor(panel: vscode.WebviewPanel, extensionUri: vscode.Uri, graphManager: CodeGraphManager) {
         this.panel = panel;
         this.extensionUri = extensionUri;
@@ -47,6 +49,20 @@ export class CodeExplorerPanel {
 
     private listen() {
         this.panel.webview.onDidReceiveMessage(async msg => {
+            if (msg.command === 'runSymbol') {
+                const nodes = this.graphManager.getGraphData().nodes;
+                const targetNode = nodes.find(n => 
+                    n.label === msg.symbol || n.id === msg.symbol
+                );
+                
+                if (targetNode) {
+                    // Switch from "Execute" to "Focus Visual"
+                    this.focusSymbol(targetNode.label, targetNode.type);
+                } else {
+                    vscode.window.showWarningMessage(`Symbol "${msg.symbol}" not found in graph.`);
+                }
+            }
+
             if (msg.command === 'ready') {
                 // Ensure manager is synchronized with the actual workspace root before building
                 const folders = vscode.workspace.workspaceFolders;
@@ -238,7 +254,7 @@ export class CodeExplorerPanel {
         padding: 20px;
         box-sizing: border-box;
     }
-    select, button {
+    select, button, input {
         background-color: var(--vscode-button-background);
         color: var(--vscode-button-foreground);
         border: none;
@@ -247,6 +263,14 @@ export class CodeExplorerPanel {
         cursor: pointer;
         font-family: inherit;
     }
+    input {
+        background-color: var(--vscode-input-background);
+        color: var(--vscode-input-foreground);
+        border: 1px solid var(--vscode-input-border);
+        cursor: text;
+        flex: 1;
+        max-width: 300px;
+    }
     select {
         background-color: var(--vscode-dropdown-background);
         color: var(--vscode-dropdown-foreground);
@@ -254,6 +278,11 @@ export class CodeExplorerPanel {
     }
     button:hover {
         background-color: var(--vscode-button-hoverBackground);
+    }
+    #run {
+        background-color: var(--vscode-charts-orange);
+        color: white;
+        font-weight: bold;
     }
     #status {
         margin-left: auto;
@@ -305,6 +334,17 @@ export class CodeExplorerPanel {
             <option value="class_diagram">Inheritance Diagram</option>
             <option value="function_signatures">Function Signatures</option>
         </select>
+        <div style="position:relative; flex:1; display:flex; gap:5px;">
+            <input type="text" id="symbol-search" list="symbols-list" placeholder="Search symbol or SPARQL...">
+            <datalist id="symbols-list"></datalist>
+            <button id="run">Run / Query</button>
+            <select id="sparql-examples" style="max-width:100px;">
+                <option value="">Examples</option>
+                <option value="SELECT ?x WHERE { ?x type 'class' }">All Classes</option>
+                <option value="SELECT ?x WHERE { ?x imports 'auth.py' }">Imports Auth</option>
+                <option value="SELECT ?target WHERE { 'main' calls ?target }">Called by Main</option>
+            </select>
+        </div>
         <button id="rebuild">Refresh</button>
         <button id="stop">Stop</button>
         <button id="add">Add to Chat</button>

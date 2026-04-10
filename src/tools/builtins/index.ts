@@ -30,6 +30,7 @@ import { researchWebPageTool } from './researchWebPage';
 import { moltbookActionTool } from './moltbookAction';
 import { waitTool } from './wait';
 import { analyzeImageTool } from './analyzeImage';
+import { runVerificationTool } from './runVerification';
 import { moveFileTool } from './moveFile';
 import { storeKnowledgeTool } from './storeKnowledge';
 import { extractYoutubeTranscriptTool } from './extractYoutubeTranscript';
@@ -72,6 +73,7 @@ export const allTools: ToolDefinition[] = [
     moltbookActionTool,
     waitTool,
     analyzeImageTool,
+    runVerificationTool,
     moveFileTool,
     storeKnowledgeTool,
     summarizeTextTool,

@@ -51,20 +51,8 @@ export async function startDiscussionWithInitialPrompt(
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const role = lastCaps.clipboardInsertRole || config.get<string>('clipboardInsertRole') || 'user'; 
 
-    // Handle "Auto-Execute" (Trigger LLM immediately)
-    if (autoExecute && role === 'user') {
-        // Wait a tiny bit for the webview to initialize its DOM after loadDiscussion
-        await new Promise(resolve => setTimeout(resolve, 200));
-        
-        await panel.sendMessage({
-            role: 'user',
-            content: prompt,
-            timestamp: Date.now()
-        });
-        return;
-    }
-
-    // --- FALLBACK: MANUAL INSERTION (Paste as Reference Content) ---
+    // --- PASTE ONLY MODE (No Auto-Execute) ---
+    // We strictly avoid calling panel.sendMessage here.
     let personalityName = undefined;
     let model = undefined;
 

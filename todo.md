@@ -40,5 +40,12 @@ Surgical updates MUST be fast. So no heavy computations, just the current file a
 Add a fast librarian mode (single shot, just take a look at the current task and the tree and infer the files that need to be added)
 Make skills md with claude style
 
-
-the llm is making mistakes about updated files. try to explain why this is happening, then propose a fix
+# IMPORTANT
+## The settings ui is not showing up
+name is not defined
+Erreur pendant l'exécution de la commande lollms-vs-coder.showConfigView : name is not defined. Probablement due à l'extension qui contribue à lollms-vs-coder.showConfigView.
+## The libraririan doesn't work in stand alone mode
+pressing the badge doesn't trigger a librarian flow
+## Git ui:
+Add multiple buttons in front of each branch allowing full crud (remove, switch to, fuse with, create tag from here ...)
+## the llm is making mistakes about updated files. try to explain why this is happening, then propose a fixthe llm is making mistakes about updated files. try to explain why this is happening, then propose a fix

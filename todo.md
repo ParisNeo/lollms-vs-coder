@@ -47,3 +47,5 @@ name is not defined
 Erreur pendant l'exécution de la commande lollms-vs-coder.showConfigView : name is not defined. Probablement due à l'extension qui contribue à lollms-vs-coder.showConfigView.
 ## The libraririan doesn't work in stand alone mode
 pressing the badge doesn't trigger a librarian flow
+## Git ui:
+Add multiple buttons in front of each branch allowing full crud (remove, switch to, fuse with, create tag from here ...)

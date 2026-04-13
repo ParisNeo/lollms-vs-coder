@@ -42,5 +42,6 @@ Make skills md with claude style
 
 
 # IMPORTANT
-the settings ui is not showing up:
+## The settings ui is not showing up
 name is not defined
+Erreur pendant l'exécution de la commande lollms-vs-coder.showConfigView : name is not defined. Probablement due à l'extension qui contribue à lollms-vs-coder.showConfigView.

@@ -113,9 +113,14 @@ export class PersonalityManager {
             // Merge missing defaults
             let hasChanges = false;
             for (const def of DEFAULT_PERSONALITIES) {
-                // If a default personality ID is missing from the user's list, add it.
-                if (!this.personalities.find(p => p.id === def.id)) {
+                const existingIndex = this.personalities.findIndex(p => p.id === def.id);
+                if (existingIndex === -1) {
                     this.personalities.push(def);
+                    hasChanges = true;
+                } else if (def.isDefault && this.personalities[existingIndex].systemPrompt !== def.systemPrompt) {
+                    // Force override the default persona's prompt to ensure it is always up to date
+                    this.personalities[existingIndex].systemPrompt = def.systemPrompt;
+                    this.personalities[existingIndex].description = def.description;
                     hasChanges = true;
                 }
             }

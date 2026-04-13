@@ -106,6 +106,42 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
         }
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.openStudio', async () => {
+        const choice = await vscode.window.showQuickPick([
+            { label: '$(lightbulb) Build a Skill', description: 'Create a new reusable skill', command: 'lollms-vs-coder.addSkill' },
+            { label: '$(account) Build a Persona', description: 'Create a new AI personality', command: 'lollms-vs-coder.createPersonality' },
+            { label: '$(tools) Build a Tool', description: 'Scaffold a new TypeScript tool', command: 'lollms-vs-coder.buildTool' }
+        ], { placeHolder: 'Welcome to Lollms Studio. What would you like to build?' });
+        if (choice) {
+            vscode.commands.executeCommand(choice.command);
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.buildTool', async () => {
+        const content = `import { ToolDefinition, ToolExecutionEnv } from '../tool';
+
+export const myCustomTool: ToolDefinition = {
+    name: "my_custom_tool",
+    description: "Describe what this tool does",
+    isAgentic: true,
+    isDefault: true,
+    parameters: [
+        { name: "param1", type: "string", description: "A parameter", required: true }
+    ],
+    async execute(params: { param1: string }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
+        // Implement tool logic here
+        return { success: true, output: "Tool executed: " + params.param1 };
+    }
+};
+`;
+        const doc = await vscode.workspace.openTextDocument({
+            language: 'typescript',
+            content: content
+        });
+        await vscode.window.showTextDocument(doc);
+        vscode.window.showInformationMessage("Tool scaffold created. Save this file in your project or extension tools directory.");
+    }));
+
     // Enhanced Selection Menu (Fallback/Hotkey support)
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showSelectionMenu', async () => {
         const editor = vscode.window.activeTextEditor;

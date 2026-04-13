@@ -274,7 +274,15 @@ export class GitIntegration {
 
   public async renameBranch(folder: vscode.WorkspaceFolder, oldName: string, newName: string): Promise<void> {
       try {
-          await execAsync(`git branch -m "${oldName}" "${newName}"`, { cwd: folder.uri.fsPath });
+          const safeOld = oldName.trim().replace(/"/g, '\\"');
+          const safeNew = newName.trim().replace(/\s+/g, '-').replace(/"/g, '\\"');
+          
+          const current = await this.getCurrentBranch(folder);
+          if (current === safeOld) {
+              await execAsync(`git branch -m "${safeNew}"`, { cwd: folder.uri.fsPath });
+          } else {
+              await execAsync(`git branch -m "${safeOld}" "${safeNew}"`, { cwd: folder.uri.fsPath });
+          }
       } catch (e: any) {
           throw new Error(e.message || "Failed to rename branch.");
       }

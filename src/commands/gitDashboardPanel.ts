@@ -435,10 +435,21 @@ export class GitDashboardPanel {
             border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite;
         }
         :root {
-            --sidebar-width: 260px;
-            --right-panel-width: 320px;
+            --sidebar-width: 320px;
+            --right-panel-width: 380px;
             --border: 1px solid var(--vscode-widget-border);
             --header-bg: var(--vscode-sideBarSectionHeader-background);
+        }
+
+        .resizer {
+            width: 4px;
+            background: var(--vscode-widget-border);
+            cursor: col-resize;
+            z-index: 10;
+            transition: background 0.2s;
+        }
+        .resizer:hover, .resizer.dragging {
+            background: var(--vscode-focusBorder);
         }
         body {
             font-family: var(--vscode-font-family);
@@ -506,25 +517,31 @@ export class GitDashboardPanel {
         .nav-item .item-actions { 
             opacity: 0;
             display: flex; 
-            gap: 2px; 
+            gap: 4px; 
             position: absolute;
             right: 8px;
-            background: var(--vscode-list-hoverBackground);
-            padding: 2px 4px;
-            border-radius: 4px;
-            box-shadow: -15px 0 15px var(--vscode-list-hoverBackground);
+            background: var(--vscode-editorWidget-background);
+            border: 1px solid var(--vscode-widget-border);
+            padding: 4px;
+            border-radius: 6px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
             align-items: center; 
             transition: opacity 0.1s; 
             pointer-events: none;
         }
         .nav-item.active .item-actions { 
-            background: var(--vscode-list-activeSelectionBackground);
-            box-shadow: -15px 0 15px var(--vscode-list-activeSelectionBackground);
+            background: var(--vscode-editorWidget-background);
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
         }
         
         .item-actions .icon-btn { 
-            width: 20px; height: 20px; 
-            background: rgba(255,255,255,0.05);
+            width: 22px; height: 22px; 
+            background: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+            opacity: 1;
+        }
+        .item-actions .icon-btn:hover {
+            background: var(--vscode-button-secondaryHoverBackground);
         }
 
         /* --- RICH GIT BADGES --- */
@@ -678,7 +695,7 @@ export class GitDashboardPanel {
 
     <div class="main-layout">
         <!-- LEFT SIDEBAR -->
-        <div class="sidebar-left">
+        <div class="sidebar-left" id="sidebar-left">
             <div class="nav-section" id="section-changes">
                 <div class="nav-section-header" onclick="toggleSection('section-changes')">
                     <span>CHANGES</span>
@@ -709,8 +726,10 @@ export class GitDashboardPanel {
             </div>
         </div>
 
+        <div class="resizer" id="resizer-left"></div>
+
         <!-- CENTER TABS -->
-        <div class="center-stage">
+        <div class="center-stage" id="center-stage">
             <div class="tabs-header">
                 <div class="tab active" data-view="HISTORY">History</div>
                 <div class="tab" data-view="STAGING">Staging</div>
@@ -745,6 +764,8 @@ export class GitDashboardPanel {
                 </div>
             </div>
         </div>
+
+        <div class="resizer" id="resizer-right"></div>
 
         <!-- RIGHT METADATA -->
         <div class="sidebar-right" id="metadata-panel">

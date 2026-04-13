@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-04-13 19:27]
+
+- feat(gui): enhance Git Dashboard with resizable panels and UI improvements
+
 ## [2026-04-13 12:59]
 
 - **feat: Add project memory integration and Git Dashboard improvements**

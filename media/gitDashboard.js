@@ -438,5 +438,37 @@ function renderCommitDetails(hash, files) {
     `;
 }
 
+function setupResizer(resizerId, targetId, isRight) {
+    const resizer = document.getElementById(resizerId);
+    const target = document.getElementById(targetId);
+    if (!resizer || !target) return;
+    let isDown = false;
+    resizer.addEventListener('mousedown', (e) => {
+        isDown = true;
+        resizer.classList.add('dragging');
+        document.body.style.cursor = 'col-resize';
+    });
+    window.addEventListener('mousemove', (e) => {
+        if (!isDown) return;
+        if (isRight) {
+            const newWidth = document.body.clientWidth - e.clientX;
+            if (newWidth > 200 && newWidth < 800) target.style.width = newWidth + 'px';
+        } else {
+            const newWidth = e.clientX;
+            if (newWidth > 200 && newWidth < 800) target.style.width = newWidth + 'px';
+        }
+    });
+    window.addEventListener('mouseup', () => {
+        if (isDown) {
+            isDown = false;
+            resizer.classList.remove('dragging');
+            document.body.style.cursor = 'default';
+        }
+    });
+}
+
+setupResizer('resizer-left', 'sidebar-left', false);
+setupResizer('resizer-right', 'metadata-panel', true);
+
 // Signal ready
 post('ready');

@@ -258,11 +258,13 @@ You can trigger UI actions using these tags. Note the consistent parameter usage
   - \`<project_memory action="add|update|delete" id="unique_id" title="Short Title">Detailed content to remember</project_memory>\`
 
 ### 🧠 PROJECT MEMORY PROTOCOL
-When the user asks you to "remember" a fact, "take note" of a requirement, or when you discover a critical project constraint (e.g., "this is a research project for self-enhancing AI"):
-1. **COMMIT**: You MUST use the \`<project_memory>\` tag. 
-2. **NO BACKTICKS**: Do NOT wrap this tag in triple backticks or any other markdown code blocks. It must be standalone in your response.
-3. **PERSIST**: Do NOT just confirm it in text. Committing it to memory ensures it is loaded in every future conversation in this workspace.
-4. **FORMAT**: Ensure you provide a unique \`id\` (snake_case) and a descriptive \`title\`.
+When you discover a critical project constraint, note a requirement, OR when evaluating past memories:
+1. **COMMIT**: Use \`<project_memory action="add" id="unique_id" title="Title">Content</project_memory>\` to save new facts permanently.
+2. **EVALUATE & MODIFY**: At the end of your response, if an existing memory was used or was useful, increase its importance. If it wasn't useful or is outdated, decrease its importance.
+   Use \`<project_memory action="update" id="existing_id" importance="0.8" />\`
+   - Importance ranges from \`0.0\` to \`1.0\`.
+   - Memories that fall below 20% (0.2) will be archived into deep storage.
+   - DNA memories ("project_dna") are untouchable (always 1.0).
 
 ### ⚡ IMMEDIATE TRIGGER RULES
 - User says: "Remember X" or "Note that Y" or "This is a Z project".

@@ -13,8 +13,9 @@ export interface MemoryEntry {
 
 export class ProjectMemoryManager {
     private readonly DECAY_RATE = 0.05; // Importance lost per day of inactivity
-    private readonly ACTIVE_THRESHOLD = 0.6; // Min score to stay in Layer 1 context
+    private readonly ACTIVE_THRESHOLD = 0.2; // Min score to stay in Layer 1 context
     private localPath?: vscode.Uri;
+    private memoryStore: Map<string, MemoryItem> = new Map();
     private _onDidChange = new vscode.EventEmitter<void>();
     public readonly onDidChange = this._onDidChange.event;
 
@@ -67,11 +68,16 @@ export class ProjectMemoryManager {
                 if (title) this._cache[index].title = title;
                 if (content) this._cache[index].content = content;
                 
-                // Automatically increment importance by 50% (0.5) on update, capped at 100% (1.0)
-                const currentImportance = this._cache[index].importance;
-                this._cache[index].importance = Math.min(1.0, currentImportance + 0.5);
+                if (importance !== undefined && !isNaN(importance)) {
+                    this._cache[index].importance = Math.max(0.0, Math.min(1.0, importance));
+                } else {
+                    // Default increment if importance not specifically given
+                    const currentImportance = this._cache[index].importance;
+                    this._cache[index].importance = Math.min(1.0, currentImportance + 0.5);
+                }
                 
                 this._cache[index].timestamp = Date.now();
+                this._cache[index].lastUsed = Date.now();
             }
         }
 

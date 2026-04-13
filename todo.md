@@ -49,3 +49,5 @@ When we install the extension bootstrapped personas text must be forced to the o
 Add personality, skill and tool building studio
 ## memory usage
 at the end of the response add an optional modify memory importance tag that adds to a memory if it was used or was useful or decrease its importance if it wasn't useful. DNA ones are untouchable. if a memory has less than 20% it goes to the deep system. it can be brought back by an agent if he needs it.
+
+## Branch renaming needs fixing

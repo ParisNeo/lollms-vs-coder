@@ -39,3 +39,8 @@ Surgical updates MUST be fast. So no heavy computations, just the current file a
 
 Add a fast librarian mode (single shot, just take a look at the current task and the tree and infer the files that need to be added)
 Make skills md with claude style
+
+
+# IMPORTANT
+the settings ui is not showing up:
+name is not defined

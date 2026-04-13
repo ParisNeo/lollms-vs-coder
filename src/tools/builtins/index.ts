@@ -33,6 +33,8 @@ import { analyzeImageTool } from './analyzeImage';
 import { runVerificationTool } from './runVerification';
 import { moveFileTool } from './moveFile';
 import { storeKnowledgeTool } from './storeKnowledge';
+import { readMemoryCategoryTool } from './readMemoryCategory';
+import { promoteMemoryToSkillTool } from './promoteMemoryToSkill';
 import { extractYoutubeTranscriptTool } from './extractYoutubeTranscript';
 import { summarizeTextTool } from './summarizeText';
 import { searchWikipediaTool } from './searchWikipedia';
@@ -76,7 +78,44 @@ export const allTools: ToolDefinition[] = [
     runVerificationTool,
     moveFileTool,
     storeKnowledgeTool,
+    readMemoryCategoryTool, // NEW
+    promoteMemoryToSkillTool, // NEW
     summarizeTextTool,
     searchWikipediaTool,
     searchStackOverflowTool,    
+    {
+        name: "read_output_tail",
+        description: "Peeks at the last few lines of a log or output file. Use this to check progress of long-running tasks without consuming context.",
+        isAgentic: true,
+        isDefault: true,
+        parameters: [
+            { name: "path", type: "string", description: "Relative path to the file.", required: true },
+            { name: "lines", type: "number", description: "Number of lines to read from the end. Default 50.", required: false }
+        ],
+        async execute(params, env) {
+            if (!env.workspaceRoot) return { success: false, output: "No workspace." };
+            const fullPath = vscode.Uri.joinPath(env.workspaceRoot.uri, params.path);
+            try {
+                const bytes = await vscode.workspace.fs.readFile(fullPath);
+                const text = Buffer.from(bytes).toString('utf8');
+                const linesArr = text.split('\n');
+                const tail = linesArr.slice(-(params.lines || 50)).join('\n');
+                return { success: true, output: `[LAST ${params.lines || 50} LINES OF ${params.path}]:\n\n${tail}` };
+            } catch (e: any) { return { success: false, output: `Failed to peek: ${e.message}` }; }
+        }
+    },
+    {
+        name: "stop_process",
+        description: "Forcefully kills a process by its name or PID. Use this if you see the training logs are bad (e.g. NaN loss) or the app is hung.",
+        isAgentic: true,
+        isDefault: true,
+        parameters: [
+            { name: "process_identifier", type: "string", description: "The name of the process (e.g., 'python.exe') or PID.", required: true }
+        ],
+        async execute(params, env, signal) {
+            const isWin = process.platform === 'win32';
+            const cmd = isWin ? `taskkill /F /IM "${params.process_identifier}"` : `pkill -f "${params.process_identifier}"`;
+            return await env.agentManager!.runCommand(cmd, signal);
+        }
+    }
 ];

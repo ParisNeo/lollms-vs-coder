@@ -40,6 +40,8 @@ export class ActionsTreeProvider implements vscode.TreeDataProvider<ActionItem> 
         const actions: ActionItem[] = [];
 
         if (hasWorkspace) {
+            actions.push(new ActionItem(l.t('Fix All Errors'), 'lollms-vs-coder.fixAllErrors', 'zap', 'Iteratively repair all workspace errors'));
+            actions.push(new ActionItem(l.t('Copy Problems List'), 'lollms-vs-coder.copyAllErrors', 'clippy', 'Copy all current workspace problems to clipboard'));
             actions.push(new ActionItem(l.t('Deep Search'), 'lollms-vs-coder.showFileSearch', 'search', 'Power search across project content'));
             actions.push(new ActionItem(l.t('Generate Notebook'), 'lollms-vs-coder.generateEducativeNotebookFromAction', 'book', 'Create a pedagogical tutorial notebook'));
             actions.push(new ActionItem(l.t('Log'), 'lollms-vs-coder.showLog', 'output', 'Show Internal Logs'));

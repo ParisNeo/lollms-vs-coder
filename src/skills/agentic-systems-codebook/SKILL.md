@@ -2,7 +2,7 @@
 name: agentic-systems-codebook
 description: >
   Master architecture, patterns, and implementation for high-fidelity Agentic Systems.
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
 category: standards/architecture
 created: 2026-04-09

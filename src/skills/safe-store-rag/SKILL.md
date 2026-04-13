@@ -2,7 +2,7 @@
 name: safe-store-rag
 description: >
   Techniques for hybrid semantic/keyword search and pre-processing document chunks.
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
 category: ai/knowledge_management/rag
 created: 2026-04-09

@@ -893,7 +893,8 @@ export function updateBadges() {
     const currentProfileId = caps.responseProfileId || 'balanced';
     const currentProfile = state.profiles.find(p => p.id === currentProfileId) || state.profiles[0];
     
-    if (currentProfile) {
+    // REDUNDANT IN AGENT MODE: Hide Profile/Personality as the Agent uses a fixed Architect protocol
+    if (currentProfile && !caps.agentMode) {
         const wrapper = document.createElement('div');
         wrapper.className = 'badge-wrapper';
         wrapper.style.position = 'relative';
@@ -961,6 +962,8 @@ export function updateBadges() {
 
     // --- THEME: TASK & TEAM ---
     // --- THEME: THINKING & REASONING ---
+    // Suppress Reasoning/Task/Research groups in Agent Mode to reduce clutter
+    if (!caps.agentMode) {
     const thinkingGroup = document.createElement('div');
     thinkingGroup.className = 'badge-group';
     thinkingGroup.innerHTML = '<span class="badge-group-label">Logic</span>';
@@ -986,8 +989,9 @@ export function updateBadges() {
         }
         thinkingGroup.appendChild(thinkBadge);
     }
+    }
 
-      if (guiState.debugBadge || caps.herdMode) {
+    if (!caps.agentMode && (guiState.debugBadge || caps.herdMode)) {
         const taskGroup = document.createElement('div');
         taskGroup.className = 'badge-group';
         taskGroup.innerHTML = '<span class="badge-group-label">Task</span>';
@@ -1038,7 +1042,7 @@ export function updateBadges() {
     }
 
     // --- THEME: KNOWLEDGE & RESEARCH    
-    if (guiState.autoContextBadge || guiState.autoSkillBadge !== false || guiState.webSearchBadge !== false) {
+    if (caps.agentMode || guiState.autoContextBadge || guiState.autoSkillBadge !== false || guiState.webSearchBadge !== false) {
         const knowledgeGroup = document.createElement('div');
         knowledgeGroup.className = 'badge-group';
         knowledgeGroup.innerHTML = '<span class="badge-group-label">Knowledge</span>';
@@ -1058,6 +1062,8 @@ export function updateBadges() {
         );
         if (memBadge) knowledgeGroup.appendChild(memBadge);
 
+        // Hide Librarian/Skill/Web toggles in Agent Mode (Agent manages these tools itself)
+        if (!caps.agentMode) {
         const ctxBadge = createToggleBadge(
             '🧠 Librarian',
             'autocontext',
@@ -1156,6 +1162,7 @@ export function updateBadges() {
             
             knowledgeGroup.appendChild(webBadge);
             knowledgeGroup.appendChild(logContainer);
+        }
         }
     }
 

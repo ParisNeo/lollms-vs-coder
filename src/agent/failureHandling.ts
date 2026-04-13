@@ -21,17 +21,44 @@ export class FailureMemory {
         if (this.failures.length === 0) return "";
 
         return `
-# 🛑 CRITICAL: SPECIALIST FAILURE LOG (BLAME)
-The following specialists failed to execute their assigned tasks. 
-Analyze the errors below. You MUST change the model, the persona, or the tool parameters to fix this. 
+# 🛑 EVOLVING INTELLIGENCE: MISTAKES TO AVOID
+I have detected that we are repeating patterns that previously failed. You must deviate from the following logic:
 
 ${this.failures.map((f, i) => `
-[BLAME #${i + 1}]
-- Specialist Action: \`${f.toolName}\`
-- Failed Parameters: \`${JSON.stringify(f.parameters)}\`
-- Error Output: "${f.errorOutput.substring(0, 500)}"
-- Verdict: The previous strategy is BLOCKED. Spawn a different agent or use a different approach.
+### FAILED ATTEMPT #${i + 1}
+- **Tool**: \`${f.toolName}\`
+- **Invalid Parameters**: \`${JSON.stringify(f.parameters)}\`
+- **Error Received**: "${f.errorOutput.substring(0, 500)}"
 `).join('\n')}
+
+**GENIE REFLEXIVE PROTOCOL**: 
+1. **STRICT BLOCK**: You are FORBIDDEN from repeating the 'Failed Attempt' logic shown above.
+2. **ROOT CAUSE ANALYSIS**: If the error is a \`NameError\` (like \'nn\' is not defined), you MUST check the import section of the file before applying a fix.
+3. **DEVIATE**: If \`generate_code\` failed because a SEARCH block didn't match, use \`read_file\` to get the FRESH content of the file and try a smaller, more precise SEARCH block.
+`;
+    }
+
+    /**
+     * Generates a prompt for the agent to analyze why a recent success worked
+     * where previous attempts failed.
+     */
+    public getReflectionPrompt(successfulTool: string, successfulParams: any): string {
+        const relevantFailures = this.failures.filter(f => f.toolName === successfulTool);
+        if (relevantFailures.length === 0) return "";
+
+        return `
+### 🧬 META-HARNESS REFLECTION
+You just successfully executed \`${successfulTool}\` after previous failures.
+
+**PREVIOUS FAILURES:**
+${relevantFailures.map(f => `- Error: "${f.errorOutput.substring(0, 200)}..." with params: ${JSON.stringify(f.parameters)}`).join('\n')}
+
+**SUCCESSFUL EXECUTION:**
+- Params: \`${JSON.stringify(successfulParams)}\`
+
+**TASK**: 
+1. Briefly explain why this version worked.
+2. Output a \`<project_memory>\` tag to ensure future agents don't repeat the failing patterns.
 `;
     }
 

@@ -2,7 +2,7 @@
 name: lollms-safestore-formatting
 description: >
   Guidelines for formatting SafeStore chunks for LollmsClient to ensure accurate source attribution.
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
 category: ai/knowledge_management/rag
 created: 2026-04-09

@@ -70,7 +70,10 @@ export async function runCommandInTerminal(
     cwd: string, 
     taskName: string, 
     signal?: AbortSignal,
-    options?: { shell?: 'powershell' | 'cmd' | 'bash' | 'zsh' | 'fish' }
+    options?: { 
+        shell?: 'powershell' | 'cmd' | 'bash' | 'zsh' | 'fish',
+        timeoutMs?: number 
+    }
 ): Promise<{ success: boolean, output: string }> {
     return new Promise(async (resolve) => {
         const outputDir = path.join(cwd, '.lollms');
@@ -95,6 +98,17 @@ export async function runCommandInTerminal(
         let execution: vscode.ShellExecution;
         const shellType = options?.shell || (isWin ? 'powershell' : 'bash');
 
+        // Load .env variables dynamically
+        let envVars: Record<string, string> = {};
+        try {
+            const envPath = path.join(cwd, '.lollms', '.env');
+            const content = await fs.readFile(envPath, 'utf8');
+            content.split('\n').forEach(line => {
+                const [k, ...v] = line.split('=');
+                if (k) envVars[k.trim()] = v.join('=').trim();
+            });
+        } catch {}
+
         let sanitizedCommand = command;
         // Fix Windows 'curl' alias (Invoke-WebRequest) which breaks standard curl usage
         if (isWin) {
@@ -104,8 +118,8 @@ export async function runCommandInTerminal(
 
         if (isWin) {
             if (shellType === 'powershell') {
-                // Use Tee-Object to show output to user AND save to file
-                const psCommand = `& { ${sanitizedCommand} } | Tee-Object -FilePath "${relOutputFile}"; $LASTEXITCODE | Out-File -FilePath "${relExitCodeFile}" -Encoding utf8`;
+                const envArgs = Object.entries(envVars).map(([k, v]) => `$env:${k}='${v}';`).join(' ');
+                const psCommand = `& { ${envArgs} ${sanitizedCommand} } | Tee-Object -FilePath "${relOutputFile}"; $LASTEXITCODE | Out-File -FilePath "${relExitCodeFile}" -Encoding utf8`;
                 execution = new vscode.ShellExecution("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psCommand], { cwd });
             } else if (shellType === 'cmd') {
                 // CMD doesn't have native Tee. We use a trick: execute via powershell wrapper but inside CMD environment
@@ -174,14 +188,16 @@ export async function runCommandInTerminal(
                 });
             }
 
-            // 2. Safety Timeout: Kill process if it exceeds 2 minutes without finishing
+            // 2. Safety Timeout: Configurable by the Agent. Default to 120s if not specified.
+            const timeoutDuration = options?.timeoutMs || 120000;
             setTimeout(() => {
                 if (executionTask) {
                     executionTask.terminate();
                     disposable.dispose();
-                    resolve({ success: false, output: "TIMEOUT: Command took longer than 120s and was terminated." });
+                    const seconds = Math.floor(timeoutDuration / 1000);
+                    resolve({ success: false, output: `TIMEOUT: Command took longer than ${seconds}s and was terminated. Hint: Increase the 'timeout_s' parameter for heavy tasks.` });
                 }
-            }, 120000);
+            }, timeoutDuration);
 
         } catch (err: any) {
             disposable.dispose();

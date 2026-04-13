@@ -2,7 +2,7 @@
 name: safe-store-htm
 description: >
   Implements and manages structural hierarchies (trees) for documents in SafeStore, supporting breadcrumbs, recursive tree retrieval, and automated imports from CSV or Markdown headers.
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
 category: ai/knowledge_management/safe_store
 created: 2026-04-09

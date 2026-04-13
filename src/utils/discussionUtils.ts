@@ -69,13 +69,23 @@ export async function startDiscussionWithInitialPrompt(
         });
     }
 
-    await panel.addMessageToDiscussion({
+    const initialMessage: ChatMessage = {
         role: role as 'user' | 'assistant',
         content: prompt,
         timestamp: Date.now(),
         personalityName: personalityName,
         model: model
-    });
+    };
+
+    await panel.addMessageToDiscussion(initialMessage);
+
+    // --- AUTO-EXECUTE LOGIC ---
+    // If autoExecute is true, we trigger the actual API call immediately
+    if (autoExecute) {
+        // Ensure the panel is visible and ready to handle the stream
+        panel._panel.reveal();
+        await panel.sendMessage(initialMessage);
+    }
 
     if (config.get<boolean>('autoGenerateTitle')) {
         const newTitle = await services.discussionManager.generateDiscussionTitle({

@@ -2,7 +2,7 @@
 name: safe-store-graph
 description: >
   Extracting and querying structured entities and relationships from documents.
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
 category: ai/knowledge_management/knowledge_graph
 created: 2026-04-09

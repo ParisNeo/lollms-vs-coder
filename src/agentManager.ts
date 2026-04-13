@@ -194,6 +194,50 @@ export class AgentManager {
         };
         this.currentPlan.attempts.push(archive);
     }
+    /**
+     * Programmatic implementation of Phase 0.
+     * Ensures the Genie never works on a dangerous or unstable environment without consent.
+     */
+    private async preFlightSafetyCheck(folder: vscode.WorkspaceFolder, signal: AbortSignal): Promise<boolean> {
+        const isRepo = await this.gitIntegration.isGitRepo(folder);
+
+        if (!isRepo) {
+            const consent = await this.ui.requestUserInput(
+                "⚠️ **Safety Warning**: No Git repository detected in this workspace. I cannot undo my changes automatically. Would you like to proceed anyway? (yes/no)",
+                signal
+            );
+            return consent.toLowerCase().trim().startsWith('y');
+        }
+
+        const isClean = await this.gitIntegration.isClean(folder);
+        const currentBranch = await this.gitIntegration.getCurrentBranch(folder);
+        const isMain = ['main', 'master', 'prod', 'production'].includes(currentBranch.toLowerCase());
+
+        if (!isClean) {
+            const choice = await this.ui.requestUserInput(
+                `📦 **Uncommitted Changes Detected**: Your workspace is dirty. For your safety, should I:\n1. **Stash** changes and create a clean AI branch?\n2. **Commit** them now?\n3. **Proceed** anyway (Dangerous)?`,
+                signal
+            );
+            
+            if (choice.includes('1')) {
+                await this.gitIntegration.stash(folder, "Genie: Stashed before mission");
+            } else if (choice.includes('2')) {
+                const msg = await this.gitIntegration.generateCommitMessage(folder);
+                await this.gitIntegration.commitWithMessage(msg || "Genie: pre-flight backup", folder);
+            } else if (!choice.toLowerCase().includes('proceed') && !choice.includes('3')) {
+                return false; // Cancelled
+            }
+        }
+
+        // Automatic Branching for isolation
+        if (!currentBranch.startsWith('ai-task-')) {
+            const branchName = `ai-task-${Date.now()}`;
+            this.ui.addMessageToDiscussion({ role: 'system', content: `🛡️ **Safety Protocol**: Creating isolated branch \`${branchName}\`...` });
+            await this.gitIntegration.createAndCheckoutBranch(folder, branchName);
+        }
+
+        return true;
+    }
 
     /**
      * Handles user messages with enhanced "Briefing" (Prime Directive) priority.
@@ -213,10 +257,18 @@ export class AgentManager {
         this.chatHistory = [...discussion.messages];
         this.currentUserPermissions = permissions;
 
+        // --- RELOAD GENIE PERSISTENT SESSION ---
+        if (discussion.agentSession) {
+            this.sessionState.replVariables = discussion.agentSession.replVariables || {};
+            this.sessionState.workingMemory = discussion.agentSession.workingMemory || [];
+            this.completedActionsHistory = discussion.agentSession.completedActionsHistory || [];
+        }
+
         if (!this.currentPlan) {
             this.failureMemory.clear();
             this.consecutiveTaskFailures.clear();
-            this.completedActionsHistory = [];
+            // We preserve completedActionsHistory so the Architect remembers what was already done
+            // in previous turn cycles of this same discussion.
         }
 
         // --- DEBUG MODE GIT SANDBOX ---
@@ -251,6 +303,10 @@ Please commit or stash your work before starting an iterative debug session to e
         this.ui.updateGeneratingState();
 
         try {
+            // --- PHASE 0: HYGIENE & SAFETY CHECK ---
+            const safetyPassed = await this.preFlightSafetyCheck(workspaceFolder, controller.signal);
+            if (!safetyPassed) return;
+
             // --- BLOCKING DEBUG FLOW ---
             if (isDebugActive) {
                 this.processManager.updateDescription(processId, "🛰️ Orchestrator: Initializing Debug Sandbox...");
@@ -260,37 +316,184 @@ Please commit or stash your work before starting an iterative debug session to e
                 return; 
             }
 
-            // --- STANDARD AGENT FLOW ---
-            const hasActivePlan = this.currentPlan && this.currentPlan.tasks.some(t => t.status === 'pending' || t.status === 'in_progress');
-
-            if (hasActivePlan) {
-                this.processManager.updateDescription(processId, "🔄 Replanning...");
-                const result = await this.replan(content, controller.signal);
-                if (result.success) {
-                    await this.executePlan(0, controller.signal, this.currentDiscussion.model);
-                    await this.synthesizeFinalResponse(content, controller.signal, this.currentDiscussion.model);
-                }
-            } else {
-                const plan = await this.runArchitectLoop(content, controller.signal, this.currentDiscussion.model);
-                if (plan) {
-                    this.displayAndSavePlan(plan);
-                    await this.executePlan(0, controller.signal, this.currentDiscussion.model);
-                    await this.synthesizeFinalResponse(content, controller.signal, this.currentDiscussion.model);
-                }
+            // --- CONTINUOUS AUTONOMOUS AGENT FLOW ---
+            // Initialize the REPL variables with empty containers if they don't exist
+            if (!this.sessionState.replVariables) {
+                this.sessionState.replVariables = {};
             }
+
+            await this.runAutonomousLoop(content, controller.signal, processId, this.currentDiscussion.model);
 
         } catch (error: any) {
             if (error.name !== 'AbortError' && error.message !== 'AbortError') {
                 this.ui.addMessageToDiscussion({ role: 'system', content: `❌ **Critical Error:** ${error.message}` });
             }
         } finally {
-            this.isActive = false; // CRITICAL: Reset activity flag to dismiss overlay
+            // --- PERSIST GENIE SESSION ---
+            if (this.currentDiscussion) {
+                this.currentDiscussion.agentSession = {
+                    replVariables: this.sessionState.replVariables,
+                    workingMemory: this.sessionState.workingMemory,
+                    completedActionsHistory: this.completedActionsHistory
+                };
+                await this.discussionManager.saveDiscussion(this.currentDiscussion);
+            }
+
+            this.isActive = false; // Reset activity flag to dismiss overlay
             this.processManager.unregister(processId);
             this.ui.updateGeneratingState();
         }
     }
 
-    // ... (checkMoltbookKeyExists kept same) ...
+    /**
+     * 🧞 THE GENIE'S MODERN LOOP (RE-ACT)
+     * Replaces static planning with an iterative Discover-Reason-Act-Observe cycle.
+     */
+    private async runAutonomousLoop(
+        objective: string, 
+        signal: AbortSignal, 
+        processId: string, 
+        modelOverride?: string,
+        extraHistory: ChatMessage[] = []
+    ) {
+        if (!this.currentDiscussion) return;
+
+        // Initialize a "Living Plan" object to track the timeline in the UI
+        if (!this.currentPlan) {
+            this.currentPlan = {
+                objective: objective,
+                scratchpad: "Mission started. Initializing discovery...",
+                tasks: [],
+                status: 'active'
+            };
+            await this.displayAndSavePlan(this.currentPlan);
+        }
+
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        let maxSteps = config.get<number>('agent.maxSteps') || 100;
+        let stepCount = 0;
+        const model = modelOverride || this.currentDiscussion.model;
+
+        while (stepCount < maxSteps) {
+            if (signal.aborted) break;
+            stepCount++;
+
+            this.processManager?.updateDescription(processId, `Genie: Reasoning (Step ${stepCount})...`);
+            this.ui.updateGeneratingState();
+
+            // 1. Get Project Context for this specific step
+            const contextData = await this.contextManager.getContextContent({ 
+                includeTree: true, 
+                modelName: model,
+                signal 
+            });
+
+            // 2. Build the ReAct prompt
+            const systemPrompt = await this.planParser.getArchitectSystemPrompt(this.getEnabledTools(), this.currentDiscussion.importedSkills);
+            
+            const historyContext = `
+### 🕒 MISSION TIMELINE (EXECUTED ACTIONS)
+${this.completedActionsHistory.length > 0 ? this.completedActionsHistory.join('\n\n') : "No actions taken yet."}
+
+**Current Status**: You have completed ${this.completedActionsHistory.length} steps. 
+**Constraint**: Do NOT repeat the reasoning or summaries found above. State only the NEW reasoning for the next step.
+
+### 🛑 REFLEXIVE MEMORY (MISTAKES TO AVOID)
+${this.failureMemory.getMemoryContext()}
+
+### 🛠️ CURRENT WORLD STATE (PROJECT STRUCTURE)
+${contextData.projectTree}
+
+### 📄 ACCESSIBLE FILE CONTENTS
+${contextData.selectedFilesContent || "(No files read into context yet)"}
+`;
+
+            const messages: ChatMessage[] = [
+                systemPrompt,
+                ...this.chatHistory,
+                ...extraHistory,
+                { role: 'user', content: `${historyContext}\n\n**OBJECTIVE:** ${objective}\n\nWhat is your next technical action? Output JSON only.` }
+            ];
+
+            // 3. Ask Genie for the next action
+            const response = await this.lollmsApi.sendChat(messages, null, signal, model);
+            const cleanResponse = stripThinkingTags(response);
+            const toolCall = this.planParser.extractJson(cleanResponse);
+
+            if (!toolCall) {
+                // If the Genie just "talked" without a tool, we treat it as a conversational failure or a request for more info.
+                if (cleanResponse.length < 500) {
+                    this.ui.addMessageToDiscussion({ role: 'assistant', content: cleanResponse, model });
+                    break; 
+                }
+                continue; 
+            }
+
+            let action;
+            try {
+                action = JSON.parse(toolCall);
+            } catch (jsonErr: any) {
+                // Self-Healing Turn: Nudge the AI to fix the JSON
+                this.completedActionsHistory.push(`[SYSTEM ERROR] Your last JSON output was malformed: ${jsonErr.message}. Please repeat your action with valid JSON escaping.`);
+                continue;
+            }
+            
+            // 4. Update UI Timeline
+            const taskId = stepCount;
+            const task: Task = {
+                id: taskId,
+                description: action.thought || "Executing tool...",
+                action: action.tool,
+                parameters: action.params || {},
+                status: 'in_progress',
+                result: null,
+                retries: 0
+            };
+            
+            this.currentPlan.tasks.push(task);
+            this.currentPlan.scratchpad = action.thought || this.currentPlan.scratchpad;
+            await this.displayAndSavePlan(this.currentPlan);
+
+            // 5. Execute Action
+            this.processManager?.updateDescription(processId, `Genie: Executing ${action.tool}...`);
+            this.ui.updateGeneratingState();
+
+            if (action.tool === 'submit_response') {
+                task.status = 'completed';
+                task.result = action.params.response;
+                await this.displayAndSavePlan(this.currentPlan);
+                await this.synthesizeFinalResponse(objective, signal, model);
+                break;
+            }
+
+            const result = await this.runSingleTask(task, signal, model);
+            
+            // --- PATIENCE & PERSISTENCE PROTOCOL ---
+            // If the agent is explicitly monitoring a long process (like training),
+            // and the action was successful, we give it a "bonus turn" to prevent timeout.
+            const isMonitoring = task.action === 'wait' || 
+                               task.action === 'read_output_tail' || 
+                               task.action === 'is_process_active';
+                               
+            if (result.success && isMonitoring && stepCount > (maxSteps * 0.8)) {
+                maxSteps += 10; // "Refuel" the mission length for patience
+                this.ui.addMessageToDiscussion({ 
+                    role: 'system', 
+                    content: `⏳ **Mission Extended**: The Architect is monitoring a live process. Turn limit increased to ${maxSteps}.` 
+                });
+            }
+
+            // If the loop detects a terminal success or stop condition
+            if (signal.aborted) break;
+        }
+
+        if (stepCount >= maxSteps) {
+            this.ui.addMessageToDiscussion({ 
+                role: 'system', 
+                content: `⚠️ **Mission Timeout:** Reached maximum steps (${MAX_STEPS}) without a final response.` 
+            });
+        }
+    }
     private async checkMoltbookKeyExists(): Promise<boolean> {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         if (config.get<string>('moltbook.apiKey')) return true;
@@ -305,258 +508,15 @@ Please commit or stash your work before starting an iterative debug session to e
         return false;
     }
 
-    private async runArchitectLoop(objective: string, signal: AbortSignal, modelOverride?: string, onChunk?: (chunk: string) => void): Promise<Plan | null> {
-         const enabledTools = this.getEnabledTools();
-         const systemPromptMsg = await this.planParser.getArchitectSystemPrompt(enabledTools);
-         
-         const investigationHistory: any[] = [];
-         const existingHistory = this.currentPlan?.attempts || [];
- 
-         await this.displayAndSavePlan({
-             objective,
-             scratchpad: "🧠 Architect is analyzing the objective and environment...",
-             tasks: [],
-             investigation: investigationHistory,
-             attempts: existingHistory
-         });
-         
-         const workingMemoryContext = this.sessionState.workingMemory.length > 0 
-             ? `\n[WORKING MEMORY]\n${this.sessionState.workingMemory.join('\n---\n')}\n`
-             : "";
-         
-         const failureContext = this.failureMemory.getMemoryContext();
+    // Logic updated in main agentManager.ts file implementation
 
-         // --- INJECT PRIME DIRECTIVE (The Extra Argument) ---
-         const technicalBriefing = this.currentDiscussion?.discussion_data_zone 
-            ? `\n### 🛡️ PRIME DIRECTIVE (MANDATORY CONSTRAINTS)\n${this.currentDiscussion.discussion_data_zone}\n`
-            : "";
-
-         // --- INJECT LIVING CONTEXT ---
-         const historyContext: ChatMessage[] = [
-             systemPromptMsg,
-             ...this.chatHistory.filter(m => m.role !== 'system'), 
-             { role: 'user', content: `${technicalBriefing}\nObjective: ${objective}\n${workingMemoryContext}\n${failureContext}` }
-         ];
-
-         let loopCount = 0;
-         let investigationCount = 0;
-         const MAX_LOOPS = 15;
-         const INVESTIGATION_LIMIT = 5; // Force a plan after 5 discovery steps
-         const { PromptTemplates } = require('./promptTemplates');
-
-         while (loopCount < MAX_LOOPS) {
-             if (signal.aborted) return null;
-             loopCount++;
-             this.ui.updateGeneratingState();
-
-             // --- CRITICAL: REFRESH PROJECT STATE EVERY LOOP ---
-             const contextData = await this.contextManager.getContextContent({ 
-                 includeTree: true, 
-                 modelName: modelOverride || this.currentDiscussion?.model 
-             });
-
-             // RE-FETCH the latest discussion data from disk/manager to ensure briefing updates are caught
-             if (this.currentDiscussion?.id) {
-                const latestDisc = await this.discussionManager.getDiscussion(this.currentDiscussion.id);
-                if (latestDisc) {
-                    this.currentDiscussion.discussion_data_zone = latestDisc.discussion_data_zone;
-                }
-             }
-
-             // Extract Mission Briefing from Discussion Data Zone
-             const currentBriefing = this.currentDiscussion?.discussion_data_zone || "";
-
-             // Update historyContext by replacing the old project state message
-             const stateIdx = historyContext.findIndex(m => m.role === 'system' && m.content.includes('ACTUAL PROJECT STATE'));
-             const newStateMsg: ChatMessage = {
-                 role: 'system',
-                 content: PromptTemplates.buildProjectStateMessage({
-                     tree: contextData.projectTree,
-                     files: contextData.selectedFilesContent,
-                     skills: contextData.skillsContent,
-                     briefing: currentBriefing
-                 })
-             };
-
-             if (stateIdx !== -1) {
-                 historyContext[stateIdx] = newStateMsg;
-             } else {
-                 historyContext.splice(historyContext.length - 1, 0, newStateMsg);
-             }
-
-             // --- LOOP BREAKER: INJECT ULTIMATUM ---
-             if (investigationCount >= INVESTIGATION_LIMIT) {
-                 historyContext.push({ 
-                     role: 'system', 
-                     content: `🚨 **ARCHITECT CRITICAL WARNING**: You have performed ${investigationCount} investigation steps. 
-                     
-You are now FORBIDDEN from using any more single tool calls. You have enough information. 
-You MUST now output a multi-step **OPTION B: EXECUTION PLAN** to fulfill the user's request. 
-Failure to provide a Plan JSON now will result in task termination.` 
-                 });
-             }
-             
-             let response = "";
-             try {
-                const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-                const architectModel = config.get<string>('architectModelName') || modelOverride || this.currentDiscussion?.model;
-                const options = { thinking: this.currentDiscussion?.capabilities?.thinkingMode };
-                
-                response = await this.lollmsApi.sendChat(historyContext, (chunk) => {
-                    if (onChunk) onChunk(chunk);
-                }, signal, architectModel, options);
-             } catch(e: any) {
-                 return null;
-             }
-             
-             const cleanResponse = stripThinkingTags(response);
-
-             // 🧠 REASONING NOTIFICATIONS
-             // Extract thinking/reasoning tags and show them as toast notifications
-             const thoughtMatch = response.match(/<(?:think|thinking|analysis|reasoning)>([\s\S]*?)<\/\1>/i);
-             if (thoughtMatch && thoughtMatch[1]) {
-                 const thought = thoughtMatch[1].trim();
-                 const preview = thought.length > 120 ? thought.substring(0, 117) + "..." : thought;
-                 vscode.window.showInformationMessage(`🧠 Architect: ${preview}`);
-             }
-
-             const jsonStr = this.planParser.extractJson(cleanResponse);
-             
-             if (jsonStr) {
-                 try {
-                     const plan = JSON.parse(jsonStr) as Plan;
-                     this.planParser.validateAndInitializePlan(plan, enabledTools);
-                     
-                     // --- ANTI-LAZY ENFORCER ---
-                     // Prevent the Architect from using the Plan phase just to look around.
-                     const readOnlyTools = ['list_files', 'read_file', 'read_code_graph', 'search_files', 'get_environment_details'];
-                     const isOnlyReading = plan.tasks.every(t => readOnlyTools.includes(t.action));
-                     
-                     if (isOnlyReading) {
-                         historyContext.push({ role: 'assistant', content: response });
-                         historyContext.push({ 
-                             role: 'system', 
-                             content: "🛑 PLAN REJECTED: Your plan only consists of discovery tasks. Do NOT use the Plan JSON for discovery. Use OPTION A (Single Tool Call) to explore. Only create a Plan when you are ready to modify code, run execution tests, or use submit_response." 
-                         });
-                         continue;
-                     }
-                     
-                     return plan;
-                 } catch(e) {}
-             }
-             
-             const toolMatch = this.parseToolCall(cleanResponse);
-             if (toolMatch) {
-                 // REJECT conversation if we are in discovery phase
-                 if (toolMatch.name === 'submit_response' && loopCount < 3) {
-                     historyContext.push({ role: 'system', content: "CRITICAL: You are attempting to finish too early. You have not verified the code logic or environment yet. Continue investigating or perform the requested task." });
-                     continue;
-                 }
-
-                 // Add to Investigation History
-                 const invEntry = {
-                     action: toolMatch.name,
-                     parameters: toolMatch.params,
-                     status: 'in_progress',
-                     result: null as string | null
-                 };
-                 investigationHistory.push(invEntry);
-                 
-                 const statusMsg = toolMatch.scratchpad 
-                     ? `🧠 ${toolMatch.scratchpad}\n\nExecuting: ${toolMatch.name}`
-                     : `🧠 Architect is exploring: ${toolMatch.name}`;
-
-                 await this.displayAndSavePlan({
-                     objective,
-                     scratchpad: statusMsg,
-                     tasks:[],
-                     investigation: investigationHistory,
-                     attempts: existingHistory
-                 });
-
-                 // Update Web UI if search
-                 if (toolMatch.name.includes('search')) {
-                    this.ui.addMessageToDiscussion({ 
-                        role: 'system', 
-                        content: `🔍 **Researching:** ${toolMatch.params.query || '...'} via ${toolMatch.name.split('_')[1] || 'web'}`,
-                        skipInPrompt: true
-                    });
-                 }
-
-                 // Execution logic...
-                 // Save the investigation result into the history so the next turn sees it
-                 historyContext.push({ role: 'assistant', content: response });
-                 const tempEnv = {
-                     workspaceRoot: this.currentWorkspaceFolder,
-                     lollmsApi: this.lollmsApi,
-                     contextManager: this.contextManager,
-                     codeGraphManager: this.codeGraphManager,
-                     skillsManager: this.skillsManager,
-                     currentPlan: null,
-                     agentManager: this
-                 };
-                 try {
-                     const res = await this.executeTask(toolMatch.name, toolMatch.params, signal, tempEnv as any);
-                     // Check if the Librarian added a significant insight
-                     if (toolMatch.name === 'auto_select_context_files' && res.output.includes('Agent Analysis:')) {
-                         const analysis = res.output.split('Agent Analysis:')[1].trim();
-                         this.sessionState.workingMemory.push(analysis);
-                     }
-                     historyContext.push({ role: 'user', content: `Tool Output: ${res.output}` });
-                     invEntry.status = res.success ? 'completed' : 'failed';
-                     invEntry.result = res.output;
-                     investigationCount++; // Increment the discovery counter
-                 } catch(e: any) {
-                     historyContext.push({ role: 'user', content: `Tool Error: ${e.message}` });
-                     invEntry.status = 'failed';
-                     invEntry.result = e.message;
-                 }
-                 
-                 // Update the plan with the tool execution result
-                 await this.displayAndSavePlan({
-                     objective,
-                     scratchpad: `🧠 Architect is exploring: ${toolMatch.name}(${JSON.stringify(toolMatch.params)})`,
-                     tasks:[],
-                     investigation: investigationHistory,
-                     attempts: existingHistory
-                 });
-             } else {
-                 investigationHistory.push({
-                     action: 'thought',
-                     parameters: {},
-                     status: 'completed',
-                     result: response
-                 });
-                 await this.displayAndSavePlan({
-                     objective,
-                     scratchpad: "🧠 Architect is thinking...",
-                     tasks:[],
-                     investigation: investigationHistory,
-                     attempts: existingHistory
-                 });
-
-                 // If we have history of messages, assume the last response might be conversational.
-                 // We push it to history so the model knows what it said.
-                 historyContext.push({ role: 'assistant', content: response });
-                 // If no JSON plan and no tool, force a prompt and explicitly remind the agent about its objective
-                 historyContext.push({ 
-                     role: 'user', 
-                     content: `I see your thoughts, but you haven't provided a JSON tool call or a multi-step Plan JSON yet. 
-                     
-**STRICT REMINDER**: To fulfill the objective "${objective}", you must actually use tools to verify the code and state. Do not provide a final answer in prose yet. Please provide a valid JSON plan or tool call.` 
-                 });
-             }
-         }
-         return null;
-    }
-    
-    private parseToolCall(content: string): { name: string, params: any, scratchpad?: string } | null {
+    private parseToolCall(content: string): { name: string, params: any, scratchpad?: string, thought?: string } | null {
         // 1. Try Markdown Code Block
         const match = content.match(/```json\s*(\{[\s\S]*?"tool"[\s\S]*?\})\s*```/);
         if (match) {
             try {
                 const obj = JSON.parse(match[1]);
-                if (obj.tool) return { name: obj.tool, params: obj.params || {}, scratchpad: obj.scratchpad };
+                if (obj.tool) return { name: obj.tool, params: obj.params || {}, scratchpad: obj.scratchpad || obj.thought, thought: obj.thought };
             } catch (e) { }
         }
 
@@ -581,7 +541,7 @@ Failure to provide a Plan JSON now will result in task termination.`
         for (const json of jsonObjects) {
             try {
                 const obj = JSON.parse(json);
-                if (obj.tool) return { name: obj.tool, params: obj.params || {}, scratchpad: obj.scratchpad };
+                if (obj.tool) return { name: obj.tool, params: obj.params || {}, scratchpad: obj.scratchpad || obj.thought, thought: obj.thought };
             } catch (e) { }
         }
 
@@ -643,31 +603,46 @@ Failure to provide a Plan JSON now will result in task termination.`
         const task = this.currentPlan.tasks.find(t => t.id === taskId);
         if (!task) return;
 
-        // Force reset the task
         task.parameters = newParams;
-        task.status = 'pending';
-        task.result = null; // Clear previous error
+        task.status = 'in_progress';
+        task.result = null;
         task.retries = 0;
         task.can_retry = false;
 
-        this.isActive = true; // Reactive visual state
+        this.isActive = true;
         this.ui.addMessageToDiscussion({ 
             role: 'system', 
-            content: `🔄 **Manual Override:** Resetting Task ${taskId}. Params: \`${JSON.stringify(newParams)}\`` 
+            content: `🔄 **Manual Override:** Re-executing Task ${taskId}. Params: \`${JSON.stringify(newParams)}\`` 
         });
         
         await this.displayAndSavePlan(this.currentPlan);
 
-        // Register new process linked to this retry
         const { id: processId, controller } = this.processManager.register(this.currentDiscussion.id, `Agent: Retrying task ${taskId}...`);
         this.ui.updateGeneratingState();
 
         try {
-            // Re-run the execution loop starting from the beginning (to catch dependencies)
-            await this.executePlan(0, controller.signal, this.currentDiscussion.model);
-            await this.synthesizeFinalResponse("Retry task execution", controller.signal, this.currentDiscussion.model);
+            const tempEnv = {
+                workspaceRoot: this.currentWorkspaceFolder,
+                lollmsApi: this.lollmsApi,
+                contextManager: this.contextManager,
+                codeGraphManager: this.codeGraphManager,
+                skillsManager: this.skillsManager,
+                currentPlan: this.currentPlan,
+                agentManager: this
+            };
+
+            const res = await this.executeTask(task.action, newParams, controller.signal, tempEnv as any);
+            task.status = res.success ? 'completed' : 'failed';
+            task.result = res.output;
+            await this.displayAndSavePlan(this.currentPlan);
+
+            const msg = `Manual Override: User re-ran ${task.action} with ${JSON.stringify(newParams)}.\nResult:\n${res.output}\nPlease continue your autonomous loop based on this new result.`;
+            await this.runAutonomousLoop(this.currentPlan.objective + `\n${msg}`, controller.signal, processId, this.currentDiscussion.model, [{ role: 'user', content: msg }]);
+
         } catch (e: any) {
-            console.error("Retry failed", e);
+            task.status = 'failed';
+            task.result = e.message;
+            await this.displayAndSavePlan(this.currentPlan);
         } finally {
             this.isActive = false;
             this.processManager.unregister(processId);
@@ -887,10 +862,25 @@ Please provide a clear, concise final response to the user summarizing the outco
             task.parameters = resolvedParams; 
             await this.displayAndSavePlan(this.currentPlan); 
 
+            // --- REPETITION & LOOP DETECTION ---
+            const lastAction = this.completedActionsHistory[this.completedActionsHistory.length - 1];
+            const isRedundantRead = task.action === 'read_file' && 
+                                   this.contextManager.getContextStateProvider()?.getIncludedFiles().some(f => f.path === resolvedParams.path);
+
             if (this.failureMemory.hasFailedBefore(task.action, resolvedParams)) {
                 result = { 
                     success: false, 
-                    output: `CRITICAL FAILURE: The Specialist detected a loop with these parameters. Strategy blocked.` 
+                    output: `🛑 LOOP BLOCKED: You have already tried ${task.action} with these parameters and it failed. You MUST change your strategy (e.g., read a DIFFERENT file, use a DIFFERENT tool, or check your imports).` 
+                };
+            } else if (lastAction && lastAction.includes(`ACTION: ${task.action}`) && JSON.stringify(resolvedParams) === JSON.stringify(task.parameters)) {
+                result = {
+                    success: false,
+                    output: `⚠️ REPETITIVE ACTION: You just did this in the previous step. Do NOT read the same file again. If you saw an error, FIX IT now using 'generate_code'. If you are lost, use 'search_files' to find where 'nn' or 'torch' are defined elsewhere.`
+                };
+            } else if (isRedundantRead) {
+                result = {
+                    success: true,
+                    output: `ℹ️ NOTE: This file is already in your 'ACCESSIBLE FILE CONTENTS'. Reading it again is a wasted turn. Please analyze the code you already have and propose a fix.`
                 };
             } else {
                 result = await this.executeTask(task.action, resolvedParams, signal, undefined, specialistModel, task.agent_persona, task.agent_skills, task.agent_files);
@@ -901,6 +891,16 @@ Please provide a clear, concise final response to the user summarizing the outco
 
         task.result = result.output;
         task.status = result.success ? 'completed' : 'failed';
+
+        // --- STRIP REDUNDANT PREAMBLES FROM LOGGING ---
+        // If the LLM still generates a preamble, we trim it for the prompt history 
+        // to prevent the "Summary Snowball" effect.
+        let conciseThought = task.description;
+        const objectiveStart = this.currentPlan?.objective.substring(0, 30);
+        if (objectiveStart && conciseThought.includes(objectiveStart)) {
+            const parts = conciseThought.split(/now I need to|therefore,|next step is/i);
+            if (parts.length > 1) conciseThought = "Decision: " + parts[parts.length - 1].trim();
+        }
         
         // 📊 DASHBOARD UPDATE
         if (this.dashboardState && this.dashboardUpdater) {
@@ -917,21 +917,53 @@ Please provide a clear, concise final response to the user summarizing the outco
 
         // 📊 STRUCTURED TIMELINE
         // Record the action and the observation for the next prompt iteration.
-        // We explicitly prompt the model to compare expectations with reality.
-        const observation = result.output.substring(0, 500) + (result.output.length > 500 ? '...' : '');
+        const observation = result.output.substring(0, 1000) + (result.output.length > 1000 ? '...' : '');
+        const statusEmoji = result.success ? '✅ SUCCESS' : '❌ FAILURE';
+        
         this.completedActionsHistory.push(
-            `[TASK ${task.id}]
-- Action: ${task.action}(${JSON.stringify(resolvedParams)})
-- Intended Goal: ${task.description}
-- Status: ${task.status.toUpperCase()}
-- Actual Observation: "${observation}"`
+            `[STEP ${task.id}]
+- ACTION: ${task.action}
+- INTENT: ${conciseThought}
+- STATUS: ${statusEmoji}
+- OBSERVATION: "${observation}"
+- CONSEQUENCE: ${result.success ? 'Proceed with next step.' : 'CRITICAL: You must analyze why this failed and change approach immediately.'}`
         );
 
         if (!result.success) {
             this.failureMemory.recordFailure(task.action, resolvedParams, result.output);
+        } else {
+            // --- EVOLVING INTELLIGENCE: META-REFLECTION ---
+            // If this tool has failed before in this session, trigger a reflection to "patch" the harness
+            const reflectionPrompt = this.failureMemory.getReflectionPrompt(task.action, resolvedParams);
+            if (reflectionPrompt) {
+                this.ui.addMessageToDiscussion({ 
+                    role: 'system', 
+                    content: `🧬 **Meta-Harness:** Success detected after previous failures. Evolving logic...`,
+                    skipInPrompt: true 
+                });
+
+                try {
+                    const evolutionResponse = await this.lollmsApi.sendChat([
+                        { 
+                            role: 'system', 
+                            content: `You are the Genie's Reflexive Memory. 
+Analyze why the recent fix worked where others failed. 
+Output a <project_memory action="add" importance="2.0"> tag describing the technical lesson (e.g. "Lesson: In PyQt6, always use .exec() not .exec_()"). 
+A high importance (2.0+) ensures this lesson is prioritized in every prompt to prevent the bug from returning.` 
+                        },
+                        { role: 'user', content: reflectionPrompt }
+                    ], null, signal, specialistModel);
+
+                    if (this.projectMemoryManager) {
+                        await this.projectMemoryManager.processTags(evolutionResponse);
+                    }
+                } catch (e) {
+                    console.error("Harness evolution failed", e);
+                }
+            }
         }
         
-        // Scan task output for memory updates
+        // Scan task output (or evolution response) for memory updates
         if (this.projectMemoryManager) {
             await this.projectMemoryManager.processTags(result.output);
         }
@@ -1152,7 +1184,7 @@ Please provide a clear, concise final response to the user summarizing the outco
         return result;
     }
 
-    public async runCommand(command: string, signal: AbortSignal): Promise<{ success: boolean, output: string }> {
+    public async runCommand(command: string, signal: AbortSignal, options?: { shell?: any, timeoutMs?: number }): Promise<{ success: boolean, output: string }> {
         if (!this.currentWorkspaceFolder) return { success: false, output: "No workspace." };
         
         let finalCommand = command;
@@ -1171,7 +1203,13 @@ Please provide a clear, concise final response to the user summarizing the outco
         // Use a descriptive task name so the user sees what is running in the status bar/terminal tab
         const taskName = command.length > 30 ? command.substring(0, 27) + "..." : command;
         
-        return runCommandInTerminal(finalCommand, this.currentWorkspaceFolder.uri.fsPath, `Lollms: ${taskName}`, signal);
+        return runCommandInTerminal(
+            finalCommand, 
+            this.currentWorkspaceFolder.uri.fsPath, 
+            `Lollms: ${taskName}`, 
+            signal,
+            options
+        );
     }
 
     public async requestUserInput(question: string, signal: AbortSignal): Promise<string> {
@@ -1401,11 +1439,13 @@ OUTPUT JSON ONLY for tool calls.
         return "Max steps reached";
     }
 
-    private deactivateAgent() {
+    private async deactivateAgent() {
         this.isActive = false;
         if(this.currentDiscussion && !this.currentDiscussion.id.startsWith('temp-')){
             this.currentDiscussion.plan = null;
-            this.discussionManager.saveDiscussion(this.currentDiscussion);
+            // Wipe the persistent session if the user explicitly turns off Agent Mode
+            this.currentDiscussion.agentSession = undefined;
+            await this.discussionManager.saveDiscussion(this.currentDiscussion);
         }
         this.currentPlan = null;
         this.ui.updateAgentMode(false);
@@ -1441,10 +1481,10 @@ If the code is perfect, output a "VERIFICATION PASSED" report.`;
             { role: 'user', content: "The code is written and verified at runtime. Perform a final logical audit. Does it meet the objective perfectly?" }
         ];
 
-        const response = await this.lollmsAPI.sendChat(chatHistory, null, signal, model);
+        const response = await this.lollmsApi.sendChat(chatHistory, null, signal, model);
         if (this.ui.updateMessageContent) {
-            this.ui.updateMessageContent(verifierMsgId, response);
+            await this.ui.updateMessageContent(verifierMsgId, response);
         }
     }
-   
+  
 }

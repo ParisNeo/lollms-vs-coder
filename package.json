@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.7.44",
+  "version": "0.8.1",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -200,6 +200,11 @@
         "command": "lollms-vs-coder.fixAllErrors",
         "title": "Lollms: Fix All Workspace Errors",
         "icon": "$(zap)"
+      },
+      {
+        "command": "lollms-vs-coder.copyAllErrors",
+        "title": "Lollms: Copy All Errors",
+        "icon": "$(clippy)"
       },
       {
         "command": "lollms-vs-coder.debugErrorWithAI",
@@ -804,6 +809,11 @@
           "type": "number",
           "default": 3,
           "description": "Maximum number of agent tasks that can be executed in parallel."
+        },
+        "lollmsVsCoder.agent.maxSteps": {
+          "type": "number",
+          "default": 100,
+          "description": "Maximum number of turns an agent can take before a Mission Timeout. High values are better for long tasks like training."
         },
         "lollmsVsCoder.agent.createBranchOnEdit": {
           "type": "boolean",

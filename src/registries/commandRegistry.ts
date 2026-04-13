@@ -13,13 +13,13 @@ import { registerGitCommands } from './gitCommands';
 import { registerPersonalityCommands } from './personalityCommands';
 import { registerSkillsCommands } from './skillsCommands';
 
-export function registerCommands(
+export async function registerCommands(
     context: vscode.ExtensionContext,
     services: LollmsServices,
     getActiveWorkspace: () => vscode.WorkspaceFolder | undefined
 ) {
     registerUICommands(context, services);
-    registerChatCommands(context, services, getActiveWorkspace);
+    await registerChatCommands(context, services, getActiveWorkspace);
     registerContextCommands(context, services);
     registerFileCommands(context, services, getActiveWorkspace);
     registerPromptCommands(context, services);

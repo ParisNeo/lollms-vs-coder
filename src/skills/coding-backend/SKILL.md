@@ -2,7 +2,7 @@
 name: coding-backend
 description: >
   Expertise in API design, microservices, security, and scalable server-side logic.
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
 category: development/web/backend
 created: 2026-04-09

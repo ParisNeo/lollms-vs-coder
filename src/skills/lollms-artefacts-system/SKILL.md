@@ -2,9 +2,9 @@
 name: lollms-artefacts-system-1772558834790
 description: >
   Complete guide to creating, using, and managing artefacts in Lollms for structured content generation
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
-category: ai/lollms/features/artefacts
+category: lollms
 created: 2026-03-03
 ---
 

@@ -128,6 +128,9 @@ export class ContextManager {
   public refreshFileInCache(uri: vscode.Uri) {
     const relPath = this.normalize(vscode.workspace.asRelativePath(uri, false));
     this._fileContentCache?.delete(relPath);
+    // Invalidate tree because file content changes can affect [C] / [D] markers 
+    // and code graph accuracy.
+    this.markTreeDirty();
   }
 
   /**
@@ -141,6 +144,10 @@ export class ContextManager {
   
   public setContextStateProvider(provider: ContextStateProvider | undefined) {
       this.contextStateProvider = provider;
+      // Invalidate tree cache whenever the user changes file inclusion/exclusion states
+      this.contextStateProvider?.onDidChangeTreeData(() => {
+          this.markTreeDirty();
+      });
   }
 
   public setSkillsManager(manager: SkillsManager) {
@@ -1840,6 +1847,11 @@ ${cumulativeBrain || "No observations yet."}
         result.selectedFilesContent += `**INSTRUCTIONS:**\n- Use \`read_file\` to peek at specific files.\n- Use \`search_files\` to find code.\n- Use \`rlm_repl\` to maintain state and memory.\n\n`;
         result.selectedFilesContent += `### RLM MEMORY\n- **Front Memory (Scratchpad):** [Empty]\n- **Back Memory (Persistent):** [Empty]\n`;
     } else if (includedFiles.length > 0) {
+      result.selectedFilesContent += "## Loaded code files\n\n"
+      result.selectedFilesContent += "The content of the files added to the context is provided here.\n"
+      result.selectedFilesContent += "If you need to load other files use files loading tag.\n"
+      result.selectedFilesContent += "Only load files if they are not already loaded here and you do need them to perform the task.\n^,"
+
       // Redundant Index removed. Markers are now in the Project Structure tree.
       for (let i = 0; i < includedFiles.length; i++) {
         const fileEntry = includedFiles[i];
@@ -2068,7 +2080,7 @@ Based on the objective and the file tree, which files are the most relevant? Ret
   private async generateProjectTree(signal?: AbortSignal, onProgress?: (percentage: number) => void): Promise<string> {
     
     if (!this.contextStateProvider) {
-      return '## Project Structure\n\n*No project structure available - no workspace folder found.*\n';
+      return '## 🌳 PROJECT STRUCTURE\n\n*No project structure available - no workspace folder found.*\n';
     }
 
     const contextFiles = this.contextStateProvider.getIncludedFiles();
@@ -2082,10 +2094,10 @@ Based on the objective and the file tree, which files are the most relevant? Ret
 
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
     if (!workspaceFolder) {
-      return '## Project Structure\n\n*No workspace folder found.*\n';
+      return '## 🌳 PROJECT STRUCTURE\n\n*No workspace folder found.*\n';
     }
 
-    let tree = '## Project Structure\n\n';
+    let tree = '## 🌳 PROJECT STRUCTURE\n\n';
     
     if (allVisibleFiles.length === 0) {
       tree += '*No files are currently visible in the context. Right-click files in the explorer to change their context state.*\n';

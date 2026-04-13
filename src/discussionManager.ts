@@ -21,6 +21,11 @@ export interface Discussion {
     activeDiagrams?: string[]; // e.g., ['class_diagram', 'call_graph']
     appliedState?: Record<string, Record<number, number[]>>;
     discussion_data_zone?: string;
+    agentSession?: {
+        replVariables: Record<string, any>;
+        workingMemory: string[];
+        completedActionsHistory: string[];
+    };
 }
 
 export interface DiscussionGroup {

@@ -76,11 +76,9 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
      * Common logic to show a diff view comparing the state BEFORE the AI change 
      * vs the state AFTER the AI change.
      */
-    async function openDiffView(fileUri: vscode.Uri, originalContent: string) {
+    async function openDiffView(fileUri: vscode.Uri, originalContent: string, snapshotOnly: boolean = false) {
         const workspaceFolder = vscode.workspace.getWorkspaceFolder(fileUri);
-        if (!workspaceFolder) {
-             throw new Error("File is not in a workspace folder.");
-        }
+        if (!workspaceFolder) return;
         
         const snapshotsDir = vscode.Uri.joinPath(workspaceFolder.uri, '.lollms', 'snapshots');
         await vscode.workspace.fs.createDirectory(snapshotsDir).then(undefined, () => {}); 
@@ -88,16 +86,33 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         const fileName = path.basename(fileUri.fsPath);
         const snapshotUri = vscode.Uri.joinPath(snapshotsDir, `${fileName}.orig`);
         
-        // Save the "Before" state to a temp file
-        await vscode.workspace.fs.writeFile(snapshotUri, Buffer.from(originalContent, 'utf8'));
+        // Only write if it doesn't exist to preserve the state before a batch started
+        try {
+            await vscode.workspace.fs.stat(snapshotUri);
+        } catch {
+            await vscode.workspace.fs.writeFile(snapshotUri, Buffer.from(originalContent, 'utf8'));
+        }
+
+        if (snapshotOnly) return;
 
         // Open the Diff Editor
         const title = `${fileName} (Original) ↔ ${fileName} (Proposed)`;
         await vscode.commands.executeCommand('vscode.diff', snapshotUri, fileUri, title, { 
             preview: false,
-            preserveFocus: false // We want focus to shift to the new diff
+            preserveFocus: false
         });
     }
+
+    // New command to allow webview to request a diff for a specific file
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showDiff', async (filePath: string) => {
+        const activeWorkspace = getActiveWorkspace();
+        if (!activeWorkspace) return;
+        const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
+        try {
+            const doc = await vscode.workspace.openTextDocument(fileUri);
+            await openDiffView(fileUri, doc.getText());
+        } catch (e) {}
+    }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string, options?: { silent?: boolean }) => {
         const activeWorkspace = getActiveWorkspace();
@@ -115,6 +130,8 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 await vscode.workspace.fs.stat(fileUri);
                 const doc = await vscode.workspace.openTextDocument(fileUri);
                 originalContent = doc.getText();
+                // Ensure a snapshot exists for diffing later
+                await openDiffView(fileUri, originalContent, true); 
                 fileExists = true;
             } catch {
                 const parentDir = vscode.Uri.joinPath(fileUri, '..');
@@ -184,10 +201,22 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             }
 
             const document = await vscode.workspace.openTextDocument(fileUri);
+            const currentDocText = document.getText();
             
             // Real-time Disk Verification: Is the content already there?
-            if (document.getText() === content) {
+            if (currentDocText === content) {
                 return { success: true, alreadyApplied: true };
+            }
+
+            // Find first modified line for UX scrolling
+            let firstModifiedLine = 0;
+            const oldLines = currentDocText.split('\n');
+            const newLines = content.split('\n');
+            for (let i = 0; i < Math.min(oldLines.length, newLines.length); i++) {
+                if (oldLines[i] !== newLines[i]) {
+                    firstModifiedLine = i;
+                    break;
+                }
             }
 
             const fullRange = new vscode.Range(new vscode.Position(0, 0), document.lineAt(document.lineCount - 1).range.end);
@@ -196,8 +225,12 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             const applied = await vscode.workspace.applyEdit(edit);
 
             if (applied) {
+                // FORCE SAVE TO DISK
                 await document.save();
                 if (!options?.silent) {
+                    const editor = await vscode.window.showTextDocument(document);
+                    const pos = new vscode.Position(firstModifiedLine, 0);
+                    editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
                     await openDiffView(fileUri, originalContent);
                 }
                 return { success: true, alreadyApplied: false };
@@ -334,50 +367,52 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
 
         const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
 
-        // CRITICAL: Force VS Code to provide the absolute current state of the document
-        // This prevents "Apply All" from failing due to stale text buffers.
+        // Standardize on using the TextDocument throughout the whole command
         let document: vscode.TextDocument;
+        let fileExists = true;
         try {
             document = await vscode.workspace.openTextDocument(fileUri);
-            if (document.isDirty) {
-                await document.save();
-            }
         } catch (e) {
-            return { success: false, error: `Could not open file ${filePath}` };
+            // Handle new file creation
+            fileExists = false;
+            const parentDir = path.dirname(fileUri.fsPath);
+            await vscode.workspace.fs.createDirectory(vscode.Uri.file(parentDir));
+            await vscode.workspace.fs.writeFile(fileUri, Buffer.from('', 'utf8'));
+            document = await vscode.workspace.openTextDocument(fileUri);
         }
 
         const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
         let matches = [...content.matchAll(aiderRegex)];
         
         if (matches.length === 0) {
-             if (!options?.silent) vscode.window.showErrorMessage("No valid Search/Replace blocks found. Ensure markers start at the beginning of the line.");
+             if (!options?.silent) vscode.window.showErrorMessage("No valid Search/Replace blocks found.");
              return { success: false, error: "Invalid Aider block format" };
         }
 
-        // If a specific hunk is requested (Bulk Apply mode), only process that one
         if (options?.hunkIndex !== undefined && matches[options.hunkIndex]) {
             matches = [matches[options.hunkIndex]];
         }
         
         try {
-            let currentContent = "";
-            let fileExists = false;
-            try {
-                await vscode.workspace.fs.stat(fileUri);
-                const document = await vscode.workspace.openTextDocument(fileUri);
-                currentContent = document.getText();
-                fileExists = true;
-            } catch {
-                currentContent = "";
-                fileExists = false;
-            }
+            const originalContent = document.getText();
+            await openDiffView(fileUri, originalContent, true); // Snapshot for diffs
 
-            const originalContent = currentContent;
+            let currentContent = originalContent;
             let applyCount = 0;
+            let firstChangeLine: number | undefined;
 
-            for (const match of matches) {
+            for (let i = 0; i < matches.length; i++) {
+                const match = matches[i];
                 const searchCode = match[1];
                 const replaceCode = match[2];
+
+                // Capture the location of the FIRST match for scrolling
+                if (i === 0 && !options?.silent) {
+                    const range = findBlockRange(document, searchCode);
+                    if (range) {
+                        firstChangeLine = document.positionAt(range.start).line;
+                    }
+                }
                 
                 // --- SPECIAL CASE: EMPTY SEARCH BLOCK ---
                 // If search is empty, treat as "Create File" if new, or "Append to end" if existing.
@@ -509,18 +544,29 @@ ${originalContent}
 
             if (applyCount > 0) {
                 const wasActuallyModified = currentContent !== originalContent;
+                if (!wasActuallyModified) return { success: true, alreadyApplied: true };
 
-                const parentDir = path.dirname(filePath);
-                const parentUri = vscode.Uri.joinPath(activeWorkspace.uri, parentDir);
-                // Fix: ensure the directory creation actually happens
-                await vscode.workspace.fs.createDirectory(parentUri);
-
-                await vscode.workspace.fs.writeFile(fileUri, Buffer.from(currentContent, 'utf8'));
+                const edit = new vscode.WorkspaceEdit();
+                const fullRange = new vscode.Range(
+                    new vscode.Position(0, 0),
+                    document.lineAt(document.lineCount - 1).range.end
+                );
+                edit.replace(fileUri, fullRange, currentContent);
                 
-                if (!options?.silent && wasActuallyModified) {
-                    openDiffView(fileUri, originalContent).catch(() => {});
+                const applied = await vscode.workspace.applyEdit(edit);
+                if (applied) {
+                    await document.save();
+                    if (!options?.silent) {
+                        const editor = await vscode.window.showTextDocument(document);
+                        if (firstChangeLine !== undefined) {
+                            const pos = new vscode.Position(firstChangeLine, 0);
+                            editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+                        }
+                        openDiffView(fileUri, originalContent).catch(() => {});
+                    }
+                    return { success: true, alreadyApplied: false };
                 }
-                return { success: true, alreadyApplied: !wasActuallyModified };
+                return { success: false, error: "WorkspaceEdit failed to apply." };
             }
             return { success: false, error: "Failed to apply edits to document." };
 
@@ -567,7 +613,10 @@ ${originalContent}
 
             const edit = new vscode.WorkspaceEdit();
             edit.replace(fileUri, new vscode.Range(new vscode.Position(0, 0), document.lineAt(document.lineCount - 1).range.end), newFullContent);
-            await vscode.workspace.applyEdit(edit);
+            const applied = await vscode.workspace.applyEdit(edit);
+            if (applied) {
+                await document.save();
+            }
 
             await openDiffView(fileUri, originalContent);
 
@@ -607,7 +656,10 @@ ${originalContent}
 
             const edit = new vscode.WorkspaceEdit();
             edit.replace(fileUri, new vscode.Range(new vscode.Position(0, 0), document.lineAt(document.lineCount - 1).range.end), newFullContent);
-            await vscode.workspace.applyEdit(edit);
+            const applied = await vscode.workspace.applyEdit(edit);
+            if (applied) {
+                await document.save();
+            }
 
             await openDiffView(fileUri, originalContent);
 
@@ -648,7 +700,7 @@ ${originalContent}
         }
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyPatchContent', async (filePath: string, patchContent: string) => {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyPatchContent', async (filePath: string, patchContent: string, options?: { silent?: boolean }) => {
          try {
              const activeWorkspace = getActiveWorkspace();
              if(!activeWorkspace) return;
@@ -657,11 +709,24 @@ ${originalContent}
              const doc = await vscode.workspace.openTextDocument(fileUri);
              const originalContent = doc.getText();
 
+             // Parse first hunk line for scrolling
+             const hunkMatch = patchContent.match(/@@ -(\d+),/);
+             const firstLine = hunkMatch ? parseInt(hunkMatch[1], 10) - 1 : 0;
+
              try {
+                // applyDiff now handles explicit saving internally
                 await applyDiff(patchContent, filePath); 
+                
+                if (!options?.silent) {
+                    // Scroll to the patch location
+                    const editor = await vscode.window.showTextDocument(doc);
+                    const pos = new vscode.Position(Math.max(0, firstLine), 0);
+                    editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+                }
+
              } catch (diffErr: any) {
                 const fixBtn = "Fix with AI";
-                const selection = await vscode.window.showErrorMessage(
+                const selection = options?.silent ? fixBtn : await vscode.window.showErrorMessage(
                     `Failed to apply patch to ${filePath}: ${diffErr.message}`,
                     fixBtn, "Cancel"
                 );
@@ -679,8 +744,10 @@ ${originalContent}
                 throw diffErr;
              }
              
-             await openDiffView(fileUri, originalContent);
-             vscode.window.showInformationMessage(`Patch applied successfully to ${filePath}. Review changes.`);
+             if (!options?.silent) {
+                await openDiffView(fileUri, originalContent);
+                vscode.window.showInformationMessage(`Patch applied successfully to ${filePath}. Review changes.`);
+             }
          } catch (e: any) {
              // Error already handled or ignored
          }

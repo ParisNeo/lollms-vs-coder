@@ -2,9 +2,9 @@
 name: lollms-client-discussion-mastering
 description: >
   Comprehensive guide to managing conversation state, long-term memory extraction, and aider-style versioned document editing.
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
-category: ai/lollms/client
+category: lollms
 created: 2026-04-09
 ---
 

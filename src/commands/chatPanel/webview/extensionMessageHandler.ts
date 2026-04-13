@@ -860,20 +860,29 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     
                     if (row && message.success) {
                         const iconEl = row.querySelector('.status-icon');
-                        
+                        const actionsEl = row.querySelector('.row-actions') as HTMLElement;
+
                         if (message.alreadyApplied) {
-                            // Indicate it's already done but keep it green
                             row.style.background = 'rgba(15, 157, 88, 0.05)'; 
                             row.style.opacity = '0.7';
                             if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-check-all" style="color:var(--vscode-charts-green)" title="Already applied to disk"></span>';
                         } else {
-                            // Fresh apply
                             row.style.background = 'rgba(15, 157, 88, 0.15)'; 
                             row.style.opacity = '1';
                             if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)" title="Applied successfully"></span>';
                         }
+
+                        if (actionsEl) {
+                            actionsEl.style.display = 'flex';
+                            actionsEl.innerHTML = `<button class="icon-btn view-diff-row-btn" title="View Changes (Diff)" style="height:20px; width:20px;"><i class="codicon codicon-diff"></i></button>`;
+                            const diffBtn = actionsEl.querySelector('.view-diff-row-btn') as HTMLElement;
+                            diffBtn.onclick = (e) => {
+                                e.stopPropagation();
+                                vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.showDiff', params: message.filePath }});
+                            };
+                        }
                     } else if (row) {
-                        row.style.background = 'rgba(244, 71, 71, 0.15)'; // Error tint
+                        row.style.background = 'rgba(244, 71, 71, 0.1)'; 
                         const iconEl = row.querySelector('.status-icon');
                         const actionsEl = row.querySelector('.row-actions') as HTMLElement;
 
@@ -883,36 +892,64 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
                         if (actionsEl) {
                             actionsEl.style.display = 'flex';
-                            
-                            // If the extension tells us it's already repairing, show spinner immediately
-                            if (message.repaired === 'in_progress') {
-                                actionsEl.innerHTML = '<button class="code-action-btn apply-btn retry-row-btn" disabled style="height:20px; font-size:9px; padding:0 6px;"><div class="spinner"></div> Repairing...</button>';
-                            } else {
-                                actionsEl.innerHTML = '<button class="code-action-btn apply-btn retry-row-btn" style="height:20px; font-size:9px; padding:0 6px;">Fix with AI</button>';
-                                const retryBtn = actionsEl.querySelector('.retry-row-btn') as HTMLButtonElement;
-                                retryBtn.onclick = () => {
-                                    retryBtn.disabled = true;
-                                    retryBtn.innerHTML = '<div class="spinner"></div> Repairing...';
-                                    
-                                    // Ensure main button doesn't turn green while we fix this hunk
-                                    const btnContainer = resultsList?.previousElementSibling;
-                                    const mainBtn = btnContainer?.querySelector('.apply-all-btn:not(.secondary-btn)') as HTMLButtonElement;
-                                    if (mainBtn) {
-                                        mainBtn.classList.add('stop-btn-red');
-                                        mainBtn.innerHTML = '<span class="codicon codicon-sync spin"></span> Repairing Hunks...';
-                                    }
+                            actionsEl.innerHTML = `
+                                <div class="failure-controls">
+                                    <button class="code-action-btn apply-btn ai-fix-btn" style="height:20px; font-size:9px;" title="Ask AI to fix indentation/matching">AI Repair</button>
+                                    <button class="code-action-btn secondary-button manual-fix-btn" style="height:20px; font-size:9px;" title="View raw block for manual paste">Manual</button>
+                                    <button class="icon-btn ignore-fix-btn" style="height:20px; width:20px;" title="Skip this change"><i class="codicon codicon-circle-slash"></i></button>
+                                </div>
+                            `;
 
-                                    vscode.postMessage({ 
-                                        command: 'replaceCode', 
-                                        filePath: message.filePath, 
-                                        content: "REPAIR_REQUESTED", 
-                                        messageId: message.messageId,
-                                        blockIndex: message.blockIndex,
-                                        hunkIndex: message.hunkIndex,
-                                        options: { silent: true }
-                                    });
-                                };
-                            }
+                            const aiBtn = actionsEl.querySelector('.ai-fix-btn') as HTMLButtonElement;
+                            const manualBtn = actionsEl.querySelector('.manual-fix-btn') as HTMLButtonElement;
+                            const ignoreBtn = actionsEl.querySelector('.ignore-fix-btn') as HTMLButtonElement;
+
+                            aiBtn.onclick = (e) => {
+                                e.stopPropagation();
+                                aiBtn.disabled = true;
+                                aiBtn.innerHTML = '<div class="spinner"></div> Repairing...';
+                                vscode.postMessage({ 
+                                    command: 'replaceCode', 
+                                    filePath: message.filePath, 
+                                    content: "REPAIR_REQUESTED", 
+                                    messageId: message.messageId,
+                                    blockIndex: message.blockIndex,
+                                    hunkIndex: message.hunkIndex,
+                                    options: { silent: true }
+                                });
+                            };
+
+                            manualBtn.onclick = (e) => {
+                                e.stopPropagation();
+                                // Trigger Raw Modal for this specific hunk
+                                const targetBlock = document.getElementById(`block-${message.messageId}-${message.blockIndex}`);
+                                if (targetBlock) {
+                                    const codeText = (targetBlock as any).dataset.rawCode || "";
+                                    const aiderRegex = /<<<<<<< SEARCH\\r?\\n([\\s\\S]*?)\\r?\\n=======\\r?\\n([\\s\\S]*?)\\r?\\n>>>>>>> REPLACE/gm;
+                                    const matches = [...codeText.matchAll(aiderRegex)];
+                                    const hunkContent = (message.hunkIndex !== undefined && matches[message.hunkIndex]) 
+                                        ? matches[message.hunkIndex][0] 
+                                        : codeText;
+
+                                    if (dom.rawCodeDisplay) {
+                                        dom.rawCodeFilename.textContent = message.filePath;
+                                        document.getElementById('raw-hunk-id')!.textContent = message.hunkIndex !== undefined ? `HUNK ${message.hunkIndex + 1}` : 'FULL';
+                                        dom.rawCodeDisplay.textContent = hunkContent;
+                                        dom.rawCodeDisplay.dataset.messageId = message.messageId;
+                                        dom.rawCodeDisplay.dataset.blockIndex = String(message.blockIndex);
+                                        dom.rawCodeDisplay.dataset.hunkIndex = message.hunkIndex !== undefined ? String(message.hunkIndex) : "";
+                                        dom.rawCodeModal.classList.add('visible');
+                                    }
+                                }
+                            };
+
+                            ignoreBtn.onclick = (e) => {
+                                e.stopPropagation();
+                                row.style.background = 'transparent';
+                                row.style.opacity = '0.4';
+                                iconEl!.innerHTML = '<span class="codicon codicon-circle-slash"></span>';
+                                actionsEl.style.display = 'none';
+                            };
                         }
                     }
 

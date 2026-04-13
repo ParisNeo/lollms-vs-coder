@@ -2,7 +2,7 @@
 name: lollms-rag-chromadb
 description: >
   Building a complete RAG system with LoLLMs: document ingestion, vectorization, and agentic retrieval from mixed file types.
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
 category: ai/knowledge_management/rag
 created: 2026-04-09

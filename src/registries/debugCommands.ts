@@ -137,7 +137,8 @@ export function registerDebugCommands(context: vscode.ExtensionContext, services
         prompt += `3. Provide a fix using the **SEARCH/REPLACE (AIDER)** format if the file is in context, or provide the corrected code block.\n`;
 
         if (getActiveWorkspace()) {
-            await startDiscussionWithInitialPrompt(services, prompt, getActiveWorkspace()!);
+            // Force auto-generation for runtime exceptions to provide immediate relief
+            await startDiscussionWithInitialPrompt(services, prompt, getActiveWorkspace()!, true);
         }
     }));
 

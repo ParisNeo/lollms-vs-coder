@@ -136,7 +136,7 @@ export async function activate(context: vscode.ExtensionContext) {
     registerViews(context, services);
 
     // Register Commands
-    registerCommands(context, services, getActiveWorkspace);
+    await registerCommands(context, services, getActiveWorkspace);
 
     // Register Workspace Switcher Command
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.selectActiveWorkspace', async () => {
@@ -242,15 +242,28 @@ export async function activate(context: vscode.ExtensionContext) {
     const statusBar = new LollmsStatusBar(context, lollmsAPI);
     context.subscriptions.push(statusBar);
 
-    // --- CACHE INVALIDATION LISTENERS ---
-    // Invalidate context cache when files are modified on disk
-    context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(doc => {
-        contextManager.refreshFileInCache(doc.uri);
-    }));
+    // --- CACHE INVALIDATION LISTENERS (GLOBAL FS WATCHER) ---
+    // We use a FileSystemWatcher instead of narrow document events to ensure 
+    // programmatic writes (by the agent or git) also invalidate the cache.
+    const watcher = vscode.workspace.createFileSystemWatcher('**/*');
+    
+    watcher.onDidChange(uri => {
+        contextManager.refreshFileInCache(uri);
+        codeGraphManager.reset(); // Invalidate architecture graph
+    });
+    
+    watcher.onDidCreate(uri => {
+        contextManager.markTreeDirty();
+        codeGraphManager.reset();
+    });
+    
+    watcher.onDidDelete(uri => {
+        contextManager.refreshFileInCache(uri);
+        contextManager.markTreeDirty();
+        codeGraphManager.reset();
+    });
 
-    context.subscriptions.push(vscode.workspace.onDidDeleteFiles(e => {
-        e.files.forEach(uri => contextManager.refreshFileInCache(uri));
-    }));
+    context.subscriptions.push(watcher);
 
     // Configuration Listener
     context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(async e => {

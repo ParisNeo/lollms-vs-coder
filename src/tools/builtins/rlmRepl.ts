@@ -4,7 +4,7 @@ import * as fs from 'fs/promises';
 
 export const rlmReplTool: ToolDefinition = {
     name: "rlm_repl",
-    description: "Executes Python code in a stateful REPL style. The code has access to the full project 'context' (as variable 'context') and a persistent 'thread_memory' dictionary that survives across calls. This dictionary is automatically populated with data from previous tasks that used 'save_as'.",
+    description: "The Genie's internal reasoning lab. Executes Python code with access to 'context' and 'thread_memory'. Use this to cross-reference 'available_skills' and 'project_memories' to decide your strategy.",
     isAgentic: true,
     isDefault: true,
     permissionGroup: 'shell_execution',
@@ -18,8 +18,16 @@ export const rlmReplTool: ToolDefinition = {
         }
 
         // --- RLM DATA ZONE PREPARATION ---
-        // Convert the Agent's in-memory State to a JSON string for Python ingestion
-        const threadMemoryJson = JSON.stringify(env.agentManager.sessionState.replVariables);
+        // 1. Fetch Skills & Memories to inject into the "Thinking Brain"
+        const allSkills = await env.skillsManager?.getSkills() || [];
+        const allMemories = await (env.agentManager as any).projectMemoryManager?.getMemories() || [];
+
+        // 2. Prepare the local state
+        const state = env.agentManager.sessionState.replVariables;
+        state['available_skills'] = allSkills.map(s => ({ id: s.id, name: s.name, desc: s.description }));
+        state['project_memories'] = allMemories.map(m => ({ id: m.id, title: m.title, content: m.content }));
+
+        const threadMemoryJson = JSON.stringify(state);
         
         let contextInjection = "context = ''\n";
         if (params.inspect_context) {
@@ -41,7 +49,10 @@ thread_memory = json.loads(r'''${threadMemoryJson}''')
 # 2. Inject Context
 ${contextInjection}
 
-# 3. User Logic Execution
+# 3. Inject Reflexive Memory (Failures to avoid)
+# thread_memory['mistakes'] = ...
+
+# 4. User Logic Execution
 # We use a localized scope for the execution to prevent pollution 
 # but allow modification of the thread_memory dict.
 try:

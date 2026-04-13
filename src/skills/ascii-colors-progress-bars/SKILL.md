@@ -2,7 +2,7 @@
 name: ascii-colors-progress-bars
 description: >
   Customizable progress bars with multiple styles, thread safety, and manual control.
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
 category: development/languages/python/ui/ascii_colors
 created: 2025-02-01

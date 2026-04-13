@@ -510,7 +510,10 @@ export async function applyDiff(diffContent: string, targetFilePath?: string) {
         document.lineAt(document.lineCount - 1).range.end
     );
     edit.replace(fileUri, fullRange, patchResult.result);
-    await vscode.workspace.applyEdit(edit);
+    const applied = await vscode.workspace.applyEdit(edit);
+    if (applied) {
+        await document.save();
+    }
 }
 
 export async function getProcessedSystemPrompt(

@@ -2,7 +2,7 @@
 name: ascii-colors-menus
 description: >
   Interactive terminal menus with keyboard navigation, submenus, filtering, and multi-select.
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
 category: development/languages/python/ui/ascii_colors
 created: 2025-02-01

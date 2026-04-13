@@ -2,7 +2,7 @@
 name: lollms-safestore-rag
 description: >
   Building a complete Retrieval Augmented Generation pipeline combining SafeStore retrieval and LollmsClient generation.
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
 category: ai/knowledge_management/rag
 created: 2026-04-09

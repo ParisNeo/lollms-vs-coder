@@ -76,7 +76,7 @@ function convertSkills() {
 name: ${id}
 description: >
   ${yamlDescription}
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
 category: ${category}
 created: ${createdDate}

@@ -45,6 +45,7 @@ export class PromptTemplates {
         sections.push(`
 ### 📄 FORMAT 1: FULL FILE CONTENT (OVERWRITE)
 **Header**: \`\`\`language:path/to/file.ext\`\`\`
+**STRICT HEADER RULE**: The header MUST contain ONLY the language and the relative path. You are FORBIDDEN from adding any metadata, counts, or notes like "(2 hunks)" or "(modified)" to the path.
 **Usage**: Replaces the **entire** file on disk.
 - **Requirement**: The block MUST contain the complete, 1:1 content of the file.
 - **Warning**: Do NOT use this header for snippets or partial code. If you use this header, you MUST provide the whole file.
@@ -55,6 +56,7 @@ export class PromptTemplates {
             sections.push(`
 ### ⚡ FORMAT 2: SEARCH/REPLACE (Surgical Patch)
 **Header**: \`\`\`language:path/to/file.ext\`\`\`
+**STRICT HEADER RULE**: The header MUST contain ONLY the language and the relative path. You are FORBIDDEN from adding any metadata, counts, or notes like "(2 hunks)" or "(modified)" to the path.
 **Structure**:
 \`\`\`
 <<<<<<< SEARCH
@@ -69,7 +71,7 @@ export class PromptTemplates {
 2. **UNIQUE CONTEXT**: Always include 3-4 lines of unchanged code before and after the change in the \`SEARCH\` block to ensure the patcher finds the correct location.
 3. **NO FRAGMENTS**: Do not use \`...\` inside the \`SEARCH\` block to skip lines. If lines are in the middle of your match, you must include them.
 4. **ATOMIC BLOCKS**: If you are changing multiple functions or distant parts of a file, use **multiple separate** SEARCH/REPLACE blocks.
-5. **APPENDING**: To add code to the end of a file, use an empty \`SEARCH\` block (\`<<<<<<< SEARCH\` followed immediately by \`=======\`).
+5. **NO EMPTY SEARCH BLOCKS**: You are STRICTLY FORBIDDEN from leaving the \`SEARCH\` block empty. Every patch must have a verifiable anchor. To append code to the end of a file, include the final 2-3 lines of the existing file in your \`SEARCH\` block and add your new code after them in the \`REPLACE\` block.
 `);
         }
 
@@ -99,13 +101,11 @@ Your changes will be applied to the disk automatically. You MUST use the **SEARC
 The following blocks represent the project exactly as it is on the user's disk at THIS MOMENT.
 Use this as the reference for any SEARCH/REPLACE operations.
 
-### 🎯 MISSION BRIEFING (Current Task Instructions)
+## 🎯 MISSION BRIEFING (Current Task Instructions)
 ${context.briefing || 'No specific task-level briefing provided.'}
 
-### 🧬 PROJECT DNA (Global Standards)
+## 🧬 PROJECT DNA (Global Standards)
 ${context.memory || 'No global standards defined yet.'}
-
-### 🌳 PROJECT STRUCTURE
 ${context.tree || ''}
 ${context.files || ''}
 `.trim();
@@ -121,12 +121,20 @@ ${context.files || ''}
         shells: string[],
         capabilities?: DiscussionCapabilities,
         forceFullCodeSetting?: boolean,
-        context?: { tree: string; files: string; skills: string; briefing?: string }
+        context?: { tree: string; files: string; skills: string; briefing?: string; memory?: string }
     ): string {
 
         const formatting = this.getFormatInstructions(capabilities, forceFullCodeSetting);
         const activeProfileId = capabilities?.responseProfileId || 'balanced';
         const activeProfile = SYSTEM_RESPONSE_PROFILES.find(p => p.id === activeProfileId) || SYSTEM_RESPONSE_PROFILES[0];
+
+        const envInfo = `
+### 💻 ENVIRONMENT INFO
+- OS Platform: ${os.platform()}
+- Preferred Shell: ${os.platform() === 'win32' ? 'PowerShell 7/5.1' : 'Bash'}
+- Available Shells: ${shells.join(', ')}
+- Current Date: ${new Date().toISOString().split('T')[0]}
+`;
 
         const skillsAuthority = (context?.skills || capabilities?.hasSkills) ? `
 ### 📖 SKILLS AUTHORITY PROTOCOL
@@ -210,24 +218,6 @@ Initial context is minimized to save time.
         return `${activeProfile.prefix || ''}# 🎭 ROLE & PERSONA
 ${persona}
 
-### ENVIRONMENT INFO
-- OS Platform: ${os.platform()}
-- Preferred Shell: ${os.platform() === 'win32' ? 'PowerShell 7/5.1' : 'Bash'}
-- Available Shells: ${shells.join(', ')}
-- Current Date: ${new Date().toISOString().split('T')[0]}
-
-${memory ? `### LONG-TERM MEMORY\n${memory}\n` : ''}
-${skillsAuthority}
-${context?.tree ? `
-### 🌳 PROJECT STRUCTURE LEGEND
-- **[C]**: Full Content is loaded in the "FILE CONTENTS" section below. You can read and edit this file.
-- **[D]**: Only Class/Function Definitions are loaded. You see the structure but not the implementation.
-- **No Tag**: Only the path is known to you.
-
-${context.tree}` : ''}
-
-${context?.files || ''}
-
 # 🧠 BEHAVIOR & STYLE
 ${activeProfile.systemPrompt ? `
 ### 📢 CRITICAL RESPONSE STYLE: ${activeProfile.name.toUpperCase()}
@@ -278,9 +268,12 @@ When the user asks you to "remember" a fact, "take note" of a requirement, or wh
 - User says: "Remember X" or "Note that Y" or "This is a Z project".
 - Your action: IMMEDIATELY output \`<project_memory action="add" id="..." title="...">...</project_memory>\`.
 
+${skillsAuthority}
+
 ${context?.memory || ''}
 
 ${formatting}
+${envInfo}
 `;
     }
 }

@@ -2,7 +2,7 @@
 name: lollms-structured
 description: >
   The social network for AI agents. Post, comment, upvote, and create communities.
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
 category: social/agent_networks
 created: 2026-04-09

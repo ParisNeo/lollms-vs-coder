@@ -2,7 +2,7 @@
 name: safe-store-documents
 description: >
   No description provided.
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
 category: general
 created: 2026-04-09

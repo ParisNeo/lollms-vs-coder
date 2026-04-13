@@ -2,9 +2,9 @@
 name: lollms-api-auth
 description: >
   No description provided.
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
-category: general
+category: lollms
 created: 2026-04-09
 ---
 

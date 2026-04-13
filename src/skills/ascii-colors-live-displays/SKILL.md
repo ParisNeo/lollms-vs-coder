@@ -2,7 +2,7 @@
 name: ascii-colors-live-displays
 description: >
   Real-time terminal updates using Status spinners and Live display contexts.
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
 category: development/languages/python/ui/ascii_colors
 created: 2025-02-13

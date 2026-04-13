@@ -1262,7 +1262,7 @@ export function initEventHandlers() {
             const syncMemBtn = target.closest('.sync-memory-btn') as HTMLButtonElement;
             if (syncMemBtn) {
                 e.stopPropagation();
-                const { action, id, title, content } = syncMemBtn.dataset;
+                const { action, id, title, content, importance } = syncMemBtn.dataset;
                 
                 syncMemBtn.disabled = true;
                 syncMemBtn.innerHTML = '<i class="codicon codicon-loading spin"></i>';
@@ -1275,7 +1275,8 @@ export function initEventHandlers() {
                             action, 
                             id, 
                             title: decodeURIComponent(title || ''), 
-                            content: decodeURIComponent(content || '') 
+                            content: decodeURIComponent(content || ''),
+                            importance: parseFloat(importance || "1.0")
                         }
                     }
                 });

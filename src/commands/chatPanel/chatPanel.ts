@@ -1177,6 +1177,12 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                   skills: contextData.skillsContent
               };
 
+              let memoryBlock = "";
+              if (this._discussionCapabilities.projectMemoryEnabled !== false && this.agentManager?.projectMemoryManager) {
+                  progress.report({ message: "Reading project memory..." });
+                  memoryBlock = await this.agentManager.projectMemoryManager.getFormattedMemoryBlock();
+              }
+
               progress.report({ message: "Processing system prompt..." });
               const personaContent = this.getCurrentPersonaSystemPrompt();
               const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, forceFullCode, { ...context, tree: '', files: '' });
@@ -1188,12 +1194,13 @@ The following project state was exported from VS Code.
 ## 📜 CORE INSTRUCTIONS & PERSONA
 ${systemPrompt}
 
-## 🌳 PROJECT STRUCTURE
 ${context.tree || 'No tree provided.'}
 
 ${context.files || '## 📄 FILE CONTENTS\nNo files selected.'}
 
 ${context.skills ? `## 🎓 ACTIVE SKILLS\n${context.skills}` : ''}
+
+${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
 
 ---
 
@@ -1285,23 +1292,23 @@ ${context.skills ? `## 🎓 ACTIVE SKILLS\n${context.skills}` : ''}
       const messageToResend = this._currentDiscussion.messages[index];
       if (messageToResend.role !== 'user') return;
 
-      // 1. Stop any current generation to prevent race conditions
       this.processManager.cancelForDiscussion(this.discussionId);
       ChatPanel.activeGenerations.delete(this.discussionId);
 
-      // 2. Truncate the history: Keep everything BEFORE this message
       this._currentDiscussion.messages = this._currentDiscussion.messages.slice(0, index);
 
-      // 3. Persist the truncation to disk immediately
       if (!this._currentDiscussion.id.startsWith('temp-')) {
           await this._discussionManager.saveDiscussion(this._currentDiscussion);
       }
 
-      // 4. Force a UI reload to remove the "future" bubbles from the webview
       await this.loadDiscussion();
 
-      // 5. Re-send the message as if it were a fresh prompt
-      await this.sendMessage(messageToResend);
+      // FIXED: Respect Agent Mode during regeneration
+      if (this._discussionCapabilities.agentMode) {
+           await this.sendMessage(messageToResend); // This now correctly routes to AgentManager
+      } else {
+           await this.sendMessage(messageToResend);
+      }
   }
   
   private async insertMessage(afterMessageId: string | null, role: 'user' | 'assistant', content: string) {
@@ -1482,20 +1489,6 @@ ${context.skills ? `## 🎓 ACTIVE SKILLS\n${context.skills}` : ''}
 
     await this.addMessageToDiscussion(userMessage);
 
-    if (this.agentManager && this.agentManager.getIsActive()) {
-        if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
-             await this.agentManager.handleUserMessage(
-                 typeof message.content === 'string' ? message.content : "User Input", 
-                 this._currentDiscussion, 
-                 vscode.workspace.workspaceFolders[0]
-             );
-        } else {
-             this.addMessageToDiscussion({ role: 'system', content: "Agent requires an active workspace folder." });
-        }
-        // CRITICAL: Stop ChatPanel from processing the standard chat loop!
-        return;
-    }
-
     // --- AUTO TITLE GENERATION ---
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const isUntitled = !this._currentDiscussion?.title || 
@@ -1537,15 +1530,21 @@ ${context.skills ? `## 🎓 ACTIVE SKILLS\n${context.skills}` : ''}
         }
     }
 
-    if (this.agentManager && this.agentManager.getIsActive()) {
+    // SUMMON THE GENIE: If Agent Mode capability is active, force Agent Logic
+    if (this.agentManager && this._discussionCapabilities.agentMode) {
         if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
+             // Auto-activate the manager if it was in standby
+             if (!this.agentManager.getIsActive()) {
+                 this.agentManager.toggleAgentMode(); 
+             }
+             
              await this.agentManager.handleUserMessage(
                  typeof message.content === 'string' ? message.content : "User Input", 
-                 this._currentDiscussion, 
+                 this._currentDiscussion!, 
                  vscode.workspace.workspaceFolders[0]
              );
         } else {
-             this.addMessageToDiscussion({ role: 'system', content: "Agent requires an active workspace folder." });
+             this.addMessageToDiscussion({ role: 'system', content: "Genie requires an active workspace folder to execute actions." });
         }
         return;
     }
@@ -2583,6 +2582,9 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                                 result = { success: false, error: e.message };
                             }
                         
+                        // Small breather to allow VS Code buffers to sync and OS to handle file lock
+                        await new Promise(r => setTimeout(r, 250));
+
                         this._panel.webview.postMessage({
                             command: 'applyAllResult',
                             messageId: messageId,
@@ -3144,14 +3146,6 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                     vscode.commands.executeCommand('lollms-vs-coder.saveContextSelection');
                 } else if (command === 'loadContext') {
                     vscode.commands.executeCommand('lollms-vs-coder.loadContextSelection');
-                } else if (command === 'lollms-vs-coder.createGitBranch') {
-                    vscode.commands.executeCommand('lollms-vs-coder.createGitBranch', params);
-                } else if (command === 'lollms-vs-coder.mergeGitBranch') {
-                    vscode.commands.executeCommand('lollms-vs-coder.mergeGitBranch', params);
-                } else if (command === 'lollms-vs-coder.switchGitBranch') {
-                    vscode.commands.executeCommand('lollms-vs-coder.switchGitBranch', params);
-                } else if (command === 'workbench.action.reloadWindow') {
-                    vscode.commands.executeCommand('workbench.action.reloadWindow');
                 } else if (command === 'synthesizeSearchResults') {
                     if (!this.agentManager.getIsActive()) {
                         this.agentManager.toggleAgentMode();
@@ -3170,6 +3164,19 @@ Task:
                         this.agentManager.run(objective, this._currentDiscussion!, vscode.workspace.workspaceFolders[0], this._currentDiscussion?.model);
                     } else {
                         vscode.window.showErrorMessage("Active workspace required for agent execution.");
+                    }
+                } else {
+                    // ROBUST FALLBACK: Allow execution of any command starting with allowed namespaces (whitelisting by prefix)
+                    if (command.startsWith('lollms-vs-coder.') || command.startsWith('workbench.') || command.startsWith('vscode.')) {
+                        if (Array.isArray(params)) {
+                            vscode.commands.executeCommand(command, ...params);
+                        } else if (params !== undefined) {
+                            vscode.commands.executeCommand(command, params);
+                        } else {
+                            vscode.commands.executeCommand(command);
+                        }
+                    } else {
+                        console.warn(`executeLollmsCommand: Blocked attempt to run unauthorized command: ${command}`);
                     }
                 }
                 break;

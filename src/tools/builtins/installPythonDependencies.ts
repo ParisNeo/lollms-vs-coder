@@ -56,9 +56,10 @@ export const installPythonDependenciesTool: ToolDefinition = {
     isDefault: true,
     parameters: [
         { name: "env_name", type: "string", description: "Venv folder name.", required: true },
-        { name: "dependencies", type: "array", description: "List of package names strings. Leave empty to auto-detect from requirements.txt or source code.", required: true }
+        { name: "dependencies", type: "array", description: "List of package names strings. Leave empty to auto-detect from requirements.txt or source code.", required: true },
+        { name: "timeout_s", type: "number", description: "Optional: Execution timeout in seconds. Increase this for large libraries like torch/tensorflow. Default: 120s.", required: false }
     ],
-    async execute(params: { env_name: string, dependencies: string[] }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
+    async execute(params: { env_name: string, dependencies: string[], timeout_s?: number }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
         // Check if venv exists first
         if (!env.workspaceRoot) return { success: false, output: "No workspace." };
         const rootPath = env.workspaceRoot.uri.fsPath;
@@ -132,7 +133,8 @@ export const installPythonDependenciesTool: ToolDefinition = {
             command = `"${pythonExec}" -m pip install ${deps}`;
         }
 
-        const result = await env.agentManager!.runCommand(command, signal);
+        const timeoutMs = params.timeout_s ? params.timeout_s * 1000 : undefined;
+        const result = await env.agentManager!.runCommand(command, signal, { timeoutMs });
 
         if (!result.success) {
             let helpfulError = result.output;

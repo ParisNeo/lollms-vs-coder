@@ -2,7 +2,7 @@
 name: safe-store-core
 description: >
   Primary API for local semantic storage, vectorization, and document management.
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
 category: ai/knowledge_management/safe_store
 created: 2026-04-09

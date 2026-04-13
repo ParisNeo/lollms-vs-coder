@@ -1,12 +1,30 @@
-# Lollms VS Coder: The Autonomous Engineering Command Center
+# Lollms VS Coder: Sovereign Engineering for Everyone
 
 [![Version](https://img.shields.io/github/v/release/ParisNeo/lollms-vs-coder?logo=github&style=flat-square)](https://github.com/ParisNeo/lollms-vs-coder/releases) 
 [![License](https://img.shields.io/github/license/ParisNeo/lollms-vs-coder?style=flat-square)](https://github.com/ParisNeo/lollms-vs-coder/blob/main/LICENSE) 
 [![Languages](https://img.shields.io/github/languages/top/ParisNeo/lollms-vs-coder?style=flat-square)](https://github.com/ParisNeo/lollms-vs-coder) 
 
-**Lollms VS Coder** is a private, local-first (hybrid) AI engineering suite integrated deeply into VS Code. It transforms the AI from a simple "Chatbot" into a **Verifiable Engineering Operator** that plans, executes, and self-heals your code.
+**Lollms VS Coder** is your local-first AI partner. Whether you are a **Senior Architect** who wants to validate every byte of memory or a **Vibe Coder** who wants to summon a digital genie to manifest an app from pure thought, Lollms provides the tools to build without boundaries.
 
 Now available in **English, French, Spanish, German, Arabic, and Chinese (Simplified)**! 🌍
+
+---
+
+## 🏗️ Choose Your Pathway
+
+Lollms is designed to adapt to your style, not force you into ours.
+
+### 📐 The Architect (Control & Precision)
+For those who know exactly what they want and need to understand the *why*.
+- **Surgical HUD**: Analyze individual functions for architectural risks.
+- **Context Pinning**: Tell the AI exactly which files to look at and which to ignore.
+- **Guardian Protocol**: Watch the AI work and verify every self-healing step it takes.
+
+### 🧞 The Genie (Vibe Coding & Autonomy)
+For those who want to build at the speed of thought without being a "specialist."
+- **Summon the Agent**: Describe a goal in plain English—"Build me a weather dashboard with a retro UI"—and watch the Genie create the files, install dependencies, and run the server.
+- **Autonomous Repair**: If the Genie makes a mistake, it sees the error and fixes it before you even notice.
+- **Zero-Config Environments**: Let the AI manage your Python virtual environments and MCP tools.
 
 ---
 
@@ -27,8 +45,12 @@ In an era of generic AI "Copilots," Lollms provides **Sovereignty, Structural In
 
 ## 🚀 The Lollms Edge: Why choose us?
 
-### 1. 🎭 Expert Personalities (The Digital Twin)
-Lollms doesn't just "chat." It allows you to inhabit a specific **Expert Persona**. Need a deep security audit? Switch to the **Security Auditor**. Refactoring a complex backend? Invoke the **Senior Architect**. These aren't just labels; they are deep behavioral overrides that change how the AI plans, critiques, and writes code. You can even build your own custom personas using the built-in **Personality Builder**.
+### 1. 🎭 Expert Personalities (Your Team of Specialists)
+Lollms doesn't just "chat." It allows you to summon a specific **Expert Persona**. 
+- **Vibe Coder?** Summon the **Pragmatist** to get things running fast.
+- **Security Pro?** Switch to the **Security Auditor** for a deep vulnerability scan.
+- **Embedded Expert?** Invoke the **STM32 Specialist** to handle register-level logic.
+You can even build your own custom personas to fit your unique project vibe.
 
 ### 2. 💎 Modular Skills (The Source of Truth)
 Stop relying on the AI's "hallucination-prone" general knowledge. **Lollms Skills** are atomic, verified knowledge capsules. 
@@ -97,12 +119,31 @@ The **Lollms Chat** is your central hub for interacting with the AI.
 
 ## 🛠️ Discussion Tools & Thinking Mode
 
-Customize how the AI behaves for each specific discussion by clicking the **Discussion Settings** (Gear Icon ⚙️) inside the chat panel.
+### 🧞 Summoning the Genie (Agent Mode)
+Simply toggle the **Agent** badge in your chat. The AI is no longer just talking to you; it is an operator with hands. It can:
+- **Search the Web** for the latest documentation.
+- **Read & Write** files in your workspace.
+- **Execute Commands** in your terminal to test its own work.
 
 ### 🧠 Activate Thinking Mode
-For complex tasks requiring logic and reasoning, enable **Thinking Mode**.
-1.  Open **Discussion Settings**.
-2.  Select a **Reasoning Strategy** (e.g. Chain of Thought, Plan and Solve).
+For complex tasks that require deep logic, enable **Thinking Mode**.
+1.  Open **Discussion Settings (⚙️)**.
+2.  Select your reasoning budget and watch the AI contemplate the best path before writing a single line.
+
+### 🧬 Evolving Intelligence (The Memory Layer)
+Lollms introduces a human-like memory architecture to ensure the Genie gets smarter with every interaction without bloating your context.
+
+- **Dual-Layer Context**: 
+  - **Limbic System**: Recent successes and critical failures are injected directly into every prompt for immediate recall.
+  - **Neocortex**: An organized hierarchical library of thousands of project facts. The Genie can "browse" its own deep memory if it hits a wall.
+- **Importance Weighting**: High-use facts grow stronger. Obsolete information "decays" and moves to deep storage, keeping the context lean and focused.
+- **Memory-to-Skill Promotion**: Found a technical truth that applies to multiple projects? Use the **Promote to Skill** button in the Memory Manager to turn a project fact into a permanent Global Skill.
+- **Error Awareness**: When the Genie makes a mistake, it records the failure. If it tries to do the same thing again, a "Reflexive Guard" blocks the action and forces a new strategy.
+- **Success Reflection**: Every time the Genie fixes a hard bug, it reflects on *why* the fix worked. It then saves this "Technical Lesson" to your **Project Memory** automatically.
+- **Internal REPL (The Brain)**: The Genie has access to an internal Python lab where it can search through its own **Skills** and **Memories** using code to find the perfect solution for your current task.
+- **Project Evolution**: Over time, your digital Genie becomes a specialist in *your* specific codebase, avoiding your project's unique pitfalls.
+
+---
 
 ### 🌍 Web Search & Research Agent
 Toggle **Web Search** in the settings to allow the AI to browse the internet. When enabled, Lollms spawns a specialized **Research Librarian** to verify facts or read library documentation.

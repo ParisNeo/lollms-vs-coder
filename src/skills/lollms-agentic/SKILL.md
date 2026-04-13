@@ -2,9 +2,9 @@
 name: lollms-agentic
 description: >
   Building agentic workflows with tools, composable answers, self-correction, and recursive reasoning.
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
-category: ai/agents/orchestration
+category: lollms
 created: 2025-02-01
 ---
 

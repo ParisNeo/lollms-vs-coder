@@ -6,9 +6,9 @@ import { promisify } from 'util';
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
 import { getProcessedSystemPrompt, stripThinkingTags } from './utils';
 
-const execAsync = promisify(exec);
-const MAX_DIFF_LENGTH = 8000;
-const MAX_BUFFER_SIZE = 20 * 1024 * 1024;
+export const execAsync = promisify(exec);
+export const MAX_DIFF_LENGTH = 8000;
+export const MAX_BUFFER_SIZE = 20 * 1024 * 1024;
 
 export interface GitCommit {
     hash: string;
@@ -337,12 +337,18 @@ export class GitIntegration {
       }
   }
 
-  public async getCompareDiff(folder: vscode.WorkspaceFolder, hash1: string, hash2: string): Promise<string> {
+  public async getCommitDiff(folder: vscode.WorkspaceFolder, hash: string): Promise<string> {
       if (!folder) return "";
       try {
-          return await this._getDiff(`${hash1} ${hash2}`, folder);
+          // Standard git show -p provides the patch for the entire commit
+          const { stdout } = await execAsync(`git --no-pager show --pretty="" -p ${hash}`, {
+              cwd: folder.uri.fsPath,
+              maxBuffer: MAX_BUFFER_SIZE,
+              timeout: 10000
+          });
+          return stdout || '';
       } catch (e: any) {
-          throw new Error(`Failed to get compare diff: ${e.message}`);
+          throw new Error(`Failed to get commit diff: ${e.message}`);
       }
   }
 

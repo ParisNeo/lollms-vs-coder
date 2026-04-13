@@ -7,13 +7,17 @@ export class McpClient {
     private pendingRequests = new Map<number, { resolve: (val: any) => void, reject: (err: any) => void }>();
     private isInitialized = false;
 
-    constructor(private command: string, private args: string[] = []) {}
+    constructor(private command: string, private args: string[] = [], private authKey?: string) {}
 
     public async connect(): Promise<void> {
         if (this.process) return;
 
+        const env = { ...process.env };
+        if (this.authKey) env.MCP_AUTH_KEY = this.authKey;
+
         this.process = cp.spawn(this.command, this.args, {
-            stdio: ['pipe', 'pipe', 'inherit'] // pipe stdin/stdout, inherit stderr
+            stdio: ['pipe', 'pipe', 'inherit'],
+            env
         });
 
         if (!this.process.stdout || !this.process.stdin) {

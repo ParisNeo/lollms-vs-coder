@@ -1,10 +1,10 @@
 ---
-name: -uuid-
+name: lollms-discussion
 description: >
   FastAPI entry point
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
-category: ...
+category: lollms
 created: 2026-04-09
 ---
 
@@ -23,6 +23,7 @@ created: 2026-04-09
 
 1. [Core Architecture](#1-core-architecture)
 2. [The Event System](#2-the-event-system)
+   - 2.4.1 [Unified Processing Tag Protocol](#241-unified-processing-tag-protocol-new--recommended)
 3. [The Branching System](#3-the-branching-system)
    - 3.1 Concept
    - 3.2 What Creates a Branch
@@ -36,20 +37,24 @@ created: 2026-04-09
    - 3.10 Temporary Tool-History Messages
    - 3.11 Complete Branch Management Example
 4. [The Artefact System](#4-the-artefact-system)
+   - 4.5 [Artefact Images](#45-artefact-images--embedding-visual-content-in-documents)
 5. [Notes](#5-notes)
 6. [Skills](#6-skills)
 7. [Inline Interactive Teaching Widgets](#7-inline-interactive-teaching-widgets)
-8. [Interactive Forms](#8-interactive-forms)0
-9. [The Silent Artefact Guard](#8-the-silent-artefact-guard)
-10. [The Tooling System](#9-the-tooling-system)
-11. [REPL Text Tools](#10-repl-text-tools)
-12. [Context Compression](#11-context-compression)
-13. [Scratchpad Placement Model](#12-scratchpad-placement-model)
-14. [Source Title Extraction](#13-source-title-extraction)
-15. [`chat()` Parameter Reference](#14-chat-parameter-reference)
-16. [`chat()` Return Value Reference](#15-chat-return-value-reference)
-17. [The Swarm System](#16-the-swarm-system)
-18. [Worked Example (single-agent)](#17-worked-example)
+8. [Interactive Forms](#8-interactive-forms)
+9. [The Silent Artefact Guard](#9-the-silent-artefact-guard)
+10. [The Tooling System](#10-the-tooling-system)
+11. [The Streaming State Machine](#11-the-streaming-state-machine)
+12. [REPL Text Tools](#12-repl-text-tools)
+13. [Context Compression](#13-context-compression)
+14. [Scratchpad Placement Model](#14-scratchpad-placement-model)
+15. [Source Title Extraction](#15-source-title-extraction)
+16. [`chat()` Parameter Reference](#16-chat-parameter-reference)
+17. [`chat()` Return Value Reference](#17-chat-return-value-reference)
+18. [The Swarm System](#18-the-swarm-system)
+19. [UI Implementation Guide](#20-ui-implementation-guide)
+20. [Migration Guide](#21-migration-guide-legacy-to-unified-streaming)
+21. [Worked Example (single-agent)](#22-worked-example-single-agent)
 
 ---
 
@@ -235,6 +240,13 @@ internal synchronisation channel between the streaming loop and the post-process
 | 46 | `MSG_TYPE_FORM_READY` | Complete parsed form descriptor ready for rendering | `{title, form}` |
 | 47 | `MSG_TYPE_FORM_SUBMITTED` | User answers injected back into generation context | `{form_id, answers}` |
 
+> **Note on Processing Events**: The unified `<processing>` tag protocol (§2.4.1)
+> delivers all secondary content through `MSG_TYPE_CHUNK` with special `meta` dicts:
+> - `meta["type"]`: `"processing_open"`, `"processing_status"`, `"processing_close"`,
+>   or `"processing_final_content"`
+> - `meta["processing_type"]`: `"artefact_building"`, `"widget_building"`,
+>   `"form_building"`, `"note_building"`, `"skill_building"`, or `"synthesis"`
+
 ### 2.4 Inline Streaming Events (MSG_TYPE_CHUNK with meta)
 
 Some events arrive as `MSG_TYPE_CHUNK` with `text=""` but a non-empty `meta` dict.
@@ -250,11 +262,29 @@ but carry no content. Content arrives on the secondary stream (§2.5).
 | `"inline_widget_start"` | Opening `<lollms_inline ...>` tag detected | `{title: str, widget_type: "html"\|"react"\|"svg"}` |
 | `"form_start"` | Opening `<lollms_form ...>` tag detected | `{title: str}` |
 
-### 2.5 Secondary Content Streams — CHUNK and DONE Events
+### 2.5 Secondary Content Streams — CHUNK and DONE Events (DEPRECATED)
 
+> **DEPRECATED**: This section describes the legacy secondary stream protocol.
+> New applications should use the unified `<processing>` tag protocol (§2.4.1).
+> These events continue to fire for backward compatibility but may be removed
+> in a future major version.
+
+The framework uses an internal state machine (`_StreamState`) to intercept XML tags.
 When the LLM generates an artefact, note, skill, or widget, the raw content is routed
 to a **separate, parallel stream** using dedicated event types rather than appearing in
-the main chat bubble stream. See §4–7 for full details per content type.
+the main chat bubble stream (`MSG_TYPE_CHUNK`).
+
+#### 2.5.1 Lifecycle of a Tagged Block (Legacy)
+1.  **Announcement**: A `MSG_TYPE_CHUNK` fires with `text=""` and `meta` containing the tag title.
+2.  **Streaming**: Zero or more `*_CHUNK` events fire (e.g., `MSG_TYPE_ARTEFACT_CHUNK`).
+3.  **Completion**: A `*_DONE` event fires. At this exact moment, the framework:
+    -   Validates the content (for widgets).
+    -   Persists the data to the database (for artefacts/notes/skills).
+    -   Fires `MSG_TYPE_ARTEFACTS_STATE_CHANGED`.
+4.  **Anchor Placement**: For Widgets and Forms, an anchor tag is appended to the main message content (see §20).
+
+### 2.6 `MSG_TYPE_ARTEFACTS_STATE_CHANGED` — Two Distinct Modes
+=======
 
 ### 2.6 `MSG_TYPE_ARTEFACTS_STATE_CHANGED` — Two Distinct Modes
 
@@ -941,13 +971,8 @@ Airline: Transavia
 </artefact>
 ```
 
-#### 4.2.4 Patch an Existing Artefact — SEARCH/REPLACE (Aider Format)
-
-```xml
-<artefact name="app.py">
-<<<<<<< SEARCH
-def greet():
-    return 'hello'
+def greet(name: str = 'world'):
+    return f'hello {name}'
 =======
 def greet(name: str = 'world'):
     return f'hello {name}'
@@ -1002,6 +1027,221 @@ mgr.remove("scratch.txt")
 `MSG_TYPE_ARTEFACTS_STATE_CHANGED` fires once per `<artefact>` / `<revert_artefact>`
 tag immediately as it is processed, before the full response is assembled. See §2.6 for
 event payload shapes.
+
+### 4.5 Artefact Images — Embedding Visual Content in Documents
+
+Artefacts can carry images alongside their text content. This is essential for:
+- **PDF documents** converted to text+images (each page rendered as PNG/JPEG)
+- **Screenshots** embedded in technical documentation
+- **Diagrams** referenced from code explanations
+- **Multi-modal reports** combining prose and visual evidence
+
+#### 4.5.1 The Image Anchor System
+
+Images are stored as base64 strings in `artefact["images"]` and referenced **inline**
+in the text content using self-closing anchor tags:
+
+```xml
+<artefact_image id="TITLE::N" />
+```
+
+Where:
+- `TITLE` = the artefact's `title` field
+- `N` = 0-based index into `artefact["images"]`
+
+**Example artefact with embedded images:**
+```xml
+<artefact name="annual_report_2024.pdf" type="document">
+# Annual Report 2024
+
+## Executive Summary
+<artefact_image id="annual_report_2024.pdf::0" />
+
+Revenue increased 23% year-over-year. Key drivers shown in the chart above.
+
+## Regional Breakdown
+<artefact_image id="annual_report_2024.pdf::1" />
+
+The Asia-Pacific region now represents our largest market segment.
+
+## Product Portfolio
+<artefact_image id="annual_report_2024.pdf::2" />
+<artefact_image id="annual_report_2024.pdf::3" />
+
+New product lines launched in Q3 and Q4 respectively.
+</artefact>
+```
+
+#### 4.5.2 Image Storage and MIME Types
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `images` | `list[str]` | Base64-encoded image data |
+| `image_media_types` | `list[str]` | Parallel list of MIME types (`"image/png"`, `"image/jpeg"`, etc.) |
+
+When `image_media_types` is shorter than `images`, missing entries default to `"image/jpeg"`.
+
+#### 4.5.3 Context Assembly — How the LLM Receives Images
+
+The framework automatically:
+
+1. **Collects** all images from active artefacts via `artefacts.get_context_images()`
+2. **Appends** them to the vision input after any user-supplied images
+3. **Injects** a mapping note into the scratchpad showing which slot corresponds to which anchor
+
+Image ordering in the LLM call:
+```
+[user images] → [artefact images in activation order, by index]
+```
+
+The system prompt includes instructions (see `_build_artefact_instructions()`) telling the LLM how to interpret `<artefact_image id="..." />` anchors and correlate them with the numbered image slots.
+
+#### 4.5.4 API Methods for Image-Enabled Artefacts
+
+```python
+# Create an artefact with images
+artefact = discussion.artefacts.add(
+    title="my_document",
+    artefact_type=ArtefactType.DOCUMENT,
+    content="See figure: <artefact_image id='my_document::0' />",
+    images=[base64_page_1, base64_page_2],  # list of base64 strings
+    image_media_types=["image/png", "image/png"],
+    active=True
+)
+
+# Retrieve images for rendering
+context_images = discussion.artefacts.get_context_images()
+# Returns: [{"id": "my_document::0", "data": "...", "media_type": "image/png",
+#            "title": "my_document", "index": 0, "active": True}, ...]
+
+# Get only IMAGE-type artefacts (legacy/UI helper)
+image_artefacts = discussion.artefacts.get_active_images()
+```
+
+#### 4.5.5 Complete Working Example — PDF Import with Page Images
+
+```python
+from lollms_client import LollmsClient, LollmsDiscussion, LollmsDataManager
+from lollms_client.lollms_discussion import ArtefactType
+import base64
+
+# Setup
+lc = LollmsClient("ollama", {"model_name": "llava", "host_address": "http://localhost:11434"})
+db = LollmsDataManager("sqlite:///multimodal.db")
+discussion = LollmsDiscussion.create_new(lollms_client=lc, db_manager=db, autosave=True)
+
+# Simulate PDF processing: extract text and render pages to images
+def import_pdf_as_artefact(discussion, pdf_path: str, title: str):
+    """
+    Example: Convert a PDF to a text+images artefact.
+    In production, use pdf2image + pytesseract or similar.
+    """
+    # Simulated: pages as (text, image_base64) tuples
+    pages = [
+        ("## Page 1\n\nExecutive summary content here...", "iVBORw0KGgo..."),  # PNG base64
+        ("## Page 2\n\nFinancial data table...", "iVBORw0KGgo..."),           # PNG base64
+        ("## Page 3\n\nChart showing trends...", "iVBORw0KGgo..."),          # PNG base64
+    ]
+    
+    # Build content with image anchors
+    content_parts = []
+    images_b64 = []
+    media_types = []
+    
+    for i, (page_text, img_b64) in enumerate(pages):
+        # Add image anchor before the page text
+        content_parts.append(f"<artefact_image id=\"{title}::{i}\" />\n\n{page_text}")
+        images_b64.append(img_b64)
+        media_types.append("image/png")
+    
+    full_content = "\n\n---\n\n".join(content_parts)
+    
+    # Create the artefact
+    artefact = discussion.artefacts.add(
+        title=title,
+        artefact_type=ArtefactType.DOCUMENT,
+        content=full_content,
+        images=images_b64,
+        image_media_types=media_types,
+        active=True,
+        description=f"Imported from {pdf_path} — {len(pages)} pages with images"
+    )
+    
+    return artefact
+
+# Import a document
+artefact = import_pdf_as_artefact(discussion, "report.pdf", "Q4_Earnings_Report")
+
+# --- Rendering in a UI ---
+
+def render_artefact_with_images(discussion, title: str):
+    """
+    Render an artefact's text content, replacing image anchors with actual images.
+    """
+    artefact = discussion.artefacts.get(title)
+    if not artefact:
+        return None
+    
+    content = artefact["content"]
+    images = artefact.get("images", [])
+    media_types = artefact.get("image_media_types", ["image/jpeg"] * len(images))
+    
+    # Build an HTML representation
+    html_parts = []
+    
+    # Split by image anchors and interleave actual images
+    import re
+    pattern = r'<artefact_image\s+id=["\']([^"\']+)["\']\s*/?>'
+    
+    last_end = 0
+    for match in re.finditer(pattern, content):
+        # Text before this anchor
+        html_parts.append(content[last_end:match.start()])
+        
+        # Parse the image ID
+        img_id = match.group(1)
+        parsed = discussion.artefacts._artefacts.parse_image_id(img_id)
+        if parsed:
+            art_title, idx = parsed
+            if art_title == title and 0 <= idx < len(images):
+                # Embed as data URI
+                mime = media_types[idx] if idx < len(media_types) else "image/jpeg"
+                data_uri = f"data:{mime};base64,{images[idx]}"
+                html_parts.append(f'<img src="{data_uri}" alt="Page {idx+1}" style="max-width:100%;" />')
+        
+        last_end = match.end()
+    
+    # Remaining text
+    html_parts.append(content[last_end:])
+    
+    return "".join(html_parts)
+
+# Or use the framework's built-in context image collection
+context_images = discussion.artefacts.get_context_images()
+print(f"Total images in context: {len(context_images)}")
+for img in context_images:
+    print(f"  {img['id']}: {img['media_type']} ({len(img['data'])} chars base64)")
+
+# Chat with the document — the LLM sees both text and images
+result = discussion.chat(
+    "Summarize the key findings from the earnings report, "
+    "referencing specific charts and figures by name.",
+    streaming_callback=lambda t, mt, m: print(t, end="", flush=True) if mt.value == 0 else None
+)
+```
+
+#### 4.5.6 Rules for LLM-Generated Artefacts with Images
+
+When the LLM patches or creates artefacts:
+
+| Rule | Rationale |
+|------|-----------|
+| **Preserve anchors unchanged** | When patching text containing `<artefact_image id="..." />`, do not modify or remove the tags |
+| **Cannot create images via XML** | Images must be supplied by the application layer; the LLM cannot generate base64 image data |
+| **Can reference anchors in replies** | The LLM may write "As shown in `<artefact_image id='doc::2' />`, revenue..." |
+| **Image slots are append-only** | New images are always added to the end; existing indices remain stable |
+
+The `build_artefacts_context_zone()` method preserves anchors verbatim in the text it returns, while `get_context_images()` provides the parallel image data for the LLM API call.
 
 ---
 
@@ -1420,7 +1660,44 @@ Any tool with `name="sources"` in its output spec is treated as a RAG tool.
 
 ---
 
-## 11. REPL Text Tools
+## 11. The Streaming State Machine
+
+The `_StreamState` machine is the "firewall" of the conversation. Its primary job is to prevent raw XML tags and tool calls from leaking into the user's chat bubble while routing secondary content through the unified `<processing>` stream.
+
+### 11.1 Bracket Buffering
+The moment a `<` character appears, all streaming is diverted into a `bracket_buf`.
+- If the buffer grows to match a known tag (e.g., `<artifact`), the machine enters `STATE_SECONDARY` and immediately emits `<processing type="...">` (§2.4.1).
+- If the buffer can no longer possibly match any known tag (e.g., `< Looking at the...`), the entire buffer is flushed to the chat bubble and the machine returns to `STATE_NORMAL`.
+- **Max Buffer**: A safety cap of 4096 characters exists; if exceeded without a match, the buffer is flushed as text.
+
+### 11.2 Unified Processing Stream
+When a secondary tag is detected:
+1. **Opening**: `<processing type="..." title="...">` is emitted immediately with appropriate attributes.
+2. **Status Streaming**: As content arrives, status lines (`* ...`) are streamed inside the processing tag.
+3. **Closing**: On `</artifact>` (or other close tag), `</processing>` is emitted.
+4. **Final Content**: For widgets/forms, the complete validated content follows in bulk.
+
+### 11.3 Real-time Persistence
+DB operations occur **the moment the closing tag is seen**, before `</processing>` completes. This ensures that even if the connection drops or a tool-call causes an error later in the turn, the artefacts created earlier are already saved.
+
+### 11.4 State Diagram
+
+```
+STATE_NORMAL ──<"─<"──> STATE_BUFFERING ──match──> STATE_SECONDARY/PROCESSING
+     │                      │                           │
+     │                      │ no match                  │ content arrives
+     │                      ▼                           ▼
+     │<───────────────── flush                    emit status lines
+     │                                               │
+     │<──────────────────────────────────────────── close tag
+     │                                               │
+     │                                          emit </processing>
+     │                                          + final content
+     ▼                                               │
+STATE_NORMAL <──────────────────────────────────────┘
+```
+
+## 12. REPL Text Tools
 
 In-session named buffers (`enable_repl_tools=True`, default) for navigating large tool
 outputs without re-injecting them into the context window.
@@ -1634,15 +1911,34 @@ Rules injected from round 2 onward prevent empty agreement:
 ```
 chat(swarm=[...]) → add user message → SwarmOrchestrator.run()
   FOR round in 1..max_rounds:
+    <processing type="synthesis" round="N">  ← opens for each round
     FOR each agent:
       build system_prompt + hlf_context + nlp_prompt
       agent.generate(streaming) → save as LollmsMessage
       _post_process_llm_response → artefacts, notes, widgets
       generate_structured → HLFMessage
     check convergence → maybe break early
+    </processing>  ← closes at round end
   moderator.generate(synthesis_prompt) → final message
   return {user_message, ai_message, agent_messages, hlf_log, artefacts, swarm_meta}
 ```
+
+**Synthesis Processing Stream**
+
+During swarm execution, each round is wrapped in a `<processing type="synthesis">` tag:
+
+```xml
+<processing type="synthesis" round="1" agents="3">
+* Proposer: Introducing distributed cache architecture...
+* Critic: Identifying potential consistency issues...
+* Synthesizer: Integrating perspectives...
+</processing>
+```
+
+The synthesis processing tag helps UIs show:
+- Which round is currently executing
+- How many agents are participating
+- Per-agent status updates (when streamed with `show_deliberation=True`)
 
 ### 16.8 Shared Artefact Collaboration
 
@@ -1699,7 +1995,251 @@ print(f"Version: {impl['version']}")   # > 1 after tester's patches
 
 ---
 
-## 18. Worked Example (single-agent)
+## 20. UI Implementation Guide
+
+### 20.1 Unified Streaming Protocol (Recommended Approach)
+
+The new unified streaming protocol (§2.4.1) simplifies UI implementation by delivering
+all secondary content through a single channel with predictable XML tags.
+
+**Recommended Parsing Strategy**
+
+```python
+import re
+from dataclasses import dataclass
+from typing import Optional, List, Callable
+
+@dataclass
+class BuildOperation:
+    type: str           # artefact_building, widget_building, etc.
+    title: str
+    attrs: dict
+    status_lines: List[str]
+    final_content: str = ""
+    is_complete: bool = False
+
+class UnifiedStreamParser:
+    def __init__(self):
+        self.current: Optional[BuildOperation] = None
+        self.completed: List[BuildOperation] = []
+        
+    def on_chunk(self, text: str, msg_type, meta: dict):
+        """Call this for every MSG_TYPE_CHUNK event."""
+        
+        # Handle processing meta events
+        if meta.get("type") == "processing_open":
+            self.current = BuildOperation(
+                type=meta["processing_type"],
+                title=meta["title"],
+                attrs=meta.get("attrs", {}),
+                status_lines=[]
+            )
+            self.on_build_start(self.current)
+            
+        elif meta.get("type") == "processing_status":
+            if self.current:
+                self.current.status_lines.append(meta["status"])
+                self.on_status_update(self.current, meta["status"])
+                
+        elif meta.get("type") == "processing_close":
+            if self.current:
+                self.current.is_complete = True
+                self.completed.append(self.current)
+                self.on_build_complete(self.current)
+                self.current = None
+                
+        elif meta.get("type") == "processing_final_content":
+            if self.current:
+                self.current.final_content = text  # or from meta
+                self.on_final_content(self.current)
+        
+        # Also parse raw text for direct XML detection (fallback)
+        self._parse_raw_text(text)
+    
+    def _parse_raw_text(self, text: str):
+        """Fallback: detect processing tags directly in stream."""
+        # Detect opening tag
+        proc_open = re.search(
+            r'<processing\s+type="([^"]+)"\s+title="([^"]+)"([^>]*)>',
+            text
+        )
+        if proc_open and not self.current:
+            attrs = {}
+            # Parse additional attributes
+            attr_str = proc_open.group(3)
+            for match in re.finditer(r'(\w+)="([^"]*)"', attr_str):
+                attrs[match.group(1)] = match.group(2)
+            
+            self.current = BuildOperation(
+                type=proc_open.group(1),
+                title=proc_open.group(2),
+                attrs=attrs,
+                status_lines=[]
+            )
+        
+        # Detect status lines
+        if self.current and "* " in text:
+            for line in text.split("\n"):
+                if line.strip().startswith("* "):
+                    status = line.strip()[2:]
+                    self.current.status_lines.append(status)
+        
+        # Detect closing tag
+        if "</processing>" in text and self.current:
+            self.current.is_complete = True
+            self.completed.append(self.current)
+            self.on_build_complete(self.current)
+            self.current = None
+    
+    # Override these in your UI
+    def on_build_start(self, op: BuildOperation): pass
+    def on_status_update(self, op: BuildOperation, status: str): pass
+    def on_build_complete(self, op: BuildOperation): pass
+    def on_final_content(self, op: BuildOperation): pass
+```
+
+**Rendering by Operation Type**
+
+```python
+def render_build_operation(op: BuildOperation):
+    """Render a completed build operation in the UI."""
+    
+    if op.type == "artefact_building":
+        # Artefacts live in discussion space - show summary
+        return {
+            "component": "ArtefactCard",
+            "props": {
+                "title": op.title,
+                "type": op.attrs.get("art_type", "document"),
+                "language": op.attrs.get("language"),
+                "status_lines": op.status_lines,
+            }
+        }
+    
+    elif op.type == "widget_building":
+        # Widgets have final_content with the actual HTML
+        # Extract from <lollms_inline> tag
+        import re
+        inline_match = re.search(
+            r'<lollms_inline[^>]*>(.*?)</lollms_inline>',
+            op.final_content,
+            re.DOTALL
+        )
+        if inline_match:
+            return {
+                "component": "InteractiveWidget",
+                "props": {
+                    "title": op.title,
+                    "widget_type": op.attrs.get("widget_type", "html"),
+                    "source": inline_match.group(1),
+                    "sandbox": True,
+                }
+            }
+    
+    elif op.type == "form_building":
+        # Forms have final_content with the form definition
+        import re
+        form_match = re.search(
+            r'<lollms_form[^>]*>(.*?)</lollms_form>',
+            op.final_content,
+            re.DOTALL
+        )
+        if form_match:
+            # Parse form descriptor
+            return {
+                "component": "InteractiveForm",
+                "props": {
+                    "title": op.title,
+                    "form_data": parse_form_xml(form_match.group(0)),
+                }
+            }
+    
+    elif op.type == "synthesis":
+        # Synthesis shows status then final text
+        return {
+            "component": "SynthesisPanel",
+            "props": {
+                "round": op.attrs.get("round"),
+                "status_lines": op.status_lines,
+            }
+        }
+```
+
+### 20.2 Legacy: Mounting Interactive Components (Deprecated)
+
+> **DEPRECATED**: The anchor-tag approach is maintained for backward compatibility.
+> New applications should use the unified `<processing>` protocol (§20.1).
+
+For `lollms_inline` and `lollms_form`, the framework inserts "anchor tags" into the `ai_message.content`. Your UI should scan for these and replace them with live components.
+
+| Tag | Purpose | Source Data Location |
+|---|---|---|
+| `<lollms_widget id="UUID" />` | Interactive Lab/Demo | `message.metadata['inline_widgets']` |
+| `<lollms_form_anchor id="UUID" />` | Structured Input Form | `message.metadata['forms']` |
+
+### 20.3 Handling "The clean bubble"
+Because the framework removes the XML tags during streaming, `ai_message.content` only contains the text the LLM intended for the user. 
+- **DO NOT** try to regex-extract tags from the final content; they aren't there.
+- **DO** use the `affected_artefacts` list returned by `chat()` to know what changed.
+- **DO** listen for `MSG_TYPE_ARTEFACTS_STATE_CHANGED` for real-time sidebar updates.
+- **DO** parse the `<processing>` stream for real-time build status (new approach).
+
+---
+
+---
+
+## 21. Migration Guide: Legacy to Unified Streaming
+
+### 21.1 What Changed
+
+| Before (Legacy) | After (Unified) |
+|---|---|
+| Separate `MSG_TYPE_ARTEFACT_CHUNK` stream | `<processing type="artefact_building">` in main stream |
+| `MSG_TYPE_WIDGET_DONE` with content | `<processing>` status + bulk `<lollms_inline>` after |
+| Anchor tags in final message | Same, but now preceded by processing status |
+| Multiple event types to handle | Single `MSG_TYPE_CHUNK` with `meta["type"]` variants |
+
+### 21.2 Minimal Migration
+
+**Before (legacy handler):**
+```python
+def callback(text, msg_type, meta):
+    if msg_type == MSG_TYPE.MSG_TYPE_ARTEFACT_CHUNK:
+        update_sidebar(meta["title"], text)
+    elif msg_type == MSG_TYPE.MSG_TYPE_ARTEFACT_DONE:
+        finalize_sidebar(meta["title"])
+```
+
+**After (unified handler):**
+```python
+def callback(text, msg_type, meta):
+    # New: handle processing stream
+    if meta.get("type") == "processing_open":
+        if meta["processing_type"] == "artefact_building":
+            update_sidebar(meta["title"], "")  # placeholder
+    elif meta.get("type") == "processing_status":
+        if meta["processing_type"] == "artefact_building":
+            update_sidebar(meta["title"], meta["status"])
+    elif meta.get("type") == "processing_close":
+        if meta["processing_type"] == "artefact_building":
+            finalize_sidebar(meta["title"])
+    
+    # Keep legacy for backward compatibility
+    elif msg_type == MSG_TYPE.MSG_TYPE_ARTEFACT_CHUNK:
+        pass  # now handled above, or keep for old code
+```
+
+### 21.3 Full Migration Checklist
+
+- [ ] Update callback to parse `meta["type"]` for processing events
+- [ ] Add UI component for showing `<processing>` status inline
+- [ ] Handle bulk final content for widgets/forms after `</processing>`
+- [ ] Test with `enable_inline_widgets=True` and `enable_forms=True`
+- [ ] Remove legacy handlers once confident (optional)
+
+---
+
+## 22. Worked Example (single-agent)
 
 Full turn: external tool, REPL text tools, notes, skills, artefact, inline widget.
 

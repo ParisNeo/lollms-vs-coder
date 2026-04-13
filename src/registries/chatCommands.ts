@@ -9,12 +9,9 @@ import { getProcessedSystemPrompt, stripThinkingTags } from '../utils';
 
 export async function registerChatCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
     
-    // Ensure we don't double-register refresh
-    if (!vscode.commands.getCommands(true).then(cmds => cmds.includes('lollms-vs-coder.refreshDiscussions'))) {
-        context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refreshDiscussions', () => {
-            services.treeProviders.discussion?.refresh();
-        }));
-    }
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refreshDiscussions', () => {
+        services.treeProviders.discussion?.refresh();
+    }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.searchDiscussions', async () => {
         const panel = ChatPanel.currentPanel;
@@ -160,10 +157,7 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         }
     }));
 
-    // REMOVED: Duplicate registration of lollms-vs-coder.renameDiscussion. 
-    // This command is now centrally managed in another registry to prevent collisions.
-    
-
+    // Handled in discussion tree provider context menu or generic registry
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.generateDiscussionTitle', async (item: DiscussionItem) => {
         await vscode.window.withProgress({

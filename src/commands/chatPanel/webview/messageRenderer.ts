@@ -357,12 +357,10 @@ function renderDiagram(codeElement: HTMLElement, language: string, container: HT
     diagramContainer.className = 'diagram-container';
     
     const helpNote = document.createElement('div');
-    helpNote.style.fontSize = '10px';
-    helpNote.style.color = 'var(--vscode-descriptionForeground)';
-    helpNote.style.marginBottom = '5px';
-    helpNote.style.textAlign = 'right';
-    helpNote.innerText = 'Scroll to Zoom & Drag to Pan';
+    helpNote.style.cssText = 'font-size: 10px; opacity: 0.6; margin-bottom: 5px; text-align: right;';
+    helpNote.innerHTML = '<span class="codicon codicon-zoom-in" style="font-size:10px"></span> Scroll to Zoom | <span class="codicon codicon-move" style="font-size:10px"></span> Drag to Pan';
     container.appendChild(helpNote);
+    container.appendChild(diagramContainer);
 
     if (language === 'mermaid') {
         const id = `mermaid-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
@@ -373,32 +371,20 @@ function renderDiagram(codeElement: HTMLElement, language: string, container: HT
             mermaid.render(id, sanitizedText).then((result: any) => {
                 const svg = typeof result === 'string' ? result : result.svg;
                 diagramContainer.innerHTML = svg;
-                container.appendChild(diagramContainer);
-                
                 enablePanZoom(diagramContainer);
-
-                if(codeElement.parentElement) codeElement.parentElement.style.display = 'none';
             }).catch((e: any) => {
                 console.error("Mermaid render error:", e);
-                const errorDiv = document.createElement('div');
-                errorDiv.style.color = 'var(--vscode-errorForeground)';
-                errorDiv.innerText = "Error rendering Mermaid diagram: " + e.message;
-                diagramContainer.appendChild(errorDiv);
-                if(codeElement.parentElement) codeElement.parentElement.style.display = 'block';
-                container.appendChild(diagramContainer);
+                diagramContainer.innerHTML = `
+                    <div style="color:var(--vscode-errorForeground); padding:10px; font-size:11px; background:var(--vscode-inputValidation-errorBackground); border-radius:4px; border: 1px solid var(--vscode-errorForeground);">
+                        <strong>Mermaid Error:</strong> ${sanitizer.sanitize(e.message)}
+                    </div>`;
             });
         } catch (e: any) {
-             console.error("Mermaid sync error:", e);
              diagramContainer.innerText = "Error rendering Mermaid diagram.";
-             container.appendChild(diagramContainer);
         }
     } else if (language === 'svg') {
         diagramContainer.innerHTML = sanitizer.sanitize(codeElement.textContent || '', { USE_PROFILES: { svg: true } });
-        container.appendChild(diagramContainer);
-        
         enablePanZoom(diagramContainer);
-
-        if(codeElement.parentElement) codeElement.parentElement.style.display = 'none';
     }
 }
 
@@ -667,6 +653,9 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
                     else if (prefix === 'diff') type = 'diff';
                     else if (prefix === 'delete_code') type = 'delete';
                     else type = 'file';
+
+                    // Cleanup path: remove trailing metadata like (2 hunks) added by some LLMs
+                    pathStr = pathStr.replace(/\s*\(\d+\s+hunks?\)$/i, '').trim();
                 } else if (headerText.toLowerCase() === 'diff') {
                     type = 'diff';
                 }
@@ -931,9 +920,10 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
             }
         }
 
+        const isDiagram = language === 'mermaid' || language === 'svg';
         const details = document.createElement('details');
         details.className = 'code-collapsible';
-        details.open = true;
+        details.open = !isDiagram; // Diagrams default to collapsed source view
 
         const summary = document.createElement('summary');
         summary.className = 'code-summary';
@@ -984,6 +974,14 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
             });
             inspectBtn.disabled = isDisabled;
             actions.appendChild(inspectBtn);
+        }
+
+        if (isDiagram) {
+            // Add a "Source" button to the header to make it clear how to view code
+            const showCodeBtn = createButton('Source', 'codicon-code', () => {
+                details.open = !details.open;
+            }, 'code-action-btn', 'View diagram source');
+            actions.appendChild(showCodeBtn);
         }
 
         if (isReplace && filePath) {
@@ -1093,6 +1091,14 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
 
         const parent = pre.parentNode;
         if (parent) {
+            // If it's a diagram, create the render zone ABOVE the collapsible block
+            if (isDiagram) {
+                const renderZone = document.createElement('div');
+                renderZone.className = 'diagram-render-zone';
+                parent.insertBefore(renderZone, pre); 
+                renderDiagram(code, language, renderZone);
+            }
+
             // Add gutter to standard Prism blocks too
             if (!pre.querySelector('.code-line-gutter')) {
                 const gutter = document.createElement('div');
@@ -1107,12 +1113,8 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
             details.appendChild(pre); 
         }
 
-        if (language === 'mermaid' || language === 'svg') {
-            // Ensure that even if we render a diagram, the Apply button (if present) remains in the summary
-            renderDiagram(code, language, details);
-        } else {
-            Prism.highlightElement(code);
-        }
+        // Apply highlighting (always do it now so source view looks good)
+        Prism.highlightElement(code);
     });
 
     if (actionableBlockCount > 0) {
@@ -1839,10 +1841,26 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 }
 
                 const isBlockGenerating = !isFinal && !block.isClosed;
+                const isDiagram = language === 'mermaid' || language === 'svg';
                 
                 // Assign a unique ID to the block for navigation from the summary list
                 const blockIdentifier = `block-${messageId}-${idx}`;
                 details.id = blockIdentifier;
+                
+                // --- DIAGRAM RENDER ZONE (SURGICAL PATH) ---
+                // If it's a finished diagram block, render the visual ABOVE the code details
+                if (isDiagram && !isBlockGenerating) {
+                    const renderZone = document.createElement('div');
+                    renderZone.className = 'diagram-render-zone';
+                    fragment.appendChild(renderZone);
+                    
+                    // Pass the raw code block content directly
+                    const tempCode = document.createElement('code');
+                    tempCode.textContent = codeOnly;
+                    
+                    // Do not block UI with await, let it render in background
+                    renderDiagram(tempCode, language, renderZone);
+                }
 
                 // Go to File button
                 if (block.path) {

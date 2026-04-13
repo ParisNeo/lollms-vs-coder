@@ -2,7 +2,7 @@
 name: ascii-colors-logging
 description: >
   Production-grade logging with colors, multiple handlers, JSON output, and context tracking.
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
 category: development/languages/python/logging/ascii_colors
 created: 2025-02-01

@@ -2,7 +2,7 @@
 name: surgical-debugging
 description: >
   A scientific, iterative framework for diagnosing and fixing complex bugs using strategic instrumentation and hypothesis validation.
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
 category: tools/debugging
 created: 2026-04-09

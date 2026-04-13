@@ -2,7 +2,7 @@
 name: mycanvas
 description: >
   Quick reference for terminal colors, styles, and output with ASCIIColors.
-author: Lollms User
+author: ParisNeo
 version: 1.0.0
 category: development/languages/python/ui/ascii_colors
 created: 2026-04-09

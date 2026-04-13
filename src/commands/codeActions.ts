@@ -15,8 +15,9 @@ export class LollmsCodeActionProvider implements vscode.CodeActionProvider {
         const codeActions: vscode.CodeAction[] = [];
 
         // 1. Handle Diagnostics (Quick Fixes)
+        // This ensures the "Fix with Lollms" button appears in front of each error in the Problems UI
         for (const diagnostic of context.diagnostics) {
-            const action = new vscode.CodeAction(`✨ Fix with Lollms`, vscode.CodeActionKind.QuickFix);
+            const action = new vscode.CodeAction(`✨ Fix this problem with Lollms`, vscode.CodeActionKind.QuickFix);
             action.command = {
                 command: 'lollms-vs-coder.fixDiagnostic',
                 title: 'Fix with Lollms',

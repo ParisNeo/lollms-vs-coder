@@ -21,8 +21,33 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showLog', () => 
         Logger.show()));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.copyAllErrors', async () => {
+        const diagnostics = vscode.languages.getDiagnostics();
+        let report = "# WORKSPACE PROBLEMS REPORT\n\n";
+        let count = 0;
+
+        for (const [uri, diags] of diagnostics) {
+            if (diags.length === 0) continue;
+            report += `## File: ${vscode.workspace.asRelativePath(uri)}\n`;
+            for (const d of diags) {
+                const severity = d.severity === vscode.DiagnosticSeverity.Error ? 'ERROR' : 'WARNING';
+                report += `- [Line ${d.range.start.line + 1}] [${severity}] ${d.message}\n`;
+                count++;
+            }
+            report += "\n";
+        }
+
+        if (count === 0) {
+            vscode.window.showInformationMessage("No problems found to copy.");
+            return;
+        }
+
+        await vscode.env.clipboard.writeText(report);
+        vscode.window.showInformationMessage(`✅ Copied ${count} problems to clipboard.`);
+    }));
+
     // --- TAB NAVIGATION LOGIC ---
-    const setTab = (tabName: 'chat' | 'librarian' | 'git' | 'graph' | 'lab') => {
+    const setTab = (tabName: 'chat' | 'librarian' | 'git' | 'graph' | 'lab' | 'mcp' | 'env') => {
         vscode.commands.executeCommand('setContext', 'lollms:activeTab', tabName);
         context.globalState.update('lollms.activeTab', tabName);
         // Refresh the header view to update "Active" indicators
@@ -40,6 +65,17 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
         vscode.commands.executeCommand('lollms-vs-coder.showCodeGraphPanel');
     }));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showLabTab', () => setTab('lab')));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showMcpTab', () => {
+        setTab('mcp');
+        const { McpManagerPanel } = require('../commands/mcpManagerPanel');
+        McpManagerPanel.createOrShow(services.extensionUri);
+    }));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showEnvTab', () => {
+        setTab('env');
+        const { EnvManagerPanel } = require('../commands/envManagerPanel');
+        const folder = vscode.workspace.workspaceFolders?.[0].uri;
+        if (folder) EnvManagerPanel.createOrShow(services.extensionUri, folder);
+    }));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showMemoryTab', () => {
         setTab('memory');
         // Automatically open the full management UI when clicking the navigation tab
@@ -77,6 +113,12 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
 
         // Directly open the beautiful modal instead of showing the redundant list
         await vscode.commands.executeCommand('lollms-vs-coder.triggerCodeAction', { isCustom: true });
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.manageEnv', () => {
+        const { EnvManagerPanel } = require('../commands/envManagerPanel');
+        const folder = vscode.workspace.workspaceFolders?.[0].uri;
+        if (folder) EnvManagerPanel.createOrShow(services.extensionUri, folder);
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.manageProjectMemory', () => {
@@ -140,13 +182,15 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
         }
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyMemoryTag', async (params: { action: string, id: string, title: string, content: string }) => {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyMemoryTag', async (params: { action: string, id: string, title: string, content: string, importance?: number }) => {
         if (services.projectMemoryManager) {
             await services.projectMemoryManager.updateMemory(
                 params.action as any, 
                 params.id, 
                 params.title, 
-                params.content
+                params.content,
+                "general",
+                params.importance
             );
             vscode.window.showInformationMessage(`Lollms: Fact "${params.id}" synced to Project Memory.`);
         }

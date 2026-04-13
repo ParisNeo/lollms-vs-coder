@@ -26,17 +26,19 @@ export class ToolManager {
 
     private async loadMcpTools() {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-        const mcpServers = config.get<{[key: string]: string}>('mcpServers');
+        const mcpServers = config.get<{[key: string]: any}>('mcpServers');
 
         if (!mcpServers) return;
 
-        for (const [serverName, commandStr] of Object.entries(mcpServers)) {
+        for (const [serverName, configEntry] of Object.entries(mcpServers)) {
             try {
-                const parts = commandStr.split(' ');
+                const cmdString = typeof configEntry === 'string' ? configEntry : configEntry.command;
+                const authKey = configEntry.authKey || undefined;
+                const parts = cmdString.split(' ');
                 const command = parts[0];
                 const args = parts.slice(1);
                 
-                const client = new McpClient(command, args);
+                const client = new McpClient(command, args, authKey);
                 await client.connect();
                 this.mcpClients.push(client);
 

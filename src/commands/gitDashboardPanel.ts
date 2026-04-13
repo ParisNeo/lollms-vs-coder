@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { GitIntegration } from '../gitIntegration';
+import { GitIntegration, execAsync, MAX_BUFFER_SIZE } from '../gitIntegration';
 
 export class GitDashboardPanel {
     public static currentPanel: GitDashboardPanel | undefined;
@@ -8,6 +8,34 @@ export class GitDashboardPanel {
     private readonly _git: GitIntegration;
     private _disposables: vscode.Disposable[] = [];
     private _isDisposed: boolean = false;
+
+    /**
+    * Unified diff engine.
+    * Handles: 
+    * - Branch Comparison: ref1="HEAD", ref2="branch_name"
+    * - Specific Commit: ref1="hash^", ref2="hash"
+    * - Staged: ref1="--cached", ref2=""
+    * - Unstaged: ref1="", ref2=""
+    */
+    public async getDiffContent(folder: vscode.WorkspaceFolder, ref1: string, ref2: string = "", path: string = ""): Promise<string> {
+        if (!folder) return "";
+        try {
+            const pathArg = path ? `-- "${path}"` : "";
+            const { stdout } = await execAsync(`git --no-pager diff ${ref1} ${ref2} ${pathArg}`, {
+                cwd: folder.uri.fsPath,
+                maxBuffer: MAX_BUFFER_SIZE,
+                timeout: 10000
+            });
+            return stdout || '';
+        } catch (e: any) {
+            // Fallback to git show for full commit patches if diff fails
+            if (ref2 && !path) {
+                const { stdout } = await execAsync(`git --no-pager show --pretty="" -p ${ref2}`, { cwd: folder.uri.fsPath });
+                return stdout || '';
+            }
+            return `Error generating diff: ${e.message}`;
+        }
+    }
 
     public static createOrShow(extensionUri: vscode.Uri, git: GitIntegration) {
         if (GitDashboardPanel.currentPanel) {
@@ -22,7 +50,10 @@ export class GitDashboardPanel {
             { 
                 enableScripts: true,
                 retainContextWhenHidden: true,
-                localResourceRoots:[vscode.Uri.joinPath(extensionUri, 'out', 'styles')]
+                localResourceRoots:[
+                    vscode.Uri.joinPath(extensionUri, 'out', 'styles'),
+                    vscode.Uri.joinPath(extensionUri, 'media')
+                ]
             }
         );
         GitDashboardPanel.currentPanel = new GitDashboardPanel(panel, extensionUri, git);
@@ -47,55 +78,35 @@ export class GitDashboardPanel {
     private _currentGraphLimit = 50;
 
     private async refresh(appendGraph: boolean = false) {
-        console.log('[GitDashboard] refresh() called, isDisposed:', this._isDisposed);
-        if (this._isDisposed) {
-            console.log('[GitDashboard] Aborting: panel is disposed');
+        if (this._isDisposed) return;
+        const folder = vscode.workspace.workspaceFolders?.[0];
+        if (!folder) {
+            this._panel.webview.postMessage({ command: 'error', message: 'No workspace folder found.' });
             return;
         }
 
-        const folder = vscode.workspace.workspaceFolders?.[0];
-        console.log('[GitDashboard] workspaceFolder:', folder?.uri.fsPath ?? 'UNDEFINED');
-        if (!folder) {
-            this._panel.webview.postMessage({
-                command: 'error',
-                message: 'No workspace folder open. Please open a git repo folder first.'
-            });
-            return;
-        }
+        this._panel.webview.postMessage({ command: 'status', message: 'Fetching Git data...' });
 
         try {
             const limit = 50;
             const skip = appendGraph ? this._currentGraphLimit : 0;
             const graphLimit = appendGraph ? limit : this._currentGraphLimit;
 
-            console.log('[GitDashboard] Fetching lightweight data...');
-            const currentBranch = await this._git.getCurrentBranch(folder).catch((e: any) => { console.error('[GitDashboard] getCurrentBranch failed:', e); return 'unknown'; });
-            const status = await this._git.getGitStatus(folder).catch((e: any) => { console.error('[GitDashboard] getGitStatus failed:', e); return { staged: [], unstaged: [], untracked: [] }; });
-            const branches = await this._git.getBranches(folder).catch((e: any) => { console.error('[GitDashboard] getBranches failed:', e); return []; });
-            console.log('[GitDashboard] branch:', currentBranch, '| branches:', branches.length);
-
-            if (this._isDisposed) return;
-            this._panel.webview.postMessage({ 
-                command: 'updatePartial', 
-                data: { status, branches, currentBranch } 
-            });
-
-            console.log('[GitDashboard] Fetching heavy data...');
-            const stashes = await this._git.getStashList(folder).catch((e: any) => { console.error('[GitDashboard] getStashList failed:', e); return []; });
-            const tags = await this._git.getTags(folder).catch((e: any) => { console.error('[GitDashboard] getTags failed:', e); return []; });
-            const submodules = await this._git.getSubmodules(folder).catch((e: any) => { console.error('[GitDashboard] getSubmodules failed:', e); return []; });
-            const history = await this._git.getCommitHistory(folder, 15).catch((e: any) => { console.error('[GitDashboard] getCommitHistory failed:', e); return []; });
-            const graph = await this._git.getGitGraph(folder, graphLimit, skip).catch((e: any) => { console.error('[GitDashboard] getGitGraph failed:', e); return null; });
-            console.log('[GitDashboard] graph length:', graph?.length ?? 0);
+            const currentBranch = await this._git.getCurrentBranch(folder);
+            const status = await this._git.getGitStatus(folder);
+            const branches = await this._git.getBranches(folder);
+            const stashes = await this._git.getStashList(folder);
+            const tags = await this._git.getTags(folder);
+            const submodules = await this._git.getSubmodules(folder);
+            const graph = await this._git.getGitGraph(folder, graphLimit, skip);
 
             if (this._isDisposed) return;
             if (appendGraph) { this._currentGraphLimit += limit; }
 
             this._panel.webview.postMessage({ 
                 command: appendGraph ? 'appendGraph' : 'update', 
-                data: { status, branches, currentBranch, stashes, tags, history, graph: graph ?? '', submodules } 
+                data: { status, branches, currentBranch, stashes, tags, graph: graph ?? '', submodules } 
             });
-            console.log('[GitDashboard] postMessage(update) sent');
 
         } catch (error: any) {
             console.error('[GitDashboard] Unhandled error in refresh():', error);
@@ -111,8 +122,17 @@ export class GitDashboardPanel {
 
     private _setListeners() {
         this._panel.webview.onDidReceiveMessage(async (msg) => {
+            if (msg.command === 'ready') {
+                await this.refresh();
+                return;
+            }
             const folder = vscode.workspace.workspaceFolders?.[0];
-            if (!folder) return;
+            if (!folder) {
+                if (msg.command === 'refresh' || msg.command === 'loadMore') {
+                    this._panel.webview.postMessage({ command: 'error', message: 'No active workspace folder.' });
+                }
+                return;
+            }
             try {
                 switch (msg.command) {
                     case 'loadMore':
@@ -120,6 +140,12 @@ export class GitDashboardPanel {
                         break;
                     case 'refresh': 
                         await this.refresh(); 
+                        break;
+                    case 'selectCommit':
+                        if (msg.hash) {
+                            const files = await this._git.getChangedFiles(folder, msg.hash);
+                            this._panel.webview.postMessage({ command: 'commitDetails', hash: msg.hash, files });
+                        }
                         break;
                     case 'stage': 
                         await this._git.stageFile(folder, msg.path); 
@@ -149,8 +175,38 @@ export class GitDashboardPanel {
                         }
                         break;
                     case 'switch': 
-                        await this._git.checkout(folder, msg.branch); 
-                        await this.refresh(); 
+                        try {
+                            await this._git.checkout(folder, msg.branch);
+                            await this.refresh();
+                        } catch (e: any) {
+                            if (e.message.includes("overwritten by checkout") || e.message.includes("local changes")) {
+                                const choices = ["📦 Stash & Switch", "🗑️ Discard & Switch", "Cancel"];
+                                const result = await vscode.window.showErrorMessage(
+                                    `Git Conflict: Your local changes would be overwritten by switching to "${msg.branch}".`,
+                                    { modal: true },
+                                    ...choices
+                                );
+
+                                if (result === "📦 Stash & Switch") {
+                                    await this._git.stash(folder, `Auto-stash before switching to ${msg.branch}`);
+                                    await this._git.checkout(folder, msg.branch);
+                                    vscode.window.showInformationMessage(`Changes stashed and switched to ${msg.branch}.`);
+                                } else if (result === "🗑️ Discard & Switch") {
+                                    const confirm = await vscode.window.showWarningMessage(
+                                        "This will PERMANENTLY delete all your uncommitted changes. Proceed?", 
+                                        { modal: true }, 
+                                        "Yes, Discard"
+                                    );
+                                    if (confirm === "Yes, Discard") {
+                                        await this._git.discardChanges(folder, "."); 
+                                        await this._git.checkout(folder, msg.branch);
+                                    }
+                                }
+                                await this.refresh();
+                            } else {
+                                vscode.window.showErrorMessage(`Checkout failed: ${e.message}`);
+                            }
+                        }
                         break;
                     case 'deleteBranch':
                         const confirm = await vscode.window.showWarningMessage(
@@ -250,6 +306,31 @@ export class GitDashboardPanel {
                         const message = await this._git.generateCommitMessage(folder);
                         this._panel.webview.postMessage({ command: 'setMessage', message });
                         break;
+                    case 'getFileDiff':
+                        if (msg.path) {
+                            let diff = "";
+                            try {
+                                if (msg.isBranchComparison) {
+                                    diff = await this.getDiffContent(folder, 'HEAD', `"${msg.path}"`);
+                                } else if (msg.isCommitDiff) {
+                                    if (msg.commitHash) {
+                                        // Specific file in specific commit
+                                        diff = await this.getDiffContent(folder, `${msg.commitHash}^`, msg.commitHash, msg.path);
+                                    } else {
+                                        // Full commit patch (using the path arg as hash)
+                                        diff = await this.getDiffContent(folder, `${msg.path}^`, msg.path);
+                                    }
+                                } else {
+                                    // Staged/Unstaged changes
+                                    const ref1 = msg.staged ? "--cached" : "";
+                                    diff = await this.getDiffContent(folder, ref1, "", msg.path);
+                                }
+                            } catch (e: any) { 
+                                diff = `Lollms Git Error: ${e.message}`; 
+                            }
+                            this._panel.webview.postMessage({ command: 'showDiff', path: msg.path, diff });
+                        }
+                        break;
                     case 'copyToClipboard':
                         if (msg.text) {
                             await vscode.env.clipboard.writeText(msg.text);
@@ -320,6 +401,7 @@ export class GitDashboardPanel {
 
     private _getHtml(webview: vscode.Webview) {
         const codiconsUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'codicon.css'));
+        const scriptUri = webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'media', 'gitDashboard.js'));
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -327,679 +409,331 @@ export class GitDashboardPanel {
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link href="${codiconsUri}" rel="stylesheet" />
     <style>
+        #global-loader {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: var(--vscode-editor-background);
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            z-index: 10000; gap: 15px;
+        }
+        #global-loader .spinner {
+            width: 40px; height: 40px; border: 4px solid var(--vscode-button-background);
+            border-top-color: transparent; border-radius: 50%; animation: spin 1s linear infinite;
+        }
         :root {
-            --border-radius: 6px;
-            --gap: 16px;
+            --sidebar-width: 260px;
+            --right-panel-width: 320px;
+            --border: 1px solid var(--vscode-widget-border);
+            --header-bg: var(--vscode-sideBarSectionHeader-background);
         }
         body {
             font-family: var(--vscode-font-family);
             color: var(--vscode-editor-foreground);
             background: var(--vscode-editor-background);
-            padding: var(--gap);
-            margin: 0;
-            height: 100vh;
-            box-sizing: border-box;
+            margin: 0; padding: 0;
+            height: 100vh; width: 100vw;
             overflow: hidden;
+            display: flex; flex-direction: column;
         }
-        .dashboard-container {
-            display: flex;
-            gap: var(--gap);
-            height: 100%;
+
+        /* TOOLBAR */
+        .top-toolbar {
+            height: 48px;
+            background: var(--header-bg);
+            border-bottom: var(--border);
+            display: flex; align-items: center;
+            padding: 0 15px; gap: 20px;
+            flex-shrink: 0;
         }
-        .col-left {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            gap: var(--gap);
-            min-width: 350px;
-            max-width: 450px;
+        .toolbar-group { display: flex; align-items: center; gap: 8px; }
+        .branch-breadcrumb { 
+            font-size: 12px; font-weight: 600; opacity: 0.8; 
+            display: flex; align-items: center; gap: 5px;
+            background: var(--vscode-badge-background);
+            padding: 4px 10px; border-radius: 15px;
         }
-        .col-right {
-            flex: 2;
-            display: flex;
-            flex-direction: column;
-            gap: var(--gap);
-            min-width: 400px;
+
+        /* MAIN LAYOUT */
+        .main-layout {
+            flex: 1; display: flex; width: 100%; overflow: hidden;
         }
-        .card {
-            background: var(--vscode-editorWidget-background);
-            border: 1px solid var(--vscode-widget-border);
-            border-radius: var(--border-radius);
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }
-        .flex-1 { flex: 1; }
-        .flex-2 { flex: 2; }
-        
-        .card-header {
-            padding: 10px 14px;
-            background: var(--vscode-sideBarSectionHeader-background);
-            border-bottom: 1px solid var(--vscode-widget-border);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .card-header h2 {
-            margin: 0;
-            font-size: 11px;
-            font-weight: bold;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            color: var(--vscode-sideBarTitle-foreground);
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-        .card-body {
-            padding: 10px;
+
+        /* LEFT SIDEBAR */
+        .sidebar-left {
+            width: var(--sidebar-width);
+            background: var(--vscode-sideBar-background);
+            border-right: var(--border);
+            display: flex; flex-direction: column;
             overflow-y: auto;
-            flex: 1;
         }
-        .card-footer {
-            padding: 12px;
-            border-top: 1px solid var(--vscode-widget-border);
-            background: var(--vscode-editor-background);
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
+        .nav-section { border-bottom: var(--border); }
+        .nav-section-header {
+            padding: 8px 12px; font-size: 11px; font-weight: bold;
+            text-transform: uppercase; opacity: 0.6;
+            display: flex; justify-content: space-between; align-items: center;
+            cursor: pointer; user-select: none;
         }
+        .nav-section-header:hover { opacity: 1; background: rgba(255,255,255,0.05); }
+        .nav-section.collapsed .nav-content { display: none; }
+        .nav-section.collapsed .nav-section-header i { transform: rotate(-90deg); }
+        .nav-section-header i { transition: transform 0.2s; }
         
-        .btn {
-            background: var(--vscode-button-background);
-            color: var(--vscode-button-foreground);
-            border: 1px solid transparent;
-            padding: 6px 12px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 12px;
+        .nav-item {
+            padding: 6px 12px 6px 24px; font-size: 13px;
+            display: flex; align-items: center; gap: 8px;
+            cursor: pointer; transition: background 0.1s;
+        }
+        .nav-item:hover { background: var(--vscode-list-hoverBackground); }
+        .nav-item.active { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+        .nav-item i { font-size: 14px; opacity: 0.7; }
+        .nav-item:hover .item-actions { display: flex; }
+        .nav-item .item-actions { display: none; margin-left: auto; gap: 4px; }
+        
+        .item-actions .icon-btn { 
+            width: 20px; height: 20px; 
+            background: rgba(255,255,255,0.05);
+        }
+
+        /* --- RICH GIT BADGES --- */
+        .badge-pill {
             display: inline-flex;
             align-items: center;
-            justify-content: center;
-            gap: 6px;
-            font-weight: 500;
+            padding: 2px 8px;
+            border-radius: 14px;
+            font-size: 10px;
+            font-weight: 700;
+            margin-right: 6px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.2);
         }
-        .btn:hover { background: var(--vscode-button-hoverBackground); }
-        .btn-secondary {
-            background: var(--vscode-button-secondaryBackground);
-            color: var(--vscode-button-secondaryForeground);
+        .badge-head { background: #61afef; color: #1e1e1e; font-weight: 900; }
+        .badge-branch { background: rgba(86, 182, 194, 0.2); color: #56b6c2; border: 1px solid #56b6c2; }
+        .badge-remote { background: rgba(209, 154, 102, 0.2); color: #d19a66; border: 1px solid #d19a66; }
+        .badge-tag { background: #c678dd; color: white; }
+
+        .graph-msg .badge-pill:first-child { margin-left: 0; }
+
+        /* CENTER AREA */
+        .center-stage {
+            flex: 1; display: flex; flex-direction: column;
+            background: var(--vscode-editor-background);
+            min-width: 0;
         }
-        .btn-secondary:hover { background: var(--vscode-button-secondaryHoverBackground); }
-        .btn-danger {
-            background: transparent;
-            color: var(--vscode-errorForeground);
-            border: 1px solid var(--vscode-errorForeground);
+        .tabs-header {
+            display: flex; background: var(--header-bg);
+            border-bottom: var(--border); padding: 0 10px;
         }
-        .btn-danger:hover {
-            background: var(--vscode-inputValidation-errorBackground);
+        .tab {
+            padding: 10px 15px; font-size: 12px; cursor: pointer;
+            border-bottom: 2px solid transparent; opacity: 0.7;
+        }
+        .tab.active { opacity: 1; border-bottom-color: var(--vscode-button-background); font-weight: bold; }
+        .view-container { flex: 1; overflow: auto; position: relative; }
+
+        /* RIGHT PANEL */
+        .sidebar-right {
+            width: var(--right-panel-width);
+            background: var(--vscode-sideBar-background);
+            border-left: var(--border);
+            display: flex; flex-direction: column;
+            overflow-y: auto;
+            padding: 15px;
+        }
+
+        /* STATUS BAR */
+        .status-bar {
+            height: 24px; background: var(--vscode-statusBar-background);
+            color: var(--vscode-statusBar-foreground);
+            font-size: 11px; display: flex; align-items: center;
+            padding: 0 10px; gap: 15px; border-top: var(--border);
+        }
+
+        /* SHARED COMPONENTS */
+        .btn {
+            background: var(--vscode-button-background); color: var(--vscode-button-foreground);
+            border: none; padding: 4px 12px; border-radius: 2px; cursor: pointer;
+            font-size: 12px; display: inline-flex; align-items: center; gap: 5px;
+        }
+        .btn:hover { filter: brightness(1.1); }
+        .btn-secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
+        
+        .list-row {
+            padding: 6px 10px; display: flex; align-items: center; gap: 10px;
+            border-radius: 4px; cursor: pointer;
+        }
+        .list-row:hover { background: var(--vscode-list-hoverBackground); }
+        
+        /* GRAPH VIEW OVERRIDES */
+        #graph-inner { position: relative; padding: 10px; }
+        .graph-html-row {
+            position: absolute; left: 0; right: 0; height: 26px;
+            display: flex; align-items: center; padding: 0 8px;
+            border-radius: 4px; cursor: pointer;
+            transition: background 0.1s;
+        }
+        .graph-html-row:hover { background: var(--vscode-list-hoverBackground); }
+        .graph-html-row:hover .item-actions { opacity: 1; pointer-events: auto; }
+        .graph-html-row.selected { background: var(--vscode-list-activeSelectionBackground); }
+        
+        .graph-msg { 
+            flex: 1; 
+            font-size: 12px; 
+            white-space: nowrap; 
+            overflow: hidden; 
+            text-overflow: ellipsis; 
+            margin-left: 8px;
+            opacity: 0.9;
         }
         
+        .item-actions { 
+            opacity: 0; 
+            display: flex; 
+            gap: 2px; 
+            margin-left: 12px; 
+            align-items: center; 
+            background: var(--vscode-list-hoverBackground);
+            padding: 2px 4px;
+            border-radius: 4px;
+            box-shadow: -5px 0 10px var(--vscode-list-hoverBackground); /* Fade effect for text */
+            pointer-events: none;
+            transition: opacity 0.1s;
+        }
+
         .icon-btn {
             background: transparent;
-            color: var(--vscode-icon-foreground);
             border: none;
-            border-radius: 4px;
-            width: 24px;
-            height: 24px;
+            color: var(--vscode-icon-foreground);
             cursor: pointer;
-            display: inline-flex;
+            width: 22px;
+            height: 22px;
+            display: flex;
             align-items: center;
             justify-content: center;
+            border-radius: 3px;
         }
+
         .icon-btn:hover {
             background: var(--vscode-toolbar-hoverBackground);
             color: var(--vscode-foreground);
         }
-
-        .list-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 6px 8px;
-            border-radius: 4px;
-            margin-bottom: 2px;
-            border: 1px solid transparent;
-        }
-        .list-row:hover {
-            background: var(--vscode-list-hoverBackground);
-            border-color: var(--vscode-widget-border);
-        }
-        .item-label {
-            font-size: 12px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            flex: 1;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        .item-actions {
-            display: flex;
-            gap: 4px;
-            opacity: 0;
-            transition: opacity 0.1s;
-            background: var(--vscode-editor-background);
-            padding-left: 8px;
-        }
         
-        .list-row:hover .item-actions,
-        .graph-html-row:hover .item-actions {
-            opacity: 1;
-            background: var(--vscode-list-hoverBackground);
-        }
-
         textarea {
-            background: var(--vscode-input-background);
-            color: var(--vscode-input-foreground);
-            border: 1px solid var(--vscode-input-border);
-            border-radius: 4px;
-            padding: 8px;
-            font-family: var(--vscode-font-family);
-            font-size: 13px;
-            resize: vertical;
-            min-height: 60px;
-            outline: none;
-        }
-        textarea:focus { border-color: var(--vscode-focusBorder); }
-        
-        /* Timeline specific */
-        .graph-html-row {
-            position: absolute;
-            left: 0;
-            right: 0;
-            height: 24px;
-            display: flex;
-            align-items: center;
-            padding: 0 10px;
-            border-radius: 4px;
-            white-space: nowrap;
-        }
-        .graph-html-row:hover {
-            background-color: var(--vscode-list-hoverBackground);
+            width: 100%; background: var(--vscode-input-background);
+            color: var(--vscode-input-foreground); border: var(--border);
+            padding: 8px; border-radius: 4px; resize: vertical;
         }
 
-        .graph-msg { color: var(--vscode-editor-foreground); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; margin-left: 8px; flex: 1; }
-        .graph-author { font-size: 10px; opacity: 0.6; margin-left: 8px; white-space: nowrap; font-weight: 600; }
-        .graph-date { font-size: 10px; opacity: 0.5; margin-left: 8px; white-space: nowrap; width: 90px; text-align: right; }
-        .graph-hash-btn { 
-            background: transparent; border: none; padding: 0;
-            color: var(--vscode-textLink-foreground); font-size: 11px; margin-right: 8px; opacity: 0.8; font-family: monospace; cursor: pointer; text-decoration: underline; 
-        }
-        .graph-hash-btn:hover { opacity: 1; color: var(--vscode-textLink-activeForeground); }
-        .branch-tag { 
-            background: var(--vscode-badge-background); 
-            color: var(--vscode-badge-foreground); 
-            padding: 2px 6px; 
-            border-radius: 10px; 
-            font-size: 9px; 
-            font-weight: bold; 
-            margin-left: 6px; 
-            border: 1px solid var(--vscode-contrastBorder, transparent);
-            cursor: pointer;
-        }
-        .branch-tag:hover {
-            filter: brightness(1.2);
-        }
-        .branch-tag.head { background: var(--vscode-charts-blue); color: white; }
-        .branch-tag.remote { background: var(--vscode-charts-purple); color: white; }
-        
-        .file-status-badge {
-            width: 18px; height: 18px; border-radius: 3px;
-            display: flex; align-items: center; justify-content: center;
-            font-size: 10px; font-weight: 800; flex-shrink: 0;
-            user-select: none;
-        }
-        .status-M { color: var(--vscode-gitDecoration-modifiedResourceForeground); background: rgba(230, 180, 0, 0.1); }
-        .status-A { color: var(--vscode-gitDecoration-addedResourceForeground); background: rgba(0, 200, 0, 0.1); }
-        .status-D { color: var(--vscode-gitDecoration-deletedResourceForeground); background: rgba(200, 0, 0, 0.1); }
-        .status-U { color: var(--vscode-gitDecoration-untrackedResourceForeground); background: rgba(100, 100, 100, 0.1); }
-
-        .list-row {
-            cursor: pointer;
-            transition: all 0.1s ease;
-        }
-        .list-row:active { transform: scale(0.98); }
-        
-        .bulk-actions { display: flex; gap: 4px; }
-        
-        .spinner { display: inline-block; animation: spin 1s linear infinite; }
+        .spinner { animation: spin 1s linear infinite; }
         @keyframes spin { 100% { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
-    <div class="dashboard-container">
-        <!-- Left Column -->
-        <div class="col-left">
-            <!-- Working Tree -->
-            <div class="card flex-2">
-                <div class="card-header">
-                    <h2><i class="codicon codicon-folder"></i> Working Tree</h2>
-                    <div class="bulk-actions">
-                        <button class="icon-btn" onclick="post('stageAll')" title="Stage All Changes"><i class="codicon codicon-checklist"></i></button>
-                        <button class="icon-btn" onclick="post('unstageAll')" title="Unstage All Changes"><i class="codicon codicon-history"></i></button>
-                        <button class="icon-btn" onclick="post('refresh')" title="Refresh"><i class="codicon codicon-refresh"></i></button>
+    <div class="top-toolbar">
+        <div class="toolbar-group">
+            <button class="btn" onclick="post('refresh')"><i class="codicon codicon-cloud-download"></i> Pull</button>
+            <button class="btn" onclick="post('refresh')"><i class="codicon codicon-cloud-upload"></i> Push</button>
+            <button class="btn btn-secondary" onclick="post('refresh')"><i class="codicon codicon-sync"></i> Fetch</button>
+        </div>
+        <div class="branch-breadcrumb" id="active-branch-info">
+            <i class="codicon codicon-git-branch"></i> <span id="current-branch-name">loading...</span>
+        </div>
+        <div style="flex:1"></div>
+        <div class="toolbar-group">
+            <button class="btn btn-secondary" onclick="post('stash')"><i class="codicon codicon-archive"></i> Stash</button>
+            <button class="btn btn-secondary" onclick="post('openGitManager')"><i class="codicon codicon-search"></i> Search</button>
+        </div>
+    </div>
+
+    <div class="main-layout">
+        <!-- LEFT SIDEBAR -->
+        <div class="sidebar-left">
+            <div class="nav-section" id="section-changes">
+                <div class="nav-section-header" onclick="toggleSection('section-changes')">
+                    <span>CHANGES</span>
+                    <i class="codicon codicon-chevron-down"></i>
+                </div>
+                <div class="nav-content" id="changes-list"></div>
+            </div>
+            <div class="nav-section" id="section-branches">
+                <div class="nav-section-header" onclick="toggleSection('section-branches')">
+                    <span>LOCAL BRANCHES</span>
+                    <i class="codicon codicon-chevron-down"></i>
+                </div>
+                <div class="nav-content" id="local-branches-list"></div>
+            </div>
+            <div class="nav-section" id="section-tags">
+                <div class="nav-section-header" onclick="toggleSection('section-tags')">
+                    <span>TAGS</span>
+                    <i class="codicon codicon-chevron-down"></i>
+                </div>
+                <div class="nav-content" id="tags-list"></div>
+            </div>
+            <div class="nav-section" id="section-stashes">
+                <div class="nav-section-header" onclick="toggleSection('section-stashes')">
+                    <span>STASHES</span>
+                    <i class="codicon codicon-chevron-down"></i>
+                </div>
+                <div class="nav-content" id="stashes-list"></div>
+            </div>
+        </div>
+
+        <!-- CENTER TABS -->
+        <div class="center-stage">
+            <div class="tabs-header">
+                <div class="tab active" data-view="HISTORY">History</div>
+                <div class="tab" data-view="STAGING">Staging</div>
+                <div class="tab" data-view="DIFF">Diff</div>
+            </div>
+            <div class="view-container">
+                <!-- HISTORY VIEW -->
+                <div id="view-HISTORY" class="view">
+                    <div id="graph-inner"></div>
+                    <div style="display:flex; justify-content:center; padding:20px;">
+                        <button class="btn btn-secondary" onclick="post('loadMore')">Load More Commits</button>
                     </div>
                 </div>
-                <div class="card-body" id="files">
-                    <div style="opacity:0.5; padding:20px; text-align:center;"><i class="codicon codicon-sync spinner"></i> Loading files...</div>
-                </div>
-                <div class="card-footer">
-                    <textarea id="c-msg" placeholder="Commit message..."></textarea>
-                    <div style="display:flex; justify-content: space-between; gap: 10px;">
-                        <button class="btn btn-secondary" id="ai-gen-btn" onclick="generateAI()" style="flex: 1;"><i class="codicon codicon-sparkle"></i> Auto-Generate</button>
-                        <button class="btn" onclick="commit()" style="flex: 1;"><i class="codicon codicon-check"></i> Commit</button>
+
+                <!-- STAGING VIEW -->
+                <div id="view-STAGING" class="view" style="display:none; padding:24px;">
+                    <div id="staging-summary" style="margin-bottom: 20px;"></div>
+                    <div style="display:flex; flex-direction:column; gap:12px;">
+                        <textarea id="commit-msg-input" style="height: 120px;" placeholder="Commit message (Conventional Commits encouraged)"></textarea>
+                        <div style="display:flex; gap:10px;">
+                            <button class="btn" style="flex:1" onclick="commit()"><i class="codicon codicon-check"></i> Commit</button>
+                            <button class="btn btn-secondary" onclick="generateAI()"><i class="codicon codicon-sparkle"></i> AI Message</button>
+                        </div>
                     </div>
                 </div>
-            </div>
 
-            <!-- Submodules -->
-            <div class="card flex-1">
-                <div class="card-header">
-                    <h2><i class="codicon codicon-repo"></i> Submodules</h2>
-                    <button class="icon-btn" onclick="post('addSubmodule')" title="Add Submodule"><i class="codicon codicon-add"></i></button>
-                </div>
-                <div class="card-body" id="submodules">
-                    <div style="opacity:0.5; padding:20px; text-align:center;"><i class="codicon codicon-sync spinner"></i> Loading submodules...</div>
-                </div>
-            </div>
-
-            <!-- Tags -->
-            <div class="card flex-1">
-                <div class="card-header">
-                    <h2><i class="codicon codicon-tag"></i> Tags</h2>
-                    <button class="icon-btn" onclick="post('createTag')" title="Create Tag"><i class="codicon codicon-add"></i></button>
-                </div>
-                <div class="card-body" id="tags">
-                    <div style="opacity:0.5; padding:20px; text-align:center;"><i class="codicon codicon-sync spinner"></i> Loading tags...</div>
-                </div>
-            </div>
-
-            <!-- Stashes -->
-            <div class="card flex-1">
-                <div class="card-header">
-                    <h2><i class="codicon codicon-archive"></i> Stashes</h2>
-                    <button class="icon-btn" onclick="post('stash')" title="Stash All"><i class="codicon codicon-add"></i></button>
-                </div>
-                <div class="card-body" id="stashes">
-                    <div style="opacity:0.5; padding:20px; text-align:center;"><i class="codicon codicon-sync spinner"></i> Loading stashes...</div>
+                <!-- DIFF VIEW -->
+                <div id="view-DIFF" class="view" style="display:none; padding:0;">
+                    <div id="diff-content-area" style="font-family: var(--vscode-editor-font-family); font-size: 12px; white-space: pre; overflow: auto; height: 100%;">
+                        <div style="opacity:0.5; padding:40px; text-align:center;">Select a file from the sidebar to view diff.</div>
+                    </div>
                 </div>
             </div>
         </div>
 
-        <!-- Right Column -->
-        <div class="col-right">
-            <!-- Branches -->
-            <div class="card flex-1">
-                <div class="card-header">
-                    <h2><i class="codicon codicon-git-branch"></i> Branches</h2>
-                    <div style="display:flex; gap:4px;">
-                        <button class="icon-btn" onclick="post('checkoutPrevious')" title="Checkout Previous Branch (-)"><i class="codicon codicon-arrow-left"></i></button>
-                        <button class="icon-btn" onclick="post('branch')" title="New Branch"><i class="codicon codicon-add"></i></button>
-                    </div>
-                </div>
-                <div class="card-body" id="branches">
-                    <div style="opacity:0.5; padding:20px; text-align:center;"><i class="codicon codicon-sync spinner"></i> Loading branches...</div>
-                </div>
-            </div>
-
-            <!-- Timeline -->
-            <div class="card flex-2">
-                <div class="card-header">
-                    <h2><i class="codicon codicon-history"></i> Multi-Branch Timeline</h2>
-                    <button class="btn btn-secondary" onclick="post('openGitManager')" title="Advanced Git Search & AI Query"><i class="codicon codicon-search"></i> Advanced Search</button>
-                </div>
-                <div class="card-body" id="graph-container" style="overflow-x: auto; position: relative; display: flex; flex-direction: column;">
-                    <div id="graph-inner" style="flex: 1;">
-                        <div style="opacity:0.5; padding:20px; text-align:center;"><i class="codicon codicon-sync spinner"></i> Building multi-branch timeline...</div>
-                    </div>
-                    <button class="btn btn-secondary" id="load-more-btn" onclick="post('loadMore')" style="margin: 10px; align-self: center;">Load More Commits...</button>
-                </div>
+        <!-- RIGHT METADATA -->
+        <div class="sidebar-right" id="metadata-panel">
+            <div style="opacity:0.5; text-align:center; margin-top:50px;">
+                <i class="codicon codicon-info" style="font-size:32px"></i>
+                <p>Select a commit or file to view details.</p>
             </div>
         </div>
     </div>
 
-    <script>
-        // BUG FIX 2: acquireVsCodeApi() called once here at the top level.
-        // All inline onclick handlers and post() calls now have access to vscode.
-        const vscode = acquireVsCodeApi();
+    <div id="global-loader">
+        <div class="spinner"></div>
+        <div style="opacity: 0.7; font-size: 12px;">Syncing Git Repository...</div>
+    </div>
 
-        function post(cmd, extra = {}) {
-            vscode.postMessage({ command: cmd, ...extra });
-        }
+    <div class="status-bar">
+        <span id="status-branch-label">---</span>
+        <span id="status-index-label">0 staged · 0 unstaged</span>
+        <div style="flex:1"></div>
+        <span id="status-msg">Ready</span>
+    </div>
 
-        function setLoadingStates() {
-            const loader = '<div style="opacity:0.5; padding:20px; text-align:center;"><i class="codicon codicon-sync spinner"></i> Loading...</div>';
-            document.getElementById('files').innerHTML = loader;
-            document.getElementById('submodules').innerHTML = loader;
-            document.getElementById('stashes').innerHTML = loader;
-            document.getElementById('branches').innerHTML = loader;
-            document.getElementById('graph-inner').innerHTML = loader;
-        }
-        
-        function generateAI() {
-            const btn = document.getElementById('ai-gen-btn');
-            btn.disabled = true;
-            btn.innerHTML = '<i class="codicon codicon-sync spinner"></i> Generating...';
-            post('generateMessage');
-        }
-
-        function commit() { 
-            const m = document.getElementById('c-msg').value; 
-            if(m) { post('commit', {message: m}); document.getElementById('c-msg').value = ''; } 
-        }
-
-        function jsEscape(str) {
-            if (!str) return '';
-            // JSON.stringify handles all escaping safely, then strip the outer quotes
-            return JSON.stringify(str).slice(1, -1);
-        }
-
-        function escapeHtml(text) {
-            if(!text) return '';
-            return text
-                .replace(/&/g, "&amp;")
-                .replace(/</g, "&lt;")
-                .replace(/>/g, "&gt;")
-                .replace(/"/g, "&quot;")
-                .replace(/'/g, "&#039;");
-        }
-
-        function renderGraph(graph) {
-            const graphLines = graph.split('\\n').filter(l => l.trim());
-            if (!graphLines.length) {
-                document.getElementById('graph-inner').innerHTML =
-                    '<div style="opacity:0.5; padding:20px; text-align:center;">No commit history found.</div>';
-                return;
-            }
-            const colors = [
-                'var(--vscode-charts-blue)', 
-                'var(--vscode-charts-purple)', 
-                'var(--vscode-charts-red)', 
-                'var(--vscode-charts-green)', 
-                'var(--vscode-charts-orange)', 
-                'var(--vscode-charts-yellow)'
-            ];
-            const charW = 14;
-            const charH = 24;
-            let paths = '';
-            let htmlRows = '';
-            let maxCols = 0;
-
-            const grid = graphLines.map(line => {
-                const match = line.match(/^([\\*\\|\\/\\s\\\\\\_]+)/);
-                return match ? match[1] : '';
-            });
-
-            graphLines.forEach((line, rowIndex) => {
-                const match = line.match(/^([\\*\\|\\/\\s\\\\\\_]+)(.*)$/);
-                if (!match) return;
-
-                const graphPart = match[1];
-                let textPart = match[2];
-                maxCols = Math.max(maxCols, graphPart.length);
-
-                const y = rowIndex * charH;
-                const cy = y + charH / 2;
-
-                for (let col = 0; col < graphPart.length; col++) {
-                    const char = graphPart[col];
-                    if (char === ' ') continue;
-
-                    const cx = col * charW + charW / 2;
-                    let color = colors[Math.floor(col / 2) % colors.length];
-
-                    if (char === '*') {
-                        const isHead = textPart.includes('HEAD');
-                        const fill = isHead ? 'var(--vscode-editor-background)' : color;
-                        const strokeW = isHead ? 3 : 0;
-                        const r = isHead ? 5 : 4;
-                        
-                        if (rowIndex > 0) {
-                            const prevChar = grid[rowIndex - 1][col];
-                            if (prevChar === '*' || prevChar === '|') {
-                                paths += \`<line x1="\${cx}" y1="\${y}" x2="\${cx}" y2="\${cy}" stroke="\${color}" stroke-width="2" />\`;
-                            }
-                        }
-                        if (rowIndex < grid.length - 1) {
-                            const nextChar = grid[rowIndex + 1][col];
-                            if (nextChar === '*' || nextChar === '|') {
-                                paths += \`<line x1="\${cx}" y1="\${cy}" x2="\${cx}" y2="\${y + charH}" stroke="\${color}" stroke-width="2" />\`;
-                            }
-                        }
-                        paths += \`<circle cx="\${cx}" cy="\${cy}" r="\${r}" fill="\${fill}" stroke="\${color}" stroke-width="\${strokeW}" />\`;
-                    } else if (char === '|') {
-                        paths += \`<line x1="\${cx}" y1="\${y}" x2="\${cx}" y2="\${y + charH}" stroke="\${color}" stroke-width="2" />\`;
-                    } else if (char === '/') {
-                        color = colors[Math.floor((col + 1) / 2) % colors.length] || color;
-                        const startX = (col + 1) * charW + charW / 2;
-                        const endX = (col - 1) * charW + charW / 2;
-                        paths += \`<path d="M \${startX} \${y} C \${startX} \${y + charH/2}, \${endX} \${y + charH/2}, \${endX} \${y + charH}" stroke="\${color}" stroke-width="2" fill="none" />\`;
-                    } else if (char === '\\\\') {
-                        color = colors[Math.floor((col + 1) / 2) % colors.length] || color;
-                        const startX = (col - 1) * charW + charW / 2;
-                        const endX = (col + 1) * charW + charW / 2;
-                        paths += \`<path d="M \${startX} \${y} C \${startX} \${y + charH/2}, \${endX} \${y + charH/2}, \${endX} \${y + charH}" stroke="\${color}" stroke-width="2" fill="none" />\`;
-                    } else if (char === '_') {
-                        const startX = (col - 1) * charW + charW / 2;
-                        const endX = (col + 1) * charW + charW / 2;
-                        paths += \`<line x1="\${startX}" y1="\${cy}" x2="\${endX}" y2="\${cy}" stroke="\${color}" stroke-width="2" />\`;
-                    }
-                }
-
-                if (textPart.trim()) {
-                    const parts = textPart.split('|');
-                    const hash = parts[0]?.trim() ?? '';
-                    const date = parts[1]?.trim() ?? '';
-                    const author = parts[2]?.trim() ?? '';
-                    const decoration = parts[3]?.trim() ?? '';
-                    const message = parts[4]?.trim() ?? '';
-
-                    let tagsHtml = '';
-                    if (decoration) {
-                        const cleanDecoration = decoration.replace(/^\\(|\\)$/g, '');
-                        tagsHtml = cleanDecoration.split(',').map(t => {
-                            t = t.trim();
-                            let cls = 'branch-tag';
-                            let branchName = t;
-                            if (t.includes('HEAD')) {
-                                cls += ' head';
-                                branchName = t.split('->').pop().trim();
-                            } else if (t.includes('origin/')) {
-                                cls += ' remote';
-                            }
-                            return \`<span class="\${cls}" onclick="post('switch', {branch: '\${jsEscape(branchName)}'})" title="Checkout \${escapeHtml(branchName)}">\${escapeHtml(t)}</span>\`;
-                        }).join('');
-                    }
-
-                    htmlRows += \`
-                        <div class="graph-html-row" style="top: \${y}px; left: \${maxCols * charW + 10}px; height: \${charH}px;">
-                            \${hash ? \`<button class="graph-hash-btn" onclick="post('inspectCommit', {hash: '\${jsEscape(hash)}'})" title="Inspect Commit with AI">\${hash.substring(0, 8)}</button>\` : ''}
-                            <span class="graph-msg" title="\${escapeHtml(message)}">\${escapeHtml(message)}</span>
-                            <span class="graph-author" title="Author: \${escapeHtml(author)}">\${escapeHtml(author)}</span>
-                            <span class="graph-date">\${escapeHtml(date)}</span>
-                            \${tagsHtml}
-                            \${hash ? \`
-                            <div class="item-actions">
-                                <button class="icon-btn" onclick="post('copyToClipboard', {text:'\${jsEscape(hash)}'})" title="Copy Hash"><i class="codicon codicon-copy"></i></button>
-                                <button class="icon-btn" onclick="post('checkoutRef',{ref:'\${jsEscape(hash)}'})" title="Checkout Commit"><i class="codicon codicon-target"></i></button>
-                                <button class="icon-btn" onclick="post('branchFromCommit',{ref:'\${jsEscape(hash)}'})" title="Create Branch From Here"><i class="codicon codicon-git-branch"></i></button>
-                                <button class="icon-btn" onclick="post('mergeRef',{ref:'\${jsEscape(hash)}'})" title="Merge Commit"><i class="codicon codicon-git-merge"></i></button>
-                                <button class="icon-btn" onclick="post('compareRef',{ref:'\${jsEscape(hash)}'})" title="Compare with HEAD"><i class="codicon codicon-git-compare"></i></button>
-                            </div>\` : ''}
-                        </div>\`;
-                }
-            });
-
-            const svgWidth = maxCols * charW + 20;
-            const svgHeight = graphLines.length * charH;
-            document.getElementById('graph-inner').innerHTML = \`
-                <div style="position: relative; height: \${svgHeight}px; width: 100%; min-width: 600px;">
-                    <svg width="\${svgWidth}" height="\${svgHeight}" style="position: absolute; top: 0; left: 0; z-index: 1;">
-                        \${paths}
-                    </svg>
-                    <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 2;">
-                        \${htmlRows}
-                    </div>
-                </div>\`;
-        }
-
-        function renderFiles(status) {
-            const container = document.getElementById('files');
-            container.innerHTML = '';
-
-            const createRow = (file, type, isStaged) => {
-                const row = document.createElement('div');
-                row.className = 'list-row';
-                const statusChar = isStaged ? (type === 'untracked' ? 'A' : 'M') : (type === 'untracked' ? 'U' : 'M');
-                
-                row.innerHTML = \`
-                    <div class="item-label" title="\${escapeHtml(file)}">
-                        <div class="file-status-badge status-\${statusChar}">\${statusChar}</div>
-                        \${escapeHtml(file)}
-                    </div>
-                    <div class="item-actions">
-                        <button class="icon-btn" onclick="event.stopPropagation(); post('openFile',{path:'\${jsEscape(file)}'})" title="Open File"><i class="codicon codicon-go-to-file"></i></button>
-                        \${isStaged ? 
-                            \`<button class="icon-btn" onclick="event.stopPropagation(); post('unstage',{path:'\${jsEscape(file)}'})" title="Unstage"><i class="codicon codicon-remove"></i></button>\` :
-                            \`<button class="icon-btn" onclick="event.stopPropagation(); post('stage',{path:'\${jsEscape(file)}'})" title="Stage"><i class="codicon codicon-add"></i></button>\`
-                        }
-                        \${!isStaged ? \`<button class="icon-btn" style="color:var(--vscode-errorForeground)" onclick="event.stopPropagation(); post('discard',{path:'\${jsEscape(file)}'})" title="Discard"><i class="codicon codicon-discard"></i></button>\` : ''}
-                    </div>
-                \`;
-                row.onclick = () => post('openDiff', { path: file, isStaged });
-                return row;
-            };
-
-            const sections = [
-                { title: 'Staged Changes', files: status.staged, type: 'staged', staged: true },
-                { title: 'Changes', files: status.unstaged, type: 'unstaged', staged: false },
-                { title: 'Untracked', files: status.untracked, type: 'untracked', staged: false }
-            ];
-
-            sections.forEach(sec => {
-                if (sec.files.length > 0) {
-                    const header = document.createElement('div');
-                    header.style = 'display:flex; justify-content:space-between; align-items:center; padding: 10px 8px 4px 8px; font-size:10px; font-weight:bold; opacity:0.6; text-transform:uppercase;';
-                    header.innerHTML =\`<span>\${sec.title}</span> <span>\${sec.files.length}</span>\`;
-                    container.appendChild(header);
-                    sec.files.forEach(f => container.appendChild(createRow(f, sec.type, sec.staged)));
-                }
-            });
-
-            if (container.innerHTML === '') {
-                container.innerHTML = '<div style="opacity:0.5; padding:40px; text-align:center;"><i class="codicon codicon-check" style="font-size:30px; display:block; margin-bottom:10px;"></i>Everything is up to date.</div>';
-            }
-        }
-
-        function renderBranches(branches, currentBranch) {
-            document.getElementById('branches').innerHTML = branches.map(b => \`
-                <div class="list-row">
-                    <div class="item-label" style="\${b === currentBranch ? 'font-weight:bold; color:var(--vscode-textLink-foreground)' : ''}">
-                        <i class="codicon \${b === currentBranch ? 'codicon-git-branch' : 'codicon-source-control'}"></i> \${escapeHtml(b)}
-                    </div>
-                    \${b !== currentBranch ? \`
-                    <div class="item-actions">
-                        <button class="btn btn-secondary" onclick="post('switch',{branch:'\${jsEscape(b)}'})" title="Switch to this branch"><i class="codicon codicon-arrow-swap"></i> Switch</button>
-                        <button class="btn btn-danger" onclick="post('deleteBranch',{branch:'\${jsEscape(b)}'})" title="Delete Branch"><i class="codicon codicon-trash"></i></button>
-                    </div>\` : ''}
-                </div>
-            \`).join('');
-        }
-
-        function renderSubmodules(submodules) {
-            document.getElementById('submodules').innerHTML = submodules.map(s => \`
-                <div class="list-row">
-                    <div class="item-label" title="\${escapeHtml(s.path)}"><i class="codicon codicon-file-submodule"></i> \${escapeHtml(s.path)}</div>
-                    <div class="item-actions" style="align-items: center;">
-                        <span style="font-size:10px; opacity:0.5; font-family:monospace; margin-right: 8px;">\${s.hash.substring(0,7)}</span>
-                        <button class="btn btn-danger" onclick="post('removeSubmodule',{path:'\${jsEscape(s.path)}'})" title="Remove"><i class="codicon codicon-trash"></i></button>
-                    </div>
-                </div>
-            \`).join('') || '<div style="opacity:0.5; font-size:11px; padding:10px; text-align:center;">No submodules.</div>';
-        }
-
-        function renderStashes(stashes) {
-            document.getElementById('stashes').innerHTML = stashes.map((s, i) => \`
-                <div class="list-row">
-                    <div class="item-label" title="\${escapeHtml(s)}"><i class="codicon codicon-archive"></i> \${escapeHtml(s)}</div>
-                    <div class="item-actions">
-                        <button class="btn btn-secondary" onclick="post('stashApply',{index:\${i}})"><i class="codicon codicon-check"></i> Apply</button>
-                    </div>
-                </div>
-            \`).join('') || '<div style="opacity:0.5; font-size:11px; padding:10px; text-align:center;">No stashes found.</div>';
-        }
-
-        function renderTags(tags) {
-            document.getElementById('tags').innerHTML = tags.map(t => \`
-                <div class="list-row">
-                    <div class="item-label" title="\${escapeHtml(t.message)}">
-                        <i class="codicon codicon-tag"></i> 
-                        <span style="font-weight:bold; color:var(--vscode-charts-orange)">\${escapeHtml(t.name)}</span>
-                        <small style="opacity:0.5; margin-left:5px;">\${escapeHtml(t.date)}</small>
-                    </div>
-                    <div class="item-actions">
-                        <button class="icon-btn" onclick="post('checkoutRef',{ref:'\${jsEscape(t.name)}'})" title="Checkout Tag"><i class="codicon codicon-target"></i></button>
-                        <button class="icon-btn" style="color:var(--vscode-errorForeground)" onclick="post('deleteTag',{name:'\${jsEscape(t.name)}'})" title="Delete Tag"><i class="codicon codicon-trash"></i></button>
-                    </div>
-                </div>
-            \`).join('') || '<div style="opacity:0.5; font-size:11px; padding:10px; text-align:center;">No tags.</div>';
-        }
-
-        // Accumulated graph state for appendGraph support
-        let accumulatedGraph = '';
-
-        window.addEventListener('message', e => {
-            const msg = e.data;
-
-            if (msg.command === 'error') {
-                const errorHtml = '<div style="padding:20px; color:var(--vscode-errorForeground); text-align:center;">' +
-                    '<i class="codicon codicon-error"></i> ' + escapeHtml(msg.message || 'Unknown Error') +
-                '</div>';
-                document.getElementById('files').innerHTML = errorHtml;
-                document.getElementById('branches').innerHTML = errorHtml;
-                document.getElementById('graph-inner').innerHTML = errorHtml;
-                return;
-            }
-
-            if (msg.command === 'setMessage') {
-                document.getElementById('c-msg').value = msg.message;
-                const btn = document.getElementById('ai-gen-btn');
-                btn.disabled = false;
-                btn.innerHTML = '<i class="codicon codicon-sparkle"></i> Auto-Generate';
-                return;
-            }
-
-            // Partial update: only lightweight fields available yet
-            if (msg.command === 'updatePartial') {
-                const { status, branches, currentBranch } = msg.data;
-                renderFiles(status);
-                renderBranches(branches, currentBranch);
-                return;
-            }
-
-            const { status, branches, currentBranch, stashes, tags, graph, submodules } = msg.data;
-
-            if (msg.command === 'appendGraph') {
-                // Append new commits to the existing graph
-                accumulatedGraph += '\\n' + graph;
-            } else {
-                // Full update — reset accumulated graph
-                accumulatedGraph = graph;
-            }
-
-            renderFiles(status);
-            renderBranches(branches, currentBranch);
-            renderGraph(accumulatedGraph);
-            renderSubmodules(submodules);
-            renderStashes(stashes);
-            if (tags) renderTags(tags);
-        });
-
-        // The extension drives the initial refresh via setTimeout after setting HTML.
-        // No webviewReady round-trip needed.
-    </script>
+    <script src="${scriptUri}"></script>
 </body>
 </html>`;
     }

@@ -32,7 +32,7 @@ export class ProjectMemoryPanel {
             try {
                 switch (msg.command) {
                     case 'save':
-                        await this.manager.updateMemory('update', msg.id, msg.title, msg.content);
+                        await this.manager.updateMemory('update', msg.id, msg.title, msg.content, undefined, msg.importance);
                         vscode.window.showInformationMessage(`Lollms: Memory "${msg.title}" updated.`);
                         break;
                     case 'delete':
@@ -41,7 +41,7 @@ export class ProjectMemoryPanel {
                     case 'add_direct':
                         const id = 'mem_' + Date.now();
                         // CRITICAL: Await the update so _update() is triggered by onDidChange AFTER save
-                        await this.manager.updateMemory('add', id, msg.title, msg.content);
+                        await this.manager.updateMemory('add', id, msg.title, msg.content, "general", msg.importance);
                         vscode.window.showInformationMessage(`Lollms: New memory "${msg.title}" created.`);
                         break;
                 }
@@ -109,6 +109,16 @@ export class ProjectMemoryPanel {
                 <input type="text" id="new-title" placeholder="e.g., Coding Standards">
                 <label>Knowledge Content</label>
                 <textarea id="new-content" rows="4" placeholder="Enter details the AI should always remember for this project..."></textarea>
+                
+                <div style="margin-bottom: 15px;">
+                    <div style="display:flex; justify-content: space-between;">
+                        <label style="margin:0;">Importance (Weight)</label>
+                        <span id="new-weight-val" style="font-size: 11px; opacity: 0.8;">1.0</span>
+                    </div>
+                    <input type="range" id="new-importance" min="1.0" max="5.0" step="0.1" value="1.0" style="width:100%;" oninput="document.getElementById('new-weight-val').textContent = this.value">
+                    <p style="font-size: 10px; opacity: 0.7; margin:0;">Higher weight ensures this stays in the AI's limited context longer.</p>
+                </div>
+
                 <div class="actions">
                     <button class="secondary" id="cancel-add-btn">Cancel</button>
                     <button id="confirm-add-btn">Create Memory</button>
@@ -123,12 +133,26 @@ export class ProjectMemoryPanel {
                     </div>` : ''}
                 ${!isLoading && memories.length === 0 ? '<div class="empty-state">No memories saved yet. The AI will add facts here as you work.</div>' : ''}
                 ${!isLoading ? memories.map(m => `
-                    <div class="memory-card" data-id="${m.id}">
+                    <div class="memory-card" data-id="${m.id}" style="border-left: 5px solid rgba(0, 122, 204, ${Math.min(1, m.importance / 5)})">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <span class="badge" style="background: var(--vscode-badge-background); font-size:9px;">${m.category}</span>
+                            <span style="font-size:10px; opacity:0.6;">Power: ${Math.round(m.importance * 100)}%</span>
+                        </div>
                         <label>Title / Identifier</label>
                         <input type="text" class="title-input" value="${escape(m.title)}">
                         <label>Knowledge Content</label>
                         <textarea class="content-input" rows="4">${escape(m.content)}</textarea>
+                        
+                        <div style="margin-bottom: 12px;">
+                            <div style="display:flex; justify-content: space-between;">
+                                <label style="margin:0;">Weight</label>
+                                <span class="weight-val" style="font-size: 11px; opacity: 0.8;">${m.importance}</span>
+                            </div>
+                            <input type="range" class="importance-input" min="1.0" max="5.0" step="0.1" value="${m.importance}" style="width:100%;" oninput="this.previousElementSibling.querySelector('.weight-val').textContent = this.value">
+                        </div>
+
                         <div class="actions">
+                            <button class="secondary" onclick="promoteToSkill('${m.id}')" title="Convert to permanent protocol"><i class="codicon codicon-workspace-trusted"></i> Promote to Skill</button>
                             <button class="delete-btn" data-id="${m.id}">Delete</button>
                             <button class="save-btn" data-id="${m.id}">Save Changes</button>
                         </div>
@@ -154,13 +178,16 @@ export class ProjectMemoryPanel {
                 document.getElementById('confirm-add-btn').addEventListener('click', () => {
                     const title = document.getElementById('new-title').value;
                     const content = document.getElementById('new-content').value;
+                    const importance = parseFloat(document.getElementById('new-importance').value);
                     if (!title.trim()) return;
                     
-                    vscode.postMessage({ command: 'add_direct', title, content });
+                    vscode.postMessage({ command: 'add_direct', title, content, importance });
                     
                     // Reset and hide
                     document.getElementById('new-title').value = '';
                     document.getElementById('new-content').value = '';
+                    document.getElementById('new-importance').value = 1.0;
+                    document.getElementById('new-weight-val').textContent = '1.0';
                     newForm.style.display = 'none';
                 });
 
@@ -174,7 +201,8 @@ export class ProjectMemoryPanel {
                         const card = target.closest('.memory-card');
                         const title = card.querySelector('.title-input').value;
                         const content = card.querySelector('.content-input').value;
-                        vscode.postMessage({ command: 'save', id, title, content });
+                        const importance = parseFloat(card.querySelector('.importance-input').value);
+                        vscode.postMessage({ command: 'save', id, title, content, importance });
                     } else if (target.classList.contains('delete-btn')) {
                         vscode.postMessage({ command: 'delete', id });
                     }

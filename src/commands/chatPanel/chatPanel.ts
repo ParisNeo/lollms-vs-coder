@@ -1466,6 +1466,8 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
   public async sendMessage(message: ChatMessage, autoContextMode: boolean = false) {
     if (this._isDisposed) return;
     
+    await this.waitForWebviewReady();
+    
     // --- 1. PRESERVE USER CONTENT IMMEDIATELY ---
     // Create a fresh copy to prevent any mutation issues
     const userMessage: ChatMessage = { 
@@ -1473,10 +1475,6 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
         id: message.id || 'user_' + Date.now() + Math.random().toString(36).substring(2),
         timestamp: Date.now()
     };
-
-    if (!this._currentDiscussion) {
-        await this.waitForWebviewReady();
-    }
 
     if (this._inputResolver) {
         const text = (typeof userMessage.content === 'string') ? userMessage.content : "User provided input.";
@@ -3432,7 +3430,7 @@ Task:
                     language: 'markdown',
                     scope: sScope 
                 });
-                vscode.window.showInformationMessage(vscode.l10n.t("Skill '{0}' saved to {1} library.", name, scope));
+                vscode.window.showInformationMessage(vscode.l10n.t("Skill '{0}' saved to {1} library.", sName, sScope));
                 vscode.commands.executeCommand('lollms-vs-coder.refreshSkills'); 
                 break;
             case 'importSkills':

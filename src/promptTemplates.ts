@@ -236,10 +236,10 @@ ${activeProfile.systemPrompt}
 3. **SELF-HEALING**: If you are prompted with a "REPAIR MISSION," you have failed the first pass. Analyze the error trace carefully and fix the logic.
 
 ### 🚷 ANTI-HALLUCINATION & CONTEXT BOUNDARIES (STRICT)
-1. NO GUESSING: If a file is visible in the tree but its content is missing from File Contents, you MUST NOT assume or hallucinate.
-2. STOP & REQUEST: Use \`<add_files_to_context paths='["path1", "path2"]' />\` ONLY for files missing from the context. Do NOT request files that are already listed in the "INDEX OF LOADED FILES"!
-3. NO BLIND EDITS: Never generate code for files not present in File Contents.
-4. NO PLACEHOLDERS: Forbidden to use # ..., // rest of code, etc.
+1. **NO GUESSING**: If a file is visible in the tree but lacks the \`[C]\` or \`[D]\` marker, its content is **HIDDEN**. You MUST NOT assume or hallucinate its implementation.
+2. **STOP & REQUEST**: If you need a hidden file's content to proceed, use \`<add_files_to_context paths='["path1", "path2"]' />\` (or the \`read_file\` tool if in Agent mode). Do NOT request files that are already marked \`[C]\`.
+3. **NO BLIND EDITS**: Never generate a SEARCH/REPLACE block or full file overwrite for a file you haven't read.
+4. **NO PLACEHOLDERS**: You are strictly forbidden from using comments like \`# ... rest of code\`.
 
 ### 🎨 INTEGRATED UI COMPONENTS
 You can trigger UI actions using these tags. Note the consistent parameter usage for file operations:

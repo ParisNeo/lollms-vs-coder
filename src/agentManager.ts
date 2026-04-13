@@ -339,7 +339,6 @@ Please commit or stash your work before starting an iterative debug session to e
                 await this.discussionManager.saveDiscussion(this.currentDiscussion);
             }
 
-            this.isActive = false; // Reset activity flag to dismiss overlay
             this.processManager.unregister(processId);
             this.ui.updateGeneratingState();
         }
@@ -644,7 +643,6 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
             task.result = e.message;
             await this.displayAndSavePlan(this.currentPlan);
         } finally {
-            this.isActive = false;
             this.processManager.unregister(processId);
             this.ui.updateGeneratingState();
         }

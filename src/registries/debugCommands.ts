@@ -57,9 +57,9 @@ export function registerDebugCommands(context: vscode.ExtensionContext, services
 
             const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
             if (workspaceFolder) {
-                 await startDiscussionWithInitialPrompt(services, prompt, workspaceFolder);
+                 await startDiscussionWithInitialPrompt(services, prompt, workspaceFolder, true, 'user');
             } else if (getActiveWorkspace()) {
-                 await startDiscussionWithInitialPrompt(services, prompt, getActiveWorkspace()!);
+                 await startDiscussionWithInitialPrompt(services, prompt, getActiveWorkspace()!, true, 'user');
             } else {
                 vscode.window.showErrorMessage("No workspace folder found for this file.");
             }
@@ -138,7 +138,7 @@ export function registerDebugCommands(context: vscode.ExtensionContext, services
 
         if (getActiveWorkspace()) {
             // Force auto-generation for runtime exceptions to provide immediate relief
-            await startDiscussionWithInitialPrompt(services, prompt, getActiveWorkspace()!, true);
+            await startDiscussionWithInitialPrompt(services, prompt, getActiveWorkspace()!, true, 'user');
         }
     }));
 
@@ -225,7 +225,7 @@ export function registerDebugCommands(context: vscode.ExtensionContext, services
                 // Automatically add the file to context so AI has full awareness
                 await vscode.commands.executeCommand('lollms-vs-coder.setContextIncluded', targetUri, [targetUri]);
                 
-                await startDiscussionWithInitialPrompt(services, prompt, workspaceFolder);
+                await startDiscussionWithInitialPrompt(services, prompt, workspaceFolder, true, 'user');
             } else {
                 vscode.window.showErrorMessage("No workspace folder found for this file.");
             }

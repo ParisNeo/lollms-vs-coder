@@ -74,7 +74,7 @@ export function registerPromptCommands(context: vscode.ExtensionContext, service
         if (prompt.action_type === 'information') {
             const activeFolder = vscode.workspace.workspaceFolders?.[0];
             if (activeFolder) {
-                await startDiscussionWithInitialPrompt(services, prompts.userPrompt, activeFolder);
+                await startDiscussionWithInitialPrompt(services, prompts.userPrompt, activeFolder, true, 'user');
             }
         } else {
             // Surgical code modification with Intelligent Orchestrator

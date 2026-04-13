@@ -595,8 +595,10 @@ function createToggleBadge(
     const span = document.createElement('span');
     span.className = `mode-badge ${activeClass} ${isActive ? 'active' : 'inactive'} clickable`;
     
-    if (isActive && onExecute) {
-        span.title = `${text}: Click to Deactivate.\nRight-click to Execute immediately.`;
+    if (onExecute) {
+        span.title = isActive 
+            ? `${text} Mode Active.\nClick the badge to Execute manually.\nClick the circle to Deactivate.`
+            : `${text} Mode Inactive.\nClick to Enable and Execute.`;
     } else {
         span.title = isActive ? `${text} Mode Active (Click to disable)` : `${text} Mode Inactive (Click to enable)`;
     }
@@ -609,24 +611,28 @@ function createToggleBadge(
         onToggle();
     };
 
-    // Standard Left Click: Always Toggle
+    // Standard Left Click: Execute if available, else Toggle
     span.onclick = (e) => {
         e.stopPropagation();
-        onToggle();
+        if (onExecute) {
+            if (!isActive) {
+                onToggle();
+            }
+            setTimeout(onExecute, isActive ? 0 : 50);
+        } else {
+            onToggle();
+        }
     };
 
-    // Right Click: Execute Shortcut (if available)
+    // Right Click: Execute Shortcut (Fallback)
     if (onExecute) {
         span.oncontextmenu = (e) => {
             e.preventDefault();
             e.stopPropagation();
-            if (isActive) {
-                onExecute();
-            } else {
-                // If inactive, activate AND execute
+            if (!isActive) {
                 onToggle();
-                setTimeout(onExecute, 50);
             }
+            setTimeout(onExecute, isActive ? 0 : 50);
         };
     }
 

@@ -51,7 +51,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     private _onDidChangeFileDecorations: vscode.EventEmitter<vscode.Uri | vscode.Uri[]> = new vscode.EventEmitter<vscode.Uri | vscode.Uri[]>();
     readonly onDidChangeFileDecorations: vscode.Event<vscode.Uri | vscode.Uri[]> = this._onDidChangeFileDecorations.event;
 
-    private workspaceRoot: string;
+    private workspaceFolder: vscode.WorkspaceFolder;
     private context: vscode.ExtensionContext;
     private stateKey: string;
     
@@ -62,10 +62,10 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         '.git', '.idea', '.vscode', '.ruff_cache'
     ]);
 
-    constructor(workspaceRoot: string, context: vscode.ExtensionContext) {
-        this.workspaceRoot = workspaceRoot;
+    constructor(workspaceFolder: vscode.WorkspaceFolder, context: vscode.ExtensionContext) {
+        this.workspaceFolder = workspaceFolder;
         this.context = context;
-        this.stateKey = `context-state-${this.workspaceRoot}`;
+        this.stateKey = `context-state-${this.workspaceFolder.uri.fsPath}`;
         
         vscode.workspace.onDidChangeConfiguration(e => {
             if (e.affectsConfiguration('lollmsVsCoder.contextFileExceptions')) {
@@ -81,9 +81,9 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             .then(() => this.refresh());
     }
 
-    public async switchWorkspace(newWorkspaceRoot: string) {
-        this.workspaceRoot = newWorkspaceRoot;
-        this.stateKey = `context-state-${newWorkspaceRoot}`;
+    public async switchWorkspace(newWorkspaceFolder: vscode.WorkspaceFolder) {
+        this.workspaceFolder = newWorkspaceFolder;
+        this.stateKey = `context-state-${newWorkspaceFolder.uri.fsPath}`;
         await this.cleanNonExistentFiles();
         await this.migrateDefaultCollapsedFolders();
         this.refresh();
@@ -117,7 +117,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     }
 
     private async cleanNonExistentFiles(): Promise<void> {
-        const workspaceFolder = vscode.workspace.workspaceFolders?.find(f => f.uri.fsPath === this.workspaceRoot);
+        const workspaceFolder = this.workspaceFolder;
         if (!workspaceFolder) return;
     
         const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
@@ -166,7 +166,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     }
 
     async getChildren(element?: ContextItem): Promise<ContextItem[]> {
-        if (!this.workspaceRoot) {
+        if (!this.workspaceFolder) {
             return [];
         }
 
@@ -179,8 +179,14 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             this.scoutFolderForCollapsing(element);
         }
 
-        const parentUri = element ? element.resourceUri : vscode.Uri.file(this.workspaceRoot);
-        const entries = await vscode.workspace.fs.readDirectory(parentUri);
+        const parentUri = element ? element.resourceUri : this.workspaceFolder.uri;
+        let entries;
+        try {
+            entries = await vscode.workspace.fs.readDirectory(parentUri);
+        } catch (error) {
+            import('../logger').then(m => m.Logger.warn(`Failed to read directory: ${parentUri.toString()}`));
+            return [];
+        }
         
         const items: ContextItem[] = [];
         for (const [name, type] of entries) {
@@ -384,7 +390,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     }
 
     public async getAllVisibleFiles(signal?: AbortSignal): Promise<string[]> {
-        const workspaceFolder = vscode.workspace.workspaceFolders?.find(f => f.uri.fsPath === this.workspaceRoot);
+        const workspaceFolder = this.workspaceFolder;
         if (!workspaceFolder) return [];
 
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');

@@ -99,20 +99,28 @@ function renderBranches(branches, current) {
         return `
         <div class="nav-item ${isCurrent ? 'active' : ''}" onclick="selectBranch('${escapedName}')">
             <i class="codicon ${isCurrent ? 'codicon-record' : 'codicon-git-branch'}"></i>
-            <span style="flex:1; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(b)}</span>
+            <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(b)}">${escapeHtml(b)}</span>
             <div class="item-actions">
                 <button class="icon-btn" onclick="event.stopPropagation(); post('switch', {branch: '${escapedName}'})" title="Checkout Branch">
                     <i class="codicon codicon-target"></i>
                 </button>
+                <button class="icon-btn" onclick="event.stopPropagation(); post('renameBranch', {branch: '${escapedName}'})" title="Rename Branch">
+                    <i class="codicon codicon-edit"></i>
+                </button>
                 <button class="icon-btn" onclick="event.stopPropagation(); post('branchFromCommit', {ref: '${escapedName}'})" title="Branch from here">
                     <i class="codicon codicon-git-branch"></i>
+                </button>
+                <button class="icon-btn" onclick="event.stopPropagation(); post('createTag', {ref: '${escapedName}'})" title="Create Tag from here">
+                    <i class="codicon codicon-tag"></i>
                 </button>
                 <button class="icon-btn" onclick="event.stopPropagation(); post('mergeRef', {ref: '${escapedName}'})" title="Merge into current">
                     <i class="codicon codicon-git-merge"></i>
                 </button>
+                ${!isCurrent ? `
                 <button class="icon-btn" style="color:var(--vscode-errorForeground)" onclick="event.stopPropagation(); post('deleteBranch', {branch: '${escapedName}'})" title="Delete Branch">
                     <i class="codicon codicon-trash"></i>
                 </button>
+                ` : ''}
             </div>
         </div>
         `;
@@ -138,7 +146,7 @@ function renderWorkingTree(status) {
             sidebarHtml += `
             <div class="nav-item" onclick="selectFile('${jsEscape(f)}', ${isStaged})">
                 <div class="file-status-badge status-${symbol}">${symbol}</div>
-                <span style="flex:1; overflow:hidden; text-overflow:ellipsis;">${escapeHtml(f)}</span>
+                <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(f)}">${escapeHtml(f)}</span>
                 <div class="item-actions" style="margin-right: -10px">
                     <button class="icon-btn" onclick="event.stopPropagation(); post('${isStaged ? 'unstage' : 'stage'}', {path:'${jsEscape(f)}'})">
                         <i class="codicon codicon-${isStaged ? 'remove' : 'add'}"></i>

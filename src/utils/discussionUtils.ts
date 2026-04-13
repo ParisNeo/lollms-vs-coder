@@ -8,7 +8,8 @@ export async function startDiscussionWithInitialPrompt(
     services: LollmsServices, 
     prompt: string, 
     activeWorkspaceFolder: vscode.WorkspaceFolder | undefined,
-    autoExecute: boolean = true
+    autoExecute: boolean = true,
+    roleOverride?: 'user' | 'assistant'
 ) {
     if (!services.discussionManager) return;
 
@@ -49,10 +50,8 @@ export async function startDiscussionWithInitialPrompt(
 
     const lastCaps = services.discussionManager.getLastCapabilities();
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-    const role = lastCaps.clipboardInsertRole || config.get<string>('clipboardInsertRole') || 'user'; 
+    const role = roleOverride || lastCaps.clipboardInsertRole || config.get<string>('clipboardInsertRole') || 'user'; 
 
-    // --- PASTE ONLY MODE (No Auto-Execute) ---
-    // We strictly avoid calling panel.sendMessage here.
     let personalityName = undefined;
     let model = undefined;
 
@@ -63,13 +62,15 @@ export async function startDiscussionWithInitialPrompt(
         
         // Add an empty user context message so the conversation structure is valid
         await panel.addMessageToDiscussion({
+            id: 'user_' + Date.now(),
             role: 'user',
-            content: '',
+            content: 'Imported code for context:',
             timestamp: Date.now()
         });
     }
 
     const initialMessage: ChatMessage = {
+        id: 'msg_' + Date.now() + Math.random().toString(36).substring(2),
         role: role as 'user' | 'assistant',
         content: prompt,
         timestamp: Date.now(),
@@ -77,14 +78,12 @@ export async function startDiscussionWithInitialPrompt(
         model: model
     };
 
-    await panel.addMessageToDiscussion(initialMessage);
-
-    // --- AUTO-EXECUTE LOGIC ---
-    // If autoExecute is true, we trigger the actual API call immediately
     if (autoExecute) {
-        // Ensure the panel is visible and ready to handle the stream
         panel._panel.reveal();
+        // sendMessage handles both adding to discussion and triggering the LLM
         await panel.sendMessage(initialMessage);
+    } else {
+        await panel.addMessageToDiscussion(initialMessage);
     }
 
     if (config.get<boolean>('autoGenerateTitle')) {

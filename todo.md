@@ -41,11 +41,11 @@ Add a fast librarian mode (single shot, just take a look at the current task and
 Make skills md with claude style
 
 # IMPORTANT
-## The settings ui is not showing up
-name is not defined
-Erreur pendant l'exécution de la commande lollms-vs-coder.showConfigView : name is not defined. Probablement due à l'extension qui contribue à lollms-vs-coder.showConfigView.
-## The libraririan doesn't work in stand alone mode
-pressing the badge doesn't trigger a librarian flow
 ## Git ui:
-Add multiple buttons in front of each branch allowing full crud (remove, switch to, fuse with, create tag from here ...)
-## the llm is making mistakes about updated files. try to explain why this is happening, then propose a fixthe llm is making mistakes about updated files. try to explain why this is happening, then propose a fix
+increase the width of the side panel and make it resizable
+make the buttons in the items in the branches list have opaque background
+## Force lollms persona
+When we install the extension bootstrapped personas text must be forced to the one we have built.
+Add personality, skill and tool building studio
+## memory usage
+at the end of the response add an optional modify memory importance tag that adds to a memory if it was used or was useful or decrease its importance if it wasn't useful. DNA ones are untouchable. if a memory has less than 20% it goes to the deep system. it can be brought back by an agent if he needs it.

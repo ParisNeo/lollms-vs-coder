@@ -231,12 +231,17 @@ export class ContextManager {
               const ext = path.extname(filePath).toLowerCase();
               if (this.binaryExtensions.has(ext)) continue;
 
-              const fileBytes = await vscode.workspace.fs.readFile(fullPath);
-              const buffer = Buffer.from(fileBytes);
-
-              if (this.isBinary(buffer)) continue;
-
-              const text = buffer.toString('utf8');
+              let text = '';
+              const openDoc = vscode.workspace.textDocuments.find(d => d.uri.toString() === fullPath.toString());
+              
+              if (openDoc) {
+                  text = openDoc.getText();
+              } else {
+                  const fileBytes = await vscode.workspace.fs.readFile(fullPath);
+                  const buffer = Buffer.from(fileBytes);
+                  if (this.isBinary(buffer)) continue;
+                  text = buffer.toString('utf8');
+              }
               
               content += `\`\`\`${this.getLanguageId(filePath)}:${filePath}\n${text}\n\`\`\`\n\n`;
           } catch (error) { }
@@ -1850,7 +1855,7 @@ ${cumulativeBrain || "No observations yet."}
       result.selectedFilesContent += "## Loaded code files\n\n"
       result.selectedFilesContent += "The content of the files added to the context is provided here.\n"
       result.selectedFilesContent += "If you need to load other files use files loading tag.\n"
-      result.selectedFilesContent += "Only load files if they are not already loaded here and you do need them to perform the task.\n^,"
+      result.selectedFilesContent += "Only load files if they are not already loaded here and you do need them to perform the task.\n\n"
 
       // Redundant Index removed. Markers are now in the Project Structure tree.
       for (let i = 0; i < includedFiles.length; i++) {
@@ -1887,13 +1892,24 @@ ${cumulativeBrain || "No observations yet."}
 
           // 1. Try State-Aware Cache First
           const cached = this._fileContentCache.get(filePath);
-          if (cached && cached.state === contextState) {
+          
+          // Check if document is open in editor (might have unsaved changes)
+          const openDoc = vscode.workspace.textDocuments.find(d => d.uri.toString() === fullPath.toString());
+          const isDirty = openDoc?.isDirty;
+
+          if (cached && cached.state === contextState && !isDirty) {
               fileContent = cached.content;
           } 
-          // 2. Read from disk and process based on type
+          // 2. Read from disk (or open document) and process based on type
           else {
-              const fileBytes = await vscode.workspace.fs.readFile(fullPath);
-              const fileBuffer = Buffer.from(fileBytes);
+              let fileBuffer: Buffer;
+              if (openDoc) {
+                  // Use the live document text if it's open, to ensure AI sees unsaved changes
+                  fileBuffer = Buffer.from(openDoc.getText(), 'utf8');
+              } else {
+                  const fileBytes = await vscode.workspace.fs.readFile(fullPath);
+                  fileBuffer = Buffer.from(fileBytes);
+              }
 
               if (this.imageExtensions.has(ext)) {
                   if (!enableVision) {
@@ -1990,6 +2006,12 @@ ${cumulativeBrain || "No observations yet."}
     result.text = `# 📂 PROJECT: ${path.basename(workspaceFolder.uri.fsPath)}\n`;
     result.text += `**Sandbox Protocol:** You are restricted to this project folder. Use ONLY relative paths for all file operations.\n`;
     result.text += `**Active Context:** ${includedFiles.length} Files | ${allSkillIds.length} Skills\n\n`;
+
+    result.text += `**TREE LEGEND & ANTI-HALLUCINATION MANDATE:**\n`;
+    result.text += `- \`[C]\` : Content Loaded. The full, exact content of this file is provided below.\n`;
+    result.text += `- \`[D]\` : Definitions Only. Only class and function signatures are provided below.\n`;
+    result.text += `- \`(No annotation)\` : Content is **HIDDEN**. You only know this file exists.\n`;
+    result.text += `**CRITICAL:** You MUST NOT hallucinate, guess, or assume the contents of hidden files. If you need to see a hidden file to safely fulfill the user's request, use \`read_file\` or \`add_files_to_context\`.\n\n`;
 
     if (result.skillsContent) {
         result.text += `## 🎓 ACTIVE SKILLS\n${result.skillsContent}---\n\n`;
@@ -2165,8 +2187,8 @@ Based on the objective and the file tree, which files are the most relevant? Ret
     const stateMap = new Map<string, string>();
     contextFiles.forEach(f => stateMap.set(this.normalize(f.path), f.state));
 
-    // Token-efficient YAML-style tree generation
-    const generateTreeString = (obj: any, indentLevel: number = 0, currentPath: string = ''): string => {
+    // Tree generation using standard box-drawing characters
+    const generateTreeString = (obj: any, prefix: string = '', currentPath: string = ''): string => {
       let result = '';
       const keys = Object.keys(obj).sort((a, b) => {
         const aIsDir = obj[a] !== null;
@@ -2176,9 +2198,10 @@ Based on the objective and the file tree, which files are the most relevant? Ret
         return a.localeCompare(b);
       });
 
-      const indent = '  '.repeat(indentLevel);
-
-      keys.forEach((key) => {
+      keys.forEach((key, index) => {
+        const isLast = index === keys.length - 1;
+        const connector = isLast ? '└── ' : '├── ';
+        
         const fullPath = currentPath ? currentPath + '/' + key : key;
         const normalizedPath = this.normalize(fullPath);
         const isDirectory = obj[key] !== null;
@@ -2201,14 +2224,15 @@ Based on the objective and the file tree, which files are the most relevant? Ret
         }
 
         if (isCollapsed) {
-             result += indent + key + '/' + suffix + '\n';
+             result += prefix + connector + key + '/' + suffix + '\n';
              return; 
         }
         
-        result += indent + key + (isDirectory ? '/' : '') + suffix + '\n';
+        result += prefix + connector + key + (isDirectory ? '/' : '') + suffix + '\n';
 
         if (isDirectory) {
-          result += generateTreeString(obj[key], indentLevel + 1, fullPath);
+          const childPrefix = prefix + (isLast ? '    ' : '│   ');
+          result += generateTreeString(obj[key], childPrefix, fullPath);
         }
       });
 

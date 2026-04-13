@@ -323,9 +323,9 @@ export async function activate(context: vscode.ExtensionContext) {
         await projectMemoryManager.switchWorkspace(folder.uri);
         
         if (contextStateProvider) {
-            await contextStateProvider.switchWorkspace(folder.uri.fsPath);
+            await contextStateProvider.switchWorkspace(folder);
         } else {
-            contextStateProvider = new ContextStateProvider(folder.uri.fsPath, context);
+            contextStateProvider = new ContextStateProvider(folder, context);
             contextManager.setContextStateProvider(contextStateProvider);
             codeGraphManager.setContextSetter((key, value) => {
                 vscode.commands.executeCommand('setContext', `lollms:${key}`, value);

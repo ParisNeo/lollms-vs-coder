@@ -88,10 +88,11 @@ export class GitIntegration {
       }
   }
 
-  public async createTag(folder: vscode.WorkspaceFolder, name: string, message?: string): Promise<void> {
+  public async createTag(folder: vscode.WorkspaceFolder, name: string, message?: string, ref?: string): Promise<void> {
       const msgArg = message ? ` -m "${message.replace(/"/g, '\\"')}"` : '';
       const flag = message ? '-a' : '';
-      await execAsync(`git tag ${flag} "${name}" ${msgArg}`, { cwd: folder.uri.fsPath });
+      const refArg = ref ? ` "${ref}"` : '';
+      await execAsync(`git tag ${flag} "${name}" ${msgArg}${refArg}`, { cwd: folder.uri.fsPath });
   }
 
   public async deleteTag(folder: vscode.WorkspaceFolder, name: string): Promise<void> {
@@ -268,6 +269,14 @@ export class GitIntegration {
               throw new Error(`Merge Conflict: Please resolve manually in the editor.`);
           }
           throw new Error(`Merge failed: ${e.message}`);
+      }
+  }
+
+  public async renameBranch(folder: vscode.WorkspaceFolder, oldName: string, newName: string): Promise<void> {
+      try {
+          await execAsync(`git branch -m "${oldName}" "${newName}"`, { cwd: folder.uri.fsPath });
+      } catch (e: any) {
+          throw new Error(e.message || "Failed to rename branch.");
       }
   }
 

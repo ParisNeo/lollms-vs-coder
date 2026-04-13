@@ -208,6 +208,21 @@ export class GitDashboardPanel {
                             }
                         }
                         break;
+                    case 'renameBranch':
+                        const newBranchName = await vscode.window.showInputBox({ 
+                            prompt: `Rename branch '${msg.branch}' to:`,
+                            value: msg.branch 
+                        });
+                        if (newBranchName && newBranchName !== msg.branch) {
+                            try {
+                                await this._git.renameBranch(folder, msg.branch, newBranchName);
+                                await this.refresh();
+                                vscode.window.showInformationMessage(`Renamed branch to '${newBranchName}'.`);
+                            } catch (e: any) {
+                                vscode.window.showErrorMessage(`Failed to rename branch: ${e.message}`);
+                            }
+                        }
+                        break;
                     case 'deleteBranch':
                         const confirm = await vscode.window.showWarningMessage(
                             `Are you sure you want to delete branch '${msg.branch}'?`,
@@ -281,7 +296,7 @@ export class GitDashboardPanel {
                             });
 
                             try {
-                                await this._git.createTag(folder, sanitizedName, tagMsg);
+                                await this._git.createTag(folder, sanitizedName, tagMsg, msg.ref);
                                 await this.refresh();
                                 vscode.window.showInformationMessage(`Tag '${sanitizedName}' created.`);
                             } catch (e: any) {
@@ -481,12 +496,31 @@ export class GitDashboardPanel {
             padding: 6px 12px 6px 24px; font-size: 13px;
             display: flex; align-items: center; gap: 8px;
             cursor: pointer; transition: background 0.1s;
+            position: relative;
         }
         .nav-item:hover { background: var(--vscode-list-hoverBackground); }
         .nav-item.active { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
         .nav-item i { font-size: 14px; opacity: 0.7; }
-        .nav-item:hover .item-actions { display: flex; }
-        .nav-item .item-actions { display: none; margin-left: auto; gap: 4px; }
+        
+        .nav-item:hover .item-actions { opacity: 1; pointer-events: auto; }
+        .nav-item .item-actions { 
+            opacity: 0;
+            display: flex; 
+            gap: 2px; 
+            position: absolute;
+            right: 8px;
+            background: var(--vscode-list-hoverBackground);
+            padding: 2px 4px;
+            border-radius: 4px;
+            box-shadow: -15px 0 15px var(--vscode-list-hoverBackground);
+            align-items: center; 
+            transition: opacity 0.1s; 
+            pointer-events: none;
+        }
+        .nav-item.active .item-actions { 
+            background: var(--vscode-list-activeSelectionBackground);
+            box-shadow: -15px 0 15px var(--vscode-list-activeSelectionBackground);
+        }
         
         .item-actions .icon-btn { 
             width: 20px; height: 20px; 

@@ -8,6 +8,8 @@ import { ChatPanel } from '../commands/chatPanel/chatPanel';
 
 export function registerFileCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
 
+    const lastSnapshotWrite = new Map<string, number>();
+
     // Helper to find a block of code in a document with flexible whitespace matching
     function findBlockRange(document: vscode.TextDocument, searchBlock: string): { start: number, end: number } | null {
         const text = document.getText();
@@ -86,11 +88,22 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         const fileName = path.basename(fileUri.fsPath);
         const snapshotUri = vscode.Uri.joinPath(snapshotsDir, `${fileName}.orig`);
         
-        // Only write if it doesn't exist to preserve the state before a batch started
-        try {
-            await vscode.workspace.fs.stat(snapshotUri);
-        } catch {
+        const now = Date.now();
+        const lastWrite = lastSnapshotWrite.get(snapshotUri.toString()) || 0;
+
+        // Overwrite if it's been more than 5 seconds since the last snapshot write
+        // This ensures a new AI interaction creates a fresh baseline, while a fast
+        // "Apply All" batch preserves the baseline from the start of the batch.
+        if (now - lastWrite > 5000) {
             await vscode.workspace.fs.writeFile(snapshotUri, Buffer.from(originalContent, 'utf8'));
+            lastSnapshotWrite.set(snapshotUri.toString(), now);
+        } else {
+            try {
+                await vscode.workspace.fs.stat(snapshotUri);
+            } catch {
+                await vscode.workspace.fs.writeFile(snapshotUri, Buffer.from(originalContent, 'utf8'));
+                lastSnapshotWrite.set(snapshotUri.toString(), now);
+            }
         }
 
         if (snapshotOnly) return;
@@ -227,6 +240,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             if (applied) {
                 // FORCE SAVE TO DISK
                 await document.save();
+                services.contextManager.refreshFileInCache(fileUri);
                 if (!options?.silent) {
                     const editor = await vscode.window.showTextDocument(document);
                     const pos = new vscode.Position(firstModifiedLine, 0);
@@ -556,6 +570,7 @@ ${originalContent}
                 const applied = await vscode.workspace.applyEdit(edit);
                 if (applied) {
                     await document.save();
+                    services.contextManager.refreshFileInCache(fileUri);
                     if (!options?.silent) {
                         const editor = await vscode.window.showTextDocument(document);
                         if (firstChangeLine !== undefined) {
@@ -616,6 +631,7 @@ ${originalContent}
             const applied = await vscode.workspace.applyEdit(edit);
             if (applied) {
                 await document.save();
+                services.contextManager.refreshFileInCache(fileUri);
             }
 
             await openDiffView(fileUri, originalContent);
@@ -659,6 +675,7 @@ ${originalContent}
             const applied = await vscode.workspace.applyEdit(edit);
             if (applied) {
                 await document.save();
+                services.contextManager.refreshFileInCache(fileUri);
             }
 
             await openDiffView(fileUri, originalContent);
@@ -716,6 +733,7 @@ ${originalContent}
              try {
                 // applyDiff now handles explicit saving internally
                 await applyDiff(patchContent, filePath); 
+                services.contextManager.refreshFileInCache(vscode.Uri.joinPath(activeWorkspace.uri, filePath));
                 
                 if (!options?.silent) {
                     // Scroll to the patch location

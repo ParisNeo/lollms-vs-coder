@@ -1396,7 +1396,7 @@ personalities: this._personalityManager.getPersonalities()
                             <div style="font-weight:bold; font-size:12px;">\${name}</div>
                             <div style="font-size:10px; opacity:0.7; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">\${command}</div>
                         </div>
-                        <button class="icon-btn remove-mcp-btn" data-name="${name}" style="color:var(--error-color)"><i class="codicon codicon-trash"></i></button>
+                        <button class="icon-btn remove-mcp-btn" data-name="\${name}" style="color:var(--error-color)"><i class="codicon codicon-trash"></i></button>
                     \`;
                     container.appendChild(row);
                 });

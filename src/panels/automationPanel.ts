@@ -9,14 +9,14 @@ export class AutomationPanel {
 
     public static createOrShow(extensionUri: vscode.Uri): AutomationPanel {
         if (AutomationPanel.currentPanel) {
-            AutomationPanel.currentPanel._panel.reveal(vscode.ViewColumn.Two);
+            AutomationPanel.currentPanel._panel.reveal(vscode.ViewColumn.One);
             return AutomationPanel.currentPanel;
         }
 
         const panel = vscode.window.createWebviewPanel(
             'lollmsAutomation',
             'Lollms: Workspace Repair',
-            vscode.ViewColumn.Two,
+            vscode.ViewColumn.One,
             {
                 enableScripts: true,
                 retainContextWhenHidden: true,
@@ -28,11 +28,20 @@ export class AutomationPanel {
         return AutomationPanel.currentPanel;
     }
 
+    private _isReady = false;
+    private _queuedMessages: any[] = [];
+
     private constructor(panel: vscode.WebviewPanel, private _extensionUri: vscode.Uri) {
         this._panel = panel;
         this._panel.webview.html = this._getHtmlForWebview();
         
         this._panel.webview.onDidReceiveMessage(async msg => {
+            if (msg.command === 'ready') {
+                this._isReady = true;
+                this._queuedMessages.forEach(m => this._panel.webview.postMessage(m));
+                this._queuedMessages = [];
+                return;
+            }
             switch (msg.command) {
                 case 'cancel':
                     this._onDidCancel.fire();
@@ -60,23 +69,29 @@ export class AutomationPanel {
         }, null, this._disposables);
     }
 
+    private _postMessage(message: any) {
+        if (this._isReady) {
+            this._panel.webview.postMessage(message);
+        } else {
+            this._queuedMessages.push(message);
+        }
+    }
+
     public showDiscovery(files: { path: string, errors: { line: number, message: string, snippet: string }[] }[]) {
-        this._panel.webview.postMessage({ command: 'discovery', files });
+        this._postMessage({ command: 'discovery', files });
     }
 
     public updateFileProgress(filePath: string, status: string, details: string, data?: any) {
         // Ensure we explicitly pass reasoning if it's inside the data object
-        this._panel.webview.postMessage({ command: 'updateFile', filePath, status, details, ...data });
+        this._postMessage({ command: 'updateFile', filePath, status, details, ...data });
     }
 
     public updateOverallProgress(percentage: number, label: string) {
-        this._panel.webview.postMessage({ command: 'updateProgress', percentage, label });
+        this._postMessage({ command: 'updateProgress', percentage, label });
     }
 
     public log(message: string) {
-        if (this._panel && this._panel.visible) {
-            this._panel.webview.postMessage({ command: 'log', message });
-        }
+        this._postMessage({ command: 'log', message });
     }
 
     public dispose() {
@@ -169,33 +184,16 @@ export class AutomationPanel {
                 };
 
                 const getErrorSummary = () => {
-                    let summary = "Workspace Errors Discovery:\n\n";
+                    let summary = "Workspace Errors Discovery:\\n\\n";
                     sessionData.discovery.forEach(f => {
-                        summary += \`File: \${f.path}\n\`;
+                        summary += \`File: \${f.path}\\n\`;
                         f.errors.forEach(e => {
-                            summary += \`- [Line \${e.line}] \${e.message}\n\`;
+                            summary += \`- [Line \${e.line}] \${e.message}\\n\`;
+                            if (e.snippet) {
+                                summary += \`  Context: \${e.snippet}\\n\`;
+                            }
                         });
-                        summary += "\n";
-                    });
-                    return summary;
-                };
-
-                document.getElementById('copy-errors-btn').onclick = () => {
-                    vscode.postMessage({ command: 'copyToClipboard', text: getErrorSummary() });
-                };
-
-                document.getElementById('chat-errors-btn').onclick = () => {
-                    vscode.postMessage({ command: 'startChatWithErrors', text: getErrorSummary() });
-                };
-
-                const getErrorSummary = () => {
-                    let summary = "Workspace Errors Discovery:\n\n";
-                    sessionData.discovery.forEach(f => {
-                        summary += \`File: \${f.path}\n\`;
-                        f.errors.forEach(e => {
-                            summary += \`- [Line \${e.line}] \${e.message}\n\`;
-                        });
-                        summary += "\n";
+                        summary += "\\n";
                     });
                     return summary;
                 };
@@ -211,6 +209,9 @@ export class AutomationPanel {
                 document.getElementById('export-btn').onclick = () => {
                     vscode.postMessage({ command: 'export', data: sessionData });
                 };
+
+                // Notify host that we are ready to receive queued messages
+                vscode.postMessage({ command: 'ready' });
 
                 window.addEventListener('message', event => {
                     const msg = event.data;

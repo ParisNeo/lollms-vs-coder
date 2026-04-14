@@ -41,13 +41,6 @@ Add a fast librarian mode (single shot, just take a look at the current task and
 Make skills md with claude style
 
 # IMPORTANT
-## Git ui:
-increase the width of the side panel and make it resizable
-make the buttons in the items in the branches list have opaque background
-## Force lollms persona
-When we install the extension bootstrapped personas text must be forced to the one we have built.
-Add personality, skill and tool building studio
-## memory usage
-at the end of the response add an optional modify memory importance tag that adds to a memory if it was used or was useful or decrease its importance if it wasn't useful. DNA ones are untouchable. if a memory has less than 20% it goes to the deep system. it can be brought back by an agent if he needs it.
 
-## Branch renaming needs fixing
+## Problem in websearch
+ Unknown tool: add_briefing_entry

@@ -68,8 +68,8 @@ export class ProjectMemoryManager {
                 if (title) this._cache[index].title = title;
                 if (content) this._cache[index].content = content;
                 
-                if (importance !== undefined && !isNaN(importance)) {
-                    this._cache[index].importance = Math.max(0.0, Math.min(1.0, importance));
+                if (importance !== undefined && !isNaN(Number(importance))) {
+                    this._cache[index].importance = Math.max(0.0, Math.min(1.0, Number(importance)));
                 } else {
                     // Default increment if importance not specifically given
                     const currentImportance = this._cache[index].importance;

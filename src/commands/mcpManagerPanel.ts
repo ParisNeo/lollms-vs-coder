@@ -52,10 +52,11 @@ export class McpManagerPanel {
         this._panel.webview.html = this._getHtml(servers);
     }
 
-    private _getHtml(servers: Record<string, string>) {
+    private _getHtml(servers: Record<string, any>) {
         return `<!DOCTYPE html>
         <html>
         <head>
+            <link href="https://cdn.jsdelivr.net/npm/@vscode/codicons/dist/codicon.css" rel="stylesheet" />
             <style>
                 body { font-family: var(--vscode-font-family); color: var(--vscode-editor-foreground); padding: 20px; background: var(--vscode-editor-background); }
                 .server-card { background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border); padding: 15px; border-radius: 8px; margin-bottom: 10px; }
@@ -76,20 +77,43 @@ export class McpManagerPanel {
             </div>
             <script>
                 const vscode = acquireVsCodeApi();
-                let servers = ${JSON.stringify(servers)};
+                let servers = \${JSON.stringify(servers)};
+
+                const KNOWN_SERVERS = [
+                    { name: 'google-maps', type: 'stdio', cmd: 'npx -y @modelcontextprotocol/server-google-maps', desc: 'Local search & navigation' },
+                    { name: 'brave-search', type: 'stdio', cmd: 'npx -y @modelcontextprotocol/server-brave-search', desc: 'Live web search results' },
+                    { name: 'github', type: 'stdio', cmd: 'npx -y @modelcontextprotocol/server-github', desc: 'Manage issues/PRs/code' },
+                    { name: 'memory', type: 'stdio', cmd: 'npx -y @modelcontextprotocol/server-memory', desc: 'Persistent Knowledge Graph' }
+                ];
                 
                 function render() {
                     const container = document.getElementById('list');
-                    container.innerHTML = Object.entries(servers).map(([name, cmd], i) => \`
+                    container.innerHTML = Object.entries(servers).map(([name, cfg], i) => \`
                         <div class="server-card">
-                            <label style="font-size:10px; font-weight:bold; opacity:0.7;">SERVER NAME</label>
-                            <input value="\${name}" onchange="updateName('\${name}', this.value)" placeholder="e.g. filesystem" />
-                            <label style="font-size:10px; font-weight:bold; opacity:0.7;">COMMAND</label>
-                            <input value="\${cmd}" onchange="updateCmd('\${name}', this.value)" placeholder="npx -y ..." />
-                            <button class="remove-btn" onclick="remove('\${name}')">Remove</button>
+                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                                <input style="font-weight:bold; border:none; background:transparent; width:auto;" value="\${name}" onchange="updateName('${name}', this.value)" />
+                                <span class="badge">\${cfg.type || 'stdio'}</span>
+                            </div>
+                            
+                            <label>COMMAND / URL</label>
+                            <input value="\${cfg.command || cfg.url || ''}" onchange="updateVal('\${name}', this.value)" />
+                            
+                            <label>ENV (JSON format)</label>
+                            <input value='\${JSON.stringify(cfg.env || {})}' onchange="updateEnv('\${name}', this.value)" placeholder='{"API_KEY": "..."}' />
+                            
+                            <button class="remove-btn" onclick="remove('\${name}')">Delete</button>
+                        </div>
+                    \`).join('');
+                    
+                    const quick = document.getElementById('quick-add');
+                    quick.innerHTML = '<h4>Quick Install Popular Servers</h4>' + KNOWN_SERVERS.map(s => \`
+                        <div class="server-card" style="border-style:dashed; opacity:0.8; cursor:pointer;" onclick='addKnown(\${JSON.stringify(s)})'>
+                            <strong>\${s.name}</strong><br><small>\${s.desc}</small>
                         </div>
                     \`).join('');
                 }
+
+                function addKnown(s) { servers[s.name] = { type: s.type, command: s.cmd, env: {} }; render(); }
 
                 function updateName(oldName, newName) {
                     const cmd = servers[oldName];

@@ -136,42 +136,40 @@ ${skill.content}
 
 function xmlToSkill(xml: string, forcedScope?: 'global' | 'local'): Skill {
     const getAttr = (attrName: string) => {
-        // Improved regex: handles spaces around '=', escaped quotes, and multi-line tags
-        const regex = new RegExp(`\\b${attrName}\\s*=\\s*(["'])(.*?)\\1`, 'is');
+        const regex = new RegExp(`${attrName}\\s*=\\s*(["'])(.*?)\\1`, 'is');
         const match = xml.match(regex);
         return match ? unescapeXml(match[2]) : '';
     };
 
-    // 1. Extract content first so we can use it as a fallback for the name
     let content = extractContentTag(xml);
     if (!content) {
-        content = xml.replace(/^<skill[^>]*>/i, '').replace(/<\/skill>\s*$/i, '').trim();
+        content = xml.replace(/<skill[^>]*>/i, '').replace(/<\/skill>\s*$/i, '').trim();
     }
 
-    // 2. Identify properties (Attribute -> Tag -> Default/Content Fallback)
     const id = getAttr('id') || 'skill-' + Math.random().toString(36).substring(2, 9);
     
     let name = getAttr('title') || extractTag(xml, 'name');
     if (!name) {
-        // If no name found, take the first line of content (stripping markdown headers)
         name = content.split('\n')[0].replace(/[#*`]/g, '').trim().substring(0, 40) || 'Untitled Skill';
     }
 
     const description = getAttr('description') || extractTag(xml, 'description') || 'No description provided.';
-    let category = getAttr('category') || extractTag(xml, 'category');
+    let category = getAttr('category') || extractTag(xml, 'category') || 'general';
 
-    // SMART CATEGORY FALLBACK
-    if (!category || category.trim() === "") {
+    if (category.trim() === "") {
         const lowerName = name.toLowerCase();
         if (lowerName.includes('python')) category = 'python';
         else if (lowerName.includes('safe_store') || lowerName.includes('safestore')) category = 'safe_store';
         else if (lowerName.includes('api') || lowerName.includes('lollms')) category = 'lollms/api';
         else if (lowerName.includes('css') || lowerName.includes('html') || lowerName.includes('react')) category = 'frontend';
-        else category = 'general'; // Move everything else into a "general" folder
+        else category = 'general';
     }
 
     const language = getAttr('language') || extractTag(xml, 'language') || 'markdown';
-    const timestamp = parseInt(getAttr('timestamp')) || parseInt(extractTag(xml, 'timestamp')) || Date.now();
+    
+    const rawTimestamp = getAttr('timestamp') || extractTag(xml, 'timestamp');
+    const parsedTime = rawTimestamp ? parseInt(rawTimestamp) : Date.now();
+    const timestamp = isNaN(parsedTime) ? Date.now() : parsedTime;
 
     return { id, name, description, category, language, timestamp, content, scope: forcedScope || 'global' };
 }

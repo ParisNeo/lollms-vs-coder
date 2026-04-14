@@ -35,13 +35,19 @@ export class SelectionDecorator {
         }
 
         const selection = editor.selection;
+        const line = selection.start.line;
+        const char = selection.start.character;
+        const lineLength = editor.document.lineAt(line).text.length;
+
+        // Safety Check: Ensure character offset doesn't exceed line length
+        const safeChar = Math.min(char, lineLength);
         
         // Place the icon at the very start of the selection (first character)
         const decorationRange = new vscode.Range(
-            selection.start.line, 
-            selection.start.character, 
-            selection.start.line, 
-            selection.start.character
+            line, 
+            safeChar, 
+            line, 
+            safeChar
         );
 
         editor.setDecorations(this.decorationType, [decorationRange]);

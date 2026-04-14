@@ -29,6 +29,8 @@ window.addEventListener('message', e => {
         gitData = msg.data;
         renderBranches(gitData.branches, gitData.currentBranch);
         renderWorkingTree(gitData.status);
+        renderTags(gitData.tags);
+        renderStashes(gitData.stashes);
         renderGraph(gitData.graph);
     } else if (msg.command === 'error') {
         const inner = document.getElementById('graph-inner');
@@ -89,6 +91,60 @@ function commit() {
 function generateAI() { post('generateMessage'); }
 
 // RENDERERS
+function renderTags(tags) {
+    const list = document.getElementById('tags-list');
+    if (!list) return;
+    
+    if (!tags || tags.length === 0) {
+        list.innerHTML = '<div style="opacity:0.3; padding:8px 24px; font-size:11px;">No tags found</div>';
+        return;
+    }
+
+    list.innerHTML = tags.map(tag => `
+        <div class="nav-item" onclick="selectCommit('${tag.name}')">
+            <i class="codicon codicon-tag"></i>
+            <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(tag.message)}">${escapeHtml(tag.name)}</span>
+            <span style="font-size:9px; opacity:0.5; margin-right:8px;">${tag.date}</span>
+            <div class="item-actions">
+                <button class="icon-btn" onclick="event.stopPropagation(); post('checkoutRef', {ref: '${jsEscape(tag.name)}'})" title="Checkout Tag">
+                    <i class="codicon codicon-export"></i>
+                </button>
+                <button class="icon-btn" style="color:var(--vscode-errorForeground)" onclick="event.stopPropagation(); post('deleteTag', {name: '${jsEscape(tag.name)}'})" title="Delete Tag">
+                    <i class="codicon codicon-trash"></i>
+                </button>
+            </div>
+        </div>
+    `).join('');
+}
+
+function renderStashes(stashes) {
+    const list = document.getElementById('stashes-list');
+    if (!list) return;
+
+    if (!stashes || stashes.length === 0) {
+        list.innerHTML = '<div style="opacity:0.3; padding:8px 24px; font-size:11px;">No stashed changes</div>';
+        return;
+    }
+
+    list.innerHTML = stashes.map((s, i) => {
+        const parts = s.split(': ');
+        const label = parts.length > 1 ? parts.slice(1).join(': ') : s;
+        return `
+        <div class="nav-item">
+            <i class="codicon codicon-archive"></i>
+            <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escapeHtml(s)}">${escapeHtml(label)}</span>
+            <div class="item-actions">
+                <button class="icon-btn" onclick="event.stopPropagation(); post('stashApply', {index: ${i}})" title="Apply Stash">
+                    <i class="codicon codicon-cloud-download"></i>
+                </button>
+                <button class="icon-btn" style="color:var(--vscode-errorForeground)" onclick="event.stopPropagation(); post('dropStash', {index: ${i}})" title="Drop Stash">
+                    <i class="codicon codicon-trash"></i>
+                </button>
+            </div>
+        </div>`;
+    }).join('');
+}
+
 function renderBranches(branches, current) {
     const list = document.getElementById('local-branches-list');
     if (!list) return;

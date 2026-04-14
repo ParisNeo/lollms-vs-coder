@@ -666,6 +666,9 @@ export class ChatPanel {
     
             this.log(`Starting API Tokenization. Model: ${modelForTokenization}, Text Length: ${fullTextToTokenize.length}`);
             
+            // Yield to event loop to prevent unresponsive host during massive string operations
+            await new Promise(resolve => setTimeout(resolve, 0));
+
             if (signal.aborted) return;
 
             const [tokenizeResponse, contextSizeResponse] = await Promise.all([

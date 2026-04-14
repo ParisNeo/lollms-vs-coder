@@ -83,10 +83,15 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         if (!workspaceFolder) return;
         
         const snapshotsDir = vscode.Uri.joinPath(workspaceFolder.uri, '.lollms', 'snapshots');
-        await vscode.workspace.fs.createDirectory(snapshotsDir).then(undefined, () => {}); 
+        try {
+            await vscode.workspace.fs.createDirectory(snapshotsDir);
+        } catch (e) {}
         
         const fileName = path.basename(fileUri.fsPath);
-        const snapshotUri = vscode.Uri.joinPath(snapshotsDir, `${fileName}.orig`);
+        // Use hash of path to avoid filename collisions in snapshots dir
+        const crypto = require('crypto');
+        const hash = crypto.createHash('md5').update(fileUri.fsPath).digest('hex').substring(0, 8);
+        const snapshotUri = vscode.Uri.joinPath(snapshotsDir, `${hash}_${fileName}.orig`);
         
         const now = Date.now();
         const lastWrite = lastSnapshotWrite.get(snapshotUri.toString()) || 0;
@@ -120,11 +125,20 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showDiff', async (filePath: string) => {
         const activeWorkspace = getActiveWorkspace();
         if (!activeWorkspace) return;
-        const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
+
+        let fileUri: vscode.Uri;
+        if (path.isAbsolute(filePath)) {
+            fileUri = vscode.Uri.file(filePath);
+        } else {
+            fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
+        }
+
         try {
             const doc = await vscode.workspace.openTextDocument(fileUri);
             await openDiffView(fileUri, doc.getText());
-        } catch (e) {}
+        } catch (e: any) {
+            vscode.window.showErrorMessage(`Failed to open diff for ${filePath}: ${e.message}`);
+        }
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string, options?: { silent?: boolean }) => {

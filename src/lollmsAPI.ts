@@ -734,7 +734,9 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
 
                     if (content) {
                         fullResponse += content;
-                        onChunk(content);
+                        if (typeof onChunk === 'function') {
+                            onChunk(content);
+                        }
                     }
                 }
             }

@@ -6,6 +6,7 @@ export interface Personality {
     description: string;
     systemPrompt: string;
     isDefault?: boolean;
+    category?: string;
 }
 
 const DEFAULT_PERSONALITIES: Personality[] = [

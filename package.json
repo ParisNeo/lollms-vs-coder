@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.8.2",
+  "version": "0.8.3",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -567,9 +567,39 @@
         "icon": "$(comment-discussion)"
       },
       {
+        "command": "lollms-vs-coder.showPersonasTab",
+        "title": "Expert Personas",
+        "icon": "$(account)"
+      },
+      {
+        "command": "lollms-vs-coder.showSkillsTab",
+        "title": "Skills Library",
+        "icon": "$(lightbulb)"
+      },
+      {
+        "command": "lollms-vs-coder.showMemoryTab",
+        "title": "Project Memory",
+        "icon": "$(chip)"
+      },
+      {
         "command": "lollms-vs-coder.showLibrarianTab",
         "title": "Librarian (Files/Memory)",
         "icon": "$(library)"
+      },
+      {
+        "command": "lollms-vs-coder.showFixTab",
+        "title": "Workspace Repair",
+        "icon": "$(zap)"
+      },
+      {
+        "command": "lollms-vs-coder.showMcpTab",
+        "title": "MCP Tools",
+        "icon": "$(plug)"
+      },
+      {
+        "command": "lollms-vs-coder.showEnvTab",
+        "title": "Environment",
+        "icon": "$(symbol-variable)"
       },
       {
         "command": "lollms-vs-coder.showGitTab",
@@ -1058,10 +1088,19 @@
         },
         "lollmsVsCoder.mcpServers": {
           "type": "object",
-          "default": {},
-          "description": "Configuration for MCP Servers. Map server names to their command execution strings.",
+          "default": {
+             "filesystem": { "type": "stdio", "command": "npx -y @modelcontextprotocol/server-filesystem", "args": ["."], "env": {} },
+             "memory": { "type": "stdio", "command": "npx -y @modelcontextprotocol/server-memory", "env": {} }
+          },
+          "description": "Configuration for MCP Servers. Support both local commands and remote SSE URLs.",
           "additionalProperties": {
-            "type": "string"
+            "type": "object",
+            "properties": {
+                "type": { "type": "string", "enum": ["stdio", "sse"], "default": "stdio" },
+                "command": { "type": "string" },
+                "url": { "type": "string" },
+                "env": { "type": "object" }
+            }
           }
         },
         "lollmsVsCoder.companion.enableWebSearch": {

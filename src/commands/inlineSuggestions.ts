@@ -91,7 +91,8 @@ ${truncatedAfter}`;
         messages.push({ role: 'user', content: prompt });
 
         try {
-            const response = await this.api.sendChat(messages, signal);
+            // Fix: Pass null for onChunk callback to prevent TypeError
+            const response = await this.api.sendChat(messages, null, signal);
             const firstLine = response.split('\n')[0].trim();
             
             const lineSuffix = document.lineAt(position.line).text.substring(position.character);

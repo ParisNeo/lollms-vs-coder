@@ -44,9 +44,12 @@ export class ToolManager {
 
                 const mcpTools = await client.listTools();
                 for (const t of mcpTools) {
+                    // Namespace tools to avoid collisions (e.g., github_create_issue)
+                    const namespacedName = `${serverName}_${t.name}`.replace(/-/g, '_');
+                    
                     const toolDef: ToolDefinition = {
-                        name: t.name,
-                        description: t.description || `MCP Tool from ${serverName}`,
+                        name: namespacedName,
+                        description: t.description || `[MCP] ${t.name}`,
                         isAgentic: true, // MCP tools are usually for agents
                         isDefault: true,
                         parameters: t.inputSchema?.properties ? Object.entries(t.inputSchema.properties).map(([k, v]: [string, any]) => ({

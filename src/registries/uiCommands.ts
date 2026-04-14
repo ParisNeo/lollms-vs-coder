@@ -7,7 +7,9 @@ import { registerSelectModelCommand } from '../commands/selectModel';
 import { ProcessItem } from '../commands/treeItems';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
 
+
 export function registerUICommands(context: vscode.ExtensionContext, services: LollmsServices) {
+
     // Satisfy ToolManager lifecycle requirements
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refreshTools', () => {
         ChatPanel.panels.forEach(p => p.updateGeneratingState());
@@ -56,6 +58,14 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showChatTab', () => setTab('chat')));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showLibrarianTab', () => setTab('librarian')));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showPersonasTab', () => {
+        setTab('personas');
+        vscode.commands.executeCommand('lollms-vs-coder.managePersonalities');
+    }));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showSkillsTab', () => {
+        setTab('skills');
+        vscode.commands.executeCommand('lollms-vs-coder.manageSkills');
+    }));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showGitTab', () => {
         setTab('git');
         vscode.commands.executeCommand('lollms-vs-coder.showGitDashboard');
@@ -160,6 +170,16 @@ export const myCustomTool: ToolDefinition = {
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.manageProjectMemory', () => {
         const { ProjectMemoryPanel } = require('../commands/projectMemoryPanel');
         ProjectMemoryPanel.createOrShow(services.extensionUri, (services as any).projectMemoryManager);
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.manageSkills', () => {
+        const { SkillsManagerPanel } = require('../commands/skillsManagerPanel');
+        SkillsManagerPanel.createOrShow(services.extensionUri, services.skillsManager);
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.managePersonalities', () => {
+        const { PersonalityManagerPanel } = require('../commands/personalityManagerPanel');
+        PersonalityManagerPanel.createOrShow(services.extensionUri, services.personalityManager);
     }));
 
     // Support clicking a memory item in the tree to open the manager

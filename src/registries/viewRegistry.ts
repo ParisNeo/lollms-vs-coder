@@ -26,6 +26,8 @@ export class TabsTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
         
         return [
             new TabItem("Chat & Discussions", "chat", "comment-discussion", activeTab === 'chat'),
+            new TabItem("Expert Personas", "personas", "account", activeTab === 'personas'),
+            new TabItem("Skills Library", "skills", "lightbulb", activeTab === 'skills'),
             new TabItem("Project Memory", "memory", "chip", activeTab === 'memory'),
             new TabItem("Librarian (Knowledge)", "librarian", "library", activeTab === 'librarian'),
             new TabItem("Workspace Repair", "fix", "zap", activeTab === 'fix'),

@@ -22,7 +22,7 @@ export class TabsTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
 
     async getChildren(): Promise<vscode.TreeItem[]> {
         const activeTab = this.context.globalState.get('lollms.activeTab', 'chat');
-        const { TabItem } = require('../commands/treeItems');
+        const { TabItem } = await import('../commands/treeItems');
         
         return [
             new TabItem("Chat & Discussions", "chat", "comment-discussion", activeTab === 'chat'),

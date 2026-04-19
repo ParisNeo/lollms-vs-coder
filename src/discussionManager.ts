@@ -25,6 +25,7 @@ export interface Discussion {
         replVariables: Record<string, any>;
         workingMemory: string[];
         completedActionsHistory: string[];
+        secureCredentials?: Record<string, string>;
     };
 }
 
@@ -405,10 +406,13 @@ Output ONLY the JSON.`
         };
 
         try {
+            const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+            const titlingModel = config.get<string>('titlingModelName') || discussion.model;
+
             const rawResponse = await this.lollmsAPI.sendChat([
                 systemPrompt, 
                 { role: 'user', content: `Generate a title for a discussion starting with: "${contentSnippet}"` }
-            ], null, undefined, discussion.model);
+            ], null, undefined, titlingModel);
 
             const cleanResponse = stripThinkingTags(rawResponse).trim();
             

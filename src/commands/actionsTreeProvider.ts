@@ -40,13 +40,14 @@ export class ActionsTreeProvider implements vscode.TreeDataProvider<ActionItem> 
         const actions: ActionItem[] = [];
 
         if (hasWorkspace) {
-            actions.push(new ActionItem(l.t('Lollms Studio (Personas, Skills, Tools)'), 'lollms-vs-coder.openStudio', 'beaker', 'Open Lollms Studio'));
-            actions.push(new ActionItem(l.t('Fix All Errors'), 'lollms-vs-coder.fixAllErrors', 'zap', 'Iteratively repair all workspace errors'));
-            actions.push(new ActionItem(l.t('Copy Problems List'), 'lollms-vs-coder.copyAllErrors', 'clippy', 'Copy all current workspace problems to clipboard'));
-            actions.push(new ActionItem(l.t('Deep Search'), 'lollms-vs-coder.showFileSearch', 'search', 'Power search across project content'));
-            actions.push(new ActionItem(l.t('Generate Notebook'), 'lollms-vs-coder.generateEducativeNotebookFromAction', 'book', 'Create a pedagogical tutorial notebook'));
-            actions.push(new ActionItem(l.t('Log'), 'lollms-vs-coder.showLog', 'output', 'Show Internal Logs'));
-            actions.push(new ActionItem(l.t('Help'), 'lollms-vs-coder.showHelp', 'question', 'View Documentation'));
+            actions.push(new ActionItem(l.t('label.lollmsStudio'), 'lollms-vs-coder.openStudio', 'beaker', l.t('tooltip.openStudio')));
+            actions.push(new ActionItem(l.t('label.cveBuilder'), 'lollms-vs-coder.openCveBuilder', 'shield', l.t('tooltip.cveBuilder')));
+            actions.push(new ActionItem(l.t('label.fixAllErrors'), 'lollms-vs-coder.fixAllErrors', 'zap', l.t('tooltip.fixAllErrors')));
+            actions.push(new ActionItem(l.t('label.copyErrors'), 'lollms-vs-coder.copyAllErrors', 'clippy', l.t('tooltip.copyErrors')));
+            actions.push(new ActionItem(l.t('label.deepSearch'), 'lollms-vs-coder.showFileSearch', 'search', l.t('tooltip.deepSearch')));
+            actions.push(new ActionItem(l.t('label.generateNotebook'), 'lollms-vs-coder.generateEducativeNotebookFromAction', 'book', l.t('tooltip.generateNotebook')));
+            actions.push(new ActionItem(l.t('label.showLog'), 'lollms-vs-coder.showLog', 'output', l.t('tooltip.showLog')));
+            actions.push(new ActionItem(l.t('label.showHelp'), 'lollms-vs-coder.showHelp', 'question', l.t('tooltip.showHelp')));
         }
 
         return Promise.resolve(actions);

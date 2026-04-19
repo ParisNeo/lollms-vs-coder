@@ -30,6 +30,8 @@ import { researchWebPageTool } from './researchWebPage';
 import { moltbookActionTool } from './moltbookAction';
 import { waitTool } from './wait';
 import { analyzeImageTool } from './analyzeImage';
+import { createSvgAssetTool } from './createSvgAsset';
+import { processImageAssetTool } from './processImageAsset';
 import { runVerificationTool } from './runVerification';
 import { moveFileTool } from './moveFile';
 import { storeKnowledgeTool } from './storeKnowledge';
@@ -41,10 +43,20 @@ import { searchWikipediaTool } from './searchWikipedia';
 import { searchStackOverflowTool } from './searchStackOverflow';
 import { testWebPageTool } from './testWebPage';
 import { captureDesktopTool } from './captureDesktop';
+import { editCodeTool } from './editCode';
+import { createAgentTool } from './createAgent';
+import { delegateTaskTool } from './delegateTask';
+import { requestSecureCredentialTool } from './requestSecureCredential';
 
 export const allTools: ToolDefinition[] = [
+    requestSecureCredentialTool,
+    editCodeTool,
+    createAgentTool,
+    createAgentTool,
+    delegateTaskTool,
     testWebPageTool,
     captureDesktopTool,
+    deleteFileTool,
     autoSelectContextFilesTool,
     createPythonEnvironmentTool,
     deselectContextFilesTool,
@@ -75,6 +87,8 @@ export const allTools: ToolDefinition[] = [
     moltbookActionTool,
     waitTool,
     analyzeImageTool,
+    createSvgAssetTool,
+    processImageAssetTool,
     runVerificationTool,
     moveFileTool,
     storeKnowledgeTool,
@@ -82,7 +96,24 @@ export const allTools: ToolDefinition[] = [
     promoteMemoryToSkillTool, // NEW
     summarizeTextTool,
     searchWikipediaTool,
-    searchStackOverflowTool,    
+    searchStackOverflowTool,
+    {
+        name: "is_process_active",
+        description: "Checks if a background process is still running. Useful for monitoring long-running tasks.",
+        isAgentic: true,
+        isDefault: true,
+        parameters: [
+            { name: "process_identifier", type: "string", description: "The name of the process (e.g., 'python.exe') or PID.", required: true }
+        ],
+        async execute(params, env, signal) {
+            const isWin = process.platform === 'win32';
+            const cmd = isWin 
+                ? `Get-Process -Name "${params.process_identifier.replace('.exe', '')}" -ErrorAction SilentlyContinue` 
+                : `pgrep -f "${params.process_identifier}"`;
+            const result = await env.agentManager!.runCommand(cmd, signal);
+            return { success: true, output: result.success ? "PROCESS_ACTIVE" : "PROCESS_NOT_FOUND" };
+        }
+    },
     {
         name: "read_output_tail",
         description: "Peeks at the last few lines of a log or output file. Use this to check progress of long-running tasks without consuming context.",

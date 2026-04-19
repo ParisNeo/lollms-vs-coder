@@ -10,16 +10,6 @@ export const captureDesktopTool: ToolDefinition = {
         { name: "label", type: "string", description: "A label for this screenshot (e.g., 'after_launch').", required: false }
     ],
     async execute(params: { label?: string }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
-        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-        const isAllowed = config.get<boolean>('agent.permissions.screenCapture') || false;
-
-        if (!isAllowed) {
-            return { 
-                success: false, 
-                output: "🛑 **Permission Denied:** Desktop screen capture is disabled for security/privacy. Please enable 'Screen Capture' in Lollms Agent Permissions settings if you wish to use this feature." 
-            };
-        }
-
         const timestamp = Date.now();
         const filename = `.lollms/screenshot_\${params.label || timestamp}.png`;
         

@@ -262,6 +262,9 @@ export const dom = {
     get capHerdRounds() { return document.getElementById('cap-herdRounds') as HTMLInputElement; },
     get capHerdPreCount() { return document.getElementById('cap-herdPreCount') as HTMLInputElement; },
     get capHerdPostCount() { return document.getElementById('cap-herdPostCount') as HTMLInputElement; },
+    get capHerdOrchestrator() { return document.getElementById('cap-herdOrchestrator') as HTMLSelectElement; },
+    get capHerdParticipants() { return document.getElementById('herd-models-list') as HTMLDivElement; },
+    get capHerdCritic() { return document.getElementById('cap-herdCritic') as HTMLInputElement; },
     get capHerdParallelGeneration() { return document.getElementById('cap-herdParallelGeneration') as HTMLInputElement; },
     get herdConfigSection() { return document.getElementById('herd-config-section') as HTMLDivElement; },
     get herdModelsList() { return document.getElementById('herd-models-list') as HTMLDivElement; },
@@ -310,6 +313,16 @@ export const dom = {
     get webTabContents() { return document.querySelectorAll('.web-tab-content'); },
     get webSubmitBtns() { return document.querySelectorAll('.web-submit-btn'); },
 
+    // Mission Briefing Modal
+    get missionBriefingModal() { return document.getElementById('mission-briefing-modal') as HTMLDivElement; },
+    get missionBriefingCloseBtn() { return document.getElementById('mission-briefing-close-btn') as HTMLSpanElement; },
+    get briefingUploadBtn() { return document.getElementById('briefing-upload-btn') as HTMLButtonElement; },
+    get briefingClipboardBtn() { return document.getElementById('briefing-clipboard-btn') as HTMLButtonElement; },
+    get briefingContentInput() { return document.getElementById('briefing-content-input') as HTMLTextAreaElement; },
+    get briefingDnaPreview() { return document.getElementById('briefing-dna-preview') as HTMLDivElement; },
+    get briefingClearBtn() { return document.getElementById('briefing-clear-btn') as HTMLButtonElement; },
+    get briefingSaveBtn() { return document.getElementById('briefing-save-btn') as HTMLButtonElement; },
+
     // Global Discussion Search
     get discussionSearchModal() { return document.getElementById('discussion-search-modal') as HTMLDivElement; },
     get discussionSearchInput() { return document.getElementById('discussion-search-input') as HTMLInputElement; },
@@ -329,6 +342,7 @@ export const dom = {
     get copySearchBtn() { return document.getElementById('copy-search-btn') as HTMLButtonElement; },
     get copyReplaceBtn() { return document.getElementById('copy-replace-btn') as HTMLButtonElement; },
     get copyRawBtn() { return document.getElementById('copy-raw-btn') as HTMLButtonElement; },
+    get rawFixAiBtn() { return document.getElementById('raw-fix-ai-btn') as HTMLButtonElement; },
     get markAppliedBtn() { return document.getElementById('mark-applied-btn') as HTMLButtonElement; },
     get searchSelectionBtn() { return document.getElementById('search-selection-btn') as HTMLButtonElement; },
     get rawSearchResultsMini() { return document.getElementById('raw-search-results') as HTMLDivElement; }

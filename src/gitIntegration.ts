@@ -493,19 +493,21 @@ export class GitIntegration {
           { role: 'user', content: userPromptContent }
       ];
       try {
+          const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+          const commitModel = config.get<string>('gitCommitModelName') || undefined;
+
           const rawMessage = await vscode.window.withProgress({
               location: vscode.ProgressLocation.SourceControl,
               title: "Lollms: Generating commit message...",
               cancellable: false
           }, async () => {
-              return await this.lollmsAPI.sendChat(prompt);
+              return await this.lollmsAPI.sendChat(prompt, null, undefined, commitModel);
           });
           const cleanMessage = this.parseCommitMessage(rawMessage);
           if (!cleanMessage) {
               vscode.window.showWarningMessage('Lollms returned an empty commit message.');
               return '';
           }
-          const config = vscode.workspace.getConfiguration('lollmsVsCoder');
           const autoUpdateChangelog = config.get<boolean>('autoUpdateChangelog');
           if (autoUpdateChangelog && cleanMessage) {
               await this.updateChangelog(folder, cleanMessage);

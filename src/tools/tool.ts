@@ -4,6 +4,7 @@ import { ContextManager } from '../contextManager';
 import type { AgentManager } from '../agentManager';
 import type { CodeGraphManager } from '../codeGraphManager';
 import { SkillsManager } from '../skillsManager';
+import { PersonalityManager } from '../personalityManager';
 
 export interface Task {
     id: number;
@@ -36,6 +37,7 @@ export interface ToolExecutionEnv {
     contextManager: ContextManager;
     codeGraphManager?: CodeGraphManager;
     skillsManager?: SkillsManager;
+    personalityManager?: PersonalityManager;
     currentPlan: Plan | null;
     agentManager?: AgentManager; // Made optional for Companion use
     taskModel?: string; // Specific model requested by the architect for this task

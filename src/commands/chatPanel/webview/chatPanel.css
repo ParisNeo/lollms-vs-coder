@@ -2675,6 +2675,150 @@ mark.current-match {
     border-top: 1px solid var(--vscode-widget-border);
 }
 
+.processing-block {
+    background-color: var(--vscode-editor-inactiveSelectionBackground);
+    border: 1px solid var(--vscode-widget-border);
+    border-radius: 6px;
+    margin: 12px 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.processing-header {
+    padding: 8px 12px;
+    background-color: var(--vscode-sideBarSectionHeader-background);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.processing-header:hover {
+    background-color: var(--vscode-list-hoverBackground);
+}
+
+.processing-title {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--vscode-foreground);
+    opacity: 0.9;
+}
+
+.processing-body {
+    padding: 12px;
+    font-family: var(--vscode-editor-font-family);
+    font-size: 11px;
+    line-height: 1.5;
+    background-color: var(--vscode-editor-background);
+    border-top: 1px solid var(--vscode-widget-border);
+    white-space: pre-wrap;
+    max-height: 200px;
+    overflow-y: auto;
+    color: var(--vscode-descriptionForeground);
+}
+
+.processing-block details summary::-webkit-details-marker {
+    display: none;
+}
+
+.processing-block details summary {
+    list-style: none;
+}
+
+.processing-block .folder-handle {
+    transition: transform 0.2s;
+}
+
+.processing-block details[open] .folder-handle {
+    transform: rotate(90deg);
+}
+
+.lollms-form-block {
+    background-color: var(--vscode-editor-inactiveSelectionBackground);
+    border: 1px solid var(--vscode-widget-border);
+    border-radius: 8px;
+    margin: 15px 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.lollms-form-header {
+    padding: 10px 15px;
+    background-color: var(--vscode-sideBarSectionHeader-background);
+    border-bottom: 1px solid var(--vscode-widget-border);
+    font-weight: bold;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.lollms-form-body {
+    padding: 15px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.form-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.form-field label {
+    font-weight: 600;
+    font-size: 11px;
+    opacity: 0.8;
+}
+
+.radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.radio-option {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 10px;
+    background: var(--vscode-editor-background);
+    border: 1px solid var(--vscode-widget-border);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+}
+
+.radio-option:hover {
+    border-color: var(--vscode-focusBorder);
+    background: var(--vscode-list-hoverBackground);
+}
+
+.radio-option input {
+    margin-top: 2px;
+    cursor: pointer;
+}
+
+.radio-option span {
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.lollms-form-footer {
+    padding: 10px 15px;
+    border-top: 1px solid var(--vscode-widget-border);
+    display: flex;
+    justify-content: flex-end;
+}
+
 .context-loading-spinner {
     display: none;
     align-items: center;

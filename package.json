@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.8.3",
+  "version": "0.8.10",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -615,6 +615,55 @@
         "command": "lollms-vs-coder.showLabTab",
         "title": "The Lab (Workflows/Tools)",
         "icon": "$(beaker)"
+      },
+      {
+        "command": "lollms-vs-coder.openCveBuilder",
+        "title": "Lollms: CVE Report Builder",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "lollms-vs-coder.openStudio",
+        "title": "Lollms Studio (Personas, Skills, Tools)"
+      },
+      {
+        "command": "lollms-vs-coder.findInGraph",
+        "title": "Locate in Architecture Graph"
+      },
+      {
+        "command": "lollms-vs-coder.openAndSelect",
+        "title": "Open and Select Text"
+      },
+      {
+        "command": "lollms-vs-coder.triggerSurgicalInsight",
+        "title": "Lollms HUD: Analyze Symbol"
+      },
+      {
+        "command": "lollms-vs-coder.fixDiagnosticAtPosition",
+        "title": "Fix Issue at Position"
+      },
+      {
+        "command": "lollms-vs-coder.manageSkills",
+        "title": "Manage Skills Library"
+      },
+      {
+        "command": "lollms-vs-coder.managePersonalities",
+        "title": "Manage Expert Personas"
+      },
+      {
+        "command": "lollms-vs-coder.manageEnv",
+        "title": "Manage Environment Variables"
+      },
+      {
+        "command": "lollms-vs-coder.fixDiagnostic",
+        "title": "Fix with Lollms"
+      },
+      {
+        "command": "lollms-vs-coder.showDiff",
+        "title": "Show Diff"
+      },
+      {
+        "command": "lollms-vs-coder.showFileSearch",
+        "title": "Power Search"
       }
     ],
     "keybindings": [
@@ -974,6 +1023,26 @@
           "type": "string",
           "default": "",
           "description": "The 'Big' model used for planning and reasoning in Multi-Agent mode. Leave empty to use the Chat Model."
+        },
+        "lollmsVsCoder.titlingModelName": {
+          "type": "string",
+          "default": "",
+          "description": "Model used for generating discussion titles. Leave empty to use the Chat Model."
+        },
+        "lollmsVsCoder.gitCommitModelName": {
+          "type": "string",
+          "default": "",
+          "description": "Model used for generating git commit messages. Leave empty to use the Chat Model."
+        },
+        "lollmsVsCoder.surgicalModelName": {
+          "type": "string",
+          "default": "",
+          "description": "Model used for surgical code repairs and modifications. Leave empty to use the Chat Model."
+        },
+        "lollmsVsCoder.summarizationModelName": {
+          "type": "string",
+          "default": "",
+          "description": "Model used for long file processing and summarization. Leave empty to use the Chat Model."
         },
         "lollmsVsCoder.requestTimeout": {
           "type": "number",

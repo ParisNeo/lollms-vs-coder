@@ -77,25 +77,32 @@ export class LollmsAPI {
     this.baseUrl = this.normalizeBaseUrl(this.config.apiUrl);
     Logger.info(`LollmsAPI Initialized. BaseURL: ${this.baseUrl}, Backend: ${this.config.backendType}`);
   }
+    private normalizeBaseUrl(urlStr: string): string {
+        try {
+            if (!urlStr) return '';
+            urlStr = urlStr.trim();
 
-  private normalizeBaseUrl(urlStr: string): string {
-      try {
-          if (!urlStr) return '';
-          urlStr = urlStr.trim();
-          if (!urlStr.startsWith('http')) {
-              urlStr = 'http://' + urlStr;
-          }
-          const url = new URL(urlStr);
-          let cleanUrl = `${url.protocol}//${url.host}${url.pathname}`;
-          if (cleanUrl.endsWith('/')) {
-              cleanUrl = cleanUrl.slice(0, -1);
-          }
-          return cleanUrl;
-      } catch (e) {
-          Logger.error(`Invalid API URL format: ${urlStr}`, e);
-          return urlStr;
-      }
-  }
+            // Heuristic: If it lacks scheme, add https for cloud (Moonshot/Kimi), http for localhost
+            if (!urlStr.startsWith('http')) {
+                if (urlStr.includes('localhost') || urlStr.includes('127.0.0.1')) {
+                    urlStr = 'http://' + urlStr;
+                } else {
+                    urlStr = 'https://' + urlStr;
+                }
+            }
+
+            const url = new URL(urlStr);
+            let cleanUrl = `${url.protocol}//${url.host}${url.pathname}`;
+
+            // Remove trailing slash only. Version logic moved to getModels to prevent logic clashing.
+            cleanUrl = cleanUrl.replace(/\/+$/, '');
+
+            return cleanUrl;
+        } catch (e) {
+            Logger.error(`Invalid API URL format: ${urlStr}`, e);
+            return urlStr;
+        }
+    }
 
   private createHttpsAgent(): https.Agent {
       const certPath = this.config.sslCertPath ? this.config.sslCertPath.replace(/^['"]|['"]$/g, '') : '';
@@ -234,14 +241,21 @@ export class LollmsAPI {
     let headers: any = { 'Authorization': `Bearer ${this.config.apiKey}` };
 
     if (backend === 'ollama') {
-        url += '/api/tags';
+        url = url.endsWith('/api/tags') ? url : (url.endsWith('/api') ? `${url}/tags` : `${url}/api/tags`);
     } else if (backend === 'openwebui') {
-        url += '/models';
+        url = url.endsWith('/models') ? url : `${url}/models`;
     } else if (backend === 'google') {
         url = `https://generativelanguage.googleapis.com/v1beta/models?key=${this.config.apiKey}`;
         headers = {};
     } else {
-        url += '/v1/models';
+        // Standard OpenAI-compatible path joining
+        // Prevents double-versioning (/v1/v1) while ensuring standard cloud paths work
+        const pathLower = url.toLowerCase();
+        if (pathLower.endsWith('/v1') || pathLower.endsWith('/v1/')) {
+            url = url.replace(/\/+$/, '') + '/models';
+        } else {
+            url = url.replace(/\/+$/, '') + '/v1/models';
+        }
     }
 
     const controller = new AbortController();

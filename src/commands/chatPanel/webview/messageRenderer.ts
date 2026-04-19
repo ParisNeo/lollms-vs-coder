@@ -1491,6 +1491,95 @@ function renderFileOpBlock(type: 'delete' | 'move' | 'prune', params: any, messa
     </div>`;
 }
 
+function renderFormBlock(xmlContent: string, messageId: string): string {
+    const titleMatch = xmlContent.match(/title=["'](.*?)["']/);
+    const idMatch = xmlContent.match(/id=["'](.*?)["']/);
+    const title = titleMatch ? titleMatch[1] : "Decision Required";
+    const formId = idMatch ? idMatch[1] : "generic-form";
+
+    // Parse nested input elements
+    const inputRegex = /<input\s+([^>]*?)\s*\/>/gi;
+    let inputsHtml = "";
+    let match;
+    const radioGroups: Record<string, string[]> = {};
+
+    while ((match = inputRegex.exec(xmlContent)) !== null) {
+        const attrStr = match[1];
+        const attrs: any = {};
+        const attrRegex = /(\w+)=["']([^"']*)["']/g;
+        let m;
+        while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
+
+        if (attrs.type === 'radio') {
+            if (!radioGroups[attrs.name]) radioGroups[attrs.name] = [];
+            radioGroups[attrs.name].push(`
+                <label class="radio-option">
+                    <input type="radio" name="${attrs.name}" value="${attrs.value}" ${attrs.checked === 'true' ? 'checked' : ''}>
+                    <span>${sanitizer.sanitize(attrs.label)}</span>
+                </label>
+            `);
+        } else {
+            inputsHtml += `
+                <div class="form-field">
+                    <label>${sanitizer.sanitize(attrs.label)}</label>
+                    <input type="${attrs.type}" name="${attrs.name}" value="${attrs.value || ''}" 
+                           placeholder="${attrs.placeholder || ''}" 
+                           style="width:100%; padding:6px; border:1px solid var(--vscode-input-border); background:var(--vscode-input-background); color:var(--vscode-input-foreground); border-radius:4px;" />
+                </div>
+            `;
+        }
+    }
+
+    // Add radio groups to body
+    for (const name in radioGroups) {
+        inputsHtml += `<div class="radio-group">${radioGroups[name].join('')}</div>`;
+    }
+
+    const submitMatch = xmlContent.match(/<submit\s+label=["'](.*?)["']\s*\/>/i);
+    const submitLabel = submitMatch ? submitMatch[1] : "Validate Choice";
+
+    return `
+    <div class="lollms-form-block" data-form-id="${formId}">
+        <div class="lollms-form-header">
+            <span class="codicon codicon-question"></span>
+            <span>${sanitizer.sanitize(title)}</span>
+        </div>
+        <div class="lollms-form-body">
+            ${inputsHtml}
+        </div>
+        <div class="lollms-form-footer">
+            <button class="code-action-btn apply-btn lollms-form-submit-btn" 
+                    data-form-id="${formId}" 
+                    data-message-id="${messageId}">
+                <span class="codicon codicon-check"></span> ${sanitizer.sanitize(submitLabel)}
+            </button>
+        </div>
+    </div>`;
+}
+
+function renderProcessingBlock(rawContent: string, isClosed: boolean): string {
+    const lines = rawContent.trim().split('\n').filter(l => l.trim().length > 0);
+    const displayTitle = lines.length > 0 ? lines[lines.length - 1].replace(/^\*\s*/, '') : "Processing...";
+    
+    const icon = isClosed 
+        ? '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span>' 
+        : '<div class="spinner"></div>';
+
+    return `
+    <div class="processing-block">
+        <details ${!isClosed ? 'open' : ''}>
+            <summary class="processing-header">
+                <span class="folder-handle codicon codicon-chevron-right"></span>
+                ${icon}
+                <span class="processing-title">${sanitizer.sanitize(displayTitle)}</span>
+            </summary>
+            <div class="processing-body">
+                ${sanitizer.sanitize(rawContent.trim())}
+            </div>
+        </details>
+    </div>`;
+}
+
 function renderImageGenBlock(prompt: string, path: string, width?: string, height?: string): string {
     const safePrompt = encodeURIComponent(prompt);
     const safePath = encodeURIComponent(path);
@@ -1647,6 +1736,26 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             }
 
             // --- FILE OPERATIONS & CONTEXT TAG PARSING ---
+            // --- PROCESSING TAG PARSING ---
+            const processingBlocks: { html: string, start: number, end: number }[] = [];
+            // --- FORM TAG PARSING ---
+            const forms: { html: string, start: number, end: number }[] = [];
+            const formRegex = /<lollms_form\b[^>]*>([\s\S]*?)<\/lollms_form>/gi;
+            let formMatch;
+            while ((formMatch = formRegex.exec(contentWithoutThoughts)) !== null) {
+                const html = renderFormBlock(formMatch[0], messageId);
+                forms.push({ html, start: formMatch.index, end: formMatch.index + formMatch[0].length });
+            }
+
+            const procRegex = /<processing\b[^>]*>([\s\S]*?)(?:<\/processing>|$)/gi;
+            let procMatch;
+            while ((procMatch = procRegex.exec(contentWithoutThoughts)) !== null) {
+                const innerContent = procMatch[1];
+                const isClosed = procMatch[0].toLowerCase().includes('</processing>');
+                const html = renderProcessingBlock(innerContent, isClosed);
+                processingBlocks.push({ html, start: procMatch.index, end: procMatch.index + procMatch[0].length });
+            }
+
             const fileOps: { html: string, start: number, end: number }[] = [];
             const opRegex = /<(move_file|delete_file|add_files_to_context|remove_files_from_context)\s+([^>]*?)\s*\/>/gi;
             let opMatch;
@@ -1703,7 +1812,9 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 ...images.map(i => ({ start: i.start, end: i.end, html: i.html, elementType: 'image' as const })),
                 ...fileOps.map(o => ({ start: o.start, end: o.end, html: o.html, elementType: 'fileOp' as const })),
                 ...memTags.map(m => ({ start: m.start, end: m.end, html: m.html, elementType: 'projectMemory' as const })),
-                ...debugReports.map(d => ({ start: d.start, end: d.end, html: d.html, elementType: 'debugReport' as const }))
+                ...forms.map(f => ({ start: f.start, end: f.end, html: f.html, elementType: 'form' as const })),
+                ...debugReports.map(d => ({ start: d.start, end: d.end, html: d.html, elementType: 'debugReport' as const })),
+                ...processingBlocks.map(p => ({ start: p.start, end: p.end, html: p.html, elementType: 'processing' as const }))
             ].sort((a, b) => a.start - b.start);
 
             // 2. Filter to keep only TOP-LEVEL elements
@@ -1734,8 +1845,8 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     fragment.appendChild(textDiv);
                 }
 
-                // B. Render the UI element (Code Block or Skill or Image or AddFiles or FileOp or DebugReport or ProjectMemory)
-                const uiTypes = ['skill', 'image', 'addFiles', 'fileOp', 'projectMemory', 'debugReport'];
+                // B. Render the UI element (Code Block or Skill or Image or AddFiles or FileOp or DebugReport or ProjectMemory or Processing or Form)
+                const uiTypes = ['skill', 'image', 'addFiles', 'fileOp', 'projectMemory', 'debugReport', 'processing', 'form'];
                 if (uiTypes.includes(el.elementType)) {
                     const uiDiv = document.createElement('div');
                     uiDiv.innerHTML = (el as any).html;
@@ -1909,7 +2020,6 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     if (isFullyApplied) {
                         applyBtn.classList.add('applied');
                         applyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
-                        details.open = false;
                     }
 
                     if (isBlockGenerating) {
@@ -2941,7 +3051,7 @@ export function updateContext(contextText: string, files: string[] = [], skills:
     const briefingBtn = document.getElementById('edit-briefing-btn');
     if (briefingBtn) {
         briefingBtn.addEventListener('click', () => {
-            vscode.postMessage({ command: 'requestMissionBriefing' });
+            vscode.postMessage({ command: 'requestMissionBriefingUI' });
         });
     }
 

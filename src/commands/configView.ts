@@ -21,6 +21,10 @@ export class SettingsPanel {
     useLollmsExtensions: true,
     modelName: '',
     architectModelName: '',
+    titlingModelName: '',
+    gitCommitModelName: '',
+    surgicalModelName: '',
+    summarizationModelName: '',
     disableSslVerification: false,
     sslCertPath: '',
     requestTimeout: 600000,
@@ -149,6 +153,10 @@ export class SettingsPanel {
     this._pendingConfig.useLollmsExtensions = config.get<boolean>('useLollmsExtensions') ?? true;
     this._pendingConfig.modelName = config.get<string>('modelName') || '';
     this._pendingConfig.architectModelName = config.get<string>('architectModelName') || '';
+    this._pendingConfig.titlingModelName = config.get<string>('titlingModelName') || '';
+    this._pendingConfig.gitCommitModelName = config.get<string>('gitCommitModelName') || '';
+    this._pendingConfig.surgicalModelName = config.get<string>('surgicalModelName') || '';
+    this._pendingConfig.summarizationModelName = config.get<string>('summarizationModelName') || '';
     this._pendingConfig.disableSslVerification = config.get<boolean>('disableSslVerification') || false;
     this._pendingConfig.sslCertPath = config.get<string>('sslCertPath') || '';
     this._pendingConfig.requestTimeout = config.get<number>('requestTimeout') || 600000;
@@ -537,6 +545,10 @@ export class SettingsPanel {
                   ['useLollmsExtensions', this._pendingConfig.useLollmsExtensions],
                   ['modelName', this._pendingConfig.modelName],
                   ['architectModelName', this._pendingConfig.architectModelName],
+                  ['titlingModelName', this._pendingConfig.titlingModelName],
+                  ['gitCommitModelName', this._pendingConfig.gitCommitModelName],
+                  ['surgicalModelName', this._pendingConfig.surgicalModelName],
+                  ['summarizationModelName', this._pendingConfig.summarizationModelName],
                   ['disableSslVerification', this._pendingConfig.disableSslVerification],
                   ['sslCertPath', this._pendingConfig.sslCertPath],
                   ['requestTimeout', this._pendingConfig.requestTimeout],
@@ -684,6 +696,9 @@ export class SettingsPanel {
                 return;
   
             case 'fetchModels':
+              console.log("[Lollms Extension] Received 'fetchModels' command from Webview.");
+              Logger.info("[ConfigView] Received model refresh request.");
+              
               if (this._panel) {
                 try {
                   const tempConfig: LollmsConfig = {
@@ -695,11 +710,19 @@ export class SettingsPanel {
                       backendType: this._pendingConfig.backendType as any,
                       useLollmsExtensions: this._pendingConfig.useLollmsExtensions
                   };
+                  
+                  Logger.info(`[ConfigView] Fetching models for ${tempConfig.backendType} at ${tempConfig.apiUrl}`);
                   const tempApi = new LollmsAPI(tempConfig); 
                   const models = await tempApi.getModels(true); 
-                  this._panel.webview.postMessage({ command: 'modelsList', models: models || [] });
+                  
+                  if (this._panel && !(this as any)._isDisposed) {
+                      this._panel.webview.postMessage({ command: 'modelsList', models: models || [] });
+                  }
                 } catch (e: any) {
-                  this._panel.webview.postMessage({ command: 'modelsList', models: [], error: e.message });
+                  Logger.error(`[ConfigView] Model fetch failed: ${e.message}`);
+                  if (this._panel && !(this as any)._isDisposed) {
+                      this._panel.webview.postMessage({ command: 'modelsList', models: [], error: e.message });
+                  }
                 }
               }
               return;
@@ -748,7 +771,7 @@ personalities: this._personalityManager.getPersonalities()
         <html lang="en">
         <head>
             <meta charset="UTF-8" />
-            <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' ${webview.cspSource}; script-src 'unsafe-inline' ${webview.cspSource}; img-src data:; font-src ${webview.cspSource};">
+            <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' ${webview.cspSource}; script-src 'unsafe-inline' ${webview.cspSource}; img-src data:; font-src ${webview.cspSource}; connect-src http://localhost:* http://127.0.0.1:* https:;">
             <meta name="viewport" content="width=device-width, initial-scale=1.0" />
             <title>${t('config.title', 'Lollms VS Coder Configuration')}</title>
             <link href="${webview.asWebviewUri(vscode.Uri.joinPath(this._extensionUri, 'out', 'styles', 'codicon.css'))}" rel="stylesheet" />
@@ -862,6 +885,20 @@ personalities: this._personalityManager.getPersonalities()
               .log-container { background: var(--vscode-editor-background); padding: 12px; border-radius: 4px; border: 1px solid var(--vscode-panel-border); font-family: var(--vscode-editor-font-family); font-size: 12px; white-space: pre-wrap; height: 300px; overflow: auto; }
               .security-warning { background: rgba(244, 135, 113, 0.1); border: 1px solid var(--error-color); border-radius: var(--border-radius-sm); padding: 12px; margin-top: 15px; color: var(--error-color); }
               .security-warning strong { display: block; margin-bottom: 4px; }
+
+              .spin {
+                  animation: lollms-rotation 1s linear infinite;
+                  display: inline-block;
+              }
+              @keyframes lollms-rotation {
+                  from { transform: rotate(0deg); }
+                  to { transform: rotate(360deg); }
+              }
+              
+              .icon-btn.disabled {
+                  opacity: 0.5;
+                  pointer-events: none;
+              }
             </style>
         </head>
         <body>
@@ -960,8 +997,12 @@ personalities: this._personalityManager.getPersonalities()
                     <select id="modelSelect" class="model-dropdown" style="flex:1;">
                         <option value="">Loading Models...</option>
                     </select>
-                    <button id="copyModelName" type="button" class="icon-btn" title="Copy Model Name"><i class="codicon codicon-copy"></i></button>
-                    <button id="refreshModels" type="button" class="icon-btn" title="${t('command.refresh.title', 'Refresh')}"><i class="codicon codicon-refresh"></i></button>
+                    <button id="copyModelName" type="button" class="icon-btn" title="Copy Model Name">
+                        <i class="codicon codicon-copy"></i>
+                    </button>
+                    <button id="refreshModels" type="button" class="icon-btn" title="${t('command.refresh.title', 'Refresh')}">
+                        <i class="codicon codicon-refresh"></i>
+                    </button>
                 </div>
                 <label for="architectModelSelect">Architect/Planner Model (Agent Mode)</label>
                 <div class="input-group">
@@ -969,7 +1010,24 @@ personalities: this._personalityManager.getPersonalities()
                         <option value="">Loading Models...</option>
                     </select>
                 </div>
-                <span class="help-text">Used for planning complex tasks. Defaults to Chat Model if empty.</span>
+                <span class="help-text">Used for planning complex tasks.</span>
+
+                <div class="card" style="margin-top:20px; padding:15px; border:1px solid var(--vscode-widget-border); border-radius:8px;">
+                    <h3 style="margin-top:0;">Task-Specific Models</h3>
+                    <p class="help-text">Assign specific models to background tasks. Leave as "Default" to use the main Chat Model.</p>
+                    
+                    <label>Titling Model (Discussion Names)</label>
+                    <select id="titlingModelSelect" class="model-dropdown"></select>
+                    
+                    <label>Git Commit Model (Message Gen)</label>
+                    <select id="gitCommitModelSelect" class="model-dropdown"></select>
+                    
+                    <label>Surgical Model (Refactoring/Repair)</label>
+                    <select id="surgicalModelSelect" class="model-dropdown"></select>
+                    
+                    <label>Summarization Model (Big Files)</label>
+                    <select id="summarizationModelSelect" class="model-dropdown"></select>
+                </div>
                 <label for="requestTimeout">${t('config.requestTimeout.label', 'Request Timeout (ms)')}</label>
                 <input type="number" id="requestTimeout" value="${requestTimeout}" min="1000" step="1000" />
                 <div class="checkbox-container">
@@ -1522,21 +1580,61 @@ personalities: this._personalityManager.getPersonalities()
 
             function populateModelDropdown(selectElement, selectedValue, error) {
                 if(!selectElement) return;
+                
+                // Keep track of what was selected before we clear
+                const previousValue = selectedValue || selectElement.value;
+                
                 selectElement.innerHTML = '';
-                if (error) { selectElement.appendChild(new Option("Error: " + error, "")); return; }
+                
+                if (error) { 
+                    selectElement.appendChild(new Option("⚠️ Error: " + error, "")); 
+                    return; 
+                }
+
                 if (loadedModels.length > 0) {
-                    if (['inspectorModelName', 'architectModelSelect'].includes(selectElement.id)) {
+                    // Add the "Default" option for secondary models
+                    const secondaryModels = [
+                        'inspectorModelName', 'architectModelSelect', 'titlingModelSelect', 
+                        'gitCommitModelSelect', 'surgicalModelSelect', 'summarizationModelSelect'
+                    ];
+                    if (secondaryModels.includes(selectElement.id)) {
                         selectElement.appendChild(new Option("Same as Chat Model (Default)", ""));
                     }
-                    loadedModels.forEach(model => selectElement.appendChild(new Option(model.id, model.id)));
-                    if (selectedValue) selectElement.value = selectedValue;
+
+                    loadedModels.forEach(model => {
+                        const opt = new Option(model.id, model.id);
+                        selectElement.appendChild(opt);
+                    });
+
+                    // Attempt to restore previous selection
+                    if (previousValue) {
+                        selectElement.value = previousValue;
+                    }
                 } else {
-                    selectElement.appendChild(new Option(selectedValue ? selectedValue + " (Cached)" : "No models found", selectedValue || ""));
+                    // Fallback if no models returned but we have a cached value
+                    selectElement.appendChild(new Option(previousValue ? previousValue + " (offline)" : "No models found", previousValue || ""));
                 }
             }
 
             function refreshModelsList(force) {
-                vscode.postMessage({ command: 'fetchModels', value: force });
+                console.log("%c[Lollms Config] Refresh Triggered!", "color: orange; font-weight: bold;", "Force:", force);
+                
+                try {
+                    // Trigger spin on all refresh icons in settings
+                    const icons = document.querySelectorAll('.codicon-refresh');
+                    console.log("[Lollms Config] Found " + icons.length + " refresh icons to animate.");
+                    
+                    icons.forEach(i => {
+                        i.classList.add('spin');
+                        const btn = i.parentElement;
+                        if (btn) btn.classList.add('disabled');
+                    });
+                    
+                    console.log("[Lollms Config] Sending 'fetchModels' message to extension host...");
+                    vscode.postMessage({ command: 'fetchModels', value: force });
+                } catch (err) {
+                    console.error("[Lollms Config] Critical error in refreshModelsList:", err);
+                }
             }
 
             function updatePersonaSelects() {
@@ -1602,12 +1700,50 @@ personalities: this._personalityManager.getPersonalities()
             }
 
             // --- GLOBAL LISTENERS ---
-            document.getElementById('saveToolbar').onclick = () => vscode.postMessage({ command: 'saveConfig' });
-            document.getElementById('resetToolbar').onclick = () => vscode.postMessage({ command: 'resetConfig' });
-            document.getElementById('closeToolbar').onclick = () => vscode.postMessage({ command: 'closePanel' });
-            document.getElementById('testConnection').onclick = () => vscode.postMessage({ command: 'testConnection' });
-            document.getElementById('refreshModels').onclick = () => refreshModelsList(true);
+            console.log("[Lollms Config] Attaching event listeners...");
+
+            const attach = (id, fn) => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.addEventListener('click', (e) => {
+                        console.log(\`[Lollms Config] Click detected on element: #\${id}\`);
+                        fn(e);
+                    });
+                } else {
+                    console.warn(\`[Lollms Config] Could not find element to attach listener: #\${id}\`);
+                }
+            };
+
+            attach('saveToolbar', () => vscode.postMessage({ command: 'saveConfig' }));
+            attach('resetToolbar', () => vscode.postMessage({ command: 'resetConfig' }));
+            attach('closeToolbar', () => vscode.postMessage({ command: 'closePanel' }));
+            attach('testConnection', () => vscode.postMessage({ command: 'testConnection' }));
+            attach('refreshModels', () => refreshModelsList(true));
+            attach('refreshInspectorModels', () => refreshModelsList(true));
+
             document.getElementById('saveCurrentAsProfile').onclick = () => vscode.postMessage({ command: 'requestProfileName' });
+
+            document.getElementById('toggleApiKey').onclick = () => {
+                const input = document.getElementById('apiKey');
+                const icon = document.querySelector('#toggleApiKey i');
+                if (input.type === 'password') {
+                    input.type = 'text';
+                    icon.classList.replace('codicon-eye', 'codicon-eye-closed');
+                } else {
+                    input.type = 'password';
+                    icon.classList.replace('codicon-eye-closed', 'codicon-eye');
+                }
+            };
+
+            document.getElementById('copyApiKey').onclick = () => {
+                const val = document.getElementById('apiKey').value;
+                vscode.postMessage({ command: 'copyToClipboard', value: val });
+            };
+
+            document.getElementById('copyModelName').onclick = () => {
+                const val = document.getElementById('modelSelect').value;
+                vscode.postMessage({ command: 'copyToClipboard', value: val });
+            };
             document.getElementById('importConfig').onclick = () => vscode.postMessage({ command: 'importConnectionConfig' });
             document.getElementById('exportConfig').onclick = () => vscode.postMessage({ command: 'exportConnectionConfig' });
 
@@ -1618,6 +1754,11 @@ personalities: this._personalityManager.getPersonalities()
                 safeSet('apiKey', p.apiKey);
                 safeSet('backendType', p.backendType);
                 safeSet('modelSelect', p.modelName);
+                safeSet('architectModelSelect', p.architectModelName || '');
+                safeSet('titlingModelSelect', p.titlingModelName || '');
+                safeSet('gitCommitModelSelect', p.gitCommitModelName || '');
+                safeSet('surgicalModelSelect', p.surgicalModelName || '');
+                safeSet('summarizationModelSelect', p.summarizationModelName || '');
                 safeSet('disableSsl', p.disableSslVerification, true);
                 safeSet('sslCertPath', p.sslCertPath);
                 
@@ -1649,10 +1790,41 @@ personalities: this._personalityManager.getPersonalities()
             window.addEventListener('message', e => {
                 const m = e.data;
                 if (m.command === 'modelsList') {
+                    console.log("[Lollms Config] Received model list from extension:", m.models ? m.models.length : 0);
+                    
+                    // Stop all spinning refresh icons
+                    document.querySelectorAll('.codicon-refresh').forEach(i => {
+                        i.classList.remove('spin');
+                        const btn = i.parentElement;
+                        if (btn) btn.classList.remove('disabled');
+                    });
+                    
                     loadedModels = m.models || [];
-                    populateModelDropdown(document.getElementById('modelSelect'), config.modelName, m.error);
-                    populateModelDropdown(document.getElementById('architectModelSelect'), config.architectModelName, m.error);
-                    populateModelDropdown(document.getElementById('inspectorModelName'), config.inspectorModelName, m.error);
+
+                    // Preserve current UI selections (even if not saved to disk yet)
+                    const currentChatModel = document.getElementById('modelSelect').value || config.modelName;
+                    const currentArchModel = document.getElementById('architectModelSelect').value || config.architectModelName;
+                    const currentInspModel = document.getElementById('inspectorModelName').value || config.inspectorModelName;
+
+                    // Update all 3 relevant dropdowns
+                    const targets = [
+                        'modelSelect', 'architectModelSelect', 'inspectorModelName', 
+                        'titlingModelSelect', 'gitCommitModelSelect', 'surgicalModelSelect', 'summarizationModelSelect'
+                    ];
+                    targets.forEach(id => {
+                        const el = document.getElementById(id);
+                        if (el) {
+                            let valToRestore = currentChatModel;
+                            if (id === 'architectModelSelect') valToRestore = currentArchModel;
+                            if (id === 'inspectorModelName') valToRestore = currentInspModel;
+                            if (id === 'titlingModelSelect') valToRestore = config.titlingModelName;
+                            if (id === 'gitCommitModelSelect') valToRestore = config.gitCommitModelName;
+                            if (id === 'surgicalModelSelect') valToRestore = config.surgicalModelName;
+                            if (id === 'summarizationModelSelect') valToRestore = config.summarizationModelName;
+
+                            populateModelDropdown(el, valToRestore, m.error);
+                        }
+                    });
                 } else if (m.command === 'configSaved') {
                     config = m.newConfig;
                     checkReactivity();

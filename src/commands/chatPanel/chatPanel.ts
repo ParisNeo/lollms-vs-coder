@@ -144,12 +144,13 @@ export class ChatPanel {
   
   public setProcessManager(processManager: ProcessManager) { 
       this.processManager = processManager; 
-      
+
       // Initialize AgentManager logic
       if (ChatPanel.activeAgents.has(this.discussionId)) {
           this.log(`Reconnecting to existing active agent for discussion ${this.discussionId}`);
           this.agentManager = ChatPanel.activeAgents.get(this.discussionId)!;
           this.agentManager.setUI(this);
+          this.agentManager.personalityManager = this._personalityManager;
       } else {
           // If created here directly (fallback), we construct it.
           // Usually registry creates it and calls setAgentManager
@@ -164,6 +165,7 @@ export class ChatPanel {
               undefined, 
               this._skillsManager
           );
+          this.agentManager.personalityManager = this._personalityManager;
       }
   }
   
@@ -588,8 +590,15 @@ export class ChatPanel {
         }
         
         if (!this._isDisposed) {
-            this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: 'Building file tree...' });
-            this._panel.webview.postMessage({ command: 'updateStatus', status: 'Scanning project files...', type: 'info' });
+            const isRebuildNeeded = this._contextManager.isTreeDirty();
+            const statusText = isRebuildNeeded ? 'Building file tree...' : 'Counting tokens...';
+            
+            this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: statusText });
+            this._panel.webview.postMessage({ 
+                command: 'updateStatus', 
+                status: isRebuildNeeded ? 'Scanning project files...' : 'Syncing context...', 
+                type: 'info' 
+            });
         }
 
         try {
@@ -803,6 +812,43 @@ export class ChatPanel {
       if (isGlobalDefault) {
           await this._discussionManager.saveLastCapabilities(this._discussionCapabilities);
       }
+  }
+
+  public async openMissionBriefingUI() {
+      const disc = this._currentDiscussion;
+      let currentBriefing = "";
+      let isGlobal = false;
+      
+      if (disc && disc.discussion_data_zone) {
+          try {
+              const parsed = JSON.parse(disc.discussion_data_zone);
+              if (parsed.user_constraints) {
+                  currentBriefing = parsed.user_constraints;
+              }
+          } catch {
+              currentBriefing = disc.discussion_data_zone;
+          }
+      }
+      
+      if (!currentBriefing && this._contextManager) {
+          const globalBriefing = this._contextManager.getGlobalBriefing();
+          if (globalBriefing) {
+              currentBriefing = globalBriefing;
+              isGlobal = true;
+          }
+      }
+
+      let dna = "";
+      if (this.agentManager?.projectMemoryManager) {
+          dna = await this.agentManager.projectMemoryManager.getFormattedMemoryBlock();
+      }
+
+      this._panel.webview.postMessage({
+          command: 'openMissionBriefingModal',
+          briefing: currentBriefing,
+          isGlobal: isGlobal,
+          dna: dna
+      });
   }
 
   public async handleManualAutoContext(userPrompt: string) {
@@ -1190,8 +1236,9 @@ Please provide the **FULL CONTENT** of the file instead using the format:
               const personaContent = this.getCurrentPersonaSystemPrompt();
               const systemPrompt = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, forceFullCode, { ...context, tree: '', files: '' });
               
+              const projectName = contextData.projectName || "Unknown Project";
               let fullText = `
-# 🧊 PROJECT SNAPSHOT FOR EXTERNAL LLM
+# 🧊 PROJECT SNAPSHOT: ${projectName.toUpperCase()} FOR EXTERNAL LLM
 The following project state was exported from VS Code. 
 
 ## 📜 CORE INSTRUCTIONS & PERSONA
@@ -1480,9 +1527,20 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
     };
 
     if (this._inputResolver) {
-        const text = (typeof userMessage.content === 'string') ? userMessage.content : "User provided input.";
+        let text = (typeof userMessage.content === 'string') ? userMessage.content : "User provided input.";
         const resolver = this._inputResolver;
         this._inputResolver = null;
+        
+        // Humanize the visual bubble for form data
+        if (text.startsWith('FORM_SUBMISSION:')) {
+            try {
+                const data = JSON.parse(text.substring(16));
+                // If there's a simple choice, show that, otherwise show all values
+                const vals = Object.values(data);
+                userMessage.content = vals.length === 1 ? String(vals[0]) : vals.join(', ');
+            } catch(e) {}
+        }
+
         await this.addMessageToDiscussion(userMessage);
         resolver(text);
         return;
@@ -1897,7 +1955,7 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
             personaContent, 
             undefined, 
             forceFullCode, 
-            { ...context, tree: '', files: '' } 
+            { ...context, tree: '', files: '', projectName: contextData.projectName } 
         );
 
         // 2. Prepare the Bundled Project Context Message (User role)
@@ -2785,6 +2843,7 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                 }
                 break;
             case 'requestAddFileToContext':
+            {
                 const uris = await vscode.window.showOpenDialog({
                     canSelectMany: true,
                     openLabel: 'Add to AI Context',
@@ -2837,7 +2896,9 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                     this.updateContextAndTokens();
                     this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: false });
                 }
-                break;
+                break;                
+            }
+
             case 'performDeepDiscussionSearch':
                 const query = message.query.trim();
                 if (!query) return;
@@ -3133,10 +3194,8 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
             case 'executeLollmsCommand':
                 const { command, params } = message.details;
                 if (command === 'search-add-context-btn') {
-                    if (dom.fileSearchModal) {
-                        dom.fileSearchModal.classList.add('visible');
-                        dom.fileSearchInput.focus();
-                    }
+                    // Send message back to webview to open the modal
+                    webview.postMessage({ command: 'showFileSearchModal' });
                 } else if (command === 'createNotebook') {
                     vscode.commands.executeCommand('lollms-vs-coder.createNotebook', params.path, params.cellContent);
                 } else if (command === 'gitCommit') {
@@ -3744,7 +3803,85 @@ Task:
                 await this.handleRequestContextUsage();
                 break;
             case 'requestMissionBriefing':
-                vscode.commands.executeCommand('lollms-vs-coder.setMissionBriefing');
+            case 'requestMissionBriefingUI':
+                await this.openMissionBriefingUI();
+                break;
+            case 'requestBriefingFileUpload':
+            {
+                const uris = await vscode.window.showOpenDialog({
+                    canSelectMany: false,
+                    openLabel: 'Select Briefing Document',
+                    filters: {
+                        'Documents':['pdf', 'docx', 'md', 'txt']
+                    }
+                });
+                if (uris && uris[0]) {
+                    const uri = uris[0];
+                    const fileName = path.basename(uri.fsPath);
+                    const bytes = await vscode.workspace.fs.readFile(uri);
+                    const base64 = Buffer.from(bytes).toString('base64');
+                    
+                    this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: true, statusText: 'Parsing document...' });
+                    try {
+                        const text = await this._contextManager.processFile(fileName, base64,[], 'text');
+                        this._panel.webview.postMessage({
+                            command: 'updateBriefingContent',
+                            text: text
+                        });
+                    } catch (e: any) {
+                        vscode.window.showErrorMessage("Failed to read document: " + e.message);
+                    } finally {
+                        this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: false });
+                    }
+                }
+                break;
+            }
+            case 'requestBriefingClipboard':
+                try {
+                    const text = await vscode.env.clipboard.readText();
+                    if (text) {
+                        this._panel.webview.postMessage({
+                            command: 'updateBriefingContent',
+                            text: text
+                        });
+                    }
+                } catch (e: any) {
+                    vscode.window.showErrorMessage("Failed to read clipboard: " + e.message);
+                }
+                break;
+            case 'saveMissionBriefing':
+                const { content, scope } = message;
+                
+                if (this._currentDiscussion) {
+                    let parsed: any = {};
+                    if (this._currentDiscussion.discussion_data_zone) {
+                        try {
+                            parsed = JSON.parse(this._currentDiscussion.discussion_data_zone);
+                        } catch {
+                            parsed = { legacy: this._currentDiscussion.discussion_data_zone };
+                        }
+                    }
+                    if (content) {
+                        parsed.user_constraints = content;
+                    } else {
+                        delete parsed.user_constraints;
+                    }
+                    this._currentDiscussion.discussion_data_zone = JSON.stringify(parsed, null, 2);
+                    if (!this._currentDiscussion.id.startsWith('temp-')) {
+                        await this._discussionManager.saveDiscussion(this._currentDiscussion);
+                    }
+                }
+
+                if (scope === 'global' && this._contextManager) {
+                    await this._contextManager.setGlobalBriefing(content);
+                } else if (this._contextManager) {
+                    if (!content && scope === 'global') {
+                        await this._contextManager.setGlobalBriefing('');
+                    }
+                }
+
+                this.updateContextAndTokens();
+                vscode.window.showInformationMessage("🎯 Mission Briefing updated.");
                 break;
             case 'internetHelpSearch':
                 // Execute ONLY the web research agent loop. 
@@ -5054,6 +5191,56 @@ Task:
             </div>
         </div>
 
+        <!-- Mission Briefing Modal -->
+        <div id="mission-briefing-modal" class="modal">
+            <div class="modal-content" style="max-width: 800px; width: 90%;">
+                <div class="modal-header">
+                    <h2 style="margin:0; display:flex; align-items:center; gap:8px;"><span class="codicon codicon-shield"></span> Mission Briefing</h2>
+                    <span class="close-btn" id="mission-briefing-close-btn">&times;</span>
+                </div>
+                <div class="modal-body" style="display:flex; flex-direction:column; gap:15px;">
+                    <div>
+                        <label style="margin-top:0;">Scope</label>
+                        <div class="radio-group" style="flex-direction: row; gap:20px; margin-top:5px; display: flex;">
+                            <label class="radio-option" style="flex:1; display:flex; align-items:center; gap:8px; cursor:pointer;">
+                                <input type="radio" name="briefing-scope" value="local" checked style="margin:0;"> <span>Current Discussion Only</span>
+                            </label>
+                            <label class="radio-option" style="flex:1; display:flex; align-items:center; gap:8px; cursor:pointer;">
+                                <input type="radio" name="briefing-scope" value="global" style="margin:0;"> <span>Persistent (All Discussions)</span>
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <div>
+                        <label style="margin-top:0;">Input Method</label>
+                        <div style="display:flex; gap:10px; margin-top:5px;">
+                            <button class="code-action-btn secondary-btn" id="briefing-upload-btn" style="flex:1; justify-content:center; height:32px;"><i class="codicon codicon-file-add"></i> Upload Document (PDF, DOCX, MD)</button>
+                            <button class="code-action-btn secondary-btn" id="briefing-clipboard-btn" style="flex:1; justify-content:center; height:32px;"><i class="codicon codicon-clippy"></i> Paste from Clipboard</button>
+                        </div>
+                    </div>
+                    
+                    <div>
+                        <label style="margin-top:0; display:flex; justify-content:space-between;">
+                            <span>Briefing Content (Task Constraints)</span>
+                        </label>
+                        <textarea id="briefing-content-input" rows="8" placeholder="Enter task-specific constraints, rules, or paste documentation..." style="margin-top:5px; font-family:var(--vscode-editor-font-family); font-size:12px; width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid var(--vscode-input-border); border-radius: 4px; background: var(--vscode-input-background); color: var(--vscode-input-foreground); resize: vertical; outline: none;"></textarea>
+                    </div>
+                    
+                    <div style="border-top: 1px solid var(--vscode-widget-border); padding-top: 15px;">
+                        <label style="margin-top:0;">🧬 Project DNA (Live Memory)</label>
+                        <p style="font-size:10px; opacity:0.7; margin-top:0; margin-bottom:5px;">These facts are automatically extracted from Project Memory and appended to every prompt.</p>
+                        <div id="briefing-dna-preview" style="font-size: 11px; opacity: 0.8; background: var(--vscode-editor-inactiveSelectionBackground); padding: 10px; border-radius: 4px; max-height: 150px; overflow-y: auto; white-space: pre-wrap; border: 1px solid var(--vscode-widget-border);">
+                            Loading DNA...
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer" style="display:flex; justify-content: space-between;">
+                    <button id="briefing-clear-btn" class="code-action-btn delete-btn" style="width:120px; justify-content:center; height:32px; font-weight:bold;">Clear Briefing</button>
+                    <button id="briefing-save-btn" class="code-action-btn apply-btn" style="width:120px; justify-content:center; height:32px; font-weight:bold;"><i class="codicon codicon-save"></i> Save</button>
+                </div>
+            </div>
+        </div>
+
         <!-- Global Discussion Search Modal -->
         <div id="discussion-search-modal" class="modal">
             <div class="modal-content" style="max-width: 800px;">
@@ -5107,6 +5294,7 @@ Task:
                     <button id="copy-search-btn" class="code-action-btn secondary-btn" style="flex:1; min-width: 120px; justify-content: center; height: 32px;"><span class="codicon codicon-copy"></span> Copy SEARCH</button>
                     <button id="copy-replace-btn" class="code-action-btn secondary-btn" style="flex:1; min-width: 120px; justify-content: center; height: 32px;"><span class="codicon codicon-copy"></span> Copy REPLACE</button>
                     <button id="copy-raw-btn" class="code-action-btn secondary-btn" style="flex:1; min-width: 120px; justify-content: center; height: 32px;"><span class="codicon codicon-copy"></span> Copy Full Block</button>
+                    <button id="raw-fix-ai-btn" class="code-action-btn apply-btn" style="flex:1; min-width: 150px; justify-content: center; height: 32px; border-color: var(--vscode-charts-purple);"><span class="codicon codicon-sparkle"></span> Fix with AI</button>
                     <button id="mark-applied-btn" class="code-action-btn apply-btn" style="flex:1; min-width: 180px; justify-content: center; height: 32px; background-color: var(--vscode-charts-green) !important;"><span class="codicon codicon-check"></span> Mark as Applied Manually</button>
                 </div>
             </div>

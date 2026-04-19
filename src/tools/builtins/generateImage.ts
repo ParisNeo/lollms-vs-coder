@@ -3,7 +3,7 @@ import { ToolDefinition, ToolExecutionEnv } from '../tool';
 
 export const generateImageTool: ToolDefinition = {
     name: "generate_image",
-    description: "Generates an image based on a prompt and saves it to a specified path.",
+    description: "Generates a bitmap image (PNG/JPG) using AI based on a prompt. Use this to create website backgrounds, hero sections, textures, or UI placeholder images.",
     isAgentic: true,
     isDefault: true,
     parameters: [

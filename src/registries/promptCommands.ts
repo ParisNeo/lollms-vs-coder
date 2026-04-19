@@ -6,7 +6,7 @@ import { ChatPanel } from '../commands/chatPanel/chatPanel';
 import { startDiscussionWithInitialPrompt } from '../utils/discussionUtils';
 import { CustomActionModal } from '../commands/customActionModal';
 import { stripThinkingTags, getProcessedSystemPrompt } from '../utils';
-import { Logger } from '../logger'; // <--- AJOUTEZ CETTE LIGNE
+import { Logger } from '../logger';
 
 export function registerPromptCommands(context: vscode.ExtensionContext, services: LollmsServices) {
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.saveMessageAsPrompt', async (content: string) => {
@@ -88,6 +88,9 @@ export function registerPromptCommands(context: vscode.ExtensionContext, service
                 const signal = abortController.signal;
 
                 try {
+                    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+                    const surgicalModel = config.get<string>('surgicalModelName') || undefined;
+
                     const history: ChatMessage[] = [
                         { role: 'system', content: await getProcessedSystemPrompt('surgical_agent') },
                         { role: 'user', content: prompts.userPrompt }
@@ -96,13 +99,14 @@ export function registerPromptCommands(context: vscode.ExtensionContext, service
                     let finalCode = "";
                     let stepCount = 0;
                     const MAX_STEPS = 5;
+                    let lastResponse = "";
 
                     while (stepCount < MAX_STEPS && !finalCode) {
                         if (signal.aborted) break;
                         stepCount++;
 
-                        const response = await services.lollmsAPI.sendChat(history, null, signal);
-                        const cleanResponse = stripThinkingTags(response);
+                        lastResponse = await services.lollmsAPI.sendChat(history, null, signal, surgicalModel);
+                        const cleanResponse = stripThinkingTags(lastResponse);
 
                         // Check if response contains a tool call
                         const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);

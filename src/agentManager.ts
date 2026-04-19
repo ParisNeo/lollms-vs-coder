@@ -13,6 +13,7 @@ import { ToolManager } from './tools/toolManager';
 import { ToolExecutionEnv, ToolDefinition, Plan, ToolPermissionGroup } from './tools/tool';
 import { CodeGraphManager } from './codeGraphManager';
 import { SkillsManager } from './skillsManager';
+import { PersonalityManager } from './personalityManager';
 import { runCommandInTerminal } from './extensionState';
 import { RLMDatabaseManager } from './rlmDatabaseManager';
 import { FailureMemory } from './agent/failureHandling'; 
@@ -59,6 +60,8 @@ export class AgentManager {
     public currentDiscussion?: Discussion;
     private toolManager: ToolManager;
     private codeGraphManager: CodeGraphManager;
+    private dashboardState: any = { web: "", skills: "", debugger: "" };
+    private dashboardUpdater?: () => void;
     private skillsManager: SkillsManager;
     private globalFailureLog: string[] = []; 
     private currentUserPermissions: UserPermissions = { canExecute: true, canRead: true };
@@ -68,6 +71,7 @@ export class AgentManager {
     private failureMemory: FailureMemory = new FailureMemory();
     private isDebugging: boolean = false;
     public projectMemoryManager?: any; // Required for ChatPanel to process memory tags
+    public personalityManager?: PersonalityManager;
     
     /**
      * Explicitly track completed actions for prompt injection to prevent
@@ -87,11 +91,13 @@ export class AgentManager {
         environmentHistory: string[];
         workingMemory: string[]; // Ephemeral State (current session)
         projectMemory: string[]; // Project State (persists in .lollms)
+        secureCredentials?: Record<string, string>;
     } = {
         replVariables: {},
         installedPackages: [],
         environmentHistory: [],
-        workingMemory: []
+        workingMemory: [],
+        secureCredentials: {}
     };
 
     constructor(
@@ -199,29 +205,69 @@ export class AgentManager {
      * Ensures the Genie never works on a dangerous or unstable environment without consent.
      */
     private async preFlightSafetyCheck(folder: vscode.WorkspaceFolder, signal: AbortSignal): Promise<boolean> {
-        const isRepo = await this.gitIntegration.isGitRepo(folder);
+        let isRepo = await this.gitIntegration.isGitRepo(folder);
 
         if (!isRepo) {
-            const consent = await this.ui.requestUserInput(
-                "⚠️ **Safety Warning**: No Git repository detected in this workspace. I cannot undo my changes automatically. Would you like to proceed anyway? (yes/no)",
-                signal
-            );
-            return consent.toLowerCase().trim().startsWith('y');
+            const formPrompt = `
+<lollms_form id="no_git_repo" title="No Git Repository Detected">
+  <input type="radio" name="decision" label="Stop" value="stop" checked="true" />
+  <input type="radio" name="decision" label="Continue anyway (No automatic rollbacks)" value="continue" />
+  <input type="radio" name="decision" label="Create a new repository locally and start" value="init" />
+  <submit label="Confirm Action" />
+</lollms_form>`.trim();
+
+            const response = await this.ui.requestUserInput(formPrompt, signal);
+            let choice = response;
+
+            if (response.startsWith('FORM_SUBMISSION:')) {
+                try {
+                    const data = JSON.parse(response.substring(16));
+                    choice = data.decision;
+                } catch(e) {}
+            }
+
+            if (choice === 'stop' || (!choice.toLowerCase().includes('continue') && !choice.toLowerCase().includes('init') && !['stop', 'continue', 'init'].includes(choice))) {
+                return false;
+            } else if (choice === 'init' || choice.toLowerCase().includes('init')) {
+                await this.runCommand('git init', signal);
+                await this.runCommand('git add .', signal);
+                await this.runCommand('git commit -m "Initial commit"', signal);
+                this.ui.addMessageToDiscussion({ role: 'system', content: `🛡️ **Git Repository Initialized.**` });
+                isRepo = true;
+            } else {
+                this.ui.addMessageToDiscussion({ role: 'system', content: `⚠️ **Proceeding without Git.** Automatic rollbacks are disabled.` });
+                return true;
+            }
         }
+
+        if (!isRepo) return true;
 
         const isClean = await this.gitIntegration.isClean(folder);
         const currentBranch = await this.gitIntegration.getCurrentBranch(folder);
         const isMain = ['main', 'master', 'prod', 'production'].includes(currentBranch.toLowerCase());
 
         if (!isClean) {
-            const choice = await this.ui.requestUserInput(
-                `📦 **Uncommitted Changes Detected**: Your workspace is dirty. For your safety, should I:\n1. **Stash** changes and create a clean AI branch?\n2. **Commit** them now?\n3. **Proceed** anyway (Dangerous)?`,
-                signal
-            );
+            const formPrompt = `
+<lollms_form id="preflight_safety" title="Uncommitted Changes Detected">
+  <input type="radio" name="decision" label="Stash changes and create a clean AI branch" value="1" checked="true" />
+  <input type="radio" name="decision" label="Commit them now" value="2" />
+  <input type="radio" name="decision" label="Proceed anyway (Dangerous)" value="3" />
+  <submit label="Confirm Safety Action" />
+</lollms_form>`.trim();
+
+            const response = await this.ui.requestUserInput(formPrompt, signal);
+            let choice = response;
+
+            if (response.startsWith('FORM_SUBMISSION:')) {
+                try {
+                    const data = JSON.parse(response.substring(16));
+                    choice = data.decision;
+                } catch(e) {}
+            }
             
-            if (choice.includes('1')) {
+            if (choice === '1' || choice.includes('1')) {
                 await this.gitIntegration.stash(folder, "Genie: Stashed before mission");
-            } else if (choice.includes('2')) {
+            } else if (choice === '2' || choice.includes('2')) {
                 const msg = await this.gitIntegration.generateCommitMessage(folder);
                 await this.gitIntegration.commitWithMessage(msg || "Genie: pre-flight backup", folder);
             } else if (!choice.toLowerCase().includes('proceed') && !choice.includes('3')) {
@@ -261,7 +307,12 @@ export class AgentManager {
         if (discussion.agentSession) {
             this.sessionState.replVariables = discussion.agentSession.replVariables || {};
             this.sessionState.workingMemory = discussion.agentSession.workingMemory || [];
+            this.sessionState.secureCredentials = discussion.agentSession.secureCredentials || {};
             this.completedActionsHistory = discussion.agentSession.completedActionsHistory || [];
+        }
+        
+        if (!this.sessionState.secureCredentials) {
+            this.sessionState.secureCredentials = {};
         }
 
         if (!this.currentPlan) {
@@ -334,6 +385,7 @@ Please commit or stash your work before starting an iterative debug session to e
                 this.currentDiscussion.agentSession = {
                     replVariables: this.sessionState.replVariables,
                     workingMemory: this.sessionState.workingMemory,
+                    secureCredentials: this.sessionState.secureCredentials,
                     completedActionsHistory: this.completedActionsHistory
                 };
                 await this.discussionManager.saveDiscussion(this.currentDiscussion);
@@ -392,7 +444,7 @@ Please commit or stash your work before starting an iterative debug session to e
             
             const historyContext = `
 ### 🕒 MISSION TIMELINE (EXECUTED ACTIONS)
-${this.completedActionsHistory.length > 0 ? this.completedActionsHistory.join('\n\n') : "No actions taken yet."}
+${this.completedActionsHistory.length > 0 ? this.completedActionsHistory.slice(-12).join('\n\n') : "No actions taken yet."}
 
 **Current Status**: You have completed ${this.completedActionsHistory.length} steps. 
 **Constraint**: Do NOT repeat the reasoning or summaries found above. State only the NEW reasoning for the next step.
@@ -459,9 +511,16 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
 
             if (action.tool === 'submit_response') {
                 task.status = 'completed';
-                task.result = action.params.response;
+                task.result = "Response submitted to chat.";
                 await this.displayAndSavePlan(this.currentPlan);
-                await this.synthesizeFinalResponse(objective, signal, model);
+                
+                // Directly add the agent's response to the discussion
+                await this.ui.addMessageToDiscussion({
+                    id: `agent_final_${Date.now()}`,
+                    role: 'assistant',
+                    content: action.params.response,
+                    model: model
+                });
                 break;
             }
 
@@ -489,7 +548,7 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
         if (stepCount >= maxSteps) {
             this.ui.addMessageToDiscussion({ 
                 role: 'system', 
-                content: `⚠️ **Mission Timeout:** Reached maximum steps (${MAX_STEPS}) without a final response.` 
+                content: `⚠️ **Mission Timeout:** Reached maximum steps (${maxSteps}) without a final response.` 
             });
         }
     }
@@ -650,10 +709,6 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
 
     private async synthesizeFinalResponse(originalObjective: string, signal: AbortSignal, modelOverride?: string) {
         if (signal.aborted || !this.currentPlan || !this.currentDiscussion) return;
-
-        // Check if the plan already explicitly submitted a response successfully
-        const hasSuccessfulResponse = this.currentPlan.tasks.some(t => t.action === 'submit_response' && t.status === 'completed');
-        if (hasSuccessfulResponse) return;
 
         // Don't synthesize if there are still pending tasks (meaning it was stopped/deadlocked)
         const pendingTasks = this.currentPlan.tasks.filter(t => t.status === 'pending' || t.status === 'in_progress');
@@ -860,20 +915,59 @@ Please provide a clear, concise final response to the user summarizing the outco
             task.parameters = resolvedParams; 
             await this.displayAndSavePlan(this.currentPlan); 
 
+            // --- SECURE CREDENTIAL INJECTION ---
+            let secureParams = JSON.parse(JSON.stringify(resolvedParams));
+            const credentials = this.sessionState.secureCredentials || {};
+            if (Object.keys(credentials).length > 0) {
+                const replaceSecrets = (obj: any) => {
+                    for (const key in obj) {
+                        if (typeof obj[key] === 'string') {
+                            for (const [secId, secVal] of Object.entries(credentials)) {
+                                obj[key] = obj[key].split(secId).join(secVal);
+                            }
+                        } else if (typeof obj[key] === 'object' && obj[key] !== null) {
+                            replaceSecrets(obj[key]);
+                        }
+                    }
+                };
+                replaceSecrets(secureParams);
+            }
+
             // --- REPETITION & LOOP DETECTION ---
-            const lastAction = this.completedActionsHistory[this.completedActionsHistory.length - 1];
             const isRedundantRead = task.action === 'read_file' && 
                                    this.contextManager.getContextStateProvider()?.getIncludedFiles().some(f => f.path === resolvedParams.path);
+                                   
+            const pastTasks = this.currentPlan.tasks.filter(t => t.id !== task.id && (t.status === 'completed' || t.status === 'failed'));
+            
+            // Smarter identical check (looks back up to 5 tasks to catch alternating loops)
+            const recentTasks = pastTasks.slice(-5);
+            const recentIdentical = recentTasks.find(t => t.action === task.action && JSON.stringify(t.parameters) === JSON.stringify(resolvedParams));
+
+            // Stuck in a rut detector (high failure rate on same tool consecutively)
+            const recentFailures = pastTasks.slice(-3).filter(t => t.status === 'failed');
+            const isStuck = recentFailures.length >= 3 && recentFailures.every(t => t.action === task.action);
 
             if (this.failureMemory.hasFailedBefore(task.action, resolvedParams)) {
                 result = { 
                     success: false, 
-                    output: `🛑 LOOP BLOCKED: You have already tried ${task.action} with these parameters and it failed. You MUST change your strategy (e.g., read a DIFFERENT file, use a DIFFERENT tool, or check your imports).` 
+                    output: `🛑 CRITICAL ERROR: LOOP BLOCKED.
+You are attempting to execute '${task.action}' with parameters you have ALREADY tried and which ALREADY failed. 
+FAILED PARAMS: ${JSON.stringify(resolvedParams)}
+
+STRICT PROTOCOL: 
+1. You are FORBIDDEN from calling this tool with these parameters again.
+2. You must now use 'read_file' or 'search_files' to investigate why your previous assumption was wrong.
+3. If you are stuck, use 'submit_response' to ask the user for clarification.` 
                 };
-            } else if (lastAction && lastAction.includes(`ACTION: ${task.action}`) && JSON.stringify(resolvedParams) === JSON.stringify(task.parameters)) {
+            } else if (recentIdentical) {
                 result = {
                     success: false,
-                    output: `⚠️ REPETITIVE ACTION: You just did this in the previous step. Do NOT read the same file again. If you saw an error, FIX IT now using 'generate_code'. If you are lost, use 'search_files' to find where 'nn' or 'torch' are defined elsewhere.`
+                    output: `⚠️ REPETITIVE ACTION: You executed this exact same action with the same parameters in step ${recentIdentical.id}. You MUST change your strategy or parameters to avoid an infinite loop.`
+                };
+            } else if (isStuck) {
+                result = {
+                    success: false,
+                    output: `🛑 SYSTEM OVERRIDE: You have failed to use the '${task.action}' tool successfully 3 times in a row. You are stuck in a loop. You MUST step back, use 'read_file' to gather more context, use 'execute_command' to run a diagnostic, or ask the user for help using 'submit_response'. DO NOT use '${task.action}' again this turn.`
                 };
             } else if (isRedundantRead) {
                 result = {
@@ -881,7 +975,16 @@ Please provide a clear, concise final response to the user summarizing the outco
                     output: `ℹ️ NOTE: This file is already in your 'ACCESSIBLE FILE CONTENTS'. Reading it again is a wasted turn. Please analyze the code you already have and propose a fix.`
                 };
             } else {
-                result = await this.executeTask(task.action, resolvedParams, signal, undefined, specialistModel, task.agent_persona, task.agent_skills, task.agent_files);
+                result = await this.executeTask(task.action, secureParams, signal, undefined, specialistModel, task.agent_persona, task.agent_skills, task.agent_files);
+
+                // --- SANITIZE OUTPUT (Hide real values) ---
+                if (Object.keys(credentials).length > 0 && result.output) {
+                    for (const [secId, secVal] of Object.entries(credentials)) {
+                        if (secVal && secVal.length > 2) { // Only sanitize meaningful secrets
+                            result.output = result.output.split(secVal).join(secId);
+                        }
+                    }
+                }
             }
         } catch (error: any) {
             result = { success: false, output: `Specialist Runtime Error:\n${error.stack || error.message}` };
@@ -992,11 +1095,20 @@ A high importance (2.0+) ensures this lesson is prioritized in every prompt to p
     
     // ... (analyzeStepResult, checkGlobalPermission, executeTask, submitFinalMessage - kept same) ...
     private async analyzeStepResult(task: Task, output: string, model: string | undefined, signal: AbortSignal): Promise<{ decision: 'continue' | 'replan', reasoning: string, new_instruction?: string }> {
-        // ... (existing logic) ...
-        return { decision: 'continue', reasoning: "Proceed." };
+        if (output.includes("RLM_REPL_ERROR") || output.includes("NameError")) {
+            return { decision: 'replan', reasoning: "Technical error detected. Must adjust code or imports.", new_instruction: "Fix the reported python error before continuing." };
+        }
+        return { decision: 'continue', reasoning: "Step successful." };
     }
+
     private checkGlobalPermission(tool: ToolDefinition): { allowed: boolean, message?: string } {
-        // ... (existing logic) ...
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder.agent.permissions');
+        if (tool.permissionGroup === 'shell_execution' && !config.get('shellExecution')) {
+            return { allowed: false, message: "Permission Denied: Shell Execution is disabled in settings." };
+        }
+        if (tool.permissionGroup === 'filesystem_write' && !config.get('filesystemWrite')) {
+            return { allowed: false, message: "Permission Denied: File writing is disabled." };
+        }
         return { allowed: true };
     }
     private async executeTask(action: string, params: any, signal: AbortSignal, overrideEnv?: ToolExecutionEnv, taskModel?: string, taskPersona?: string, taskSkills?: string[], taskFiles?: string[]): Promise<{ success: boolean, output: string }> {
@@ -1014,6 +1126,7 @@ A high importance (2.0+) ensures this lesson is prioritized in every prompt to p
             contextManager: this.contextManager,
             codeGraphManager: this.codeGraphManager,
             skillsManager: this.skillsManager,
+            personalityManager: this.personalityManager,
             currentPlan: this.currentPlan,
             agentManager: this,
             taskModel: taskModel,

@@ -107,6 +107,11 @@ export class DiscussionItem extends vscode.TreeItem {
     }
 }
 
+// Placeholder for search provider imported by viewRegistry
+export class DiscussionSearchProvider {
+    refresh() {}
+}
+
 export class DiscussionGroupItem extends vscode.TreeItem {
     constructor(
         public readonly group: DiscussionGroup

@@ -823,6 +823,56 @@ export function initEventHandlers() {
         });
     }
 
+    // --- Mission Briefing Modal Events ---
+    const briefingBtn = document.getElementById('edit-briefing-btn');
+    if (briefingBtn) {
+        briefingBtn.addEventListener('click', () => {
+            vscode.postMessage({ command: 'requestMissionBriefingUI' });
+        });
+    }
+
+    if (dom.missionBriefingCloseBtn) {
+        dom.missionBriefingCloseBtn.addEventListener('click', () => {
+            dom.missionBriefingModal.classList.remove('visible');
+        });
+    }
+
+    if (dom.briefingUploadBtn) {
+        dom.briefingUploadBtn.addEventListener('click', () => {
+            vscode.postMessage({ command: 'requestBriefingFileUpload' });
+        });
+    }
+
+    if (dom.briefingClipboardBtn) {
+        dom.briefingClipboardBtn.addEventListener('click', () => {
+            vscode.postMessage({ command: 'requestBriefingClipboard' });
+        });
+    }
+
+    if (dom.briefingClearBtn) {
+        dom.briefingClearBtn.addEventListener('click', () => {
+            if (dom.briefingContentInput) {
+                dom.briefingContentInput.value = '';
+            }
+        });
+    }
+
+    if (dom.briefingSaveBtn) {
+        dom.briefingSaveBtn.addEventListener('click', () => {
+            if (!dom.briefingContentInput) return;
+            const content = dom.briefingContentInput.value;
+            const scopeElement = document.querySelector('input[name="briefing-scope"]:checked') as HTMLInputElement;
+            const scope = scopeElement ? scopeElement.value : 'local';
+            
+            vscode.postMessage({
+                command: 'saveMissionBriefing',
+                content: content,
+                scope: scope
+            });
+            dom.missionBriefingModal.classList.remove('visible');
+        });
+    }
+
     // --- Global Discussion Search Events ---
     if (dom.discussionSearchRunBtn) {
         const runSearch = () => {
@@ -949,7 +999,7 @@ export function initEventHandlers() {
             const path = item.dataset.path;
             const query = item.dataset.query;
             
-            // 1. Extract and Copy REPLACE block from the Modal Display
+            // 1. Extract and Copy REPLACE block from the hunk currently displayed in the modal
             const fullText = dom.rawCodeDisplay.textContent || "";
             const replaceMatch = fullText.match(/=======[\r\n]*([\s\S]*?)[\r\n]*>>>>>>> REPLACE/s);
             if (replaceMatch) {
@@ -967,6 +1017,37 @@ export function initEventHandlers() {
                 });
             }
         });
+    }
+
+    if (dom.rawFixAiBtn) {
+        dom.rawFixAiBtn.onclick = () => {
+            const display = dom.rawCodeDisplay;
+            if (!display) return;
+            
+            const messageId = display.dataset.messageId;
+            const blockIndex = parseInt(display.dataset.blockIndex || "0", 10);
+            const hunkIndexRaw = display.dataset.hunkIndex;
+            const hunkIndex = hunkIndexRaw === "" ? undefined : parseInt(hunkIndexRaw || "0", 10);
+            const filePath = dom.rawCodeFilename.textContent;
+
+            if (messageId && filePath) {
+                dom.rawFixAiBtn.disabled = true;
+                dom.rawFixAiBtn.innerHTML = '<div class="spinner"></div> Repairing...';
+                
+                vscode.postMessage({ 
+                    command: 'replaceCode', 
+                    filePath: filePath, 
+                    content: "REPAIR_REQUESTED", 
+                    messageId: messageId,
+                    blockIndex: blockIndex,
+                    hunkIndex: hunkIndex,
+                    options: { silent: true }
+                });
+                
+                // Close modal so user can see progress in chat
+                dom.rawCodeModal.classList.remove('visible');
+            }
+        };
     }
 
     if (dom.rawCodeFilename) {
@@ -1299,6 +1380,42 @@ export function initEventHandlers() {
                     inferPromptBtn.innerHTML = '<div class="spinner"></div> Inferring...';
                     vscode.postMessage({ command: 'inferPrompt', messageId: msgId });
                 }
+                return;
+            }
+
+            // Handle Form Submission
+            const formBtn = target.closest('.lollms-form-submit-btn') as HTMLButtonElement;
+            if (formBtn) {
+                e.stopPropagation();
+                const formBlock = formBtn.closest('.lollms-form-block') as HTMLElement;
+                const data: Record<string, string> = {};
+                
+                // Collect Radios
+                formBlock.querySelectorAll('input[type="radio"]:checked').forEach((input: any) => {
+                    data[input.name] = input.value;
+                });
+                
+                // Collect Text/Number inputs
+                formBlock.querySelectorAll('input[type="text"], input[type="number"]').forEach((input: any) => {
+                    data[input.name] = input.value;
+                });
+
+                if (Object.keys(data).length === 0) {
+                    vscode.postMessage({ command: 'showError', message: 'Please provide the requested information.' });
+                    return;
+                }
+
+                formBtn.disabled = true;
+                formBtn.innerHTML = '<div class="spinner"></div> Submitting...';
+
+                vscode.postMessage({
+                    command: 'sendMessage',
+                    message: { 
+                        role: 'user', 
+                        content: `FORM_SUBMISSION:${JSON.stringify(data)}`,
+                        skipInPrompt: true 
+                    }
+                });
                 return;
             }
 

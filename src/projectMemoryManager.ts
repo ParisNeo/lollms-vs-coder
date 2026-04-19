@@ -138,8 +138,11 @@ export class ProjectMemoryManager {
      */
     public async getFormattedMemoryBlock(): Promise<string> {
         const memories = await this.getMemories();
+        if (memories.length === 0) {
+            return "### 🧠 PROJECT MEMORY: (Empty)";
+        }
+
         const now = Date.now();
-        
         const scored = memories.map(m => {
             const ageDays = (now - m.lastUsed) / (1000 * 60 * 60 * 24);
             const score = Math.max(0, m.importance - (ageDays * this.DECAY_RATE));
@@ -149,25 +152,28 @@ export class ProjectMemoryManager {
         const active = scored.filter(m => m.currentScore >= this.ACTIVE_THRESHOLD);
         const latent = scored.filter(m => m.currentScore < this.ACTIVE_THRESHOLD);
 
-        let block = "\n### 🧠 LIMBIC MEMORY (ACTIVE CONTEXT)\n";
+        let block = "";
+
         if (active.length > 0) {
+            block += "\n### 🧠 LIMBIC MEMORY (ACTIVE CONTEXT)\n";
             active.forEach(m => {
                 block += `#### [${m.category}] ${m.title}\n${m.content}\n\n`;
             });
-        } else {
-            block += "No high-priority technical lessons active.\n";
         }
 
-        block += "\n### 📂 NEOCORTEX INDEX (DEEP STORAGE)\n";
-        block += "You have thousands of latent memories. Browse these categories if needed:\n";
-        
-        const categories = [...new Set(latent.map(l => l.category))];
-        categories.forEach(cat => {
-            const count = latent.filter(l => l.category === cat).length;
-            block += `- ${cat}/ (Contains ${count} items. Use \`read_memory_category\` to see IDs)\n`;
-        });
+        if (latent.length > 0) {
+            const categories = [...new Set(latent.map(l => l.category))];
+            if (categories.length > 0) {
+                block += "\n### 📂 NEOCORTEX INDEX (DEEP STORAGE)\n";
+                block += "Latent memories are available in these categories:\n";
+                categories.forEach(cat => {
+                    const count = latent.filter(l => l.category === cat).length;
+                    block += `- ${cat}/ (${count} items. Use \`read_memory_category\` to browse)\n`;
+                });
+            }
+        }
 
-        return block;
+        return block.trim() || "### 🧠 PROJECT MEMORY: (Empty)";
     }
 
     public async strengthenMemory(id: string) {

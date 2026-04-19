@@ -121,10 +121,11 @@ ${context.files || ''}
         shells: string[],
         capabilities?: DiscussionCapabilities,
         forceFullCodeSetting?: boolean,
-        context?: { tree: string; files: string; skills: string; briefing?: string; memory?: string }
+        context?: { tree: string; files: string; skills: string; briefing?: string; memory?: string, projectName?: string }
     ): string {
 
         const formatting = this.getFormatInstructions(capabilities, forceFullCodeSetting);
+        const projectHeader = context?.projectName ? `# 📂 WORKING ON PROJECT: ${context.projectName.toUpperCase()}\n\n` : '';
         const activeProfileId = capabilities?.responseProfileId || 'balanced';
         const activeProfile = SYSTEM_RESPONSE_PROFILES.find(p => p.id === activeProfileId) || SYSTEM_RESPONSE_PROFILES[0];
 
@@ -215,7 +216,7 @@ Initial context is minimized to save time.
         }
 
         // Default prompt
-        return `${activeProfile.prefix || ''}# 🎭 ROLE & PERSONA
+        return `${projectHeader}${activeProfile.prefix || ''}# 🎭 ROLE & PERSONA
 ${persona}
 
 # 🧠 BEHAVIOR & STYLE
@@ -257,14 +258,28 @@ You can trigger UI actions using these tags. Note the consistent parameter usage
   - \`<remove_files_from_context paths='["path1", "path2"]' />\`
   - \`<project_memory action="add|update|delete" id="unique_id" title="Short Title">Detailed content to remember</project_memory>\`
 
-### 🧠 PROJECT MEMORY PROTOCOL
-When you discover a critical project constraint, note a requirement, OR when evaluating past memories:
-1. **COMMIT**: Use \`<project_memory action="add" id="unique_id" title="Title">Content</project_memory>\` to save new facts permanently.
-2. **EVALUATE & MODIFY**: At the end of your response, if an existing memory was used or was useful, increase its importance. If it wasn't useful or is outdated, decrease its importance.
-   Use \`<project_memory action="update" id="existing_id" importance="0.8" />\`
-   - Importance ranges from \`0.0\` to \`1.0\`.
-   - Memories that fall below 20% (0.2) will be archived into deep storage.
-   - DNA memories ("project_dna") are untouchable (always 1.0).
+### 🧠 PROJECT MEMORY PROTOCOL (SELECTIVE EVOLUTION)
+You maintain a permanent knowledge base for this project. To prevent context pollution, you MUST be extremely selective. 
+
+**THE SIGNIFICANCE THRESHOLD:**
+Only use \`<project_memory>\` if the information satisfies ALL three criteria:
+1. **LONGEVITY**: Will this fact still be true and useful in 100 chat turns?
+2. **NON-OBVIOUS**: Is this a deep technical insight or a project-specific quirk that cannot be inferred from the code alone?
+3. **CRITICAL**: Would forgetting this lead to a regression or a repeated mistake?
+
+**STRICT PROHIBITIONS:**
+- **NO SUMMARIES**: Never save "The user asked me to refactor X" or "I finished task Y".
+- **NO PLEASANTRIES**: Never save "The user likes concise code" or "The user was happy with the fix".
+- **NO TRIVIA**: Do not save specific variable names or minor local logic.
+
+**MANDATORY CATEGORIES:**
+- **Technical Lessons**: "In this specific version of PyQt, .exec() must be used instead of .exec_()."
+- **Architectural Constraints**: "The backend is strictly restricted to port 8081."
+- **Project DNA**: "All new modules must follow the Hexagonal Architecture pattern found in /src/core."
+
+**ACTIONS:**
+- **COMMIT**: \`<project_memory action="add" id="..." title="...">Detailed Fact</project_memory>\`
+- **STRENGTHEN**: If an existing memory just helped you avoid a bug, update it to increase its importance: \`<project_memory action="update" id="..." importance="0.9" />\`.
 
 ### ⚡ IMMEDIATE TRIGGER RULES
 - User says: "Remember X" or "Note that Y" or "This is a Z project".

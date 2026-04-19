@@ -12,29 +12,42 @@ export class FailureMemory {
         this.failures.push({ toolName, parameters: params, errorOutput: error, timestamp: Date.now() });
     }
 
+    private cleanParams(params: any): any {
+        if (!params || typeof params !== 'object') return params;
+        const p = { ...params };
+        // Remove reasoning fields that might change slightly while the core action remains identical
+        delete p.thought;
+        delete p.scratchpad;
+        return p;
+    }
+
     public hasFailedBefore(toolName: string, params: any): boolean {
-        const paramStr = JSON.stringify(params);
-        return this.failures.some(f => f.toolName === toolName && JSON.stringify(f.parameters) === paramStr);
+        const paramStr = JSON.stringify(this.cleanParams(params));
+        return this.failures.some(f => f.toolName === toolName && JSON.stringify(this.cleanParams(f.parameters)) === paramStr);
     }
 
     public getMemoryContext(): string {
         if (this.failures.length === 0) return "";
 
-        return `
-# 🛑 EVOLVING INTELLIGENCE: MISTAKES TO AVOID
-I have detected that we are repeating patterns that previously failed. You must deviate from the following logic:
+        // Only show the last 3 failures to keep context focused and avoid "Summary Snowball"
+        const recentFailures = this.failures.slice(-3);
 
-${this.failures.map((f, i) => `
-### FAILED ATTEMPT #${i + 1}
+        return `
+# 🛑 EVOLVING INTELLIGENCE: MISTAKES TO AVOID (STRICT)
+The following actions were ATTEMPTED and FAILED. You must change your technical approach.
+
+${recentFailures.map((f, i) => `
+### FAILURE #${i + 1}
 - **Tool**: \`${f.toolName}\`
-- **Invalid Parameters**: \`${JSON.stringify(f.parameters)}\`
-- **Error Received**: "${f.errorOutput.substring(0, 500)}"
+- **Tried Params**: \`${JSON.stringify(f.parameters)}\`
+- **Resulting Error**: "${f.errorOutput.substring(0, 300)}"
 `).join('\n')}
 
-**GENIE REFLEXIVE PROTOCOL**: 
-1. **STRICT BLOCK**: You are FORBIDDEN from repeating the 'Failed Attempt' logic shown above.
+**REFLEXIVE CONSTRAINTS**: 
+1. **STRICT BLOCK**: If you repeat any of the 'Tried Params' above, the system will terminate your turn.
 2. **ROOT CAUSE ANALYSIS**: If the error is a \`NameError\` (like \'nn\' is not defined), you MUST check the import section of the file before applying a fix.
 3. **DEVIATE**: If \`generate_code\` failed because a SEARCH block didn't match, use \`read_file\` to get the FRESH content of the file and try a smaller, more precise SEARCH block.
+4. **BREAK THE LOOP**: If you are failing repeatedly, STOP GUESSING. Use \`execute_command\` to run a test or diagnostic, or read a different file to gather more clues.
 `;
     }
 
@@ -58,7 +71,7 @@ ${relevantFailures.map(f => `- Error: "${f.errorOutput.substring(0, 200)}..." wi
 
 **TASK**: 
 1. Briefly explain why this version worked.
-2. Output a \`<project_memory>\` tag to ensure future agents don't repeat the failing patterns.
+2. Output a \`<project_memory>\` tag. Frame the content as a "Lesson for my future self" so you are sharper and more efficient next time.
 `;
     }
 

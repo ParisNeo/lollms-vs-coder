@@ -3,60 +3,63 @@ import { ToolDefinition, ToolExecutionEnv } from '../tool';
 import { getProcessedSystemPrompt, applySearchReplace } from '../../utils';
 import { ChatMessage } from '../../lollmsAPI';
 
-async function getCoderSystemPrompt(customPrompt: string, planObjective: string, projectContext: any, fileExists: boolean): Promise<ChatMessage> {
+async function getCoderSystemPrompt(
+    customPrompt: string, 
+    planObjective: string, 
+    projectContext: any, 
+    fileExists: boolean,
+    technicalBriefing: string
+): Promise<ChatMessage> {
     const agentPersonaPrompt = await getProcessedSystemPrompt('agent', undefined, undefined, undefined, false, projectContext);
     
     let formatInstructions = "";
     if (fileExists) {
         formatInstructions = `
-**MODIFICATION MODE (AIDER FORMAT):**
-The file exists. You MUST use the **SEARCH/REPLACE** block format to edit specific parts of the code.
+### ⚡ MODIFICATION MODE: SEARCH/REPLACE (AIDER)
+The file already exists. You MUST use the SEARCH/REPLACE block format.
 
 \`\`\`language
 <<<<<<< SEARCH
-[Exact code chunk to match from original file]
+[Exact current lines from the file]
 =======
-[New code chunk to replace it with]
+[New lines to replace them with]
 >>>>>>> REPLACE
 \`\`\`
 
-**RULES FOR SEARCH/REPLACE:**
-1. **EXACT MATCH**: The content inside \`SEARCH\` must match the original file exactly (including indentation and whitespace).
-2. **CONTEXT**: Include 2-3 lines of unchanged context before and after your changes in the SEARCH block to ensure uniqueness.
-3. **MULTIPLE EDITS**: You MUST output multiple small SEARCH/REPLACE blocks in sequence to modify different parts of the file.
-4. **GRANULARITY**: Prefer 10 small blocks over 1 large block. If you change two functions, use two separate blocks. If you add imports and change logic, use separate blocks.
-5. **NO FULL FILE**: Do NOT output the full file content unless you are rewriting it entirely.
+**STRICT RULES:**
+1. **LITERAL MATCH**: The SEARCH block MUST be a character-for-character match of the file content provided in the user prompt.
+2. **ZERO DIALOGUE**: Do not explain your changes. Output ONLY the blocks.
+3. **NO PLACEHOLDERS**: Provide complete functional code. Never use "// ... rest of code".
 `;
     } else {
         formatInstructions = `
-**CREATION MODE:**
-The file does not exist. You MUST output the **FULL CONTENT** of the new file in a single markdown code block.
+### 📄 CREATION MODE: FULL FILE
+The file does not exist. You MUST output the **100% COMPLETE** content of the new file.
+
+**STRICT RULES:**
+1. **NO SNIPPETS**: Provide every line from start to finish.
+2. **ZERO DIALOGUE**: Output ONLY the code block.
 `;
     }
 
     const fullContent = `${agentPersonaPrompt}
 
-**CODE GENERATION SPECIFIC INSTRUCTIONS:**
-You are a code generation sub-agent. You will be given instructions and context to write or modify a file.
+# 🎭 ROLE: PRECISION CODE BUILDER
+You are a specialized sub-agent tasked with writing or modifying a specific file.
 
-**CONTEXT & SKILLS (SOURCE OF TRUTH):**
-You have been provided with the **Project Context** (relevant files and structure) and **Active Skills**.
-1. **STRICT ADHERENCE**: If a skill defines a protocol or API (e.g., \`safe_store\`), you MUST follow its documentation exactly. Skill documentation overrides your general training data.
-2. **CONTEXT AWARENESS**: Use the provided files to ensure imports are correct and logic is consistent with the existing codebase.
+## 🎯 MISSION BRIEFING (YOUR SOURCE OF TRUTH)
+The following briefing contains the architectural decisions and discoveries made by the Lead Architect. You MUST follow these instructions over any internal knowledge.
 
-**FORMATTING INSTRUCTIONS:**
+${technicalBriefing || "No specific briefing provided."}
+
+## 🛠️ FORMATTING MANDATE
 ${formatInstructions}
 
-**CRITICAL INSTRUCTIONS:**
-1.  **NO EXTRA TEXT**: Do not add any explanations, comments, or conversational text outside the code block.
-2.  **NO PLACEHOLDERS:** Do not use placeholders like "..." inside the code logic.
-3.  **NO PATCHES**: Do not use git diff format.
+## 📋 TASK DETAILS
+- **Project Objective:** ${planObjective}
+- **Specific File Task:** ${customPrompt}
 
-**CUSTOM INSTRUCTIONS FOR THIS TASK:**
-${customPrompt}
-
-**CONTEXT FOR YOUR TASK:**
-- **Main Objective:** ${planObjective}
+**CRITICAL**: If you include any conversational text, explanations, or "Here is the code", the system will fail. Output ONLY the code blocks.
 `;
     
     return {
@@ -77,138 +80,109 @@ export const generateCodeTool: ToolDefinition = {
         { name: "system_prompt", type: "string", description: "Optional system prompt to guide the sub-agent's persona and style.", required: false }
     ],
     async execute(params: { file_path: string, user_prompt: string, system_prompt?: string }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
-        if (!env.currentPlan) {
-            return { success: false, output: "Cannot execute without a plan." };
-        }
-        if (!params.file_path) {
-            return { success: false, output: "Error: 'file_path' parameter is required." };
-        }
+        if (!env.currentPlan) return { success: false, output: "Cannot execute without a plan." };
+        if (!params.file_path) return { success: false, output: "Error: 'file_path' parameter is required." };
         
-        // Sanitize path (remove leading slash)
-        let filePath = params.file_path.trim();
-        if (filePath.startsWith('/') || filePath.startsWith('\\')) {
-            filePath = filePath.substring(1);
-        }
-
+        let filePath = params.file_path.trim().replace(/^[\\\/]+/, '');
         const currentDiscussion = env.agentManager?.getCurrentDiscussion();
         const modelOverride = env.taskModel || currentDiscussion?.model;
         
-        const discussionSkills = currentDiscussion?.importedSkills ||[];
+        // 1. GATHER GROUNDING INFO (BRIEFING + CONTEXT)
+        const briefing = env.contextManager.renderBriefing(currentDiscussion);
+        
+        const discussionSkills = currentDiscussion?.importedSkills || [];
         const taskSkills = env.taskSkills || [];
         const importedSkills = Array.from(new Set([...discussionSkills, ...taskSkills]));
         
-        let contextData = {
-            tree: '',
-            files: '',
-            skills: ''
-        };
-
-        if (env.workspaceRoot) {
-            try {
-                const allFiles = await env.contextManager.getWorkspaceFilePaths();
-                const fileListString = allFiles.join('\n');
-                
-                // If the architect explicitly assigned files, use them immediately
-                let selectedFiles: string[] = env.taskFiles ||[];
-
-                // If no explicit files were assigned, fallback to the AI context peek
-                if (selectedFiles.length === 0 && allFiles.length > 0) {
-                    const selectionSystemPrompt: ChatMessage = {
-                        role: 'system',
-                        content: `You are a dependency analyzer for file: "${filePath}".
-Identify which *other* existing files in the project are crucial to read (type definitions, utility functions, signatures, base classes, or CLI structures) to ensure correct implementation.
-Select up to 10 relevant files. Return ONLY a valid JSON array of strings. Do NOT select the target file itself.`
-                    };
-
-                    const selectionUserPrompt: ChatMessage = {
-                        role: 'user',
-                        content: `**Target File:** ${filePath}\n**Instruction:** ${params.user_prompt}\n**File List:**\n${fileListString}`
-                    };
-
-                    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-                    const architectModel = config.get<string>('architectModelName') || modelOverride;
-
-                    const selectionResponse = await env.lollmsApi.sendChat([selectionSystemPrompt, selectionUserPrompt], null, signal, architectModel);
-                    
-                    const jsonMatch = selectionResponse.match(/\[.*\]/s);
-                    let selectedFiles: string[] = [];
-                    if (jsonMatch) {
-                        try {
-                            selectedFiles = JSON.parse(jsonMatch[0]);
-                        } catch (e) { }
-                    }
-                }
-
-                if (selectedFiles.length > 0) {
-                    const dependencyContext = await env.contextManager.readSpecificFiles(selectedFiles);
-                    if (dependencyContext) {
-                        contextData.files += `\n\n==== ASSIGNED DEPENDENCIES & CONTEXT FILES ====\n${dependencyContext}\n===============================================\n`;
-                    }
-                }
-            } catch (e) { }
+        let contextData = { tree: '', files: '', skills: '' };
+        
+        // Automatically peek at dependencies if the Architect provided them
+        if (env.taskFiles && env.taskFiles.length > 0) {
+            const depContext = await env.contextManager.readSpecificFiles(env.taskFiles);
+            contextData.files = `\n### CRITICAL DEPENDENCIES (Read these first)\n${depContext}\n\n`;
         }
 
         const baseContext = await env.contextManager.getContextContent({
             importedSkillIds: importedSkills,
-            modelName: modelOverride || env.lollmsApi.getModelName()
+            modelName: modelOverride || env.lollmsApi.getModelName(),
+            signal
         });
+        
         contextData.tree = baseContext.projectTree;
-        contextData.files = baseContext.selectedFilesContent + contextData.files; 
+        contextData.files += baseContext.selectedFilesContent;
         contextData.skills = baseContext.skillsContent;
 
-        let userPromptContent = params.user_prompt || `Generate code for ${filePath}`;
+        // 2. PREPARE USER PROMPT WITH FILE CONTENT
+        let userPromptContent = params.user_prompt;
         let existingContent: string | null = null;
 
         if (env.workspaceRoot) {
             try {
                 const fileUri = vscode.Uri.joinPath(env.workspaceRoot.uri, filePath);
-                const fileContentBytes = await vscode.workspace.fs.readFile(fileUri);
-                existingContent = Buffer.from(fileContentBytes).toString('utf8');
-                userPromptContent = `I am working on the file \`${filePath}\`. Current content:\n\n\`\`\`\n${existingContent}\n\`\`\`\n\nInstruction: ${userPromptContent}`;
-            } catch (error) { }
+                const bytes = await vscode.workspace.fs.readFile(fileUri);
+                existingContent = Buffer.from(bytes).toString('utf8');
+                userPromptContent = `### TARGET FILE: ${filePath}\n\`\`\`\n${existingContent}\n\`\`\`\n\n### INSTRUCTION\n${userPromptContent}`;
+            } catch (error) {
+                userPromptContent = `### TARGET FILE: ${filePath} (New File)\n\n### INSTRUCTION\n${userPromptContent}`;
+            }
         }
 
-        const coderSystemPrompt = await getCoderSystemPrompt(params.system_prompt || env.taskPersona || '', env.currentPlan.objective, contextData, !!existingContent);
-        const coderUserPrompt: ChatMessage = { role: 'user', content: userPromptContent };
+        // 3. CALL BUILDER
+        const coderSystemPrompt = await getCoderSystemPrompt(
+            params.system_prompt || env.taskPersona || '', 
+            env.currentPlan.objective, 
+            contextData, 
+            !!existingContent,
+            briefing
+        );
         
-        const responseText = await env.lollmsApi.sendChat([coderSystemPrompt, coderUserPrompt], null, signal, modelOverride);
+        const responseText = await env.lollmsApi.sendChat([
+            coderSystemPrompt, 
+            { role: 'user', content: userPromptContent }
+        ], null, signal, modelOverride);
 
+        // 4. STRICT EXTRACTION (STOPS CONVERSATION FROM LEAKING INTO FILE)
         let finalFileContent = "";
+        const cleanResponse = stripThinkingTags(responseText);
         
-        // Aider regex (strict start/end)
+        // Strategy A: Multi-Hunk Aider
         const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
-        const matches = [...responseText.matchAll(aiderRegex)];
+        const matches = [...cleanResponse.matchAll(aiderRegex)];
         
         if (matches.length > 0) {
             if (existingContent) {
-                // --- CASE 1: SURGICAL UPDATE ---
-                let modifiedContent = existingContent;
+                let modified = existingContent;
                 for (const match of matches) {
-                    const result = applySearchReplace(modifiedContent, match[1], match[2]);
-                    if (result.success) {
-                        modifiedContent = result.result;
-                    } else {
-                        return { success: false, output: `Specialist Error: Failed to apply edit to existing file.\nError: ${result.error}` };
-                    }
+                    const result = applySearchReplace(modified, match[1], match[2]);
+                    if (result.success) modified = result.result;
+                    else return { success: false, output: `Apply failed: ${result.error}` };
                 }
-                finalFileContent = modifiedContent;
+                finalFileContent = modified;
             } else {
-                // --- CASE 2: ACCIDENTAL AIDER ON NEW FILE (Self-Healing) ---
-                // The AI used markers for a new file. We interpret the REPLACE blocks as the file content.
+                // Fallback for AI using Aider on new files
                 finalFileContent = matches.map(m => m[2]).join('\n').trim();
-                env.agentManager?.sessionState.workingMemory.push(`Note: Corrected a formatting error where the specialist used Aider markers for a new file (${filePath}).`);
             }
         } else {
-            // --- CASE 3: FULL CONTENT GENERATION ---
-            const codeBlockRegex = /```(?:[^\n]*)\n([\s\S]+?)\n```/s;
-            const match = responseText.match(codeBlockRegex);
-            const generatedCode = match ? match[1].trim() : responseText.trim();
-            
-            // Basic validation to ensure we didn't just get conversational text
-            if (!generatedCode || generatedCode.length < 5) {
-                 return { success: false, output: `Specialist Error: Failed to produce valid code content.` };
+            // Strategy B: Full Code Block
+            // We search for the first block that doesn't look like a tool call
+            const codeBlockRegex = /```(?:\w+)?[\r\n]+([\s\S]*?)[\r\n]+```/g;
+            let blockMatch;
+            while ((blockMatch = codeBlockRegex.exec(cleanResponse)) !== null) {
+                const block = blockMatch[1].trim();
+                if (!block.startsWith('{') && block.length > 10) {
+                    finalFileContent = block;
+                    break;
+                }
             }
-            finalFileContent = generatedCode;
+            
+            if (!finalFileContent) {
+                // Last ditch: if no blocks but long response, check if it's pure code
+                if (cleanResponse.length > 20 && !cleanResponse.includes('I am') && !cleanResponse.includes('Sure!')) {
+                    finalFileContent = cleanResponse.trim();
+                } else {
+                    return { success: false, output: "Error: The builder sub-agent produced conversational text instead of a code block. Task failed." };
+                }
+            }
         }
 
         if (!env.workspaceRoot) {
@@ -222,6 +196,11 @@ Select up to 10 relevant files. Return ONLY a valid JSON array of strings. Do NO
             const parentUri = vscode.Uri.joinPath(env.workspaceRoot.uri, parentDir);
             await vscode.workspace.fs.createDirectory(parentUri);
             await vscode.workspace.fs.writeFile(fileUri, Buffer.from(finalFileContent, 'utf8'));
+            
+            if (env.contextManager.getContextStateProvider()) {
+                await env.contextManager.getContextStateProvider()!.addFilesToContext([filePath]);
+            }
+            
             return { success: true, output: `Successfully generated and wrote code to file: ${filePath}` };
         } catch (error: any) {
             return { success: false, output: `Error writing generated code: ${error.message}` };

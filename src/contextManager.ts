@@ -11,11 +11,13 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import * as os from 'os';
 import fetch from 'node-fetch';
+import { YoutubeTranscript } from 'youtube-transcript';
 import { URL } from 'url';
 const execAsync = promisify(exec);
 
 export interface ContextResult {
   text: string;
+  projectName: string;
   images: { filePath: string; data: string }[];
   projectTree: string;
   selectedFilesContent: string;
@@ -105,6 +107,7 @@ export class ContextManager {
   // --- GLOBAL CACHE STATE ---
   private _cachedTreeString: string | null = null;
   private _isTreeDirty: boolean = true;
+  private _fileTreeObject: any = null; // Persistent tree structure
   private _fileContentCache!: Map<string, { content: string, state: ContextState }>;
 
   constructor(context: vscode.ExtensionContext, lollmsAPI: LollmsAPI) {
@@ -114,11 +117,50 @@ export class ContextManager {
   }
 
   /**
-   * Invalidates the entire tree cache (e.g. on file create/delete/rename)
+   * Surgical update for the tree structure.
+   */
+  public updateTreeStructure(uri: vscode.Uri, type: 'create' | 'delete' | 'change') {
+    if (!this._fileTreeObject) return; // Haven't done initial scan yet
+
+    const relPath = this.normalize(vscode.workspace.asRelativePath(uri, false));
+    const parts = relPath.split('/').filter(p => p.length > 0);
+
+    if (type === 'create') {
+        let current = this._fileTreeObject;
+        parts.forEach((part, index) => {
+            if (!current[part]) {
+                current[part] = index === parts.length - 1 ? null : {};
+            }
+            current = current[part];
+        });
+    } else if (type === 'delete') {
+        let current = this._fileTreeObject;
+        for (let i = 0; i < parts.length - 1; i++) {
+            if (!current[parts[i]]) return;
+            current = current[parts[i]];
+        }
+        delete current[parts[parts.length - 1]];
+    }
+
+    // Always invalidate the rendered string and visible files list
+    this._cachedTreeString = null;
+    this._cachedVisibleFiles = null;
+    this._isTreeDirty = false; // We just updated it surgically, so it's not "dirty" in the sense of needing a full re-scan
+  }
+
+  /**
+   * Invalidates the entire tree cache (e.g. on mass operations)
    */
   public markTreeDirty() {
     this._isTreeDirty = true;
+    this._fileTreeObject = null;
     this._cachedTreeString = null;
+    this._cachedVisibleFiles = null;
+  }
+  private _cachedVisibleFiles: string[] | null = null;
+
+  public isTreeDirty(): boolean {
+    return this._isTreeDirty || !this._cachedTreeString;
   }
 
   /**
@@ -142,6 +184,18 @@ export class ContextManager {
     this._fileContentCache?.clear();
   }
   
+  public get extensionContext(): vscode.ExtensionContext {
+      return this.context;
+  }
+
+  public getGlobalBriefing(): string {
+      return this.context.workspaceState.get<string>('lollms_global_briefing', '');
+  }
+
+  public async setGlobalBriefing(content: string) {
+      await this.context.workspaceState.update('lollms_global_briefing', content);
+  }
+
   public setContextStateProvider(provider: ContextStateProvider | undefined) {
       this.contextStateProvider = provider;
       // Invalidate tree cache whenever the user changes file inclusion/exclusion states
@@ -884,22 +938,38 @@ ${fullContext.selectedFilesContent.substring(0, 5000)}...
 
   public renderBriefing(discussion: any): string {
     const fallback = "Librarian is analyzing project state...";
-    if (!discussion || !discussion.discussion_data_zone) return fallback;
+    let briefingText = "";
+    
+    try {
+        const globalBriefing = this.getGlobalBriefing();
+        if (globalBriefing) {
+            briefingText += `**[GLOBAL CONSTRAINTS]**\n${globalBriefing}\n\n`;
+        }
+    } catch (e) {}
+
+    if (!discussion || !discussion.discussion_data_zone) {
+        return (briefingText + fallback).trim();
+    }
     
     try {
         const raw = discussion.discussion_data_zone.trim();
-        if (!raw.startsWith('{')) return raw || fallback;
+        if (!raw.startsWith('{')) {
+            briefingText += `**[LOCAL CONSTRAINTS]**\n${raw}`;
+            return briefingText.trim();
+        }
 
         const entries = JSON.parse(raw);
         const keys = Object.keys(entries);
-        if (keys.length === 0) return fallback;
+        if (keys.length === 0) return (briefingText + fallback).trim();
         
-        return keys.map(id => {
+        const entriesText = keys.map(id => {
             const title = id.replace(/_/g, ' ').toUpperCase();
             return `**[${title}]**\n${entries[id]}`;
         }).join('\n\n');
+        
+        return (briefingText + entriesText).trim();
     } catch { 
-        return discussion.discussion_data_zone || fallback; 
+        return (briefingText + (discussion.discussion_data_zone || fallback)).trim(); 
     }
   }
 
@@ -1051,6 +1121,28 @@ Google Available: ${canGoogle}` }
             if (toolName === 'done') {
                 renderUpdate("Finished", true);
                 break;
+            }
+
+            if (toolName === 'add_briefing_entry' || toolName === 'amend_briefing_entry') {
+                this.updateBriefingData(discussion, toolName === 'add_briefing_entry' ? 'add' : 'amend', params.id, params.info);
+                actionLog.push(`📝 **Briefing Updated**: ${params.id}`);
+                renderUpdate("Updating Knowledge Base...", false);
+                chatHistory.push({ role: 'system', content: "SUCCESS: Briefing entry updated." });
+                continue;
+            }
+
+            if (toolName === 'summon_specialist') {
+                actionLog.push(`📣 **Summoning ${params.agent}**: ${params.reason}`);
+                renderUpdate(`Waiting for ${params.agent}...`, false);
+                
+                if (params.agent === 'librarian') {
+                    await this.runContextAgent(params.reason, model, signal, onUpdate, onOverlayUpdate, undefined, 'collaborative', discussion, fullHistory);
+                } else if (params.agent === 'skills') {
+                    await this.runSkillSelectionAgent(params.reason, model, signal, [], onUpdate, discussion);
+                }
+                
+                chatHistory.push({ role: 'system', content: `Specialist ${params.agent} has finished. Check the Team Briefing and Project Context for new data.` });
+                continue;
             }
 
             if (toolName === 'plan_searches') {
@@ -1575,6 +1667,20 @@ ${cumulativeBrain || "No observations yet."}
                   break;
               }
 
+          if (toolName === 'summon_specialist') {
+              actionLog.push(`📣 **Summoning ${params.agent}**: ${params.reason}`);
+              renderUpdate(`Waiting for ${params.agent}...`, false, step);
+              
+              if (params.agent === 'web') {
+                  await this.runWebResearchAgent(params.reason, model, signal, onUpdate, onStatusUpdate, discussion, fullHistory);
+              } else if (params.agent === 'skills') {
+                  await this.runSkillSelectionAgent(params.reason, model, signal, [], onUpdate, discussion);
+              }
+              
+              chatHistory.push({ role: 'system', content: `Specialist ${params.agent} has finished. Check the Team Briefing for new data.` });
+              continue;
+          }
+
           if (toolName === 'add_briefing_entry' || toolName === 'amend_briefing_entry') {
               this.updateBriefingData(discussion, toolName === 'add_briefing_entry' ? 'add' : 'amend', params.id, params.info);
               actionLog.push(`📝 **Briefing Updated**: ${params.id}`);
@@ -2003,7 +2109,10 @@ ${cumulativeBrain || "No observations yet."}
             }
         }
     }
-    result.text = `# 📂 PROJECT: ${path.basename(workspaceFolder.uri.fsPath)}\n`;
+    const projectName = path.basename(workspaceFolder.uri.fsPath);
+    result.projectName = projectName;
+    result.importedSkills = [];
+    result.text = `# 📂 PROJECT: ${projectName}\n`;
     result.text += `**Sandbox Protocol:** You are restricted to this project folder. Use ONLY relative paths for all file operations.\n`;
     result.text += `**Active Context:** ${includedFiles.length} Files | ${allSkillIds.length} Skills\n\n`;
 
@@ -2106,89 +2215,36 @@ Based on the objective and the file tree, which files are the most relevant? Ret
     }
 
     const contextFiles = this.contextStateProvider.getIncludedFiles();
-
-    // 1. Update UI to show we are scanning, not just "Building"
-    if (onProgress) onProgress(5); 
-
-    // 2. Fast Scan
-    const allVisibleFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
-    if (signal?.aborted) throw new Error("Operation cancelled");
-
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (!workspaceFolder) {
-      return '## 🌳 PROJECT STRUCTURE\n\n*No workspace folder found.*\n';
-    }
+    if (!workspaceFolder) return '';
 
-    let tree = '## 🌳 PROJECT STRUCTURE\n\n';
-    
-    if (allVisibleFiles.length === 0) {
-      tree += '*No files are currently visible in the context. Right-click files in the explorer to change their context state.*\n';
-      return tree;
-    }
-
-    // --- SAFETY CHECK: Truncate large trees to prevent API Context Length errors ---
-    const FILE_LIMIT = 1500; // Reduced for Librarian safety
-    let effectiveFiles = allVisibleFiles;
-    let warningMsg = '';
-
-    if (allVisibleFiles.length > FILE_LIMIT) {
-        effectiveFiles = allVisibleFiles.slice(0, FILE_LIMIT);
-        warningMsg = `\n*(⚠️ Tree truncated: ${allVisibleFiles.length - FILE_LIMIT} files hidden. Use .lollms/context_exceptions to ignore large folders like node_modules or build.)*\n`;
-    }
-
-    tree += '```text\n';
-    
-    const fileTree: { [key: string]: any } = {};
-    
-    // Enhanced Performance: Crawl files in larger batches but yield strictly
-    for (let i = 0; i < effectiveFiles.length; i++) {
-        if (i % 50 === 0) {
-            await new Promise(resolve => setTimeout(resolve, 2)); 
-            if (onProgress) {
-                const pct = Math.round((i / effectiveFiles.length) * 100);
-                onProgress(pct);
-            }
-        }
+    // 1. Initial Scan only if dirty or empty
+    if (this._isTreeDirty || !this._fileTreeObject) {
+        if (onProgress) onProgress(10);
+        const allVisibleFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
         
-        const filePath = effectiveFiles[i];
-        if (filePath.includes(':') || filePath.startsWith('/') || filePath.startsWith('\\')) {
-            continue;
+        this._fileTreeObject = {};
+        for (const filePath of allVisibleFiles) {
+            const parts = filePath.split(/[\\/]/).filter(part => part.length > 0);
+            let current = this._fileTreeObject;
+            parts.forEach((part, index) => {
+                if (!current[part]) {
+                    current[part] = index === parts.length - 1 ? null : {};
+                }
+                if (current[part] !== null) current = current[part];
+            });
         }
-
-        // FIX: Split on both slashes to avoid flattening on Windows
-        const parts = filePath.split(/[\\/]/).filter(part => part.length > 0);
-        
-        // --- PRUNING LOGIC: Skip children of collapsed folders ---
-        let isCollapsedByParent = false;
-        let currentPathAcc = "";
-        for (let j = 0; j < parts.length - 1; j++) {
-            currentPathAcc = currentPathAcc ? currentPathAcc + '/' + parts[j] : parts[j];
-            const parentUri = vscode.Uri.joinPath(workspaceFolder.uri, currentPathAcc);
-            if (this.contextStateProvider?.getStateForUri(parentUri) === 'collapsed') {
-                isCollapsedByParent = true;
-                break;
-            }
-        }
-        if (isCollapsedByParent) continue;
-        // ---------------------------------------------------------
-
-        let current = fileTree;
-        parts.forEach((part, index) => {
-            if (!current[part]) {
-                current[part] = index === parts.length - 1 ? null : {};
-            }
-            if (current[part] !== null) {
-                current = current[part];
-            }
-        });
+        this._isTreeDirty = false;
     }
 
-    // Create a map for quick state lookup during tree construction
+    let tree = '## 🌳 PROJECT STRUCTURE\n\n```text\n';
+    
     const stateMap = new Map<string, string>();
     contextFiles.forEach(f => stateMap.set(this.normalize(f.path), f.state));
 
     // Tree generation using standard box-drawing characters
     const generateTreeString = (obj: any, prefix: string = '', currentPath: string = ''): string => {
+      if (!obj) return '';
       let result = '';
       const keys = Object.keys(obj).sort((a, b) => {
         const aIsDir = obj[a] !== null;
@@ -2239,8 +2295,8 @@ Based on the objective and the file tree, which files are the most relevant? Ret
       return result;
     };
 
-    tree += generateTreeString(fileTree);
-    tree += '```\n' + warningMsg;
+    tree += generateTreeString(this._fileTreeObject);
+    tree += '```\n';
 
     return tree;
   }

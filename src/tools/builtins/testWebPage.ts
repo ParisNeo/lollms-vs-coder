@@ -12,16 +12,6 @@ export const testWebPageTool: ToolDefinition = {
         { name: "wait_for", type: "string", description: "Optional CSS selector to wait for before taking the screenshot.", required: false }
     ],
     async execute(params: { url: string, wait_for?: string }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
-        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-        const isAllowed = config.get<boolean>('agent.permissions.webTesting') || false;
-
-        if (!isAllowed) {
-            return { 
-                success: false, 
-                output: "🛑 **Permission Denied:** Web Testing (headless browser) is disabled. Please enable 'Web Testing' in Lollms Agent Permissions settings." 
-            };
-        }
-
         const pythonCode = `
 import asyncio
 from playwright.async_api import async_playwright

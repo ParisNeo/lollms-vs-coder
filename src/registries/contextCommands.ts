@@ -194,7 +194,8 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
                     includeTree: true,
                     modelName: services.lollmsAPI.getModelName()
                 });
-                const output = `${res.projectTree}\n\n## File Contents\n\n${res.selectedFilesContent}`;
+                const projectName = res.projectName || "Unknown Project";
+                const output = `# 🧊 PROJECT SNAPSHOT: ${projectName.toUpperCase()} FOR EXTERNAL LLM\n\nThe following project state was exported from VS Code.\n\n${res.projectTree}\n\n## File Contents\n\n${res.selectedFilesContent}`;
                 progress.report({ message: "Finalizing clipboard content..." });
                 await vscode.env.clipboard.writeText(output);
                 vscode.window.showInformationMessage("✅ File tree and selected content copied to clipboard.");

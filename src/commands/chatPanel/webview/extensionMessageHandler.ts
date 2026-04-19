@@ -92,6 +92,31 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
                 }
                 break;
+            case 'openMissionBriefingModal':
+                if (dom.missionBriefingModal) {
+                    if (dom.briefingContentInput) {
+                        dom.briefingContentInput.value = message.briefing || '';
+                    }
+                    if (dom.briefingDnaPreview) {
+                        dom.briefingDnaPreview.innerHTML = message.dna ? sanitizer.sanitize(marked.parse(message.dna) as string) : 'No Project DNA found.';
+                    }
+                    
+                    const radios = document.getElementsByName('briefing-scope');
+                    radios.forEach((r: any) => {
+                        if (r.value === (message.isGlobal ? 'global' : 'local')) {
+                            r.checked = true;
+                        }
+                    });
+                    
+                    dom.missionBriefingModal.classList.add('visible');
+                }
+                break;
+            case 'updateBriefingContent':
+                if (dom.briefingContentInput) {
+                    const current = dom.briefingContentInput.value;
+                    dom.briefingContentInput.value = current ? current + '\n\n' + message.text : message.text;
+                }
+                break;
             case 'updateMessage':
                 {
                     if (typeof message.newContent === 'string' && message.newContent.startsWith('LOG_UPDATE:')) {
@@ -791,44 +816,27 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const blockEl = document.getElementById(targetBlockId) as HTMLDetailsElement;
 
                     if (blockEl && message.success) {
-                        // Handle specific hunk button or main block button
+                        // Reset button state to allow re-applying if the user didn't save the diff
+                        const restoreBtn = (btn) => {
+                            btn.disabled = false;
+                            btn.classList.add('applied');
+                            btn.innerHTML = '<span class="codicon codicon-check"></span>';
+                        };
+
                         if (message.hunkIndex !== undefined) {
                             const hunkBubbles = blockEl.querySelectorAll('.aider-hunk-bubble');
                             const targetHunk = hunkBubbles[message.hunkIndex];
                             if (targetHunk) {
                                 const hunkBtn = targetHunk.querySelector('.apply-btn');
-                                if (hunkBtn) {
-                                    hunkBtn.classList.add('applied');
-                                    hunkBtn.innerHTML = '<span class="codicon codicon-check"></span>';
-                                }
+                                if (hunkBtn) restoreBtn(hunkBtn);
                                 targetHunk.classList.add('collapsed');
                             }
-                            
-                            // If all hunks in this block are now applied, mark the main block button too
-                            const totalHunks = hunkBubbles.length;
-                            const appliedHunks = blockEl.querySelectorAll('.aider-hunk-actions .apply-btn.applied').length;
-                            if (appliedHunks === totalHunks) {
-                                const mainApplyBtn = blockEl.querySelector('.code-actions .apply-btn');
-                                if (mainApplyBtn) {
-                                    mainApplyBtn.classList.add('applied');
-                                    mainApplyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
-                                }
-                                blockEl.open = false; // Collapse only when fully finished
-                            }
                         } else {
-                            // Full block applied successfully
                             const mainApplyBtn = document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`);
-                            if (mainApplyBtn) {
-                                mainApplyBtn.classList.add('applied');
-                                mainApplyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
-                            }
-                            // Also mark all internal hunks as applied
-                            blockEl.querySelectorAll('.aider-hunk-actions .apply-btn').forEach(btn => {
-                                btn.classList.add('applied');
-                                btn.innerHTML = '<span class="codicon codicon-check"></span>';
-                            });
+                            if (mainApplyBtn) restoreBtn(mainApplyBtn);
+                            
+                            blockEl.querySelectorAll('.aider-hunk-actions .apply-btn').forEach(restoreBtn);
                             blockEl.querySelectorAll('.aider-hunk-bubble').forEach(h => h.classList.add('collapsed'));
-                            blockEl.open = false;
                         }
 
                         // RE-SYNC main button state for the entire message
@@ -903,6 +911,12 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             const aiBtn = actionsEl.querySelector('.ai-fix-btn') as HTMLButtonElement;
                             const manualBtn = actionsEl.querySelector('.manual-fix-btn') as HTMLButtonElement;
                             const ignoreBtn = actionsEl.querySelector('.ignore-fix-btn') as HTMLButtonElement;
+
+                            // AUTOMATIC REDIRECTION: If this was a manual triggered apply that failed, 
+                            // pop the raw code modal immediately to help the user.
+                            if (!message.repaired && !message.alreadyApplied) {
+                                manualBtn.click();
+                            }
 
                             aiBtn.onclick = (e) => {
                                 e.stopPropagation();

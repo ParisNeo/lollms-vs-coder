@@ -227,42 +227,11 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 }
             }
 
-            const document = await vscode.workspace.openTextDocument(fileUri);
-            const currentDocText = document.getText();
-            
-            // Real-time Disk Verification: Is the content already there?
-            if (currentDocText === content) {
-                return { success: true, alreadyApplied: true };
-            }
-
-            // Find first modified line for UX scrolling
-            let firstModifiedLine = 0;
-            const oldLines = currentDocText.split('\n');
-            const newLines = content.split('\n');
-            for (let i = 0; i < Math.min(oldLines.length, newLines.length); i++) {
-                if (oldLines[i] !== newLines[i]) {
-                    firstModifiedLine = i;
-                    break;
-                }
-            }
-
-            const fullRange = new vscode.Range(new vscode.Position(0, 0), document.lineAt(document.lineCount - 1).range.end);
-            const edit = new vscode.WorkspaceEdit();
-            edit.replace(fileUri, fullRange, content);
-            const applied = await vscode.workspace.applyEdit(edit);
-
-            if (applied) {
-                // FORCE SAVE TO DISK
-                await document.save();
-                services.contextManager.refreshFileInCache(fileUri);
-                if (!options?.silent) {
-                    const editor = await vscode.window.showTextDocument(document);
-                    const pos = new vscode.Position(firstModifiedLine, 0);
-                    editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
-                    await openDiffView(fileUri, originalContent);
-                }
-                return { success: true, alreadyApplied: false };
-            }
+            // Open Diff View: Original (Disk) vs Proposed (Virtual)
+            // No direct WorkspaceEdit or Save is performed here.
+            // The user must review and Save the diff tab to apply changes.
+            await services.diffManager.openDiff(fileUri, content);
+            return { success: true, alreadyApplied: false };
             return { success: false, error: "VS Code failed to apply the WorkspaceEdit. The file might be locked or read-only." };
 
         } catch (e: any) {
@@ -469,23 +438,9 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                     applyCount++;
                 } else {
                     const fixBtn = "Fix with AI";
-                    const isAutoFixEnabled = panel?._discussionCapabilities?.autoFix !== false;
-
-                    // 1. If AutoFix is disabled, just report the error and stop.
-                    if (!isAutoFixEnabled) {
-                        if (!options?.silent) {
-                            vscode.window.showErrorMessage(`Failed to apply patch to ${filePath}: ${result.error}`);
-                        }
-                        return { success: false, error: result.error };
-                    }
-
-                    // 2. If enabled, proceed with the UI prompt or silent repair
-                    const selection = options?.silent ? fixBtn : await vscode.window.showErrorMessage(
-                        `Could not apply search/replace block in ${filePath}: ${result.error}`,
-                        fixBtn, "Cancel"
-                    );
-
-                    if (selection === fixBtn && panel && messageId) {
+                    
+                    // IF REPAIR IS REQUESTED (from the manual modal button)
+                    if (content === "REPAIR_REQUESTED" && panel && messageId) {
                         // --- ENHANCED SILENT REPAIR ---
                         return await vscode.window.withProgress({
                             location: vscode.ProgressLocation.Notification,
@@ -574,28 +529,10 @@ ${originalContent}
                 const wasActuallyModified = currentContent !== originalContent;
                 if (!wasActuallyModified) return { success: true, alreadyApplied: true };
 
-                const edit = new vscode.WorkspaceEdit();
-                const fullRange = new vscode.Range(
-                    new vscode.Position(0, 0),
-                    document.lineAt(document.lineCount - 1).range.end
-                );
-                edit.replace(fileUri, fullRange, currentContent);
-                
-                const applied = await vscode.workspace.applyEdit(edit);
-                if (applied) {
-                    await document.save();
-                    services.contextManager.refreshFileInCache(fileUri);
-                    if (!options?.silent) {
-                        const editor = await vscode.window.showTextDocument(document);
-                        if (firstChangeLine !== undefined) {
-                            const pos = new vscode.Position(firstChangeLine, 0);
-                            editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
-                        }
-                        openDiffView(fileUri, originalContent).catch(() => {});
-                    }
-                    return { success: true, alreadyApplied: false };
-                }
-                return { success: false, error: "WorkspaceEdit failed to apply." };
+                // Use the DiffManager to show the result of the surgical patch
+                // compared to the current file on disk.
+                await services.diffManager.openDiff(fileUri, currentContent);
+                return { success: true, alreadyApplied: false };
             }
             return { success: false, error: "Failed to apply edits to document." };
 
@@ -645,7 +582,6 @@ ${originalContent}
             const applied = await vscode.workspace.applyEdit(edit);
             if (applied) {
                 await document.save();
-                services.contextManager.refreshFileInCache(fileUri);
             }
 
             await openDiffView(fileUri, originalContent);
@@ -689,7 +625,6 @@ ${originalContent}
             const applied = await vscode.workspace.applyEdit(edit);
             if (applied) {
                 await document.save();
-                services.contextManager.refreshFileInCache(fileUri);
             }
 
             await openDiffView(fileUri, originalContent);
@@ -747,7 +682,6 @@ ${originalContent}
              try {
                 // applyDiff now handles explicit saving internally
                 await applyDiff(patchContent, filePath); 
-                services.contextManager.refreshFileInCache(vscode.Uri.joinPath(activeWorkspace.uri, filePath));
                 
                 if (!options?.silent) {
                     // Scroll to the patch location

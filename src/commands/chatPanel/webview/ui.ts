@@ -883,13 +883,13 @@ export function updateBadges() {
     }
 
     // Render Dynamic Model Pool Selection inside herd config (if present)
-    if (dom.herdModelsList && caps.herdParticipantModels) {
+    if (dom.herdModelsList) {
         const globalPool = (window as any).herdDynamicModelPool || [];
-        const activeModels = caps.herdParticipantModels;
+        const activeModels = caps.herdParticipantModels || [];
 
         dom.herdModelsList.innerHTML = globalPool.map((m: any) => `
             <div class="checkbox-container" style="border:none; background:transparent; padding:2px 0;">
-                <input type="checkbox" value="${m.model}" class="herd-pool-check" ${activeModels.includes(m.model) || activeModels.length === 0 ? 'checked' : ''}>
+                <input type="checkbox" value="${m.model}" class="herd-pool-check" ${activeModels.includes(m.model) ? 'checked' : ''}>
                 <label style="font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${m.model}</label>
             </div>
         `).join('');
@@ -1142,7 +1142,7 @@ export function updateBadges() {
         // Enhanced Web Search Toggle Badge with Activity Log
         const webBadge = createToggleBadge(
             '🌍 Web Search', 'web', 
-            guiState.webSearchBadge !== false, 
+            guiState.webSearchBadge !== false || caps.agentMode, 
             caps.webSearch, 
             () => {
                 vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { webSearch: !caps.webSearch } });

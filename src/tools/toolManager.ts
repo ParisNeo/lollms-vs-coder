@@ -33,12 +33,17 @@ export class ToolManager {
         for (const [serverName, configEntry] of Object.entries(mcpServers)) {
             try {
                 const cmdString = typeof configEntry === 'string' ? configEntry : configEntry.command;
-                const authKey = configEntry.authKey || undefined;
                 const parts = cmdString.split(' ');
                 const command = parts[0];
                 const args = parts.slice(1);
                 
-                const client = new McpClient(command, args, authKey);
+                const client = new McpClient({
+                    name: serverName,
+                    type: (configEntry.type as any) || 'stdio',
+                    command: command,
+                    args: args,
+                    env: configEntry.env
+                });
                 await client.connect();
                 this.mcpClients.push(client);
 

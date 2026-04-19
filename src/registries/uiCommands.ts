@@ -75,6 +75,10 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
         vscode.commands.executeCommand('lollms-vs-coder.showCodeGraphPanel');
     }));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showLabTab', () => setTab('lab')));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.openCveBuilder', () => {
+        const { CvePanel } = require('../commands/cvePanel');
+        CvePanel.createOrShow(services.extensionUri, services.lollmsAPI, services.contextManager);
+    }));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showMcpTab', () => {
         setTab('mcp');
         const { McpManagerPanel } = require('../commands/mcpManagerPanel');
@@ -93,7 +97,9 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
     }));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showFixTab', () => {
         setTab('fix');
-        // Automatically trigger the error scan when clicking the tab if user wants
+        // Focus the process view if it's currently relevant to fixes
+        vscode.commands.executeCommand('lollmsProcessesView.focus');
+        // Automatically trigger the error scan when clicking the tab
         vscode.commands.executeCommand('lollms-vs-coder.fixAllErrors');
     }));
 
@@ -216,26 +222,11 @@ export const myCustomTool: ToolDefinition = {
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setMissionBriefing', async () => {
         const panel = ChatPanel.currentPanel;
-        const disc = panel?.getCurrentDiscussion();
-        
-        if (!disc) {
+        if (!panel) {
             vscode.window.showWarningMessage("No active discussion found to set briefing for.");
             return;
         }
-
-        const briefing = await vscode.window.showInputBox({
-            prompt: "Set the MISSION BRIEFING (Task-specific constraints).",
-            placeHolder: "e.g., Refactor this without using async/await, strictly follow PEP8.",
-            value: disc.discussion_data_zone || ""
-        });
-
-        if (briefing !== undefined) {
-            disc.discussion_data_zone = briefing;
-            await services.discussionManager.saveDiscussion(disc);
-            
-            panel?.updateContextAndTokens();
-            vscode.window.showInformationMessage("🎯 Mission Briefing updated.");
-        }
+        await panel.openMissionBriefingUI();
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyMemoryTag', async (params: { action: string, id: string, title: string, content: string, importance?: number }) => {

@@ -98,8 +98,12 @@ export async function runCommandInTerminal(
         let execution: vscode.ShellExecution;
         const shellType = options?.shell || (isWin ? 'powershell' : 'bash');
 
-        // Load .env variables dynamically
-        let envVars: Record<string, string> = {};
+        // Load .env variables dynamically and FORCE UTF-8 for Python/System
+        let envVars: Record<string, string> = {
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONUTF8": "1",
+            "LANG": "en_US.UTF-8"
+        };
         try {
             const envPath = path.join(cwd, '.lollms', '.env');
             const content = await fs.readFile(envPath, 'utf8');
@@ -110,23 +114,23 @@ export async function runCommandInTerminal(
         } catch {}
 
         let sanitizedCommand = command;
-        // Fix Windows 'curl' alias (Invoke-WebRequest) which breaks standard curl usage
         if (isWin) {
-            // Regex to find 'curl' but not 'curl.exe' or 'mycurl'
             sanitizedCommand = sanitizedCommand.replace(/(?<![\w.-])curl(?![\w.-])/g, 'curl.exe');
         }
 
         if (isWin) {
             if (shellType === 'powershell') {
                 const envArgs = Object.entries(envVars).map(([k, v]) => `$env:${k}='${v}';`).join(' ');
-                const psCommand = `& { ${envArgs} ${sanitizedCommand} } | Tee-Object -FilePath "${relOutputFile}"; $LASTEXITCODE | Out-File -FilePath "${relExitCodeFile}" -Encoding utf8`;
+                // Force UTF8 Encoding in the PowerShell session before running the command
+                const utf8Setup = `[Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8;`;
+                const psCommand = `& { ${utf8Setup} ${envArgs} ${sanitizedCommand} } | Tee-Object -FilePath "${relOutputFile}"; $LASTEXITCODE | Out-File -FilePath "${relExitCodeFile}" -Encoding utf8`;
                 execution = new vscode.ShellExecution("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psCommand], { cwd });
             } else if (shellType === 'cmd') {
-                // CMD doesn't have native Tee. We use a trick: execute via powershell wrapper but inside CMD environment
-                const cmdCommand = `powershell -Command "${sanitizedCommand} | Tee-Object -FilePath '${relOutputFile}'" & echo %errorlevel% > "${relExitCodeFile}"`;
+                // chcp 65001 switches CMD to UTF-8 mode
+                const cmdCommand = `chcp 65001 >nul && powershell -Command "${sanitizedCommand} | Tee-Object -FilePath '${relOutputFile}'" & echo %errorlevel% > "${relExitCodeFile}"`;
                 execution = new vscode.ShellExecution("cmd.exe", ["/c", cmdCommand], { cwd });
             } else {
-                const shCommand = `export LANG=en_US.UTF-8; (${sanitizedCommand}) 2>&1 | tee '${relOutputFile}'; echo $? > '${relExitCodeFile}'`;
+                const shCommand = `export LANG=en_US.UTF-8; export PYTHONIOENCODING=utf-8; (${sanitizedCommand}) 2>&1 | tee '${relOutputFile}'; echo $? > '${relExitCodeFile}'`;
                 execution = new vscode.ShellExecution("bash.exe", ["-c", shCommand], { cwd });
             }
         } else {
@@ -164,7 +168,23 @@ export async function runCommandInTerminal(
                     let success = e.exitCode === 0 || e.exitCode === 1; // UI apps often exit with 1 on manual close
                     try {
                         if (fs.existsSync(outputFile)) {
-                            output = fs.readFileSync(outputFile, 'utf8').replace(/^\uFEFF/, '');
+                            const buffer = fs.readFileSync(outputFile);
+                            
+                            if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
+                                output = buffer.toString('utf16le');
+                            } 
+                            else if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
+                                output = buffer.swap16().toString('utf16le');
+                            } 
+                            else {
+                                // Default to UTF-8 with manual normalization
+                                // We use TextDecoder with fatal:false to replace bad sequences with placeholders
+                                const decoder = new TextDecoder('utf-8', { fatal: false });
+                                output = decoder.decode(buffer);
+                            }
+                            
+                            output = output.replace(/^\uFEFF/, '');
+                            output = output.replace(/\0/g, '');
                         }
                     } catch (err) {
                         output = `[Extension Error] Failed to read terminal output: ${err}`;

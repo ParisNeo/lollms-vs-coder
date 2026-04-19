@@ -134,7 +134,8 @@ export class QuickEditManager {
             const contextData = {
                 tree: globalContext.projectTree,
                 files: globalContext.selectedFilesContent,
-                skills: globalContext.skillsContent
+                skills: globalContext.skillsContent,
+                projectName: globalContext.projectName
             };
 
             let systemPromptContent = await getProcessedSystemPrompt('chat', undefined, undefined, this.memoryManager, false, contextData);

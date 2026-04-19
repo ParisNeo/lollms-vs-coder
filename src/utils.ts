@@ -522,7 +522,7 @@ export async function getProcessedSystemPrompt(
     customPersonaContent?: string,
     memoryManager?: MemoryManager,
     forceFullCode?: boolean,
-    context?: { tree: string, files: string, skills: string, memory?: string },
+    context?: { tree: string, files: string, skills: string, memory?: string, projectName?: string },
     workingMemory?: string
 ): Promise<string> {
     const memory = memoryManager ? await memoryManager.getMemory() : "";

@@ -243,23 +243,30 @@ export async function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(statusBar);
 
     // --- CACHE INVALIDATION LISTENERS (GLOBAL FS WATCHER) ---
-    // We use a FileSystemWatcher instead of narrow document events to ensure 
-    // programmatic writes (by the agent or git) also invalidate the cache.
     const watcher = vscode.workspace.createFileSystemWatcher('**/*');
     
+    const isIgnored = (uri: vscode.Uri) => {
+        const p = uri.fsPath;
+        return p.includes('.lollms') || p.includes('.git') || p.includes('node_modules') || p.includes('venv');
+    };
+
     watcher.onDidChange(uri => {
+        if (isIgnored(uri)) return;
         contextManager.refreshFileInCache(uri);
-        codeGraphManager.reset(); // Invalidate architecture graph
+        contextManager.updateTreeStructure(uri, 'change');
+        codeGraphManager.reset();
     });
     
     watcher.onDidCreate(uri => {
-        contextManager.markTreeDirty();
+        if (isIgnored(uri)) return;
+        contextManager.updateTreeStructure(uri, 'create');
         codeGraphManager.reset();
     });
     
     watcher.onDidDelete(uri => {
+        if (isIgnored(uri)) return;
         contextManager.refreshFileInCache(uri);
-        contextManager.markTreeDirty();
+        contextManager.updateTreeStructure(uri, 'delete');
         codeGraphManager.reset();
     });
 

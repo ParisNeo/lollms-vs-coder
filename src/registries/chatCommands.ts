@@ -55,6 +55,7 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
             services.rlmDb 
         );
         agent.projectMemoryManager = services.projectMemoryManager;
+        agent.personalityManager = services.personalityManager;
         agent.setProcessManager(services.processManager);
         panel.setAgentManager(agent);
 
@@ -85,6 +86,8 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
             services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
             services.rlmDb
         );
+        agent.projectMemoryManager = services.projectMemoryManager;
+        agent.personalityManager = services.personalityManager;
         agent.setProcessManager(services.processManager);
         
         // Explicitly activate the agent instance immediately
@@ -116,6 +119,8 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
             panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
             services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager
         );
+        agent.projectMemoryManager = services.projectMemoryManager;
+        agent.personalityManager = services.personalityManager;
         agent.setProcessManager(services.processManager);
         panel.setAgentManager(agent);
 
@@ -207,6 +212,7 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
                 services.rlmDb 
             );
             agent.projectMemoryManager = services.projectMemoryManager;
+            agent.personalityManager = services.personalityManager;
             agent.setProcessManager(services.processManager);
             panel.setAgentManager(agent);
         }

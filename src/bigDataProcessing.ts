@@ -34,6 +34,9 @@ export class BigDataProcessor {
     }
 
     private async processSingleRun(content: string, instruction: string, token?: vscode.CancellationToken): Promise<string> {
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const summaryModel = config.get<string>('summarizationModelName') || undefined;
+
         const systemPrompt = "You are a data processing expert. Analyze the provided text according to the user instruction. Return only the processed/synthesized content.";
         const userPrompt = `Instruction: ${instruction}\n\nText:\n${content}`;
         
@@ -44,7 +47,7 @@ export class BigDataProcessor {
             return await this.lollmsAPI.sendChat([
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: userPrompt }
-            ], null, controller.signal);
+            ], null, controller.signal, summaryModel);
         } catch (e: any) {
             if (e.name === 'AbortError') return "";
             throw e;
@@ -83,10 +86,11 @@ export class BigDataProcessor {
             const userPrompt = `Instruction: ${instruction}\n\nText Chunk (${i+1}/${chunks.length}):\n${chunk}`;
 
             try {
+                const summaryModel = config.get<string>('summarizationModelName') || undefined;
                 const response = await this.lollmsAPI.sendChat([
                     { role: 'system', content: systemPrompt },
                     { role: 'user', content: userPrompt }
-                ], null, controller.signal);
+                ], null, controller.signal, summaryModel);
                 summaries.push(response);
             } catch (e: any) {
                 if (e.name === 'AbortError') return "";
@@ -104,10 +108,11 @@ export class BigDataProcessor {
         const finalUserPrompt = `Instruction: ${instruction}\n\nChunk Analyses:\n${combinedSummaries}`;
         
         try {
+            const summaryModel = config.get<string>('summarizationModelName') || undefined;
             return await this.lollmsAPI.sendChat([
                 { role: 'system', content: finalSystemPrompt },
                 { role: 'user', content: finalUserPrompt }
-            ], null, controller.signal);
+            ], null, controller.signal, summaryModel);
         } catch (e: any) {
             if (e.name === 'AbortError') return "";
             throw e;

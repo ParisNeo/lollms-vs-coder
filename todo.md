@@ -41,6 +41,4 @@ Add a fast librarian mode (single shot, just take a look at the current task and
 Make skills md with claude style
 
 # IMPORTANT
-
-## Problem in websearch
- Unknown tool: add_briefing_entry
+Add the possibility to force a model name without scan.

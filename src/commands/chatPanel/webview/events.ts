@@ -601,6 +601,12 @@ export function initEventHandlers() {
     bindChange(dom.herdModeCheckbox, (e) => {
         vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { herdMode: (e.target as HTMLInputElement).checked } });
     });
+    bindChange(dom.testModeCheckbox, (e) => {
+        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { testMode: (e.target as HTMLInputElement).checked } });
+    });
+    bindChange(dom.docsModeCheckbox, (e) => {
+        vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { documentationMode: (e.target as HTMLInputElement).checked } });
+    });
 
     bindChange(dom.modelSelector, (e) => {
         const val = (e.target as HTMLSelectElement).value;

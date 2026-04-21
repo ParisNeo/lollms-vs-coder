@@ -1291,10 +1291,11 @@ Google Available: ${canGoogle}` }
   ): Promise<{ context: string, analysis: string }> {
       const MAX_STEPS = 10;
       const MAX_RETRIES = 3;
-      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-      if (!workspaceFolder || !this.contextStateProvider) {
-          onUpdate("❌ No workspace context available.");
-          return "";
+      
+      const folders = vscode.workspace.workspaceFolders;
+      if (!folders || folders.length === 0 || !this.contextStateProvider) {
+          // Graceful fallback: scouting bypassed silently as handled by UI
+          return { context: "", analysis: "No workspace available for project-wide scouting." };
       }
 
       const allFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
@@ -1950,6 +1951,7 @@ ${cumulativeBrain || "No observations yet."}
         result.projectTree = this._cachedTreeString;
     }
 
+    const folders = vscode.workspace.workspaceFolders || [];
     const includedFiles = contextFiles.filter(f => !f.path.endsWith(path.sep));
     
     if (useRLM) {
@@ -1977,7 +1979,27 @@ ${cumulativeBrain || "No observations yet."}
         const contextState = fileEntry.state;
 
         try {
-          const fullPath = vscode.Uri.joinPath(workspaceFolder.uri, filePath);
+          // RESOLVE ACROSS ALL ROOTS
+          let fullPath: vscode.Uri | undefined;
+          
+          if (path.isAbsolute(filePath)) {
+              fullPath = vscode.Uri.file(filePath);
+          } else {
+              for (const folder of folders) {
+                  const testPath = vscode.Uri.joinPath(folder.uri, filePath);
+                  try {
+                      await vscode.workspace.fs.stat(testPath);
+                      fullPath = testPath;
+                      break;
+                  } catch {}
+              }
+          }
+
+          if (!fullPath) {
+              console.warn(`Context resolution failed for: ${filePath}`);
+              continue;
+          }
+
           const stat = await vscode.workspace.fs.stat(fullPath);
           if (stat.type !== vscode.FileType.File) continue;
 
@@ -2082,17 +2104,23 @@ ${cumulativeBrain || "No observations yet."}
     const allSkillIds = Array.from(new Set([...discussionSkillIds, ...projectSkillIds]));
 
     // --- DIAGRAMS CONTEXT ---
-    const activeDiagramIds = options?.activeDiagramIds || [];
+    const activeDiagramIds = options?.activeDiagramIds ||[];
     if (activeDiagramIds.length > 0 && this.codeGraphManager) {
         // Ensure graph is built if it's currently empty
         if (this.codeGraphManager.getGraphData().nodes.length === 0 && this.codeGraphManager.getBuildState() === 'idle') {
             await this.codeGraphManager.buildGraph();
         }
 
-        result.diagrams = [];
+        result.diagrams =[];
         for (const diagType of activeDiagramIds) {
-            const mermaid = this.codeGraphManager.generateMermaid(diagType);
-            result.diagrams.push({ type: diagType, mermaid });
+            if (diagType === 'text_summary') {
+                const summary = this.codeGraphManager.generateTextSummary();
+                // Append the compact text breakdown directly to the context text block
+                result.text += `\n### PROJECT ARCHITECTURE SUMMARY\n\`\`\`yaml\n${summary}\n\`\`\`\n\n`;
+            } else {
+                const mermaid = this.codeGraphManager.generateMermaid(diagType);
+                result.diagrams.push({ type: diagType, mermaid });
+            }
         }
     }
 
@@ -2103,8 +2131,11 @@ ${cumulativeBrain || "No observations yet."}
             if (allSkillIds.includes(skill.id)) {
                 result.importedSkills.push(skill);
                 const scopeLabel = skill.scope === 'global' ? 'GLOBAL' : 'PROJECT';
-                result.skillsContent += `\n#### 💎 SOURCE OF TRUTH: ${skill.name.toUpperCase()} (${scopeLabel} SKILL)\n`;
-                result.skillsContent += `> Description: ${skill.description}\n`;
+                // Clean the name for the prompt header to ensure it's not doubled
+                const cleanName = skill.name.replace(/SOURCE OF TRUTH:\s*/gi, '').trim();
+                
+                result.skillsContent += `\n#### 💎 SOURCE OF TRUTH: ${cleanName.toUpperCase()} (${scopeLabel} SKILL)\n`;
+                result.skillsContent += `> ${skill.description}\n`;
                 result.skillsContent += `\`\`\`${skill.language || 'text'}\n${skill.content}\n\`\`\`\n\n`;
             }
         }

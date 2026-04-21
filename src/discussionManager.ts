@@ -53,16 +53,20 @@ export class DiscussionManager {
     }
 
     public async switchWorkspace(workspaceRoot: vscode.Uri) {
-        this.discussionsDir = vscode.Uri.joinPath(workspaceRoot, '.lollms', 'discussions');
-        this.groupsFile = vscode.Uri.joinPath(workspaceRoot, '.lollms', 'discussion_groups.json');
+        // We no longer rely on a single discussionsDir.
+        // We initialize for all workspace folders.
         await this.initialize();
         this._onDidChangeDiscussions.fire();
     }
 
     private async initialize() {
-        try {
-            await vscode.workspace.fs.createDirectory(this.discussionsDir);
-        } catch (e) {}
+        const folders = vscode.workspace.workspaceFolders ||[];
+        for (const folder of folders) {
+            const dir = vscode.Uri.joinPath(folder.uri, '.lollms', 'discussions');
+            try {
+                await vscode.workspace.fs.createDirectory(dir);
+            } catch (e) {}
+        }
     }
 
     public async saveLastCapabilities(caps: DiscussionCapabilities) {
@@ -118,6 +122,9 @@ export class DiscussionManager {
             herdCriticEnabled: false,
             agentMode: false,
             debugMode: false,
+            verifierMode: false,
+            testMode: config.get<boolean>('testMode') ?? false,
+            documentationMode: config.get<boolean>('documentationMode') ?? false,
             maxDebugSteps: 10,
             autoContextMode: false, 
             autoSkillMode: false,
@@ -128,6 +135,7 @@ export class DiscussionManager {
             disableProjectContext: false,
             projectMemoryEnabled: true,
             gitWorkflow: false,
+            gitAutoWorkflow: false,
             autoApply: false,
             autoFix: true,
             autoBranch: false,
@@ -139,7 +147,9 @@ export class DiscussionManager {
                 agentBadge: true,
                 debugBadge: true,
                 autoContextBadge: true,
-                herdBadge: true
+                herdBadge: true,
+                testBadge: true,
+                docsBadge: true
             }
         };
 
@@ -183,25 +193,26 @@ export class DiscussionManager {
     async saveDiscussion(discussion: Discussion): Promise<void> {
         if (discussion.id.startsWith('temp-') || discussion.id.startsWith('remote-')) return;
         
-        const filePath = vscode.Uri.joinPath(this.discussionsDir, `${discussion.id}.json`);
         this._onDidChangeDiscussions.fire();
-        const tempPath = vscode.Uri.joinPath(this.discussionsDir, `${discussion.id}.tmp`);
         
         // Use a background task to avoid blocking the UI thread for large files
         this.saveMutex = this.saveMutex.then(async () => {
-            try {
-                const content = Buffer.from(JSON.stringify(discussion, null, 2), 'utf8');
+            const content = Buffer.from(JSON.stringify(discussion, null, 2), 'utf8');
+            const folders = vscode.workspace.workspaceFolders ||[];
+            
+            for (const folder of folders) {
+                const dir = vscode.Uri.joinPath(folder.uri, '.lollms', 'discussions');
+                const filePath = vscode.Uri.joinPath(dir, `${discussion.id}.json`);
+                const tempPath = vscode.Uri.joinPath(dir, `${discussion.id}.tmp`);
                 
-                // Write to .tmp first
-                await vscode.workspace.fs.writeFile(tempPath, content);
-                
-                // Rename .tmp to .json (Atomic-like operation on most FS)
-                await vscode.workspace.fs.rename(tempPath, filePath, { overwrite: true });
-            } catch (e) {
-                console.error(`Failed to save discussion ${discussion.id}:`, e);
-                // Attempt to clean up temp file
-                try { await vscode.workspace.fs.delete(tempPath, { useTrash: false }); } catch {}
-                throw e;
+                try {
+                    await vscode.workspace.fs.createDirectory(dir);
+                    await vscode.workspace.fs.writeFile(tempPath, content);
+                    await vscode.workspace.fs.rename(tempPath, filePath, { overwrite: true });
+                } catch (e) {
+                    console.error(`Failed to save discussion ${discussion.id} in ${folder.name}:`, e);
+                    try { await vscode.workspace.fs.delete(tempPath, { useTrash: false }); } catch {}
+                }
             }
         }).catch(e => {
             console.error("Error in save mutex chain", e);
@@ -211,28 +222,32 @@ export class DiscussionManager {
     }
     
     async getDiscussion(id: string): Promise<Discussion | null> {
-        const filePath = vscode.Uri.joinPath(this.discussionsDir, `${id}.json`);
-        try {
-            const content = await vscode.workspace.fs.readFile(filePath);
-            const jsonString = Buffer.from(content).toString('utf8').trim();
-            
-            if (!jsonString) {
-                Logger.warn(`Discussion file ${id}.json is empty. Returning recovery skeleton.`);
-                return this.createRecoverySkeleton(id);
-            }
+        const folders = vscode.workspace.workspaceFolders ||[];
+        for (const folder of folders) {
+            const filePath = vscode.Uri.joinPath(folder.uri, '.lollms', 'discussions', `${id}.json`);
+            try {
+                const content = await vscode.workspace.fs.readFile(filePath);
+                const jsonString = Buffer.from(content).toString('utf8').trim();
+                
+                if (!jsonString) {
+                    continue;
+                }
 
-            const data = JSON.parse(jsonString);
-            
-            // Migration: Ensure mandatory arrays exist
-            if (!data.messages) data.messages = [];
-            if (!data.importedSkills) data.importedSkills = [];
-            if (!data.capabilities) data.capabilities = this.getLastCapabilities();
-            
-            return data;
-        } catch (error) { 
-            Logger.error(`[DiscussionManager] Failed to read/parse discussion ${id}`, error);
-            return null; 
+                const data = JSON.parse(jsonString);
+                
+                // Migration: Ensure mandatory arrays exist
+                if (!data.messages) data.messages =[];
+                if (!data.importedSkills) data.importedSkills =[];
+                if (!data.capabilities) data.capabilities = this.getLastCapabilities();
+                
+                return data;
+            } catch (error) { 
+                // Skip to next folder if not found
+            }
         }
+        
+        Logger.warn(`Discussion file ${id}.json not found. Returning recovery skeleton.`);
+        return this.createRecoverySkeleton(id);
     }
 
     private createRecoverySkeleton(id: string): Discussion {
@@ -248,41 +263,39 @@ export class DiscussionManager {
     }
 
     async getAllDiscussions(): Promise<Discussion[]> {
-        if (!this.discussionsDir) return [];
+        const folders = vscode.workspace.workspaceFolders || [];
+        if (folders.length === 0) return[];
 
-        try {
-            // 1. Pre-check: Ensure directory exists
+        const resultsMap = new Map<string, Discussion>();
+
+        for (const folder of folders) {
+            const dir = vscode.Uri.joinPath(folder.uri, '.lollms', 'discussions');
             try {
-                await vscode.workspace.fs.stat(this.discussionsDir);
-            } catch {
-                await vscode.workspace.fs.createDirectory(this.discussionsDir);
-                return []; 
-            }
-
-            const entries = await vscode.workspace.fs.readDirectory(this.discussionsDir);
-            // Relaxed filter: Allow any non-directory entry ending in .json
-            const jsonFiles = entries.filter(([name, type]) => 
-                type !== vscode.FileType.Directory && name.endsWith('.json')
-            );
-            
-            const results: Discussion[] = [];
-            for (const [name] of jsonFiles) {
-                try {
-                    const id = path.parse(name).name;
-                    const discussion = await this.getDiscussion(id);
-                    if (discussion && discussion.messages) {
-                        results.push(discussion);
+                await vscode.workspace.fs.stat(dir);
+                const entries = await vscode.workspace.fs.readDirectory(dir);
+                const jsonFiles = entries.filter(([name, type]) => 
+                    type !== vscode.FileType.Directory && name.endsWith('.json')
+                );
+                
+                for (const [name] of jsonFiles) {
+                    try {
+                        const id = path.parse(name).name;
+                        if (!resultsMap.has(id)) {
+                            const discussion = await this.getDiscussion(id);
+                            if (discussion && discussion.messages) {
+                                resultsMap.set(id, discussion);
+                            }
+                        }
+                    } catch (err) {
+                        console.error(`[DiscussionManager] Skipping corrupt discussion: ${name}`, err);
                     }
-                } catch (err) {
-                    console.error(`[DiscussionManager] Skipping corrupt discussion: ${name}`, err);
                 }
+            } catch (error) {
+                // Directory might not exist, skip
             }
-            
-            return results.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-        } catch (error) {
-            Logger.error("Failed to fetch discussions", error);
-            return [];
         }
+        
+        return Array.from(resultsMap.values()).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
     }
 
     /**
@@ -336,11 +349,14 @@ export class DiscussionManager {
 
     async deleteDiscussion(id: string): Promise<void> {
         this.processManager.cancelForDiscussion(id);
-        const filePath = vscode.Uri.joinPath(this.discussionsDir, `${id}.json`);
-        try { 
-            await vscode.workspace.fs.delete(filePath); 
-            this._onDidChangeDiscussions.fire();
-        } catch (error) {}
+        const folders = vscode.workspace.workspaceFolders ||[];
+        for (const folder of folders) {
+            const filePath = vscode.Uri.joinPath(folder.uri, '.lollms', 'discussions', `${id}.json`);
+            try { 
+                await vscode.workspace.fs.delete(filePath); 
+            } catch (error) {}
+        }
+        this._onDidChangeDiscussions.fire();
     }
 
     async cleanEmptyDiscussions(): Promise<number> {
@@ -356,16 +372,38 @@ export class DiscussionManager {
     }
     
     async getGroups(): Promise<DiscussionGroup[]> {
-        try {
-            const content = await vscode.workspace.fs.readFile(this.groupsFile);
-            const jsonString = Buffer.from(content).toString('utf8');
-            return JSON.parse(jsonString);
-        } catch (error) { return []; }
+        const folders = vscode.workspace.workspaceFolders ||[];
+        const groupsMap = new Map<string, DiscussionGroup>();
+
+        for (const folder of folders) {
+            const groupsFile = vscode.Uri.joinPath(folder.uri, '.lollms', 'discussion_groups.json');
+            try {
+                const content = await vscode.workspace.fs.readFile(groupsFile);
+                const jsonString = Buffer.from(content).toString('utf8');
+                const groups: DiscussionGroup[] = JSON.parse(jsonString);
+                for (const g of groups) {
+                    if (!groupsMap.has(g.id)) {
+                        groupsMap.set(g.id, g);
+                    }
+                }
+            } catch (error) { }
+        }
+        return Array.from(groupsMap.values());
     }
 
     async saveGroups(groups: DiscussionGroup[]): Promise<void> {
         const content = Buffer.from(JSON.stringify(groups, null, 2), 'utf8');
-        await vscode.workspace.fs.writeFile(this.groupsFile, content);
+        const folders = vscode.workspace.workspaceFolders || [];
+        for (const folder of folders) {
+            const groupsFile = vscode.Uri.joinPath(folder.uri, '.lollms', 'discussion_groups.json');
+            try {
+                const dir = vscode.Uri.joinPath(folder.uri, '.lollms');
+                await vscode.workspace.fs.createDirectory(dir);
+                await vscode.workspace.fs.writeFile(groupsFile, content);
+            } catch (e) {
+                console.error(`Failed to sync groups to ${folder.name}`, e);
+            }
+        }
     }
 
     async deleteGroup(groupId: string): Promise<void> {

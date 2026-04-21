@@ -19,11 +19,14 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
         return "";
     }
 
-    public setup(context: vscode.ExtensionContext) {
+    public async setup(context: vscode.ExtensionContext) {
         this.context = context;
         
         // Restore state
         this.restoreState();
+        
+        // GC: Purge files from disk that aren't in our current memory state (orphans from previous crashes)
+        await this.purgeOrphanedDiffs();
 
         // Track active editor changes to toggle the buttons in the title bar
         context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(editor => {
@@ -121,11 +124,15 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
         const fileName = path.basename(originalUri.fsPath);
         const ext = path.extname(fileName);
         const name = path.basename(fileName, ext);
-        const timestamp = Date.now();
-        const diffFileName = `${name}_generated_${timestamp}${ext}`;
+        
+        // Use a hash of the original path to ensure a STABLE filename for this specific file
+        const crypto = require('crypto');
+        const hash = crypto.createHash('md5').update(originalUri.fsPath).digest('hex').substring(0, 8);
+        const diffFileName = `${name}.${hash}.proposed${ext}`;
         const generatedUri = vscode.Uri.joinPath(diffDir, diffFileName);
 
         try {
+            // Overwrite the existing "proposed" file for this specific document if it exists
             await vscode.workspace.fs.writeFile(generatedUri, Buffer.from(newContent, 'utf8'));
         } catch (e: any) {
             vscode.window.showErrorMessage(`Failed to write temp file for diff: ${e.message}`);
@@ -189,9 +196,37 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
             this.updateContext(vscode.window.activeTextEditor);
 
             try {
-                await vscode.workspace.fs.delete(generatedUri);
+                // Force delete the temporary proposed file immediately
+                await vscode.workspace.fs.delete(generatedUri, { recursive: false, useTrash: false });
             } catch (e) {
                 console.error("Failed to delete diff file", e);
+            }
+        }
+    }
+
+    /**
+     * Scans the workspace and deletes any .proposed files that aren't 
+     * registered in the current session.
+     */
+    private async purgeOrphanedDiffs() {
+        const folders = vscode.workspace.workspaceFolders;
+        if (!folders) return;
+
+        for (const folder of folders) {
+            const diffDir = vscode.Uri.joinPath(folder.uri, '.lollms', 'diffs');
+            try {
+                const entries = await vscode.workspace.fs.readDirectory(diffDir);
+                for (const [name, type] of entries) {
+                    if (type === vscode.FileType.File && name.includes('.proposed')) {
+                        const fullUri = vscode.Uri.joinPath(diffDir, name);
+                        // If not in our active session tracking map, kill it
+                        if (!this.generatedToOriginal.has(fullUri.fsPath)) {
+                            await vscode.workspace.fs.delete(fullUri, { useTrash: false });
+                        }
+                    }
+                }
+            } catch (e) {
+                // Directory likely doesn't exist
             }
         }
     }

@@ -852,6 +852,8 @@ export function updateBadges() {
         herdBadge: true,
         webSearchBadge: true,
         autoSkillBadge: true,
+        testBadge: true,
+        docsBadge: true,
         ...(caps.guiState || {})
     };
 
@@ -1040,6 +1042,66 @@ export function updateBadges() {
             }
         );
         if (verifierBadge) taskGroup.appendChild(verifierBadge);
+
+        const testBadge = createToggleBadge(
+            '🧪 Test',
+            'test',
+            guiState.testBadge !== false,
+            caps.testMode,
+            () => {
+                vscode.postMessage({
+                    command: 'updateDiscussionCapabilitiesPartial',
+                    partial: { testMode: !caps.testMode }
+                });
+            }
+        );
+        if (testBadge) {
+            if (caps.testMode) {
+                testBadge.style.backgroundColor = '#e84393';
+                testBadge.style.color = 'white';
+            }
+            taskGroup.appendChild(testBadge);
+        }
+
+        const docsBadge = createToggleBadge(
+            '📖 Docs',
+            'docs',
+            guiState.docsBadge !== false,
+            caps.documentationMode,
+            () => {
+                vscode.postMessage({
+                    command: 'updateDiscussionCapabilitiesPartial',
+                    partial: { documentationMode: !caps.documentationMode }
+                });
+            }
+        );
+
+        const gitWorkflowBadge = createToggleBadge(
+            '🐙 Git',
+            'git',
+            true,
+            caps.gitAutoWorkflow,
+            () => {
+                vscode.postMessage({
+                    command: 'updateDiscussionCapabilitiesPartial',
+                    partial: { gitAutoWorkflow: !caps.gitAutoWorkflow }
+                });
+            }
+        );
+        if (gitWorkflowBadge) {
+            if (caps.gitAutoWorkflow) {
+                gitWorkflowBadge.style.backgroundColor = 'var(--vscode-gitDecoration-modifiedResourceForeground)';
+                gitWorkflowBadge.style.color = 'white';
+            }
+            taskGroup.appendChild(gitWorkflowBadge);
+        }
+        if (docsBadge) {
+            if (caps.documentationMode) {
+                docsBadge.style.backgroundColor = '#00b894';
+                docsBadge.style.color = 'white';
+            }
+            taskGroup.appendChild(docsBadge);
+        }
 
         const herdBadge = createToggleBadge('🐂 Multi-Agent', 'herd', guiState.herdBadge, caps.herdMode, () => {
             vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { herdMode: !caps.herdMode } });
@@ -1532,12 +1594,14 @@ export function renderSkillsTree(container: HTMLElement, node: any, activeSkillI
             checkbox.className = 'skill-checkbox';
             checkbox.value = child.id;
             checkbox.id = `skill-${child.id}`;
-            // FIX: Check if this specific skill is in the active list
             checkbox.checked = activeSkillIds.includes(child.id);
+
+            // Clean the label for the UI
+            const displayLabel = child.label.replace(/SOURCE OF TRUTH:\s*/gi, '').trim();
 
             const label = document.createElement('label');
             label.htmlFor = `skill-${child.id}`;
-            label.innerHTML = `<span class="codicon codicon-file-code"></span> ${child.label}`;
+            label.innerHTML = `<span class="codicon codicon-bookmark"></span> 💎 ${displayLabel}`;
             label.title = child.description || '';
             
             const div = document.createElement('div');

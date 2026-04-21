@@ -17,8 +17,8 @@ export const SYSTEM_RESPONSE_PROFILES: ResponseProfile[] = [
     {
         id: "structured",
         name: "Structured (Analytical)",
-        description: "Formal Problem/Hypothesis/Fix breakdown.",
-        systemPrompt: "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this three-part structure for every response:\n  1. **Problem**: Identify what is being asked or what issue was found.\n  2. **Hypothesis**: Describe the technical path chosen and why.\n  3. **Fix**: Provide the actual implementation or code.",
+        description: "Formal Discover/Explain/Think/Act breakdown.",
+        systemPrompt: "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this four-part structure for every response:\n  1. **Discover**: Identify what is being asked or what issue was found.\n  2. **Explain**: Break down the underlying mechanics or context of the issue.\n  3. **Think**: Describe the technical path chosen to resolve it and why.\n  4. **Act**: Provide the actual implementation, code, or tool call.",
         prefix: ""
     },
     {

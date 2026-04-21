@@ -535,6 +535,90 @@ export class CodeGraphManager {
        MERMAID EXPORT
        ========================= */
 
+    getArchitectureAnalysis(target: string, queryType: 'outline' | 'dependencies' | 'usages'): string {
+        if (this.buildState !== 'ready') return "Graph not built. Please run update_code_graph first.";
+        
+        const normalizedTarget = target.replace(/\\/g, '/');
+        const targetNodes = this.graph.nodes.filter(n => 
+            n.label === target || 
+            (n.filePath && (n.filePath === normalizedTarget || n.filePath.endsWith('/' + normalizedTarget))) ||
+            n.id === target
+        );
+
+        if (targetNodes.length === 0) return `Target '${target}' not found in the architecture graph.`;
+
+        let result = `Architecture Analysis for '${target}':\n\n`;
+
+        targetNodes.forEach(tNode => {
+            result += `###[${tNode.type.toUpperCase()}] ${tNode.label} ${tNode.filePath ? `(in ${tNode.filePath})` : ''}\n`;
+            
+            if (queryType === 'outline') {
+                if (tNode.type === 'file' || tNode.type === 'class') {
+                    const children = this.graph.edges.filter(e => e.source === tNode.id && e.label === 'contains').map(e => this.graph.nodes.find(n => n.id === e.target));
+                    result += `Contains:\n`;
+                    let hasItems = false;
+                    children.forEach(c => {
+                        if (c) {
+                            result += `- [${c.type}] ${c.signature || c.label}\n`;
+                            hasItems = true;
+                        }
+                    });
+                    if (!hasItems) result += `- (Empty)\n`;
+                } else {
+                    result += `Outline not applicable for type ${tNode.type}. Use 'usages' or 'dependencies'.\n`;
+                }
+            } else if (queryType === 'dependencies') {
+                const outgoing = this.graph.edges.filter(e => e.source === tNode.id && e.label !== 'contains');
+                result += `Dependencies (What this uses/calls/imports):\n`;
+                let hasItems = false;
+                outgoing.forEach(e => {
+                    const dest = this.graph.nodes.find(n => n.id === e.target);
+                    if (dest) {
+                        result += `-[${e.label}] -> [${dest.type}] ${dest.label} ${dest.filePath ? `(${dest.filePath})` : ''}\n`;
+                        hasItems = true;
+                    }
+                });
+                if (!hasItems) result += `- (None found)\n`;
+            } else if (queryType === 'usages') {
+                const incoming = this.graph.edges.filter(e => e.target === tNode.id && e.label !== 'contains');
+                result += `Usages (What uses/calls/imports this):\n`;
+                let hasItems = false;
+                incoming.forEach(e => {
+                    const src = this.graph.nodes.find(n => n.id === e.source);
+                    if (src) {
+                        result += `- [${e.label}] <- [${src.type}] ${src.label} ${src.filePath ? `(${src.filePath})` : ''}\n`;
+                        hasItems = true;
+                    }
+                });
+                if (!hasItems) result += `- (None found)\n`;
+            }
+            result += `\n`;
+        });
+
+        return result.trim();
+    }
+
+    generateTextSummary(): string {
+        if (this.buildState !== 'ready') return "Graph not built.";
+        let out = "Project Architecture Summary:\n";
+        const files = this.graph.nodes.filter(n => n.type === 'file');
+        files.forEach(f => {
+            out += `- ${f.filePath}:\n`;
+            
+            const contains = this.graph.edges.filter(e => e.source === f.id && e.label === 'contains').map(e => this.graph.nodes.find(n => n.id === e.target));
+            const imports = this.graph.edges.filter(e => e.source === f.id && e.label === 'imports').map(e => this.graph.nodes.find(n => n.id === e.target));
+            
+            const classes = contains.filter(n => n?.type === 'class').map(n => n?.label);
+            const funcs = contains.filter(n => n?.type === 'function').map(n => n?.label);
+            const imps = imports.map(n => n?.label);
+            
+            if (classes.length) out += `  Classes: ${classes.join(', ')}\n`;
+            if (funcs.length) out += `  Functions: ${funcs.join(', ')}\n`;
+            if (imps.length) out += `  Imports: ${imps.join(', ')}\n`;
+        });
+        return out;
+    }
+
     generateMermaid(type: string): string {
         // Apply global init for better dark mode rendering
         const header = "%%{init: {'theme': 'dark', 'themeVariables': { 'lineColor': '#569cd6' }}}%%\n";

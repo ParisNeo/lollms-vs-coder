@@ -38,34 +38,20 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     private static readonly DEPTH_THRESHOLD = 5;
     private static readonly MUTE_DEEP_WARNING_KEY = 'lollms.muteDeepFolderWarning';
     
-    private static readonly BUILD_DEBUG_PATTERNS = [
-        'build', 'dist', 'out', 'bin', 'obj', 'target', 'debug', 'release', 
-        'node_modules', 'cmake-build-debug', 'cmake-build-release', 'vendor',
-        'pkg', 'artifacts'
-    ];
-
-    private static readonly VENV_PATTERNS = [
-        'venv', 'env', '.venv', '.env', 'conda-env', 'pypy', 'virtualenv'
-    ];
-
     private _onDidChangeFileDecorations: vscode.EventEmitter<vscode.Uri | vscode.Uri[]> = new vscode.EventEmitter<vscode.Uri | vscode.Uri[]>();
     readonly onDidChangeFileDecorations: vscode.Event<vscode.Uri | vscode.Uri[]> = this._onDidChangeFileDecorations.event;
 
-    private workspaceFolder: vscode.WorkspaceFolder;
     private context: vscode.ExtensionContext;
-    private stateKey: string;
+    private readonly stateKey: string = 'lollms-context-selection-unified';
     
-    // Default folders to show as collapsed (content hidden)
     private defaultCollapsedFolders = new Set([
         'node_modules', 'dist', 'build', 'out', 'bin', 'obj', 'target',
         'venv', '.venv', 'env', '.env', 
         '.git', '.idea', '.vscode', '.ruff_cache'
     ]);
 
-    constructor(workspaceFolder: vscode.WorkspaceFolder, context: vscode.ExtensionContext) {
-        this.workspaceFolder = workspaceFolder;
+    constructor(context: vscode.ExtensionContext) {
         this.context = context;
-        this.stateKey = `context-state-${this.workspaceFolder.uri.fsPath}`;
         
         vscode.workspace.onDidChangeConfiguration(e => {
             if (e.affectsConfiguration('lollmsVsCoder.contextFileExceptions')) {
@@ -166,20 +152,23 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     }
 
     async getChildren(element?: ContextItem): Promise<ContextItem[]> {
-        if (!this.workspaceFolder) {
-            return [];
-        }
+        const folders = vscode.workspace.workspaceFolders;
+        if (!folders || folders.length === 0) return [];
 
         if (element && element.state === 'collapsed') {
             return [];
         }
 
-        // --- SMART FOLDER SCOUTING ---
-        if (element && element.isDirectory) {
+        // Root level: show all workspace folders
+        if (!element) {
+            return folders.map(f => new ContextItem(f.uri, this.getStateForUri(f.uri), true));
+        }
+
+        if (element.isDirectory) {
             this.scoutFolderForCollapsing(element);
         }
 
-        const parentUri = element ? element.resourceUri : this.workspaceFolder.uri;
+        const parentUri = element.resourceUri;
         let entries;
         try {
             entries = await vscode.workspace.fs.readDirectory(parentUri);

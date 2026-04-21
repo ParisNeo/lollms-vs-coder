@@ -102,6 +102,7 @@ export class SelectionHoverProvider implements vscode.HoverProvider {
             
             contents.appendMarkdown(`[✨ **Lollms HUD: Analyze ${symbolName}**](command:lollms-vs-coder.triggerSurgicalInsight?${args})\n\n`);
             contents.appendMarkdown(`[📊 **Locate in Architecture Graph**](command:lollms-vs-coder.findInGraph?${graphArgs})\n\n`);
+            contents.appendMarkdown(`[🔍 **Analyze Dependencies**](command:lollms-vs-coder.analyzeDependencies?${graphArgs})\n\n`);
             
             shouldShow = true;
         }

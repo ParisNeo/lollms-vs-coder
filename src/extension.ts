@@ -299,51 +299,39 @@ export async function activate(context: vscode.ExtensionContext) {
     }));
 
     // Context
-    let contextStateProvider: ContextStateProvider | undefined;
-    const fileDecorationProvider = new FileDecorationProvider(undefined);
+    const contextStateProvider = new ContextStateProvider(context);
+    contextManager.setContextStateProvider(contextStateProvider);
+    
+    const fileDecorationProvider = new FileDecorationProvider(contextStateProvider);
     context.subscriptions.push(vscode.window.registerFileDecorationProvider(fileDecorationProvider));
+    vscode.window.registerTreeDataProvider('lollmsFileTreeView', contextStateProvider);
 
-    // Workspace Switching Logic
+    // Workspace Switching Logic (Now only handles UI updates, not state resets)
     async function switchActiveWorkspace(folder: vscode.WorkspaceFolder) {
-        // Optimization: If we are already in this workspace, don't trigger a destructive reload
         if (activeWorkspaceFolder?.uri.toString() === folder.uri.toString()) {
             return;
         }
-
-        contextManager.clearAllCaches(); // WIPE CACHE FOR NEW FOLDER
 
         const isInitialLoad = activeWorkspaceFolder === undefined;
         activeWorkspaceFolder = folder;
         statusBar.updateActiveWorkspace(folder);
 
-        await discussionManager.switchWorkspace(folder.uri);
-        await skillsManager.switchWorkspace(folder.uri, context.extensionUri);
+        // Notify managers to refresh (Merge logic now handles the multi-root data)
+        await discussionManager.initialize();
+        await skillsManager.switchWorkspace(vscode.workspace.workspaceFolders?.[0].uri || folder.uri, context.extensionUri);
+        await projectMemoryManager.getMemories();
+        
         services.treeProviders.skills?.refresh();
+        services.treeProviders.discussion?.refresh();
         
+        // Code Graph is specifically allowed to focus on the active folder
         codeGraphManager.setWorkspaceRoot(folder.uri);
-        services.treeProviders.codeExplorer?.refresh();
+        codeGraphManager.setContextSetter((key, value) => {
+            vscode.commands.executeCommand('setContext', `lollms:${key}`, value);
+        });
 
-        // Switch RLM DB Workspace
-        await rlmDb.switchWorkspace(folder.uri);
-
-        // Switch Project Memory Workspace
-        await projectMemoryManager.switchWorkspace(folder.uri);
-        
-        if (contextStateProvider) {
-            await contextStateProvider.switchWorkspace(folder);
-        } else {
-            contextStateProvider = new ContextStateProvider(folder, context);
-            contextManager.setContextStateProvider(contextStateProvider);
-            codeGraphManager.setContextSetter((key, value) => {
-                vscode.commands.executeCommand('setContext', `lollms:${key}`, value);
-            });
-            fileDecorationProvider.updateStateProvider(contextStateProvider);
-            vscode.window.registerTreeDataProvider('lollmsFileTreeView', contextStateProvider);
-        }
-
-        // Only dispose panels if this is a manual switch between different folders.
-        // If it's the first time we detect a workspace on startup, leave open panels alone.
         if (!isInitialLoad) {
+            // If it's the first time we detect a workspace on startup, leave open panels alone.
             ChatPanel.panels.forEach(panel => panel.dispose());
             vscode.window.showInformationMessage(`Lollms workspace switched to '${folder.name}'.`);
         }
@@ -368,6 +356,11 @@ export async function activate(context: vscode.ExtensionContext) {
     }
 
     initializeWorkspace();
+    
+    // Start the Neural Dream Cycle
+    projectMemoryManager.performDreamCycle().then(() => {
+        Logger.info("Dream Cycle complete: Neural memory reorganized.");
+    });
 
     // --- FIRST RUN & COMPLIANCE WIZARD ---
     const wasConfigured = context.globalState.get<boolean>('lollms.wasConfigured', false);

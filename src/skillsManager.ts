@@ -176,7 +176,6 @@ function xmlToSkill(xml: string, forcedScope?: 'global' | 'local'): Skill {
 
 export class SkillsManager {
     private globalSkillsDir: vscode.Uri;
-    private localSkillsDir: vscode.Uri | undefined;
     private extensionUri?: vscode.Uri;
 
     private cachedGlobalSkills: Skill[] | null = null;
@@ -199,15 +198,16 @@ export class SkillsManager {
     }
 
     public async switchWorkspace(workspaceRoot: vscode.Uri, extensionUri: vscode.Uri) {
-        this.localSkillsDir = vscode.Uri.joinPath(workspaceRoot, '.lollms', 'skills');
         this.extensionUri = extensionUri;
         this.invalidateCache('local');
         
-        try {
-            if (this.localSkillsDir) {
-                await vscode.workspace.fs.createDirectory(this.localSkillsDir);
-            }
-        } catch (e) {}
+        const folders = vscode.workspace.workspaceFolders ||[];
+        for (const folder of folders) {
+            const dir = vscode.Uri.joinPath(folder.uri, '.lollms', 'skills');
+            try {
+                await vscode.workspace.fs.createDirectory(dir);
+            } catch (e) {}
+        }
 
         await this.ensureBootstrapSkills();
     }
@@ -292,12 +292,21 @@ export class SkillsManager {
     }
 
     private async writeSkillToFile(skill: Skill): Promise<void> {
-        let rootDir = skill.scope === 'global' ? this.globalSkillsDir : this.localSkillsDir;
-        if (!rootDir) {
-            if (skill.scope === 'local') throw new Error("No active workspace for local skill.");
-            rootDir = this.globalSkillsDir;
+        if (skill.scope === 'global') {
+            await this._writeSkillToRoot(skill, this.globalSkillsDir);
+        } else {
+            const folders = vscode.workspace.workspaceFolders ||[];
+            if (folders.length === 0) throw new Error("No active workspace for local skill.");
+            
+            for (const folder of folders) {
+                const dir = vscode.Uri.joinPath(folder.uri, '.lollms', 'skills');
+                await this._writeSkillToRoot(skill, dir);
+            }
         }
+        this.invalidateCache(skill.scope);
+    }
 
+    private async _writeSkillToRoot(skill: Skill, rootDir: vscode.Uri): Promise<void> {
         try { await vscode.workspace.fs.createDirectory(rootDir); } catch (e) {}
 
         const existingUri = await this.findSkillFileUri(skill.id, rootDir);
@@ -330,7 +339,6 @@ export class SkillsManager {
             const filePath = vscode.Uri.joinPath(skillFolder, `SKILL.md`);
             const mdContent = skillToMd(skill);
             await vscode.workspace.fs.writeFile(filePath, Buffer.from(mdContent, 'utf8'));
-            this.invalidateCache(skill.scope);
         } catch (e) {
             console.error(`[SkillsManager] Failed to create directory hierarchy or file`, e);
         }
@@ -459,9 +467,25 @@ export class SkillsManager {
     }
 
     public async getLocalSkills(): Promise<Skill[]> {
-        if (!this.localSkillsDir) return [];
         if (this.cachedLocalSkills) return this.cachedLocalSkills;
-        this.cachedLocalSkills = await this.loadSkillsFromDir(this.localSkillsDir, 'local');
+        
+        const folders = vscode.workspace.workspaceFolders || [];
+        const uniqueLocalSkills = new Map<string, Skill>();
+        
+        for (const folder of folders) {
+            const dir = vscode.Uri.joinPath(folder.uri, '.lollms', 'skills');
+            const folderSkills = await this.loadSkillsFromDir(dir, 'local');
+            for (const skill of folderSkills) {
+                // Deduplicate by ID: Keep the one with the latest timestamp
+                if (!uniqueLocalSkills.has(skill.id) || (skill.timestamp > uniqueLocalSkills.get(skill.id)!.timestamp)) {
+                    // Cleanup name: Remove repetitive prefix if it snuck into the data
+                    skill.name = skill.name.replace(/SOURCE OF TRUTH:\s*/gi, '').trim();
+                    uniqueLocalSkills.set(skill.id, skill);
+                }
+            }
+        }
+        
+        this.cachedLocalSkills = Array.from(uniqueLocalSkills.values());
         return this.cachedLocalSkills;
     }
 
@@ -494,10 +518,20 @@ export class SkillsManager {
     }
 
     public async deleteSkill(skillId: string, scope: 'global' | 'local'): Promise<void> {
-        const targetRoot = scope === 'global' ? this.globalSkillsDir : this.localSkillsDir;
-        if (!targetRoot) return;
-        
-        const existingUri = await this.findSkillFileUri(skillId, targetRoot);
+        if (scope === 'global') {
+            await this._deleteSkillFromRoot(skillId, this.globalSkillsDir);
+        } else {
+            const folders = vscode.workspace.workspaceFolders ||[];
+            for (const folder of folders) {
+                const dir = vscode.Uri.joinPath(folder.uri, '.lollms', 'skills');
+                await this._deleteSkillFromRoot(skillId, dir);
+            }
+        }
+        this.invalidateCache(scope);
+    }
+
+    private async _deleteSkillFromRoot(skillId: string, rootDir: vscode.Uri) {
+        const existingUri = await this.findSkillFileUri(skillId, rootDir);
         if (existingUri) {
             try {
                 if (existingUri.fsPath.toLowerCase().endsWith('skill.md')) {
@@ -505,7 +539,6 @@ export class SkillsManager {
                 } else {
                     await vscode.workspace.fs.delete(existingUri, { useTrash: false });
                 }
-                this.invalidateCache(scope);
             } catch (e) {}
         }
     }
@@ -519,10 +552,12 @@ export class SkillsManager {
             } catch {}
         }
         // Delete all from Local
-        if (this.localSkillsDir) {
+        const folders = vscode.workspace.workspaceFolders || [];
+        for (const folder of folders) {
+            const dir = vscode.Uri.joinPath(folder.uri, '.lollms', 'skills');
             try {
-                await vscode.workspace.fs.delete(this.localSkillsDir, { recursive: true, useTrash: false });
-                await vscode.workspace.fs.createDirectory(this.localSkillsDir);
+                await vscode.workspace.fs.delete(dir, { recursive: true, useTrash: false });
+                await vscode.workspace.fs.createDirectory(dir);
             } catch {}
         }
         this.invalidateCache();

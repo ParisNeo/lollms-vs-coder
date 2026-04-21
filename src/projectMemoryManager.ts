@@ -1,47 +1,69 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 
-export interface MemoryEntry {
+export type MemoryTier = 0 | 1 | 2 | 3;
+
+export interface Engram {
     id: string;
     title: string;
     content: string;
     timestamp: number;
-    importance: number; // 0.0 to 1.0
+    importance: number; // 0 - 100
     lastUsed: number;
-    category: string; // Hierarchical path: "coding/python/errors"
+    category: string;
+    tier: MemoryTier;
+    scope: 'local' | 'global';
+}
+
+export interface AffectiveMatrix {
+    relationshipScore: number; // 0 (Hostile) to 100 (Worship)
+    label: string;
 }
 
 export class ProjectMemoryManager {
-    private readonly DECAY_RATE = 0.05; // Importance lost per day of inactivity
-    private readonly ACTIVE_THRESHOLD = 0.2; // Min score to stay in Layer 1 context
-    private localPath?: vscode.Uri;
-    private memoryStore: Map<string, MemoryItem> = new Map();
+    private readonly DECAY_STEP = 2; // Importance lost per dream cycle
+    private readonly TIER_THRESHOLD = 25; // Points to stay in Tier 1
+    private memoryStore: Map<string, any> = new Map();
     private _onDidChange = new vscode.EventEmitter<void>();
     public readonly onDidChange = this._onDidChange.event;
 
     constructor(private context: vscode.ExtensionContext) {}
 
     public async switchWorkspace(folder: vscode.Uri) {
-        this.localPath = vscode.Uri.joinPath(folder, '.lollms', 'project_memory.json');
+        // We now handle all workspace folders dynamically
         await this.getMemories(); // Pre-load cache
         this._onDidChange.fire();
     }
 
-    private _cache: MemoryEntry[] = [];
+    private _cache: MemoryEntry[] =[];
 
     public async getMemories(): Promise<MemoryEntry[]> {
-        if (!this.localPath) {
+        const folders = vscode.workspace.workspaceFolders ||[];
+        if (folders.length === 0) {
             this._cache = [];
-            return [];
+            return[];
         }
-        try {
-            const content = await vscode.workspace.fs.readFile(this.localPath);
-            const data = JSON.parse(Buffer.from(content).toString('utf8'));
-            this._cache = Array.isArray(data) ? data : [];
-        } catch (error) {
-            // If file doesn't exist or is corrupted, start with an empty cache for this workspace
-            this._cache = [];
+        
+        const memoryMap = new Map<string, MemoryEntry>();
+        
+        for (const folder of folders) {
+            const localPath = vscode.Uri.joinPath(folder.uri, '.lollms', 'project_memory.json');
+            try {
+                const content = await vscode.workspace.fs.readFile(localPath);
+                const data = JSON.parse(Buffer.from(content).toString('utf8'));
+                if (Array.isArray(data)) {
+                    for (const m of data) {
+                        if (!memoryMap.has(m.id) || memoryMap.get(m.id)!.timestamp < m.timestamp) {
+                            memoryMap.set(m.id, m);
+                        }
+                    }
+                }
+            } catch (error) {
+                // File might not exist
+            }
         }
+        
+        this._cache = Array.from(memoryMap.values());
         return this._cache;
     }
 
@@ -82,14 +104,16 @@ export class ProjectMemoryManager {
         }
 
         // 2. Persist
-        if (this.localPath) {
+        const folders = vscode.workspace.workspaceFolders ||[];
+        for (const folder of folders) {
+            const localPath = vscode.Uri.joinPath(folder.uri, '.lollms', 'project_memory.json');
             try {
-                const dir = vscode.Uri.joinPath(this.localPath, '..');
+                const dir = vscode.Uri.joinPath(localPath, '..');
                 await vscode.workspace.fs.createDirectory(dir);
                 const buffer = Buffer.from(JSON.stringify(this._cache, null, 2), 'utf8');
-                await vscode.workspace.fs.writeFile(this.localPath, buffer);
+                await vscode.workspace.fs.writeFile(localPath, buffer);
             } catch (e) {
-                console.error("Failed to save project memory", e);
+                console.error(`Failed to save project memory to ${folder.name}`, e);
             }
         }
 
@@ -132,57 +156,112 @@ export class ProjectMemoryManager {
     }
 
     /**
-     * Dual-Layer Context Generation:
-     * Layer 1: High-score items (Full text)
-     * Layer 2: Low-score items (Categorized Handles/Index only)
+     * TIERED NEURAL MEMORY RECOVERY
+     * Injects memory based on the Neural System Specification (Tier 0-2).
+     * Tier 3 remains hidden unless explicitly searched.
      */
     public async getFormattedMemoryBlock(): Promise<string> {
-        const memories = await this.getMemories();
-        if (memories.length === 0) {
-            return "### 🧠 PROJECT MEMORY: (Empty)";
-        }
+        const engrams = await this.getMemories();
+        const affective = await this.getAffectiveMatrix();
+        
+        let block = `\n# 🧠 NEURAL MEMORY SYSTEM (TIERED RLM)\n`;
+        block += `[AFFECTIVE MATRIX]: Relationship state is "${affective.label}" (${affective.relationshipScore}/100).\n`;
 
-        const now = Date.now();
-        const scored = memories.map(m => {
-            const ageDays = (now - m.lastUsed) / (1000 * 60 * 60 * 24);
-            const score = Math.max(0, m.importance - (ageDays * this.DECAY_RATE));
-            return { ...m, currentScore: score };
-        });
+        // Tier 0: Immutable ROM (Hardcoded Specs)
+        block += `\n## TIER 0: IMMUTABLE ROM\n`;
+        block += `- Hub Purpose: Sovereign Local Engineering\n`;
+        block += `- Protocol: LCP (LoLLMs Communication Protocol) Active\n`;
 
-        const active = scored.filter(m => m.currentScore >= this.ACTIVE_THRESHOLD);
-        const latent = scored.filter(m => m.currentScore < this.ACTIVE_THRESHOLD);
-
-        let block = "";
-
-        if (active.length > 0) {
-            block += "\n### 🧠 LIMBIC MEMORY (ACTIVE CONTEXT)\n";
-            active.forEach(m => {
-                block += `#### [${m.category}] ${m.title}\n${m.content}\n\n`;
+        // Tier 1: Working Memory (Active Engrams >= 25%)
+        const tier1 = engrams.filter(e => e.importance >= this.TIER_THRESHOLD);
+        if (tier1.length > 0) {
+            block += `\n## TIER 1: WORKING MEMORY (ACTIVE)\n`;
+            tier1.forEach(e => {
+                block += `### [${e.category.toUpperCase()}] ${e.title}\n${e.content}\n`;
             });
         }
 
-        if (latent.length > 0) {
-            const categories = [...new Set(latent.map(l => l.category))];
-            if (categories.length > 0) {
-                block += "\n### 📂 NEOCORTEX INDEX (DEEP STORAGE)\n";
-                block += "Latent memories are available in these categories:\n";
-                categories.forEach(cat => {
-                    const count = latent.filter(l => l.category === cat).length;
-                    block += `- ${cat}/ (${count} items. Use \`read_memory_category\` to browse)\n`;
-                });
-            }
+        // Tier 2: Long-Term Handles (1% - 24%)
+        const tier2 = engrams.filter(e => e.importance > 0 && e.importance < this.TIER_THRESHOLD);
+        if (tier2.length > 0) {
+            block += `\n## TIER 2: LONG-TERM HANDLES (ARCHIVED)\n`;
+            block += `You have latent knowledge in the following categories. Use <memory_search category="name" /> to retrieve.\n`;
+            const categories = [...new Set(tier2.map(e => e.category))];
+            categories.forEach(cat => {
+                const count = tier2.filter(e => e.category === cat).length;
+                block += `- ${cat}/ (${count} engrams)\n`;
+            });
         }
 
-        return block.trim() || "### 🧠 PROJECT MEMORY: (Empty)";
+        return block;
     }
 
-    public async strengthenMemory(id: string) {
-        const memories = await this.getMemories();
-        const m = memories.find(x => x.id === id);
-        if (m) {
-            m.importance = Math.min(1.0, m.importance + 0.15);
-            m.lastUsed = Date.now();
-            await this.updateMemory('update', id, m.title, m.content);
+    public async getAffectiveMatrix(): Promise<AffectiveMatrix> {
+        const score = this.context.globalState.get<number>('lollms_affective_score', 50);
+        let label = "Neutral/Professional";
+        if (score > 80) label = "Worship/Respect";
+        else if (score > 60) label = "Trusting";
+        else if (score < 20) label = "Hostile";
+        else if (score < 40) label = "Suspicious";
+        return { relationshipScore: score, label };
+    }
+
+    /**
+     * THE DREAM CYCLE: Maintenance Routine
+     * Called on session start or every 4 hours.
+     */
+    public async performDreamCycle(): Promise<void> {
+        const engrams = await this.getMemories();
+        const logs: string[] = [];
+
+        const updated = engrams.map(e => {
+            const oldImp = e.importance;
+            const newImp = Math.max(0, oldImp - this.DECAY_STEP);
+            
+            if (newImp < this.TIER_THRESHOLD && oldImp >= this.TIER_THRESHOLD) {
+                logs.push(`Transition: '${e.title}' moved to Deep Memory (Handles).`);
+            } else if (newImp === 0) {
+                logs.push(`Pruning: '${e.title}' forgotten permanently.`);
+            }
+
+            return { ...e, importance: newImp };
+        }).filter(e => e.importance > 0);
+
+        // Save back
+        await this.saveEngrams(updated);
+        
+        // Store maintenance log
+        await this.context.workspaceState.update('lollms_dream_log', {
+            timestamp: Date.now(),
+            events: logs
+        });
+    }
+
+    private async saveEngrams(engrams: Engram[]) {
+        const folders = vscode.workspace.workspaceFolders || [];
+        const buffer = Buffer.from(JSON.stringify(engrams, null, 2), 'utf8');
+        for (const folder of folders) {
+            const localPath = vscode.Uri.joinPath(folder.uri, '.lollms', 'project_memory.json');
+            try {
+                await vscode.workspace.fs.writeFile(localPath, buffer);
+            } catch (e) {}
+        }
+    }
+
+    /**
+     * REINFORCEMENT PROTOCOL
+     * Resets the decay timer and gives a +5 boost to importance.
+     * Block decay by moving the lastUsed to 'now'.
+     */
+    public async reinforceEngram(id: string): Promise<void> {
+        const engrams = await this.getMemories();
+        const index = engrams.findIndex(e => e.id === id);
+        
+        if (index !== -1) {
+            engrams[index].lastUsed = Date.now();
+            engrams[index].importance = Math.min(100, engrams[index].importance + 5);
+            await this.saveEngrams(engrams);
+            Logger.info(`Memory Reinforcement: '${id}' refreshed. Decay blocked.`);
         }
     }
 

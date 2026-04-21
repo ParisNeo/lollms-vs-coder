@@ -11,7 +11,7 @@
     "strict": true,
     "sourceMap": true,
     "noImplicitAny": true,
-    "moduleResolution": "node",
+    "moduleResolution": "node10",
     "esModuleInterop": true,
     "skipLibCheck": true,
     "allowSyntheticDefaultImports": true,

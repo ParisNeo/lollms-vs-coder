@@ -858,6 +858,11 @@ export class ChatPanel {
           vscode.window.showWarningMessage("Auto-Context cannot run while Project Context is muted.");
           return;
       }
+
+      if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
+          vscode.window.showWarningMessage("Librarian requires an open workspace folder to scan project structure.");
+          return;
+      }
     
       const { id: processId, controller } = this.processManager.register(this.discussionId, 'Librarian: Researching project...');
       this.updateGeneratingState();
@@ -1039,8 +1044,61 @@ export class ChatPanel {
    * This fusions the Inspector and Verifier into one turn.
    */
   private async processProjectMemoryTags(content: string) {
-        if (this.agentManager?.projectMemoryManager) {
-            await this.agentManager.projectMemoryManager.processTags(content);
+        const manager = this.agentManager?.projectMemoryManager;
+        if (!manager) return;
+
+        // 1. Process <memory> tags (Tier 1-3 Storage)
+        const memoryRegex = /<memory\s+([^>]*?)>([\s\S]*?)<\/memory>/gi;
+        let match;
+        while ((match = memoryRegex.exec(content)) !== null) {
+            const attrStr = match[1];
+            const body = match[2].trim();
+            const attrs: any = {};
+            const attrRegex = /(\w+)\s*=\s*["']([^"']*)["']/g;
+            let m;
+            while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
+
+            const { operation, id, title, importance, category, scope } = attrs;
+            
+            if (operation === 'add' || operation === 'alter') {
+                await manager.updateMemory('update', id, title || id, body, category || "general", parseInt(importance) || 50);
+            } else if (operation === 'remove') {
+                await manager.updateMemory('delete', id);
+            }
+        }
+
+        // 2. Process <affective_update>
+        const affectiveRegex = /<affective_update\s+value=["']([^"']*)["']\s*\/>/gi;
+        let affMatch;
+        while ((affMatch = affectiveRegex.exec(content)) !== null) {
+            const label = affMatch[1];
+            // Simple mapping of labels back to scores for the slider
+            const map: Record<string, number> = { "Hostile": 10, "Suspicious": 30, "Professional": 50, "Trusting": 70, "Respect": 90 };
+            const score = map[label] || 50;
+            await this._context.globalState.update('lollms_affective_score', score);
+        }
+
+        // 3. Handle <memory_reinforce> (Decay Prevention)
+        const reinforceRegex = /<memory_reinforce\s+id=["']([^"']*)["']\s*\/>/gi;
+        let rMatch;
+        while ((rMatch = reinforceRegex.exec(content)) !== null) {
+            await manager.reinforceEngram(rMatch[1]);
+        }
+
+        // 4. Handle <memory_search> (Tier 2 Handle Recovery)
+        if (content.includes('<memory_search')) {
+            const searchRegex = /<memory_search\s+category=["']([^"']*)["']\s*\/>/gi;
+            let sMatch;
+            while ((sMatch = searchRegex.exec(content)) !== null) {
+                const category = sMatch[1];
+                const memories = await manager.getMemories();
+                const results = memories.filter((m: any) => m.category === category);
+                
+                const searchResultMsg = `### 📂 Memory Search Result: ${category}\n` + 
+                    results.map((r: any) => `- **${r.title}**: ${r.content}`).join('\n');
+                
+                await this.addMessageToDiscussion({ role: 'system', content: searchResultMsg });
+            }
         }
     }
 
@@ -1672,7 +1730,9 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
 
     // --- SYNERGY: THE LIBRARIAN MUST FINISH FIRST ---
     let librarianAnalysis = "";
-    if (isAutoContext && !this._discussionCapabilities.disableProjectContext) {
+    const hasWorkspace = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0;
+    
+    if (isAutoContext && !this._discussionCapabilities.disableProjectContext && hasWorkspace) {
         this.processManager.updateDescription(processId, "Librarian is searching...");
         this.updateGeneratingState();
 
@@ -1996,7 +2056,7 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
 
         // 4. Build Final Sequence for the API
         // Logical Order: [Instructions] -> [Conversational History] -> [Context Data (User)] -> [Actual Instruction (User)]
-        let messagesToSend: ChatMessage[] = [
+        let messagesToSend: ChatMessage[] =[
             { role: 'system', content: baseInstructions },
             ...history,
             projectContextUserMessage
@@ -2004,7 +2064,7 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
         
         if (currentPromptMessage) {
             const activeProfileId = this._discussionCapabilities.responseProfileId || config.get<string>('defaultResponseProfileId') || 'balanced';
-            const profiles = config.get<ResponseProfile[]>('responseProfiles') || [];
+            const profiles = config.get<ResponseProfile[]>('responseProfiles') ||[];
             const activeProfile = profiles.find(p => p.id === activeProfileId) || profiles[0];
 
             if (typeof currentPromptMessage.content === 'string') {
@@ -2033,7 +2093,102 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
         }
 
         // =========================================================================
-        // DEBUG: LOG THE EXACT PAYLOAD BEING SENT TO THE LLM
+        // 🛡️ CONTEXT LIMIT CHECK & FAST PRUNING
+        // =========================================================================
+        try {
+            const targetModel = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+            const limitRes = await this._lollmsAPI.getContextSize(targetModel);
+            const maxTokens = limitRes.context_size > 0 ? limitRes.context_size : 128000;
+            
+            let payloadString = JSON.stringify(messagesToSend);
+            let estimatedTokens = Math.ceil(payloadString.length / 3.5);
+
+            if (estimatedTokens > maxTokens) {
+                this.log(`Payload exceeds context limit (${estimatedTokens} > ${maxTokens}). Pruning...`, 'WARN');
+                
+                await this.addMessageToDiscussion({
+                    id: 'system_prune_' + Date.now(),
+                    role: 'system',
+                    content: `⚠️ **Context Limit Exceeded**\nThe total size (~${estimatedTokens.toLocaleString()} tokens) exceeds the model's limit of ${maxTokens.toLocaleString()} tokens. Fast-pruning file contents based on prompt keywords to fit within capacity...`,
+                    skipInPrompt: true
+                });
+
+                // Extract file blocks from context.files
+                const fileBlocks: { fullMatch: string, path: string, content: string, keep: boolean }[] =[];
+                const blockRegex = /```(?:[^\n:]+):([^\n]+)\n([\s\S]*?)\n```/g;
+                let match;
+                while ((match = blockRegex.exec(context.files)) !== null) {
+                    fileBlocks.push({
+                        fullMatch: match[0],
+                        path: match[1].trim(),
+                        content: match[2],
+                        keep: false
+                    });
+                }
+
+                if (fileBlocks.length > 0) {
+                    const userPromptText = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
+                    const keywords = (userPromptText.toLowerCase().match(/\b[a-z]{4,}\b/g) ||[]);
+                    
+                    // 1. Mark files containing keywords
+                    for (const b of fileBlocks) {
+                        const contentLower = b.content.toLowerCase();
+                        b.keep = keywords.some(k => contentLower.includes(k));
+                    }
+
+                    let keptBlocks = fileBlocks.filter(b => b.keep);
+                    
+                    // 2. Secondary prune if still > 70% of max context
+                    const fileBudgetTokens = Math.floor(maxTokens * 0.7);
+                    let currentFileTokens = keptBlocks.reduce((acc, b) => acc + Math.ceil(b.fullMatch.length / 3.5), 0);
+
+                    while (currentFileTokens > fileBudgetTokens && keptBlocks.length > 0) {
+                        const removeIdx = Math.floor(Math.random() * keptBlocks.length);
+                        const removed = keptBlocks.splice(removeIdx, 1)[0];
+                        currentFileTokens -= Math.ceil(removed.fullMatch.length / 3.5);
+                    }
+
+                    // 3. Reconstruct context.files
+                    context.files = keptBlocks.map(b => b.fullMatch).join('\n\n');
+                    const removedCount = fileBlocks.length - keptBlocks.length;
+                    if (removedCount > 0) {
+                        context.files += `\n\n*(Note: ${removedCount} files were truncated from context to fit model limits. See Project Structure for full file list.)*\n`;
+                    }
+
+                    // 4. Rebuild messagesToSend with the pruned context
+                    const projectStateText = `
+### 📂 ATTACHED PROJECT CONTEXT
+I am providing you with the current, ground-truth state of my project files and the Librarian's technical briefing. 
+Use this information as your current "vision" of the workspace.
+
+${briefing && briefing !== "Librarian is analyzing project state..." ? `#### 📋 TEAM TECHNICAL BRIEFING\n${briefing}\n` : ""}
+${context.tree ? `#### 🌳 PROJECT STRUCTURE\n${context.tree}\n` : ""}
+${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files currently selected)*"}
+--------------------------------------------------
+`.trim();
+
+                    const projectContextUserMessage: ChatMessage = {
+                        role: 'user',
+                        content: projectStateText
+                    };
+
+                    messagesToSend =[
+                        { role: 'system', content: baseInstructions },
+                        ...history,
+                        projectContextUserMessage
+                    ];
+
+                    if (currentPromptMessage) {
+                        messagesToSend.push(currentPromptMessage);
+                    }
+                }
+            }
+        } catch (e: any) {
+            this.log(`Error during context pruning: ${e.message}`, 'ERROR');
+        }
+
+        // =========================================================================
+        // 🛡️ FINAL API OUTBOUND LOG (DEBUG)
         // =========================================================================
         const targetModel = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
         console.log(`\n=========================================================================`);
@@ -2227,6 +2382,244 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
             this.updateContextAndTokens();
         }
 
+        // --- PHASE 7: TEST GENERATION ---
+        if (this._discussionCapabilities.testMode && !controller.signal.aborted) {
+            this.processManager.updateDescription(processId, "Test Engineer: Writing unit tests...");
+            this.updateGeneratingState();
+
+            const testSystemPrompt = `You are a Senior QA/Test Engineer. 
+Your task is to write comprehensive unit tests for the changes just made by the Lead Architect.
+Look at the modifications provided in the previous message.
+1. Identify the functions/classes that were modified or created.
+2. Write unit tests to cover both the happy path and edge cases.
+3. Output the tests using the exact formatting rules (e.g., \`\`\`language:path/to/test_file.ext\n[code]\n\`\`\`).
+If you don't know the exact test file path, guess a standard path (e.g., tests/test_filename.py or filename.test.ts).
+DO NOT explain your code. Output ONLY the test code blocks.`;
+
+            const testPrompt = `Please write unit tests for the changes you just implemented. Ensure you use the exact formatting rules for file creation or modification.`;
+
+            // Create a new array to prevent mutating the original history
+            const testHistory: ChatMessage[] =[
+                ...messagesToSend,
+                { role: 'assistant', content: processedResponse },
+                { role: 'system', content: testSystemPrompt },
+                { role: 'user', content: testPrompt }
+            ];
+
+            const testMessageId = 'assistant_test_' + Date.now().toString() + Math.random().toString(36).substring(2);
+            
+            const testGenerationSession: ActiveGeneration = {
+                messageId: testMessageId,
+                buffer: '',
+                model: generationSession.model,
+                startTime: Date.now(),
+                tokenCount: 0,
+                listeners: new Set(),
+                onComplete: new Set()
+            };
+
+            const testPanelListener = (chunk: string) => { 
+                if (!this._isDisposed && this._panel.webview) {
+                    this._panel.webview.postMessage({ command: 'appendMessageChunk', id: testMessageId, chunk }); 
+                }
+            };
+
+            this._activeGenerationListener = testPanelListener;
+            testGenerationSession.listeners.add(testPanelListener);
+            ChatPanel.activeGenerations.set(this.discussionId, testGenerationSession);
+
+            if (!this._isDisposed) {
+                this._panel.webview.postMessage({ 
+                    command: 'addMessage', 
+                    message: { 
+                        id: testMessageId, 
+                        role: 'assistant', 
+                        content: '', 
+                        startTime: Date.now(), 
+                        model: generationSession.model,
+                        personalityName: '🧪 Test Engineer',
+                        timestamp: Date.now()
+                    } 
+                });
+            }
+
+            let fullTestResponse = '';
+            let firstTestTokenReceived = false;
+
+            try {
+                await this._lollmsAPI.sendChat(testHistory, (chunk) => {
+                    if (!firstTestTokenReceived) {
+                        firstTestTokenReceived = true;
+                        this.processManager.updateDescription(processId, "Test Engineer: Drafting tests...");
+                        this.updateGeneratingState();
+                    }
+
+                    fullTestResponse += chunk;
+                    testGenerationSession.buffer += chunk;
+                    testGenerationSession.tokenCount++;
+                    
+                    const elapsed = (Date.now() - testGenerationSession.startTime) / 1000;
+                    const tps = (testGenerationSession.tokenCount / elapsed).toFixed(1);
+                    
+                    this._panel.webview.postMessage({
+                        command: 'updateGenerationMetrics',
+                        tps: tps,
+                        count: testGenerationSession.tokenCount
+                    });
+
+                    testGenerationSession.listeners.forEach(listener => listener(chunk));
+                }, controller.signal, this._currentDiscussion.model, { 
+                    thinking: this._discussionCapabilities.thinkingMode,
+                    capabilities: this._discussionCapabilities,
+                    temperature: this._discussionCapabilities.temperature
+                });
+
+                this.processManager.updateDescription(processId, "Verifier: Auditing test code...");
+                this.updateGeneratingState();
+
+                const processedTestResponse = await this.verifyAndProcessCodeBlocks(
+                    testMessageId, 
+                    fullTestResponse, 
+                    controller.signal,
+                    (status) => {
+                        this.processManager.updateDescription(processId, status);
+                        this.updateGeneratingState();
+                    }
+                );
+
+                // --- AUTOMATION PIPELINE FOR TESTS ---
+                if (this._discussionCapabilities.autoApply && !controller.signal.aborted) {
+                    await this.executeAutomationPipeline(processedTestResponse, testMessageId, controller.signal, processId);
+                }
+
+                const elapsed = (Date.now() - testGenerationSession.startTime) / 1000;
+                const finalTps = (testGenerationSession.tokenCount / elapsed).toFixed(1);
+
+                const testAssistantMessage: ChatMessage = { 
+                    id: testMessageId, 
+                    role: 'assistant', 
+                    content: processedTestResponse, 
+                    model: generationSession.model,
+                    personalityName: '🧪 Test Engineer',
+                    timestamp: Date.now()
+                };
+                await this.addMessageToDiscussion(testAssistantMessage, false);
+                
+                if (!this._isDisposed) {
+                    this._panel.webview.postMessage({ 
+                        command: 'finalizeMessage', 
+                        id: testMessageId, 
+                        fullContent: processedTestResponse,
+                        tps: finalTps,
+                        personalityName: '🧪 Test Engineer'
+                    });
+                }
+
+            } catch (testErr: any) {
+                this.log(`Test Generation Failed: ${testErr.message}`, 'ERROR');
+            } finally {
+                ChatPanel.activeGenerations.delete(this.discussionId);
+            }
+        }
+
+        // --- PHASE 8: DOCUMENTATION UPDATE ---
+        if (this._discussionCapabilities.documentationMode && !controller.signal.aborted) {
+            this.processManager.updateDescription(processId, "Technical Writer: Syncing documentation...");
+            this.updateGeneratingState();
+
+            const docsSystemPrompt = `You are the **Senior Technical Writer & Project Historian**.
+Your goal is to ensure the project documentation and AI memory perfectly reflect the latest changes.
+
+### 📚 DOCUMENTATION PROTOCOL:
+1. **Analyze**: Look at the code modifications and test files created in the discussion.
+2. **Update**: Update \`README.md\`, Sphinx docs, or help files using AIDER SEARCH/REPLACE format. 
+3. **Grounding (Memory)**: Output a \`<project_memory operation="add" ...>\` tag describing any significant architectural decisions or new patterns introduced. Frame this as "Project DNA" so future sessions understand the "Why" behind the code.
+4. **Learning**: If you discover a project-specific quirk (e.g., "Always use the custom logger for DB errors"), record it in memory.
+
+DO NOT add conversational filler. Output ONLY the code blocks and memory tags.`;
+
+            const docsPrompt = `Sync the project documentation and record architectural memories based on the work just completed.`;
+
+            const docsHistory: ChatMessage[] = [
+                ...messagesToSend,
+                { role: 'assistant', content: processedResponse },
+                { role: 'system', content: docsSystemPrompt },
+                { role: 'user', content: docsPrompt }
+            ];
+
+            const docsMessageId = 'assistant_docs_' + Date.now().toString() + Math.random().toString(36).substring(2);
+            
+            const docsSession: ActiveGeneration = {
+                messageId: docsMessageId,
+                buffer: '',
+                model: generationSession.model,
+                startTime: Date.now(),
+                tokenCount: 0,
+                listeners: new Set(),
+                onComplete: new Set()
+            };
+
+            const docsListener = (chunk: string) => { 
+                if (!this._isDisposed && this._panel.webview) {
+                    this._panel.webview.postMessage({ command: 'appendMessageChunk', id: docsMessageId, chunk }); 
+                }
+            };
+
+            this._activeGenerationListener = docsListener;
+            docsSession.listeners.add(docsListener);
+            ChatPanel.activeGenerations.set(this.discussionId, docsSession);
+
+            if (!this._isDisposed) {
+                this._panel.webview.postMessage({ 
+                    command: 'addMessage', 
+                    message: { 
+                        id: docsMessageId, 
+                        role: 'assistant', 
+                        content: '', 
+                        startTime: Date.now(), 
+                        model: generationSession.model,
+                        personalityName: '📖 Technical Writer',
+                        timestamp: Date.now()
+                    } 
+                });
+            }
+
+            try {
+                const fullDocsResponse = await this._lollmsAPI.sendChat(docsHistory, (chunk) => {
+                    docsSession.buffer += chunk;
+                    docsSession.tokenCount++;
+                    docsSession.listeners.forEach(l => l(chunk));
+                }, controller.signal, this._currentDiscussion.model);
+
+                const processedDocsResponse = await this.verifyAndProcessCodeBlocks(docsMessageId, fullDocsResponse, controller.signal);
+
+                if (this._discussionCapabilities.autoApply && !controller.signal.aborted) {
+                    await this.executeAutomationPipeline(processedDocsResponse, docsMessageId, controller.signal, processId);
+                }
+
+                // Process memory tags immediately so they are available for the next turn
+                await this.processProjectMemoryTags(processedDocsResponse);
+
+                const assistantDocsMessage: ChatMessage = { 
+                    id: docsMessageId, 
+                    role: 'assistant', 
+                    content: processedDocsResponse, 
+                    model: docsSession.model,
+                    personalityName: '📖 Technical Writer',
+                    timestamp: Date.now()
+                };
+                await this.addMessageToDiscussion(assistantDocsMessage, false);
+                
+                if (!this._isDisposed) {
+                    this._panel.webview.postMessage({ command: 'finalizeMessage', id: docsMessageId, fullContent: processedDocsResponse, personalityName: '📖 Technical Writer' });
+                }
+            } catch (docErr: any) {
+                this.log(`Documentation update failed: ${docErr.message}`, 'ERROR');
+            } finally {
+                ChatPanel.activeGenerations.delete(this.discussionId);
+            }
+        }
+
     } catch (error: any) { 
         // 1. Force cleanup of the generation registry
         ChatPanel.activeGenerations.delete(this.discussionId);
@@ -2333,6 +2726,160 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
           if (!this._isDisposed) this._panel.webview.postMessage({ command: 'finalizeMessage', id: assistantMessageId, fullContent: fullResponse });
       } catch (error: any) {
           if (!this._isDisposed) this._panel.webview.postMessage({ command: 'error', content: error.message });
+      } finally {
+          this.processManager.unregister(processId);
+          this.updateGeneratingState();
+      }
+  }
+
+  private async handleInspectPatch(msg: any) {
+      const { messageId, blockIndex, filePath, content, type, isApplied } = msg;
+      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+      if (!workspaceFolder) {
+          vscode.window.showErrorMessage("No workspace folder found.");
+          return;
+      }
+
+      const fileUri = vscode.Uri.joinPath(workspaceFolder.uri, filePath);
+      let currentContent = "";
+      try {
+          const doc = await vscode.workspace.openTextDocument(fileUri);
+          currentContent = doc.getText();
+      } catch (e) {
+          vscode.window.showErrorMessage(`File not found: ${filePath}`);
+          return;
+      }
+
+      let targetContent = currentContent;
+
+      if (!isApplied) {
+          // Apply in memory
+          if (type === 'replace' || content.includes('<<<<<<< SEARCH')) {
+              const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
+              const matches = [...content.matchAll(aiderRegex)];
+              if (matches.length > 0) {
+                  let tempContent = currentContent;
+                  for (const match of matches) {
+                      const result = applySearchReplace(tempContent, match[1], match[2]);
+                      if (result.success) {
+                          tempContent = result.result;
+                      } else {
+                          vscode.window.showErrorMessage(`Patch application failed: ${result.error}. Cannot inspect.`);
+                          return;
+                      }
+                  }
+                  targetContent = tempContent;
+              }
+          } else if (type === 'file') {
+              targetContent = content;
+          } else if (type === 'diff') {
+              const result = applyDiffToString(currentContent, content);
+              if (result.success) {
+                  targetContent = result.result;
+              } else {
+                  vscode.window.showErrorMessage(`Diff application failed: ${result.error}. Cannot inspect.`);
+                  return;
+              }
+          }
+      }
+
+      const prompt = `Please review the following code for \`${filePath}\` and answer these questions:
+1. Are there any indentation errors in this code?
+2. Are there any missing imports in this code?
+3. Are there any repeated declarations in this code?
+4. Are there any variables that were not declared in their scope but are being used?
+5. Are there any unused variables inside functions?
+6. Are there any character escape errors or unescaped characters in this code?
+
+If you find ANY issues, fix them.
+- If the original block was a FULL FILE replacement, provide the fully corrected file content.
+- If the original block was an AIDER patch, provide NEW AIDER SEARCH/REPLACE blocks to fix the issues.
+
+Original block type: ${type === 'file' ? 'FULL FILE' : 'AIDER PATCH'}
+
+Here is the code to inspect:
+\`\`\`${path.extname(filePath).substring(1) || 'plaintext'}
+${targetContent}
+\`\`\`
+`;
+
+      const { id: processId, controller } = this.processManager.register(this.discussionId, `Inspecting ${filePath}...`);
+      this.updateGeneratingState();
+
+      try {
+          const systemPrompt = await getProcessedSystemPrompt('agent');
+          
+          const inspectionMessageId = 'inspection_' + Date.now();
+          await this.addMessageToDiscussion({
+              id: inspectionMessageId,
+              role: 'user',
+              content: `Inspect File: \`${filePath}\``,
+              skipInPrompt: false
+          });
+
+          const assistantMessageId = 'assistant_insp_' + Date.now();
+          this._panel.webview.postMessage({ 
+              command: 'addMessage', 
+              message: { 
+                  id: assistantMessageId, 
+                  role: 'assistant', 
+                  content: '', 
+                  startTime: Date.now(), 
+                  model: this._currentDiscussion?.model,
+                  personalityName: '🔍 Code Inspector',
+                  timestamp: Date.now()
+              } 
+          });
+
+          let fullResponse = "";
+          await this._lollmsAPI.sendChat([
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: prompt }
+          ], (chunk) => {
+              fullResponse += chunk;
+              this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk });
+          }, controller.signal);
+
+          const processedResponse = await this.verifyAndProcessCodeBlocks(
+              assistantMessageId, 
+              fullResponse, 
+              controller.signal
+          );
+
+          await this.addMessageToDiscussion({
+              id: assistantMessageId,
+              role: 'assistant',
+              content: processedResponse,
+              model: this._currentDiscussion?.model,
+              personalityName: '🔍 Code Inspector',
+              timestamp: Date.now()
+          }, false);
+
+          this._panel.webview.postMessage({ 
+              command: 'finalizeMessage', 
+              id: assistantMessageId, 
+              fullContent: processedResponse,
+              personalityName: '🔍 Code Inspector'
+          });
+
+          if (!isApplied && type === 'file') {
+              const codeBlockRegex = /```(?:\w+)?[\r\n]+([\s\S]*?)[\r\n]+```/;
+              const newCodeMatch = processedResponse.match(codeBlockRegex);
+              if (newCodeMatch && newCodeMatch[1]) {
+                  const currentDiscussion = this.getCurrentDiscussion();
+                  if (currentDiscussion) {
+                      const origMsg = currentDiscussion.messages.find(m => m.id === msg.messageId);
+                      if (origMsg && typeof origMsg.content === 'string') {
+                          const newContent = origMsg.content.replace(content, newCodeMatch[1].trim());
+                          await this.updateMessageContent(msg.messageId, newContent);
+                          vscode.window.showInformationMessage(`Original message block updated with fixed code.`);
+                      }
+                  }
+              }
+          }
+
+      } catch (e: any) {
+          vscode.window.showErrorMessage(`Inspection failed: ${e.message}`);
       } finally {
           this.processManager.unregister(processId);
           this.updateGeneratingState();
@@ -2970,7 +3517,8 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                     { label: 'Inheritance Diagram', id: 'class_diagram' },
                     { label: 'Call Graph', id: 'call_graph' },
                     { label: 'Import Graph', id: 'import_graph' },
-                    { label: 'Function Signatures', id: 'function_signatures' }
+                    { label: 'Function Signatures', id: 'function_signatures' },
+                    { label: 'Textual Architecture Summary (Token Efficient)', id: 'text_summary' }
                 ], { placeHolder: 'Select diagram type to include in AI context' });
 
                 if (diagType && this._currentDiscussion) {
@@ -3243,6 +3791,9 @@ Task:
             case 'inspectCode':
                 this.handleInspectCode(message);
                 return;
+            case 'inspectPatch':
+                await this.handleInspectPatch(message);
+                break;
             case 'stopGeneration':
                 if (this._currentDiscussion) {
                     // 1. Force Deactivate Agent if running
@@ -3376,9 +3927,12 @@ Task:
                         messageId: message.messageId,
                         filePath: message.filePath,
                         blockIndex: message.blockIndex,
-                        success: res?.success ?? true // applyPatchContent command doesn't always return a result object yet
+                        success: res?.success ?? false,
+                        error: res?.error
                     });
-                    await this.updateAppliedState(message.messageId, message.blockIndex);
+                    if (res && res.success) {
+                        await this.updateAppliedState(message.messageId, message.blockIndex);
+                    }
                 } catch (e: any) {
                     this.log(`Command applyPatchContent failed: ${e.message}`, 'ERROR');
                     webview.postMessage({ command: 'applyAllResult', messageId: message.messageId, blockIndex: message.blockIndex, success: false, error: e.message });
@@ -4383,6 +4937,14 @@ Task:
                                 <span>🐂 Multi-Agent</span>
                                 <label class="switch"><input type="checkbox" id="herdModeCheckbox"><span class="slider"></span></label>
                             </div>
+                            <div class="menu-item-toggle">
+                                <span>🧪 Test Mode</span>
+                                <label class="switch"><input type="checkbox" id="testModeCheckbox"><span class="slider"></span></label>
+                            </div>
+                            <div class="menu-item-toggle">
+                                <span>📖 Documentation Mode</span>
+                                <label class="switch"><input type="checkbox" id="docsModeCheckbox"><span class="slider"></span></label>
+                            </div>
                         </div>
 
                         <div class="menu-view hidden" id="menu-ai">
@@ -4715,7 +5277,7 @@ Task:
 
                         <div class="checkbox-container" style="margin-top:12px;">
                             <label class="switch"><input type="checkbox" id="cap-explainCode" checked><span class="slider"></span></label>
-                            <label for="cap-explainCode">AI explains changes (Problem/Hypothesis/Fix)</label>
+                            <label for="cap-explainCode">AI explains changes (Discover/Explain/Think/Act)</label>
                         </div>
 
                         <h3 style="margin-top:20px; color:var(--vscode-charts-orange);">🚀 Automation</h3>

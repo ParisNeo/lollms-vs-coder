@@ -1072,7 +1072,7 @@ personalities: this._personalityManager.getPersonalities()
               <div class="checkbox-container"><input type="checkbox" id="addPedagogicalInstruction" ${addPedagogicalInstruction ? 'checked' : ''}><label for="addPedagogicalInstruction">Add Pedagogical Instruction (Hidden)</label></div>
 
               <h3>Response Profiles</h3>
-              <p class="help-text">Define custom response styles (Problem/Hypothesis/Fix, Minimalist, etc.)</p>
+              <p class="help-text">Define custom response styles (Discover/Explain/Think/Act, Minimalist, etc.)</p>
               <label for="defaultProfileSelect">Default Profile</label>
               <select id="defaultProfileSelect"></select>
 

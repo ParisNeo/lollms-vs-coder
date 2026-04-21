@@ -10,14 +10,12 @@ export interface KnowledgeNode {
 }
 
 export class RLMDatabaseManager {
-    private localPath?: vscode.Uri;
     private _onDidChange = new vscode.EventEmitter<void>();
     public readonly onDidChange = this._onDidChange.event;
 
     constructor(private context: vscode.ExtensionContext) {}
 
     public async switchWorkspace(folder: vscode.Uri) {
-        this.localPath = vscode.Uri.joinPath(folder, '.lollms', 'rlm_database.json');
         this._onDidChange.fire();
     }
 
@@ -26,12 +24,38 @@ export class RLMDatabaseManager {
     }
 
     private async getLocalData(): Promise<Record<string, KnowledgeNode>> {
-        if (!this.localPath) return {};
-        try {
-            const content = await vscode.workspace.fs.readFile(this.localPath);
-            return JSON.parse(Buffer.from(content).toString('utf8'));
-        } catch {
-            return {};
+        const folders = vscode.workspace.workspaceFolders ||[];
+        if (folders.length === 0) return {};
+        
+        let mergedData: Record<string, KnowledgeNode> = {};
+        
+        for (const folder of folders) {
+            const localPath = vscode.Uri.joinPath(folder.uri, '.lollms', 'rlm_database.json');
+            try {
+                const content = await vscode.workspace.fs.readFile(localPath);
+                const data = JSON.parse(Buffer.from(content).toString('utf8'));
+                this.deepMerge(mergedData, data);
+            } catch {
+                // Ignore
+            }
+        }
+        return mergedData;
+    }
+
+    private deepMerge(target: any, source: any) {
+        for (const key of Object.keys(source)) {
+            if (source[key] instanceof Object && key in target && target[key] instanceof Object) {
+                this.deepMerge(target[key], source[key]);
+            } else {
+                // Resolve conflict by timestamp
+                if (target[key] && target[key].timestamp && source[key].timestamp) {
+                    if (source[key].timestamp > target[key].timestamp) {
+                        target[key] = source[key];
+                    }
+                } else {
+                    target[key] = source[key];
+                }
+            }
         }
     }
 
@@ -55,10 +79,18 @@ export class RLMDatabaseManager {
 
         if (isGlobal) {
             await this.context.globalState.update('rlm_global_db', data);
-        } else if (this.localPath) {
-            const dir = vscode.Uri.file(path.dirname(this.localPath.fsPath));
-            await vscode.workspace.fs.createDirectory(dir);
-            await vscode.workspace.fs.writeFile(this.localPath, Buffer.from(JSON.stringify(data, null, 2)));
+        } else {
+            const folders = vscode.workspace.workspaceFolders ||[];
+            for (const folder of folders) {
+                const localPath = vscode.Uri.joinPath(folder.uri, '.lollms', 'rlm_database.json');
+                try {
+                    const dir = vscode.Uri.file(path.dirname(localPath.fsPath));
+                    await vscode.workspace.fs.createDirectory(dir);
+                    await vscode.workspace.fs.writeFile(localPath, Buffer.from(JSON.stringify(data, null, 2)));
+                } catch (e) {
+                    // Ignore
+                }
+            }
         }
         this._onDidChange.fire();
     }

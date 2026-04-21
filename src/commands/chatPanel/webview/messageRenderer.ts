@@ -180,7 +180,7 @@ function enablePanZoom(container: HTMLElement) {
     let startX = 0;
     let startY = 0;
 
-    const svg = container.querySelector('svg') as HTMLElement;
+    const svg = container.querySelector('svg') as unknown as SVGSVGElement;
     if (!svg) return;
 
     container.style.overflow = 'hidden';
@@ -2055,6 +2055,22 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 });
                 if (isBlockGenerating) saveBtn.disabled = true;
                 actions.appendChild(saveBtn);
+
+                // Inspect File button
+                const inspectFileBtn = createButton('Inspect File', 'codicon-eye', () => {
+                    const isApplied = state.appliedState?.[messageId]?.[blockIdx]?.includes(-1) || false;
+                    vscode.postMessage({ 
+                        command: 'inspectPatch', 
+                        filePath: block.path, 
+                        content: codeOnly, 
+                        messageId: messageId,
+                        blockIndex: blockIdx,
+                        type: block.type,
+                        isApplied: isApplied
+                    });
+                }, 'code-action-btn', 'Inspect this code block for errors using AI');
+                if (isBlockGenerating) inspectFileBtn.disabled = true;
+                actions.appendChild(inspectFileBtn);
 
                 // Inspect button
                 if (state.isInspectorEnabled) {

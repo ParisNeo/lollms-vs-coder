@@ -39,6 +39,8 @@ The file does not exist. You MUST output the **100% COMPLETE** content of the ne
 **STRICT RULES:**
 1. **NO SNIPPETS**: Provide every line from start to finish.
 2. **ZERO DIALOGUE**: Output ONLY the code block.
+3. **NO PLACEHOLDERS**: Provide complete functional code. Never use "// ... rest of code".
+4. **NO NESTING**: Do not include the marker tags (<<<<<<< SEARCH, etc.) inside the code sections themselves.
 `;
     }
 

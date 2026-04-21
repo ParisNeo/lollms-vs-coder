@@ -43,4 +43,4 @@ Make skills md with claude style
 # IMPORTANT
 
 ## Problem in websearch
- Unknown tool: add_briefing_entry
+apply all **MUST** save all updated files

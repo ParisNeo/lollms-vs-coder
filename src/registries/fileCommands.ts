@@ -140,16 +140,77 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             vscode.window.showErrorMessage(`Failed to open diff for ${filePath}: ${e.message}`);
         }
     }));
+    /**
+     * Intelligent Workspace Resolver.
+     * Maps namespaced paths (Folder/path) to URIs.
+     * Falls back to "The Old Way" if no workspace is open.
+     */
+        /**
+     * Intelligent Workspace Resolver.
+     * Maps namespaced paths (Folder/path) to URIs.
+     */
+    async function resolveWorkspaceFromPath(namespacedPath: string): Promise<{ folder: vscode.WorkspaceFolder | undefined, relativePath: string, uri: vscode.Uri } | null> {
+        const folders = vscode.workspace.workspaceFolders || [];
+        const normalized = namespacedPath.replace(/\\/g, '/').trim();
+        
+        // 1. Check if it's already an absolute path
+        if (path.isAbsolute(normalized)) {
+            const uri = vscode.Uri.file(normalized);
+            return { folder: vscode.workspace.getWorkspaceFolder(uri), relativePath: normalized, uri };
+        }
+
+        // 2. Try namespaced resolution (Folder/path/to/file)
+        const parts = normalized.split('/');
+        const candidateRoot = parts[0];
+        const namespacedFolder = folders.find(f => f.name === candidateRoot);
+        if (namespacedFolder) {
+            const rel = parts.slice(1).join('/');
+            return { folder: namespacedFolder, relativePath: rel, uri: vscode.Uri.joinPath(namespacedFolder.uri, rel) };
+        }
+
+        // 3. Search for the file existence across all roots
+        for (const folder of folders) {
+            const testUri = vscode.Uri.joinPath(folder.uri, normalized);
+            try {
+                await vscode.workspace.fs.stat(testUri);
+                return { folder, relativePath: normalized, uri: testUri };
+            } catch {
+                // Continue to next root if not found
+            }
+        }
+
+        // 4. Default to active workspace or first folder
+        const fallbackFolder = getActiveWorkspace() || folders[0];
+        if (fallbackFolder) {
+            return { folder: fallbackFolder, relativePath: normalized, uri: vscode.Uri.joinPath(fallbackFolder.uri, normalized) };
+        }
+
+        return null;
+    }
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string, options?: { silent?: boolean }) => {
-        const activeWorkspace = getActiveWorkspace();
-        if (!activeWorkspace) {
-            vscode.window.showErrorMessage("No active workspace.");
-            return { success: false, error: "No workspace" };
+        // Handle Member-Targeted Replacement (path/to/file:ClassName:MethodName)
+        let targetMember: string[] = [];
+        let cleanPath = filePath;
+
+        if (filePath.includes(':')) {
+            const parts = filePath.split(':');
+            cleanPath = parts[0];
+            targetMember = parts.slice(1);
+        }
+
+        const resolution = await resolveWorkspaceFromPath(cleanPath);
+        if (!resolution) {
+            vscode.window.showErrorMessage("Could not resolve path: " + filePath);
+            return { success: false, error: "Invalid path" };
         }
         
+        const { folder, relativePath } = resolution;
+        
         try {
-            const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
+            const fileUri = folder 
+                ? vscode.Uri.joinPath(folder.uri, relativePath) 
+                : vscode.Uri.file(relativePath);
             let originalContent = '';
             let fileExists = false;
 
@@ -307,17 +368,21 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 const edit = new vscode.WorkspaceEdit();
                 edit.replace(originalUri, new vscode.Range(0, 0, originalDoc.lineCount, 0), newContent);
                 
-                await vscode.workspace.applyEdit(edit);
-                await originalDoc.save();
-                
-                services.diffManager.cleanup(generatedUri);
-                
-                if (vscode.window.activeTextEditor?.document.uri.toString() === generatedUri.toString()) {
-                     await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+                const applied = await vscode.workspace.applyEdit(edit);
+                if (applied) {
+                    await originalDoc.save();
+                    
+                    // Close the diff tab before cleaning up the file
+                    if (vscode.window.activeTextEditor?.document.uri.toString() === generatedUri.toString()) {
+                        await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+                    }
+                    
+                    // Clean up: This deletes the file from disk
+                    await services.diffManager.cleanup(generatedUri);
+                    
+                    await vscode.window.showTextDocument(originalDoc);
+                    vscode.window.showInformationMessage("Changes accepted.");
                 }
-                
-                await vscode.window.showTextDocument(originalDoc);
-                vscode.window.showInformationMessage("Changes accepted.");
             }
         }
     }));
@@ -358,11 +423,15 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
     }));
 
     
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string, panel?: any, messageId?: string, options?: { silent?: boolean, blockIndex?: number, hunkIndex?: number }): Promise<{ success: boolean, error?: string, repaired?: boolean }> => {
-        const activeWorkspace = getActiveWorkspace();
-        if (!activeWorkspace) return { success: false, error: "No active workspace" };
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string, panel?: any, messageId?: string, options?: { silent?: boolean, blockIndex?: number, hunkIndex?: number }): Promise<{ success: boolean; error?: string; repaired?: boolean; alreadyApplied?: boolean }> => {
+        Logger.info(`Executing replaceCode for: ${filePath}`);
+        const resolution = await resolveWorkspaceFromPath(filePath);
+        if (!resolution || !resolution.uri) {
+            Logger.error(`Resolution failed for path: ${filePath}`);
+            return { success: false, error: "Invalid path or workspace not found" };
+        }
 
-        const fileUri = vscode.Uri.joinPath(activeWorkspace.uri, filePath);
+        const { uri: fileUri } = resolution;
 
         // Standardize on using the TextDocument throughout the whole command
         let document: vscode.TextDocument;
@@ -538,6 +607,8 @@ ${originalContent}
 
         } catch(e: any) {
             vscode.window.showErrorMessage(`Error accessing file ${filePath}: ${e.message}`);
+            
+            return { success: false, error: "Unexpected termination of replaceCode command." };
         }
     }));
 

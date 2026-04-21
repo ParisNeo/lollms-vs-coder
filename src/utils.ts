@@ -43,8 +43,8 @@ export const SYSTEM_RESPONSE_PROFILES: ResponseProfile[] = [
     {
         id: "structured",
         name: "Structured (Analytical)",
-        description: "Formal Problem/Hypothesis/Fix breakdown.",
-        systemPrompt: "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this three-part structure for every response:\n  1. **Problem**: Identify what is being asked or what issue was found.\n  2. **Hypothesis**: Describe the technical path chosen and why.\n  3. **Fix**: Provide the actual implementation or code.\n\n- **STRICT FORMATTING**: Use standard Markdown (bolding, lists) for these sections. Do NOT wrap these text sections in triple backticks.\n- **AUTONOMOUS ACTIONS**: If you need to use a tool or save a memory, do so at the END of your 'Fix' section. Tags like <project_memory> are mandatory for persistence.",
+        description: "Formal Discover/Explain/Think/Act breakdown.",
+        systemPrompt: "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this four-part structure for every response:\n  1. **Discover**: Identify what is being asked or what issue was found.\n  2. **Explain**: Break down the underlying mechanics or context of the issue.\n  3. **Think**: Describe the technical path chosen to resolve it and why.\n  4. **Act**: Provide the actual implementation, code, or tool call.\n\n- **STRICT FORMATTING**: Use standard Markdown (bolding, lists) for these sections. Do NOT wrap these text sections in triple backticks.\n- **AUTONOMOUS ACTIONS**: If you need to use a tool or save a memory, do so at the END of your 'Act' section. Tags like <project_memory> are mandatory for persistence.",
         prefix: ""
     },
     {
@@ -82,7 +82,6 @@ export interface DiscussionCapabilities {
     forceFullCodePath: boolean;
     fileRename: boolean;
     fileDelete: boolean;
-    fileDelete: boolean;
     fileSelect: boolean;
     fileReset: boolean;
     imageGen: boolean;
@@ -105,7 +104,6 @@ export interface DiscussionCapabilities {
     };
     gitWorkflow: boolean;
     gitCommit?: boolean;
-    clipboardInsertRole: 'user' | 'assistant';
     
     // --- UPDATED HERD CONFIG ---
     herdMode: boolean;
@@ -120,12 +118,14 @@ export interface DiscussionCapabilities {
     agentMode: boolean;
     debugMode: boolean;
     verifierMode: boolean;
+    testMode: boolean;
+    documentationMode: boolean;
+    gitAutoWorkflow: boolean;
     maxDebugSteps: number;
     autoContextMode: boolean;
     autoSkillMode: boolean;
     contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
     disableProjectContext: boolean;
-    projectMemoryEnabled: boolean;
     projectMemoryEnabled: boolean;
     temperature: number;
     ttftTimeout: number;
@@ -136,6 +136,8 @@ export interface DiscussionCapabilities {
         herdBadge: boolean;
         webSearchBadge?: boolean;
         autoSkillBadge?: boolean;
+        testBadge?: boolean;
+        docsBadge?: boolean;
     };
 }
 
@@ -211,34 +213,30 @@ function calculateLineSimilarity(line1: string, line2: string): number {
  * Includes indentation detection and automatic correction.
  */
 export function applySearchReplace(content: string, searchBlock: string, replaceBlock: string): { success: boolean, result: string, error?: string } {
+    // Detect original line endings
+    const isCrlf = content.includes('\r\n');
+    const eol = isCrlf ? '\r\n' : '\n';
+
     // Normalize line endings to \n for internal processing
     const normalizedContent = content.replace(/\r\n/g, '\n');
     
-    // Stricter normalization: remove potential marker artifacts but preserve intentional whitespace.
-    // If replaceBlock is just whitespace/newlines, it means we want to delete code.
-    let normalizedSearch = searchBlock.replace(/\r\n/g, '\n').replace(/^\n+|\n+$/g, '');
+    // Normalize blocks but avoid stripping significant empty lines if they were intended for context
+    let normalizedSearch = searchBlock.replace(/\r\n/g, '\n');
     let normalizedReplace = replaceBlock.replace(/\r\n/g, '\n');
-    
-    // If the replacement is just whitespace or empty, trim it to truly represent removal
-    if (!normalizedReplace.trim()) {
-        normalizedReplace = "";
-    } else {
-        normalizedReplace = normalizedReplace.replace(/^\n+|\n+$/g, '');
-    }
+
+    // Clean up markers if they accidentally include the search/replace keywords themselves (Safety fallback)
+    normalizedSearch = normalizedSearch.replace(/^<<<<<<< SEARCH\n?/, '').replace(/\n?>>>>>>> REPLACE$/, '');
 
     // 1. Special Case: Empty Search Block (Append to end)
-    // If the AI sends an empty search block, it signifies an intention to append to the end.
     if (normalizedSearch.trim() === "") {
-        const eol = normalizedContent.includes('\r\n') ? '\r\n' : '\n';
-        // If content is empty, just use replace block, else append with a newline
-        const result = normalizedContent.length === 0 
-            ? normalizedReplace 
-            : normalizedContent.trimEnd() + eol + normalizedReplace;
-        return { success: true, result };
+        const result = (normalizedContent.length === 0 || normalizedContent.endsWith('\n')) 
+            ? normalizedContent + normalizedReplace.trimStart()
+            : normalizedContent + '\n' + normalizedReplace.trimStart();
+        
+        return { success: true, result: isCrlf ? result.replace(/\n/g, '\r\n') : result };
     }
 
-    // 2. Idempotency Check (NEW): If the replacement is already there, we win.
-    // This prevents errors if the user applies the same hunk twice or fixes it manually.
+    // 2. Idempotency Check: If the replacement is already there, we win.
     if (normalizedContent.includes(normalizedReplace.trim())) {
         return { success: true, result: normalizedContent };
     }
@@ -246,6 +244,15 @@ export function applySearchReplace(content: string, searchBlock: string, replace
     // 3. Direct match attempt (Fast Path)
     if (normalizedContent.includes(normalizedSearch)) {
         const parts = normalizedContent.split(normalizedSearch);
+        return { success: true, result: parts.join(normalizedReplace) };
+    }
+
+    // 4. Handle trailing whitespace issues in SEARCH block
+    // AI often adds trailing spaces that are not in the source code
+    const linesSearch = normalizedSearch.split('\n');
+    const linesSearchNoTrailing = linesSearch.map(l => l.trimEnd()).join('\n');
+    if (normalizedContent.includes(linesSearchNoTrailing)) {
+        const parts = normalizedContent.split(linesSearchNoTrailing);
         return { success: true, result: parts.join(normalizedReplace) };
     }
 
@@ -612,86 +619,4 @@ export function stripThinkingTags(responseText: string): string {
 export function extractAndStripMemory(responseText: string): { content: string, memory: string | null } {
     const match = responseText.match(/<memory>([\s\S]*?)<\/memory>/);
     return match ? { content: responseText.replace(match[0], '').trim(), memory: match[1].trim() } : { content: responseText, memory: null };
-}
-
-export interface DiscussionCapabilities {
-    generationFormats: {
-        fullFile: boolean;
-        partialFormat: 'aider' | 'diff';
-    };
-    autoApply: boolean;
-    autoFix: boolean;
-    autoBranch: boolean;
-    maxFixRetries: number;
-    thinkingMode: boolean;
-    thinkingBudget?: number;
-    forceFullCode: boolean;
-    allowedFormats: {
-        fullFile: boolean;
-        insert: boolean;
-        replace: boolean;
-        delete: boolean;
-    };
-    responseProfileId: string;
-    language: string;
-    voice: string;
-    explainCode: boolean;
-    addPedagogicalInstruction: boolean;
-    forceFullCodePath: boolean;
-    fileRename: boolean;
-    fileDelete: boolean;
-    fileSelect: boolean;
-    fileReset: boolean;
-    imageGen: boolean;
-    enableImages: boolean;
-    enableTTS: boolean;
-    enableSTT: boolean;
-    useImageModeForDocs: boolean;
-    webSearch: boolean;
-    distillWebResults: boolean;
-    antiPromptInjection: boolean;
-    searchInCacheFirst: boolean;
-    clipboardInsertRole: 'user' | 'assistant';
-    searchSources: {
-        google: boolean;
-        arxiv: boolean;
-        wikipedia: boolean;
-        stackoverflow: boolean;
-        youtube: boolean;
-        github: boolean;
-    };
-    gitWorkflow: boolean;
-    gitCommit?: boolean;
-    clipboardInsertRole: 'user' | 'assistant';
-    
-    // --- UPDATED HERD CONFIG ---
-    herdMode: boolean;
-    herdParallelGeneration: boolean;
-    herdPreAnswerCount: number;
-    herdPostAnswerCount: number;
-    herdOrchestratorModel?: string;      // The leader/planner model
-    herdParticipantModels?: string[];    // List of model names participating
-    herdCriticEnabled?: boolean;         // Optional critique step
-    // ---------------------------
-
-    agentMode: boolean;
-    debugMode: boolean;
-    verifierMode: boolean;
-    maxDebugSteps: number;
-    autoContextMode: boolean;
-    autoSkillMode: boolean;
-    contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
-    disableProjectContext: boolean;
-    projectMemoryEnabled: boolean;
-    projectMemoryEnabled: boolean;
-    temperature: number;
-    ttftTimeout: number;
-    interTokenTimeout: number;
-    guiState?: {
-        agentBadge: boolean;
-        autoContextBadge: boolean;
-        herdBadge: boolean;
-        webSearchBadge?: boolean;
-        autoSkillBadge?: boolean;
-    };
 }

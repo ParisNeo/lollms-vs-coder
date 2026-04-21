@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.8.10",
+  "version": "0.8.16",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -272,11 +272,6 @@
       {
         "command": "lollms-vs-coder.searchDiscussions",
         "title": "Search Discussions",
-        "icon": "$(search)"
-      },
-      {
-        "command": "lollms-vs-coder.renameDiscussion",
-        "title": "Rename Discussions",
         "icon": "$(search)"
       },
       {
@@ -692,8 +687,8 @@
             {
               "id": "structured",
               "name": "Structured (Analytical)",
-              "description": "Formal Problem/Hypothesis/Fix breakdown.",
-              "systemPrompt": "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this three-part structure for every response:\n  1. **Problem**: Identify what is being asked or what issue was found.\n  2. **Hypothesis**: Describe the technical path chosen and why.\n  3. **Fix**: Provide the actual implementation or code.",
+              "description": "Formal Discover/Explain/Think/Act breakdown.",
+              "systemPrompt": "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this four-part structure for every response:\n  1. **Discover**: Identify what is being asked or what issue was found.\n  2. **Explain**: Break down the underlying mechanics or context of the issue.\n  3. **Think**: Describe the technical path chosen to resolve it and why.\n  4. **Act**: Provide the actual implementation, code, or tool call.",
               "prefix": ""
             },
             {
@@ -754,6 +749,16 @@
               }
             }
           }
+        },
+        "lollmsVsCoder.documentationMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically update project documentation (README, docs, etc.) after code modifications."
+        },
+        "lollmsVsCoder.gitAutoWorkflow": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically create branches and prepare commits for agentic missions."
         },
         "lollmsVsCoder.connectionProfiles": {
           "type": "array",
@@ -1076,12 +1081,12 @@
         },
         "lollmsVsCoder.chatPersona": {
           "type": "string",
-          "default": "You are Lollms, an expert AI software engineer. You always start your responses with a clear pedagogical breakdown of the **Problem**, your **Hypothesis**, and your proposed **Fix** before providing code or executing tools.",
+          "default": "You are Lollms, an expert AI software engineer. You always start your responses with a clear pedagogical breakdown of the **Discover**, **Explain**, **Think**, and **Act** phases before providing code or executing tools.",
           "description": "%config.chatPersona.description%"
         },
         "lollmsVsCoder.agentPersona": {
           "type": "string",
-          "default": "You are a specialized AI agent. Before performing tasks, you briefly summarize the **Problem**, your **Hypothesis** (approach), and your **Fix** (plan).",
+          "default": "You are a specialized AI agent. Before performing tasks, you briefly summarize the **Discover** (issue), **Explain** (context), **Think** (approach), and **Act** (plan).",
           "description": "%config.agentPersona.description%"
         },
         "lollmsVsCoder.codeInspectorPersona": {
@@ -1296,6 +1301,11 @@
           "type": "number",
           "default": 16000,
           "description": "Token budget for Claude 3.7 Sonnet thinking mode."
+        },
+        "lollmsVsCoder.testMode": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically generate unit tests after the AI modifies or generates code."
         },
         "lollmsVsCoder.antiPromptInjection": {
           "type": "boolean",
@@ -1859,6 +1869,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/marked": "5.0.2",
     "@types/minimatch": "^5.1.2",
+    "@types/node": "^18.11.18",
     "@types/node-fetch": "2.6.13",
     "@types/pdf-parse": "^1.1.1",
     "@types/prismjs": "^1.26.4",

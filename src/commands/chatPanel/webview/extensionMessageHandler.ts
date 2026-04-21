@@ -278,6 +278,8 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     
                     if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = caps.agentMode;
                     if (dom.autoContextCheckbox) dom.autoContextCheckbox.checked = caps.autoContextMode;
+                    if (dom.testModeCheckbox) dom.testModeCheckbox.checked = !!caps.testMode;
+                    if (dom.docsModeCheckbox) dom.docsModeCheckbox.checked = !!caps.documentationMode;
                     if (dom.capClipboardRole) dom.capClipboardRole.value = caps.clipboardInsertRole || 'user';
                     
                     const langSelect = document.getElementById('modal-language') as HTMLSelectElement;

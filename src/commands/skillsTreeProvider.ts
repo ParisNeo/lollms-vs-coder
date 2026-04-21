@@ -103,7 +103,9 @@ class SkillCategoryItem extends vscode.TreeItem {
 
 class SkillItem extends vscode.TreeItem {
     constructor(public readonly skill: Skill) {
-        super(skill.name, vscode.TreeItemCollapsibleState.None);
+        // Clean the display label: Remove "SOURCE OF TRUTH" prefix
+        const cleanName = skill.name.replace(/SOURCE OF TRUTH:\s*/gi, '').trim();
+        super(cleanName, vscode.TreeItemCollapsibleState.None);
         this.id = skill.id;
         this.description = skill.description;
         this.tooltip = new vscode.MarkdownString(`**${skill.name}**\n\n*${skill.description}*\n\n\`\`\`${skill.language || ''}\n${skill.content}\n\`\`\``);

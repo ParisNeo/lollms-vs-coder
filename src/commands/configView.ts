@@ -1585,6 +1585,12 @@ personalities: this._personalityManager.getPersonalities()
                 const previousValue = selectedValue || selectElement.value;
                 
                 selectElement.innerHTML = '';
+
+                // Add Manual Entry Option
+                const manualOpt = new Option("✍️ Enter model name manually...", "__manual__");
+                manualOpt.style.fontWeight = "bold";
+                manualOpt.style.color = "var(--vscode-textLink-foreground)";
+                selectElement.appendChild(manualOpt);
                 
                 if (error) { 
                     selectElement.appendChild(new Option("⚠️ Error: " + error, "")); 
@@ -1779,6 +1785,28 @@ personalities: this._personalityManager.getPersonalities()
                     renderConnectionProfiles();
                 }
             };
+
+            // Handle Manual Model Selection in Dropdowns
+            function handleModelDropdownChange(e) {
+                const select = e.target;
+                if (select.value === "__manual__") {
+                    const manualValue = prompt("Enter exact model name/id:");
+                    if (manualValue) {
+                        const newOpt = new Option(manualValue, manualValue);
+                        select.add(newOpt, 1);
+                        select.value = manualValue;
+                        // Trigger the change event for the binder
+                        select.dispatchEvent(new Event('input'));
+                    } else {
+                        // Revert to default if cancelled
+                        select.value = "";
+                    }
+                }
+            }
+
+            document.querySelectorAll('.model-dropdown').forEach(el => {
+                el.addEventListener('change', handleModelDropdownChange);
+            });
 
             // Bind inputs
             ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','language','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','halApiKey','scopusApiKey','clipboardInsertRole','mcpServers','unstagedChangesBehavior','systemCustomInfo','moltbookApiKey','moltbookBotName','moltbookBotPurpose','remoteServerPort','remoteDiscordToken','remoteSlackToken','remoteSlackSigningSecret'].forEach(k => bind(k, k));

@@ -184,7 +184,7 @@ export class ChatPanel {
             const blockContent = match[3];
             modifiedFiles.add(filePath);
 
-            const opts = { silent: true };
+            const opts = { silent: true, autoSave: true };
             if (blockContent.includes('<<<<<<< SEARCH')) {
                 await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, blockContent, this, messageId, opts);
             } else {
@@ -3164,7 +3164,8 @@ ${targetContent}
                                 const opts = { 
                                     silent: true, 
                                     blockIndex: change.blockIndex, 
-                                    hunkIndex: change.hunkIndex 
+                                    hunkIndex: change.hunkIndex,
+                                    autoSave: true
                                 };
 
                                 if (change.type === 'file') {
@@ -6010,8 +6011,8 @@ ${doc.getText()}
                         { role: 'user', content: repairPrompt }
                     ], null, signal, this._currentDiscussion?.model);
 
-                    // Apply the fix silently
-                    await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', relativePath, response, this, messageId, { silent: true });
+                    // Apply the fix silently and auto-save
+                    await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', relativePath, response, this, messageId, { silent: true, autoSave: true });
                     
                     // Wait for diagnostics to refresh
                     await new Promise(r => setTimeout(r, 1500));
@@ -6101,7 +6102,7 @@ ${doc.getText()}
 
                     // 2. Apply Aider Patch
                     autoUI.updateFileProgress(relPath, 'fixing', `Applying surgical patch...`);
-                    await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', relPath, cleanResponse, this, undefined, { silent: true });
+                    await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', relPath, cleanResponse, this, undefined, { silent: true, autoSave: true });
                     
                     // 3. Verify
                     await new Promise(r => setTimeout(r, 2000));

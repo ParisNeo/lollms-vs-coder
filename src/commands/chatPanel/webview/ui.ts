@@ -918,6 +918,25 @@ export function updateBadges() {
         menu.id = 'profile-menu';
         menu.className = 'custom-menu hidden';
         
+        // 1. Manual Entry Option
+        const manualItem = document.createElement('div');
+        manualItem.className = 'custom-menu-item';
+        manualItem.style.borderBottom = '1px solid var(--vscode-menu-separatorBackground)';
+        manualItem.style.paddingBottom = '8px';
+        manualItem.style.marginBottom = '4px';
+        manualItem.innerHTML = `<span class="codicon codicon-edit"></span> Enter model name manually...`;
+        manualItem.onclick = (e) => {
+            e.stopPropagation();
+            const manualName = prompt("Enter model name/id (e.g. ollama/mistral):");
+            if (manualName) {
+                vscode.postMessage({ command: 'updateDiscussionModel', model: manualName.trim() });
+                // We also trigger a token refresh because the model changed
+                vscode.postMessage({ command: 'calculateTokens' });
+            }
+            menu.classList.remove('visible');
+        };
+        menu.appendChild(manualItem);
+
         state.profiles.forEach(p => {
              const item = document.createElement('div');
              item.className = 'custom-menu-item';

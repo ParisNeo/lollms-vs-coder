@@ -20,19 +20,28 @@ export function registerSelectModelCommand(context: vscode.ExtensionContext, ser
             // Passing a Promise to showQuickPick makes VS Code show a loading spinner automatically
             const selected = await vscode.window.showQuickPick(
                 services.lollmsAPI.getModels(true).then(models => {
-                    if (!models || models.length === 0) {
-                        return [{ label: "No models found", detail: "Check your API connection settings.", id: null }];
-                    }
-                    const items = models.map(m => ({
-                        label: m.id,
-                        description: m.id === currentModel ? '(Current)' : undefined,
-                        id: m.id
-                    }));
-                    items.sort((a, b) => {
-                        if (a.id === currentModel) return -1;
-                        if (b.id === currentModel) return 1;
-                        return a.label.localeCompare(b.label);
+                    const items: any[] = [];
+                    
+                    // Add Manual Entry Option
+                    items.push({
+                        label: "$(edit) Enter model name manually...",
+                        id: "__manual__",
+                        alwaysShow: true
                     });
+
+                    if (models && models.length > 0) {
+                        const modelItems = models.map(m => ({
+                            label: m.id,
+                            description: m.id === currentModel ? '(Current)' : undefined,
+                            id: m.id
+                        }));
+                        modelItems.sort((a, b) => {
+                            if (a.id === currentModel) return -1;
+                            if (b.id === currentModel) return 1;
+                            return a.label.localeCompare(b.label);
+                        });
+                        items.push(...modelItems);
+                    }
                     return items;
                 }),
                 {
@@ -42,11 +51,21 @@ export function registerSelectModelCommand(context: vscode.ExtensionContext, ser
                 }
             );
 
-            if (!selected || (selected as any).id === null) {
+            if (!selected) {
                 return;
             }
 
-            const selectedId = (selected as any).id;
+            let selectedId = (selected as any).id;
+
+            if (selectedId === "__manual__") {
+                const manualName = await vscode.window.showInputBox({
+                    prompt: "Enter the exact model name/id",
+                    placeHolder: "e.g. ollama/codellama:7b",
+                    value: currentModel
+                });
+                if (!manualName) return;
+                selectedId = manualName.trim();
+            }
 
             // Determine the configuration target to update.
             // If the user has defined the setting in the Workspace or WorkspaceFolder,

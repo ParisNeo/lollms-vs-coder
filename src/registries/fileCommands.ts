@@ -188,7 +188,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         return null;
     }
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string, options?: { silent?: boolean }) => {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string, options?: { silent?: boolean, autoSave?: boolean }) => {
         // Handle Member-Targeted Replacement (path/to/file:ClassName:MethodName)
         let targetMember: string[] = [];
         let cleanPath = filePath;
@@ -213,11 +213,12 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 : vscode.Uri.file(relativePath);
             let originalContent = '';
             let fileExists = false;
+            let document: vscode.TextDocument | undefined;
 
             try {
                 await vscode.workspace.fs.stat(fileUri);
-                const doc = await vscode.workspace.openTextDocument(fileUri);
-                originalContent = doc.getText();
+                document = await vscode.workspace.openTextDocument(fileUri);
+                originalContent = document.getText();
                 // Ensure a snapshot exists for diffing later
                 await openDiffView(fileUri, originalContent, true); 
                 fileExists = true;
@@ -245,7 +246,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             }
 
             // --- PLACEHOLDER & SIZE SAFETY CHECK ---
-            if (fileExists) {
+            if (fileExists && !options?.autoSave) {
                 // Improved detection: Only flag "..." if it's on a line by itself or in a comment, 
                 // not inside a long string like print("Phase 2...")
                 const lines = content.split('\n');
@@ -289,10 +290,26 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             }
 
             // Open Diff View: Original (Disk) vs Proposed (Virtual)
-            // No direct WorkspaceEdit or Save is performed here.
+            if (options?.autoSave && document) {
+                const edit = new vscode.WorkspaceEdit();
+                const lastLine = document.lineCount > 0 ? document.lineCount - 1 : 0;
+                const fullRange = new vscode.Range(
+                    new vscode.Position(0, 0),
+                    document.lineAt(lastLine).range.end
+                );
+                edit.replace(fileUri, fullRange, content);
+                const applied = await vscode.workspace.applyEdit(edit);
+                if (applied) {
+                    await document.save();
+                }
+            }
+
             // The user must review and Save the diff tab to apply changes.
-            await services.diffManager.openDiff(fileUri, content);
-            return { success: true, alreadyApplied: false };
+            if (!options?.silent) {
+                await services.diffManager.openDiff(fileUri, content);
+            }
+            
+            return { success: true, alreadyApplied: !!options?.autoSave };
             return { success: false, error: "VS Code failed to apply the WorkspaceEdit. The file might be locked or read-only." };
 
         } catch (e: any) {
@@ -423,7 +440,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
     }));
 
     
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string, panel?: any, messageId?: string, options?: { silent?: boolean, blockIndex?: number, hunkIndex?: number }): Promise<{ success: boolean; error?: string; repaired?: boolean; alreadyApplied?: boolean }> => {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string, panel?: any, messageId?: string, options?: { silent?: boolean, blockIndex?: number, hunkIndex?: number, autoSave?: boolean }): Promise<{ success: boolean; error?: string; repaired?: boolean; alreadyApplied?: boolean }> => {
         Logger.info(`Executing replaceCode for: ${filePath}`);
         const resolution = await resolveWorkspaceFromPath(filePath);
         if (!resolution || !resolution.uri) {
@@ -598,10 +615,26 @@ ${originalContent}
                 const wasActuallyModified = currentContent !== originalContent;
                 if (!wasActuallyModified) return { success: true, alreadyApplied: true };
 
+                if (options?.autoSave) {
+                    const edit = new vscode.WorkspaceEdit();
+                    const fullRange = new vscode.Range(
+                        new vscode.Position(0, 0),
+                        document.lineAt(document.lineCount - 1).range.end
+                    );
+                    edit.replace(fileUri, fullRange, currentContent);
+                    const applied = await vscode.workspace.applyEdit(edit);
+                    if (applied) {
+                        await document.save();
+                    }
+                }
+
                 // Use the DiffManager to show the result of the surgical patch
                 // compared to the current file on disk.
-                await services.diffManager.openDiff(fileUri, currentContent);
-                return { success: true, alreadyApplied: false };
+                if (!options?.silent) {
+                    await services.diffManager.openDiff(fileUri, currentContent);
+                }
+                
+                return { success: true, alreadyApplied: !!options?.autoSave };
             }
             return { success: false, error: "Failed to apply edits to document." };
 

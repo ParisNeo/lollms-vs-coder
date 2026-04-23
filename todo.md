@@ -44,7 +44,7 @@ Make skills md with claude style
 ## Problem in websearch
 apply all **MUST** save all updated files
 Add the possibility to force a model name without scan.
-
+Implement add from search feature to be abel to add new files to context by doing a search and selecting the files that match that search
 # URGENT!!!!
 ## 🌳 PROJECT STRUCTURE
 

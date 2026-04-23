@@ -44,3 +44,11 @@ Make skills md with claude style
 ## Problem in websearch
 apply all **MUST** save all updated files
 Add the possibility to force a model name without scan.
+
+# URGENT!!!!
+## 🌳 PROJECT STRUCTURE
+
+```text
+```
+
+The project structure is always empty!! It needs to be populated with the project tree or if in a workspace we show the projects structures

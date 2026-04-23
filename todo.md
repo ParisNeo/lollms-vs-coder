@@ -45,6 +45,7 @@ Make skills md with claude style
 apply all **MUST** save all updated files
 Add the possibility to force a model name without scan.
 Implement add from search feature to be abel to add new files to context by doing a search and selecting the files that match that search
+UI problems in the modify with lollms ui
 # URGENT!!!!
 ## 🌳 PROJECT STRUCTURE
 

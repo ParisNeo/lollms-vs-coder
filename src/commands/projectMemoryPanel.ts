@@ -64,149 +64,177 @@ export class ProjectMemoryPanel {
         this._panel.webview.html = this._getHtml(memories, false);
     }
 
-    private _getHtml(memories: MemoryEntry[], isLoading: boolean = false) {
-        const escape = (str: string) => str.replace(/[&<>"']/g, (m) => ({
+    private _getHtml(memories: any[], isLoading: boolean = false) {
+        const escape = (str: string) => (str || '').replace(/[&<>"']/g, (m) => ({
             '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
         }[m] || m));
+
+        // Threshold for T1 (Working Memory) defined in projectMemoryManager
+        const T1_THRESHOLD = 25;
+        const workingMemory = memories.filter(m => (m.importance || 0) >= T1_THRESHOLD);
+        const deepMemory = memories.filter(m => (m.importance || 0) < T1_THRESHOLD);
+
+        const renderMemoryCard = (m: any) => `
+            <div class="memory-card" data-id="${m.id}" style="border-left: 5px solid ${m.importance >= T1_THRESHOLD ? 'var(--vscode-charts-blue)' : 'var(--vscode-descriptionForeground)'}">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                    <span class="badge" style="background: var(--vscode-badge-background); font-size:9px; border-radius:4px; padding:2px 6px;">${m.category || 'general'}</span>
+                    <span style="font-size:10px; opacity:0.6; font-weight:bold;">Importance: ${Math.round(m.importance)}%</span>
+                </div>
+                
+                <div class="form-group">
+                    <label>Identifier</label>
+                    <input type="text" class="title-input" value="${escape(m.title)}">
+                </div>
+                
+                <div class="form-group">
+                    <label>Context Body</label>
+                    <textarea class="content-input" rows="3">${escape(m.content)}</textarea>
+                </div>
+                
+                <div style="margin: 10px 0;">
+                    <div style="display:flex; justify-content: space-between;">
+                        <label style="margin:0; font-size:10px;">Retentiveness Weight</label>
+                        <span class="weight-val" style="font-size: 11px; opacity: 0.8; font-family:monospace;">${Math.round(m.importance)}</span>
+                    </div>
+                    <input type="range" class="importance-input" min="0" max="100" step="1" value="${m.importance}" style="width:100%;" oninput="this.previousElementSibling.querySelector('.weight-val').textContent = this.value">
+                </div>
+
+                <div class="actions">
+                    <button class="delete-btn" data-id="${m.id}" title="Delete fact permanently"><i class="codicon codicon-trash"></i></button>
+                    <div style="flex:1"></div>
+                    ${m.importance >= T1_THRESHOLD 
+                        ? `<button class="secondary move-deep-btn" data-id="${m.id}" title="Archive to Deep Memory (Stops auto-injection)"><i class="codicon codicon-archive"></i> Archive</button>`
+                        : `<button class="secondary move-live-btn" data-id="${m.id}" title="Bring to Live Context (Always in prompt)"><i class="codicon codicon-zap"></i> Make Live</button>`
+                    }
+                    <button class="save-btn" data-id="${m.id}" title="Commit changes"><i class="codicon codicon-save"></i> Save</button>
+                </div>
+            </div>`;
 
         return `<!DOCTYPE html>
         <html lang="en">
         <head>
             <meta charset="UTF-8">
+            <link href="https://cdn.jsdelivr.net/npm/@vscode/codicons/dist/codicon.css" rel="stylesheet" />
             <style>
-                body { font-family: var(--vscode-font-family); color: var(--vscode-editor-foreground); padding: 20px; background: var(--vscode-editor-background); }
-                .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--vscode-panel-border); padding-bottom: 10px; margin-bottom: 20px; }
-                .memory-card { background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-widget-border); padding: 15px; border-radius: 8px; margin-bottom: 15px; box-shadow: 0 2px 5px rgba(0,0,0,0.2); }
-                .new-card { border: 2px dashed var(--vscode-focusBorder); display: none; margin-bottom: 25px; animation: slideDown 0.2s ease-out; }
-                @keyframes slideDown { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+                :root {
+                    --card-bg: var(--vscode-editorWidget-background);
+                    --input-bg: var(--vscode-input-background);
+                    --border: var(--vscode-widget-border);
+                }
+                body { font-family: var(--vscode-font-family); color: var(--vscode-editor-foreground); padding: 25px; background: var(--vscode-editor-background); margin: 0; }
+                .header-sticky { position: sticky; top: 0; background: var(--vscode-editor-background); padding-bottom: 15px; border-bottom: 1px solid var(--vscode-panel-border); margin-bottom: 25px; z-index: 100; display: flex; justify-content: space-between; align-items: center; }
                 
-                .loading-overlay { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 50px; opacity: 0.7; }
-                .spinner { width: 40px; height: 40px; border: 4px solid var(--vscode-button-secondaryBackground); border-top: 4px solid var(--vscode-button-background); border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 15px; }
-                @keyframes spin { 100% { transform: rotate(360deg); } }
+                h2 { margin: 0; font-size: 18px; font-weight: 400; display: flex; align-items: center; gap: 10px; }
+                h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; opacity: 0.5; margin: 30px 0 15px 0; border-bottom: 1px dashed var(--border); padding-bottom: 5px; }
 
-                label { display: block; font-size: 11px; font-weight: bold; opacity: 0.7; margin-bottom: 4px; text-transform: uppercase; }
-                input, textarea { width: 100%; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 8px; margin-bottom: 12px; border-radius: 4px; font-family: inherit; box-sizing: border-box; }
+                .memory-card { background: var(--card-bg); border: 1px solid var(--border); padding: 16px; border-radius: 8px; margin-bottom: 15px; box-shadow: 0 4px 10px rgba(0,0,0,0.2); transition: transform 0.1s; }
+                .memory-card:hover { border-color: var(--vscode-focusBorder); }
+                
+                .new-card { border: 2px dashed var(--vscode-focusBorder); display: none; margin-bottom: 30px; background: rgba(0, 122, 204, 0.05); }
+                
+                .form-group { margin-bottom: 12px; }
+                label { display: block; font-size: 10px; font-weight: 700; opacity: 0.6; margin-bottom: 4px; text-transform: uppercase; }
+                input, textarea { width: 100%; background: var(--input-bg); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 8px; border-radius: 4px; font-family: inherit; box-sizing: border-box; }
                 input:focus, textarea:focus { outline: 1px solid var(--vscode-focusBorder); border-color: transparent; }
-                .actions { display: flex; gap: 10px; justify-content: flex-end; }
+                
+                .actions { display: flex; gap: 8px; margin-top: 15px; }
                 button { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 6px 14px; cursor: pointer; border-radius: 4px; font-size: 12px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
-                button:hover { background: var(--vscode-button-hoverBackground); }
+                button:hover { filter: brightness(1.2); }
                 button.secondary { background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); }
-                button.delete-btn { background: transparent; border: 1px solid var(--vscode-errorForeground); color: var(--vscode-errorForeground); }
+                button.delete-btn { background: transparent; color: var(--vscode-errorForeground); border: 1px solid var(--vscode-errorForeground); padding: 6px 10px; }
                 button.delete-btn:hover { background: var(--vscode-errorForeground); color: white; }
-                .empty-state { text-align: center; opacity: 0.5; padding: 40px; }
+                
+                .loading-overlay { text-align: center; padding: 100px 0; opacity: 0.5; }
+                .spinner { width: 30px; height: 30px; border: 3px solid var(--vscode-button-secondaryBackground); border-top: 3px solid var(--vscode-button-background); border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 15px auto; }
+                @keyframes spin { 100% { transform: rotate(360deg); } }
+                
+                .empty-hint { padding: 40px; text-align: center; opacity: 0.4; font-style: italic; border: 1px dashed var(--border); border-radius: 8px; }
+                
+                .tier-badge { font-size: 9px; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 10px; }
+                .tier-live { background: var(--vscode-charts-blue); color: white; }
+                .tier-deep { background: var(--vscode-descriptionForeground); color: white; opacity: 0.6; }
             </style>
         </head>
         <body>
-            <div class="header">
-                <h2 style="margin:0;">🧠 Project Memories</h2>
-                <button id="show-add-btn"><span style="font-size:16px;">+</span> Add New Fact</button>
+            <div class="header-sticky">
+                <h2><i class="codicon codicon-chip"></i> Neural Memory Manager</h2>
+                <button id="show-add-btn"><i class="codicon codicon-add"></i> Add New Fact</button>
             </div>
 
-            <!-- THE NEW INLINE FORM -->
             <div id="new-memory-form" class="memory-card new-card">
-                <div style="margin-bottom:10px; font-weight:bold; color:var(--vscode-focusBorder);">🆕 Create New Project Fact</div>
-                <label>Title / Identifier</label>
-                <input type="text" id="new-title" placeholder="e.g., Coding Standards">
-                <label>Knowledge Content</label>
-                <textarea id="new-content" rows="4" placeholder="Enter details the AI should always remember for this project..."></textarea>
+                <label>Identifier / Title</label>
+                <input type="text" id="new-title" placeholder="e.g., Coding Standards (v2)">
+                <label style="margin-top:10px;">Context Content</label>
+                <textarea id="new-content" rows="4" placeholder="Technical facts the AI must remember for this project..."></textarea>
                 
-                <div style="margin-bottom: 15px;">
+                <div style="margin: 15px 0;">
                     <div style="display:flex; justify-content: space-between;">
-                        <label style="margin:0;">Importance (Weight)</label>
-                        <span id="new-weight-val" style="font-size: 11px; opacity: 0.8;">1.0</span>
+                        <label style="margin:0;">Initial Power (0-100%)</label>
+                        <span id="new-weight-val" style="font-size: 11px; opacity: 0.8; font-family:monospace;">80</span>
                     </div>
-                    <input type="range" id="new-importance" min="1.0" max="5.0" step="0.1" value="1.0" style="width:100%;" oninput="document.getElementById('new-weight-val').textContent = this.value">
-                    <p style="font-size: 10px; opacity: 0.7; margin:0;">Higher weight ensures this stays in the AI's limited context longer.</p>
+                    <input type="range" id="new-importance" min="0" max="100" step="1" value="80" style="width:100%;" oninput="document.getElementById('new-weight-val').textContent = this.value">
                 </div>
 
                 <div class="actions">
                     <button class="secondary" id="cancel-add-btn">Cancel</button>
-                    <button id="confirm-add-btn">Create Memory</button>
+                    <button id="confirm-add-btn"><i class="codicon codicon-check"></i> Create Memory</button>
                 </div>
             </div>
-            
-            <div id="list">
-                ${isLoading ? `
-                    <div class="loading-overlay">
-                        <div class="spinner"></div>
-                        <div>Retrieving Knowledge Base...</div>
-                    </div>` : ''}
-                ${!isLoading && memories.length === 0 ? '<div class="empty-state">No memories saved yet. The AI will add facts here as you work.</div>' : ''}
-                ${!isLoading ? memories.map(m => `
-                    <div class="memory-card" data-id="${m.id}" style="border-left: 5px solid rgba(0, 122, 204, ${Math.min(1, m.importance / 5)})">
-                        <div style="display:flex; justify-content:space-between; align-items:center;">
-                            <span class="badge" style="background: var(--vscode-badge-background); font-size:9px;">${m.category}</span>
-                            <span style="font-size:10px; opacity:0.6;">Power: ${Math.round(m.importance * 100)}%</span>
-                        </div>
-                        <label>Title / Identifier</label>
-                        <input type="text" class="title-input" value="${escape(m.title)}">
-                        <label>Knowledge Content</label>
-                        <textarea class="content-input" rows="4">${escape(m.content)}</textarea>
-                        
-                        <div style="margin-bottom: 12px;">
-                            <div style="display:flex; justify-content: space-between;">
-                                <label style="margin:0;">Weight</label>
-                                <span class="weight-val" style="font-size: 11px; opacity: 0.8;">${m.importance}</span>
-                            </div>
-                            <input type="range" class="importance-input" min="1.0" max="5.0" step="0.1" value="${m.importance}" style="width:100%;" oninput="this.previousElementSibling.querySelector('.weight-val').textContent = this.value">
-                        </div>
 
-                        <div class="actions">
-                            <button class="secondary" onclick="promoteToSkill('${m.id}')" title="Convert to permanent protocol"><i class="codicon codicon-workspace-trusted"></i> Promote to Skill</button>
-                            <button class="delete-btn" data-id="${m.id}">Delete</button>
-                            <button class="save-btn" data-id="${m.id}">Save Changes</button>
-                        </div>
-                    </div>
-                `).join('') : ''}
+            <div id="main-list">
+                ${isLoading ? '<div class="loading-overlay"><div class="spinner"></div>Scanning project brain...</div>' : ''}
+                
+                <h3>Live Working Memory (Tier 1) <span class="tier-badge tier-live">AUTO-INJECTED</span></h3>
+                ${workingMemory.length === 0 ? '<div class="empty-hint">No facts currently in the active working context.</div>' : workingMemory.map(renderMemoryCard).join('')}
+
+                <h3>Deep Memory handles (Tier 2) <span class="tier-badge tier-deep">HIDDEN</span></h3>
+                ${deepMemory.length === 0 ? '<div class="empty-hint">No facts archived in deep memory.</div>' : deepMemory.map(renderMemoryCard).join('')}
             </div>
 
             <script>
                 const vscode = acquireVsCodeApi();
                 const newForm = document.getElementById('new-memory-form');
 
-                // Toggle visibility
-                document.getElementById('show-add-btn').addEventListener('click', () => {
+                document.getElementById('show-add-btn').onclick = () => {
                     newForm.style.display = 'block';
                     document.getElementById('new-title').focus();
-                });
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                };
 
-                document.getElementById('cancel-add-btn').addEventListener('click', () => {
-                    newForm.style.display = 'none';
-                });
+                document.getElementById('cancel-add-btn').onclick = () => newForm.style.display = 'none';
 
-                // Create Logic
-                document.getElementById('confirm-add-btn').addEventListener('click', () => {
+                document.getElementById('confirm-add-btn').onclick = () => {
                     const title = document.getElementById('new-title').value;
                     const content = document.getElementById('new-content').value;
-                    const importance = parseFloat(document.getElementById('new-importance').value);
+                    const importance = parseInt(document.getElementById('new-importance').value, 10);
                     if (!title.trim()) return;
-                    
                     vscode.postMessage({ command: 'add_direct', title, content, importance });
-                    
-                    // Reset and hide
-                    document.getElementById('new-title').value = '';
-                    document.getElementById('new-content').value = '';
-                    document.getElementById('new-importance').value = 1.0;
-                    document.getElementById('new-weight-val').textContent = '1.0';
                     newForm.style.display = 'none';
-                });
+                };
 
-                // Delegation for existing items
-                document.getElementById('list').addEventListener('click', (e) => {
-                    const target = e.target;
-                    const id = target.getAttribute('data-id');
-                    if (!id) return;
+                document.getElementById('main-list').onclick = (e) => {
+                    const btn = e.target.closest('button');
+                    if (!btn) return;
+                    const id = btn.dataset.id;
+                    const card = btn.closest('.memory-card');
 
-                    if (target.classList.contains('save-btn')) {
-                        const card = target.closest('.memory-card');
+                    if (btn.classList.contains('save-btn')) {
                         const title = card.querySelector('.title-input').value;
                         const content = card.querySelector('.content-input').value;
-                        const importance = parseFloat(card.querySelector('.importance-input').value);
+                        const importance = parseInt(card.querySelector('.importance-input').value, 10);
                         vscode.postMessage({ command: 'save', id, title, content, importance });
-                    } else if (target.classList.contains('delete-btn')) {
+                    } else if (btn.classList.contains('delete-btn')) {
                         vscode.postMessage({ command: 'delete', id });
+                    } else if (btn.classList.contains('move-deep-btn')) {
+                        const title = card.querySelector('.title-input').value;
+                        const content = card.querySelector('.content-input').value;
+                        vscode.postMessage({ command: 'save', id, title, content, importance: 20 });
+                    } else if (btn.classList.contains('move-live-btn')) {
+                        const title = card.querySelector('.title-input').value;
+                        const content = card.querySelector('.content-input').value;
+                        vscode.postMessage({ command: 'save', id, title, content, importance: 80 });
                     }
-                });
+                };
             </script>
         </body>
         </html>`;

@@ -84,12 +84,14 @@ export async function runCommandInTerminal(
             }
         }
 
-        const outputFile = path.join(outputDir, 'last_output.txt');
-        const exitCodeFile = path.join(outputDir, 'last_exit_code.txt');
+        // Generate a unique ID for this specific execution to prevent race conditions in parallel tasks
+        const executionId = Math.random().toString(36).substring(2, 10);
+        const outputFile = path.join(outputDir, `output_${executionId}.txt`);
+        const exitCodeFile = path.join(outputDir, `exit_code_${executionId}.txt`);
         
-        // Relative paths from cwd
-        const relOutputFile = '.lollms/last_output.txt';
-        const relExitCodeFile = '.lollms/last_exit_code.txt';
+        // Relative paths from cwd for use in the shell command
+        const relOutputFile = `.lollms/output_${executionId}.txt`;
+        const relExitCodeFile = `.lollms/exit_code_${executionId}.txt`;
 
         if (fs.existsSync(outputFile)) { try { fs.unlinkSync(outputFile); } catch(e) {} }
         if (fs.existsSync(exitCodeFile)) { try { fs.unlinkSync(exitCodeFile); } catch(e) {} }
@@ -190,7 +192,15 @@ export async function runCommandInTerminal(
                         output = `[Extension Error] Failed to read terminal output: ${err}`;
                         success = false;
                     }
-                    // Strip ANSI codes before returning to the AI agent
+                    // Cleanup: Remove the temporary files immediately after reading
+                    try {
+                        if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
+                        if (fs.existsSync(exitCodeFile)) fs.unlinkSync(exitCodeFile);
+                    } catch (e) {
+                        Logger.warn(`Failed to cleanup temp terminal files: ${e.message}`);
+                    }
+
+                    // Strip ANSI codes from the output before returning to the AI agent
                     const { stripAnsiCodes } = require('./utils');
                     resolve({ success, output: stripAnsiCodes(output) });
                 }, 800);

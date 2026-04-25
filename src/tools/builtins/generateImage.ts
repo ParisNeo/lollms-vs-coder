@@ -30,8 +30,11 @@ export const generateImageTool: ToolDefinition = {
             await vscode.workspace.fs.createDirectory(parentUri);
             
             await vscode.workspace.fs.writeFile(fileUri, buffer);
-            
-            return { success: true, output: `Image generated and saved successfully to '${params.file_path}'.` };
+
+            return { 
+                success: true, 
+                output: `Image generated and saved successfully to \`${params.file_path}\`.\n\n<image_result path="${params.file_path}" />` 
+            };
         } catch (error: any) {
             return { success: false, output: `Image generation failed: ${error.message}` };
         }

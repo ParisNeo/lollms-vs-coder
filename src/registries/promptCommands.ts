@@ -181,8 +181,8 @@ export function registerPromptCommands(context: vscode.ExtensionContext, service
                     let newDocumentContent = originalDocText;
 
                     // 1. Check for SEARCH/REPLACE blocks (Preferred)
-                    const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
-                    const matches = [...cleanText.matchAll(aiderRegex)];
+                    const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
+                    let matches =[...cleanText.matchAll(aiderRegex)];
 
                     if (matches.length > 0) {
                         const { applySearchReplace } = require('../utils');

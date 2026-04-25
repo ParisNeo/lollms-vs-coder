@@ -60,6 +60,7 @@ export class ChatPanel {
   
   private _discussionCapabilities: DiscussionCapabilities;
   private _tokenAbortController: AbortController | null = null;
+  private _isTokenizing: boolean = false;
 
   // Track active listeners to prevent duplication
   private _activeGenerationListener?: (chunk: string) => void;
@@ -174,13 +175,23 @@ export class ChatPanel {
         if (!workspaceFolder) return;
 
         // Extraction & Application
-        const blockRegex = /```(\w+):([^\n\s]+)[\r\n]+([\s\S]+?)[\r\n]+```/g;
+        // We capture the language, the path, and the body. 
+        // We use a more robust regex that handles optional whitespace and ensures we don't capture the header line.
+        const blockRegex = /```[\t ]*(?:language:|lang:)?(\w+)[\t ]*:[\t ]*([^\n\r\s]+)[\t ]*[\r\n]+([\s\S]+?)[\r\n]+```/g;
         let match;
         const modifiedFiles = new Set<string>();
 
         while ((match = blockRegex.exec(content)) !== null) {
             if (signal.aborted) break;
-            const filePath = match[2];
+            let filePath = match[2];
+            
+            // Second level safety: if path starts with language name (e.g. typescript:src/file.ts)
+            if (filePath.includes(':')) {
+                const parts = filePath.split(':');
+                if (['typescript', 'ts', 'python', 'py', 'javascript', 'js', 'css', 'html'].includes(parts[0].toLowerCase())) {
+                    filePath = parts.slice(1).join(':');
+                }
+            }
             const blockContent = match[3];
             modifiedFiles.add(filePath);
 
@@ -429,7 +440,8 @@ export class ChatPanel {
           command: 'loadDiscussion', 
           messages: safeMessages,
           isInspectorEnabled: isInspectorEnabled,
-          appliedState: this._currentDiscussion.appliedState || {}
+          appliedState: this._currentDiscussion.appliedState || {},
+          currentModel: this._currentDiscussion.model || this._lollmsAPI.getModelName()
       });
       
       const activeGen = ChatPanel.activeGenerations.get(this.discussionId);
@@ -492,10 +504,16 @@ export class ChatPanel {
       const userProfiles = (Array.isArray(profiles) ? profiles : []).filter((p: any) => p && p.id);
       const allProfiles = [...SYSTEM_RESPONSE_PROFILES, ...userProfiles.filter((p: any) => !SYSTEM_RESPONSE_PROFILES.some((sp: any) => sp.id === p.id))];
 
+      const workspaceFolders = (vscode.workspace.workspaceFolders || []).map(f => ({
+          name: f.name,
+          uri: f.uri.toString()
+      }));
+
       this._panel.webview.postMessage({ 
           command: 'updateDiscussionCapabilities', 
           capabilities: this._discussionCapabilities,
-          profiles: allProfiles
+          profiles: allProfiles,
+          workspaceFolders: workspaceFolders
       });
       
       let isRepo = false;
@@ -569,18 +587,21 @@ export class ChatPanel {
   }
 
   public async updateContextAndTokens() {
-    this.log("updateContextAndTokens called");
-    if (this._isDisposed) {
-        this.log("updateContextAndTokens aborted (disposed)", 'WARN');
-        return;
-    }
+    if (this._isDisposed) return;
 
+    // Concurrency Lock: If already tokenizing, cancel previous and restart
     if (this._tokenAbortController) {
         this._tokenAbortController.abort();
-        this._tokenAbortController = null;
     }
+    
     this._tokenAbortController = new AbortController();
     const signal = this._tokenAbortController.signal;
+
+    // Small delay to debounce rapid UI interactions
+    await new Promise(resolve => setTimeout(resolve, 150));
+    if (signal.aborted) return;
+
+    this._isTokenizing = true;
 
     try {
         if (!this._contextManager || !this._currentDiscussion || !this._panel.webview) {
@@ -606,7 +627,7 @@ export class ChatPanel {
             const importedIds = this._currentDiscussion?.importedSkills || [];
             const activeDiagrams = this._currentDiscussion?.activeDiagrams || [];
             
-            const modelForTokenization = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+            const modelForTokenization = (this._currentDiscussion?.model || this._lollmsAPI.getModelName() || "default").trim();
             const context = await this._contextManager.getContextContent({ 
                 signal, 
                 importedSkillIds: importedIds,
@@ -629,7 +650,7 @@ export class ChatPanel {
             if (this._isDisposed) return;
 
             const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles()?.map(f => f.path) || [];
-            
+
             // Aggressive truncation for Webview UI to prevent IPC Channel Closure
             const UI_PREVIEW_LIMIT = 10000; 
             const contextTextForUI = context.text.length > UI_PREVIEW_LIMIT
@@ -643,84 +664,123 @@ export class ChatPanel {
                     files: includedFiles,
                     skills: context.importedSkills || [],
                     diagrams: context.diagrams || [],
+                    images: context.images || [], // Pass images list for counter
                     briefing: this._currentDiscussion?.discussion_data_zone || ""
                 });
             }
             this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
-            
+
             this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: 'Counting tokens...' });
             this._panel.webview.postMessage({ command: 'updateStatus', status: 'Computing tokens length...', type: 'info' });
-    
-            const discussionContent = this._currentDiscussion!.messages.map(msg => {
-                if (typeof msg.content === 'string') return msg.content;
-                if (Array.isArray(msg.content)) {
-                    return msg.content.filter(item => item.type === 'text').map(item => item.text).join('\n');
-                }
+
+            // --- SEGMENTED TOKEN CALCULATION ---
+            const { estimateImageTokens } = require('../../utils');
+
+            // 1. System Prompt & Skills (Authority over instructions)
+            const personaContent = this.getCurrentPersonaSystemPrompt();
+            const systemText = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, false, { ...context, tree: '', files: '' });
+
+            // 2. Discussion History (Conversational Context)
+            const historyText = this._currentDiscussion!.messages.map(msg => {
+                const content = msg.content;
+                if (typeof content === 'string') return content;
+                if (Array.isArray(content)) return content.filter(item => item.type === 'text').map(item => item.text).join('\n');
                 return '';
             }).join('\n');
-            
-            const fullTextToTokenize = context.text + '\n' + discussionContent;
 
-            if (!modelForTokenization) {
-                this.log("No model selected for tokenization.", 'WARN');
-                if (!this._isDisposed) {
-                    this._panel.webview.postMessage({
-                        command: 'updateTokenProgress',
-                        error: `No model configured`
-                    });
-                    this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (No model)', type: 'info' });
-                }
-                return;
+            // 3. Image Tokens (LUT Aware & Capability Gated)
+            let imageTokens = 0;
+            const visionEnabled = this._discussionCapabilities.enableImages !== false;
+
+            if (visionEnabled) {
+                context.images.forEach(img => imageTokens += estimateImageTokens(modelForTokenization));
+                this._currentDiscussion.messages.forEach(m => {
+                    if (Array.isArray(m.content)) {
+                        m.content.forEach((p: any) => { if (p.type === 'image_url') imageTokens += estimateImageTokens(modelForTokenization); });
+                    }
+                });
             }
-    
-            this.log(`Starting API Tokenization. Model: ${modelForTokenization}, Text Length: ${fullTextToTokenize.length}`);
-            
-            // Yield to event loop to prevent unresponsive host during massive string operations
-            await new Promise(resolve => setTimeout(resolve, 0));
 
-            if (signal.aborted) return;
+            this.log(`Segmented Tokenization Started. Model: ${modelForTokenization}`);
 
-            const [tokenizeResponse, contextSizeResponse] = await Promise.all([
-                this._lollmsAPI.tokenize(fullTextToTokenize, modelForTokenization),
-                this._lollmsAPI.getContextSize(modelForTokenization)
-            ]).catch(err => {
-                this.log(`Tokenization Promise failed: ${err.message}`, 'ERROR');
-                return [null, null];
-            });
-            
-            if (this._isDisposed || signal.aborted || !tokenizeResponse || !contextSizeResponse) return;
+            // Parallelize tokenization requests but handle Context Size independently to prevent total failure
+            const [systemRes, historyRes, filesRes, contextSizeRes] = await Promise.all([
+                this._lollmsAPI.tokenize(systemText, modelForTokenization).catch(e => ({ count: Math.ceil(systemText.length/3.2), isEstimation: true })),
+                this._lollmsAPI.tokenize(historyText, modelForTokenization).catch(e => ({ count: Math.ceil(historyText.length/3.2), isEstimation: true })),
+                this._lollmsAPI.tokenize(context.text, modelForTokenization).catch(e => ({ count: Math.ceil(context.text.length/3.2), isEstimation: true })),
+                this._lollmsAPI.getContextSize(modelForTokenization).catch(e => {
+                    Logger.error(`[TokenStats] Context Size API critically failed: ${e.message}`);
+                    return null; // Handle null in the next step
+                })
+            ]);
+            this.log(`"systemRes":${systemRes},\n"historyRes":${historyRes},\n"filesRes":${filesRes},\n"contextSizeRes":${contextSizeRes},\n`);
+            if (this._isDisposed || signal.aborted) return;
 
-            // --- IMAGE TOKEN CALCULATION ---
-            // 1. Images in Project Context
-            let imageCount = context.images.length;
-            
-            // 2. Images in Chat History (Attachments)
-            this._currentDiscussion.messages.forEach(m => {
-                if (Array.isArray(m.content)) {
-                    imageCount += m.content.filter(part => part.type === 'image_url').length;
+            // RESOLVE CONTEXT SIZE Authoritatively
+            let finalCtxSize = 128000;
+            let isLimitApproximate = true;
+            let isUserDefined = false;
+
+            if (contextSizeRes) {
+                finalCtxSize = contextSizeRes.context_size;
+                isLimitApproximate = !!contextSizeRes.isEstimation && !contextSizeRes.isUserDefined;
+                isUserDefined = !!contextSizeRes.isUserDefined;
+            } else {
+                // Heuristic Fallback if API returned null or crashed
+                const { getContextLimitForModel } = require('../../utils');
+                const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+                const manualOverride = config.get<number>('failsafeContextSize') || 0;
+
+                if (manualOverride > 0) {
+                    finalCtxSize = manualOverride;
+                    isLimitApproximate = false;
+                    isUserDefined = true;
+                } else {
+                    finalCtxSize = getContextLimitForModel(modelForTokenization);
+                    isLimitApproximate = true;
                 }
-                // Handle complex document attachments that have images
-                if ((m as any).attachmentData?.images) {
-                    imageCount += (m as any).attachmentData.images.length;
-                }
-            });
+            }
 
-            const imageTokens = imageCount * 250;
-            const totalTokens = tokenizeResponse.count + imageTokens;
+            const totalTokens = systemRes.count + historyRes.count + filesRes.count + imageTokens;
+            const ctxSize = finalCtxSize;
+            const isActuallyApproximate = isLimitApproximate;
 
-            let ctxSize = contextSizeResponse.context_size || 0;
-            const isApproximate = tokenizeResponse.isEstimation || contextSizeResponse.isEstimation;
+            // --- VERBOSE LOGGING ---
+            Logger.info(`[TokenStats] Success! Model: ${modelForTokenization}`);
+            Logger.info(`[TokenStats] Breakdown: System=${systemRes.count}, History=${historyRes.count}, Files=${filesRes.count}, Images=${imageTokens}`);
+            Logger.info(`[TokenStats] Final: ${totalTokens} / ${ctxSize} (Approx: ${isActuallyApproximate})`);
 
             if (this._panel && this._panel.webview) {
                 this._panel.webview.postMessage({
                     command: 'updateTokenProgress',
                     totalTokens: totalTokens,
                     contextSize: ctxSize,
-                    isApproximate: isApproximate
+                    isApproximate: isActuallyApproximate, 
+                    segments: {
+                        system: systemRes.count,
+                        history: historyRes.count,
+                        files: filesRes.count,
+                        images: imageTokens
+                    }
+                });
+            }
+
+            if (this._panel && this._panel.webview) {
+                this._panel.webview.postMessage({
+                    command: 'updateTokenProgress',
+                    totalTokens: totalTokens,
+                    contextSize: ctxSize,
+                    isApproximate: isActuallyApproximate, 
+                    segments: {
+                        system: systemRes.count,
+                        history: historyRes.count,
+                        files: filesRes.count,
+                        images: imageTokens
+                    }
                 });
             }
             
-            if (isApproximate) {
+            if (isActuallyApproximate) {
                 this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (Approximate - API Check Failed)', type: 'warning' });
             } else {
                 this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready', type: 'info' });
@@ -729,37 +789,50 @@ export class ChatPanel {
         } catch (error: any) {
             if (error.message === "Operation cancelled" || signal.aborted) {
                 this.log("Context update cancelled.", 'INFO');
-                if (!this._isDisposed) this._panel.webview.postMessage({ command: 'updateStatus', status: 'Context scan stopped', type: 'warning' });
                 return;
             }
 
-            this.log(`Failed to update tokens via API: ${error.message}. Using failsafe fallback.`, 'WARN');
+            // --- DETAILED ERROR LOGGING ---
+            Logger.error(`[TokenStats] API Pipeline Failed! Error: ${error.message}`);
+            if (error.stack) {
+                Logger.debug(`[TokenStats] Stack Trace: ${error.stack}`);
+            }
+
             if (this._isDisposed) return;
             
             try {
-                const context = await this._contextManager.getContextContent({ signal }); 
+                // FALLBACK STRATEGY
+                this.log("updateContextAndTokens: Building context...");
+                const context = await this._contextManager.getContextContent({ signal });
                 if (signal.aborted) return;
 
-                const discussionContent = this._currentDiscussion!.messages.map(msg => {
-                    if (typeof msg.content === 'string') return msg.content;
-                    if (Array.isArray(msg.content)) {
-                        return msg.content.filter(item => item.type === 'text').map(item => item.text).join('\n');
-                    }
+                const historyText = this._currentDiscussion!.messages.map(msg => {
+                    const content = msg.content;
+                    if (typeof content === 'string') return content;
+                    if (Array.isArray(content)) return content.filter(item => item.type === 'text').map(item => item.text).join('\n');
                     return '';
                 }).join('\n');
-                const fullText = context.text + '\n' + discussionContent;
+
+                const systemText = await getProcessedSystemPrompt('chat', this._discussionCapabilities, undefined, undefined, false, { ...context, tree: '', files: '' });
                 
+                // Use standard heuristic for initial log (tokens instead of chars)
+                const totalEstimatedTokens = Math.ceil((context.text.length + historyText.length + systemText.length) / 3.2);
+                this.log(`Starting API Tokenization. Model: ${modelForTokenization}, Est. Token Load: ${totalEstimatedTokens}`);
+
+                const fullText = context.text + '\n' + historyText;
                 const wordCount = fullText.trim().split(/\s+/).length;
-                const estimatedTokens = Math.ceil(wordCount * 1.33);
+                const estimatedTokens = Math.ceil(wordCount * 1.35); // Heuristic
                 
                 const config = vscode.workspace.getConfiguration('lollmsVsCoder');
                 const failsafeSize = config.get<number>('failsafeContextSize') || 128000;
+
+                Logger.warn(`[TokenStats] Recovered using Failsafe. Estimated Tokens: ${estimatedTokens}, Capacity: ${failsafeSize}`);
 
                 this._panel.webview.postMessage({
                     command: 'updateTokenProgress',
                     totalTokens: estimatedTokens,
                     contextSize: failsafeSize,
-                    isApproximate: true
+                    isApproximate: true 
                 });
                 
                 this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (Approx)', type: 'warning' });
@@ -776,7 +849,8 @@ export class ChatPanel {
                 }
             }
         } finally {
-            if (!this._isDisposed) {
+            this._isTokenizing = false;
+            if (!this._isDisposed && !signal.aborted) {
                 this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
             }
             if (this._tokenAbortController === signal) {
@@ -1133,13 +1207,19 @@ export class ChatPanel {
     
     // Detect all partial blocks (Diff/SearchReplace)
     // Support both \n and \r\n after the language:path header
-    const blockRegex = /```(\w+):([^\n\s]+)[\r\n]+([\s\S]+?)[\r\n]+```/g;
+    const blockRegex = /```(?:language:|lang:)?(\w+):([^\n\s]+)[\r\n]+([\s\S]+?)[\r\n]+```/g;
     let match;
     const blocksToVerify: { type: string, path: string, content: string, originalMatch: string }[] = [];
 
     while ((match = blockRegex.exec(fullContent)) !== null) {
         const type = match[1].toLowerCase();
-        const path = match[2];
+        let path = match[2];
+
+        // Strip language hallucination from path if it snuck in (e.g. typescript:src/utils.ts)
+        if (path.includes(':')) {
+            const parts = path.split(':');
+            path = parts.slice(1).join(':');
+        }
         const content = match[3];
         if (type === 'diff' || content.includes('<<<<<<< SEARCH')) {
             blocksToVerify.push({ type, path, content, originalMatch: match[0] });
@@ -1174,9 +1254,8 @@ export class ChatPanel {
                 result = applyDiffToString(originalFileText, block.content);
             } else {
                 // Handle multiple SEARCH/REPLACE blocks within the same content
-                // FIX: Use line-anchored markers to avoid confusion with code comments like # =============
-                const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
-                const matches = [...block.content.matchAll(aiderRegex)];
+                const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
+                const matches =[...block.content.matchAll(aiderRegex)];
                 
                 if (matches.length > 0) {
                     let currentFileState = originalFileText;
@@ -2093,23 +2172,43 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
         }
 
         // =========================================================================
-        // 🛡️ CONTEXT LIMIT CHECK & FAST PRUNING
+        // 🛡️ CONTEXT LIMIT CHECK & FAST PRUNING (V3: Image LUT Aware)
         // =========================================================================
         try {
             const targetModel = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
             const limitRes = await this._lollmsAPI.getContextSize(targetModel);
             const maxTokens = limitRes.context_size > 0 ? limitRes.context_size : 128000;
             
-            let payloadString = JSON.stringify(messagesToSend);
-            let estimatedTokens = Math.ceil(payloadString.length / 3.5);
+            // Accurate Estimation: Using Model-Specific Image LUT
+            const { estimateImageTokens } = require('../../utils');
+            let textOnlySize = 0;
+            let imageTokens = 0;
+            
+            messagesToSend.forEach(m => {
+                if (typeof m.content === 'string') {
+                    textOnlySize += m.content.length;
+                } else if (Array.isArray(m.content)) {
+                    m.content.forEach((part: any) => {
+                        if (part.type === 'text') {
+                            textOnlySize += part.text.length;
+                        } else if (part.type === 'image_url') {
+                            // Pass model name for specific calculation (e.g. Claude vs GPT)
+                            imageTokens += estimateImageTokens(targetModel);
+                        }
+                    });
+                }
+            });
+
+            let estimatedTokens = Math.ceil(textOnlySize / 3.5) + imageTokens;
 
             if (estimatedTokens > maxTokens) {
+                const pruneMsgId = 'system_prune_' + Date.now();
                 this.log(`Payload exceeds context limit (${estimatedTokens} > ${maxTokens}). Pruning...`, 'WARN');
                 
                 await this.addMessageToDiscussion({
-                    id: 'system_prune_' + Date.now(),
+                    id: pruneMsgId,
                     role: 'system',
-                    content: `⚠️ **Context Limit Exceeded**\nThe total size (~${estimatedTokens.toLocaleString()} tokens) exceeds the model's limit of ${maxTokens.toLocaleString()} tokens. Fast-pruning file contents based on prompt keywords to fit within capacity...`,
+                    content: `⚖️ **Context Governor: Pruning Required**\nThe total payload (~${estimatedTokens.toLocaleString()} tokens) exceeds capacity (${maxTokens.toLocaleString()}). \n\n*Optimizing file context to prioritize relevant logic...*`,
                     skipInPrompt: true
                 });
 
@@ -2150,9 +2249,22 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
 
                     // 3. Reconstruct context.files
                     context.files = keptBlocks.map(b => b.fullMatch).join('\n\n');
-                    const removedCount = fileBlocks.length - keptBlocks.length;
-                    if (removedCount > 0) {
-                        context.files += `\n\n*(Note: ${removedCount} files were truncated from context to fit model limits. See Project Structure for full file list.)*\n`;
+                    const removedBlocks = fileBlocks.filter(b => !b.keep);
+                    
+                    if (removedBlocks.length > 0) {
+                        const removedList = removedBlocks.map(b => `  - \`${b.path}\``).join('\n');
+                        const keptList = keptBlocks.map(b => `  - \`${b.path}\``).join('\n');
+                        
+                        await this.updateMessageContent(pruneMsgId, `⚖️ **Context Governor: Optimization Complete**
+To fit within the **${maxTokens.toLocaleString()}** token limit, I have reorganized the context:
+
+**✅ PRESERVED (Matched Keywords):**
+${keptList || "  - (None)"}
+
+**✂️ EVICTED (Context Pruned):**
+${removedList}
+
+*The AI still sees the file paths in the Project Tree, but their content was hidden to allow the model to process your request.*`);
                     }
 
                     // 4. Rebuild messagesToSend with the pruned context
@@ -2383,8 +2495,15 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
         }
 
         // --- PHASE 7: TEST GENERATION ---
+        // --- PHASE 7: TEST GENERATION ---
         if (this._discussionCapabilities.testMode && !controller.signal.aborted) {
             this.processManager.updateDescription(processId, "Test Engineer: Writing unit tests...");
+            
+            // FORCE MINIMALIST PROFILE for sub-agents to remove reasoning bloat
+            const subAgentCapabilities = { 
+                ...this._discussionCapabilities, 
+                responseProfileId: 'minimalist' 
+            };
             this.updateGeneratingState();
 
             const testSystemPrompt = `You are a Senior QA/Test Engineer. 
@@ -2469,9 +2588,9 @@ DO NOT explain your code. Output ONLY the test code blocks.`;
 
                     testGenerationSession.listeners.forEach(listener => listener(chunk));
                 }, controller.signal, this._currentDiscussion.model, { 
-                    thinking: this._discussionCapabilities.thinkingMode,
-                    capabilities: this._discussionCapabilities,
-                    temperature: this._discussionCapabilities.temperature
+                    thinking: subAgentCapabilities.thinkingMode,
+                    capabilities: subAgentCapabilities,
+                    temperature: subAgentCapabilities.temperature
                 });
 
                 this.processManager.updateDescription(processId, "Verifier: Auditing test code...");
@@ -2525,18 +2644,29 @@ DO NOT explain your code. Output ONLY the test code blocks.`;
         // --- PHASE 8: DOCUMENTATION UPDATE ---
         if (this._discussionCapabilities.documentationMode && !controller.signal.aborted) {
             this.processManager.updateDescription(processId, "Technical Writer: Syncing documentation...");
+
+            // FORCE MINIMALIST PROFILE for sub-agents to remove reasoning bloat
+            const subAgentCapabilities = { 
+                ...this._discussionCapabilities, 
+                responseProfileId: 'minimalist' 
+            };
             this.updateGeneratingState();
 
             const docsSystemPrompt = `You are the **Senior Technical Writer & Project Historian**.
-Your goal is to ensure the project documentation and AI memory perfectly reflect the latest changes.
+Your primary goal is to maintain the project's PHYSICAL documentation files.
 
-### 📚 DOCUMENTATION PROTOCOL:
-1. **Analyze**: Look at the code modifications and test files created in the discussion.
-2. **Update**: Update \`README.md\`, Sphinx docs, or help files using AIDER SEARCH/REPLACE format. 
-3. **Grounding (Memory)**: Output a \`<project_memory operation="add" ...>\` tag describing any significant architectural decisions or new patterns introduced. Frame this as "Project DNA" so future sessions understand the "Why" behind the code.
-4. **Learning**: If you discover a project-specific quirk (e.g., "Always use the custom logger for DB errors"), record it in memory.
+### 📚 DOCUMENTATION PROTOCOL (STRICT PRIORITY):
+1. **FILE MODIFICATION (MANDATORY)**: You MUST update or create at least one documentation file (e.g., \`README.md\`, \`ARCHITECTURE.md\`, or \`docs/*.md\`) using the AIDER SEARCH/REPLACE format. 
+   - Document new classes, functions, or changes in behavior.
+   - If the project is missing a README, create one now.
+2. **INTERNAL GROUNDING (SECONDARY)**: ONLY AFTER updating the files, you may use a \`<project_memory operation="add" ...>\` tag.
+   - Use memory ONLY for "Project DNA" (e.g., "The user hates Flask, always use FastAPI") or "Hidden Quirks" that aren't appropriate for a public README.
 
-DO NOT add conversational filler. Output ONLY the code blocks and memory tags.`;
+### 🛑 PROHIBITIONS:
+- **NO MEMORY-ONLY RESPONSES**: Generating a memory tag without updating a documentation file is a FAILURE.
+- **NO CHATTER**: Output ONLY the Aider code blocks and the memory tags.
+
+If there are no meaningful docs to update, find the README.md and add a "Latest Changes" entry.`;
 
             const docsPrompt = `Sync the project documentation and record architectural memories based on the work just completed.`;
 
@@ -2589,7 +2719,9 @@ DO NOT add conversational filler. Output ONLY the code blocks and memory tags.`;
                     docsSession.buffer += chunk;
                     docsSession.tokenCount++;
                     docsSession.listeners.forEach(l => l(chunk));
-                }, controller.signal, this._currentDiscussion.model);
+                }, controller.signal, this._currentDiscussion.model, {
+                    capabilities: subAgentCapabilities
+                });
 
                 const processedDocsResponse = await this.verifyAndProcessCodeBlocks(docsMessageId, fullDocsResponse, controller.signal);
 
@@ -2625,7 +2757,34 @@ DO NOT add conversational filler. Output ONLY the code blocks and memory tags.`;
         ChatPanel.activeGenerations.delete(this.discussionId);
 
         if (error.name === 'AbortError' || error.message === 'AbortError') {
-            await this.loadDiscussion(); 
+            // --- PRESERVE PARTIAL CONTENT ---
+            if (fullResponse.trim()) {
+                const stoppedText = fullResponse + "\n\n*(Generation stopped by user)*";
+                const assistantMessage: ChatMessage = { 
+                    id: assistantMessageId, 
+                    role: 'assistant', 
+                    content: stoppedText, 
+                    model: generationSession.model,
+                    personalityName: personaName,
+                    timestamp: Date.now()
+                };
+
+                // Add to persistent history so it survives refreshes
+                await this.addMessageToDiscussion(assistantMessage, false);
+
+                // Tell the UI to finalize the current bubble with the partial text
+                if (!this._isDisposed) {
+                    this._panel.webview.postMessage({ 
+                        command: 'finalizeMessage', 
+                        id: assistantMessageId, 
+                        fullContent: stoppedText,
+                        personalityName: personaName
+                    });
+                }
+            } else {
+                // If stopped before any tokens arrived, just refresh to clean up the "Thinking" bubble
+                await this.loadDiscussion();
+            }
         } else {
             this.log(`Message delivery failed: ${error.message}`, 'ERROR');
 
@@ -2755,8 +2914,9 @@ DO NOT add conversational filler. Output ONLY the code blocks and memory tags.`;
       if (!isApplied) {
           // Apply in memory
           if (type === 'replace' || content.includes('<<<<<<< SEARCH')) {
-              const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
-              const matches = [...content.matchAll(aiderRegex)];
+            // Handle multiple SEARCH/REPLACE blocks within the same content
+            const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
+            const matches =[...content.matchAll(aiderRegex)];
               if (matches.length > 0) {
                   let tempContent = currentContent;
                   for (const match of matches) {
@@ -3161,11 +3321,13 @@ ${targetContent}
 
                             let result: any = { success: false };
                             try {
+                                // MANDATORY: For bulk apply, we MUST use autoSave to ensure 
+                                // the next hunk in the batch sees the updated file content.
                                 const opts = { 
                                     silent: true, 
                                     blockIndex: change.blockIndex, 
                                     hunkIndex: change.hunkIndex,
-                                    autoSave: true
+                                    autoSave: true 
                                 };
 
                                 if (change.type === 'file') {
@@ -3173,6 +3335,8 @@ ${targetContent}
                                     result = applyResult || { success: true };
                                     if (result.success) await this.updateAppliedState(messageId, change.blockIndex);
                                 } else if (change.type === 'replace') {
+                                    // CRITICAL: We await this fully. 
+                                    // The replaceCode command now re-reads the document from the active editor.
                                     const res: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', change.path, change.content, this, messageId, opts);
                                     result = (res && typeof res === 'object') ? res : { success: !!res };
                                     if (result.success) await this.updateAppliedState(messageId, change.blockIndex, change.hunkIndex);
@@ -3285,109 +3449,123 @@ ${targetContent}
                 break;
             case 'requestFileSearch':
                 {
-                    const query = message.query.trim();
+                    const query = (message.query || "").trim();
                     const searchMode = message.mode || 'path';
                     const options = message.options || { matchCase: false, wholeWord: false };
                     let results: any[] = [];
 
-                    const includedFiles = new Set(
-                        this._contextManager.getContextStateProvider()?.getIncludedFiles()?.map(f => f.path) || []
-                    );
+                    try {
+                        const includedFiles = new Set(
+                            this._contextManager.getContextStateProvider()?.getIncludedFiles()?.map(f => f.path) || []
+                        );
 
-                    if (searchMode === 'content') {
-                        // Advanced content search: only search files visible in the tree (skips excluded/collapsed)
-                        const visibleFiles = await this._contextManager.getWorkspaceFilePaths();
-                        results = await this._contextManager.searchWorkspaceContent(query, {
-                            ...options,
-                            include: visibleFiles.join(',')
-                        });                        
-                    } else {
-                        let allFiles = await this._contextManager.getWorkspaceFilePaths();
+                        if (searchMode === 'content') {
+                            // OPTIMIZATION: If the query is long (selection), treat as literal search
+                            // to avoid regex parsing errors on special chars like () or [].
+                            const isLiteral = query.length > 30 || query.includes('\n');
+                            
+                            const visibleFiles = await this._contextManager.getWorkspaceFilePaths();
+                            
+                            // SAFETY: Don't pass a massive include string to shell if tree is large.
+                            const includeFilter = visibleFiles.length < 60 ? visibleFiles.join(',') : undefined;
 
-                        // Apply Include/Exclude filters to filename list
-                        if (options.include) {
-                            const includes = options.include.split(',').map((p: string) => p.trim().toLowerCase());
-                            allFiles = allFiles.filter(f => includes.some((p: string) => f.toLowerCase().includes(p) || f.toLowerCase().endsWith(p.replace('*', ''))));
-                        }
-                        if (options.exclude) {
-                            const excludes = options.exclude.split(',').map((p: string) => p.trim().toLowerCase());
-                            allFiles = allFiles.filter(f => !excludes.some((p: string) => f.toLowerCase().includes(p) || f.toLowerCase().endsWith(p.replace('*', ''))));
-                        }
-                        
-                        // --- ADVANCED FILENAME PARSER ---
-                        let filtered = allFiles;
-                        
-                        // 1. Handle Extension Filter (ext:py)
-                        const extMatch = query.match(/ext:(\w+)/);
-                        if (extMatch) {
-                            const targetExt = "." + extMatch[1].toLowerCase();
-                            filtered = filtered.filter(f => f.toLowerCase().endsWith(targetExt));
-                        }
-                        
-                        // Clean query of metadata tags
-                        const cleanQuery = query.replace(/ext:\w+/g, '').trim();
-                        if (!cleanQuery) {
-                            results = filtered.slice(0, 50).map(f => ({ path: f, snippet: "" }));
+                            results = await this._contextManager.searchWorkspaceContent(query, {
+                                ...options,
+                                include: includeFilter,
+                                literal: isLiteral
+                            });                        
                         } else {
-                            // 2. Handle OR logic (|)
-                            const orParts = cleanQuery.split('|').map(p => p.trim()).filter(p => p);
+                            let allFiles = await this._contextManager.getWorkspaceFilePaths();
 
-                            if (options.fuzzy === false) {
-                                // STRICT MATCHING MODE
-                                const filteredFiles = filtered.filter(f => {
-                                    return orParts.some(part => {
-                                        const terms = part.split(/\s+/);
-                                        return terms.every(term => {
-                                            const isNot = term.startsWith('-');
-                                            const actualTerm = isNot ? term.substring(1) : term;
-                                            const match = options.matchCase ? f.includes(actualTerm) : f.toLowerCase().includes(actualTerm.toLowerCase());
-                                            return isNot ? !match : match;
-                                        });
-                                    });
-                                });
-                                results = filteredFiles.slice(0, 50).map(f => ({ path: f, snippet: "" }));
+                            // Apply Include/Exclude filters to filename list
+                            if (options.include) {
+                                const includes = options.include.split(',').map((p: string) => p.trim().toLowerCase());
+                                allFiles = allFiles.filter(f => includes.some((p: string) => f.toLowerCase().includes(p) || f.toLowerCase().endsWith(p.replace('*', ''))));
+                            }
+                            if (options.exclude) {
+                                const excludes = options.exclude.split(',').map((p: string) => p.trim().toLowerCase());
+                                allFiles = allFiles.filter(f => !excludes.some((p: string) => f.toLowerCase().includes(p) || f.toLowerCase().endsWith(p.replace('*', ''))));
+                            }
+                            
+                            // --- ADVANCED FILENAME PARSER ---
+                            let filtered = allFiles;
+                            
+                            // 1. Handle Extension Filter (ext:py)
+                            const extMatch = query.match(/ext:(\w+)/);
+                            if (extMatch) {
+                                const targetExt = "." + extMatch[1].toLowerCase();
+                                filtered = filtered.filter(f => f.toLowerCase().endsWith(targetExt));
+                            }
+                            
+                            // Clean query of metadata tags
+                            const cleanQuery = query.replace(/ext:\w+/g, '').trim();
+                            if (!cleanQuery) {
+                                results = filtered.slice(0, 50).map(f => ({ path: f, snippet: "" }));
                             } else {
-                                // FUZZY SCORING MODE
-                                const scoredResults = filtered.map(f => {
-                                    let maxOrScore = 0;
-                                    const matches = orParts.some(part => {
-                                        const terms = part.split(/\s+/);
-                                        return terms.every(term => {
-                                            const isNot = term.startsWith('-');
-                                            const actualTerm = isNot ? term.substring(1) : term;
-                                            if (!actualTerm) return true;
+                                // 2. Handle OR logic (|)
+                                const orParts = cleanQuery.split('|').map(p => p.trim()).filter(p => p);
 
-                                            const fLower = f.toLowerCase();
-                                            const tLower = actualTerm.toLowerCase();
-                                            const idx = options.matchCase ? f.indexOf(actualTerm) : fLower.indexOf(tLower);
-
-                                            if (idx !== -1) {
-                                                let score = 10;
-                                                if (f.split(/[\\/]/).pop()?.toLowerCase().startsWith(tLower)) score += 50;
-                                                if (idx === 0) score += 100;
-                                                maxOrScore = Math.max(maxOrScore, score);
-                                                return isNot ? false : true;
-                                            }
-                                            return isNot ? true : false;
+                                if (options.fuzzy === false) {
+                                    // STRICT MATCHING MODE
+                                    const filteredFiles = filtered.filter(f => {
+                                        return orParts.some(part => {
+                                            const terms = part.split(/\s+/);
+                                            return terms.every(term => {
+                                                const isNot = term.startsWith('-');
+                                                const actualTerm = isNot ? term.substring(1) : term;
+                                                const match = options.matchCase ? f.includes(actualTerm) : f.toLowerCase().includes(actualTerm.toLowerCase());
+                                                return isNot ? !match : match;
+                                            });
                                         });
                                     });
-                                    return { path: f, score: maxOrScore, matches };
-                                })
-                                .filter(res => res.matches)
-                                .sort((a, b) => b.score - a.score);
+                                    results = filteredFiles.slice(0, 50).map(f => ({ path: f, snippet: "" }));
+                                } else {
+                                    // FUZZY SCORING MODE
+                                    const scoredResults = filtered.map(f => {
+                                        let maxOrScore = 0;
+                                        const matches = orParts.some(part => {
+                                            const terms = part.split(/\s+/);
+                                            return terms.every(term => {
+                                                const isNot = term.startsWith('-');
+                                                const actualTerm = isNot ? term.substring(1) : term;
+                                                if (!actualTerm) return true;
 
-                                results = scoredResults.slice(0, 50).map(r => ({ path: r.path, snippet: "" }));
+                                                const fLower = f.toLowerCase();
+                                                const tLower = actualTerm.toLowerCase();
+                                                const idx = options.matchCase ? f.indexOf(actualTerm) : fLower.indexOf(tLower);
+
+                                                if (idx !== -1) {
+                                                    let score = 10;
+                                                    if (f.split(/[\\/]/).pop()?.toLowerCase().startsWith(tLower)) score += 50;
+                                                    if (idx === 0) score += 100;
+                                                    maxOrScore = Math.max(maxOrScore, score);
+                                                    return isNot ? false : true;
+                                                }
+                                                return isNot ? true : false;
+                                            });
+                                        });
+                                        return { path: f, score: maxOrScore, matches };
+                                    })
+                                    .filter(res => res.matches)
+                                    .sort((a, b) => b.score - a.score);
+
+                                    results = scoredResults.slice(0, 50).map(r => ({ path: r.path, snippet: "" }));
+                                }
                             }
                         }
+                        
+                        // Add the 'isAlreadyIncluded' flag to each result
+                        const resultsWithMetadata = (results || []).map(r => ({
+                            ...r,
+                            isAlreadyIncluded: includedFiles.has(r.path)
+                        }));
+                        
+                        webview.postMessage({ command: 'fileSearchResults', results: resultsWithMetadata, query, mode: searchMode });
+                    } catch (err: any) {
+                        Logger.error(`Search failed: ${err.message}`);
+                        // Always send a response to stop the webview spinner
+                        webview.postMessage({ command: 'fileSearchResults', results: [], query, mode: searchMode });
                     }
-                    
-                    // Add the 'isAlreadyIncluded' flag to each result
-                    const resultsWithMetadata = results.map(r => ({
-                        ...r,
-                        isAlreadyIncluded: includedFiles.has(r.path)
-                    }));
-                    
-                    webview.postMessage({ command: 'fileSearchResults', results: resultsWithMetadata, query, mode: searchMode });
                 }
                 break;
             case 'requestAddFileToContext':
@@ -3713,6 +3891,9 @@ ${targetContent}
             case 'updateDiscussionModel':
                 if (this._currentDiscussion) {
                     this._currentDiscussion.model = message.model || undefined;
+                    // Provide immediate feedback to the webview header
+                    const effectiveModel = message.model || this._lollmsAPI.getModelName();
+                    this._panel.webview.postMessage({ command: 'updateModelNameOnly', modelName: effectiveModel });
                     if (!this._currentDiscussion.id.startsWith('temp-')) {
                         await this._discussionManager.saveDiscussion(this._currentDiscussion);
                     }
@@ -3797,24 +3978,34 @@ Task:
                 break;
             case 'stopGeneration':
                 if (this._currentDiscussion) {
-                    // 1. Force Deactivate Agent if running
-                    if (this.agentManager && this.agentManager.getIsActive()) {
+                    const isInterruption = message.isInterruption === true;
+
+                    // 1. If it's a full stop (not raise hand), deactivate agent
+                    if (!isInterruption && this.agentManager && this.agentManager.getIsActive()) {
                         this.agentManager.toggleAgentMode(); 
                     }
-                    
-                    // 2. Force purge from the generation registry
+
+                    // 2. Clear generation buffer
                     ChatPanel.activeGenerations.delete(this.discussionId);
 
-                    // 3. Cancel all backend processes for this discussion
+                    // 3. Cancel current turn
                     this.processManager.cancelForDiscussion(this.discussionId);
-                    
+
                     // 4. Reset metrics
                     this._panel.webview.postMessage({
                         command: 'updateGenerationMetrics',
                         reset: true
                     });
 
-                    // 5. Authoritatively hide overlay and unlock input
+                    // 5. If Interruption, add a visual marker to the chat
+                    if (isInterruption) {
+                        await this.addMessageToDiscussion({
+                            role: 'system',
+                            content: '✋ **User raised hand.** The Architect has paused to receive your feedback. Describe your changes or suggestions below.'
+                        });
+                    }
+
+                    // 6. Authoritatively hide overlay and unlock input
                     this.updateGeneratingState();
                 }
                 break;
@@ -4498,6 +4689,26 @@ Task:
                     this.updateGeneratingState();
                 }
                 break;
+            case 'resolveImageUri':
+                {
+                    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+                    if (workspaceFolder) {
+                        const fileUri = vscode.Uri.joinPath(workspaceFolder.uri, message.path);
+                        try {
+                            // Ensure file exists before resolving
+                            await vscode.workspace.fs.stat(fileUri);
+                            const webviewUri = webview.asWebviewUri(fileUri);
+                            webview.postMessage({ 
+                                command: 'imageUriResolved', 
+                                targetId: message.targetId, 
+                                uri: webviewUri.toString() 
+                            });
+                        } catch (e) {
+                            Logger.warn(`Could not resolve image result path: ${message.path}`);
+                        }
+                    }
+                }
+                break;
             case 'runAutoSkill':
                 if (this._isDisposed || !this.processManager) { break; }
                 const { id: skillProcId, controller: skillCtrl } = this.processManager.register(this.discussionId, 'Optimizing Skills...');
@@ -4883,11 +5094,17 @@ Task:
                             </div>
                         </div>
                     </div>
-                    <button id="stopButton" class="stop-btn-red">
-                        <i class="codicon codicon-primitive-square"></i>
-                        <span>Cancel Task</span>
-                    </button>
-                </div>
+                    <div style="display: flex; gap: 8px;">
+                        <button id="raiseHandButton" class="stop-btn-red" style="background-color: var(--vscode-charts-orange) !important; border-color: var(--vscode-charts-orange) !important; color: white !important;" title="Pause and provide feedback">
+                            <i class="codicon codicon-hand"></i>
+                            <span>Raise Hand</span>
+                        </button>
+                        <button id="stopButton" class="stop-btn-red">
+                            <i class="codicon codicon-primitive-square"></i>
+                            <span>Cancel Task</span>
+                        </button>
+                    </div>
+                    </div>
 
                 <div class="input-area-wrapper">
                     <div id="more-actions-menu">
@@ -4967,16 +5184,47 @@ Task:
                     </div>
 
                     <div class="top-controls">
-                        <div class="active-badges" id="active-badges">
+
+                        <!-- TIER 1: ACTIVE STATUS BADGES -->
+                        <div id="badge-dashboard-panel">
+                            <div class="active-badges" id="active-badges">
+                                <!-- Badges injected here via updateBadges() -->
+                            </div>
+
+                            <div style="display: flex; align-items: center; gap: 12px;">
+                                <div id="websearch-indicator" class="websearch-indicator" title="Web Search Active" style="display: none;">
+                                    <i class="codicon codicon-globe"></i>
+                                    <span>Web</span>
+                                </div>
+                                <div id="active-tools-indicator" class="active-tools-indicator"></div>
+                            </div>
                         </div>
 
-                        <div id="websearch-indicator" class="websearch-indicator" title="Web Search Active" style="display: none;">
-                            <i class="codicon codicon-globe"></i>
-                            <span>Web</span>
+                        <!-- TIER 2: METRICS & SYSTEM STATUS -->
+                        <div class="hud-center-zone" style="display: flex; align-items: center; gap: 20px; width: 100%; border-top: 1px solid var(--vscode-editor-inactiveSelectionBackground); padding-top: 8px;">
+                            <div id="status-label" class="status-label" style="display:flex; align-items:center; gap:8px; min-width: 120px;">
+                                <button id="toggle-dashboard-btn" class="icon-btn" title="Toggle Badges Dashboard" style="padding:0; margin-right:4px;">
+                                    <i class="codicon codicon-chevron-up" id="dashboard-chevron"></i>
+                                </button>
+                                <div id="status-spinner" class="spinner" style="display:none;"></div>
+                                <span id="status-text" style="font-size: 11px; font-weight: 600; opacity: 0.8;">Ready</span>
+                            </div>
+
+                            <div class="token-progress-wrap" style="flex: 1; max-width: 400px;">
+                                <div class="token-progress-container" id="token-progress-container" style="height: 6px; margin-bottom: 4px; border-radius: 3px;">
+                                    <div class="token-progress-bar" id="token-progress-bar"></div>
+                                </div>
+                                <div style="display: flex; justify-content: space-between; align-items: center;">
+                                    <span id="token-count-label" style="font-size: 10px; font-family: var(--vscode-editor-font-family); opacity: 0.7;">Calculating capacity...</span>
+                                    <div id="token-bar-legend" class="token-legend" style="display: none; margin: 0; gap: 10px; opacity: 0.9;">
+                                        <div class="legend-item" data-type="system" style="font-size: 9px;"><div class="legend-dot segment-system"></div>SYSTEM</div>
+                                        <div class="legend-item" data-type="files" style="font-size: 9px;"><div class="legend-dot segment-files"></div>FILES</div>
+                                        <div class="legend-item" data-type="chat" style="font-size: 9px;"><div class="legend-dot segment-history"></div>CHAT</div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
-                        
-                        <div id="active-tools-indicator" class="active-tools-indicator"></div>
-                        
+
                         <div id="context-loading-spinner" style="display: none; align-items: center; gap: 8px; font-size: 0.9em; color: var(--vscode-descriptionForeground);">
                             <div class="spinner"></div>
                             <div style="display:flex; flex-direction:column; gap:2px;">
@@ -4986,7 +5234,7 @@ Task:
                                 </div>
                             </div>
                         </div>
-                    </div>
+                        </div>
                     <div class="input-area-container">
                         <div class="rich-input-toolbar">
                             <button class="toolbar-tool" data-wrap-type="python" title="Python Block"><i class="codicon codicon-symbol-method"></i><span>Python</span></button>

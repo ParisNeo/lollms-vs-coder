@@ -28,6 +28,7 @@ const symbolList = document.getElementById('symbols-list') as HTMLDataListElemen
 const runBtn = document.getElementById('run') as HTMLButtonElement;
 const exampleSelect = document.getElementById('sparql-examples') as HTMLSelectElement;
 const rebuildBtn = document.getElementById('rebuild') as HTMLButtonElement;
+const regenerateBtn = document.getElementById('regenerate') as HTMLButtonElement;
 const addChatBtn = document.getElementById('add') as HTMLButtonElement;
 const exportBtn = document.getElementById('export') as HTMLButtonElement;
 const stopBtn = document.getElementById('stop') as HTMLButtonElement;
@@ -99,6 +100,7 @@ window.addEventListener('message', event => {
                 if (mermaidContainer) mermaidContainer.style.opacity = '0.3';
             }
             if (rebuildBtn) rebuildBtn.style.display = 'none';
+            if (regenerateBtn) regenerateBtn.style.display = 'none';
             if (stopBtn) stopBtn.style.display = 'inline-block';
             if (statusLabel) statusLabel.textContent = 'Building...';
         } else {
@@ -108,6 +110,7 @@ window.addEventListener('message', event => {
                 if (mermaidContainer) mermaidContainer.style.opacity = '1';
             }
             if (rebuildBtn) rebuildBtn.style.display = 'inline-block';
+            if (regenerateBtn) regenerateBtn.style.display = 'inline-block';
             if (stopBtn) stopBtn.style.display = 'none';
             if (statusLabel) {
                 statusLabel.textContent = state === 'error' ? `Error: ${lastError}` : (state === 'ready' ? 'Ready' : 'Idle');
@@ -285,6 +288,12 @@ async function handleFocusNode(label: string, type: string) {
 if (rebuildBtn) {
     rebuildBtn.addEventListener('click', () => {
         vscode.postMessage({ command: 'rebuild' });
+    });
+}
+
+if (regenerateBtn) {
+    regenerateBtn.addEventListener('click', () => {
+        vscode.postMessage({ command: 'regenerate' });
     });
 }
 

@@ -63,9 +63,11 @@ export const editCodeTool: ToolDefinition = {
     permissionGroup: 'filesystem_write',
     parameters:[
         { name: "file_path", type: "string", description: "The relative path of the file to edit.", required: true },
+        { name: "equip_skills", type: "array", description: "List of skill IDs to inject into the sub-agent context.", required: false },
+        { name: "research_briefing", type: "string", description: "Distilled research results to inform the refactor.", required: false },
         { name: "instructions", type: "string", description: "Detailed instructions on what to change.", required: true }
     ],
-    async execute(params: { file_path: string, instructions: string }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
+    async execute(params: { file_path: string, equip_skills?: string[], research_briefing?: string, instructions: string }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
         if (!env.workspaceRoot || !env.currentPlan) return { success: false, output: "Error: Workspace root or active plan missing." };
         
         let filePath = params.file_path.trim().replace(/^[\\\/]+/, '');
@@ -124,8 +126,8 @@ export const editCodeTool: ToolDefinition = {
 
         // 3. STRICT EXTRACTION & APPLICATION
         const cleanResponse = stripThinkingTags(response);
-        const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
-        const matches = [...cleanResponse.matchAll(aiderRegex)];
+        const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
+        const matches =[...cleanResponse.matchAll(aiderRegex)];
 
         if (matches.length === 0) {
             return { success: false, output: `Error: The editor sub-agent produced conversational text or invalid Aider blocks instead of SEARCH/REPLACE modifications. Response was:\n${cleanResponse.substring(0, 500)}...` };

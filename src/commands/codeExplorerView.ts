@@ -104,6 +104,15 @@ export class CodeExplorerPanel {
                 this.update();
             }
 
+            if (msg.command === 'regenerate') {
+                // Wipe existing data completely first
+                this.graphManager.reset();
+                this.update();
+                // Trigger full rebuild
+                this.graphManager.buildGraph().then(() => this.update());
+                this.update();
+            }
+
             if (msg.command === 'stop') {
                 this.graphManager.cancel();
                 this.update();
@@ -345,7 +354,8 @@ export class CodeExplorerPanel {
                 <option value="SELECT ?target WHERE { 'main' calls ?target }">Called by Main</option>
             </select>
         </div>
-        <button id="rebuild">Refresh</button>
+        <button id="rebuild" title="Update current view with new changes">Refresh</button>
+        <button id="regenerate" style="background-color: var(--vscode-charts-blue); color: white;" title="Wipe cache and force full project re-index">Regenerate</button>
         <button id="stop">Stop</button>
         <button id="add">Add to Chat</button>
         <button id="export">Export</button>

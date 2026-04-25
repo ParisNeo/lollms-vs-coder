@@ -18,6 +18,7 @@ export interface Discussion {
     personalityId?: string;
     gitState?: { originalBranch: string, tempBranch: string };
     importedSkills?: string[];
+    selectedFolders?: string[]; // URIs of selected workspace folders
     activeDiagrams?: string[]; // e.g., ['class_diagram', 'call_graph']
     appliedState?: Record<string, Record<number, number[]>>;
     discussion_data_zone?: string;

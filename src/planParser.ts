@@ -78,15 +78,24 @@ ${memoryBlock}
                 });
                 
                 const groundingBlock = `
-# PROJECT WORLD STATE
-${projectContext.text}
+                # 🛠️ PROJECT WORLD STATE (EXISTING STRUCTURE)
+                ${projectContext.projectTree}
 
-${memoryBlock}
+                **STRICT DISCOVERY PROTOCOL**:
+                - The tree above is your EYES. If a file is listed in the tree, you ALREADY KNOW it exists.
+                - DO NOT use \`list_files\` or \`execute_command('ls')\` to check for files present in the tree.
+                - To see the code inside any file in the tree, use \`read_file\`.
+
+                ### 📄 ACCESSIBLE FILE CONTENTS
+                ${projectContext.selectedFilesContent || "(No files have been read yet. Use 'read_files' to see code.)"}
+
+                ${memoryBlock}
 
 # ARCHITECT PROTOCOL:
-1. **MEMORY ENFORCEMENT**: Check "COMPLETED ACTIONS". Do not repeat work.
-2. **KNOWLEDGE ZONES**: Use \`store_knowledge\` for important facts.
-3. **JSON ONLY**: Your response must be a single valid JSON object.
+1. **INCREMENTAL REMARKS**: Do NOT rewrite your whole history. Provide a \`new_remark\` field with only the LATEST discovery or insight from the last turn.
+2. **SUB-GOALS**: Update your \`current_sub_goal\` to reflect the immediate technical target.
+3. **MEMORY ENFORCEMENT**: Check "COMPLETED ACTIONS". Do not repeat work.
+4. **JSON ONLY**: Your response must be a single valid JSON object.
 `;
                 const historyContext = this.formatHistoryForContext(chatHistory);
 
@@ -258,14 +267,28 @@ You operate in a high-frequency loop: **Reason -> Act -> Observe**.
 3. **THE ERROR MANDATE**: If you see a Python error (e.g., \`NameError\`, \`ImportError\`), you have ONE turn to \`read_file\`. In the VERY NEXT turn, you MUST apply a fix using \`edit_code\` or \`generate_code\`. No "thinking" loops allowed.
 4. **DEBUGGING BIAS**: Use \`edit_code\` to insert \`print(f"DEBUG: {var}")\` to verify your assumptions.
 5. **NO REPETITION**: If a tool call resulted in "REPETITIVE ACTION" or "LOOP BLOCKED", you are FORBIDDEN from using that tool again on the same path. Switch to 'edit_code' immediately.
-5.  **DISCOVERY FIRST**: You cannot fix what you cannot see. Use \`read_file\` to understand the current logic and imports before proposing a change.
-6.  **SELECTIVE MEMORY**: Use \`<project_memory>\` tags ONLY for non-trivial architectural decisions or hard-won technical lessons (e.g. "Fixing the race condition in auth.ts required a mutex because..."). 
+5.  **DISCOVERY & GROUNDING**: You cannot fix what you cannot see. 
+    - Use \`read_files\` to gather dependencies.
+    - **MANDATORY**: After reading a file, if you find critical logic or variables, you MUST use \`record_discovery\` to save them. 
+    - The Harness will BLOCK you if you try to read the same file twice.
+6.  **NEURAL MEMORY**: Use \`record_discovery\` for short-term facts (Working Memory). Use \`<project_memory>\` tags for long-term architectural decisions that must persist across discussions.
     - **FORBIDDEN**: Saving status updates, task completion notes, or conversational trivia.
 7.  **LONG-RUNNING TASKS**: If you start a training or a long test, do NOT just sit and wait.
    - Use \`read_output_tail\` every few turns to check progress.
    - If metrics (loss, accuracy) look bad, use \`stop_process\` to kill the run and adjust hyperparameters.
    - Use \`wait\` (e.g. 30 seconds) between checks to be patient.
-7. **FINISH**: Only use \`submit_response\` when you have verified the fix works by running the code again.
+8.  **NO GHOSTING**: Do not assume the Worker can see what you see. If you find a dependency, add it.
+9.  **EXACT PATHS**: Use the absolute paths provided in the tree. Never guess.
+10.  **EXISTENCE CHECK**: Before stating 'the workspace is empty', you MUST examine the 'PROJECT WORLD STATE' tree. If files are listed there, the workspace is NOT empty; you simply haven't read the files yet.
+11.  **SAFE DISCOVERY**: Never attempt to manually list the contents of \`venv\` or \`node_modules\` folders. To check dependencies, use \`execute_command\` with \`pip list\` or \`npm list\`. If you try to list these folders, the system will truncate the output to protect your memory.
+12.  **DELEGATION PROTOCOL (MANAGER MODE)**: Treat \`generate_code\` and \`edit_code\` as human delegations. 
+    - Research: If the task involves a library you don't know well, use \`search_web\` first. Distill the results into the \`research_briefing\` parameter.
+    - Equipping: Review the \`available_skills\` in your context. If a skill matches the tech stack (e.g., \`tailwind_patterns\`), list its ID in \`equip_skills\`.
+    - Context: Include \`reference_files\` (like interfaces or types) to prevent the specialist from guessing logic.
+    - Briefing: Summarize internal project discoveries in the \`technical_briefing\`.
+13.  **NO INLINE SCRIPTING**: Never write logic in \`execute_command\`. Manifest logic into a script file via \`generate_code\` first, then run it.
+14.  **GROUNDING**: Update your \`scratchpad\` after every delegation to record the result of the audit.
+15.  **FINISH**: Only use \`submit_response\` when you have verified the fix works by running the code again.
 
 ### 🛠️ TOOLS AT YOUR DISPOSAL
 ${toolDescriptions}
@@ -274,21 +297,30 @@ ${errorManagementProtocol}
 ### 💡 SKILLS & CONTEXT
 ${skillsDesc}
 
-### 🛑 RESPONSE FORMAT (STRICT)
-You MUST output ONLY a valid JSON object.
-- **THOUGHT RULES**: Provide ONLY the logic for the CURRENT step (max 2 sentences). 
-- **NO REDUNDANCY**: Do NOT repeat the mission objective. Do NOT summarize previous tasks (I can see them in the timeline).
-- **CONCISENESS**: Focus on the *next* operation and why you chose those specific parameters.
+### 🛑 RESPONSE PROTOCOL & FORMAT (CRITICAL)
+You have two modes of operation:
 
+1. **TOOL MODE (Planning/Discovery)**:
+   - Output ONLY a valid JSON object.
+   - Use this for navigation, reading files, searching, or terminal commands.
 \`\`\`json
 {
-  "thought": "I found a syntax error on line 42; I will use generate_code with a SEARCH/REPLACE block to fix the indentation.",
-  "tool": "tool_name",
-  "params": {
-    "key": "value"
-  }
+"new_remark": "I found that the config.json uses a different port than expected.",
+"current_sub_goal": "Re-run the server on port 8081",
+"tool": "tool_name",
+"params": { ... }
 }
 \`\`\`
+
+2. **CODING MODE (Implementation)**:
+   - If the task is to **write or edit code**, do NOT wrap the code in a JSON string.
+   - Instead, respond with **Markdown**.
+   - Use \` \`\`\`language:path/to/file.ext \` blocks for full files.
+   - Use **AIDER SEARCH/REPLACE** blocks for surgical edits to existing files.
+   - The system will automatically extract and apply these blocks to disk.
+
+- **MILESTONES**: Every time you fulfill a major sub-objective, the system updates your progress.
+- **NO REDUNDANCY**: Focus only on the current technical step.
 `;
         return { role: 'system', content };
     }

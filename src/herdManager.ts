@@ -319,6 +319,7 @@ ${content}
         await appendToUI(`\n<div class="herd-phase-header">💬 Phase 2: Peer Review & Collaboration</div>\n\n`);
 
         const discussionTurns: DiscussionTurn[] = [];
+        const discussionFailures = new Map<string, number>();
         let currentBriefing = "Initial analysis complete. Awaiting peer contributions.";
 
         const getDiscussionTurn = async (

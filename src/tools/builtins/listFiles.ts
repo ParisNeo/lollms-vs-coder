@@ -24,7 +24,12 @@ export const listFilesTool: ToolDefinition = {
             }
 
             const fileTree = await env.agentManager.generateFileTree(targetPath);
-            return { success: true, output: `File listing for '${listPath}':\n${fileTree}` };
+            const output = `### 📁 Project Structure: ${listPath}\n\n` +
+                          `**Notice**: Large dependency folders (venv, node_modules, etc.) are truncated in this list for safety.\n` +
+                          `**Rule**: If you need to check installed libraries, DO NOT list the venv folder. Use 'get_environment_details' or 'execute_command' with 'pip list' or 'npm list'.\n\n` +
+                          `\`\`\`text\n${fileTree}\n\`\`\``;
+
+            return { success: true, output };
         } catch (error: any) {
             return { success: false, output: `Error listing files: ${error.message}` };
         }

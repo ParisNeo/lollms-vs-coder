@@ -79,10 +79,10 @@ export class ProjectMemoryManager {
                     title: title || id,
                     content: content || "",
                     timestamp: Date.now(),
-                    importance: importance !== undefined ? Math.min(1.0, importance) : 0.5, // Default to 50%
+                    importance: importance !== undefined ? Math.max(0, Math.min(100, importance)) : 50, // Default to 50
                     lastUsed: Date.now(),
                     category: category
-                });
+                } as any);
             }
         } else if (action === 'update') {
             const index = this._cache.findIndex(m => m.id === id);
@@ -91,11 +91,12 @@ export class ProjectMemoryManager {
                 if (content) this._cache[index].content = content;
                 
                 if (importance !== undefined && !isNaN(Number(importance))) {
-                    this._cache[index].importance = Math.max(0.0, Math.min(1.0, Number(importance)));
+                    // Standardize to 0-100 scale
+                    this._cache[index].importance = Math.max(0, Math.min(100, Number(importance)));
                 } else {
-                    // Default increment if importance not specifically given
-                    const currentImportance = this._cache[index].importance;
-                    this._cache[index].importance = Math.min(1.0, currentImportance + 0.5);
+                    // Default reinforcement if importance not specifically given
+                    const currentImportance = this._cache[index].importance || 0;
+                    this._cache[index].importance = Math.min(100, currentImportance + 10);
                 }
                 
                 this._cache[index].timestamp = Date.now();
@@ -142,7 +143,9 @@ export class ProjectMemoryManager {
         const tree = await contextManager.getContextContent({ includeTree: true });
         dnaContent += `- Structure: \n${tree.projectTree.substring(0, 500)}...\n`;
 
-        // 2. Identify core rules (e.g. from package.json or requirements.txt)
+        // 2. Identify core rules
+        await this.updateMemory('add', 'scripting_protocol', 'Clean Scripting Protocol', 'Complex logic must never be executed inline via terminal one-liners. Always generate a script file in .lollms/scripts/ first, then execute it. This prevents shell-escaping and character-encoding failures.', 'standards', 100);
+
         const filesToPeek = ['package.json', 'requirements.txt', 'tsconfig.json', '.eslintrc', 'pyproject.toml'];
         for (const file of filesToPeek) {
             try {

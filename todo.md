@@ -42,14 +42,7 @@ Make skills md with claude style
 
 # IMPORTANT
 ## Problem in websearch
-apply all **MUST** save all updated files
 Add the possibility to force a model name without scan.
-Implement add from search feature to be abel to add new files to context by doing a search and selecting the files that match that search
+Implement add from search feature to be abele to add new files to context by doing a search and selecting the files that match that search
 UI problems in the modify with lollms ui
-# URGENT!!!!
-## 🌳 PROJECT STRUCTURE
 
-```text
-```
-
-The project structure is always empty!! It needs to be populated with the project tree or if in a workspace we show the projects structures

@@ -389,7 +389,7 @@ export async function activate(context: vscode.ExtensionContext) {
     // Process status updates
     context.subscriptions.push(processManager.onDidProcessChange(() => {
         statusBar.updateProcesses(processManager.getAll().length);
-        ChatPanel.panels.forEach(panel => panel.updateGeneratingState());
+        ChatPanel.panels.forEach(panel => panel.updateGeneratingState());   
     }));
 
     } catch (e: any) {

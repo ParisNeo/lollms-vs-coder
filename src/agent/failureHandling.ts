@@ -70,8 +70,10 @@ ${relevantFailures.map(f => `- Error: "${f.errorOutput.substring(0, 200)}..." wi
 - Params: \`${JSON.stringify(successfulParams)}\`
 
 **TASK**: 
-1. Briefly explain why this version worked.
-2. Output a \`<project_memory>\` tag. Frame the content as a "Lesson for my future self" so you are sharper and more efficient next time.
+1. RCA: Explain precisely why this attempt succeeded where the previous ones failed (e.g., quoting, shell environment, tool choice).
+2. MEMORY: You MUST output a \`<project_memory action="add" importance="2.0" category="technical_lesson">\` tag. 
+   - State a generalized rule for your future self to prevent repeating this specific category of mistake.
+   - Example: "When using tool X, always do Y to avoid Z."
 `;
     }
 

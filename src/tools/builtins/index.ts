@@ -15,6 +15,7 @@ import { readCodeGraphTool } from './readCodeGraph';
 import { updateCodeGraphTool } from './updateCodeGraph';
 import { queryArchitectureTool } from './queryArchitecture';
 import { readFileTool } from './readFile';
+import { readFilesTool } from './readFiles';
 import { requestUserInputTool } from './requestUserInput';
 import { rlmReplTool } from './rlmRepl';
 import { runFileTool } from './runFile';
@@ -48,8 +49,10 @@ import { editCodeTool } from './editCode';
 import { createAgentTool } from './createAgent';
 import { delegateTaskTool } from './delegateTask';
 import { requestSecureCredentialTool } from './requestSecureCredential';
+import { editImageAssetTool } from './editImageAsset';
 
 export const allTools: ToolDefinition[] = [
+    editImageAssetTool,
     requestSecureCredentialTool,
     editCodeTool,
     createAgentTool,
@@ -73,6 +76,7 @@ export const allTools: ToolDefinition[] = [
     queryArchitectureTool,
     updateCodeGraphTool,
     readFileTool,
+    readFilesTool,
     requestUserInputTool,
     rlmReplTool,
     runFileTool,

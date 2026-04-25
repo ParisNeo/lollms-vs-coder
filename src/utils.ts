@@ -43,8 +43,8 @@ export const SYSTEM_RESPONSE_PROFILES: ResponseProfile[] = [
     {
         id: "structured",
         name: "Structured (Analytical)",
-        description: "Formal Discover/Explain/Think/Act breakdown.",
-        systemPrompt: "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this four-part structure for every response:\n  1. **Discover**: Identify what is being asked or what issue was found.\n  2. **Explain**: Break down the underlying mechanics or context of the issue.\n  3. **Think**: Describe the technical path chosen to resolve it and why.\n  4. **Act**: Provide the actual implementation, code, or tool call.\n\n- **STRICT FORMATTING**: Use standard Markdown (bolding, lists) for these sections. Do NOT wrap these text sections in triple backticks.\n- **AUTONOMOUS ACTIONS**: If you need to use a tool or save a memory, do so at the END of your 'Act' section. Tags like <project_memory> are mandatory for persistence.",
+        description: "Formal Observe/Think/Act breakdown.",
+        systemPrompt: "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this three-part structure for every response:\n  1. **Observe**: Identify what is being asked or what issue was found in the context.\n  2. **Think**: Describe the technical path chosen to resolve it and why.\n  3. **Act**: Provide the actual implementation, code, or tool call.\n\n- **STRICT FORMATTING**: Use standard Markdown (bolding, lists) for these sections. Do NOT wrap these text sections in triple backticks.\n- **AUTONOMOUS ACTIONS**: If you need to use a tool or save a memory, do so at the END of your 'Act' section. Tags like <project_memory> are mandatory for persistence.",
         prefix: ""
     },
     {
@@ -213,128 +213,87 @@ function calculateLineSimilarity(line1: string, line2: string): number {
  * Includes indentation detection and automatic correction.
  */
 export function applySearchReplace(content: string, searchBlock: string, replaceBlock: string): { success: boolean, result: string, error?: string } {
-    // Detect original line endings
     const isCrlf = content.includes('\r\n');
-    const eol = isCrlf ? '\r\n' : '\n';
-
-    // Normalize line endings to \n for internal processing
     const normalizedContent = content.replace(/\r\n/g, '\n');
     
-    // Normalize blocks but avoid stripping significant empty lines if they were intended for context
+    // CRITICAL: We DO NOT trimEnd() here because trailing newlines 
+    // are often used as anchors in AIDER blocks.
     let normalizedSearch = searchBlock.replace(/\r\n/g, '\n');
     let normalizedReplace = replaceBlock.replace(/\r\n/g, '\n');
 
-    // Clean up markers if they accidentally include the search/replace keywords themselves (Safety fallback)
-    normalizedSearch = normalizedSearch.replace(/^<<<<<<< SEARCH\n?/, '').replace(/\n?>>>>>>> REPLACE$/, '');
-
-    // 1. Special Case: Empty Search Block (Append to end)
+    // 1. Handle Empty Search (Prepend/Append logic)
     if (normalizedSearch.trim() === "") {
-        const result = (normalizedContent.length === 0 || normalizedContent.endsWith('\n')) 
-            ? normalizedContent + normalizedReplace.trimStart()
-            : normalizedContent + '\n' + normalizedReplace.trimStart();
-        
+        const result = normalizedContent.endsWith('\n') ? normalizedContent + normalizedReplace : normalizedContent + '\n' + normalizedReplace;
         return { success: true, result: isCrlf ? result.replace(/\n/g, '\r\n') : result };
     }
 
-    // 2. Idempotency Check: If the replacement is already there, we win.
-    if (normalizedContent.includes(normalizedReplace.trim())) {
-        return { success: true, result: normalizedContent };
-    }
-
-    // 3. Direct match attempt (Fast Path)
-    if (normalizedContent.includes(normalizedSearch)) {
-        const parts = normalizedContent.split(normalizedSearch);
-        return { success: true, result: parts.join(normalizedReplace) };
-    }
-
-    // 4. Handle trailing whitespace issues in SEARCH block
-    // AI often adds trailing spaces that are not in the source code
-    const linesSearch = normalizedSearch.split('\n');
-    const linesSearchNoTrailing = linesSearch.map(l => l.trimEnd()).join('\n');
-    if (normalizedContent.includes(linesSearchNoTrailing)) {
-        const parts = normalizedContent.split(linesSearchNoTrailing);
-        return { success: true, result: parts.join(normalizedReplace) };
-    }
-
-    // 1b. Direct match with trimmed search (Handles AI adding/removing trailing newlines)
-    const trimmedSearch = normalizedSearch.trim();
-    if (trimmedSearch.length > 10 && normalizedContent.includes(trimmedSearch)) {
-        const parts = normalizedContent.split(trimmedSearch);
-        return { success: true, result: parts.join(normalizedReplace.trim()) };
-    }
-
-    // 2. Indentation Fixer & Fuzzy Indent Matching
-    // Detect if the model added or removed consistent leading whitespace OR if we can find the block by trimmed lines.
     const contentLines = normalizedContent.split('\n');
     const searchLines = normalizedSearch.split('\n');
     const replaceLines = normalizedReplace.split('\n');
 
-    const firstNonEmptySearchIdx = searchLines.findIndex(l => l.trim().length > 0);
-    
-    if (firstNonEmptySearchIdx !== -1) {
-        const searchLine = searchLines[firstNonEmptySearchIdx];
-        const trimmedSearch = searchLine.trim();
-        
-        // Scan through content to find a line that matches the first non-empty search line (trimmed)
-        for (let i = 0; i < contentLines.length; i++) {
-            // Robust match: ignore leading/trailing whitespace when finding the anchor line
-            if (contentLines[i].trim() === trimmedSearch) {
-                // Found a potential start anchor.
-                // Verify the rest of the search block matches (trimmed)
-                let matchFound = true;
-                
-                // We need to account for the empty lines before the first non-empty line in searchLines
-                const startContentIdx = i - firstNonEmptySearchIdx;
-                if (startContentIdx < 0) continue; 
+    // 2. Find Match using a "Sliding Window" 
+    // We iterate through every line of the file looking for the start of the block
+    for (let i = 0; i <= contentLines.length - searchLines.length; i++) {
+        let match = true;
+        let indentDelta: string | null = null;
 
-                // Check all search lines
-                for (let j = 0; j < searchLines.length; j++) {
-                    if (startContentIdx + j >= contentLines.length) {
-                        matchFound = false;
-                        break;
-                    }
-                    // Crucial: compare trimmed lines to be resilient to indentation shifts
-                    if (searchLines[j].trim() !== contentLines[startContentIdx + j].trim()) {
-                        matchFound = false;
-                        break;
-                    }
-                }
+        for (let j = 0; j < searchLines.length; j++) {
+            const cLine = contentLines[i + j];
+            const sLine = searchLines[j];
 
-                if (matchFound) {
-                    // We found the block location
-                    const contentIndent = contentLines[i].match(/^\s*/)?.[0] || "";
-                    const searchIndent = searchLine.match(/^\s*/)?.[0] || "";
-                    
-                    let adjustedReplaceLines: string[] = [];
-                    
-                    if (normalizedReplace === "") {
-                        // Total removal
-                        adjustedReplaceLines = [];
-                    } else {
-                        adjustedReplaceLines = replaceLines.map(line => {
-                            if (line.trim().length === 0) return "";
-                            const lineIndent = line.match(/^\s*/)?.[0] || "";
-                            if (lineIndent.startsWith(searchIndent)) {
-                                return contentIndent + line.substring(searchIndent.length);
-                            } 
-                            if (contentIndent.length > searchIndent.length && contentIndent.startsWith(searchIndent)) {
-                                return contentIndent.substring(searchIndent.length) + line;
-                            }
-                            if (searchIndent.length > contentIndent.length && searchIndent.startsWith(contentIndent)) {
-                                if (line.startsWith(searchIndent.substring(contentIndent.length))) {
-                                    return line.substring(searchIndent.length - contentIndent.length);
-                                }
-                            }
-                            return line;
-                        });
-                    }
-                    
-                    const before = contentLines.slice(0, startContentIdx);
-                    const after = contentLines.slice(startContentIdx + searchLines.length);
-                    
-                    return { success: true, result: [...before, ...adjustedReplaceLines, ...after].join('\n') };
+            // --- IMPROVED COMPARISON ---
+            // We compare trimmed versions to ignore trailing spaces/tabs
+            // but we also allow for the AI to have missed an empty line 
+            // if the original file has one (lenient blank line matching)
+            const cTrim = cLine.trim();
+            const sTrim = sLine.trim();
+
+            if (cTrim !== sTrim) {
+                // Special case: if both are empty-ish, it's a match
+                if (cTrim === "" && sTrim === "") {
+                    // Match
+                } else {
+                    match = false;
+                    break;
                 }
             }
+
+            // Detect Indentation Shift (e.g., file has 4 spaces, AI provided 2)
+            if (sTrim.length > 0 && indentDelta === null) {
+                const cIndent = cLine.match(/^\s*/)?.[0] || "";
+                const sIndent = sLine.match(/^\s*/)?.[0] || "";
+                
+                // We store the original file's indentation to re-apply it to the replacement
+                indentDelta = cIndent; 
+            }
+        }
+
+        if (match) {
+            // SUCCESS: Match found. Now reconstruct the file.
+            const targetIndent = indentDelta || "";
+            
+            // Re-apply original indentation to the replacement lines
+            const adjustedReplace = replaceLines.map(line => {
+                if (line.trim().length === 0) return "";
+                // If AI already provided indentation, we try to preserve the relative nesting
+                const aiIndent = line.match(/^\s*/)?.[0] || "";
+                const searchBaseIndent = searchLines.find(l => l.trim().length > 0)?.match(/^\s*/)?.[0] || "";
+                
+                if (aiIndent.startsWith(searchBaseIndent)) {
+                    // Re-base AI indentation onto the file's indentation
+                    return targetIndent + aiIndent.substring(searchBaseIndent.length) + line.trimStart();
+                }
+                return targetIndent + line.trimStart();
+            });
+
+            const before = contentLines.slice(0, i);
+            const after = contentLines.slice(i + searchLines.length);
+            const finalResult = [...before, ...adjustedReplace, ...after].join('\n');
+            
+            return { 
+                success: true, 
+                result: isCrlf ? finalResult.replace(/\n/g, '\r\n') : finalResult 
+            };
         }
     }
 
@@ -365,12 +324,6 @@ export function applySearchReplace(content: string, searchBlock: string, replace
                 bestMatchIndex = i;
             }
         }
-    }
-
-    if (bestScore >= THRESHOLD && bestMatchIndex !== -1) {
-        const resultLines = [...contentLines];
-        resultLines.splice(bestMatchIndex, searchLines.length, normalizedReplace);
-        return { success: true, result: resultLines.join('\n') };
     }
 
     // --- CHECK IF ALREADY APPLIED (Repetition Guard) ---
@@ -575,9 +528,12 @@ export function stripAnsiCodes(text: string): string {
  * Updated as of early 2025.
  */
 export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
+    'gemma': 128000, // Explicitly add gemma to prevent safe fallback to lower values
     'gpt-4o': 128000,
+    'gpt-4o-mini': 128000,
     'gpt-4-turbo': 128000,
-    'gpt-3.5-turbo': 16385,
+    'gpt-3.5-turbo': 128000,
+    'claude-3-7': 200000,
     'claude-3-5': 200000,
     'claude-3-opus': 200000,
     'claude-3-haiku': 200000,
@@ -611,6 +567,71 @@ export function getContextLimitForModel(modelName: string): number {
     
     return 128000; // General safe default
 }
+
+/**
+ * Estimates the token cost of an image based on model-specific vision protocols.
+ * Heuristic based on April 2026 provider documentation.
+ */
+export function estimateImageTokens(modelName: string, width?: number, height?: number): number {
+    const model = modelName.toLowerCase();
+    
+    // Fallback dimensions if not provided (standard HD)
+    const w = width || 1024;
+    const h = height || 1024;
+
+    // 1. OpenAI GPT-4o / GPT-4 Vision
+    // Formula: 85 base + (tiles of 512x512 * 170)
+    if (model.includes('gpt-4o') || model.includes('gpt-4-vision')) {
+        const tilesX = Math.ceil(w / 512);
+        const tilesY = Math.ceil(h / 512);
+        return (tilesX * tilesY * 170) + 85;
+    }
+
+    // 2. Anthropic Claude 3 / 3.5 / 3.7
+    // Formula: (width * height) / 750
+    if (model.includes('claude-3')) {
+        return Math.ceil((w * h) / 750);
+    }
+
+    // 3. Google Gemini 1.5 / 2.0
+    // Fixed base for standard images
+    if (model.includes('gemini')) {
+        return 258; 
+    }
+
+    // Local Models (Ollama / Llava / Llama-Vision)
+    // Most use a fixed CLIP/SigLIP vit-h-14 encoder or similar
+    if (model.includes('llava') || model.includes('vision') || model.includes('minicpm')) {
+        return 620; // Safe average for local vision encoders
+    }
+
+    // --- MULTIMODAL DETECTION ---
+    // Keywords indicating vision capability in local/open-source models
+    const visionKeywords = ['vision', '-vl', 'multimodal', 'llava', 'minicpm', 'mplug'];
+    const isExplicitVision = visionKeywords.some(k => model.includes(k));
+
+    // Known multimodal-first families
+    if (model.includes('gpt-4') || model.includes('claude-3') || model.includes('gemini')) {
+        return 800; // Default if specific tile math above didn't catch it
+    }
+
+    // --- NON-VISUAL MODEL GUARD ---
+    // Narrower list of strictly text-only specialized models
+    const strictlyTextPatterns = ['codellama', 'qwen-coder', 'deepseek-v', 'mistral-nemo', 'phi-3-mini'];
+    if (strictlyTextPatterns.some(p => model.includes(p)) && !isExplicitVision) {
+        return 0;
+    }
+
+    // If it's a family like Gemma or Llama 3.2 which is hybrid, 
+    // only charge if name contains a vision indicator.
+    const hybridFamilies = ['gemma', 'llama-3.2', 'qwen', 'phi-3.5'];
+    if (hybridFamilies.some(f => model.includes(f)) && !isExplicitVision) {
+        return 0;
+    }
+
+    // Default safe fallback for unidentified multimodal models (1 tile)
+    return 600;
+    }
 
 export function stripThinkingTags(responseText: string): string {
     return responseText.replace(/<(think|thinking|analysis)>[\s\S]*?<\/\1>/gi, '').trim();

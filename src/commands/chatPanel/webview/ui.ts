@@ -117,6 +117,32 @@ function redrawCanvas() {
     }
 }
 
+/**
+ * Launches the visual editor for a specific data URI (e.g. from a generated block)
+ */
+(window as any).openImageEditorFromData = (dataUrl: string, filename: string) => {
+    const modal = dom.editorModal;
+    const canvas = dom.editorCanvas;
+    if (!modal || !canvas) return;
+
+    modal.style.display = 'flex';
+    canvasCtx = canvas.getContext('2d');
+
+    // We treat this as a "New" edit index -1 so saving appends to pendingImages 
+    // unless you want to overwrite the specific file (which would require extension-side write)
+    currentEditingIdx = null; 
+
+    const img = new Image();
+    img.onload = () => {
+        canvas.width = img.width;
+        canvas.height = img.height;
+        canvasCtx?.drawImage(img, 0, 0);
+        saveState();
+    };
+    img.src = dataUrl;
+    initCanvasEvents();
+};
+
 export function openImageEditor(index: number | null = null): void {
     currentEditingIdx = index;
     const modal = dom.editorModal;
@@ -768,16 +794,23 @@ function openProfileEditor(idx: number = -1) {
 
 export function updateBadges() {
     const container = dom.activeBadges;
-    if (!container) return;
-    
+    const dashboard = document.getElementById('badge-dashboard-panel');
+    if (!container || !state.capabilities) return;
+
+    const caps = state.capabilities;
     container.innerHTML = '';
 
-    // --- INFRASTRUCTURE GROUP (Always Visible) ---
-    const infraGroup = document.createElement('div');
-    infraGroup.className = 'badge-group';
-    container.appendChild(infraGroup);
+    const isAgentMode = caps.agentMode === true;
 
-    // Model Badge
+    // --- GROUP A: INFRASTRUCTURE (Environment & Git) ---
+    // Hide Infra group in Agent mode to focus on mission
+    if (!isAgentMode) {
+        const infraGroup = document.createElement('div');
+        infraGroup.className = 'badge-group';
+        infraGroup.innerHTML = '<span class="badge-group-label">INFRA</span>';
+        container.appendChild(infraGroup);
+
+        // Model Badge
     if (dom.modelSelector && dom.modelSelector.value) {
         const model = dom.modelSelector.value;
         const span = document.createElement('span');
@@ -1018,11 +1051,23 @@ export function updateBadges() {
     }
     }
 
-    if (!caps.agentMode && (guiState.debugBadge || caps.herdMode)) {
+    // --- GROUP B: TASK (Workflow & Modes) ---
+    if (guiState.agentBadge || (!isAgentMode && (guiState.debugBadge || caps.herdMode || caps.testMode))) {
         const taskGroup = document.createElement('div');
         taskGroup.className = 'badge-group';
-        taskGroup.innerHTML = '<span class="badge-group-label">Task</span>';
+        taskGroup.innerHTML = `<span class="badge-group-label">${isAgentMode ? 'GENIE' : 'TASK'}</span>`;
         container.appendChild(taskGroup);
+
+        const agentBadge = createToggleBadge(
+            '🤖 Agent',
+            'agent',
+            guiState.agentBadge,
+            caps.agentMode,
+            () => {
+                vscode.postMessage({ command: 'toggleAgentMode' });
+            }
+        );
+        if (agentBadge) taskGroup.appendChild(agentBadge);
 
         const debugBadge = createToggleBadge(
             '🐞 Debug', 
@@ -1128,8 +1173,8 @@ export function updateBadges() {
         if (herdBadge) taskGroup.appendChild(herdBadge);
     }
 
-    // --- THEME: KNOWLEDGE & RESEARCH    
-    if (caps.agentMode || guiState.autoContextBadge || guiState.autoSkillBadge !== false || guiState.webSearchBadge !== false) {
+    // --- THEME: KNOWLEDGE & RESEARCH (Suppress in Agent Mode) ---
+    if (!isAgentMode && (guiState.autoContextBadge || guiState.autoSkillBadge !== false || guiState.webSearchBadge !== false)) {
         const knowledgeGroup = document.createElement('div');
         knowledgeGroup.className = 'badge-group';
         knowledgeGroup.innerHTML = '<span class="badge-group-label">Knowledge</span>';
@@ -1333,7 +1378,27 @@ export function updateBadges() {
             });
             menu.classList.toggle('visible');
         };
-    }
+        }
+
+        // --- RE-SIZE DISCUSSION SPACE ---
+        if (dashboard) {
+            const hasContent = container.children.length > 0;
+            const chevron = document.getElementById('dashboard-chevron');
+            const isUserCollapsed = chevron?.classList.contains('codicon-chevron-down');
+
+            // If there is no content, we force hide it regardless of chevron to save space
+            if (!hasContent) {
+                dashboard.classList.add('hidden-state');
+                if (chevron) {
+                    chevron.classList.remove('codicon-chevron-up');
+                    chevron.classList.add('codicon-chevron-down');
+                }
+            } else if (!isUserCollapsed) {
+                // Only show if there is content AND the user didn't manually collapse it
+                dashboard.classList.remove('hidden-state');
+            }
+        }
+        }
 }
 
 // Global exposure for events.ts
@@ -1393,7 +1458,9 @@ export function renderFileSearchResults(container: HTMLElement, results: any[], 
         let hSnippet = sanitizer.sanitize(res.snippet);
         
         terms.forEach(t => {
-            const reg = new RegExp(`(${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+            if (!t) return;
+            const escaped = t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const reg = new RegExp(`(${escaped})`, 'gi');
             hPath = hPath.replace(reg, '<mark class="search-highlight">$1</mark>');
             hSnippet = hSnippet.replace(reg, '<mark class="search-highlight">$1</mark>');
         });
@@ -1840,6 +1907,10 @@ export function renderContextUsage(usage: any[]) {
         return;
     }
 
+    // Update state model
+    state.usageData.project = usage.filter(f => !f.isExtra).map(f => ({ ...f, tokens: 0 }));
+    state.usageData.extra = usage.filter(f => f.isExtra).map(f => ({ ...f, tokens: 0 }));
+
     const sizeMatch = (dom.tokenCountLabel?.textContent || "").match(/\/ ([\d\s,.]+)/);
     const contextSize = sizeMatch ? parseInt(sizeMatch[1].replace(/\D/g, '')) : 128000;
 
@@ -1855,64 +1926,132 @@ export function renderContextUsage(usage: any[]) {
         </div>
     `;
 
-    const renderTable = (files: any[], title: string, icon: string) => {
-        if (files.length === 0) return "";
+    const renderTableSection = (type: 'project' | 'extra', title: string, icon: string) => {
+        const count = state.usageData[type].length;
+        if (count === 0) return "";
+        
         return `
             <div style="margin-bottom: 30px;">
-                <h3 style="border-bottom: 1px solid var(--vscode-panel-border); padding-bottom: 8px;">
-                    <i class="codicon ${icon}"></i> ${title} (${files.length})
-                </h3>
+                <div class="usage-section-header">
+                    <div class="section-title"><i class="codicon ${icon}"></i> ${title} (${count})</div>
+                    <div class="usage-sort-controls">
+                        <button class="sort-btn ${state.currentUsageSort.column === 'name' ? 'active' : ''}" data-col="name" title="Sort by Name">
+                            <i class="codicon codicon-sort-alphabetically"></i>
+                        </button>
+                        <button class="sort-btn ${state.currentUsageSort.column === 'tokens' ? 'active' : ''}" data-col="tokens" title="Sort by Size">
+                            <i class="codicon codicon-graph-line"></i>
+                        </button>
+                        <div class="sort-divider"></div>
+                        <button class="sort-btn direction-btn" title="Toggle Direction">
+                            <i class="codicon ${state.currentUsageSort.direction === 'asc' ? 'codicon-arrow-up' : 'codicon-arrow-down'}"></i>
+                        </button>
+                    </div>
+                </div>
                 <table style="width:100%; border-collapse:collapse; font-size:12px;">
-                    <tbody id="usage-table-${icon.includes('globe') ? 'extra' : 'project'}">
-                        ${files.map(item => `
-                            <tr data-path="${item.path}" style="border-bottom: 1px solid var(--vscode-widget-border);">
-                                <td style="padding:10px 8px; max-width:300px;">
-                                    <div style="font-weight: 500; overflow:hidden; text-overflow:ellipsis;">${item.path.split('/').pop()}</div>
-                                    <div style="font-size: 10px; opacity: 0.5; overflow:hidden; text-overflow:ellipsis;">${item.path}</div>
-                                </td>
-                                <td style="padding:10px 8px; width: 120px;">
-                                    <div style="display:flex; flex-direction:column; gap:4px;">
-                                        <span class="file-token-label" style="font-weight:bold;">...</span>
-                                        <div class="token-progress-container" style="height:4px; width:100%;">
-                                            <div class="token-progress-bar file-usage-bar" style="width:0%"></div>
-                                        </div>
-                                    </div>
-                                </td>
-                                <td style="padding:10px 8px; text-align:right; width:40px;">
-                                    <button class="icon-btn remove-usage-item-btn" data-path="${item.path}" title="Remove from context">
-                                        <i class="codicon codicon-trash"></i>
-                                    </button>
-                                </td>
-                            </tr>
-                        `).join('')}
+                    <tbody id="usage-table-${type}">
+                        ${renderUsageRows(type, contextSize)}
                     </tbody>
                 </table>
             </div>
         `;
     };
 
-    const projectFiles = usage.filter(f => !f.isExtra);
-    const extraFiles = usage.filter(f => f.isExtra);
+    container.innerHTML = html + renderTableSection('project', "Project Files", "codicon-root-folder") + renderTableSection('extra', "Research & External", "codicon-globe");
 
-    container.innerHTML = html + renderTable(projectFiles, "Project Files", "codicon-root-folder") + renderTable(extraFiles, "Research & External", "codicon-globe");
+    // Re-attach listeners for sort buttons
+    container.querySelectorAll('.sort-btn').forEach(btn => {
+        btn.onclick = (e) => {
+            const col = (btn as HTMLElement).dataset.col as 'name' | 'tokens';
+            if (col) {
+                if (state.currentUsageSort.column === col) {
+                    state.currentUsageSort.direction = state.currentUsageSort.direction === 'asc' ? 'desc' : 'asc';
+                } else {
+                    state.currentUsageSort.column = col;
+                }
+            } else if ((btn as HTMLElement).classList.contains('direction-btn')) {
+                state.currentUsageSort.direction = state.currentUsageSort.direction === 'asc' ? 'desc' : 'asc';
+            }
+            
+            refreshUsageDisplay(contextSize);
+        };
+    });
 
-    // Fix: Add Event Delegation for delete buttons to bypass CSP inline script restrictions
     container.onclick = (e) => {
         const target = e.target as HTMLElement;
         const btn = target.closest('.remove-usage-item-btn') as HTMLButtonElement;
         if (btn && btn.dataset.path) {
-            vscode.postMessage({
-                command: 'removeFileFromContext',
-                path: btn.dataset.path
-            });
-            // Optimistically hide the row
+            vscode.postMessage({ command: 'removeFileFromContext', path: btn.dataset.path });
             const row = btn.closest('tr');
             if (row) row.style.opacity = '0.3';
         }
     };
 }
 
+function renderUsageRows(type: 'project' | 'extra', contextSize: number): string {
+    const sorted = [...state.usageData[type]].sort((a, b) => {
+        const dir = state.currentUsageSort.direction === 'asc' ? 1 : -1;
+        if (state.currentUsageSort.column === 'name') {
+            return dir * a.path.localeCompare(b.path);
+        } else {
+            return dir * ((a.tokens || 0) - (b.tokens || 0));
+        }
+    });
+
+    return sorted.map(item => {
+        const tokens = item.tokens || 0;
+        const pct = Math.min((tokens / contextSize) * 100, 100);
+        const barClass = pct > 20 ? 'range-warning' : 'range-safe';
+        
+        return `
+            <tr data-path="${item.path}" style="border-bottom: 1px solid var(--vscode-widget-border);">
+                <td style="padding:10px 8px; max-width:300px;">
+                    <div style="font-weight: 500; overflow:hidden; text-overflow:ellipsis;">${item.path.split('/').pop()}</div>
+                    <div style="font-size: 10px; opacity: 0.5; overflow:hidden; text-overflow:ellipsis;">${item.path}</div>
+                </td>
+                <td style="padding:10px 8px; width: 120px;">
+                    <div style="display:flex; flex-direction:column; gap:4px;">
+                        <span class="file-token-label" style="font-weight:bold;">${tokens > 0 ? tokens.toLocaleString() : '...'}</span>
+                        <div class="token-progress-container" style="height:4px; width:100%;">
+                            <div class="token-progress-bar file-usage-bar ${barClass}" style="width:${pct}%"></div>
+                        </div>
+                    </div>
+                </td>
+                <td style="padding:10px 8px; text-align:right; width:40px;">
+                    <button class="icon-btn remove-usage-item-btn" data-path="${item.path}" title="Remove from context">
+                        <i class="codicon codicon-trash"></i>
+                    </button>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function refreshUsageDisplay(contextSize: number) {
+    const projectBody = document.getElementById('usage-table-project');
+    const extraBody = document.getElementById('usage-table-extra');
+    
+    if (projectBody) projectBody.innerHTML = renderUsageRows('project', contextSize);
+    if (extraBody) extraBody.innerHTML = renderUsageRows('extra', contextSize);
+
+    // Update active state of sort buttons
+    document.querySelectorAll('.sort-btn').forEach((btn: any) => {
+        if (btn.dataset.col) {
+            btn.classList.toggle('active', btn.dataset.col === state.currentUsageSort.column);
+        } else if (btn.classList.contains('direction-btn')) {
+            const icon = btn.querySelector('i');
+            if (icon) {
+                icon.className = `codicon ${state.currentUsageSort.direction === 'asc' ? 'codicon-sort-numeric-up' : 'codicon-sort-numeric-down'}`;
+            }
+        }
+    });
+}
+
 export function updateContextFileUsage(filePath: string, tokens: number) {
+    // 1. Update State Model
+    let item = state.usageData.project.find(i => i.path === filePath) || state.usageData.extra.find(i => i.path === filePath);
+    if (item) item.tokens = tokens;
+
+    // 2. Direct DOM update for responsiveness
     const row = document.querySelector(`tr[data-path="${filePath}"]`);
     if (!row) return;
 
@@ -1947,21 +2086,73 @@ export function updateContextFileUsage(filePath: string, tokens: number) {
 /**
  * Updates a progress bar with segmented color logic.
  */
-export function updateProgressBar(element: HTMLElement | null, current: number, total: number) {
-    if (!element) return;
+export function updateProgressBar(container: HTMLElement | null, current: number, total: number, segments?: any) {
+    if (!container) return;
 
-    const percentage = Math.min((current / total) * 100, 100);
-    element.style.width = `${percentage}%`;
+    // Clear old segments if this is the first update
+    if (segments) {
+        container.innerHTML = '';
+        const types = ['system', 'files', 'history', 'images'];
 
-    element.classList.remove('range-safe', 'range-warning', 'range-danger');
+        types.forEach(type => {
+            const count = segments[type] || 0;
+            if (count > 0) {
+                const segDiv = document.createElement('div');
+                segDiv.className = `token-bar-segment segment-${type}`;
+                const pct = (count / total) * 100;
+                segDiv.style.width = `${pct}%`;
+                segDiv.title = `${type.toUpperCase()}: ${count.toLocaleString()} tokens`;
+
+                segDiv.onclick = (e) => {
+                    e.stopPropagation();
+                    const cmdType = type === 'history' ? 'chat' : type;
+                    vscode.postMessage({
+                        command: 'executeLollmsCommand', 
+                        details: { command: 'lollms-vs-coder.viewFullContext', params: cmdType }
+                    });
+                };
+                container.appendChild(segDiv);
+            }
+        });
+
+        // FIX: The legend is now in the main top-controls area.
+        // We prevent duplication by selecting from the static DOM instead of parent.
+        let legend = document.getElementById('token-bar-legend');
+        if (legend) {
+            legend.style.display = 'flex';
+        } else if (!container.parentElement?.querySelector('.token-legend')) {
+            legend = document.createElement('div');
+            legend.className = 'token-legend';
+            legend.innerHTML = `
+                <div class="legend-item" data-type="system" title="View Processed System Prompt">
+                    <div class="legend-dot segment-system"></div>System
+                </div>
+                <div class="legend-item" data-type="files" title="View Detailed File Usage">
+                    <div class="legend-dot segment-files"></div>Files
+                </div>
+                <div class="legend-item" data-type="chat" title="View History Context">
+                    <div class="legend-dot segment-history"></div>Chat
+                </div>
+                <div class="legend-item" data-type="images"><div class="legend-dot segment-images"></div>Images</div>
+            `;
+
+            // Use robust event listeners instead of raw onclick attributes
+            legend.querySelectorAll('.legend-item').forEach(item => {
+                (item as HTMLElement).onclick = () => {
+                    const type = (item as HTMLElement).dataset.type;
+                    window.vscode.postMessage({
+                        command: 'executeLollmsCommand', 
+                        details: { command: 'lollms-vs-coder.viewFullContext', params: type }
+                    });
+                };
+            });
+            container.parentElement?.appendChild(legend);
+        }
+    } else {
+        // Fallback for single bar use (e.g. usage modal)
+        container.innerHTML = `<div class="token-bar-segment segment-files" style="width: ${Math.min((current/total)*100, 100)}%"></div>`;
+    }
 
     const ratio = current / total;
-    if (ratio > 1.0) {
-        element.classList.add('range-danger');
-    } else if (ratio > 0.7) {
-        element.classList.add('range-warning');
-    } else {
-        element.classList.add('range-safe');
-    }
+    container.style.borderColor = ratio > 1.0 ? 'var(--vscode-charts-red)' : '';
 }
-

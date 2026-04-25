@@ -104,6 +104,9 @@ export function initEventHandlers() {
             case 'h1': before = "# "; break;
             case 'h2': before = "## "; break;
             case 'h3': before = "### "; break;
+            case 'aider-search': before = "<<<<<<< SEARCH\n"; break;
+            case 'aider-sep': before = "\n=======\n"; break;
+            case 'aider-replace': before = "\n>>>>>>> REPLACE\n"; break;
             case 'list': 
                 before = "- "; 
                 replacement = selected.split('\n').join('\n- ');
@@ -230,6 +233,15 @@ export function initEventHandlers() {
         });
     }
 
+    const raiseHandBtn = document.getElementById('raiseHandButton');
+    if (raiseHandBtn) {
+        raiseHandBtn.addEventListener('click', () => {
+            vscode.postMessage({ command: 'stopGeneration', isInterruption: true });
+            // We don't call setGeneratingState(false) immediately to keep the 
+            // overlay slightly visible or transition to an "Awaiting Feedback" state
+        });
+    }
+    
     if (dom.moreActionsButton) dom.moreActionsButton.addEventListener('click', (e) => {
         e.stopPropagation();
         dom.moreActionsMenu.classList.toggle('visible');
@@ -611,6 +623,14 @@ export function initEventHandlers() {
     bindChange(dom.modelSelector, (e) => {
         const val = (e.target as HTMLSelectElement).value;
         vscode.postMessage({ command: 'updateDiscussionModel', model: val });
+        // Force context header update to show the new model name
+        if (state.lastContextData) {
+            const { context, files, skills, diagrams, briefing } = state.lastContextData;
+            // Use dynamic import to avoid 'require is not defined' in ESM webview
+            import('./messageRenderer.js').then(module => {
+                module.updateContext(context, files, skills, diagrams, briefing);
+            });
+        }
     });
     
     if (dom.refreshModelsBtn) {
@@ -1097,7 +1117,7 @@ export function initEventHandlers() {
 
         if (mode !== 'full') {
             // Precise regex for Aider markers
-            const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
+            const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
             const matches = [...text.matchAll(aiderRegex)];
             
             if (matches.length > 0) {
@@ -1190,6 +1210,31 @@ export function initEventHandlers() {
     }
     if (dom.capAutoFix && state.capabilities) dom.capAutoFix.checked = state.capabilities.autoFix !== false;
     if (dom.capAutoBranch && state.capabilities) dom.capAutoBranch.checked = !!state.capabilities.autoBranch;
+    const dashboardBtn = document.getElementById('toggle-dashboard-btn');
+    const dashboardPanel = document.getElementById('badge-dashboard-panel');
+    const dashboardChevron = document.getElementById('dashboard-chevron');
+
+    if (dashboardBtn && dashboardPanel && dashboardChevron) {
+        dashboardBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+
+            const isCurrentlyHidden = dashboardPanel.classList.contains('hidden-state');
+
+            if (isCurrentlyHidden) {
+                // OPENING
+                dashboardPanel.classList.remove('hidden-state');
+                dashboardChevron.classList.remove('codicon-chevron-down');
+                dashboardChevron.classList.add('codicon-chevron-up');
+            } else {
+                // CLOSING
+                dashboardPanel.classList.add('hidden-state');
+                dashboardChevron.classList.remove('codicon-chevron-up');
+                dashboardChevron.classList.add('codicon-chevron-down');
+            }
+        });
+    }
+
     if (dom.refreshContextBtn) dom.refreshContextBtn.addEventListener('click', () => {
         vscode.postMessage({ command: 'calculateTokens' });
     });
@@ -1240,14 +1285,24 @@ export function initEventHandlers() {
             const genImgBtn = target.closest('.generate-image-btn') as HTMLButtonElement;
             if (genImgBtn) {
                 e.stopPropagation();
-                
+
+                const block = genImgBtn.closest('.generation-block');
+                const folderInp = block?.querySelector('.asset-folder-input') as HTMLInputElement;
+                const nameInp = block?.querySelector('.asset-name-input') as HTMLInputElement;
+
+                let finalPath = decodeURIComponent(genImgBtn.dataset.path || '');
+                if (folderInp && nameInp) {
+                    const folder = folderInp.value.trim().replace(/\/+$/, '');
+                    finalPath = folder + '/' + nameInp.value.trim();
+                }
+
                 genImgBtn.disabled = true;
                 genImgBtn.innerHTML = '<div class="spinner"></div> Generating...';
-                
+
                 vscode.postMessage({
                     command: 'generateImage',
                     prompt: decodeURIComponent(genImgBtn.dataset.prompt || ''),
-                    filePath: decodeURIComponent(genImgBtn.dataset.path || ''),
+                    filePath: finalPath,
                     width: genImgBtn.dataset.width || '',
                     height: genImgBtn.dataset.height || '',
                     buttonId: genImgBtn.id
@@ -1422,6 +1477,39 @@ export function initEventHandlers() {
                         skipInPrompt: true 
                     }
                 });
+                return;
+            }
+
+            // Copy Asset Path
+            const copyPathBtn = target.closest('.copy-asset-path-btn') as HTMLButtonElement;
+            if (copyPathBtn) {
+                e.stopPropagation();
+                vscode.postMessage({ command: 'copyToClipboard', text: copyPathBtn.dataset.path });
+                return;
+            }
+
+            // Save Asset As (Binary)
+            const saveAssetBtn = target.closest('.save-asset-as-btn') as HTMLButtonElement;
+            if (saveAssetBtn) {
+                e.stopPropagation();
+                vscode.postMessage({ command: 'executeLollmsCommand', details: { 
+                    command: 'lollms-vs-coder.saveAssetAs', 
+                    params: { path: saveAssetBtn.dataset.path } 
+                }});
+                return;
+            }
+
+            // Edit Asset (Internal Image Editor)
+            const editAssetBtn = target.closest('.edit-asset-btn') as HTMLButtonElement;
+            if (editAssetBtn) {
+                e.stopPropagation();
+                const container = document.getElementById(editAssetBtn.dataset.targetId || '');
+                const img = container?.querySelector('img');
+                if (img && typeof (window as any).openImageEditorFromData === 'function') {
+                    (window as any).openImageEditorFromData(img.src, editAssetBtn.dataset.path || 'edit.png');
+                } else {
+                    vscode.postMessage({ command: 'showError', message: 'Asset not loaded or ready for editing.' });
+                }
                 return;
             }
 

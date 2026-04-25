@@ -117,11 +117,42 @@ export class AgentManager {
         this.planParser = new PlanParser(this.lollmsApi, this.contextManager, this.toolManager);
         this.rlmDb = rlmDb;
 
+        // --- MITIGATION: ANTI-NESTING PROTOCOL ---
+        this.sessionState.workingMemory.push(
+            "LESSON: Avoid nesting shells. Do not use 'powershell -Command' or 'bash -c' inside 'execute_command'. " +
+            "Submit the raw command directly. For complex logic involving pipes or variables, always generate a temporary .py or .sh script first."
+        );
+
         if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
             this.currentWorkspaceFolder = vscode.workspace.workspaceFolders[0];
         }
     }
+    // Add this helper method inside the AgentManager class
+    private async condenseObservations(model: string, signal: AbortSignal) {
+        if (!this.currentPlan || !this.currentPlan.observations) return;
 
+        const summaryPrompt: ChatMessage[] = [
+            { 
+                role: 'system', 
+                content: `You are the Genie's Memory Optimizer. 
+Condense the following list of technical observations into a single, high-density "Legacy Intelligence" block. 
+Focus on: 
+1. Hard facts discovered (paths, versions, logic quirks).
+2. What failed and why.
+3. What is confirmed working.
+Keep it strictly technical and extremely concise.` 
+            },
+            { role: 'user', content: this.currentPlan.observations.join('\n') }
+        ];
+
+        try {
+            const condensed = await this.lollmsApi.sendChat(summaryPrompt, null, signal, model);
+            this.currentPlan.observations = [`COMPRESSED HISTORY: ${condensed}`];
+            this.ui.addMessageToDiscussion({ role: 'system', content: '♻️ **Scratchpad Rearranged:** Observations compressed to save context.' });
+        } catch (e) {
+            console.error("Compression failed", e);
+        }
+    }
     public setUI(ui: IAgentUI) {
         this.ui = ui;
         this.ui.updateAgentMode(this.isActive);
@@ -169,12 +200,29 @@ export class AgentManager {
             });
         } else {
             this.ui.addMessageToDiscussion({ role: 'system', content: '🤖 **Agent Mode Deactivated.**' });
-            this.currentPlan = null;
-            this.displayAndSavePlan(null);
+            // PRESERVE THE PLAN: We no longer nullify currentPlan here.
+            // We only stop the active loop.
+            if (this.currentPlan) {
+                this.currentPlan.status = 'stale';
+                this.displayAndSavePlan(this.currentPlan);
+            }
         }
         this.ui.updateAgentMode(this.isActive);
-        // CRITICAL: We NO LONGER call updateGeneratingState() here. 
-        // Simply toggling the mode should update badges, but not show the loading overlay.
+    }
+
+    public getMetrics() {
+        // Calculate raw data weights for the Brain Bar
+        const memoryChars = this.sessionState.workingMemory.join('\n').length;
+        const scratchpadChars = this.currentPlan?.scratchpad?.length || 0;
+        const historyChars = this.completedActionsHistory.join('\n').length;
+
+        return {
+            memory: memoryChars,
+            scratchpad: scratchpadChars,
+            history: historyChars,
+            replVars: Object.keys(this.sessionState.replVariables).length,
+            total: memoryChars + scratchpadChars + historyChars
+        };
     }
 
     private async displayAndSavePlan(plan: Plan | null) {
@@ -183,7 +231,31 @@ export class AgentManager {
             this.currentDiscussion.plan = plan;
             await this.discussionManager.saveDiscussion(this.currentDiscussion);
         }
-        this.ui.displayPlan(plan);
+
+        // Inject metrics into the UI update
+        const metrics = this.getMetrics();
+        this.ui.displayPlan(plan ? { ...plan, metrics } : null);
+    }
+
+    /**
+     * Generates a self-contained HTML report of the entire mission.
+     */
+    public async exportTimelineToHtml() {
+        if (!this.currentPlan) return;
+
+        const { generateMissionReport } = await import('./utils/exportUtils');
+        const html = generateMissionReport(this.currentPlan, this.completedActionsHistory);
+
+        const uri = await vscode.window.showSaveDialog({
+            defaultUri: vscode.Uri.file(`mission_report_${Date.now()}.html`),
+            filters: { 'HTML': ['html'] },
+            saveLabel: 'Export Mission Timeline'
+        });
+
+        if (uri) {
+            await vscode.workspace.fs.writeFile(uri, Buffer.from(html, 'utf8'));
+            vscode.window.showInformationMessage(`Mission report exported to ${path.basename(uri.fsPath)}`);
+        }
     }
 
     private archiveCurrentPlanState(reason: string) {
@@ -318,8 +390,11 @@ export class AgentManager {
         if (!this.currentPlan) {
             this.failureMemory.clear();
             this.consecutiveTaskFailures.clear();
-            // We preserve completedActionsHistory so the Architect remembers what was already done
-            // in previous turn cycles of this same discussion.
+        } else {
+            // --- CONTINUITY PROTOCOL ---
+            // If a plan already exists, treat the incoming user message as a "Direct Intervention"
+            this.completedActionsHistory.push(`[USER INTERVENTION]\n- FEEDBACK: "${content}"\n- ACTION: Adjusting strategy based on user input.`);
+            this.ui.addMessageToDiscussion({ role: 'system', content: '🔄 **Integrating feedback...** Resuming mission.' });
         }
 
         // --- DEBUG MODE GIT SANDBOX ---
@@ -447,7 +522,7 @@ Please commit or stash your work before starting an iterative debug session to e
 ${this.completedActionsHistory.length > 0 ? this.completedActionsHistory.slice(-12).join('\n\n') : "No actions taken yet."}
 
 **Current Status**: You have completed ${this.completedActionsHistory.length} steps. 
-**Constraint**: Do NOT repeat the reasoning or summaries found above. State only the NEW reasoning for the next step.
+**Constraint**: Review the 'AUDIT REPORT' in the last observation. You MUST update your internal scratchpad or project memory with any significant technical discoveries or architectural fixes before proceeding.
 
 ### 🛑 REFLEXIVE MEMORY (MISTAKES TO AVOID)
 ${this.failureMemory.getMemoryContext()}
@@ -459,21 +534,65 @@ ${contextData.projectTree}
 ${contextData.selectedFilesContent || "(No files read into context yet)"}
 `;
 
+            // --- ANTI-HALLUCINATION GUARD ---
+            // If the tree shows files but no content is loaded, explicitly nudge the agent
+            const structuralNudge = (contextData.projectTree.includes('├──') || contextData.projectTree.includes('└──')) && !contextData.selectedFilesContent
+                ? "\n**⚠️ NOTICE**: The Project Structure shows files EXIST. You must use 'read_files' to see their content before claiming the workspace is empty."
+                : "";
+
             const messages: ChatMessage[] = [
                 systemPrompt,
                 ...this.chatHistory,
                 ...extraHistory,
-                { role: 'user', content: `${historyContext}\n\n**OBJECTIVE:** ${objective}\n\nWhat is your next technical action? Output JSON only.` }
+                { role: 'user', content: `${historyContext}${structuralNudge}\n\n**OBJECTIVE:** ${objective}\n\nWhat is your next technical action? Output JSON only.` }
             ];
 
             // 3. Ask Genie for the next action
             const response = await this.lollmsApi.sendChat(messages, null, signal, model);
             const cleanResponse = stripThinkingTags(response);
-            const toolCall = this.planParser.extractJson(cleanResponse);
 
+            // --- AUTO-COMPRESSION CHECK ---
+            // If observations grow too large, we condense them
+            if (this.currentPlan.observations && this.currentPlan.observations.length > 15) {
+                this.processManager?.updateDescription(processId, `Genie: Compressing memories...`);
+                await this.condenseObservations(model, signal);
+            }
+
+            const toolCall = this.planParser.extractJson(cleanResponse);
             if (!toolCall) {
-                // If the Genie just "talked" without a tool, we treat it as a conversational failure or a request for more info.
-                if (cleanResponse.length < 500) {
+                // If no JSON tool is found, check if it's a "Coding Mode" response (contains code blocks)
+                if (cleanResponse.includes('```')) {
+                    this.processManager?.updateDescription(processId, `Genie: Extracting and applying code...`);
+
+                    // We treat the whole Markdown response as a "Coding Action"
+                    const task: Task = {
+                        id: stepCount,
+                        description: "Applying code modifications from Markdown response.",
+                        action: "markdown_coding",
+                        parameters: { content: cleanResponse },
+                        status: 'in_progress',
+                        result: null,
+                        retries: 0
+                    };
+                    this.currentPlan.tasks.push(task);
+
+                    // Re-use the existing automation pipeline from ChatPanel
+                    // Note: In a real implementation, we'd inject this via the UI interface
+
+                    // --- PRE-WRITE SANITIZATION ---
+                    // Some models include leading/trailing garbage around the code block in coding mode.
+                    await (this.ui as any).executeAutomationPipeline(cleanResponse, `agent_step_${stepCount}`, signal, processId);
+
+                    task.status = 'completed';
+                    task.result = "Code extracted and applied.";
+                    this.completedActionsHistory.push(`[STEP ${task.id}] COMPLETED: Applied code changes via Markdown Coding Mode.`);
+
+                    await this.displayAndSavePlan(this.currentPlan);
+                    continue;
+                }
+
+                // Conversational fallback
+                if (cleanResponse.length < 1000) {
                     this.ui.addMessageToDiscussion({ role: 'assistant', content: cleanResponse, model });
                     break; 
                 }
@@ -483,26 +602,36 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
             let action;
             try {
                 action = JSON.parse(toolCall);
+                // Auto-detect milestones from Architect's initial plan if present
+                if (stepCount === 1 && action.milestones) {
+                    this.currentPlan.milestones = action.milestones.map((m: any) => ({ label: m, status: 'pending' }));
+                }
             } catch (jsonErr: any) {
-                // Self-Healing Turn: Nudge the AI to fix the JSON
-                this.completedActionsHistory.push(`[SYSTEM ERROR] Your last JSON output was malformed: ${jsonErr.message}. Please repeat your action with valid JSON escaping.`);
+                this.completedActionsHistory.push(`[SYSTEM ERROR] Malformed JSON.`);
                 continue;
             }
             
-            // 4. Update UI Timeline
+            // 4. Update UI Timeline (Incremental)
+            if (action.new_remark) {
+                if (!this.currentPlan.observations) this.currentPlan.observations = [];
+                this.currentPlan.observations.push(action.new_remark);
+            }
+            if (action.current_sub_goal) {
+                this.currentPlan.current_sub_goal = action.current_sub_goal;
+            }
+
             const taskId = stepCount;
             const task: Task = {
                 id: taskId,
-                description: action.thought || "Executing tool...",
+                description: action.thought || action.new_remark || "Executing tool...",
                 action: action.tool,
                 parameters: action.params || {},
                 status: 'in_progress',
                 result: null,
                 retries: 0
             };
-            
+
             this.currentPlan.tasks.push(task);
-            this.currentPlan.scratchpad = action.thought || this.currentPlan.scratchpad;
             await this.displayAndSavePlan(this.currentPlan);
 
             // 5. Execute Action
@@ -513,7 +642,17 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
                 task.status = 'completed';
                 task.result = "Response submitted to chat.";
                 await this.displayAndSavePlan(this.currentPlan);
-                
+
+                // Check for successful recovery from failures before finishing
+                const reflectionPrompt = this.failureMemory.getReflectionPrompt(task.action, action.params);
+                if (reflectionPrompt && this.projectMemoryManager) {
+                    const evolutionResponse = await this.lollmsApi.sendChat([
+                        { role: 'system', content: "You are the Genie's Reflexive Memory. Analyze the success and update Project Memory." },
+                        { role: 'user', content: reflectionPrompt }
+                    ], null, signal, model);
+                    await this.projectMemoryManager.processTags(evolutionResponse);
+                }
+
                 // Directly add the agent's response to the discussion
                 await this.ui.addMessageToDiscussion({
                     id: `agent_final_${Date.now()}`,
@@ -525,7 +664,20 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
             }
 
             const result = await this.runSingleTask(task, signal, model);
-            
+
+            // --- 🛡️ CONTEXT GOVERNANCE (NEW) ---
+            // After every action, check if we are approaching the context limit
+            const currentData = await this.contextManager.getContextContent({ modelName: model, signal });
+            const tokenInfo = await this.lollmsApi.tokenize(currentData.text, model);
+            const limitInfo = await this.lollmsApi.getContextSize(model);
+
+            const usageRatio = tokenInfo.count / limitInfo.context_size;
+            if (usageRatio > 0.85) {
+                const pruneWarning = `[SYSTEM WARNING] Context usage is at ${Math.round(usageRatio * 100)}%. Your next turn may fail due to overflow. You should use 'remove_files' in your next step to eject unnecessary files, or switch to 'signatures' mode for reference files.`;
+                this.completedActionsHistory.push(pruneWarning);
+                this.ui.addMessageToDiscussion({ role: 'system', content: `⚖️ **Context Governor:** Usage at ${Math.round(usageRatio * 100)}%. Nudging Architect to prune context.` });
+            }
+
             // --- PATIENCE & PERSISTENCE PROTOCOL ---
             // If the agent is explicitly monitoring a long process (like training),
             // and the action was successful, we give it a "bonus turn" to prevent timeout.
@@ -938,10 +1090,14 @@ Please provide a clear, concise final response to the user summarizing the outco
                                    this.contextManager.getContextStateProvider()?.getIncludedFiles().some(f => f.path === resolvedParams.path);
                                    
             const pastTasks = this.currentPlan.tasks.filter(t => t.id !== task.id && (t.status === 'completed' || t.status === 'failed'));
-            
-            // Smarter identical check (looks back up to 5 tasks to catch alternating loops)
-            const recentTasks = pastTasks.slice(-5);
-            const recentIdentical = recentTasks.find(t => t.action === task.action && JSON.stringify(t.parameters) === JSON.stringify(resolvedParams));
+
+            // --- 🛡️ REDUNDANCY HARNESS ---
+            const recentTasks = pastTasks.slice(-10);
+            const redundantSuccess = recentTasks.find(t => 
+                t.status === 'completed' && 
+                t.action === task.action && 
+                JSON.stringify(t.parameters) === JSON.stringify(resolvedParams)
+            );
 
             // Stuck in a rut detector (high failure rate on same tool consecutively)
             const recentFailures = pastTasks.slice(-3).filter(t => t.status === 'failed');
@@ -951,18 +1107,24 @@ Please provide a clear, concise final response to the user summarizing the outco
                 result = { 
                     success: false, 
                     output: `🛑 CRITICAL ERROR: LOOP BLOCKED.
-You are attempting to execute '${task.action}' with parameters you have ALREADY tried and which ALREADY failed. 
-FAILED PARAMS: ${JSON.stringify(resolvedParams)}
+            You are attempting to execute '${task.action}' with parameters you have ALREADY tried and which ALREADY failed. 
 
-STRICT PROTOCOL: 
-1. You are FORBIDDEN from calling this tool with these parameters again.
-2. You must now use 'read_file' or 'search_files' to investigate why your previous assumption was wrong.
-3. If you are stuck, use 'submit_response' to ask the user for clarification.` 
+            STRICT PROTOCOL: 
+            1. You are FORBIDDEN from calling this tool with these parameters again.
+            2. Use 'read_file' or 'search_files' to investigate why your previous assumption was wrong.
+            3. If stuck, ask the user for help using 'submit_response'.` 
                 };
-            } else if (recentIdentical) {
+            } else if (redundantSuccess) {
                 result = {
                     success: false,
-                    output: `⚠️ REPETITIVE ACTION: You executed this exact same action with the same parameters in step ${recentIdentical.id}. You MUST change your strategy or parameters to avoid an infinite loop.`
+                    output: `🛑 HARNESS ERROR: REDUNDANT ACTION.
+            You already successfully executed '${task.action}' with these parameters in step ${redundantSuccess.id}. 
+            The result is already in your context or history.
+
+            STRICT PROTOCOL:
+            1. DO NOT read the same file twice.
+            2. If you need a piece of information from that file again, use 'record_discovery' to save it to your Working Memory.
+            3. Move to the next step of implementation.`
                 };
             } else if (isStuck) {
                 result = {
@@ -1023,11 +1185,12 @@ STRICT PROTOCOL:
         
         this.completedActionsHistory.push(
             `[STEP ${task.id}]
-- ACTION: ${task.action}
-- INTENT: ${conciseThought}
-- STATUS: ${statusEmoji}
-- OBSERVATION: "${observation}"
-- CONSEQUENCE: ${result.success ? 'Proceed with next step.' : 'CRITICAL: You must analyze why this failed and change approach immediately.'}`
+        - ACTION: ${task.action}
+        - PARAMETERS: ${JSON.stringify(resolvedParams)}
+        - INTENT: ${conciseThought}
+        - STATUS: ${statusEmoji}
+        - OBSERVATION: "${observation}"
+        - CONSEQUENCE: ${result.success ? 'Proceed with next step.' : 'CRITICAL: You must analyze why this failed and change approach immediately.'}`
         );
 
         if (!result.success) {
@@ -1101,7 +1264,38 @@ A high importance (2.0+) ensures this lesson is prioritized in every prompt to p
         return { decision: 'continue', reasoning: "Step successful." };
     }
 
-    private checkGlobalPermission(tool: ToolDefinition): { allowed: boolean, message?: string } {
+    private checkProjectBoundary(filePath: string): { allowed: boolean, message?: string } {
+        if (!this.currentDiscussion?.capabilities?.selectedFolders || this.currentDiscussion.capabilities.selectedFolders.length === 0) {
+            return { allowed: true };
+        }
+        
+        // "None" selected case
+        if (this.currentDiscussion.capabilities.selectedFolders.includes('__none__')) {
+            if (filePath.startsWith('.lollms/sandbox')) return { allowed: true };
+            return { allowed: false, message: "Permission Denied: Discussion is in Sandbox mode. AI can only access .lollms/sandbox." };
+        }
+
+        const normalizedPath = path.resolve(this.currentWorkspaceFolder!.uri.fsPath, filePath);
+        const allowedRoots = (vscode.workspace.workspaceFolders || [])
+            .filter(f => this.currentDiscussion!.capabilities!.selectedFolders!.includes(f.uri.toString()))
+            .map(f => f.uri.fsPath);
+
+        const isAllowed = allowedRoots.some(root => normalizedPath.startsWith(root));
+        return isAllowed 
+            ? { allowed: true } 
+            : { allowed: false, message: `Permission Denied: Access to ${filePath} is outside the selected workspace scope.` };
+    }
+
+    private checkGlobalPermission(tool: ToolDefinition, params?: any): { allowed: boolean, message?: string } {
+        // 1. Check Project-Level Whitelist
+        if (params?.path || params?.file_path || params?.source || params?.destination) {
+            const pathsToCheck = [params.path, params.file_path, params.source, params.destination].filter(Boolean);
+            for (const p of pathsToCheck) {
+                const boundaryCheck = this.checkProjectBoundary(p);
+                if (!boundaryCheck.allowed) return boundaryCheck;
+            }
+        }
+
         const config = vscode.workspace.getConfiguration('lollmsVsCoder.agent.permissions');
         if (tool.permissionGroup === 'shell_execution' && !config.get('shellExecution')) {
             return { allowed: false, message: "Permission Denied: Shell Execution is disabled in settings." };
@@ -1115,7 +1309,7 @@ A high importance (2.0+) ensures this lesson is prioritized in every prompt to p
         const tool = this.toolManager.getTool(action);
         if (!tool) return { success: false, output: `Unknown action: ${action}` };
 
-        const perm = this.checkGlobalPermission(tool);
+        const perm = this.checkGlobalPermission(tool, params);
         if (!perm.allowed) {
             return { success: false, output: perm.message || "Permission denied." };
         }
@@ -1279,17 +1473,48 @@ A high importance (2.0+) ensures this lesson is prioritized in every prompt to p
     }
     
     // ... (generateFileTree, runCommand, requestUserInput, deactivateAgent - kept same) ...
+    /**
+     * Generates a safe, truncated file tree for the AI.
+     * Respects user exclusions and prevents recursion into heavy dependency folders.
+     */
     public async generateFileTree(startPath: string, prefix: string = ''): Promise<string> {
         let result = '';
         let entries;
-        try { entries = await fs.readdir(startPath, { withFileTypes: true }); } catch (e) { return ` (error)\n`; }
+
+        // Define folders that are visible but MUST NOT be traversed recursively
+        const TRUNCATE_FOLDERS = ['venv', '.venv', 'node_modules', '.git', '.lollms', 'dist', 'build', 'bin', 'obj', 'target', 'env'];
+
+        try { 
+            entries = await fs.readdir(startPath, { withFileTypes: true }); 
+        } catch (e) { 
+            return ` (access denied)\n`; 
+        }
+
+        const provider = this.contextManager.getContextStateProvider();
+
         for (let i = 0; i < entries.length; i++) {
             const entry = entries[i];
-            if (['node_modules', '.git', '.lollms', 'venv'].includes(entry.name)) continue;
+            const fullPath = path.join(startPath, entry.name);
+            const uri = vscode.Uri.file(fullPath);
             const isLast = i === entries.length - 1;
-            result += prefix + (isLast ? '└── ' : '├── ') + entry.name + '\n';
+            const connector = isLast ? '└── ' : '├── ';
+
+            // 1. BLOCK: Check if user has excluded this file/folder from the tree
+            if (provider && provider.isStrictlyIgnored(uri)) {
+                continue; 
+            }
+
             if (entry.isDirectory()) {
-                result += await this.generateFileTree(path.join(startPath, entry.name), prefix + (isLast ? '    ' : '│   '));
+                // 2. TRUNCATE: If it's a heavy folder, show it exists but don't descend
+                if (TRUNCATE_FOLDERS.includes(entry.name.toLowerCase())) {
+                    result += `${prefix}${connector}${entry.name}/ ... (contents truncated, use specialized tools to inspect)\n`;
+                } else {
+                    // Standard recursion for safe project folders
+                    result += `${prefix}${connector}${entry.name}/\n`;
+                    result += await this.generateFileTree(fullPath, prefix + (isLast ? '    ' : '│   '));
+                }
+            } else {
+                result += `${prefix}${connector}${entry.name}\n`;
             }
         }
         return result;
@@ -1552,13 +1777,10 @@ OUTPUT JSON ONLY for tool calls.
 
     private async deactivateAgent() {
         this.isActive = false;
-        if(this.currentDiscussion && !this.currentDiscussion.id.startsWith('temp-')){
-            this.currentDiscussion.plan = null;
-            // Wipe the persistent session if the user explicitly turns off Agent Mode
-            this.currentDiscussion.agentSession = undefined;
-            await this.discussionManager.saveDiscussion(this.currentDiscussion);
+        // PRESERVE THE PLAN: Do not wipe plan or session on deactivation
+        if (this.currentPlan) {
+            this.currentPlan.status = 'stale';
         }
-        this.currentPlan = null;
         this.ui.updateAgentMode(false);
     }
     /**

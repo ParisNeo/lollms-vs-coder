@@ -84,6 +84,7 @@ export interface DiscussionCapabilities {
     disableProjectContext: boolean;
     ttftTimeout: number;
     interTokenTimeout: number;
+    selectedFolders?: string[];
     contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
     clipboardInsertRole: 'user' | 'assistant';
     guiState?: {
@@ -103,11 +104,14 @@ export const state: {
     streamingMessages: { [key: string]: { buffer: string, timer: any } },
     isGenerating: boolean,
     appliedState: Record<string, Record<number, number[]>>, // Persistent applied hunks
+    usageData: { project: any[], extra: any[] },
+    currentUsageSort: { column: 'name' | 'tokens', direction: 'asc' | 'desc' },
     lastContextData: { context: string, files: string[], skills: any[] } | null,
     capabilities: DiscussionCapabilities | null,
     currentBranch: string,
     lastCommitHash: string,
     currentPersonalityId: string,
+    currentModelName: string,
     personalities: any[],
     profiles: ResponseProfile[],
     pendingImages: { name: string, data: string }[]
@@ -118,11 +122,14 @@ export const state: {
     streamingMessages: {},
     isGenerating: false,
     appliedState: {},
+    usageData: { project: [], extra: [] },
+    currentUsageSort: { column: 'tokens', direction: 'desc' }, // Default to biggest first
     lastContextData: null,
     capabilities: null,
     currentBranch: '',
     lastCommitHash: '',
     currentPersonalityId: 'default_coder',
+    currentModelName: 'Loading...',
     personalities: [],
     profiles: [],
     pendingImages: []
@@ -176,7 +183,7 @@ export const dom = {
     get usageCloseBtn() { return document.getElementById('usage-close-btn') as HTMLSpanElement; },
     get usageRefreshBtn() { return document.getElementById('usage-refresh-btn') as HTMLButtonElement; },
     get tokenProgressBar() { return document.getElementById('token-progress-bar') as HTMLDivElement; },
-    get tokenProgressContainer() { return document.querySelector('.token-progress-container') as HTMLDivElement; },
+    get tokenProgressContainer() { return document.getElementById('token-progress-container') as HTMLDivElement; },
     get tokenCountLabel() { return document.getElementById('token-count-label') as HTMLSpanElement; },
     get refreshContextBtn() { return document.getElementById('refresh-context-btn') as HTMLButtonElement; },
     get cancelTokensBtn() { return document.getElementById('cancel-tokens-btn') as HTMLButtonElement; },

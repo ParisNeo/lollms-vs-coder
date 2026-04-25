@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.8.17",
+  "version": "0.8.41",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -687,8 +687,8 @@
             {
               "id": "structured",
               "name": "Structured (Analytical)",
-              "description": "Formal Discover/Explain/Think/Act breakdown.",
-              "systemPrompt": "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this four-part structure for every response:\n  1. **Discover**: Identify what is being asked or what issue was found.\n  2. **Explain**: Break down the underlying mechanics or context of the issue.\n  3. **Think**: Describe the technical path chosen to resolve it and why.\n  4. **Act**: Provide the actual implementation, code, or tool call.",
+              "description": "Formal Observe/Think/Act breakdown.",
+              "systemPrompt": "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this three-part structure for every response:\n  1. **Observe**: Identify what is being asked or what issue was found in the context.\n  2. **Think**: Describe the technical path chosen to resolve it and why.\n  3. **Act**: Provide the actual implementation, code, or tool call.",
               "prefix": ""
             },
             {
@@ -1081,12 +1081,12 @@
         },
         "lollmsVsCoder.chatPersona": {
           "type": "string",
-          "default": "You are Lollms, an expert AI software engineer. You always start your responses with a clear pedagogical breakdown of the **Discover**, **Explain**, **Think**, and **Act** phases before providing code or executing tools.",
+          "default": "You are Lollms, an expert AI software engineer. You always start your responses with a clear pedagogical breakdown of the **Observe**, **Think**, and **Act** phases before providing code or executing tools.",
           "description": "%config.chatPersona.description%"
         },
         "lollmsVsCoder.agentPersona": {
           "type": "string",
-          "default": "You are a specialized AI agent. Before performing tasks, you briefly summarize the **Discover** (issue), **Explain** (context), **Think** (approach), and **Act** (plan).",
+          "default": "You are a specialized AI agent. Before performing tasks, you briefly summarize the **Observe** (context/issue), **Think** (approach), and **Act** (plan).",
           "description": "%config.agentPersona.description%"
         },
         "lollmsVsCoder.codeInspectorPersona": {
@@ -1158,7 +1158,7 @@
         "lollmsVsCoder.failsafeContextSize": {
           "type": "number",
           "default": 128000,
-          "description": "Fallback context size to use if the API token counting fails."
+          "description": "Manual Context Size Override. If your model uses more/less than detected, set this value (in tokens) to force the limit and remove the '(Approx)' label. Set to 0 to use auto-detection."
         },
         "lollmsVsCoder.mcpServers": {
           "type": "object",

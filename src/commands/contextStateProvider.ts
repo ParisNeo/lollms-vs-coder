@@ -11,8 +11,14 @@ export class ContextItem extends vscode.TreeItem {
         public readonly state: ContextState,
         public readonly isDirectory: boolean
     ) {
+        // Force relative path display. If it's the root, show the folder name, not the path.
+        const label = vscode.workspace.asRelativePath(resourceUri, false);
+        const displayLabel = (label === resourceUri.fsPath || label === "") 
+            ? path.basename(resourceUri.fsPath) 
+            : label;
+
         super(
-            vscode.workspace.asRelativePath(resourceUri, false), 
+            displayLabel, 
             state === 'collapsed' 
                 ? vscode.TreeItemCollapsibleState.None 
                 : (isDirectory ? vscode.TreeItemCollapsibleState.Collapsed : vscode.TreeItemCollapsibleState.None)
@@ -35,6 +41,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     private _onDidChangeTreeData: vscode.EventEmitter<ContextItem | undefined | null | void> = new vscode.EventEmitter<ContextItem | undefined | null | void>();
     readonly onDidChangeTreeData: vscode.Event<ContextItem | undefined | null | void> = this._onDidChangeTreeData.event;
 
+    private workspaceFolder?: vscode.WorkspaceFolder;
     private static readonly DEPTH_THRESHOLD = 5;
     private static readonly MUTE_DEEP_WARNING_KEY = 'lollms.muteDeepFolderWarning';
     
@@ -260,8 +267,26 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             return 'collapsed';
         }
 
+        // DEFAULT BEHAVIOR: If it's not ignored or collapsed, it's visible in the tree.
         return 'tree-only';
-    }
+        }
+
+        /**
+        * Checks if a URI should be strictly hidden from the tree (e.g. build artifacts, internal caches)
+        */
+        public isStrictlyIgnored(uri: vscode.Uri): boolean {
+        const relativePath = this.normalize(vscode.workspace.asRelativePath(uri, false));
+        const basename = path.basename(uri.fsPath);
+
+        // Standard heavy folders
+        if (['node_modules', '.git', '__pycache__', 'venv', '.venv', 'dist', 'build', 'bin', 'obj'].includes(basename)) {
+            return true;
+        }
+
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const exceptions = config.get<string[]>('contextFileExceptions') || [];
+        return exceptions.some(pattern => minimatch(relativePath, pattern, { dot: true }));
+        }
 
     public async setStateForUris(uris: vscode.Uri[], state: ContextState) {
         if (uris.length === 0) {
@@ -406,30 +431,35 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
         // Combine user-defined exceptions with our robust defaults
         const combinedExcludes = Array.from(new Set([...exceptions, ...standardExcludes]));
-        const excludePattern = `{${combinedExcludes.join(',')}}`;
+        const excludePattern = combinedExcludes.length > 1 ? `{${combinedExcludes.join(',')}}` : (combinedExcludes[0] || "");
+
+        Logger.info(`Librarian: Scanning workspace with pattern: **/* and excludes: ${excludePattern}`);
 
         // 2. Use VS Code's native C++ multi-threaded file finder
         // This is significantly faster than manual recursion.
         const files = await vscode.workspace.findFiles(
             new vscode.RelativePattern(workspaceFolder, '**/*'),
             excludePattern,
-            10000, // Limit to 10k files for the Librarian's map
-            new vscode.CancellationTokenSource().token // We use a fresh token for the low-level call
+            10000
         );
 
         if (signal?.aborted) return [];
 
+        Logger.info(`Librarian: findFiles returned ${files.length} raw results.`);
+
         // 3. Normalize paths and filter by custom state (exclusions/collapsed)
         const visibleFiles: string[] = [];
         for (const file of files) {
+            // isExcluded checks against settings and inherited states
             if (this.isExcluded(file)) continue;
-            
+
             const state = this.getStateForUri(file);
             if (state !== 'fully-excluded') {
                 visibleFiles.push(this.normalize(vscode.workspace.asRelativePath(file, false)));
             }
         }
 
+        Logger.info(`Librarian: Discovery complete. ${visibleFiles.length} files visible after filtering.`);
         return visibleFiles;
     }
     

@@ -189,12 +189,15 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
     }
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyFileContent', async (filePath: string, content: string, options?: { silent?: boolean, autoSave?: boolean }) => {
+        // Clean up hallucinated metadata like "(2 hunks)" from the file path
+        const sanitizedFilePath = filePath.replace(/\s*\(\d+\s*hunks?\)/i, '').trim();
+        
         // Handle Member-Targeted Replacement (path/to/file:ClassName:MethodName)
-        let targetMember: string[] = [];
-        let cleanPath = filePath;
+        let targetMember: string[] =[];
+        let cleanPath = sanitizedFilePath;
 
-        if (filePath.includes(':')) {
-            const parts = filePath.split(':');
+        if (sanitizedFilePath.includes(':')) {
+            const parts = sanitizedFilePath.split(':');
             cleanPath = parts[0];
             targetMember = parts.slice(1);
         }
@@ -306,13 +309,14 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
 
             // The user must review and Save the diff tab to apply changes.
             if (!options?.silent) {
-                await services.diffManager.openDiff(fileUri, content);
+                // Determine discussionId from active panel if available
+                const discussionId = ChatPanel.currentPanel?.getCurrentDiscussion()?.id;
+                await services.diffManager.openDiff(fileUri, content, discussionId);
             }
-            
-            return { success: true, alreadyApplied: !!options?.autoSave };
-            return { success: false, error: "VS Code failed to apply the WorkspaceEdit. The file might be locked or read-only." };
 
-        } catch (e: any) {
+            return { success: true, alreadyApplied: !!options?.autoSave };
+
+            } catch (e: any) {
             Logger.error(`Error applying file content: ${e.message}`, e);
             vscode.window.showErrorMessage(`Error applying file content: ${e.message}`);
             return { success: false, error: e.message };
@@ -339,6 +343,30 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 vscode.window.showInformationMessage(`Successfully saved to ${path.basename(uri.fsPath)}`);
             } catch (e: any) {
                 vscode.window.showErrorMessage(`Failed to save file: ${e.message}`);
+            }
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.saveAssetAs', async (params: { path: string }) => {
+        const activeWorkspace = getActiveWorkspace();
+        if (!activeWorkspace || !params.path) return;
+
+        const sourceUri = vscode.Uri.joinPath(activeWorkspace.uri, params.path);
+        const fileName = path.basename(params.path);
+        const ext = path.extname(fileName).substring(1);
+
+        const targetUri = await vscode.window.showSaveDialog({
+            defaultUri: vscode.Uri.file(fileName),
+            filters: { 'Images': [ext], 'All Files': ['*'] },
+            saveLabel: 'Export Asset'
+        });
+
+        if (targetUri) {
+            try {
+                await vscode.workspace.fs.copy(sourceUri, targetUri, { overwrite: true });
+                vscode.window.showInformationMessage(`Asset exported to ${path.basename(targetUri.fsPath)}`);
+            } catch (e: any) {
+                vscode.window.showErrorMessage(`Export failed: ${e.message}`);
             }
         }
     }));
@@ -441,10 +469,19 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
 
     
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string, panel?: any, messageId?: string, options?: { silent?: boolean, blockIndex?: number, hunkIndex?: number, autoSave?: boolean }): Promise<{ success: boolean; error?: string; repaired?: boolean; alreadyApplied?: boolean }> => {
-        Logger.info(`Executing replaceCode for: ${filePath}`);
-        const resolution = await resolveWorkspaceFromPath(filePath);
+        // Clean up hallucinated metadata like "(2 hunks)" from the file path
+        const sanitizedFilePath = filePath.replace(/\s*\(\d+\s*hunks?\)/i, '').trim();
+        Logger.info(`Executing replaceCode for: ${sanitizedFilePath}`);
+
+        // Handle "REPAIR_REQUESTED" signal from UI
+        if (content === "REPAIR_REQUESTED" && (!options || options.hunkIndex === undefined)) {
+            Logger.warn("ReplaceCode called with REPAIR signal but no hunk index. Aborting.");
+            return { success: false, error: "Invalid repair context" };
+        }
+
+        const resolution = await resolveWorkspaceFromPath(sanitizedFilePath);
         if (!resolution || !resolution.uri) {
-            Logger.error(`Resolution failed for path: ${filePath}`);
+            Logger.error(`Resolution failed for path: ${sanitizedFilePath}`);
             return { success: false, error: "Invalid path or workspace not found" };
         }
 
@@ -464,7 +501,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             document = await vscode.workspace.openTextDocument(fileUri);
         }
 
-        const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
+        const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
         let matches = [...content.matchAll(aiderRegex)];
         
         if (matches.length === 0) {
@@ -477,12 +514,18 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         }
         
         try {
+            // Force a refresh of the document in case it was modified by a previous hunk in a bulk operation
+            if (options?.autoSave) {
+                await vscode.commands.executeCommand('workbench.action.files.save');
+            }
+
             const originalContent = document.getText();
             await openDiffView(fileUri, originalContent, true); // Snapshot for diffs
 
             let currentContent = originalContent;
             let applyCount = 0;
             let firstChangeLine: number | undefined;
+            const errors: string[] = [];
 
             for (let i = 0; i < matches.length; i++) {
                 const match = matches[i];
@@ -523,8 +566,10 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                     currentContent = result.result;
                     applyCount++;
                 } else {
-                    const fixBtn = "Fix with AI";
-                    
+                    // --- ENHANCED DEBUGGING FOR FAILED MATCHES ---
+                    Logger.error(`[AiderMatch] Failed to match block ${i} in ${sanitizedFilePath}. Error: ${result.error}`);
+                    errors.push(result.error || "Unknown match error");
+
                     // IF REPAIR IS REQUESTED (from the manual modal button)
                     if (content === "REPAIR_REQUESTED" && panel && messageId) {
                         // --- ENHANCED SILENT REPAIR ---
@@ -594,8 +639,8 @@ ${originalContent}
                                     if (token.isCancellationRequested) return { success: false, error: "Cancelled" };
                                     
                                     vscode.window.showInformationMessage(vscode.l10n.t("Block repaired. Retrying apply..."));
-                                    return await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, fixedBlock, panel, messageId, { silent: true });
-                                } else {
+                                    return await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', sanitizedFilePath, fixedBlock, panel, messageId, { silent: true });
+                                    } else {
                                     vscode.window.showWarningMessage(
                                         vscode.l10n.t("Lollms: The AI suggested a fix but the response format was unrecognizable.")
                                     );
@@ -611,30 +656,36 @@ ${originalContent}
                 }
             }
 
-            if (applyCount > 0) {
+            if (applyCount > 0 || errors.length > 0) {
                 const wasActuallyModified = currentContent !== originalContent;
-                if (!wasActuallyModified) return { success: true, alreadyApplied: true };
 
-                if (options?.autoSave) {
-                    const edit = new vscode.WorkspaceEdit();
-                    const fullRange = new vscode.Range(
-                        new vscode.Position(0, 0),
-                        document.lineAt(document.lineCount - 1).range.end
-                    );
-                    edit.replace(fileUri, fullRange, currentContent);
-                    const applied = await vscode.workspace.applyEdit(edit);
-                    if (applied) {
-                        await document.save();
+                if (wasActuallyModified) {
+                    if (options?.autoSave) {
+                        const edit = new vscode.WorkspaceEdit();
+                        const fullRange = new vscode.Range(
+                            new vscode.Position(0, 0),
+                            document.lineAt(document.lineCount - 1).range.end
+                        );
+                        edit.replace(fileUri, fullRange, currentContent);
+                        const applied = await vscode.workspace.applyEdit(edit);
+                        if (applied) {
+                            await document.save();
+                        }
+                    }
+
+                    // Use the DiffManager to show the result of the surgical patch
+                    if (!options?.silent) {
+                        // Determine discussionId from active panel if available
+                        const discussionId = ChatPanel.currentPanel?.getCurrentDiscussion()?.id;
+                        await services.diffManager.openDiff(fileUri, currentContent, discussionId);
                     }
                 }
 
-                // Use the DiffManager to show the result of the surgical patch
-                // compared to the current file on disk.
-                if (!options?.silent) {
-                    await services.diffManager.openDiff(fileUri, currentContent);
+                if (errors.length > 0) {
+                    return { success: false, error: `Failed to apply ${errors.length} blocks.\n- ${errors.join('\n- ')}` };
                 }
-                
-                return { success: true, alreadyApplied: !!options?.autoSave };
+
+                return { success: true, alreadyApplied: !wasActuallyModified || !!options?.autoSave };
             }
             return { success: false, error: "Failed to apply edits to document." };
 
@@ -842,7 +893,7 @@ ${originalContent}
                 const isAider = rawContent.includes('<<<<<<< SEARCH');
 
                 if (isAider) {
-                    const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
+                    const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
                     const matches = [...rawContent.matchAll(aiderRegex)];
                     
                     // If verifying a specific hunk from the list

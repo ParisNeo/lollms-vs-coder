@@ -44,8 +44,8 @@ export class PromptTemplates {
         // ── FORMAT 1: FULL FILE (OVERWRITE) ──────────────────────────────────
         sections.push(`
 ### 📄 FORMAT 1: FULL FILE CONTENT (OVERWRITE)
-**Header**: \`\`\`language:path/to/file.ext\`\`\`
-**STRICT HEADER RULE**: The header MUST contain ONLY the language and the relative path. You are FORBIDDEN from adding any metadata, counts, or notes like "(2 hunks)" or "(modified)" to the path.
+**Header**: \`\`\`[language]:path/to/file.ext\`\`\` (e.g. \`\`\`typescript:src/utils.ts\`\`\`)
+**STRICT HEADER RULE**: Replace \`[language]\` with the actual language name. The header MUST contain ONLY the language and the relative path. You are FORBIDDEN from using the literal word "language" in the header.
 **Usage**: Replaces the **entire** file on disk.
 - **Requirement**: The block MUST contain the complete, 1:1 content of the file.
 - **Warning**: Do NOT use this header for snippets or partial code. If you use this header, you MUST provide the whole file.
@@ -55,8 +55,8 @@ export class PromptTemplates {
         if (partialFormat === 'aider') {
             sections.push(`
 ### ⚡ FORMAT 2: SEARCH/REPLACE (Surgical Patch)
-**Header**: \`\`\`language:path/to/file.ext\`\`\`
-**STRICT HEADER RULE**: The header MUST contain ONLY the language and the relative path. You are FORBIDDEN from adding any metadata, counts, or notes like "(2 hunks)" or "(modified)" to the path.
+**Header**: \`\`\`[language]:path/to/file.ext\`\`\` (e.g. \`\`\`python:app/main.py\`\`\`)
+**STRICT HEADER RULE**: Replace \`[language]\` with the actual language name. The header MUST contain ONLY the language and the relative path. You are FORBIDDEN from using the literal word "language" in the header.
 **Structure**:
 \`\`\`
 <<<<<<< SEARCH
@@ -145,6 +145,12 @@ You have active skills/protocols in this project.
 ` : '';
 
         // Special roles
+        if (promptType === 'surgical_agent' && persona.includes('Technical Writer')) {
+            return `${activeProfile.prefix || ''}# 🎭 ROLE: SENIOR TECHNICAL WRITER
+You MUST update physical files (README.md, etc.) before using memory tags. Outputting only memory tags is strictly forbidden.
+`;
+        }
+
         if (promptType === 'verifier') {
             return `${activeProfile.prefix || ''}# 🎭 ROLE: SENIOR QUALITY VERIFIER (THE GUARDIAN)
 
@@ -242,8 +248,15 @@ ${activeProfile.systemPrompt}
 3. **NO BLIND EDITS**: Never generate a SEARCH/REPLACE block or full file overwrite for a file you haven't read.
 4. **NO PLACEHOLDERS**: You are strictly forbidden from using comments like \`# ... rest of code\`.
 
-### 🎨 INTEGRATED UI COMPONENTS
-You can trigger UI actions using these tags. Note the consistent parameter usage for file operations:
+### 🎨 INTEGRATED UI COMPONENTS & COMPOSITING
+You can trigger UI actions using these tags. 
+
+**IMAGE COMPOSITING PROTOCOL**:
+- If the user provides multiple images, you can reference them as a set.
+- **Tools**: Use \`edit_image_asset\` with an array of paths for blending or character transfer.
+- **Logic**: You are capable of "Style Injection" (Style of A -> Content of B) and "Character Transfer" (Subject of A -> Scene of B).
+
+Consistent parameter usage for file operations:
 
 - **Library & Content** (NEVER wrap these tags in markdown code blocks/backticks):
   - \`<skill title="..." description="..." category="...">[SKILL_CODE_OR_DOCS]</skill>\`

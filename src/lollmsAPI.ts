@@ -35,6 +35,7 @@ export interface TokenizeResponse {
 export interface ContextSizeResponse {
     context_size: number;
     isEstimation?: boolean;
+    isUserDefined?: boolean; // New flag
 }
 
 export interface ImageGenerationRequest {
@@ -63,6 +64,7 @@ export class LollmsAPI {
   private httpsAgent: https.Agent;
   private baseUrl: string;
   private _cachedModels: Array<{ id: string }> | null = null;
+  private _cachedContextSizes: Map<string, number> = new Map();
   private globalState?: vscode.Memento;
 
   constructor(config: LollmsConfig, globalState?: vscode.Memento) {
@@ -305,60 +307,86 @@ export class LollmsAPI {
 
   public async tokenize(text: string, model?: string): Promise<TokenizeResponse> {
     const backend = this.config.backendType;
-    const modelName = model || this.config.modelName;
+    const modelName = (model || this.config.modelName || "").trim();
+    const safeText = text || "";
 
-    // 1. High-Precision Lollms Tokenizer API
-    if (this.config.useLollmsExtensions && backend === 'lollms') {
-        const tokenizeUrl = `${this.baseUrl}/lollms/v1/tokenize`;
-        const isHttps = tokenizeUrl.startsWith('https');
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 5000);
-
-        try {
-            const response = await fetch(tokenizeUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${this.config.apiKey}` },
-                body: JSON.stringify({ model: modelName, text: text }),
-                signal: controller.signal,
-                agent: isHttps ? this.httpsAgent : undefined
-            });
-            if (response.ok) {
-                return await response.json() as TokenizeResponse;
-            }
-        } catch (e) { } finally { clearTimeout(timeout); }
+    // VALIDATION: Prevent 400 Bad Request by not sending invalid Pydantic models
+    if (!modelName || backend !== 'lollms' || !this.config.useLollmsExtensions) {
+        // Fallback to heuristic if model is unknown or not using Lollms extensions
+        const hasCode = safeText.includes('{') || safeText.includes('def ') || safeText.includes('function ') || safeText.includes('import ');
+        const multiplier = hasCode ? 0.35 : 0.28;
+        return { count: Math.ceil(safeText.length * multiplier), tokens: [], isEstimation: true };
     }
 
-    // 2. Advanced Heuristic Estimation
-    // Code often uses more tokens (approx 2.5-3 chars/token) than prose (approx 4 chars/token).
-    // We scan for common code indicators.
-    const hasCode = text.includes('{') || text.includes('def ') || text.includes('function ') || text.includes('import ');
-    const multiplier = hasCode ? 0.35 : 0.28; // Inverse of chars/token
-    
-    const count = Math.ceil(text.length * multiplier);
+    // 1. High-Precision Lollms Tokenizer API
+    const tokenizeUrl = `${this.baseUrl}/lollms/v1/tokenize`;
+    const isHttps = tokenizeUrl.startsWith('https');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
 
-    return { count, tokens: [], isEstimation: true };
+    try {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (this.config.apiKey) {
+            headers['Authorization'] = `Bearer ${this.config.apiKey}`;
+        }
+
+        const response = await fetch(tokenizeUrl, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify({ 
+                model: modelName, 
+                text: safeText 
+            }),
+            signal: controller.signal,
+            agent: isHttps ? this.httpsAgent : undefined
+        });
+
+        if (response.ok) {
+            const data = await response.json() as TokenizeResponse;
+            // If the server provided a real list of tokens or a non-zero count, it's NOT an estimation.
+            return { ...data, isEstimation: false };
+        } else {
+            const errBody = await response.text();
+            Logger.warn(`Tokenize API failed (${response.status}): ${errBody}`);
+        }
+    } catch (e) { 
+        Logger.error("Tokenize request exception", e);
+    } finally { 
+        clearTimeout(timeout); 
+    }
+
+    // Fallback to heuristic ONLY on true network/server failure
+    const hasCode = safeText.includes('{') || safeText.includes('def ') || safeText.includes('function ') || safeText.includes('import ');
+    return { count: Math.ceil(safeText.length * (hasCode ? 0.35 : 0.28)), tokens: [], isEstimation: true };
   }
 
-
   public async getContextSize(model?: string): Promise<ContextSizeResponse> {
-    const useExtensions = this.config.useLollmsExtensions && this.config.backendType === 'lollms';
-    const defaultSize = 128000;
+    const modelName = (model || this.config.modelName || "").trim();
+    
+    // 1. Check Local Session Cache first to prevent server hammering
+    if (this._cachedContextSizes.has(modelName)) {
+        const cachedSize = this._cachedContextSizes.get(modelName)!;
+        Logger.debug(`[API] Context Size Cache Hit for ${modelName}: ${cachedSize}`);
+        return { context_size: cachedSize, isEstimation: false };
+    }
 
-    if (!useExtensions) {
-        return { context_size: defaultSize, isEstimation: true };
+    const useExtensions = this.config.useLollmsExtensions && this.config.backendType === 'lollms';
+    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+    const manualOverride = config.get<number>('failsafeContextSize') || 0;
+
+    if (!useExtensions || !modelName) {
+        return { 
+            context_size: manualOverride || 128000, 
+            isEstimation: manualOverride === 0, 
+            isUserDefined: manualOverride > 0 
+        };
     }
 
     const contextSizeUrl = `${this.baseUrl}/lollms/v1/context_size`;
     const isHttps = contextSizeUrl.startsWith('https');
 
-    const modelToSend = model || this.config.modelName;
-    const body: any = {};
-    if (modelToSend) {
-        body.model = modelToSend;
-    }
-
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
+    const timeout = setTimeout(() => controller.abort(), 12000); // Higher timeout as server loads LLM
 
     const options: RequestInit = {
         method: 'POST',
@@ -366,7 +394,8 @@ export class LollmsAPI {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${this.config.apiKey}`
         },
-        body: JSON.stringify(body),
+        // STRICT PAYLOAD: Matches ContextSizeRequest Pydantic model
+        body: JSON.stringify({ model: modelName }),
         signal: controller.signal
     };
 
@@ -374,18 +403,44 @@ export class LollmsAPI {
         options.agent = this.httpsAgent;
     }
 
+    Logger.info(`[API] ---> POST /lollms/v1/context_size (Model: ${modelName})`);
     try {
         const response = await fetch(contextSizeUrl, options);
-        if (!response.ok) {
-            throw new Error(`Status ${response.status}`);
+        if (response.ok) {
+            const rawBody = await response.text();
+            Logger.info(`[API] <--- /context_size Raw Response: ${rawBody}`);
+
+            const data = JSON.parse(rawBody) as ContextSizeResponse;
+
+            if (data && typeof data.context_size === 'number' && data.context_size > 0) {
+                Logger.info(`[API] Found authoritative context size: ${data.context_size} tokens`);
+                this._cachedContextSizes.set(modelName, data.context_size);
+                return { ...data, isEstimation: false };
+            } else {
+                Logger.warn(`[API] Server returned 200 OK but context_size was ${data?.context_size}`);
+            }
+        } else {
+            const errText = await response.text();
+            Logger.error(`[API] /context_size failed (Status: ${response.status}) Body: ${errText.substring(0, 200)}`);
+            throw new Error(`Server returned ${response.status}`);
         }
-        const data = await response.json() as ContextSizeResponse;
-        return { ...data, isEstimation: false };
     } catch (e: any) {
-        return { context_size: defaultSize, isEstimation: true };
+        Logger.error(`[API] Network error fetching context size: ${e.message}`);
     } finally {
         clearTimeout(timeout);
     }
+
+    // FINAL FALLBACK: Use User Setting if provided, otherwise Heuristic
+    const { getContextLimitForModel } = require('./utils');
+    const heuristicSize = getContextLimitForModel(modelName);
+    
+    // If we reached here, the server API failed or returned 0.
+    // We only use the failsafe/manual override now.
+    return { 
+        context_size: manualOverride || heuristicSize || 128000, 
+        isEstimation: manualOverride === 0, // It's only an estimation if the user didn't set a hard value
+        isUserDefined: manualOverride > 0
+    };
   }
 
   /**
@@ -447,12 +502,56 @@ export class LollmsAPI {
     return data.text || '';
   }
 
-public async generateImage(prompt: string, options?: { size?: string, quality?: 'standard' | 'hd' }, token?: vscode.CancellationToken): Promise<string> {
-    if (!this.baseUrl) {
-      throw new Error("Lollms API URL is not configured correctly.");
-    }
+public async editImage(prompt: string, imageBase64: string, maskBase64?: string, model?: string, token?: vscode.CancellationToken): Promise<string> {
+  if (!this.baseUrl) throw new Error("Lollms API URL is not configured correctly.");
 
-    const imageUrl = `${this.baseUrl}/v1/images/generations`;
+  const url = `${this.baseUrl}/v1/images/edit`;
+  const isHttps = url.startsWith('https');
+
+  const requestBody = {
+      prompt,
+      image: imageBase64,
+      mask: maskBase64,
+      model: model
+  };
+
+  const controller = new AbortController();
+  if (token) token.onCancellationRequested(() => controller.abort());
+
+  try {
+      const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${this.config.apiKey}`
+          },
+          body: JSON.stringify(requestBody),
+          signal: controller.signal,
+          agent: isHttps ? this.httpsAgent : undefined
+      });
+
+      if (!response.ok) {
+          const err = await response.text();
+          throw new Error(`Image Edit Error: ${response.status} - ${err}`);
+      }
+
+      const data = await response.json() as ImageGenerationResponse;
+      if (data.data && data.data[0]?.b64_json) {
+          return data.data[0].b64_json;
+      }
+      throw new Error('API did not return image data.');
+  } catch (error: any) {
+      if (error.name === 'AbortError') throw new Error("Image edit timed out or was cancelled.");
+      throw error;
+  }
+}
+
+public async generateImage(prompt: string, options?: { size?: string, quality?: 'standard' | 'hd' }, token?: vscode.CancellationToken): Promise<string> {
+  if (!this.baseUrl) {
+    throw new Error("Lollms API URL is not configured correctly.");
+  }
+
+  const imageUrl = `${this.baseUrl}/v1/images/generations`;
     const isHttps = imageUrl.startsWith('https');
 
     const requestBody: ImageGenerationRequest = {

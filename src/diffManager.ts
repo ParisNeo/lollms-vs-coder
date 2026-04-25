@@ -10,6 +10,7 @@ interface DiffState {
 export class DiffManager implements vscode.TextDocumentContentProvider {
     private generatedToOriginal = new Map<string, string>(); // generatedFsPath -> originalFsPath
     private originalToGenerated = new Map<string, string>(); // originalFsPath -> generatedFsPath
+    private generatedToDiscussionId = new Map<string, string>(); // generatedFsPath -> discussionId
     private context: vscode.ExtensionContext | undefined;
     private static readonly STORAGE_KEY = 'lollms_diff_state';
 
@@ -37,7 +38,33 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
         context.subscriptions.push(vscode.workspace.onDidSaveTextDocument(async (doc) => {
             const fsPath = doc.uri.fsPath;
             if (this.generatedToOriginal.has(fsPath)) {
-                await this.applyDiffFromSave(doc);
+                const discussionId = this.generatedToDiscussionId.get(fsPath);
+                const applied = await this.applyDiffFromSave(doc);
+                if (applied) {
+                    // 1. Close the diff tab
+                    await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+
+                    // 2. Reveal the discussion panel if we have a reference
+                    if (discussionId) {
+                        const { ChatPanel } = require('./commands/chatPanel/chatPanel');
+                        const panel = ChatPanel.panels.get(discussionId);
+                        if (panel) {
+                            panel._panel.reveal();
+                        } else {
+                            vscode.commands.executeCommand('lollms-vs-coder.switchDiscussion', discussionId);
+                        }
+                    }
+
+                    await this.cleanup(doc.uri);
+                }
+            }
+        }));
+
+        // Cleanup when the user closes the diff tab without saving (to prevent accumulation)
+        context.subscriptions.push(vscode.workspace.onDidCloseTextDocument(async (doc) => {
+            const fsPath = doc.uri.fsPath;
+            if (this.generatedToOriginal.has(fsPath)) {
+                await this.cleanup(doc.uri);
             }
         }));
 
@@ -107,7 +134,7 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
         return genPath ? vscode.Uri.file(genPath) : undefined;
     }
 
-    public async openDiff(originalUri: vscode.Uri, newContent: string) {
+    public async openDiff(originalUri: vscode.Uri, newContent: string, discussionId?: string) {
         const workspaceFolder = vscode.workspace.getWorkspaceFolder(originalUri);
         if (!workspaceFolder) {
             vscode.window.showErrorMessage("Cannot open diff: file is not in a workspace.");
@@ -125,10 +152,8 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
         const ext = path.extname(fileName);
         const name = path.basename(fileName, ext);
         
-        // Use a hash of the original path to ensure a STABLE filename for this specific file
-        const crypto = require('crypto');
-        const hash = crypto.createHash('md5').update(originalUri.fsPath).digest('hex').substring(0, 8);
-        const diffFileName = `${name}.${hash}.proposed${ext}`;
+        // Use timestamp to match the files shown in user's screenshot and ensure uniqueness
+        const diffFileName = `${name}_generated_${Date.now()}${ext}`;
         const generatedUri = vscode.Uri.joinPath(diffDir, diffFileName);
 
         try {
@@ -141,6 +166,9 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
 
         this.generatedToOriginal.set(generatedUri.fsPath, originalUri.fsPath);
         this.originalToGenerated.set(originalUri.fsPath, generatedUri.fsPath);
+        if (discussionId) {
+            this.generatedToDiscussionId.set(generatedUri.fsPath, discussionId);
+        }
         this.saveState();
 
         const title = `${fileName} (Disk) ↔ ${fileName} (Edit Right & Save to Apply)`;
@@ -162,9 +190,9 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
         vscode.window.setStatusBarMessage("Lollms Diff: Edit the right side and Ctrl+S to apply changes.", 5000);
     }
 
-    private async applyDiffFromSave(generatedDoc: vscode.TextDocument) {
+    private async applyDiffFromSave(generatedDoc: vscode.TextDocument): Promise<boolean> {
         const originalFsPath = this.generatedToOriginal.get(generatedDoc.uri.fsPath);
-        if (!originalFsPath) return;
+        if (!originalFsPath) return false;
 
         try {
             const originalUri = vscode.Uri.file(originalFsPath);
@@ -173,8 +201,10 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
             await vscode.workspace.fs.writeFile(originalUri, Buffer.from(content, 'utf8'));
             
             vscode.window.showInformationMessage(`Changes applied to ${path.basename(originalFsPath)}`);
+            return true;
         } catch (e: any) {
             vscode.window.showErrorMessage(`Failed to apply changes: ${e.message}`);
+            return false;
         }
     }
 
@@ -188,6 +218,7 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
         if (this.generatedToOriginal.has(fsPath)) {
             const originalPath = this.generatedToOriginal.get(fsPath);
             this.generatedToOriginal.delete(fsPath);
+            this.generatedToDiscussionId.delete(fsPath);
             if (originalPath) this.originalToGenerated.delete(originalPath);
             
             this.saveState();
@@ -217,7 +248,8 @@ export class DiffManager implements vscode.TextDocumentContentProvider {
             try {
                 const entries = await vscode.workspace.fs.readDirectory(diffDir);
                 for (const [name, type] of entries) {
-                    if (type === vscode.FileType.File && name.includes('.proposed')) {
+                    // Purge both the old .proposed format and the new _generated_ format
+                    if (type === vscode.FileType.File && (name.includes('.proposed') || name.includes('_generated_'))) {
                         const fullUri = vscode.Uri.joinPath(diffDir, name);
                         // If not in our active session tracking map, kill it
                         if (!this.generatedToOriginal.has(fullUri.fsPath)) {

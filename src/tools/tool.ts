@@ -22,13 +22,22 @@ export interface Task {
     can_retry?: boolean;
 }
 
+export interface Milestone {
+    label: string;
+    status: 'pending' | 'completed' | 'active';
+}
+
 export interface Plan {
-    objective: string;
-    scratchpad: string;
+    objective: string;      // Global Mission Goal
+    current_sub_goal: string; // Immediate task objective
+    observations: string[];  // Incremental list of technical remarks
     tasks: Task[];
+    milestones?: Milestone[]; 
     investigation?: any[]; 
     attempts?: Plan[];     
     status?: 'active' | 'stale' | 'failed';
+    metrics?: any;
+    scratchpad?: string;    // Legacy fallback
 }
 
 export interface ToolExecutionEnv {

@@ -229,17 +229,91 @@ export const myCustomTool: ToolDefinition = {
         await panel.openMissionBriefingUI();
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyMemoryTag', async (params: { action: string, id: string, title: string, content: string, importance?: number }) => {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.peekAgentBrain', async (tier: any) => {
+        const panel = ChatPanel.currentPanel;
+        const agent = panel?.agentManager;
+        if (!agent) {
+            vscode.window.showWarningMessage("No active Agent found for this discussion.");
+            return;
+        }
+
+        let title = "";
+        let content = "";
+
+        // Determine correct data based on the requested tier
+        switch(tier) {
+            case 'scratchpad':
+                title = "🧠 Agent Thoughts (Scratchpad)";
+                const plan = agent['currentPlan'];
+                const objective = plan?.objective || "Unknown Mission";
+                const remarks = plan?.observations?.join('\n') || plan?.scratchpad || "No thoughts recorded yet.";
+                content = `# MISSION OBJECTIVE\n${objective}\n\n# CURRENT REASONING\n${remarks}`;
+                break;
+            case 'memory':
+                title = "💾 Agent Working Memory";
+                content = `## EPHEMERAL STATE\n` + (agent.sessionState.workingMemory.join('\n\n') || "Empty.");
+                content += `\n\n## REPL VARIABLES\n\`\`\`json\n${JSON.stringify(agent.sessionState.replVariables, null, 2)}\n\`\`\``;
+                break;
+            case 'history':
+                title = "📜 Agent Mission Timeline";
+                content = `## EXECUTED STEPS\n\n` + agent['completedActionsHistory'].map(h => `- ${h}`).join('\n\n');
+                break;
+        }
+
+        const { InfoPanel } = await import('../commands/infoPanel');
+        InfoPanel.createOrShow(services.extensionUri, title, content);
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.viewFullContext', async (type: 'system' | 'files' | 'chat') => {
+        const panel = ChatPanel.currentPanel;
+        if (!panel) return;
+
+        let title = "";
+        let content = "";
+
+        if (type === 'system') {
+            title = "Processed System Prompt";
+            const persona = services.personalityManager.getPersonality(panel.getCurrentDiscussion()?.personalityId || 'default_coder');
+            const { getProcessedSystemPrompt } = await import('../utils');
+            content = await getProcessedSystemPrompt('chat', (panel as any)._discussionCapabilities, persona?.systemPrompt);
+        } else if (type === 'files') {
+            // Trigger the existing Usage modal logic
+            panel._panel.webview.postMessage({ command: 'requestContextUsage' });
+            return;
+        } else if (type === 'chat') {
+            title = "History Sent to LLM";
+            content = (panel.getCurrentDiscussion()?.messages || [])
+                .map(m => `### ${m.role.toUpperCase()}\n${m.content}`)
+                .join('\n\n');
+        }
+
+        const { InfoPanel } = await import('../commands/infoPanel');
+        InfoPanel.createOrShow(services.extensionUri, title, content);
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.exportAgentTimeline', async () => {
+        if (ChatPanel.currentPanel?.agentManager) {
+            await ChatPanel.currentPanel.agentManager.exportTimelineToHtml();
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyMemoryTag', async (params: { action: string, id: string, title?: string, content?: string, importance?: number }) => {
         if (services.projectMemoryManager) {
-            await services.projectMemoryManager.updateMemory(
-                params.action as any, 
-                params.id, 
-                params.title, 
-                params.content,
-                "general",
-                params.importance
-            );
-            vscode.window.showInformationMessage(`Lollms: Fact "${params.id}" synced to Project Memory.`);
+            // If it's a reinforcement (Importance 100 or zap clicked), we use the specific engram refresher
+            if (params.importance === 100 || !params.content) {
+                await services.projectMemoryManager.reinforceEngram(params.id);
+                vscode.window.showInformationMessage(`Lollms: Memory "${params.id}" reinforced. Decay blocked.`);
+            } else {
+                await services.projectMemoryManager.updateMemory(
+                    params.action as any, 
+                    params.id, 
+                    params.title || params.id, 
+                    params.content,
+                    "general",
+                    params.importance
+                );
+                vscode.window.showInformationMessage(`Lollms: Fact "${params.id}" synced to Project Memory.`);
+            }
         }
     }));
 

@@ -569,7 +569,7 @@ export class HelpPanel {
             <table>
                 <tr><th>Profile</th><th>Behavior</th></tr>
                 <tr><td><b>Balanced</b></td><td>Explanation first, then code. Professional and helpful.</td></tr>
-                <tr><td><b>Structured</b></td><td>Strict <i>Problem / Hypothesis / Fix</i> layout. Best for complex debugging.</td></tr>
+                <tr><td><b>Structured</b></td><td>Formal <i>Observe / Think / Act</i> layout. Best for complex debugging.</td></tr>
                 <tr><td><b>Minimalist</b></td><td>No talking. Just the code or the direct answer.</td></tr>
                 <tr><td><b>Pedagogical</b></td><td>Acts as a teacher. Explains the "Why" deeply with analogies.</td></tr>
             </table>

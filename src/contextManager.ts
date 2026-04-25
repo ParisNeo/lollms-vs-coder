@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import { Logger } from './logger';
 import { ContextStateProvider } from './commands/contextStateProvider';
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
 import { SkillsManager, Skill } from './skillsManager';
@@ -266,9 +267,22 @@ export class ContextManager {
       }
   }
 
-  public async getWorkspaceFilePaths(): Promise<string[]> {
+  public async getWorkspaceFilePaths(selectedFolders?: string[]): Promise<string[]> {
       if (!this.contextStateProvider) return [];
-      return await this.contextStateProvider.getAllVisibleFiles();
+      const allFiles = await this.contextStateProvider.getAllVisibleFiles();
+      
+      if (!selectedFolders || selectedFolders.length === 0) {
+          return allFiles;
+      }
+
+      const activeFolderPaths = (vscode.workspace.workspaceFolders || [])
+          .filter(f => selectedFolders.includes(f.uri.toString()))
+          .map(f => f.uri.fsPath);
+
+      return allFiles.filter(f => {
+          const fullPath = path.isAbsolute(f) ? f : path.join(vscode.workspace.workspaceFolders![0].uri.fsPath, f);
+          return activeFolderPaths.some(root => fullPath.startsWith(root));
+      });
   }
 
   public async readSpecificFiles(filePaths: string[]): Promise<string> {
@@ -303,7 +317,7 @@ export class ContextManager {
       return content;
   }
 
-  public async searchWorkspaceContent(query: string, options: { matchCase: boolean, wholeWord: boolean, include?: string, exclude?: string } = { matchCase: false, wholeWord: false }, signal?: AbortSignal): Promise<{path: string, snippet: string, line?: string}[]> {
+  public async searchWorkspaceContent(query: string, options: { matchCase: boolean, wholeWord: boolean, include?: string, exclude?: string, literal?: boolean } = { matchCase: false, wholeWord: false }, signal?: AbortSignal): Promise<{path: string, snippet: string, line?: string}[]> {
     const results: {path: string, snippet: string, line?: string}[] = [];
     const maxResults = 100;
     const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -315,30 +329,35 @@ export class ContextManager {
         let stdout = "";
         // 1. Try git grep first (Supports rich boolean logic)
         try {
-            // Increase max-count per file to find better snippets
+            // -F triggers Fixed Strings (literal search)
             let gitGrepArgs = `-n -I --max-count=3 --context=0`;
             if (!options.matchCase) gitGrepArgs += ` -i`;
             if (options.wholeWord) gitGrepArgs += ` -w`;
+            if (options.literal) gitGrepArgs += ` -F`;
 
-            const orParts = query.split('|').map(p => p.trim()).filter(p => p);
             let patternArgs = "";
             
-            orParts.forEach((part, idx) => {
-                if (idx > 0) patternArgs += " --or ";
-                const andTerms = part.split(/\s+/).filter(p => p);
-                if (andTerms.length > 1) patternArgs += " ( ";
-                
-                andTerms.forEach((term, tIdx) => {
-                    const isNot = term.startsWith('-');
-                    const actualTerm = isNot ? term.substring(1) : term;
-                    if (tIdx > 0) patternArgs += " --and ";
-                    if (isNot) patternArgs += " --not ";
-                    patternArgs += ` -e "${actualTerm.replace(/"/g, '\\"')}" `;
-                });
+            if (options.literal) {
+                patternArgs = `-e "${query.replace(/"/g, '\\"')}"`;
+            } else {
+                const orParts = query.split('|').map(p => p.trim()).filter(p => p);
+                orParts.forEach((part, idx) => {
+                    if (idx > 0) patternArgs += " --or ";
+                    const andTerms = part.split(/\s+/).filter(p => p);
+                    if (andTerms.length > 1) patternArgs += " ( ";
+                    
+                    andTerms.forEach((term, tIdx) => {
+                        const isNot = term.startsWith('-');
+                        const actualTerm = isNot ? term.substring(1) : term;
+                        if (tIdx > 0) patternArgs += " --and ";
+                        if (isNot) patternArgs += " --not ";
+                        patternArgs += ` -e "${actualTerm.replace(/"/g, '\\"')}" `;
+                    });
 
-                if (andTerms.length > 1) patternArgs += " ) ";
-            });
-            
+                    if (andTerms.length > 1) patternArgs += " ) ";
+                });
+                
+            }
             // Handle Includes and Excludes via Git Pathspecs
             let pathspec = "";
             if (options.include) {
@@ -347,7 +366,6 @@ export class ContextManager {
             if (options.exclude) {
                 pathspec += " " + options.exclude.split(',').map(p => `":!${p.trim()}"`).join(' ');
             }
-
             const res = await execAsync(`git grep ${gitGrepArgs} ${patternArgs} -- ${pathspec}`, { cwd, maxBuffer: 1024 * 1024 });
             stdout = res.stdout;
         } catch (e) {
@@ -357,15 +375,13 @@ export class ContextManager {
             const pattern = query.replace(/"/g, '\\"');
             
             if (isWin) {
-                // findstr /I = case insensitive. /BE = match start/end (closest to whole word findstr has)
-                // Note: findstr's whole-word support is limited.
-                let findstrArgs = `/S /N`;
+                // /L = literal search
+                let findstrArgs = `/S /N /L`;
                 if (!options.matchCase) findstrArgs += ` /I`;
-                // For whole word on Windows, we'll wrap in regex boundaries if word is set
-                const winPattern = options.wholeWord ? `\\<${pattern}\\>` : pattern;
-                command = `findstr ${findstrArgs} /C:"${winPattern}" *`;
+                command = `findstr ${findstrArgs} /C:"${pattern}" *`;
             } else {
-                let grepArgs = `-r -n -I -m 1`;
+                // -F = fixed strings (literal)
+                let grepArgs = `-r -n -I -m 1 -F`;
                 if (!options.matchCase) grepArgs += ` -i`;
                 if (options.wholeWord) grepArgs += ` -w`;
                 command = `grep ${grepArgs} "${pattern}" .`;
@@ -1291,6 +1307,9 @@ Google Available: ${canGoogle}` }
   ): Promise<{ context: string, analysis: string }> {
       const MAX_STEPS = 10;
       const MAX_RETRIES = 3;
+      const actionLog: string[] = [];
+      const executedActions = new Set<string>();
+      let cumulativeBrain = ""; 
       
       const folders = vscode.workspace.workspaceFolders;
       if (!folders || folders.length === 0 || !this.contextStateProvider) {
@@ -1298,12 +1317,22 @@ Google Available: ${canGoogle}` }
           return { context: "", analysis: "No workspace available for project-wide scouting." };
       }
 
-      const allFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
+      // Robust file discovery: ensure we have a valid list of files before starting the agent
+      let allFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
+      
+      // If native findFiles failed, fallback to the current context state provider's known files
       if (allFiles.length === 0) {
+          allFiles = this.contextStateProvider.getIncludedFiles().map(f => f.path);
+      }
+
+      if (allFiles.length === 0) {
+          Logger.error("Librarian: Zero files discovered in workspace.");
           actionLog.push("⚠️ No files found in workspace.");
-          onUpdate(`**🧠 Librarian Mission Report**\n\n⚠️ **Blank Workspace**: I couldn't find any visible files in the project. Please ensure you are in the correct folder.`);
+          onUpdate(`**🧠 Librarian Mission Report**\n\n⚠️ **Blank Workspace**: I couldn't find any visible files in the project. Please ensure your project is indexed or add some files to context manually.`);
           return { context: "", analysis: "Workspace is empty." };
       }
+
+      Logger.info(`Librarian: Starting mission with ${allFiles.length} visible files.`);
 
       const currentContextFiles = this.contextStateProvider.getIncludedFiles().map(f => f.path);
       const selectedFiles = new Set<string>(currentContextFiles);
@@ -1413,10 +1442,6 @@ Example:
   "params": { "id": "auth_logic", "info": "Authentication uses the UserAuth class which relies on a @verify_token decorator." }
 }
 `;
-
-      const actionLog: string[] = [];
-      const executedActions = new Set<string>();
-      let cumulativeBrain = ""; // Internal master state
 
       // Build history context for the Librarian
       const historyContext = fullHistory.length > 0 
@@ -1765,7 +1790,15 @@ ${cumulativeBrain || "No observations yet."}
                       renderUpdate("Cleaning context...", false, step);
                   }
               } else if (toolName === 'read_file') {
-                  const pathArg = params.path || params.file;
+                  let pathArg = params.path || params.file;
+                  if (pathArg) {
+                      // Normalize path to handle cases where the agent omits the leading project folder
+                      if (!allFiles.includes(pathArg)) {
+                          const possibleMatch = allFiles.find(f => f.endsWith('/' + pathArg) || f.endsWith('\\' + pathArg));
+                          if (possibleMatch) pathArg = possibleMatch;
+                      }
+                  }
+
                   if (pathArg && allFiles.includes(pathArg)) {
                       actionLog.push(`🔍 **Peeking**: Inspecting logic in \`${pathArg}\`...`);
                       const uri = vscode.Uri.joinPath(workspaceFolder.uri, pathArg);
@@ -1941,17 +1974,21 @@ ${cumulativeBrain || "No observations yet."}
     }
 
     const contextFiles = this.contextStateProvider.getIncludedFiles();
+    const activeFolders = vscode.workspace.workspaceFolders || [];
+    
+    // Filter selection based on Discussion Workspace Scope
+    const selectedFolderUris = options?.capabilities?.selectedFolders || [];
+    const workspaceFolders = activeFolders.filter(f => 
+        selectedFolderUris.length === 0 || selectedFolderUris.includes(f.uri.toString())
+    );
 
     if (includeTree) {
         if (signal?.aborted) throw new Error("Operation cancelled");
-        if (this._isTreeDirty || !this._cachedTreeString) {
-            this._cachedTreeString = await this.generateProjectTree(signal, options?.onProgress);
-            this._isTreeDirty = false;
-        }
-        result.projectTree = this._cachedTreeString;
+        // We force a rebuild if the workspace scope changed
+        result.projectTree = await this.generateProjectTree(signal, options?.onProgress, selectedFolderUris);
     }
 
-    const folders = vscode.workspace.workspaceFolders || [];
+    const folders = workspaceFolders;
     const includedFiles = contextFiles.filter(f => !f.path.endsWith(path.sep));
     
     if (useRLM) {
@@ -2038,10 +2075,10 @@ ${cumulativeBrain || "No observations yet."}
                   const fileBytes = await vscode.workspace.fs.readFile(fullPath);
                   fileBuffer = Buffer.from(fileBytes);
               }
-
-              if (this.imageExtensions.has(ext)) {
+                if (this.imageExtensions.has(ext)) {
                   if (!enableVision) {
                       result.selectedFilesContent += `### \`${filePath}\` (Image Muted - Vision Disabled)\n\n`;
+                      // Ensure the image doesn't leak into the multimodal array
                       continue;
                   }
                   const base64Data = fileBuffer.toString('base64');
@@ -2239,44 +2276,91 @@ Based on the objective and the file tree, which files are the most relevant? Ret
     return null;
   }
 
-  private async generateProjectTree(signal?: AbortSignal, onProgress?: (percentage: number) => void): Promise<string> {
-    
-    if (!this.contextStateProvider) {
+  private async generateProjectTree(signal?: AbortSignal, onProgress?: (percentage: number) => void, selectedFolders?: string[]): Promise<string> {
+    if (!this.contextStateProvider || !vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
       return '## 🌳 PROJECT STRUCTURE\n\n*No project structure available - no workspace folder found.*\n';
     }
 
+    const folders = vscode.workspace.workspaceFolders;
     const contextFiles = this.contextStateProvider.getIncludedFiles();
-    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-    if (!workspaceFolder) return '';
 
-    // 1. Initial Scan only if dirty or empty
+    // 1. Initial Scan Across ALL Roots
     if (this._isTreeDirty || !this._fileTreeObject) {
         if (onProgress) onProgress(10);
-        const allVisibleFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
-        
         this._fileTreeObject = {};
-        for (const filePath of allVisibleFiles) {
-            const parts = filePath.split(/[\\/]/).filter(part => part.length > 0);
+
+        // Helper to inject a path into the hierarchical object
+        const injectPath = (pathInput: string, rootFolder?: vscode.WorkspaceFolder) => {
+            // Safety: Skip paths that contain error messages from UI bugs
+            if (pathInput.includes('Malformed Block') || pathInput.includes('<<<<<<< SEARCH')) return;
+
+            let relPath = '';
+            let targetFolder = rootFolder;
+
+            if (path.isAbsolute(pathInput)) {
+                const uri = vscode.Uri.file(pathInput);
+                targetFolder = vscode.workspace.getWorkspaceFolder(uri);
+                relPath = targetFolder ? vscode.workspace.asRelativePath(uri, false) : path.basename(pathInput);
+            } else {
+                relPath = pathInput;
+            }
+
+            // CRITICAL: If relPath is still an absolute path (meaning asRelativePath failed)
+            // we must manually strip the workspace root to ensure only the project structure is shown.
+            if (path.isAbsolute(relPath) && targetFolder) {
+                relPath = path.relative(targetFolder.uri.fsPath, relPath);
+            }
+
+            const parts = relPath.split(/[\\/]/).filter(p => p.length > 0 && p !== '.' && p !== '..');
+            if (parts.length === 0) return;
+
             let current = this._fileTreeObject;
+
+            // If multi-root, ensure we start under the folder name
+            if (folders.length > 1 && targetFolder) {
+                if (!current[targetFolder.name]) current[targetFolder.name] = {};
+                current = current[targetFolder.name];
+            }
+
             parts.forEach((part, index) => {
                 if (!current[part]) {
-                    current[part] = index === parts.length - 1 ? null : {};
+                    current[part] = (index === parts.length - 1) ? null : {};
                 }
                 if (current[part] !== null) current = current[part];
             });
+        };
+
+        // A. Prioritize files explicitly in context (Guarantees they appear in tree)
+        for (const file of contextFiles) {
+            // Find which root this relative path belongs to
+            const root = folders.find(f => {
+                try {
+                    const stats = fs.statSync(path.join(f.uri.fsPath, file.path));
+                    return true;
+                } catch { return false; }
+            });
+            injectPath(file.path, root);
+        }
+
+        // B. Supplement with visible disk files
+        for (const folder of folders) {
+            const allFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
+            for (const filePath of allFiles) {
+                const uri = vscode.Uri.joinPath(folder.uri, filePath);
+                if (!(this.contextStateProvider as any).isStrictlyIgnored(uri)) {
+                    injectPath(filePath, folder);
+                }
+            }
         }
         this._isTreeDirty = false;
     }
 
-    let tree = '## 🌳 PROJECT STRUCTURE\n\n```text\n';
-    
-    const stateMap = new Map<string, string>();
-    contextFiles.forEach(f => stateMap.set(this.normalize(f.path), f.state));
+    let treeString = '## 🌳 PROJECT STRUCTURE\n\n```text\n';
 
-    // Tree generation using standard box-drawing characters
-    const generateTreeString = (obj: any, prefix: string = '', currentPath: string = ''): string => {
-      if (!obj) return '';
-      let result = '';
+    // 2. Recursive Helper with Root awareness
+    const render = (obj: any, prefix: string = '', currentPath: string = '', rootFolder?: vscode.WorkspaceFolder): string => {
+      if (!obj || typeof obj !== 'object') return '';
+      let out = '';
       const keys = Object.keys(obj).sort((a, b) => {
         const aIsDir = obj[a] !== null;
         const bIsDir = obj[b] !== null;
@@ -2288,48 +2372,51 @@ Based on the objective and the file tree, which files are the most relevant? Ret
       keys.forEach((key, index) => {
         const isLast = index === keys.length - 1;
         const connector = isLast ? '└── ' : '├── ';
-        
-        const fullPath = currentPath ? currentPath + '/' + key : key;
-        const normalizedPath = this.normalize(fullPath);
+
+        let activeRoot = rootFolder;
+        // In multi-root, the top-level keys ARE the folder names
+        if (folders.length > 1 && !rootFolder) {
+            activeRoot = folders.find(f => f.name === key);
+        } else if (folders.length === 1) {
+            activeRoot = folders[0];
+        }
+
+        const isTopLevelHeader = folders.length > 1 && !rootFolder;
+        const subPath = isTopLevelHeader ? '' : (currentPath ? currentPath + '/' + key : key);
         const isDirectory = obj[key] !== null;
-        
+
         let suffix = "";
         let isCollapsed = false;
 
-        if (this.contextStateProvider && workspaceFolder) {
-            const uri = vscode.Uri.joinPath(workspaceFolder.uri, fullPath);
-            const state = isDirectory ? this.contextStateProvider.getStateForUri(uri) : stateMap.get(normalizedPath);
-            
+        if (this.contextStateProvider && activeRoot && !isTopLevelHeader) {
+            const uri = vscode.Uri.joinPath(activeRoot.uri, subPath);
+            const state = this.contextStateProvider.getStateForUri(uri);
+
+            if (state === 'fully-excluded') return;
             if (state === 'collapsed') {
                 isCollapsed = true;
                 suffix = " (Collapsed)";
             } else if (state === 'included') {
-                suffix = " [C]"; // Content Loaded
+                suffix = " [C]";
             } else if (state === 'definitions-only') {
-                suffix = " [D]"; // Definitions Only
+                suffix = " [D]";
             }
         }
 
-        if (isCollapsed) {
-             result += prefix + connector + key + '/' + suffix + '\n';
-             return; 
-        }
-        
-        result += prefix + connector + key + (isDirectory ? '/' : '') + suffix + '\n';
+        out += prefix + connector + key + (isDirectory ? '/' : '') + suffix + '\n';
 
-        if (isDirectory) {
-          const childPrefix = prefix + (isLast ? '    ' : '│   ');
-          result += generateTreeString(obj[key], childPrefix, fullPath);
+        if (isDirectory && !isCollapsed) {
+          out += render(obj[key], prefix + (isLast ? '    ' : '│   '), subPath, activeRoot);
         }
       });
 
-      return result;
+      return out;
     };
 
-    tree += generateTreeString(this._fileTreeObject);
-    tree += '```\n';
+    treeString += render(this._fileTreeObject);
+    treeString += '```\n';
 
-    return tree;
+    return treeString;
   }
 
   private getNoWorkspaceMessage(): string {

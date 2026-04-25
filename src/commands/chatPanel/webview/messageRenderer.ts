@@ -240,6 +240,28 @@ function enablePanZoom(container: HTMLElement) {
  * Renders a visual block indicating a fact has been saved to Project Memory.
  * Now collapsible and action-aware.
  */
+/**
+ * Renders a small interactive button to block decay for a specific memory.
+ */
+function renderReinforceTag(id: string): string {
+    return `
+    <div class="project-memory-block" style="border-left-color: var(--vscode-charts-green); margin: 8px 0;">
+        <div style="display:flex; align-items:center; justify-content:space-between; padding: 8px 12px; background: rgba(15, 157, 88, 0.05);">
+            <div style="display:flex; align-items:center; gap:10px;">
+                <span class="codicon codicon-pulse" style="color:var(--vscode-charts-green)"></span>
+                <span class="memory-summary-text" style="font-size: 10px;">REINFORCE MEMORY: ${sanitizer.sanitize(id)}</span>
+            </div>
+            <button class="code-action-btn apply-btn sync-memory-btn" 
+                    data-action="update" 
+                    data-id="${id}" 
+                    data-importance="100"
+                    title="Refresh this memory to prevent decay">
+                <i class="codicon codicon-zap"></i> Reinforce
+            </button>
+        </div>
+    </div>`;
+}
+
 function renderMemoryTag(action: string, id: string, title: string, content: string): string {
     const isDelete = action === 'delete';
     const actionLabel = isDelete ? 'REMOVED FROM' : (action === 'update' ? 'UPDATED IN' : 'ADDED TO');
@@ -443,11 +465,15 @@ function startEdit(messageDiv: HTMLElement, messageId: string, role: string) {
     toolbar.className = 'rich-input-toolbar';
     toolbar.style.borderRadius = '4px 4px 0 0';
     toolbar.innerHTML = `
-        <button class="toolbar-tool" data-wrap-type="code"><i class="codicon codicon-code"></i></button>
+        <button class="toolbar-tool" data-wrap-type="code" title="Code Block"><i class="codicon codicon-code"></i></button>
         <button class="toolbar-tool" id="edit-add-image" title="Add Image"><i class="codicon codicon-file-media"></i></button>
         <div class="toolbar-separator"></div>
-        <button class="toolbar-tool" data-wrap-type="bold"><i class="codicon codicon-bold"></i></button>
-        <button class="toolbar-tool" data-wrap-type="italic"><i class="codicon codicon-italic"></i></button>
+        <button class="toolbar-tool" data-wrap-type="aider-search" title="Aider SEARCH"><i class="codicon codicon-search"></i><span>SEARCH</span></button>
+        <button class="toolbar-tool" data-wrap-type="aider-sep" title="Aider Separator"><i class="codicon codicon-git-compare"></i><span>SEP</span></button>
+        <button class="toolbar-tool" data-wrap-type="aider-replace" title="Aider REPLACE"><i class="codicon codicon-replace"></i><span>REPLACE</span></button>
+        <div class="toolbar-separator"></div>
+        <button class="toolbar-tool" data-wrap-type="bold" title="Bold"><i class="codicon codicon-bold"></i></button>
+        <button class="toolbar-tool" data-wrap-type="italic" title="Italic"><i class="codicon codicon-italic"></i></button>
     `;
 
     const editorContainer = document.createElement('div');
@@ -646,8 +672,15 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
 
                 if (headerText.includes(':')) {
                     const parts = headerText.split(':');
-                    const prefix = parts[0].toLowerCase();
-                    pathStr = parts.slice(1).join(':').trim();
+                    let prefix = parts[0].toLowerCase();
+                    
+                    // Handle "language:typescript:path" case
+                    if ((prefix === 'language' || prefix === 'lang') && parts.length > 2) {
+                        prefix = parts[1].toLowerCase();
+                        pathStr = parts.slice(2).join(':').trim();
+                    } else {
+                        pathStr = parts.slice(1).join(':').trim();
+                    }
                     if (prefix === 'insert') type = 'insert';
                     else if (prefix === 'replace') type = 'replace';
                     else if (prefix === 'diff') type = 'diff';
@@ -1394,6 +1427,52 @@ function renderAddFilesBlock(params: any, messageId: string): string {
     </div>`;
 }
 
+function renderImageEditBlock(params: any, messageId: string): string {
+    const blockId = `img-edit-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+    const paths = Array.isArray(params.paths) ? params.paths : [];
+    const prompt = params.prompt || params.instructions || "";
+    const outPath = params.output_path || (paths.length > 0 ? paths[0] : "edited_asset.png");
+
+    const folder = outPath.includes('/') ? outPath.substring(0, outPath.lastIndexOf('/')) : '.';
+    const filename = outPath.includes('/') ? outPath.substring(outPath.lastIndexOf('/') + 1) : outPath;
+
+    const sourcesHtml = paths.map(p => `<div class="expansion-file-item"><span class="codicon codicon-file-media"></span> <span>${sanitizer.sanitize(p)}</span></div>`).join('');
+
+    return `
+    <div class="generation-block" id="${blockId}">
+        <div class="generation-header">
+            <span class="summary-lang-label"><span class="codicon codicon-wand"></span> Propose Image Edit</span>
+            <div class="code-actions">
+                <button class="code-action-btn apply-btn generate-image-btn" 
+                    data-prompt="${encodeURIComponent(prompt)}" 
+                    data-path="${encodeURIComponent(outPath)}" 
+                    data-preview-id="prev-${blockId}"
+                    title="Run Image Edit">
+                    <span class="codicon codicon-sparkle"></span> Apply Edit
+                </button>
+            </div>
+        </div>
+        <div style="display:flex; gap:10px; padding: 8px 12px; background: var(--vscode-editor-inactiveSelectionBackground); border-bottom: 1px solid var(--vscode-widget-border);">
+            <div style="flex:1;">
+                <label style="font-size:9px; font-weight:bold; opacity:0.7; display:block;">TARGET FOLDER</label>
+                <input type="text" class="asset-folder-input" value="${sanitizer.sanitize(folder)}" style="width:100%; background:transparent; border:none; color:var(--vscode-foreground); font-size:11px;">
+            </div>
+            <div style="flex:2;">
+                <label style="font-size:9px; font-weight:bold; opacity:0.7; display:block;">OUTPUT FILENAME</label>
+                <input type="text" class="asset-name-input" value="${sanitizer.sanitize(filename)}" style="width:100%; background:transparent; border:none; color:var(--vscode-foreground); font-size:11px; font-weight:bold;">
+            </div>
+        </div>
+        <div class="generation-body">
+            <p style="font-size:11px; opacity:0.8; margin-bottom:8px;"><strong>Instruction:</strong> ${sanitizer.sanitize(prompt)}</p>
+            <div style="font-size:9px; font-weight:bold; opacity:0.5; margin-bottom:4px; text-transform:uppercase;">Source Assets</div>
+            <div class="expansion-file-list" style="margin-bottom:12px;">
+                ${sourcesHtml}
+            </div>
+            <div id="prev-${blockId}" class="image-preview-zone" style="margin-top: 10px; display: flex; justify-content: center; min-height: 20px;"></div>
+        </div>
+    </div>`;
+}
+
 function renderFileOpBlock(type: 'delete' | 'move' | 'prune', params: any, messageId: string): string {
     const blockId = `file-op-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
     let title = "";
@@ -1557,6 +1636,30 @@ function renderFormBlock(xmlContent: string, messageId: string): string {
     </div>`;
 }
 
+function renderMilestoneCard(attrs: any): string {
+    return `
+    <div class="milestone-card">
+        <div class="milestone-card-header">
+            <span class="codicon codicon-bookmark"></span>
+            <h3>Milestone: ${sanitizer.sanitize(attrs.title)}</h3>
+        </div>
+        <div class="milestone-body">
+            <div class="milestone-section win">
+                <div class="milestone-section-title"><span class="codicon codicon-check"></span> Achievements</div>
+                <div class="milestone-section-content">${sanitizer.sanitize(attrs.achievements)}</div>
+            </div>
+            <div class="milestone-section hurdle">
+                <div class="milestone-section-title"><span class="codicon codicon-warning"></span> Challenges & Hurdles</div>
+                <div class="milestone-section-content">${sanitizer.sanitize(attrs.challenges)}</div>
+            </div>
+            <div class="milestone-section fix">
+                <div class="milestone-section-title"><span class="codicon codicon-tools"></span> Applied Solutions</div>
+                <div class="milestone-section-content">${sanitizer.sanitize(attrs.solutions)}</div>
+            </div>
+        </div>
+    </div>`;
+}
+
 function renderProcessingBlock(rawContent: string, isClosed: boolean): string {
     const lines = rawContent.trim().split('\n').filter(l => l.trim().length > 0);
     const displayTitle = lines.length > 0 ? lines[lines.length - 1].replace(/^\*\s*/, '') : "Processing...";
@@ -1580,31 +1683,88 @@ function renderProcessingBlock(rawContent: string, isClosed: boolean): string {
     </div>`;
 }
 
-function renderImageGenBlock(prompt: string, path: string, width?: string, height?: string): string {
-    const safePrompt = encodeURIComponent(prompt);
-    const safePath = encodeURIComponent(path);
-    const buttonId = `gen-btn-${Date.now()}${Math.random().toString(36).substr(2, 5)}`;
-    
-    // FIX: Replaced onclick="..." with data attributes and a class for event delegation
+function renderImageResultBlock(path: string, messageId: string): string {
+    const id = `img-res-${messageId}-${Math.random().toString(36).substr(2, 5)}`;
+    const safePath = sanitizer.sanitize(path);
+
+    // Trigger the path resolution as soon as the HTML is parsed
+    setTimeout(() => {
+        vscode.postMessage({
+            command: 'resolveImageUri',
+            path: path,
+            targetId: id
+        });
+    }, 0);
+
     return `
     <div class="generation-block">
         <div class="generation-header">
-            <span class="summary-lang-label"><span class="codicon codicon-device-camera"></span> Propose Image Generation ${path ? ': ' + path : ''}</span>
+            <span class="summary-lang-label"><span class="codicon codicon-file-media"></span> Image: ${safePath}</span>
+            <div class="code-actions">
+                <button class="code-action-btn copy-asset-path-btn" data-path="${safePath}" title="Copy Path"><i class="codicon codicon-copy"></i></button>
+                <button class="code-action-btn save-asset-as-btn" data-path="${safePath}" title="Save As..."><i class="codicon codicon-save"></i></button>
+                <button class="code-action-btn edit-asset-btn" data-target-id="${id}" title="Edit Visual"><i class="codicon codicon-edit"></i></button>
+            </div>
+        </div>
+        <div class="generation-body" style="display:flex; justify-content:center; background: #000; padding: 10px; border-radius: 0 0 6px 6px;">
+            <div id="${id}" class="image-result-container">
+                <div class="spinner"></div> <span style="font-size:10px; opacity:0.7;">Loading local asset...</span>
+            </div>
+        </div>
+    </div>`;
+}
+
+function renderImageGenBlock(prompt: string, path: string, width?: string, height?: string): string {
+    const safePrompt = encodeURIComponent(prompt);
+    const safePath = encodeURIComponent(path);
+    const uniqueId = `gen-${Math.random().toString(36).substr(2, 9)}`;
+    const buttonId = `btn-${uniqueId}`;
+    const previewId = `prev-${uniqueId}`;
+
+    // Trigger immediate resolution to see if the file already exists on disk
+    setTimeout(() => {
+        vscode.postMessage({
+            command: 'resolveImageUri',
+            path: path,
+            targetId: previewId
+        });
+    }, 50);
+
+    const folder = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '.';
+    const filename = path.includes('/') ? path.substring(path.lastIndexOf('/') + 1) : path;
+
+    return `
+    <div class="generation-block" id="block-${uniqueId}">
+        <div class="generation-header">
+            <span class="summary-lang-label"><span class="codicon codicon-device-camera"></span> Propose Image Asset</span>
             <div class="code-actions">
                 <button id="${buttonId}" class="code-action-btn apply-btn generate-image-btn" 
                     data-prompt="${safePrompt}" 
                     data-path="${safePath}" 
                     data-width="${width || ''}" 
                     data-height="${height || ''}"
+                    data-preview-id="${previewId}"
                     title="Generate Image with AI">
                     <span class="codicon codicon-sparkle"></span> Generate
                 </button>
             </div>
         </div>
+        <div style="display:flex; gap:10px; padding: 8px 12px; background: var(--vscode-editor-inactiveSelectionBackground); border-bottom: 1px solid var(--vscode-widget-border);">
+            <div style="flex:1;">
+                <label style="font-size:9px; font-weight:bold; opacity:0.7; display:block;">FOLDER</label>
+                <input type="text" class="asset-folder-input" value="${sanitizer.sanitize(folder)}" style="width:100%; background:transparent; border:none; color:var(--vscode-foreground); font-size:11px;">
+            </div>
+            <div style="flex:2;">
+                <label style="font-size:9px; font-weight:bold; opacity:0.7; display:block;">FILENAME</label>
+                <input type="text" class="asset-name-input" value="${sanitizer.sanitize(filename)}" style="width:100%; background:transparent; border:none; color:var(--vscode-foreground); font-size:11px; font-weight:bold;">
+            </div>
+        </div>
         <div class="generation-body">
             <p><strong>Prompt:</strong> ${sanitizer.sanitize(prompt)}</p>
             ${width || height ? `<p style="font-size: 0.85em; opacity: 0.8;"><span class="codicon codicon-screen-full" style="font-size: 10px;"></span> Requested Size: ${width || 'auto'} x ${height || 'auto'}</p>` : ''}
-            <div class="image-preview-zone" style="margin-top: 10px;"></div>
+            <div id="${previewId}" class="image-preview-zone" style="margin-top: 10px; display: flex; justify-content: center; min-height: 20px;">
+                <!-- Image will be injected here if file exists or after generation -->
+            </div>
         </div>
     </div>`;
 }
@@ -1696,6 +1856,15 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
             // --- IMAGE GENERATION TAG PARSING ---
             const images: { html: string, start: number, end: number }[] = [];
+
+            // --- NEW: Image Result Parser (Already Exists on Disk) ---
+            const resRegex = /<image_result\s+path=["']([^"']*)["']\s*\/>/gi;
+            let resMatch;
+            while ((resMatch = resRegex.exec(contentWithoutThoughts)) !== null) {
+                const imgHtml = renderImageResultBlock(resMatch[1], messageId);
+                images.push({ html: imgHtml, start: resMatch.index, end: resMatch.index + resMatch[0].length });
+            }
+
             const imgRegex = /<generate_image\s+([^>]*?)>([\s\S]*?)<\/generate_image>/gi;
             let imgMatch;
             while ((imgMatch = imgRegex.exec(contentWithoutThoughts)) !== null) {
@@ -1721,6 +1890,15 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
             // --- PROJECT MEMORY TAG PARSING ---
             const memTags: { html: string, start: number, end: number }[] = [];
+
+            // --- REINFORCE TAG PARSING ---
+            const reinfRegex = /<memory_reinforce\s+id=["']([^"']*)["']\s*\/>/gi;
+            let reinfMatch;
+            while ((reinfMatch = reinfRegex.exec(contentWithoutThoughts)) !== null) {
+                const html = renderReinforceTag(reinfMatch[1]);
+                memTags.push({ html, start: reinfMatch.index, end: reinfMatch.index + reinfMatch[0].length });
+            }
+
             const pMemRegex = /<project_memory\s+([^>]*?)>([\s\S]*?)<\/project_memory>/gi;
             let pMemMatch;
             while ((pMemMatch = pMemRegex.exec(contentWithoutThoughts)) !== null) {
@@ -1747,6 +1925,18 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 forms.push({ html, start: formMatch.index, end: formMatch.index + formMatch[0].length });
             }
 
+            const milestones: { html: string, start: number, end: number }[] = [];
+            const milestoneRegex = /<milestone\s+([^>]*?)\s*\/>/gi;
+            let mileMatch;
+            while ((mileMatch = milestoneRegex.exec(contentWithoutThoughts)) !== null) {
+                const attrStr = mileMatch[1];
+                const attrs: any = {};
+                const attrRegex = /(\w+)=["']([^"']*)["']/g;
+                let m;
+                while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
+                milestones.push({ html: renderMilestoneCard(attrs), start: mileMatch.index, end: mileMatch.index + mileMatch[0].length });
+            }
+
             const procRegex = /<processing\b[^>]*>([\s\S]*?)(?:<\/processing>|$)/gi;
             let procMatch;
             while ((procMatch = procRegex.exec(contentWithoutThoughts)) !== null) {
@@ -1757,7 +1947,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             }
 
             const fileOps: { html: string, start: number, end: number }[] = [];
-            const opRegex = /<(move_file|delete_file|add_files_to_context|remove_files_from_context)\s+([^>]*?)\s*\/>/gi;
+            const opRegex = /<(move_file|delete_file|add_files_to_context|remove_files_from_context|edit_image_asset)\s+([^>]*?)\s*(?:\/>|>(.*?)<\/edit_image_asset>)/gi;
             let opMatch;
             while ((opMatch = opRegex.exec(contentWithoutThoughts)) !== null) {
                 const tagName = opMatch[1].toLowerCase();
@@ -1781,12 +1971,14 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     }
                 }
 
-                let opType: 'delete' | 'move' | 'prune' | 'add_ctx' = 'delete';
+                let opType: 'delete' | 'move' | 'prune' | 'add_ctx' | 'edit_img' = 'delete' ;
                 if (tagName === 'move_file') opType = 'move';
                 if (tagName === 'remove_files_from_context') opType = 'prune';
                 if (tagName === 'add_files_to_context') opType = 'add_ctx';
+                if (tagName === 'edit_image_asset') opType = 'edit_img';
 
-                const opHtml = opType === 'add_ctx' ? renderAddFilesBlock(attrs, messageId) : renderFileOpBlock(opType, attrs, messageId);
+                const opHtml = opType === 'add_ctx' ? renderAddFilesBlock(attrs, messageId) : 
+                               (opType === 'edit_img' ? renderImageEditBlock(attrs, messageId) : renderFileOpBlock(opType as any, attrs, messageId));
                 fileOps.push({ html: opHtml, start: opMatch.index, end: opMatch.index + opMatch[0].length });
             }
 
@@ -1813,6 +2005,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 ...fileOps.map(o => ({ start: o.start, end: o.end, html: o.html, elementType: 'fileOp' as const })),
                 ...memTags.map(m => ({ start: m.start, end: m.end, html: m.html, elementType: 'projectMemory' as const })),
                 ...forms.map(f => ({ start: f.start, end: f.end, html: f.html, elementType: 'form' as const })),
+                ...milestones.map(m => ({ start: m.start, end: m.end, html: m.html, elementType: 'milestone' as const })),
                 ...debugReports.map(d => ({ start: d.start, end: d.end, html: d.html, elementType: 'debugReport' as const })),
                 ...processingBlocks.map(p => ({ start: p.start, end: p.end, html: p.html, elementType: 'processing' as const }))
             ].sort((a, b) => a.start - b.start);
@@ -1846,7 +2039,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 }
 
                 // B. Render the UI element (Code Block or Skill or Image or AddFiles or FileOp or DebugReport or ProjectMemory or Processing or Form)
-                const uiTypes = ['skill', 'image', 'addFiles', 'fileOp', 'projectMemory', 'debugReport', 'processing', 'form'];
+                const uiTypes = ['skill', 'image', 'addFiles', 'fileOp', 'projectMemory', 'debugReport', 'processing', 'form', 'milestone'];
                 if (uiTypes.includes(el.elementType)) {
                     const uiDiv = document.createElement('div');
                     uiDiv.innerHTML = (el as any).html;
@@ -1868,8 +2061,8 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 const codeOnly = lines.length >= 2 ? lines.slice(1, -1).join('\n') : "";
 
                 // Permit zero or one newline after SEARCH and before REPLACE markers
-                const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======[\r\n]*([\s\S]*?)[\r\n]*>>>>>>> REPLACE/gm;
-                const aiderMatches = [...codeOnly.matchAll(aiderRegex)];
+                const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======[\r\n]*([\s\S]*?)[\r\n]*>>>>>>> REPLACE/g;
+                const aiderMatches =[...codeOnly.matchAll(aiderRegex)];
                 const isAider = aiderMatches.length > 0;
                 
                 // MALFORMED DETECTION: Check if block contains bits of Aider but isn't valid
@@ -2758,6 +2951,7 @@ export function updateContext(contextText: string, files: string[] = [], skills:
 
     const isMuted = state.capabilities?.disableProjectContext;
     const isAgentActive = state.capabilities?.agentMode === true;
+    const currentModel = state.currentModelName;
     
     const themeClass = isAgentActive ? 'agent-mode-bubble' : '';
     const muteClass = isMuted ? 'muted-bubble' : '';
@@ -2775,6 +2969,41 @@ export function updateContext(contextText: string, files: string[] = [], skills:
         } catch { return raw; }
     };
 
+    const workspaceFolders = (window as any).workspaceFolders || [];
+    const selectedFolders = state.capabilities?.selectedFolders || [];
+
+    const renderWorkspaceSelector = () => {
+        if (workspaceFolders.length <= 1) return '';
+        
+        const folderItems = workspaceFolders.map(f => {
+            const isChecked = selectedFolders.length === 0 || selectedFolders.includes(f.uri);
+            return `
+                <label class="workspace-item">
+                    <input type="checkbox" class="ws-checkbox" value="${f.uri}" ${isChecked ? 'checked' : ''}>
+                    <span class="ws-name" title="${f.uri}">${f.name}</span>
+                </label>
+            `;
+        }).join('');
+
+        return `
+        <div class="workspace-scope-selector">
+            <div class="ws-selector-header">
+                <span class="ws-title"><i class="codicon codicon-root-folder"></i> Workspace Scope</span>
+                <div class="ws-bulk-actions">
+                    <button id="ws-select-all" class="ws-action-btn">All</button>
+                    <button id="ws-select-none" class="ws-action-btn">None (Regular LLM)</button>
+                </div>
+            </div>
+            <div class="ws-folder-list">
+                ${folderItems}
+            </div>
+        </div>`;
+    };
+
+    // Logic for segmented bar in header
+    const tokenParts = state.lastContextData?.segments || { system: 0, files: 0, history: 0, images: 0 };
+    const total = Math.max(tokenParts.system + tokenParts.files + tokenParts.history + tokenParts.images, 1);
+
     const innerHTML = `
     <div class="message special-zone-message context-message ${themeClass} ${muteClass}">
         <div class="message-avatar">
@@ -2783,27 +3012,12 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                 : '<span class="codicon codicon-library"></span>'}
         </div>
         <div class="message-body">
-            <div class="message-header" style="display: flex; justify-content: space-between; align-items: flex-start; width: 100%; margin-bottom: 10px; flex-wrap: wrap; gap: 10px;">
-                <div style="display:flex; flex-direction:column; gap:4px; min-width: 180px;">
-                    <div style="display:flex; align-items:center; gap:8px;">
-                        <span class="role-name">Project Context</span>
-                        <div id="status-label" class="status-label visible" style="background:transparent; padding:0; margin:0; font-weight:normal; opacity:0.7;">
-                            <div id="status-spinner" class="spinner" style="display:none; width:10px; height:10px;"></div>
-                            <span id="status-text" style="font-size:10px;">Ready</span>
-                        </div>
-                    </div>
-                    <div class="token-progress" style="width: 100%; max-width: 200px; margin-top: 2px;">
-                        <div class="token-progress-container" style="height: 3px;">
-                            <div class="token-progress-bar" id="token-progress-bar"></div>
-                        </div>
-                        <div id="context-status-container" style="display: flex; align-items: center; gap: 4px; font-size: 10px; opacity: 0.8;">
-                            <span id="token-count-label"></span>
-                            <button id="cancel-tokens-btn" class="icon-btn" style="padding:0; font-size: 10px; display: none;" title="Stop"><i class="codicon codicon-debug-stop"></i></button>
-                            <button id="refresh-context-btn" class="icon-btn" style="padding:0; font-size: 10px;" title="Refresh"><i class="codicon codicon-refresh"></i></button>
-                        </div>
-                    </div>
+            <div class="message-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 10px; flex-wrap: wrap; gap: 10px;">
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <span class="role-name">Project Context</span>
+                    ${state.lastContextData?.images?.length ? `<div class="mode-badge" style="background:var(--vscode-charts-orange); color:white; font-size:9px; padding:1px 6px; height:14px;"><i class="codicon codicon-device-camera" style="font-size:9px;"></i> Images (${state.lastContextData.images.length})</div>` : ''}
                 </div>
-                <div style="display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-start; flex: 1;">
+                <div style="display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; flex: 1;">
                     <button id="view-full-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="View Full Context and Structure">
                         <span class="codicon codicon-book"></span> View
                     </button>
@@ -2845,6 +3059,7 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                 </div>
             </div>
             <div class="message-content">
+                ${renderWorkspaceSelector()}
                 <details class="info-collapsible" style="margin-bottom: 6px; border-left: 4px solid var(--vscode-charts-purple);">
                     <summary>Team Technical Briefing</summary>
                     <div class="collapsible-content">
@@ -3146,6 +3361,32 @@ export function updateContext(contextText: string, files: string[] = [], skills:
         });
     }
 
+    // Workspace Selector Logic
+    const container = dom.contextContainer;
+    if (container) {
+        container.addEventListener('change', (e) => {
+            const target = e.target as HTMLInputElement;
+            if (target.classList.contains('ws-checkbox')) {
+                const checked = Array.from(container.querySelectorAll('.ws-checkbox:checked')).map((el: any) => el.value);
+                vscode.postMessage({ 
+                    command: 'updateDiscussionCapabilitiesPartial', 
+                    partial: { selectedFolders: checked } 
+                });
+            }
+        });
+
+        container.addEventListener('click', (e) => {
+            const target = e.target as HTMLElement;
+            if (target.id === 'ws-select-all') {
+                const all = Array.from(container.querySelectorAll('.ws-checkbox')).map((el: any) => el.value);
+                vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { selectedFolders: [] } }); // Empty = All
+            }
+            if (target.id === 'ws-select-none') {
+                vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { selectedFolders: ['__none__'] } });
+            }
+        });
+    }
+
     const refreshCtxBtn = document.getElementById('refresh-context-btn');
     if (refreshCtxBtn) {
         refreshCtxBtn.addEventListener('click', () => {
@@ -3282,8 +3523,38 @@ function showBulkProcessModal(files: string[]) {
     };
 }
 /**
- * Renders a single plan structure.
+ * Renders tool parameters as a structured form instead of raw JSON.
  */
+function renderFormFields(params: any): string {
+    if (!params || typeof params !== 'object') return '';
+
+    let html = '<div class="task-form">';
+    for (const [key, value] of Object.entries(params)) {
+        // Skip internal or empty metadata
+        if (key.startsWith('_')) continue;
+
+        const label = key.replace(/_/g, ' ').toUpperCase();
+        let displayValue = '';
+
+        if (Array.isArray(value)) {
+            displayValue = value.map(v => `<div style="margin-bottom:2px;">• ${sanitizer.sanitize(String(v))}</div>`).join('');
+        } else if (typeof value === 'object' && value !== null) {
+            displayValue = `<pre style="margin:0; font-size:11px;">${sanitizer.sanitize(JSON.stringify(value, null, 2))}</pre>`;
+        } else {
+            displayValue = sanitizer.sanitize(String(value));
+        }
+
+        html += `
+            <div class="task-form-row">
+                <div class="task-form-label">${label}</div>
+                <div class="task-form-value">${displayValue}</div>
+            </div>
+        `;
+    }
+    html += '</div>';
+    return html;
+}
+
 function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
     let investigationHtml = '';
     if (plan.investigation && plan.investigation.length > 0) {
@@ -3325,12 +3596,35 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
         </div>`;
     }
 
-    let scratchpadHtml = plan.scratchpad ? `
-        <div class="plan-scratchpad" style="margin-top:10px;">
-            <details ${isPrevious ? '' : 'open'}>
-                <summary class="scratchpad-header"><span class="codicon codicon-lightbulb"></span> Process / Thoughts</summary>
-                <div class="scratchpad-content">${sanitizer.sanitize(marked.parse(plan.scratchpad) as string, SANITIZE_CONFIG)}</div>
-            </details>
+    let scratchpadHtml = '';
+    if (plan.observations && plan.observations.length > 0) {
+        const obsItems = plan.observations.map((obs: string) => 
+            `<div class="observation-step" style="padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.05); font-size: 11px;">
+                <span class="codicon codicon-eye" style="font-size:10px; margin-right:8px; opacity:0.6;"></span>
+                ${sanitizer.sanitize(obs)}
+            </div>`).join('');
+
+        scratchpadHtml = `
+            <div class="plan-scratchpad" style="margin-top:10px; border-left: 3px solid var(--vscode-charts-orange);">
+                <details ${isPrevious ? '' : 'open'}>
+                    <summary class="scratchpad-header"><span class="codicon codicon-history"></span> Technical Remarks</summary>
+                    <div class="scratchpad-content" style="max-height: 300px; overflow-y: auto;">${obsItems}</div>
+                </details>
+            </div>`;
+    } else if (plan.scratchpad) {
+        scratchpadHtml = `
+            <div class="plan-scratchpad" style="margin-top:10px; border-left: 3px solid var(--vscode-charts-orange);">
+                <details ${isPrevious ? '' : 'open'}>
+                    <summary class="scratchpad-header"><span class="codicon codicon-history"></span> Architect Notes</summary>
+                    <div class="scratchpad-content" style="padding: 8px 12px; font-size: 11px;">${sanitizer.sanitize(plan.scratchpad)}</div>
+                </details>
+            </div>`;
+    }
+
+    let subGoalHtml = plan.current_sub_goal ? `
+        <div style="margin: 12px 12px 0 12px; padding: 10px; background: rgba(0, 122, 204, 0.1); border: 1px solid var(--vscode-charts-blue); border-radius: 6px;">
+            <div style="font-size: 9px; font-weight: 900; opacity: 0.6; text-transform: uppercase; margin-bottom: 4px;">🎯 Next Objective</div>
+            <div style="font-size: 12px; font-weight: 600;">${sanitizer.sanitize(plan.current_sub_goal)}</div>
         </div>` : '';
 
     function getStatusIcon(status: string) {
@@ -3380,13 +3674,15 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
                     <div class="task-result" style="margin-bottom: 4px;">
                         <details ${task.status === 'in_progress' || task.status === 'failed' ? 'open' : ''}>
                             <summary class="task-result-summary" style="opacity:0.7;">Task Details & Parameters</summary>
-                            <div class="task-result-box" style="border-style: dashed; opacity: 0.9;">
-                                <div style="font-size: 11px; font-weight: bold; color: var(--vscode-descriptionForeground); margin-bottom: 6px;">
-                                    TOOL: <span style="color: var(--vscode-textLink-foreground);">${task.action}</span>
-                                    ${task.model ? `<span style="margin-left: 8px; opacity: 0.7;">🤖 ${sanitizer.sanitize(task.model)}</span>` : ''}
-                                    ${task.agent_skills && task.agent_skills.length > 0 ? `<span style="margin-left: 8px; opacity: 0.7;">💡 ${sanitizer.sanitize(task.agent_skills.join(', '))}</span>` : ''}
-                                </div>
-                                <pre style="margin:0; padding:4px; background:var(--vscode-editor-inactiveSelectionBackground); border-radius:4px;"><code>${sanitizer.sanitize(JSON.stringify(task.parameters, null, 2))}</code></pre>
+                            <div class="task-result-box" style="border-style: dashed; opacity: 0.9; padding: 12px;">
+                                ${task.model || (task.agent_skills && task.agent_skills.length > 0) ? `
+                                <div style="display:flex; gap:8px; margin-bottom: 10px; opacity: 0.7;">
+                                    ${task.model ? `<span class="tool-badge">🤖 ${sanitizer.sanitize(task.model)}</span>` : ''}
+                                    ${task.agent_skills && task.agent_skills.length > 0 ? `<span class="tool-badge">💡 ${task.agent_skills.length} Skills</span>` : ''}
+                                </div>` : ''}
+
+                                ${renderFormFields(task.parameters)}
+
                                 ${editHtml}
                             </div>
                         </details>
@@ -3466,22 +3762,80 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
 export function displayPlan(plan: any) {
     if(!dom.agentPlanZone) return; 
     
+    // 1. Reset Container and visibility
+    dom.agentPlanZone.innerHTML = '';
+    
     if (!plan) {
-        dom.agentPlanZone.innerHTML = '';
         dom.agentPlanZone.classList.remove('visible');
         dom.planResizer.classList.remove('visible');
         return;
     }
 
-    dom.agentPlanZone.innerHTML = '';
     dom.agentPlanZone.classList.add('visible');
     dom.planResizer.classList.add('visible');
+
+    // 2. CONSOLIDATED HUD (Brain Bar)
+    if (plan.metrics) {
+        const m = plan.metrics;
+        const total = Math.max(m.total, 1);
+        const pScratch = (m.scratchpad / total) * 100;
+        const pMem = (m.memory / total) * 100;
+        const pHist = (m.history / total) * 100;
+
+        const hud = document.createElement('div');
+        hud.className = 'brain-bar-container';
+        hud.innerHTML = `
+            <div class="brain-bar-label">
+                <span>Agent Cognitive Load</span>
+                <span>${(m.total / 1024).toFixed(1)} KB</span>
+            </div>
+            <div class="brain-bar">
+                <div class="brain-segment segment-scratchpad" style="width: ${pScratch}%" title="Thoughts: ${m.scratchpad} chars" onclick="vscode.postMessage({command:'executeLollmsCommand', details:{command:'lollms-vs-coder.peekAgentBrain', params:'scratchpad'}})"></div>
+                <div class="brain-segment segment-memory" style="width: ${pMem}%" title="Working Memory: ${m.memory} chars" onclick="vscode.postMessage({command:'executeLollmsCommand', details:{command:'lollms-vs-coder.peekAgentBrain', params:'memory'}})"></div>
+                <div class="brain-segment segment-history" style="width: ${pHist}%" title="Mission History: ${m.history} chars" onclick="vscode.postMessage({command:'executeLollmsCommand', details:{command:'lollms-vs-coder.peekAgentBrain', params:'history'}})"></div>
+            </div>
+            <div class="brain-legend">
+                <div class="legend-item" onclick="vscode.postMessage({command:'executeLollmsCommand', details:{command:'lollms-vs-coder.peekAgentBrain', params:'scratchpad'}})">
+                    <div class="dot segment-scratchpad"></div> Thoughts
+                </div>
+                <div class="legend-item" onclick="vscode.postMessage({command:'executeLollmsCommand', details:{command:'lollms-vs-coder.peekAgentBrain', params:'memory'}})">
+                    <div class="dot segment-memory"></div> Memory
+                </div>
+                <div class="legend-item" onclick="vscode.postMessage({command:'executeLollmsCommand', details:{command:'lollms-vs-coder.peekAgentBrain', params:'history'}})">
+                    <div class="dot segment-history"></div> History
+                </div>
+            </div>
+        `;
+        dom.agentPlanZone.appendChild(hud);
+    }
+
+    // 3. PROGRESS TRACKER (Checklist)
+    if (plan.milestones && plan.milestones.length > 0) {
+        const tracker = document.createElement('div');
+        tracker.className = 'agent-progress-tracker';
+        tracker.innerHTML = plan.milestones.map((m: any) => {
+            const icon = m.status === 'completed' ? 'pass-filled' : (m.status === 'active' ? 'play' : 'circle-outline');
+            return `
+                <div class="milestone-item ${m.status}">
+                    <span class="milestone-icon"><i class="codicon codicon-${icon}"></i></span>
+                    <span class="milestone-label">${m.label}</span>
+                </div>
+            `;
+        }).join('');
+        dom.agentPlanZone.appendChild(tracker);
+    }
 
     // 1. CREATE THE STICKY TOOLBAR FIRST
     const globalActions = document.createElement('div');
     globalActions.className = 'plan-global-actions';
-    
-    const copyLogBtn = createButton('Copy Full Experience Log', 'codicon-copy', () => {
+    globalActions.style.gap = '8px';
+
+    const exportBtn = createButton('Export Report', 'codicon-export', () => {
+        vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.exportAgentTimeline' } });
+    }, 'code-action-btn');
+    globalActions.appendChild(exportBtn);
+
+    const copyLogBtn = createButton('Copy Log', 'codicon-copy', () => {
         const text = formatPlanForCopy(plan);
         vscode.postMessage({ command: 'copyToClipboard', text: text });
         

@@ -208,7 +208,7 @@ export class CustomActionModal {
             <script>
                 const vscode = acquireVsCodeApi();
                 let currentType = 'generation';
-                
+
                 function setType(type) {
                     currentType = type;
                     document.getElementById('btn-modify').classList.toggle('active', type === 'generation');
@@ -220,27 +220,41 @@ export class CustomActionModal {
                 const useContextCheckbox = document.getElementById('use-context');
                 const saveTitleGroup = document.getElementById('save-title-group');
                 const saveTitleInput = document.getElementById('save-title');
-                
+                const applyBtn = document.getElementById('apply-btn');
+
                 // Focus the textarea immediately
                 promptInput.focus();
 
                 saveCheckbox.addEventListener('change', () => {
                     saveTitleGroup.style.display = saveCheckbox.checked ? 'block' : 'none';
-                    if(saveCheckbox.checked) saveTitleInput.focus();
+                    if(saveCheckbox.checked) {
+                        saveTitleInput.focus();
+                    }
                 });
 
-                document.getElementById('apply-btn').addEventListener('click', () => {
-                    const prompt = promptInput.value;
+                applyBtn.addEventListener('click', () => {
+                    const prompt = promptInput.value.trim();
                     const save = saveCheckbox.checked;
                     const useContext = useContextCheckbox.checked;
-                    const title = saveTitleInput.value;
+                    const title = saveTitleInput.value.trim();
 
-                    if (!prompt.trim()) {
-                        return;
+                    let hasError = false;
+
+                    if (!prompt) {
+                        promptInput.style.borderColor = 'var(--vscode-errorForeground)';
+                        hasError = true;
+                    } else {
+                        promptInput.style.borderColor = '';
                     }
+
                     if (save && !title) {
-                        return;
+                        saveTitleInput.style.borderColor = 'var(--vscode-errorForeground)';
+                        hasError = true;
+                    } else {
+                        saveTitleInput.style.borderColor = '';
                     }
+
+                    if (hasError) return;
 
                     vscode.postMessage({ 
                         command: 'submit', 
@@ -255,46 +269,8 @@ export class CustomActionModal {
                 // Support Ctrl+Enter to submit
                 promptInput.addEventListener('keydown', (e) => {
                     if (e.ctrlKey && e.key === 'Enter') {
-                        document.getElementById('apply-btn').click();
+                        applyBtn.click();
                     }
-                });
-            </script>
-                const vscode = acquireVsCodeApi();
-                
-                const promptInput = document.getElementById('prompt');
-                const saveCheckbox = document.getElementById('save-prompt');
-                const useContextCheckbox = document.getElementById('use-context');
-                const saveTitleGroup = document.getElementById('save-title-group');
-                const saveTitleInput = document.getElementById('save-title');
-                
-                saveCheckbox.addEventListener('change', () => {
-                    saveTitleGroup.style.display = saveCheckbox.checked ? 'block' : 'none';
-                });
-
-                document.getElementById('apply-btn').addEventListener('click', () => {
-                    const prompt = promptInput.value;
-                    const actionType = document.querySelector('input[name="actionType"]:checked').value;
-                    const save = saveCheckbox.checked;
-                    const useContext = useContextCheckbox.checked;
-                    const title = saveTitleInput.value;
-
-                    if (!prompt) {
-                        vscode.postMessage({ command: 'error', message: 'Prompt cannot be empty.' });
-                        return;
-                    }
-                    if (save && !title) {
-                        vscode.postMessage({ command: 'error', message: 'Title cannot be empty when saving.' });
-                        return;
-                    }
-
-                    vscode.postMessage({ 
-                        command: 'submit', 
-                        data: { prompt, actionType, save, title, useContext }
-                    });
-                });
-
-                document.getElementById('cancel-btn').addEventListener('click', () => {
-                    vscode.postMessage({ command: 'cancel' });
                 });
             </script>
         </body>

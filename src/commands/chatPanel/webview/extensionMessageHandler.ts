@@ -117,6 +117,25 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     dom.briefingContentInput.value = current ? current + '\n\n' + message.text : message.text;
                 }
                 break;
+            case 'imageUriResolved':
+                {
+                    const container = document.getElementById(message.targetId);
+                    if (container) {
+                        container.innerHTML = `<img src="${message.uri}" style="max-width: 100%; border-radius: 4px; box-shadow: 0 4px 10px rgba(0,0,0,0.5); cursor: zoom-in;" onclick="window.open('${message.uri}')" />`;
+
+                        // If this was an auto-resolution for a generation block, mark the button as done
+                        if (message.targetId.startsWith('prev-gen-')) {
+                            const btnId = message.targetId.replace('prev-', 'btn-');
+                            const btn = document.getElementById(btnId) as HTMLButtonElement;
+                            if (btn) {
+                                btn.innerHTML = `<span class="codicon codicon-check"></span> Existing Asset`;
+                                btn.classList.replace('apply-btn', 'applied');
+                                btn.disabled = true;
+                            }
+                        }
+                    }
+                }
+                break;
             case 'updateMessage':
                 {
                     if (typeof message.newContent === 'string' && message.newContent.startsWith('LOG_UPDATE:')) {
@@ -175,6 +194,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'loadDiscussion':
                 {
+                    if (message.currentModel) {
+                        state.currentModelName = message.currentModel;
+                    }
                     if (dom.attachmentsContainer) dom.attachmentsContainer.innerHTML = '';
                     if (dom.chatMessagesContainer) {
                         Array.from(dom.chatMessagesContainer.children).forEach(child => {
@@ -333,7 +355,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
                     // RE-RENDER Context Bubble border/buttons if context data exists
                     if (state.lastContextData) {
-                        updateContext(state.lastContextData.context, state.lastContextData.files, state.lastContextData.skills);
+                        import('./messageRenderer.js').then(module => {
+                            module.updateContext(
+                                state.lastContextData!.context, 
+                                state.lastContextData!.files, 
+                                state.lastContextData!.skills
+                            );
+                        });
                     }
                 }
                 break;
@@ -355,11 +383,20 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     dom.thinkingIndicator.style.display = 'none';
                 }
                 break;
+            case 'updateModelNameOnly':
+                state.currentModelName = message.modelName;
+                if (state.lastContextData) {
+                    import('./messageRenderer.js').then(m => m.updateContext(state.lastContextData!.context, state.lastContextData!.files, state.lastContextData!.skills, state.lastContextData!.diagrams, state.lastContextData!.briefing));
+                }
+                break;
 
             case 'updateModels':
                 if(dom.refreshModelsBtn) {
                     const icon = dom.refreshModelsBtn.querySelector('.codicon');
                     if(icon) icon.classList.remove('spin');
+                }
+                if (message.currentModel) {
+                    state.currentModelName = message.currentModel;
                 }
                 if(dom.modelSelector) {
                     dom.modelSelector.innerHTML = '<option value="">Default Model</option>';
@@ -373,6 +410,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     dom.modelSelector.value = message.currentModel || '';
                     
                     updateBadges();
+                    // Force refresh context header to sync model name
+                    if (state.lastContextData) {
+                        import('./messageRenderer.js').then(m => m.updateContext(state.lastContextData!.context, state.lastContextData!.files, state.lastContextData!.skills, state.lastContextData!.diagrams, state.lastContextData!.briefing));
+                    }
                 }
                 break;
             case 'updatePersonalities':
@@ -432,7 +473,8 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         const size = (contextSize > 0) ? contextSize : 128000;
                         dom.tokenCountLabel.textContent = `${isApproximate ? 'Est. ' : ''}Tokens: ${totalTokens.toLocaleString()} / ${size.toLocaleString()}`;
                         
-                        updateProgressBar(dom.tokenProgressBar, totalTokens, size);
+                        // Pass segments to the progress bar
+                        updateProgressBar(dom.tokenProgressContainer, totalTokens, size, message.segments);
 
                         // Visual indicator on label for overflow
                         if (totalTokens > size) {
@@ -475,13 +517,19 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 if(dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
                 break;
             case 'imageGenerationResult':
-                const btn = document.getElementById(message.buttonId) as HTMLButtonElement;
-                if (btn) {
+                const genBtn = document.getElementById(message.buttonId) as HTMLButtonElement;
+                if (genBtn) {
                     if (message.success) {
-                        btn.innerHTML = `<span class="codicon codicon-check"></span> Saved!`;
-                        btn.disabled = true;
-                        const body = btn.closest('.generation-block')?.querySelector('.generation-body');
-                        if (body) body.innerHTML = `<img src="${message.webviewUri}" style="max-width: 100%; border-radius: 4px;" />`;
+                        genBtn.innerHTML = `<span class="codicon codicon-check"></span> Generated`;
+                        genBtn.classList.replace('apply-btn', 'applied');
+                        genBtn.disabled = true;
+
+                        // Target the specific preview zone via dataset
+                        const previewId = genBtn.dataset.previewId;
+                        const previewZone = document.getElementById(previewId || '');
+                        if (previewZone) {
+                            previewZone.innerHTML = `<img src="${message.webviewUri}" style="max-width: 100%; border-radius: 4px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); cursor: pointer;" onclick="window.open('${message.uri || message.webviewUri}')" />`;
+                        }
                     } else {
                         btn.innerHTML = `<span class="codicon codicon-error"></span> Failed`;
                         btn.disabled = false;
@@ -531,15 +579,27 @@ export async function handleExtensionMessage(event: MessageEvent) {
             case 'updateStatus':
                 if (dom.statusLabel && dom.statusText) {
                     dom.statusText.textContent = message.status;
-                    if (message.type === 'error') {
+                    const isReady = message.status.startsWith('Ready');
+                    const isError = message.type === 'error' || message.status.includes('Error');
+
+                    if (isError) {
                         dom.statusLabel.classList.add('error');
-                        if(dom.statusSpinner) dom.statusSpinner.style.display = 'none';
                     } else {
                         dom.statusLabel.classList.remove('error');
-                        if(dom.statusSpinner) dom.statusSpinner.style.display = (message.status === 'Ready' || message.status.includes('Error')) ? 'none' : 'block';
                     }
+
+                    if (dom.statusSpinner) {
+                        // Force hide spinner if status is Ready or Error
+                        dom.statusSpinner.style.display = (isReady || isError) ? 'none' : 'block';
+                    }
+                    
+                    // Also hide the separate token loading spinner if it exists
+                    if (isReady && dom.contextLoadingSpinner) {
+                        dom.contextLoadingSpinner.style.display = 'none';
+                    }
+
                     dom.statusLabel.classList.add('visible');
-                    if (message.status === 'Ready') {
+                    if (isReady) {
                         setTimeout(() => {
                             dom.statusLabel.classList.remove('visible');
                         }, 3000);
@@ -818,9 +878,17 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const blockEl = document.getElementById(targetBlockId) as HTMLDetailsElement;
 
                     if (blockEl && message.success) {
-                        // Reset button state to allow re-applying if the user didn't save the diff
+                        // Mark as applied in local memory immediately to prevent re-apply loops
+                        if (!state.appliedState[message.messageId]) state.appliedState[message.messageId] = {};
+                        if (!state.appliedState[message.messageId][message.blockIndex]) state.appliedState[message.messageId][message.blockIndex] = [];
+
+                        const hunkVal = message.hunkIndex !== undefined ? message.hunkIndex : -1;
+                        if (!state.appliedState[message.messageId][message.blockIndex].includes(hunkVal)) {
+                            state.appliedState[message.messageId][message.blockIndex].push(hunkVal);
+                        }
+
                         const restoreBtn = (btn) => {
-                            btn.disabled = false;
+                            btn.disabled = true; // Disable after success in Apply All
                             btn.classList.add('applied');
                             btn.innerHTML = '<span class="codicon codicon-check"></span>';
                         };
@@ -846,7 +914,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
                     } else if (blockEl && !message.success) {
                         // FAILURE CASE: Restore the button so the user can try again
-                        const mainApplyBtn = document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`) as HTMLButtonElement;
+                        const mainApplyBtn = document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`);
                         if (mainApplyBtn && mainApplyBtn.dataset.originalHtml) {
                             mainApplyBtn.disabled = false;
                             mainApplyBtn.innerHTML = mainApplyBtn.dataset.originalHtml;
@@ -856,10 +924,31 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         if (message.hunkIndex !== undefined) {
                             const hunkBubbles = blockEl.querySelectorAll('.aider-hunk-bubble');
                             const targetHunk = hunkBubbles[message.hunkIndex];
-                            const hunkBtn = targetHunk?.querySelector('.apply-btn') as HTMLButtonElement;
+                            const hunkBtn = targetHunk?.querySelector('.apply-btn');
                             if (hunkBtn && hunkBtn.dataset.originalHtml) {
                                 hunkBtn.disabled = false;
                                 hunkBtn.innerHTML = hunkBtn.dataset.originalHtml;
+                            }
+                        }
+
+                        // AUTOMATIC REDIRECTION to Raw Code Modal for manual fix
+                        if (!message.repaired && !message.alreadyApplied) {
+                            const codeText = blockEl.dataset.rawCode || "";
+                            const aiderRegex = /<<<<<<< SEARCH\\r?\\n([\\s\\S]*?)\\r?\\n=======\\r?\\n([\\s\\S]*?)\\r?\\n>>>>>>> REPLACE/g;
+                            const matches =[...codeText.matchAll(aiderRegex)];
+                            const hunkContent = (message.hunkIndex !== undefined && matches[message.hunkIndex]) 
+                                ? matches[message.hunkIndex][0] 
+                                : codeText;
+                            
+                            if (dom.rawCodeDisplay) {
+                                dom.rawCodeFilename.textContent = message.filePath;
+                                const hunkIdEl = document.getElementById('raw-hunk-id');
+                                if (hunkIdEl) hunkIdEl.textContent = message.hunkIndex !== undefined ? `HUNK ${message.hunkIndex + 1}` : 'FULL';
+                                dom.rawCodeDisplay.textContent = hunkContent;
+                                dom.rawCodeDisplay.dataset.messageId = message.messageId;
+                                dom.rawCodeDisplay.dataset.blockIndex = String(message.blockIndex);
+                                dom.rawCodeDisplay.dataset.hunkIndex = message.hunkIndex !== undefined ? String(message.hunkIndex) : "";
+                                dom.rawCodeModal.classList.add('visible');
                             }
                         }
                     }
@@ -941,7 +1030,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                                 const targetBlock = document.getElementById(`block-${message.messageId}-${message.blockIndex}`);
                                 if (targetBlock) {
                                     const codeText = (targetBlock as any).dataset.rawCode || "";
-                                    const aiderRegex = /<<<<<<< SEARCH\\r?\\n([\\s\\S]*?)\\r?\\n=======\\r?\\n([\\s\\S]*?)\\r?\\n>>>>>>> REPLACE/gm;
+                                    const aiderRegex = /<<<<<<< SEARCH\\r?\\n([\\s\\S]*?)\\r?\\n=======\\r?\\n([\\s\\S]*?)\\r?\\n>>>>>>> REPLACE/g;
                                     const matches = [...codeText.matchAll(aiderRegex)];
                                     const hunkContent = (message.hunkIndex !== undefined && matches[message.hunkIndex]) 
                                         ? matches[message.hunkIndex][0] 

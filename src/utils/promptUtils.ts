@@ -61,17 +61,31 @@ export async function buildCodeActionPrompt(
         }
     }
 
-    let userPrompt = `### CURRENT FILE: ${relPath}\n` +
-                     `\`\`\`${languageId}\n${currentFileText}\n\`\`\`\n\n` +
-                     `### SELECTED CODE (Lines ${selection.start.line + 1}-${selection.end.line + 1}):\n` +
+    // --- ENHANCED SPATIAL CONTEXT ---
+    const startLine = selection.start.line;
+    const endLine = selection.end.line;
+
+    // We provide 50 lines of context around the selection to give the AI "handles"
+    const contextRange = new vscode.Range(
+        new vscode.Position(Math.max(0, startLine - 25), 0),
+        new vscode.Position(Math.min(document.lineCount - 1, endLine + 25), 1000)
+    );
+    const surroundingContext = document.getText(contextRange);
+
+    let userPrompt = `### 🎯 SURGICAL TARGET: ${relPath}\n` +
+                     `**Language:** ${languageId}\n` +
+                     `**Selection Range:** Lines ${startLine + 1} to ${endLine + 1}\n\n` +
+                     `#### 📍 IMMEDIATE SPATIAL CONTEXT (Surrounding Logic)\n` +
+                     `\`\`\`${languageId}\n${surroundingContext}\n\`\`\`\n\n` +
+                     `#### 🔍 EXACT SELECTION TO MODIFY\n` +
                      `\`\`\`${languageId}\n${selectedText}\n\`\`\`\n\n` +
-                     `**USER INSTRUCTION:** ${userInstruction}\n` +
+                     `**USER OBJECTIVE:** "${userInstruction}"\n` +
                      `${contextText}`;
 
     let systemPrompt = '';
 
     // Fetch unified system prompt to include Skills and Environment
-    const baseSystemPrompt = await getProcessedSystemPrompt('agent', undefined, undefined, undefined, false, contextResult);
+    const baseSystemPrompt = await getProcessedSystemPrompt('surgical_agent', undefined, undefined, undefined, false, contextResult);
 
     if (actionType === 'information') {
         userPrompt += `\n\nPlease provide a detailed answer in Markdown format.`;

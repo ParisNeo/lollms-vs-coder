@@ -320,7 +320,7 @@ export class ChatPanel {
                   timestamp: Date.now(),
                   groupId: null,
                   plan: null,
-                  capabilities: this._discussionCapabilities, 
+                  capabilities: { ...this._discussionCapabilities, agentMode: false }, 
                   personalityId: 'default_coder',
                   importedSkills: []
               };

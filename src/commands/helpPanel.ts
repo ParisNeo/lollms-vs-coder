@@ -163,8 +163,9 @@ export class HelpPanel {
             <div class="nav-group open">
                 <div class="nav-group-header" onclick="toggleGroup(this)">Fundamentals <i class="codicon codicon-chevron-right chevron"></i></div>
                 <div class="nav-group-content">
-                    <div class="nav-item" onclick="showSection('hud')"><i class="codicon codicon-symbol-method"></i> Surgical HUD</div>
-                    <div class="nav-item" onclick="showSection('context')"><i class="codicon codicon-layers"></i> Smart Context</div>
+                    <div class="nav-item" onclick="showSection('architecture')"><i class="codicon codicon-layers-dot"></i> Sovereign Architecture</div>
+                    <div class="nav-item" onclick="showSection('modes')"><i class="codicon codicon-split-horizontal"></i> Choosing Your Mode</div>
+                    <div class="nav-item" onclick="showSection('hud')"><i class="codicon codicon-symbol-method"></i> Surgical HUD</div>                    <div class="nav-item" onclick="showSection('context')"><i class="codicon codicon-layers"></i> Smart Context</div>
                     <div class="nav-item" onclick="showSection('graph')"><i class="codicon codicon-graph"></i> Code Graph</div>
                     <div class="nav-item" onclick="showSection('profiles')"><i class="codicon codicon-settings-gear"></i> Response Styles</div>
                     <div class="nav-item" onclick="showSection('memory')"><i class="codicon codicon-chip"></i> Project Memory</div>
@@ -196,6 +197,75 @@ export class HelpPanel {
     </nav>
 
     <main id="main-content">
+        <!-- MODES COMPARISON -->
+        <section id="modes">
+            <h1>⚖️ Discussion vs. Agent Mode</h1>
+            <p>While both modes use the same AI, they differ in how they interact with your workspace and how much autonomy they possess.</p>
+
+            <table>
+                <tr><th>Feature</th><th>Discussion Mode</th><th>Agent Mode</th></tr>
+                <tr><td><b>Primary Goal</b></td><td>Knowledge & Guidance</td><td>Task Execution</td></tr>
+                <tr><td><b>Workflow</b></td><td>Linear (Q&A)</td><td>Cyclic (ReAct Loop)</td></tr>
+                <tr><td><b>Autonomy</b></td><td>Manual (You click Apply)</td><td>Autonomous (Agent uses Tools)</td></tr>
+                <tr><td><b>Context</b></td><td>User-selected files only</td><td>Full Project Discovery</td></tr>
+                <tr><td><b>Verification</b></td><td>Human Review</td><td><b>Guardian Protocol</b></td></tr>
+            </table>
+
+            <div class="feature-grid">
+                <div class="feature-item">
+                    <i class="codicon codicon-comment-discussion"></i>
+                    <strong>Use Discussion Mode if:</strong>
+                    <ul>
+                        <li>You want to learn how a library works.</li>
+                        <li>You need an explanation of a bug.</li>
+                        <li>You want to refactor a specific selection.</li>
+                    </ul>
+                </div>
+                <div class="feature-item">
+                    <i class="codicon codicon-robot"></i>
+                    <strong>Use Agent Mode if:</strong>
+                    <ul>
+                        <li>You have a multi-step mission (e.g. "Build X").</li>
+                        <li>You need the AI to run tests or install deps.</li>
+                        <li>You want the AI to "Self-Heal" errors it finds.</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- SOVEREIGN ARCHITECTURE -->
+        <section id="architecture">
+            <h1>🧊 Sovereign Architecture</h1>
+            <p>Lollms is built on a multi-layered agentic framework designed for <b>Verifiable Autonomy</b>. Unlike simple wrappers, Lollms uses a hierarchy of agents and a tiered memory system.</p>
+
+            <div class="card">
+                <h3>👥 The Agent Roster</h3>
+                <ul>
+                    <li><strong>Lead Architect (The Genie)</strong>: Mission orchestrator. Plans multi-step technical goals.</li>
+                    <li><strong>Librarian</strong>: Context governor. Manages the file tree and prevents "context drowning."</li>
+                    <li><strong>The Guardian</strong>: The verifier. Audits every line of code for functional errors before delivery.</li>
+                    <li><strong>Specialists</strong>: Dedicated personas for Backend, Frontend, DevOps, and Security.</li>
+                </ul>
+            </div>
+
+            <h2>🧠 Neural Memory (Tiered RLM)</h2>
+            <p>To provide long-term intelligence without context bloating, Lollms uses a tiered memory architecture:</p>
+            <table>
+                <tr><th>Tier</th><th>Type</th><th>Purpose</th></tr>
+                <tr><td><strong>Tier 0</strong></td><td>ROM</td><td>Immutable system protocols and core safety rules.</td></tr>
+                <tr><td><strong>Tier 1</strong></td><td>Working</td><td>Session discoveries injected into every prompt.</td></tr>
+                <tr><td><strong>Tier 2</strong></td><td>Latent</td><td>A searchable index of archived project facts.</td></tr>
+                <tr><td><strong>Tier 3</strong></td><td>Deep</td><td>Cold storage for legacy project intelligence.</td></tr>
+            </table>
+
+            <div class="tip">
+                <strong>The Dream Cycle:</strong> Every hour, Lollms reorganizes its memory. Unused facts "decay" and move to deep storage, while high-importance facts are reinforced to stay in the active Working Memory.
+            </div>
+
+            <h2>🛡️ The Guardian Protocol (Self-Healing)</h2>
+            <p>The system follows a strict <b>Reason-Act-Verify</b> loop. When code is generated, the Guardian triggers a real-time diagnostic scan. If errors (linting, missing imports) are found, the agent automatically enters a <b>Self-Heal</b> loop to patch the file until it is verified clean.</p>
+        </section>
+
         <!-- OVERVIEW -->
         <section id="intro" class="active">
             <h1>Welcome to Lollms VS Coder</h1>

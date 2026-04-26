@@ -6,11 +6,13 @@ export const runFileTool: ToolDefinition = {
     description: "Executes a file in the workspace using the appropriate interpreter based on its extension. Returns stdout and stderr for verification.",
     isAgentic: true,
     isDefault: true,
-    parameters: [
+    permissionGroup: 'shell_execution',
+    parameters:[
         { name: "file_path", type: "string", description: "Relative path to the file to execute.", required: true },
-        { name: "args", type: "string", description: "Optional command line arguments to pass to the script.", required: false }
-    ],
-    async execute(params: { file_path: string, args?: string }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
+        { name: "args", type: "string", description: "Optional command line arguments to pass to the script.", required: false },
+        { name: "timeout_s", type: "number", description: "Optional: Execution timeout in seconds. Default is 900s (15 minutes). For training scripts, set to 3600+.", required: false }
+        ],
+        async execute(params: { file_path: string, args?: string, timeout_s?: number }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
         if (!env.workspaceRoot) {
             return { success: false, output: "Error: No active workspace folder." };
         }
@@ -60,7 +62,7 @@ export const runFileTool: ToolDefinition = {
                 command = `"${filePath}"${argsStr}`;
                 break;
         }
-
-        return await env.agentManager.runCommand(command, signal);
+        const timeoutMs = params.timeout_s ? params.timeout_s * 1000 : 900000; // 15 minute default
+        return await env.agentManager.runCommand(command, signal, { timeoutMs });
     }
 };

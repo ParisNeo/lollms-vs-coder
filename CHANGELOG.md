@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-04-26 22:29]
+
+- feat(core): Implement Sovereign Architecture and Agent Management
+
 ## [2026-04-26 02:10]
 
 - feat(agent/chat): Update version and refine agent/chat panel functionality

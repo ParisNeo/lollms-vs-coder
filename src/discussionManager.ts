@@ -176,16 +176,22 @@ export class DiscussionManager {
     createNewDiscussion(groupId: string | null = null): Discussion {
         const id = Date.now().toString() + Math.random().toString(36).substring(2);
         const caps = this.getLastCapabilities();
+        
+        // Force standard mode for new discussions to prevent agent mode bleeding from global state
+        if (caps) {
+            caps.agentMode = false;
+        }
+
         return {
             id,
             title: 'New Discussion',
-            messages: [],
+            messages:[],
             timestamp: Date.now(),
             groupId,
             plan: null,
             capabilities: caps,
             personalityId: 'default_coder',
-            importedSkills: []
+            importedSkills:[]
         };
     }
 

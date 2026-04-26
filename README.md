@@ -76,6 +76,53 @@ Lollms can extract a "DNA" profile of your project (naming conventions, folder p
 
 ---
 
+## 🏗️ Sovereign Architecture (The Lollms Engine)
+
+Lollms operates on a unique **Multi-Agent / Tiered Memory** stack designed for industrial-grade reliability.
+
+### 🧠 Tiered Neural Memory
+Lollms mimics human cognition with a **Tiered Recursive Language Model (RLM)**:
+*   **Tier 1 (Active)**: Immediate technical discoveries (e.g., "The database is running on port 5432").
+*   **Tier 2 (Latent)**: Searchable handles to archived knowledge.
+*   **The Dream Cycle**: An automated background process that "decays" obsolete information and reinforces critical architectural decisions, keeping your context window focused on what matters.
+
+### 🛡️ The Guardian Protocol
+The agent's "Definition of Done" is functional verification. 
+1.  **Surgical Edit**: Changes are applied via Aider Search/Replace.
+2.  **Diagnostic Pulse**: Lollms triggers a background VS Code diagnostic check.
+3.  **Autonomous Self-Heal**: If errors are found, the agent re-opens the file and fixes the logic recursively until **0 errors** remain.
+
+### 👥 Hybrid Agent Hierarchy
+Tasks are delegated through a chain of command:
+*   **Lead Architect**: Mission planning and reasoning.
+*   **Librarian**: Context window management and dependency scouting.
+*   **The Verifier**: Critical audit and regression checking.
+
+---
+
+## ⚖️ Choosing Your Mode: Consultant vs. Operator
+
+Lollms provides two distinct ways to work. Choose the one that fits your current needs:
+
+### 💬 Discussion Mode (The Consultant)
+**Best For**: Brainstorming, code explanations, and guided refactoring.
+*   **Workflow**: You are the pilot. The AI provides code blocks, and you decide when to click **Apply**.
+*   **Vision**: Limited to the files you explicitly add to the context.
+
+### 🤖 Agent Mode (The Operator)
+**Best For**: Complex, autonomous missions and "manifesting" features.
+*   **Workflow**: You are the manager. The AI creates a plan in the **Plan Zone**, executes tools (Terminal, Filesystem), and uses the **Guardian Protocol** to self-heal errors it encounters.
+*   **Vision**: Unlimited. The agent can use discovery tools to "reach out" and read any file in your project as needed.
+
+| Feature | Discussion Mode | Agent Mode |
+| :--- | :--- | :--- |
+| **Logic** | Chat (Ask/Answer) | ReAct (Reason/Act/Observe) |
+| **Autonomy** | Passive | **Full Autonomy** |
+| **Verification** | Manual Review | **Guardian (Auto-Audit)** |
+| **UI** | Chat Bubbles | **Live Plan Timeline** |
+
+---
+
 ## 🌟 Key Features
 
 | Feature                  | Description                                                                                                                                                             |

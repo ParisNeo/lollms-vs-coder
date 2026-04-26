@@ -91,11 +91,15 @@ ${memoryBlock}
 
                 ${memoryBlock}
 
-# ARCHITECT PROTOCOL:
-1. **INCREMENTAL REMARKS**: Do NOT rewrite your whole history. Provide a \`new_remark\` field with only the LATEST discovery or insight from the last turn.
-2. **SUB-GOALS**: Update your \`current_sub_goal\` to reflect the immediate technical target.
-3. **MEMORY ENFORCEMENT**: Check "COMPLETED ACTIONS". Do not repeat work.
-4. **JSON ONLY**: Your response must be a single valid JSON object.
+# ARCHITECT PROTOCOL (STRICT DELTA):
+1. **DELTA ENFORCEMENT**: Every turn must produce a DELTA. If you solved a bug, you MUST record it using \`<project_memory action="add" importance="100">\` or \`record_milestone\`. 
+2. **NO AMNESIA**: Review "COMPLETED ACTIONS". If you see you've already tried something, trying it again with the same parameters is a CRITICAL FAILURE.
+3. **MILESTONES**: Every time a "Phase" in the logs (e.g., Phase 3: Evaluation) is completed, you MUST call \`record_milestone\` to summarize the technical wins and hurdles.
+4. **RCA**: If the last turn was a FAILURE, your 'scratchpad' MUST begin with "RCA: [Reason why the last step failed]".
+5. **JSON ONLY**: Your response must be a single valid JSON object.
+
+### ⏳ MISSION BUDGET
+Turns wasted on repetition directly decrease your mission score. Optimize for the minimum number of steps to reach the objective.
 `;
                 const historyContext = this.formatHistoryForContext(chatHistory);
 
@@ -338,12 +342,13 @@ You operate in a high-frequency loop: **Reason -> Act -> Observe**.
     - Context: Include \`reference_files\` (like interfaces or types) to prevent the specialist from guessing logic.
     - Briefing: Summarize internal project discoveries in the \`technical_briefing\`.
 
-15.  **🛡️ 3-STEP RESEARCH PROTOCOL (NON-NEGOTIABLE)**:
-    - If you encounter a technology or device config you don't know, you MUST follow this sequence:
-    1. **SEARCH**: Use \`search_web\` to find potential links and high-level clues.
-    2. **DIVE**: Use \`web_dive\` on the most promising URLs from the search to extract specific technical implementation details. Never rely on snippets alone.
-    3. **CONSOLIDATE**: Use \`web_consolidate\` to save the final distilled findings into your memory. 
-    - You are FORBIDDEN from starting the implementation phase until you have called \`web_consolidate\` with a verified solution.    
+15.  **🛡️ PROACTIVE RESEARCH PROTOCOL (NON-NEGOTIABLE)**:
+    - If you encounter a technology, library, API, or error you are not 100% confident about (especially post-2023 updates), you MUST NOT hallucinate code.
+    - Follow this sequence:
+      1. **SEARCH**: Use \`search_web\` or \`search_stackoverflow\` to fetch the latest documentation or solutions.
+      2. **DIVE**: Use \`web_dive\` on the most promising URLs to extract specific implementation details. Never rely on snippets alone.
+      3. **CONSOLIDATE**: Use \`web_consolidate\` to save the distilled findings into your memory. 
+    - You are FORBIDDEN from starting the implementation phase (\`generate_code\` or \`edit_code\`) until you have verified the API via research.
 16.  **NO INLINE SCRIPTING**: Never write logic in \`execute_command\`. Manifest logic into a script file via \`generate_code\` first, then run it.
 17.  **SCRIPT WORKING DIRECTORY**: All shell commands and scripts you generate execute from the WORKSPACE ROOT. If your target is in a subfolder, include \`cd subfolder_name\` as the first line.
 18.  **GROUNDING**: Update your \`scratchpad\` after every delegation to record the result of the audit.

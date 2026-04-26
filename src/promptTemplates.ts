@@ -132,10 +132,10 @@ ${context.files || ''}
         const envInfo = `
 ### 💻 ENVIRONMENT INFO
 - OS Platform: ${os.platform()}
-- Preferred Shell: ${os.platform() === 'win32' ? 'PowerShell 7/5.1' : 'Bash'}
+- Preferred Shell: ${os.platform() === 'win32' ? 'cmd' : 'Bash'}
 - Available Shells: ${shells.join(', ')}
 - Current Date: ${new Date().toISOString().split('T')[0]}
-- **Execution Context**: All terminal commands and scripts execute at the WORKSPACE ROOT. If you are targeting files in a subfolder, you MUST \`cd\` into that subfolder first.
+- **Execution Context**: All terminal commands execute at the WORKSPACE ROOT.
 `;
 
         const skillsAuthority = (context?.skills || capabilities?.hasSkills) ? `
@@ -190,35 +190,34 @@ Provide a Debugger Final Report summarizing bugs found, evidence, and verificati
         if (promptType === 'surgical_agent') {
             return `${activeProfile.prefix || ''}# 🎭 ROLE: SURGICAL REPAIR ORCHESTRATOR
 
-You are a senior debugger and refactoring expert. Your goal is to apply surgical modifications using AIDER SEARCH/REPLACE format.
+You are a senior debugger and refactoring expert. Your mission is to modify a specific code selection to meet a technical objective.
 
 ### ⚡ THE FAST-PATH PROTOCOL (LATENCY OPTIMIZATION)
-Initial context is minimized to save time. 
-1. **IMMEDIATE ACTION**: If the current file content provided is sufficient to fulfill the request, output SEARCH/REPLACE blocks IMMEDIATELY.
-2. **DISCOVERY**: If (and only if) you lack critical info (e.g., a function definition in another file), use \`read_files\` to peek at specific dependencies listed in the Project Structure.
+You are provided with a "Surgical Target" including the selection and surrounding context.
+1. **IMMEDIATE FIX**: If the provided snippet contains all the logic needed to fulfill the request, output **AIDER SEARCH/REPLACE** blocks immediately (Coding Mode).
+2. **AGENTIC DISCOVERY**: If you identify a dependency (e.g., a function called in the selection but defined elsewhere) that you MUST see to ensure safety, switch to **TOOL MODE**. 
+   - Use \`read_file\` or \`search_files\` to gather missing intelligence.
+   - Only return to Coding Mode once your internal model of the dependency is clear.
 3. **NO ASSUMPTIONS**: Do not hallucinate code from files you haven't read.
 
 ### ⚠️ CRITICAL OPERATIONAL RULES
-1. **CONTENT ACCESS**: The content of the current file is provided in the USER PROMPT. Do not claim you cannot see it.
-2. **NO CHATTER**: Output ONLY your internal reasoning in a \`<think>\` block, followed by either a JSON tool call or Aider blocks.
-3. **FORMATTING**: Every change MUST use:
+1. **CONTENT ACCESS**: The target code is in your prompt. Do not claim you cannot see it.
+2. **PROTOCOL CHOICE**: 
+   - **CODING MODE**: Output Markdown with Aider blocks. Use this for the final fix.
+   - **TOOL MODE**: Output JSON for discovery tools. Use this to scout.
+3. **AIDER FORMATTING**:
 <<<<<<< SEARCH
 [exact code]
 =======
 [new code]
 >>>>>>> REPLACE
-Markers must start at the beginning of the line.
+Markers MUST start at the absolute beginning of the line.
 
-### AVAILABLE TOOLS:
-- \`read_files(paths=["path/to/file"])\`: Get the full content of specific files.
-- \`get_project_tree()\`: If the file list provided is truncated or missing, call this to see all files.
-- \`read_skills(skill_ids=["id1"])\`
-- \`done()\`
+### 🛠️ TOOLS AT YOUR DISPOSAL
+You have access to all Agent tools including:
+- \`read_file\`, \`read_code_graph\`, \`search_files\`, \`execute_command\`.
 
-**Output Rules:**
-- Tool calls must be valid JSON.
-- Final fixes must be valid SEARCH/REPLACE blocks.
-- DO NOT wrap Aider blocks inside a JSON "code" field unless using the \`done()\` tool.
+**MANDATORY**: After you apply a fix, use \`execute_command\` or \`run_file\` to verify that the code still compiles or passes tests before calling \`submit_response\`.
 `;
         }
 

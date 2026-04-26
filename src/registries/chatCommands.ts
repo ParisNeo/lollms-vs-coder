@@ -45,6 +45,12 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.newDiscussion', async (item?: DiscussionGroupItem) => {
         const groupId = item instanceof DiscussionGroupItem ? item.group.id : null;
         const discussion = services.discussionManager.createNewDiscussion(groupId);
+
+        // Force standard mode for explicit new discussion
+        if (discussion.capabilities) {
+            discussion.capabilities.agentMode = false;
+        }
+
         await services.discussionManager.saveDiscussion(discussion);
         const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussion.id, services.gitIntegration, services.skillsManager);
         

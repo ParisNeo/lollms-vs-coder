@@ -72,7 +72,6 @@ export class AgentManager {
 
     private failureMemory: FailureMemory = new FailureMemory();
     private isDebugging: boolean = false;
-    private isSafetyCheckPassed: boolean = false;
     public projectMemoryManager?: any; // Required for ChatPanel to process memory tags
     public personalityManager?: PersonalityManager;
     
@@ -95,6 +94,7 @@ export class AgentManager {
         workingMemory: string[]; // Ephemeral State (current session)
         projectMemory: string[]; // Project State (persists in .lollms)
         secureCredentials?: Record<string, string>;
+        isSafetyCheckPassed?: boolean;
     } = {
         replVariables: {},
         installedPackages: [],
@@ -312,7 +312,7 @@ Keep it strictly technical and extremely concise.`
      * Ensures the Genie never works on a dangerous or unstable environment without consent.
      */
     private async preFlightSafetyCheck(folder: vscode.WorkspaceFolder, signal: AbortSignal): Promise<boolean> {
-        if (this.isSafetyCheckPassed) {
+        if (this.sessionState.isSafetyCheckPassed) {
             Logger.info(`[Phase 0] Safety check already passed for this session. Skipping.`);
             return true;
         }
@@ -427,37 +427,36 @@ Keep it strictly technical and extremely concise.`
             if (safeChoice === 'stash') {
                 await this.gitIntegration.stash(folder, "Genie: Stashed before mission");
                 this.completedActionsHistory.push(`[GIT] 📦 STASHED: Uncommitted changes moved to stash to ensure a clean mission start.`);
-                // Verify stash succeeded by re-checking
                 const stillDirty = !(await this.gitIntegration.isClean(folder));
                 if (stillDirty) {
                     this.ui.addMessageToDiscussion({ role: 'system', content: `❌ **Stash failed** — working tree still dirty. Aborting for safety.` });
                     return false;
                 }
+                this.sessionState.isSafetyCheckPassed = true;
             } else if (safeChoice === 'commit') {
                 const msg = await this.gitIntegration.generateCommitMessage(folder);
                 const finalMsg = msg?.trim() || "Genie: pre-flight backup";
                 await this.gitIntegration.commitWithMessage(folder, finalMsg);
                 this.completedActionsHistory.push(`[GIT] 💾 COMMITTED: Permanent backup created with message: "${finalMsg}"`);
-                // Re-verify
                 const stillDirty = !(await this.gitIntegration.isClean(folder));
                 if (stillDirty) {
                     this.ui.addMessageToDiscussion({ role: 'system', content: `❌ **Commit failed** — working tree still dirty. Aborting for safety.` });
                     return false;
                 }
+                this.sessionState.isSafetyCheckPassed = true;
             } else if (safeChoice === 'proceed' || safeChoice === 'continue') {
                 this.ui.addMessageToDiscussion({ role: 'system', content: `⚠️ **Safety Bypass**: Proceeding with uncommitted changes on \`${currentBranch}\`.` });
                 this.completedActionsHistory.push(`[GIT] ⚠️ BYPASS: User chose to proceed with a dirty workspace.`);
-                return true; // Explicitly allow continuation
+                this.sessionState.isSafetyCheckPassed = true;
+                return true; 
             } else {
                 this.ui.addMessageToDiscussion({ role: 'system', content: `🛑 **Operation cancelled** by user.` });
                 return false;
             }
         }
 
-        // Re-fetch current branch in case it changed (e.g., after commit in detached HEAD or other effects)
         currentBranch = await this.gitIntegration.getCurrentBranch(folder);
 
-        // Automatic Branching for isolation — skip if already on AI task branch
         if (!currentBranch.startsWith('ai-task-')) {
             const branchName = `ai-task-${Date.now()}`;
             this.ui.addMessageToDiscussion({ role: 'system', content: `🛡️ **Safety Protocol**: Creating isolated branch \`${branchName}\`...` });
@@ -467,9 +466,9 @@ Keep it strictly technical and extremely concise.`
             this.ui.addMessageToDiscussion({ role: 'system', content: `ℹ️ Already on isolated branch \`${currentBranch}\`.` });
         }
 
-        this.isSafetyCheckPassed = true;
+        this.sessionState.isSafetyCheckPassed = true;
         return true;
-        }
+    }
 
     /**
      * Helper to parse form responses consistently.
@@ -513,11 +512,12 @@ Keep it strictly technical and extremely concise.`
         // --- RELOAD GENIE PERSISTENT SESSION ---
         if (discussion.agentSession) {
             this.sessionState.replVariables = discussion.agentSession.replVariables || {};
-            this.sessionState.workingMemory = discussion.agentSession.workingMemory || [];
+            this.sessionState.workingMemory = discussion.agentSession.workingMemory ||[];
             this.sessionState.secureCredentials = discussion.agentSession.secureCredentials || {};
-            this.completedActionsHistory = discussion.agentSession.completedActionsHistory || [];
+            this.sessionState.isSafetyCheckPassed = discussion.agentSession.isSafetyCheckPassed || false;
+            this.completedActionsHistory = discussion.agentSession.completedActionsHistory ||[];
         }
-
+        
         if (!this.sessionState.secureCredentials) {
             this.sessionState.secureCredentials = {};
         }
@@ -525,7 +525,7 @@ Keep it strictly technical and extremely concise.`
         if (!this.currentPlan) {
             this.failureMemory.clear();
             this.consecutiveTaskFailures.clear();
-            this.isSafetyCheckPassed = false; // Reset for new mission
+            this.sessionState.isSafetyCheckPassed = false; // Reset for new mission
         } else {
             // --- CONTINUITY PROTOCOL ---
             // If a plan already exists, treat the incoming user message as a "Direct Intervention"
@@ -599,6 +599,7 @@ Please commit or stash your work before starting an iterative debug session to e
                     replVariables: this.sessionState.replVariables,
                     workingMemory: this.sessionState.workingMemory,
                     secureCredentials: this.sessionState.secureCredentials,
+                    isSafetyCheckPassed: this.sessionState.isSafetyCheckPassed,
                     completedActionsHistory: this.completedActionsHistory
                 };
                 await this.discussionManager.saveDiscussion(this.currentDiscussion);
@@ -693,11 +694,19 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
                 ? "\n**⚠️ NOTICE**: The Project Structure shows files EXIST. You must use 'read_files' to see their content before claiming the workspace is empty."
                 : "";
 
-            const messages: ChatMessage[] = [
+            // --- MISSION BUDGET AWARENESS ---
+            const remainingSteps = maxSteps - stepCount;
+            let budgetBlock = `### ⏳ MISSION BUDGET\n- **Current Step**: ${stepCount} of ${maxSteps}\n- **Remaining Turns**: ${remainingSteps}\n`;
+            
+            if (remainingSteps <= 3) {
+                budgetBlock += `\n**🚨 CRITICAL WARNING: LOW BUDGET**\nYou are about to run out of turns. You are FORBIDDEN from starting new deep research, long tests, or complex refactors. You MUST use your remaining turns to:\n1. Wrap up your current work safely.\n2. Use the \`submit_response\` tool to explain to the user what you accomplished and what remains to be done before you are forcefully terminated.\n`;
+            }
+
+            const messages: ChatMessage[] =[
                 systemPrompt,
                 ...this.chatHistory,
                 ...extraHistory,
-                { role: 'user', content: `${historyContext}${structuralNudge}\n\n**OBJECTIVE:** ${objective}\n\nWhat is your next technical action? Output JSON only.` }
+                { role: 'user', content: `${historyContext}${structuralNudge}\n\n${budgetBlock}\n\n**OBJECTIVE:** ${objective}\n\nWhat is your next technical action? Output JSON only.` }
             ];
 
             // 3. Ask Genie for the next action
@@ -1262,11 +1271,25 @@ Please provide a clear, concise final response to the user summarizing the outco
 
             // --- 🛡️ REDUNDANCY HARNESS ---
             const recentTasks = pastTasks.slice(-10);
-            const redundantSuccess = recentTasks.find(t => 
+            let redundantSuccess = recentTasks.find(t => 
                 t.status === 'completed' && 
                 t.action === task.action && 
                 JSON.stringify(t.parameters) === JSON.stringify(resolvedParams)
             );
+
+            // --- STATE-AWARE INVALIDATION ---
+            // If we found a redundant success, check if any "Write" actions happened in between.
+            if (redundantSuccess) {
+                const intermediateTasks = pastTasks.filter(t => t.id > redundantSuccess!.id);
+                const filesystemModified = intermediateTasks.some(t => 
+                    ['edit_code', 'generate_code', 'replaceCode', 'applyFileContent', 'delete_file', 'move_file', 'markdown_coding'].includes(t.action)
+                );
+
+                if (filesystemModified) {
+                    Logger.info(`[Harness] Redundancy ignored for Task ${task.id}: Filesystem was modified since Task ${redundantSuccess.id}.`);
+                    redundantSuccess = undefined; // Force re-execution
+                }
+            }
 
             // Stuck in a rut detector (high failure rate on same tool consecutively)
             const recentFailures = pastTasks.slice(-3).filter(t => t.status === 'failed');
@@ -1321,6 +1344,43 @@ Please provide a clear, concise final response to the user summarizing the outco
                 const memBefore = this.sessionState.workingMemory.length;
 
                 result = await this.executeTask(task.action, secureParams, signal, undefined, specialistModel, task.agent_persona, task.agent_skills, task.agent_files);
+
+                // --- PROACTIVE ERROR TRIAGE ---
+                if (!result.success && ['execute_command', 'run_file', 'execute_python_script'].includes(task.action)) {
+                    const caps = this.currentDiscussion?.capabilities;
+                    if (caps?.webSearch) {
+                        const errLines = result.output.split('\n').map(l => l.trim()).filter(l => l);
+                        const errorLine =[...errLines].reverse().find(l => l.toLowerCase().includes('error') || l.toLowerCase().includes('exception')) || errLines[0];
+
+                        if (errorLine && errorLine.length > 5) {
+                            const proc = this.processManager?.getForDiscussion(this.currentDiscussion!.id);
+                            if (proc) this.processManager?.updateDescription(proc.id, `Proactive Research: Triaging error...`);
+
+                            try {
+                                const searchTool = this.toolManager.getTool('search_stackoverflow') || this.toolManager.getTool('search_web');
+                                if (searchTool) {
+                                    const tempEnv: ToolExecutionEnv = {
+                                        workspaceRoot: this.currentWorkspaceFolder,
+                                        lollmsApi: this.lollmsApi,
+                                        contextManager: this.contextManager,
+                                        currentPlan: this.currentPlan,
+                                        agentManager: this
+                                    };
+                                    // Remove local file paths to make the query generic for the web
+                                    const genericQuery = errorLine.replace(/[A-Za-z]:\\[^\s]+|\/[^\s]+/g, '').substring(0, 150);
+                                    const searchRes = await searchTool.execute({ query: genericQuery }, tempEnv, signal);
+                                    if (searchRes.success && !searchRes.output.includes('No results found') && !searchRes.output.includes('No relevant')) {
+                                        result.output += `\n\n--- 🌐 PROACTIVE WEB RESEARCH ---\nI automatically searched the web for this error. Here are potential clues:\n${searchRes.output.substring(0, 1500)}`;
+                                        this.completedActionsHistory.push(`[PROACTIVE RESEARCH] Automatically searched for error: "${genericQuery}"`);
+                                    }
+                                }
+                            } catch (e) {
+                                // Ignore search errors to not override the original execution error
+                            }
+                        }
+                    }
+                }
+                // --- END PROACTIVE ERROR TRIAGE ---
 
                 // Calculate Delta AFTER
                 const newVars: Record<string, any> = {};
@@ -1393,8 +1453,13 @@ Please provide a clear, concise final response to the user summarizing the outco
         if (!result.success) {
             this.failureMemory.recordFailure(task.action, resolvedParams, result.output);
         } else {
+            // --- DELTA DETECTION & MILESTONE ENFORCEMENT ---
+            const isImplementationSuccess = ['edit_code', 'generate_code', 'replaceCode', 'markdown_coding'].includes(task.action);
+            if (isImplementationSuccess && result.output.includes("Successfully")) {
+                this.completedActionsHistory.push(`[MANDATE] PROGRESS DETECTED: You just modified the codebase. You MUST now use 'record_milestone' or update '<project_memory>' to document this fix before moving to the next file.`);
+            }
+
             // --- EVOLVING INTELLIGENCE: META-REFLECTION ---
-            // If this tool has failed before in this session, trigger a reflection to "patch" the harness
             const reflectionPrompt = this.failureMemory.getReflectionPrompt(task.action, resolvedParams);
             if (reflectionPrompt) {
                 this.ui.addMessageToDiscussion({ 

@@ -9,9 +9,9 @@ export const executeCommandTool: ToolDefinition = {
     parameters: [
         { name: "command", type: "string", description: "The shell command to execute.", required: true },
         { name: "shell", type: "string", description: "Optional: 'powershell', 'cmd', or 'bash'. Defaults to system default.", required: false },
-        { name: "timeout_s", type: "number", description: "Optional: Execution timeout in seconds. Default: 120s.", required: false }
-    ],
-    async execute(params: { command: string, shell?: string, timeout_s?: number }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
+        { name: "timeout_s", type: "number", description: "Optional: Execution timeout in seconds. Default is 900s (15 minutes). Use higher values for long tasks like downloading or training.", required: false }
+        ],
+        async execute(params: { command: string, shell?: string, timeout_s?: number }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
         if (!params.command) {
             return { success: false, output: "Error: 'command' parameter is required." };
         }
@@ -19,7 +19,7 @@ export const executeCommandTool: ToolDefinition = {
             return { success: false, output: "Error: Agent capabilities not available." };
         }
         
-        const timeoutMs = params.timeout_s ? params.timeout_s * 1000 : undefined;
+        const timeoutMs = params.timeout_s ? params.timeout_s * 1000 : 900000; // 15 minute default
         return (env.agentManager as any).runCommand(params.command, signal, { shell: params.shell, timeoutMs });
     }
 };

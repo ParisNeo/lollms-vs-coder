@@ -98,7 +98,6 @@ export async function runCommandInTerminal(
 
         const isWin = process.platform === 'win32';
         let execution: vscode.ShellExecution;
-        const shellType = options?.shell || (isWin ? 'powershell' : 'bash');
 
         // Load .env variables dynamically and FORCE UTF-8 for Python/System
         let envVars: Record<string, string> = {
@@ -108,7 +107,7 @@ export async function runCommandInTerminal(
         };
         try {
             const envPath = path.join(cwd, '.lollms', '.env');
-            const content = await fs.readFile(envPath, 'utf8');
+            const content = await fs.readFileSync(envPath, 'utf8');
             content.split('\n').forEach(line => {
                 const [k, ...v] = line.split('=');
                 if (k) envVars[k.trim()] = v.join('=').trim();
@@ -120,21 +119,24 @@ export async function runCommandInTerminal(
             sanitizedCommand = sanitizedCommand.replace(/(?<![\w.-])curl(?![\w.-])/g, 'curl.exe');
         }
 
+        let batFileToCleanup: string | null = null;
+
         if (isWin) {
-            if (shellType === 'powershell') {
-                const envArgs = Object.entries(envVars).map(([k, v]) => `$env:${k}='${v}';`).join(' ');
-                // Force UTF8 Encoding in the PowerShell session before running the command
-                const utf8Setup = `[Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8;`;
-                const psCommand = `& { ${utf8Setup} ${envArgs} ${sanitizedCommand} } | Tee-Object -FilePath "${relOutputFile}"; $LASTEXITCODE | Out-File -FilePath "${relExitCodeFile}" -Encoding utf8`;
-                execution = new vscode.ShellExecution("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psCommand], { cwd });
-            } else if (shellType === 'cmd') {
-                // chcp 65001 switches CMD to UTF-8 mode
-                const cmdCommand = `chcp 65001 >nul && powershell -Command "${sanitizedCommand} | Tee-Object -FilePath '${relOutputFile}'" & echo %errorlevel% > "${relExitCodeFile}"`;
-                execution = new vscode.ShellExecution("cmd.exe", ["/c", cmdCommand], { cwd });
-            } else {
-                const shCommand = `export LANG=en_US.UTF-8; export PYTHONIOENCODING=utf-8; (${sanitizedCommand}) 2>&1 | tee '${relOutputFile}'; echo $? > '${relExitCodeFile}'`;
-                execution = new vscode.ShellExecution("bash.exe", ["-c", shCommand], { cwd });
-            }
+            // ROBUST WINDOWS EXECUTION:
+            // Write the exact command to a temporary .bat file. 
+            // This natively bypasses PowerShell's strict quote/string parsing and && syntax errors.
+            // We execute the .bat file inside PowerShell purely to capture live output via Tee-Object.
+            const batFile = path.join(outputDir, `run_${executionId}.bat`);
+            const relBatFile = `.lollms\\run_${executionId}.bat`;
+            
+            const envSetters = Object.entries(envVars).map(([k, v]) => `set ${k}=${v}`).join('\n');
+            const batContent = `@echo off\nchcp 65001 >nul\n${envSetters}\n${sanitizedCommand}`;
+            fs.writeFileSync(batFile, batContent);
+            batFileToCleanup = batFile;
+
+            const utf8Setup = `[Console]::InputEncoding = [Console]::OutputEncoding =[System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8;`;
+            const psCommand = `${utf8Setup} & "${batFile}" 2>&1 | Tee-Object -FilePath "${relOutputFile}"; $LASTEXITCODE | Out-File -FilePath "${relExitCodeFile}" -Encoding utf8`;
+            execution = new vscode.ShellExecution("powershell.exe",["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psCommand], { cwd });
         } else {
             const targetShell = options?.shell || 'bash';
             const shCommand = `export LANG=en_US.UTF-8; export FORCE_COLOR=1; export TERM=xterm-256color; export CLICOLOR_FORCE=1; (${sanitizedCommand}) 2>&1 | tee "${relOutputFile}"; echo $? > "${relExitCodeFile}"`;
@@ -171,7 +173,7 @@ export async function runCommandInTerminal(
                     try {
                         if (fs.existsSync(outputFile)) {
                             const buffer = fs.readFileSync(outputFile);
-                            
+
                             if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
                                 output = buffer.toString('utf16le');
                             } 
@@ -184,9 +186,16 @@ export async function runCommandInTerminal(
                                 const decoder = new TextDecoder('utf-8', { fatal: false });
                                 output = decoder.decode(buffer);
                             }
-                            
+
                             output = output.replace(/^\uFEFF/, '');
                             output = output.replace(/\0/g, '');
+
+                            if (output.trim() === '') {
+                                output = "[Command completed with no output]";
+                            }
+                        } else {
+                            output = "[Command failed to execute. Check syntax (e.g. do not use && in PowerShell).]";
+                            success = false; // Force failure if output piping didn't even run
                         }
                     } catch (err) {
                         output = `[Extension Error] Failed to read terminal output: ${err}`;
@@ -196,7 +205,8 @@ export async function runCommandInTerminal(
                     try {
                         if (fs.existsSync(outputFile)) fs.unlinkSync(outputFile);
                         if (fs.existsSync(exitCodeFile)) fs.unlinkSync(exitCodeFile);
-                    } catch (e) {
+                        if (batFileToCleanup && fs.existsSync(batFileToCleanup)) fs.unlinkSync(batFileToCleanup);
+                    } catch (e: any) {
                         Logger.warn(`Failed to cleanup temp terminal files: ${e.message}`);
                     }
 

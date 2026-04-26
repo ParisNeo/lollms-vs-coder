@@ -32,23 +32,23 @@ export class FailureMemory {
         const recentFailures = this.failures.slice(-3);
         const lastTool = recentFailures[recentFailures.length - 1].toolName;
 
-        // SHAKER POOL: Different ways to wake up a small model
+        // SHAKER POOL: Aggressive wake-up calls for repetitive agents
         const shakerPrompts = [
-            `### 🔬 SCIENTIFIC AUDIT: REPEAT FAILURE DETECTED
-The previous hypothesis involving \`${lastTool}\` failed. Your current logic is falsified. 
-STRICT REQUIREMENT: You are now FORBIDDEN from using the parameters listed below. You MUST pivot to a different tool or a drastically different code pattern.`,
+            `### 🔬 SCIENTIFIC AUDIT: LOGIC FALSIFIED
+        Your current hypothesis involving \`${lastTool}\` has been empirically disproven. 
+        STRICT MANDATE: Do NOT repeat the parameters listed below. Discard your current assumptions. You must now use 'read_file' or 'execute_command' to gather NEW EVIDENCE before proposing another fix.`,
 
-            `### 🚨 SYSTEM DEADLOCK WARNING
-You are stuck in a repetitive loop. The last action provided zero progress. 
-INSTRUCTION: Discard your current plan. Read a DIFFERENT file or run a 'ls' command to gather fresh evidence. Do NOT repeat yourself.`,
+            `### 🚨 REPETITION CIRCUIT BREAKER
+        You are repeating yourself. This is a waste of context and compute. 
+        INSTRUCTION: Abandon your current plan. You are now FORBIDDEN from using \`${lastTool}\` on this specific path. Change your technical approach immediately.`,
 
-            `### 🕵️ DETECTIVE PROTOCOL: EVALUATE THE CLUES
-Why did the last attempt fail? Look at the error output carefully. 
-MANDATORY: Your next response MUST NOT contain the same JSON as before. If you provide the same 'params', the session will crash. Change your strategy now.`,
+            `### 🕵️ RCA MANDATE: ROOT CAUSE ANALYSIS
+        Your last actions produced zero delta. 
+        MANDATORY: Your next 'thought' MUST start with "RCA:" and explain exactly why the previous approach was wrong. Then, pivot to a different strategy.`,
 
-            `### 🧠 SOCRATIC REFLEXION
-Your last three steps have been identical and unsuccessful. 
-QUESTION: If \`${lastTool}\` keeps failing, what information are you missing? Use 'read_file' to find the truth instead of guessing the same code again.`
+            `### 🧠 META-COGNITIVE RESET
+        You are in a rut. 
+        QUESTION: If your code fix didn't work the last two times, what hidden variable are you ignoring? Run a diagnostic command to inspect the environment state before trying again.`
         ];
 
         // Pick a random shaker to keep the small model from anchoring on one error message

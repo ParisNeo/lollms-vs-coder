@@ -1,3 +1,4 @@
+import * as vscode from 'vscode';
 import { ToolDefinition } from '../tool';
 import { autoSelectContextFilesTool } from './autoSelectContextFiles';
 import { createPythonEnvironmentTool } from './createPythonEnvironment';

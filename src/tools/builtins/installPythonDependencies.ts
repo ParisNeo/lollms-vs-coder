@@ -57,7 +57,7 @@ export const installPythonDependenciesTool: ToolDefinition = {
     parameters: [
         { name: "env_name", type: "string", description: "Venv folder name.", required: true },
         { name: "dependencies", type: "array", description: "List of package names strings. Leave empty to auto-detect from requirements.txt or source code.", required: true },
-        { name: "timeout_s", type: "number", description: "Optional: Execution timeout in seconds. Increase this for large libraries like torch/tensorflow. Default: 120s.", required: false }
+        { name: "timeout_s", type: "number", description: "Optional: Execution timeout in seconds. Increase this for massive libraries. Default is already high: 600s (10 minutes).", required: false }
     ],
     async execute(params: { env_name: string, dependencies: string[], timeout_s?: number }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
         // Check if venv exists first
@@ -133,7 +133,8 @@ export const installPythonDependenciesTool: ToolDefinition = {
             command = `"${pythonExec}" -m pip install ${deps}`;
         }
 
-        const timeoutMs = params.timeout_s ? params.timeout_s * 1000 : undefined;
+        // Use a 10-minute default timeout for pip installs if not explicitly provided
+        const timeoutMs = params.timeout_s ? params.timeout_s * 1000 : 600000;
         const result = await env.agentManager!.runCommand(command, signal, { timeoutMs });
 
         if (!result.success) {

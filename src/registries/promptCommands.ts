@@ -77,154 +77,49 @@ export function registerPromptCommands(context: vscode.ExtensionContext, service
                 await startDiscussionWithInitialPrompt(services, prompts.userPrompt, activeFolder, true, 'user');
             }
         } else {
-            // Surgical code modification with Intelligent Orchestrator
-            await vscode.window.withProgress({
-                location: vscode.ProgressLocation.Notification,
-                title: `Lollms: Orchestrating ${prompt.title}...`,
-                cancellable: true
-            }, async (progress, token) => {
-                const abortController = new AbortController();
-                token.onCancellationRequested(() => abortController.abort());
-                const signal = abortController.signal;
+            // --- AGENTIC SURGICAL MISSION ---
+            // We open a real Agent discussion so the user sees the Plan Zone
+            const activeFolder = vscode.workspace.workspaceFolders?.[0];
+            if (!activeFolder) return;
 
-                try {
-                    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-                    const surgicalModel = config.get<string>('surgicalModelName') || undefined;
+            const discussion = services.discussionManager.createNewDiscussion();
+            discussion.title = `Surgical Mission: ${prompt.title}`;
 
-                    const history: ChatMessage[] = [
-                        { role: 'system', content: await getProcessedSystemPrompt('surgical_agent') },
-                        { role: 'user', content: prompts.userPrompt }
-                    ];
+            // Force Agent Mode and appropriate capabilities
+            if (discussion.capabilities) {
+                discussion.capabilities.agentMode = true;
+                discussion.capabilities.autoApply = false; // Always show diff for manual selection
+                discussion.capabilities.autoFix = true;
+            }
 
-                    let finalCode = "";
-                    let stepCount = 0;
-                    const MAX_STEPS = 5;
-                    let lastResponse = "";
+            await services.discussionManager.saveDiscussion(discussion);
 
-                    while (stepCount < MAX_STEPS && !finalCode) {
-                        if (signal.aborted) break;
-                        stepCount++;
+            const panel = ChatPanel.createOrShow(
+                services.extensionUri, 
+                services.lollmsAPI, 
+                services.discussionManager, 
+                discussion.id, 
+                services.gitIntegration, 
+                services.skillsManager
+            );
 
-                        lastResponse = await services.lollmsAPI.sendChat(history, null, signal, surgicalModel);
-                        const cleanResponse = stripThinkingTags(lastResponse);
+            // Connect dependencies
+            panel.setProcessManager(services.processManager);
+            panel.setContextManager(services.contextManager);
+            panel.setPersonalityManager(services.personalityManager);
 
-                        // Check if response contains a tool call
-                        const jsonMatch = cleanResponse.match(/\{[\s\S]*\}/);
-                        if (jsonMatch) {
-                            try {
-                                const action = JSON.parse(jsonMatch[0]);
-                                
-                                // INTENT SIGNALING
-                                if (action.tool && action.tool !== 'done') {
-                                    progress.report({ message: `🚀 Agent: Intelligent Expansion Mode (Tool: ${action.tool})` });
-                                } else if (action.tool === 'done') {
-                                    progress.report({ message: `✨ Agent: Finalizing update...` });
-                                }
+            const agent = new AgentManager(
+                panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
+                services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager
+            );
+            agent.setProcessManager(services.processManager);
+            agent.toggleAgentMode(); // Engage loop
+            panel.setAgentManager(agent);
 
-                                if (action.scratchpad) {
-                                    Logger.info(`[SurgicalAgent] Scratchpad: ${action.scratchpad}`);
-                                }
+            await panel.loadDiscussion();
 
-                                if (action.tool === 'read_files' && action.params?.paths) {
-                                    const msg = `🔍 Reading: ${action.params.paths.join(', ')}`;
-                                    progress.report({ message: `Agent: ${msg}` });
-                                    Logger.info(`[SurgicalAgent] ${msg}`);
-                                    const content = await services.contextManager.readSpecificFiles(action.params.paths);
-                                    history.push({ role: 'assistant', content: response });
-                                    history.push({ role: 'system', content: `FILE CONTENT:\n${content}` });
-                                    continue;
-                                }
-
-                                if (action.tool === 'get_project_tree') {
-                                    progress.report({ message: `🚀 Agent: Mapping project structure...` });
-                                    const contextData = await services.contextManager.getContextContent({ includeTree: true });
-                                    history.push({ role: 'assistant', content: response });
-                                    history.push({ role: 'system', content: `FULL PROJECT STRUCTURE:\n${contextData.projectTree}` });
-                                    continue;
-                                }
-
-                                if (action.tool === 'read_skills' && action.params?.skill_ids) {
-                                    const allSkills = await services.skillsManager.getSkills();
-                                    const selected = allSkills.filter(s => action.params.skill_ids.includes(s.id));
-                                    const content = selected.map(s => `Skill: ${s.name}\n${s.content}`).join('\n\n');
-                                    history.push({ role: 'assistant', content: response });
-                                    history.push({ role: 'system', content: `SKILL DATA:\n${content}` });
-                                    continue;
-                                }
-
-                                if (action.tool === 'done') {
-                                    finalCode = action.params?.code || action.code;
-                                    break;
-                                }
-                            } catch (e) {
-                                // Not a valid tool call, treat as direct content
-                                progress.report({ message: `✅ Agent: Direct Update Mode` });
-                                finalCode = cleanResponse;
-                            }
-                        } else {
-                            // No JSON/Tool found, treat as direct output
-                            progress.report({ message: `✅ Agent: Direct Update Mode` });
-                            finalCode = cleanResponse;
-                        }
-                    }
-
-                    if (signal.aborted || !finalCode) return;
-
-                    // Scan response for memory tags (e.g. AI wants to remember a specific refactor rule)
-                    if (services.projectMemoryManager) {
-                        await services.projectMemoryManager.processTags(lastResponse);
-                    }
-
-                    // --- CLEANUP LOGIC ---
-                    let cleanText = finalCode.trim();
-                    const originalDocText = editor.document.getText();
-                    let newDocumentContent = originalDocText;
-
-                    // 1. Check for SEARCH/REPLACE blocks (Preferred)
-                    const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
-                    let matches =[...cleanText.matchAll(aiderRegex)];
-
-                    if (matches.length > 0) {
-                        const { applySearchReplace } = require('../utils');
-                        for (const match of matches) {
-                            const searchBlock = match[1];
-                            const replaceBlock = match[2];
-                            const result = applySearchReplace(newDocumentContent, searchBlock, replaceBlock);
-                            
-                            if (result.success) {
-                                newDocumentContent = result.result;
-                            } else {
-                                vscode.window.showWarningMessage(`Could not apply a change: ${result.error}`);
-                            }
-                        }
-                    } else {
-                        // 2. Fallback: Direct replacement of the selected range without fragile math
-                        // Extract content from markdown fences if the AI included them
-                        const codeBlockMatch = cleanText.match(/```(?:\w+)?[\r\n]+([\s\S]*?)[\r\n]+```/);
-                        if (codeBlockMatch) {
-                            cleanText = codeBlockMatch[1];
-                        } else {
-                            // Fallback: strip any remaining single fences if at start/end
-                            cleanText = cleanText.replace(/^`{3,}.*[\r\n]+/, '').replace(/[\r\n]+`{3,}$/, '');
-                        }
-
-                        const selectionStartOffset = editor.document.offsetAt(editor.selection.start);
-                        const selectionEndOffset = editor.document.offsetAt(editor.selection.end);
-                        
-                        const before = originalDocText.substring(0, selectionStartOffset);
-                        const after = originalDocText.substring(selectionEndOffset);
-                        newDocumentContent = before + cleanText + after;
-                    }
-
-                    // Open Side-by-Side Diff View. 
-                    await services.diffManager.openDiff(editor.document.uri, newDocumentContent);
-
-                } catch (e: any) {
-                    if (e.name !== 'AbortError') {
-                        vscode.window.showErrorMessage(`Action failed: ${e.message}`);
-                    }
-                }
-            });
+            // Handover to AgentManager with the detailed surgical briefing
+            await agent.handleUserMessage(prompts.userPrompt, discussion, activeFolder);
         }
     }));
 }

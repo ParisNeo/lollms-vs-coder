@@ -105,7 +105,6 @@ export class PromptManager {
         }
 
         try {
-            console.log(`[Lollms Debug] Reading prompts file: ${this.promptsFilePath.fsPath}`);
             const fileContent = await vscode.workspace.fs.readFile(this.promptsFilePath);
             const loadedData = JSON.parse(fileContent.toString());
             let needsSave = false;

@@ -106,7 +106,7 @@ export const state: {
     appliedState: Record<string, Record<number, number[]>>, // Persistent applied hunks
     usageData: { project: any[], extra: any[] },
     currentUsageSort: { column: 'name' | 'tokens', direction: 'asc' | 'desc' },
-    lastContextData: { context: string, files: string[], skills: any[] } | null,
+    lastContextData: { context: string, files: string[], skills: any[], diagrams: any[], briefing: string } | null,
     capabilities: DiscussionCapabilities | null,
     currentBranch: string,
     lastCommitHash: string,

@@ -221,8 +221,8 @@ export class InfoPanel {
                 let searchMatches = [];
                 let currentMatchIndex = -1;
 
-                const rawContent = ${JSON.stringify(content)};
-                
+                const rawContent = ${JSON.stringify(content).replace(/</g, '\\u003c')};
+
                 // Configure marked for breaks and GFM
                 marked.setOptions({ breaks: true, gfm: true });
                 contentContainer.innerHTML = DOMPurify.sanitize(marked.parse(rawContent));

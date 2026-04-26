@@ -1,9 +1,10 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import { Logger } from './logger';
 
 export type MemoryTier = 0 | 1 | 2 | 3;
 
-export interface Engram {
+export interface MemoryEntry {
     id: string;
     title: string;
     content: string;
@@ -184,15 +185,18 @@ export class ProjectMemoryManager {
             });
         }
 
-        // Tier 2: Long-Term Handles (1% - 24%)
+        // Tier 2: Latent Handles (1% - 24%)
+        // These are injected as an index so the agent knows what it can "remember"
         const tier2 = engrams.filter(e => e.importance > 0 && e.importance < this.TIER_THRESHOLD);
         if (tier2.length > 0) {
-            block += `\n## TIER 2: LONG-TERM HANDLES (ARCHIVED)\n`;
-            block += `You have latent knowledge in the following categories. Use <memory_search category="name" /> to retrieve.\n`;
+            block += `\n## TIER 2: LATENT HANDLES (DEEP MEMORY)\n`;
+            block += `The following IDs exist in your deep storage. Use 'search_deep_memory' to retrieve full content if relevant.\n`;
+
+            // Group by category for cleaner index
             const categories = [...new Set(tier2.map(e => e.category))];
             categories.forEach(cat => {
-                const count = tier2.filter(e => e.category === cat).length;
-                block += `- ${cat}/ (${count} engrams)\n`;
+                const items = tier2.filter(e => e.category === cat);
+                block += `- ${cat}/: [${items.map(i => i.id).join(', ')}]\n`;
             });
         }
 
@@ -210,20 +214,27 @@ export class ProjectMemoryManager {
     }
 
     /**
-     * THE DREAM CYCLE: Maintenance Routine
-     * Called on session start or every 4 hours.
+     * THE DREAM CYCLE: Reorganizes and consolidates neural connections.
+     * 1. Decay: Reduces importance of all engrams.
+     * 2. Consolidation: Refreshed engrams stay in T1, others move to T2.
+     * 3. Forgetting: Importance 0 is deleted.
      */
-    public async performDreamCycle(): Promise<void> {
+    public async performDreamCycle(): Promise<{ decayed: number, consolidated: number, forgotten: number }> {
         const engrams = await this.getMemories();
+        let decayed = 0, consolidated = 0, forgotten = 0;
         const logs: string[] = [];
 
         const updated = engrams.map(e => {
             const oldImp = e.importance;
             const newImp = Math.max(0, oldImp - this.DECAY_STEP);
-            
+
+            if (newImp < oldImp) decayed++;
+
             if (newImp < this.TIER_THRESHOLD && oldImp >= this.TIER_THRESHOLD) {
+                consolidated++;
                 logs.push(`Transition: '${e.title}' moved to Deep Memory (Handles).`);
             } else if (newImp === 0) {
+                forgotten++;
                 logs.push(`Pruning: '${e.title}' forgotten permanently.`);
             }
 
@@ -232,15 +243,17 @@ export class ProjectMemoryManager {
 
         // Save back
         await this.saveEngrams(updated);
-        
+
         // Store maintenance log
         await this.context.workspaceState.update('lollms_dream_log', {
             timestamp: Date.now(),
             events: logs
         });
+
+        return { decayed, consolidated, forgotten };
     }
 
-    private async saveEngrams(engrams: Engram[]) {
+    private async saveEngrams(engrams: MemoryEntry[]) {
         const folders = vscode.workspace.workspaceFolders || [];
         const buffer = Buffer.from(JSON.stringify(engrams, null, 2), 'utf8');
         for (const folder of folders) {

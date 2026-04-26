@@ -158,7 +158,10 @@ export class ProjectMemoryPanel {
         <body>
             <div class="header-sticky">
                 <h2><i class="codicon codicon-chip"></i> Neural Memory Manager</h2>
-                <button id="show-add-btn"><i class="codicon codicon-add"></i> Add New Fact</button>
+                <div style="display:flex; gap:10px;">
+                    <button id="dream-btn" class="secondary" title="Reorganize and consolidate memories now."><i class="codicon codicon-cloud"></i> Dream Session</button>
+                    <button id="show-add-btn"><i class="codicon codicon-add"></i> Add New Fact</button>
+                </div>
             </div>
 
             <div id="new-memory-form" class="memory-card new-card">
@@ -194,6 +197,13 @@ export class ProjectMemoryPanel {
             <script>
                 const vscode = acquireVsCodeApi();
                 const newForm = document.getElementById('new-memory-form');
+
+                document.getElementById('dream-btn').onclick = () => {
+                    const btn = document.getElementById('dream-btn');
+                    btn.innerHTML = '<i class="codicon codicon-loading spin"></i> Dreaming...';
+                    btn.disabled = true;
+                    vscode.postMessage({ command: 'force_dream' });
+                };
 
                 document.getElementById('show-add-btn').onclick = () => {
                     newForm.style.display = 'block';

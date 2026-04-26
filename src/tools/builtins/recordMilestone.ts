@@ -16,6 +16,9 @@ export const recordMilestoneTool: ToolDefinition = {
         if (env.workspaceRoot && env.agentManager) {
             const commitMsg = `Milestone: ${params.title}\n\nAchievements: ${params.achievements}\nSolutions: ${params.solutions}`;
             await env.agentManager.runCommand(`git add . && git commit -m "${commitMsg.replace(/"/g, '\\"')}"`, signal);
+
+            // Explicitly log the git side of the milestone to the history
+            (env.agentManager as any).completedActionsHistory.push(`[GIT] 🚩 MILESTONE COMMIT: Saved current progress for "${params.title}" to history.`);
         }
 
         // 2. Output a structured tag that the webview renderer will catch and turn into a purple card

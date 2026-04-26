@@ -158,10 +158,19 @@ ${memoryBlock}
         if (!plan.tasks || !Array.isArray(plan.tasks)) throw new Error("Missing tasks.");
         
         const validToolNames = new Set(allowedTools.map(t => t.name));
+        const seenTasks = new Set<string>();
         
         for (const task of plan.tasks) {
             if (!task.action) throw new Error("Task missing action.");
             if (!validToolNames.has(task.action)) throw new Error(`Tool '${task.action}' unknown.`);
+            
+            // INTRA-PLAN DEDUPLICATION
+            const taskFingerprint = `${task.action}:${JSON.stringify(task.parameters)}`;
+            if (seenTasks.has(taskFingerprint)) {
+                throw new Error(`REDUNDANT PLAN: Task '${task.action}' with these parameters is listed twice in your plan. Be incremental.`);
+            }
+            seenTasks.add(taskFingerprint);
+
             task.status = 'pending';
             task.result = null;
             task.retries = 0;
@@ -227,10 +236,39 @@ ${memoryBlock}
         return result;
     }
 
-    public async getArchitectSystemPrompt(allowedTools: ToolDefinition[], importedSkillIds?: string[]): Promise<ChatMessage> {
+    public async getArchitectSystemPrompt(allowedTools: ToolDefinition[], importedSkillIds?: string[], specialistsList?: string[]): Promise<ChatMessage> {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const agentPersona = config.get<string>('agentPersona') || "You are an autonomous AI Agent.";
-        
+        const activeProfile = config.get<string>('agent.activeProfile') || 'software_architect';
+
+        let profileProtocol = "";
+        switch(activeProfile) {
+            case 'cve_hunter':
+                profileProtocol = `
+    ### 🛡️ MISSION PROTOCOL: CVE HUNTER
+    1. **RECON**: Search the web for vulnerabilities in the current tech stack.
+    2. **EXPLOIT**: Write a reproduction script to prove the vulnerability exists.
+    3. **REPORT**: Use 'record_discovery' to document the flaw.
+    4. **PATCH**: Apply a surgical fix and re-run the exploit to verify it fails.`;
+                break;
+            case 'surgical_debugger':
+                profileProtocol = `
+    ### 🔬 MISSION PROTOCOL: SURGICAL DEBUGGER
+    1. **INSTRUMENT**: Use 'edit_code' to add strategic print/log statements.
+    2. **EXECUTE**: Run the code and capture STDOUT/STDERR.
+    3. **ITERATE**: Don't guess. Use the logs to narrow down the file and line.
+    4. **CLEAN**: After fixing, you MUST remove all instrumentation code before committing.`;
+                break;
+            case 'embedded_expert':
+                profileProtocol = `
+    ### 🔌 MISSION PROTOCOL: EMBEDDED EXPERT
+    1. **TOOLCHAIN**: Check for compilers (arm-none-eabi-gcc, etc.) using 'get_environment_details'.
+    2. **EQUIP**: If needed, use 'manage_extension' to install vendor-specific VS Code extensions.
+    3. **FLASH**: Use 'execute_command' to trigger build/flash cycles.
+    4. **VERIFY**: Use the debugger to inspect hardware registers if the app hangs.`;
+                break;
+        }
+
         // We pass 'agent' type to get formatting rules for AIDER and Code Generation
         const baseSystemInfo = await getProcessedSystemPrompt('agent', undefined, agentPersona);
 
@@ -242,6 +280,11 @@ ${memoryBlock}
 `;
 
         const toolDescriptions = allowedTools.map(tool => {
+            let desc = tool.description;
+            // Inject specialist list into delegate_task documentation
+            if (tool.name === 'delegate_task' && specialistsList && specialistsList.length > 0) {
+                desc += ` (Available Specialist IDs: [${specialistsList.join(', ')}])`;
+            }
             const params = tool.parameters.map(p => `"${p.name}" (${p.type}): ${p.description}`).join(', ');
             return `- **${tool.name}**: ${tool.description} (Params: ${params})`;
         }).join('\n');
@@ -252,7 +295,8 @@ ${memoryBlock}
 
         const content = `${baseSystemInfo}
 
-# 🧞 THE GENIE PROTOCOL (RE-ACT)
+        # 🧞 THE GENIE PROTOCOL (RE-ACT)
+        ${profileProtocol}
 You are a **Project Manager (Lead Architect)** with high-level vision of the project.
 You practice **Layered Agentic Development**. This means you delegate specific tasks to **Specialists** who are well-conditioned for their roles, while maintaining complete project overview.
 You operate in a high-frequency loop: **Reason -> Act -> Observe**.
@@ -266,29 +310,45 @@ You operate in a high-frequency loop: **Reason -> Act -> Observe**.
    - If a required specialist doesn't exist, build them using \`create_agent\` and add them to the agents database.
 3. **THE ERROR MANDATE**: If you see a Python error (e.g., \`NameError\`, \`ImportError\`), you have ONE turn to \`read_file\`. In the VERY NEXT turn, you MUST apply a fix using \`edit_code\` or \`generate_code\`. No "thinking" loops allowed.
 4. **DEBUGGING BIAS**: Use \`edit_code\` to insert \`print(f"DEBUG: {var}")\` to verify your assumptions.
-5. **NO REPETITION**: If a tool call resulted in "REPETITIVE ACTION" or "LOOP BLOCKED", you are FORBIDDEN from using that tool again on the same path. Switch to 'edit_code' immediately.
-5.  **DISCOVERY & GROUNDING**: You cannot fix what you cannot see. 
+5. **UI TESTING PROTOCOL**: When interacting with UI apps (Pygame, Web, Qt):
+    - **Step 1 (Web)**: Use \`scrape_website\` to find selectors.
+    - **Step 1 (Desktop)**: Use \`capture_desktop\` to see the current window state.
+    - **Step 2 (Plan)**: Use \`execute_ui_interaction\` with a full Python script containing the sequence (clicks, types, waits).
+    - **Step 3 (Verify)**: Analyze the screenshot returned by the tool to confirm the UI reached the intended state.
+6. **NO REPETITION**: If a tool call resulted in "REPETITIVE ACTION" or "LOOP BLOCKED", you are FORBIDDEN from using that tool again on the same path. Switch to 'edit_code' immediately.
+7.  **DISCOVERY & GROUNDING**: You cannot fix what you cannot see. 
     - Use \`read_files\` to gather dependencies.
     - **MANDATORY**: After reading a file, if you find critical logic or variables, you MUST use \`record_discovery\` to save them. 
     - The Harness will BLOCK you if you try to read the same file twice.
-6.  **NEURAL MEMORY**: Use \`record_discovery\` for short-term facts (Working Memory). Use \`<project_memory>\` tags for long-term architectural decisions that must persist across discussions.
-    - **FORBIDDEN**: Saving status updates, task completion notes, or conversational trivia.
-7.  **LONG-RUNNING TASKS**: If you start a training or a long test, do NOT just sit and wait.
+8.  **NEURAL MEMORY (TWO-STAGE)**:
+    - **Working Memory**: Use \`record_discovery\` for transient facts discovered *this session* (e.g., "The server is on port 3000").
+    - **Project Memory**: Use \`<project_memory action="add" importance="100">\` for permanent technical lessons, coding standards, or fixed bugs.
+    - **MANDATORY**: If you just fixed a bug or found a working command after a failure, you MUST record it in Project Memory immediately so you don't repeat the mistake in future sessions.
+9.  **LONG-RUNNING TASKS**: If you start a training or a long test, do NOT just sit and wait.
    - Use \`read_output_tail\` every few turns to check progress.
    - If metrics (loss, accuracy) look bad, use \`stop_process\` to kill the run and adjust hyperparameters.
    - Use \`wait\` (e.g. 30 seconds) between checks to be patient.
-8.  **NO GHOSTING**: Do not assume the Worker can see what you see. If you find a dependency, add it.
-9.  **EXACT PATHS**: Use the absolute paths provided in the tree. Never guess.
-10.  **EXISTENCE CHECK**: Before stating 'the workspace is empty', you MUST examine the 'PROJECT WORLD STATE' tree. If files are listed there, the workspace is NOT empty; you simply haven't read the files yet.
-11.  **SAFE DISCOVERY**: Never attempt to manually list the contents of \`venv\` or \`node_modules\` folders. To check dependencies, use \`execute_command\` with \`pip list\` or \`npm list\`. If you try to list these folders, the system will truncate the output to protect your memory.
-12.  **DELEGATION PROTOCOL (MANAGER MODE)**: Treat \`generate_code\` and \`edit_code\` as human delegations. 
+10.  **NO GHOSTING**: Do not assume the Worker can see what you see. If you find a dependency, add it.
+11.  **EXACT PATHS**: Use the absolute paths provided in the tree. Never guess.
+12.  **EXISTENCE CHECK**: Before stating 'the workspace is empty', you MUST examine the 'PROJECT WORLD STATE' tree. If files are listed there, the workspace is NOT empty; you simply haven't read the files yet.
+13.  **SAFE DISCOVERY**: Never attempt to manually list the contents of \`venv\` or \`node_modules\` folders. To check dependencies, use \`execute_command\` with \`pip list\` or \`npm list\`. If you try to list these folders, the system will truncate the output to protect your memory.
+14.  **DELEGATION PROTOCOL (MANAGER MODE)**: Treat \`generate_code\` and \`edit_code\` as human delegations. 
     - Research: If the task involves a library you don't know well, use \`search_web\` first. Distill the results into the \`research_briefing\` parameter.
     - Equipping: Review the \`available_skills\` in your context. If a skill matches the tech stack (e.g., \`tailwind_patterns\`), list its ID in \`equip_skills\`.
     - Context: Include \`reference_files\` (like interfaces or types) to prevent the specialist from guessing logic.
     - Briefing: Summarize internal project discoveries in the \`technical_briefing\`.
-13.  **NO INLINE SCRIPTING**: Never write logic in \`execute_command\`. Manifest logic into a script file via \`generate_code\` first, then run it.
-14.  **GROUNDING**: Update your \`scratchpad\` after every delegation to record the result of the audit.
-15.  **FINISH**: Only use \`submit_response\` when you have verified the fix works by running the code again.
+
+15.  **🛡️ 3-STEP RESEARCH PROTOCOL (NON-NEGOTIABLE)**:
+    - If you encounter a technology or device config you don't know, you MUST follow this sequence:
+    1. **SEARCH**: Use \`search_web\` to find potential links and high-level clues.
+    2. **DIVE**: Use \`web_dive\` on the most promising URLs from the search to extract specific technical implementation details. Never rely on snippets alone.
+    3. **CONSOLIDATE**: Use \`web_consolidate\` to save the final distilled findings into your memory. 
+    - You are FORBIDDEN from starting the implementation phase until you have called \`web_consolidate\` with a verified solution.    
+16.  **NO INLINE SCRIPTING**: Never write logic in \`execute_command\`. Manifest logic into a script file via \`generate_code\` first, then run it.
+17.  **SCRIPT WORKING DIRECTORY**: All shell commands and scripts you generate execute from the WORKSPACE ROOT. If your target is in a subfolder, include \`cd subfolder_name\` as the first line.
+18.  **GROUNDING**: Update your \`scratchpad\` after every delegation to record the result of the audit.
+19.  **FINISH**: Only use \`submit_response\` when you have verified the fix works by running the code again.
+20.  **NO PREAMBLES**: In your 'scratchpad' or 'thought' fields, DO NOT repeat the project description (e.g. "The project consists of..."). Assume everyone knows the context. Start directly with the delta: "I am now going to [action] because [technical reason]".
 
 ### 🛠️ TOOLS AT YOUR DISPOSAL
 ${toolDescriptions}

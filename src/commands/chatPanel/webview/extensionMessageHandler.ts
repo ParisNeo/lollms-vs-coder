@@ -209,6 +209,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         state.isInspectorEnabled = message.isInspectorEnabled;
                     }
                     state.appliedState = message.appliedState || {};
+
+                    // Restore Agent Mode UI state (Red vs Blue)
+                    if (message.agentMode !== undefined && state.capabilities) {
+                        state.capabilities.agentMode = message.agentMode;
+                        updateBadges(); // This refreshes the HUD and applies theme classes
+                    }
+
                     let hasChatContent = false;
                     if (Array.isArray(message.messages)) {
                         message.messages.forEach((msg: any) => {
@@ -537,44 +544,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 }
                 break;
             case 'showAvailableTools':
-                if (dom.toolsListDiv) {
-                    dom.toolsListDiv.innerHTML = '';
-                    message.allTools.forEach((tool: any) => {
-                        const isChecked = message.enabledTools.includes(tool.name);
-                        const toolItem = document.createElement('div');
-                        toolItem.className = 'tool-item';
-                        let settingsHtml = '';
-                        if (tool.hasSettings) {
-                            settingsHtml = `<button class="icon-btn tool-settings-btn" title="Configure Tool" data-tool="${tool.name}"><i class="codicon codicon-settings-gear"></i></button>`;
-                        }
-                        toolItem.innerHTML = `
-                            <div class="checkbox-container" style="justify-content: space-between;">
-                                <div style="display: flex; align-items: center;">
-                                    <label class="switch">
-                                        <input type="checkbox" class="tool-item-checkbox" id="tool-${tool.name}" value="${tool.name}" ${isChecked ? 'checked' : ''}>
-                                        <span class="slider"></span>
-                                    </label>
-                                    <label for="tool-${tool.name}" class="tool-item-details">
-                                        <strong>${tool.name}</strong><br>
-                                        <span style="font-weight:normal; font-size: 0.9em; opacity: 0.8;">${tool.description}</span>
-                                    </label>
-                                </div>
-                                ${settingsHtml}
-                            </div>
-                        `;
-                        dom.toolsListDiv.appendChild(toolItem);
-                    });
-                    const settingsBtns = dom.toolsListDiv.querySelectorAll('.tool-settings-btn');
-                    settingsBtns.forEach(btn => {
-                        btn.addEventListener('click', (e) => {
-                            e.stopPropagation();
-                            vscode.postMessage({ command: 'openSettings' });
-                        });
-                    });
-                }
-                if (dom.toolsModal) {
-                    dom.toolsModal.classList.add('visible');
-                }
+                import('./ui.js').then(ui => {
+                    const policies = state.capabilities?.toolPolicies || {};
+                    ui.renderAdvancedToolsList(message.allTools, policies);
+                    if (dom.toolsModal) {
+                        dom.toolsModal.classList.add('visible');
+                    }
+                });
                 break;
             case 'updateStatus':
                 if (dom.statusLabel && dom.statusText) {
@@ -615,6 +591,14 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     actionBtn.classList.remove('apply-btn');
                     actionBtn.classList.add('applied'); // Turns Green
                     actionBtn.disabled = true;
+                }
+
+                const repromptBtn = document.getElementById(`btn-reprompt-${blockId}`) as HTMLButtonElement;
+                if (repromptBtn) {
+                    repromptBtn.innerHTML = `<span class="codicon codicon-check"></span> Added`;
+                    repromptBtn.classList.remove('apply-btn');
+                    repromptBtn.classList.add('applied');
+                    repromptBtn.disabled = true;
                 }
 
                 // Update the file list visualization within the expansion block

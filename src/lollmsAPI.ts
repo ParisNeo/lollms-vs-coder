@@ -645,9 +645,6 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
     // =========================================================================
     // 🛡️ FINAL API OUTBOUND LOG (DEBUG)
     // =========================================================================
-    console.log(`%c[LoLLMs API] >>> Request to Backend (${backend})`, 'color: #00ff00; font-weight: bold;');
-    console.log(`Model: ${model} | Stream: ${!!onChunk}`);
-    console.log(`Total Sequence Length: ${sanitizedMessages.length} messages`);
     
     sanitizedMessages.forEach((msg, idx) => {
         const role = msg.role.toUpperCase();

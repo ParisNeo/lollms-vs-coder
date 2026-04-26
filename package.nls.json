@@ -16,6 +16,7 @@
     "command.removeFolderFromContext.title": "Lollms: Remove Folder from Context",
     "command.showConfigView.title": "Lollms: Open Settings",
     "command.showHelp.title": "Lollms: Show Help",
+    "command.clearLog.title": "Lollms: Clear System Logs",
     "command.exportContextContent.title": "Lollms: Export Context to Clipboard",
     "command.autoSelectContextFiles.title": "Lollms: Auto-Select Context Files",
     "command.saveNewFile.title": "Lollms: Save New File",

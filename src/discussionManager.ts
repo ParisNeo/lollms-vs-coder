@@ -60,7 +60,7 @@ export class DiscussionManager {
         this._onDidChangeDiscussions.fire();
     }
 
-    private async initialize() {
+    public async initialize() {
         const folders = vscode.workspace.workspaceFolders ||[];
         for (const folder of folders) {
             const dir = vscode.Uri.joinPath(folder.uri, '.lollms', 'discussions');

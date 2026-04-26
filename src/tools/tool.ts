@@ -18,6 +18,11 @@ export interface Task {
     dependencies?: number[]; // Task IDs that must complete before this starts
     status: 'pending' | 'in_progress' | 'completed' | 'failed';
     result: string | null;
+    memory_delta?: {
+        variables?: Record<string, any>;
+        discoveries?: string[];
+        thought?: string;
+    };
     retries: number;
     can_retry?: boolean;
 }

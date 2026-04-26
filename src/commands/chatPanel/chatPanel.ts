@@ -114,8 +114,6 @@ export class ChatPanel {
         this._viewReadyResolver = resolve;
     });
 
-    this.log(`ChatPanel initialized for discussion: ${discussionId}`);
-
     panel.onDidChangeViewState(e => {
         if (e.webviewPanel.active) {
             ChatPanel.currentPanel = this;
@@ -212,11 +210,9 @@ export class ChatPanel {
 
     public setAgentManager(agent: AgentManager) {
       if (ChatPanel.activeAgents.has(this.discussionId)) {
-          this.log(`Reconnecting to EXISTING active agent for discussion ${this.discussionId}`);
           this.agentManager = ChatPanel.activeAgents.get(this.discussionId)!;
           this.agentManager.setUI(this);
       } else {
-          this.log(`Registering NEW active agent for discussion ${this.discussionId}`);
           this.agentManager = agent;
           ChatPanel.activeAgents.set(this.discussionId, agent);
       }
@@ -366,10 +362,12 @@ export class ChatPanel {
               this._currentDiscussion = discussion;
               this._panel.title = this._currentDiscussion.title;
               
+              // Ensure AgentManager internal state matches the discussion's saved capability
               if (this.agentManager) {
-                  const isActive = this.agentManager.getIsActive();
-                  if (isActive !== this._discussionCapabilities.agentMode) {
-                      this._discussionCapabilities.agentMode = isActive;
+                  const savedAgentMode = !!this._discussionCapabilities.agentMode;
+                  if (this.agentManager.getIsActive() !== savedAgentMode) {
+                      // Synchronize the manager's state without sending a system message to chat
+                      (this.agentManager as any).isActive = savedAgentMode;
                   }
               }
           } else {
@@ -440,6 +438,7 @@ export class ChatPanel {
           command: 'loadDiscussion', 
           messages: safeMessages,
           isInspectorEnabled: isInspectorEnabled,
+          agentMode: !!this._discussionCapabilities.agentMode, // Explicitly pass mode for UI theme
           appliedState: this._currentDiscussion.appliedState || {},
           currentModel: this._currentDiscussion.model || this._lollmsAPI.getModelName()
       });
@@ -645,8 +644,6 @@ export class ChatPanel {
                 return;
             }
 
-            this.log(`Context content fetched. Length: ${context.text.length} chars`);
-
             if (this._isDisposed) return;
 
             const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles()?.map(f => f.path) || [];
@@ -673,14 +670,11 @@ export class ChatPanel {
             this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: 'Counting tokens...' });
             this._panel.webview.postMessage({ command: 'updateStatus', status: 'Computing tokens length...', type: 'info' });
 
-            // --- SEGMENTED TOKEN CALCULATION ---
             const { estimateImageTokens } = require('../../utils');
 
-            // 1. System Prompt & Skills (Authority over instructions)
             const personaContent = this.getCurrentPersonaSystemPrompt();
             const systemText = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, false, { ...context, tree: '', files: '' });
 
-            // 2. Discussion History (Conversational Context)
             const historyText = this._currentDiscussion!.messages.map(msg => {
                 const content = msg.content;
                 if (typeof content === 'string') return content;
@@ -688,7 +682,6 @@ export class ChatPanel {
                 return '';
             }).join('\n');
 
-            // 3. Image Tokens (LUT Aware & Capability Gated)
             let imageTokens = 0;
             const visionEnabled = this._discussionCapabilities.enableImages !== false;
 
@@ -700,10 +693,6 @@ export class ChatPanel {
                     }
                 });
             }
-
-            this.log(`Segmented Tokenization Started. Model: ${modelForTokenization}`);
-
-            // Parallelize tokenization requests but handle Context Size independently to prevent total failure
             const [systemRes, historyRes, filesRes, contextSizeRes] = await Promise.all([
                 this._lollmsAPI.tokenize(systemText, modelForTokenization).catch(e => ({ count: Math.ceil(systemText.length/3.2), isEstimation: true })),
                 this._lollmsAPI.tokenize(historyText, modelForTokenization).catch(e => ({ count: Math.ceil(historyText.length/3.2), isEstimation: true })),
@@ -713,7 +702,6 @@ export class ChatPanel {
                     return null; // Handle null in the next step
                 })
             ]);
-            this.log(`"systemRes":${systemRes},\n"historyRes":${historyRes},\n"filesRes":${filesRes},\n"contextSizeRes":${contextSizeRes},\n`);
             if (this._isDisposed || signal.aborted) return;
 
             // RESOLVE CONTEXT SIZE Authoritatively
@@ -749,21 +737,6 @@ export class ChatPanel {
             Logger.info(`[TokenStats] Success! Model: ${modelForTokenization}`);
             Logger.info(`[TokenStats] Breakdown: System=${systemRes.count}, History=${historyRes.count}, Files=${filesRes.count}, Images=${imageTokens}`);
             Logger.info(`[TokenStats] Final: ${totalTokens} / ${ctxSize} (Approx: ${isActuallyApproximate})`);
-
-            if (this._panel && this._panel.webview) {
-                this._panel.webview.postMessage({
-                    command: 'updateTokenProgress',
-                    totalTokens: totalTokens,
-                    contextSize: ctxSize,
-                    isApproximate: isActuallyApproximate, 
-                    segments: {
-                        system: systemRes.count,
-                        history: historyRes.count,
-                        files: filesRes.count,
-                        images: imageTokens
-                    }
-                });
-            }
 
             if (this._panel && this._panel.webview) {
                 this._panel.webview.postMessage({
@@ -1627,16 +1600,18 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
       }
   }
   
-  public async requestUserInput(question: string, signal: AbortSignal): Promise<string> {
+  public async requestUserInput(question: string, signal: AbortSignal, options?: { isAgentZone?: boolean }): Promise<string> {
       return new Promise((resolve, reject) => {
           this._inputResolver = resolve;
           
-          this.addMessageToDiscussion({
-              id: 'agent_request_' + Date.now(),
-              role: 'assistant',
-              content: question,
-              model: this._currentDiscussion?.model || this._lollmsAPI.getModelName()
-          });
+          if (!options?.isAgentZone) {
+            this.addMessageToDiscussion({
+                id: 'agent_request_' + Date.now(),
+                role: 'assistant',
+                content: question,
+                model: this._currentDiscussion?.model || this._lollmsAPI.getModelName()
+            });
+          }
           
           this.updateGeneratingState();
 
@@ -1664,22 +1639,37 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
     };
 
     if (this._inputResolver) {
-        let text = (typeof userMessage.content === 'string') ? userMessage.content : "User provided input.";
-        const resolver = this._inputResolver;
-        this._inputResolver = null;
-        
-        // Humanize the visual bubble for form data
-        if (text.startsWith('FORM_SUBMISSION:')) {
-            try {
-                const data = JSON.parse(text.substring(16));
-                // If there's a simple choice, show that, otherwise show all values
-                const vals = Object.values(data);
-                userMessage.content = vals.length === 1 ? String(vals[0]) : vals.join(', ');
-            } catch(e) {}
+        let rawText = (typeof userMessage.content === 'string') ? userMessage.content : "User provided input.";
+
+        // Handle potential multipart content
+        if (Array.isArray(userMessage.content)) {
+            const textPart = userMessage.content.find(p => p.type === 'text');
+            if (textPart) rawText = textPart.text;
         }
 
+        const resolver = this._inputResolver;
+        this._inputResolver = null;
+
+        // Create a visual-only copy for the chat bubble
+        let visualContent = rawText;
+        if (rawText.startsWith('FORM_SUBMISSION:')) {
+            try {
+                const data = JSON.parse(rawText.substring(16));
+                const vals = Object.values(data);
+                // Map internal values to readable labels if possible, else use raw values
+                visualContent = `🛡️ **Safety Action Confirmed:** ${vals.join(', ')}`;
+            } catch(e) {
+                visualContent = "Form submitted.";
+            }
+        }
+
+        userMessage.content = visualContent;
         await this.addMessageToDiscussion(userMessage);
-        resolver(text);
+
+        // Resolve with the RAW text so AgentManager can parse the JSON
+        resolver(rawText);
+
+        this.updateGeneratingState();
         return;
     }
 
@@ -2303,9 +2293,6 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
         // 🛡️ FINAL API OUTBOUND LOG (DEBUG)
         // =========================================================================
         const targetModel = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
-        console.log(`\n=========================================================================`);
-        console.log(`🚀 SENDING PROMPT TO LLM (Model: ${targetModel})`);
-        console.log(`📝 Total Messages in Payload: ${messagesToSend.length}`);
         
         messagesToSend.forEach((msg, idx) => {
             const role = msg.role.toUpperCase();
@@ -2314,14 +2301,9 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
             if (contentPrev.length > 1000) {
                 const head = contentPrev.substring(0, 500);
                 const tail = contentPrev.substring(contentPrev.length - 500);
-                console.log(`\n[MESSAGE ${idx}] ROLE: ${role} | LENGTH: ${contentPrev.length} chars`);
-                console.log(`--- START ---\n${head}\n...\n[TRUNCATED]\n...\n${tail}\n--- END ---`);
             } else {
-                console.log(`\n[MESSAGE ${idx}] ROLE: ${role} | LENGTH: ${contentPrev.length} chars`);
-                console.log(`--- CONTENT ---\n${contentPrev}\n--- END ---`);
             }
         });
-        console.log(`=========================================================================\n`);
         // =========================================================================
 
         assistantMessageId = 'assistant_' + Date.now().toString() + Math.random().toString(36).substring(2);
@@ -3224,12 +3206,19 @@ ${targetContent}
         switch (message.command) {
             case 'webview-bootstrap-ok':
             case 'webview-html-loaded':
-                console.log("ChatPanel: HTML Loaded signal received.");
                 break;
             case 'webview-ready':
-                console.log("ChatPanel: JS Ready signal received.");
                 this._isWebviewReady = true;
                 this._viewReadyResolver();
+
+                // CRITICAL: Re-sync the agent's current plan immediately on ready
+                if (this.agentManager) {
+                    const plan = (this.agentManager as any).currentPlan;
+                    if (plan) {
+                        this.displayPlan(plan);
+                    }
+                }
+
                 if (this._isLoadPending) {
                     this.loadDiscussion();
                 }
@@ -3411,6 +3400,7 @@ ${targetContent}
                 {
                     const blockId = message.blockId;
                     const filesToAdd = message.files as string[];
+                    const reprompt = message.reprompt;
                     const results: { [key: string]: boolean } = {};
                     
                     if (!vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
@@ -3438,6 +3428,13 @@ ${targetContent}
                         await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', validFiles);
                         // Force a background token count refresh
                         this.updateContextAndTokens();
+
+                        if (reprompt) {
+                            this.sendMessage({
+                                role: 'user',
+                                content: `I have added the requested files to the context: ${validFiles.join(', ')}. Please continue.`
+                            } as any);
+                        }
                     }
 
                     webview.postMessage({
@@ -4021,11 +4018,24 @@ Task:
                 this._panel.webview.postMessage({ command: 'updateDiscussionCapabilities', capabilities: this._discussionCapabilities });
                 break;
             case 'runAgent':
-                if (!this._currentDiscussion) {
-                    vscode.window.showErrorMessage("No active discussion.");
-                    this.updateGeneratingState();
+                if (!this._currentDiscussion) return;
+
+                // Handle continuation after manual approval
+                if (message.objective === 'CONTINUE_AFTER_APPROVAL') {
+                    const plan = this.agentManager['currentPlan'];
+                    const task = plan?.tasks.find(t => t.id == message.taskId);
+                    if (task) {
+                        (task as any).needsApproval = false;
+                        this.agentManager.toggleAgentMode(); // Re-engage autonomous loop
+                        await this.agentManager.handleUserMessage(
+                            "The user has approved the task. Please execute it now and continue your mission.",
+                            this._currentDiscussion,
+                            vscode.workspace.workspaceFolders![0]
+                        );
+                    }
                     return;
                 }
+
                 if (message.message) await this.addMessageToDiscussion(message.message);
                 if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
                     await this.agentManager.handleUserMessage(
@@ -4074,10 +4084,6 @@ Task:
                 const allTools = this.agentManager.getTools();
                 const enabledTools = this.agentManager.getEnabledTools().map(t => t.name);
                 this._panel.webview.postMessage({ command: 'showAvailableTools', allTools, enabledTools });
-                break;
-            }
-            case 'updateEnabledTools': {
-                this.agentManager.setEnabledTools(message.tools);
                 break;
             }
             case 'requestLog':

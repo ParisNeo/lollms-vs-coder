@@ -23,6 +23,15 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showLog', () => 
         Logger.show()));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.clearLog', () => {
+        Logger.clear();
+        // Also clear local logs in the active chat panel if it exists
+        if (ChatPanel.currentPanel) {
+            (ChatPanel.currentPanel as any)._executionLogs = [];
+        }
+        vscode.window.showInformationMessage("Lollms: Logs cleared.");
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.copyAllErrors', async () => {
         const diagnostics = vscode.languages.getDiagnostics();
         let report = "# WORKSPACE PROBLEMS REPORT\n\n";
@@ -240,13 +249,12 @@ export const myCustomTool: ToolDefinition = {
         let title = "";
         let content = "";
 
-        // Determine correct data based on the requested tier
         switch(tier) {
             case 'scratchpad':
                 title = "🧠 Agent Thoughts (Scratchpad)";
                 const plan = agent['currentPlan'];
                 const objective = plan?.objective || "Unknown Mission";
-                const remarks = plan?.observations?.join('\n') || plan?.scratchpad || "No thoughts recorded yet.";
+                const remarks = plan?.observations?.join('\n\n') || plan?.scratchpad || "No thoughts recorded yet.";
                 content = `# MISSION OBJECTIVE\n${objective}\n\n# CURRENT REASONING\n${remarks}`;
                 break;
             case 'memory':
@@ -256,30 +264,65 @@ export const myCustomTool: ToolDefinition = {
                 break;
             case 'history':
                 title = "📜 Agent Mission Timeline";
-                content = `## EXECUTED STEPS\n\n` + agent['completedActionsHistory'].map(h => `- ${h}`).join('\n\n');
+                const history = (agent as any).completedActionsHistory ||[];
+                content = `# MISSION HISTORY\n\n` + history.map((h: string) => {
+                    return h.replace(/^\[(STEP \d+)\]/, '**$1**');
+                }).join('\n\n---\n\n');
+                if (!history.length) content += `*No actions completed yet.*`;
                 break;
-        }
+            default:
+                return;
+            }
 
-        const { InfoPanel } = await import('../commands/infoPanel');
-        InfoPanel.createOrShow(services.extensionUri, title, content);
+            const { InfoPanel } = await import('../commands/infoPanel');
+            InfoPanel.createOrShow(services.extensionUri, title, content || "No content available.");
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.viewFullContext', async (type: 'system' | 'files' | 'chat') => {
-        const panel = ChatPanel.currentPanel;
-        if (!panel) return;
+        // Fallback: If currentPanel is out of focus, find the first available open chat panel
+        const panel = ChatPanel.currentPanel || Array.from(ChatPanel.panels.values())[0];
+        if (!panel) {
+            vscode.window.showWarningMessage("No active Chat found to display context from.");
+            return;
+        }
 
         let title = "";
         let content = "";
 
-        if (type === 'system') {
-            title = "Processed System Prompt";
-            const persona = services.personalityManager.getPersonality(panel.getCurrentDiscussion()?.personalityId || 'default_coder');
-            const { getProcessedSystemPrompt } = await import('../utils');
-            content = await getProcessedSystemPrompt('chat', (panel as any)._discussionCapabilities, persona?.systemPrompt);
-        } else if (type === 'files') {
-            // Trigger the existing Usage modal logic
-            panel._panel.webview.postMessage({ command: 'requestContextUsage' });
-            return;
+        if (type === 'system' || type === 'files') {
+            const isSystem = type === 'system';
+            title = isSystem ? "Processed System Prompt" : "Project Context Files";
+
+            await vscode.window.withProgress({
+                location: vscode.ProgressLocation.Notification,
+                title: `Lollms: Extracting ${title}...`,
+                cancellable: false
+            }, async () => {
+                try {
+                    const disc = panel.getCurrentDiscussion();
+                    const contextData = await services.contextManager.getContextContent({ 
+                        importedSkillIds: disc?.importedSkills,
+                        modelName: disc?.model || services.lollmsAPI.getModelName()
+                    });
+
+                    if (isSystem) {
+                        const persona = services.personalityManager.getPersonality(disc?.personalityId || 'default_coder');
+                        const { getProcessedSystemPrompt } = await import('../utils');
+                        content = await getProcessedSystemPrompt(
+                            'chat', 
+                            (panel as any)._discussionCapabilities, 
+                            persona?.systemPrompt,
+                            undefined,
+                            false,
+                            { ...contextData, tree: '', files: '' }
+                        );
+                    } else {
+                        content = `# 🧊 ATTACHED PROJECT CONTEXT\n\n` + contextData.selectedFilesContent;
+                    }
+                } catch (e: any) {
+                    content = `Error loading content: ${e.message}`;
+                }
+            });
         } else if (type === 'chat') {
             title = "History Sent to LLM";
             content = (panel.getCurrentDiscussion()?.messages || [])

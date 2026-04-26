@@ -1,9 +1,11 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { Logger } from './logger';
-import { ContextStateProvider } from './commands/contextStateProvider';
+import { ContextStateProvider, ContextState } from './commands/contextStateProvider';
 import { LollmsAPI, ChatMessage } from './lollmsAPI';
 import { SkillsManager, Skill } from './skillsManager';
+import { DiscussionCapabilities } from './utils';
 import { CodeGraphManager } from './codeGraphManager';
 import * as mammoth from 'mammoth';
 const pdfParse = require('pdf-parse');
@@ -12,8 +14,9 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import * as os from 'os';
 import fetch from 'node-fetch';
-import { YoutubeTranscript } from 'youtube-transcript';
 import { URL } from 'url';
+// Use default require to handle the specific export structure of this library
+const YoutubeTranscript = require('youtube-transcript').default || require('youtube-transcript');
 const execAsync = promisify(exec);
 
 export interface ContextResult {
@@ -456,7 +459,7 @@ export class ContextManager {
 
     private async fetchYoutubeTranscript(videoId: string, languageCode: string = 'en') {
         try {
-            const transcript = await fetchTranscript(videoId, {
+            const transcript = await YoutubeTranscript.fetchTranscript(videoId, {
                 lang: languageCode || 'en'
             });
 
@@ -1468,7 +1471,7 @@ ${currentContents || "No files read yet."}
           const status = `Searching keywords: ${initialKeywords.join(', ')}...`;
           if (onStatusUpdate) onStatusUpdate(status);
           actionLog.push(`🔍 Grounding search for: **${initialKeywords.join(', ')}**`);
-          const searchResults = await this.searchWorkspaceKeywords(initialKeywords, workspaceFolder.uri.fsPath);
+          const searchResults = await this.searchWorkspaceKeywords(initialKeywords, folders[0].uri.fsPath);
           initialUserContent += `\n\n**Initial Search Results:**\n${searchResults}`;
       }
 
@@ -1507,10 +1510,15 @@ ${currentContents || "No files read yet."}
                 icon = '<span class="codicon codicon-close" style="color:var(--vscode-charts-red)"></span>';
             }
 
+            const isGit = l.startsWith('[GIT]');
+            const displayLabel = isGit ? l.replace('[GIT]', '').trim() : l;
+            const gitClass = isGit ? 'git-event' : '';
+            if (isGit) icon = '<span class="codicon codicon-git-commit"></span>';
+
             return `
-            <div class="timeline-item ${stateClass}" style="display:flex; align-items:flex-start; gap:10px; margin-bottom:2px;">
+            <div class="timeline-item ${stateClass} ${gitClass}" style="display:flex; align-items:flex-start; gap:10px; margin-bottom:2px;">
                 <div class="timeline-dot" style="flex-shrink:0; margin-top:2px;">${icon}</div>
-                <div class="timeline-content" style="flex:1; font-size:11px; line-height:1.2;">${l}</div>
+                <div class="timeline-content" style="flex:1; font-size:11px; line-height:1.2;">${displayLabel}</div>
             </div>`;
           }).join('');
 
@@ -1751,7 +1759,7 @@ ${cumulativeBrain || "No observations yet."}
               else if (toolName === 'get_file_info') {
                   const pathArg = params.path;
                   if (pathArg) {
-                      const uri = vscode.Uri.joinPath(workspaceFolder.uri, pathArg);
+                      const uri = vscode.Uri.joinPath(folders[0].uri, pathArg);
                       const stats = await vscode.workspace.fs.stat(uri);
                       const doc = await vscode.workspace.openTextDocument(uri);
                       chatHistory.push({ role: 'system', content: `FILE INFO for ${pathArg}:\nSize: ${stats.size} bytes\nLines: ${doc.lineCount}` });
@@ -1767,7 +1775,7 @@ ${cumulativeBrain || "No observations yet."}
                           if (allFiles.includes(fPath)) {
                               selectedFiles.add(fPath);
                               addedPaths.push(fPath);
-                              const uri = vscode.Uri.joinPath(workspaceFolder.uri, fPath);
+                              const uri = vscode.Uri.joinPath(folders[0].uri, fPath);
                               await this.contextStateProvider.setStateForUris([uri], fMode);
                           }
                       }
@@ -1782,7 +1790,7 @@ ${cumulativeBrain || "No observations yet."}
                           if (selectedFiles.has(p)) {
                               selectedFiles.delete(p);
                               removed.push(p);
-                              const uri = vscode.Uri.joinPath(workspaceFolder.uri, p);
+                              const uri = vscode.Uri.joinPath(folders[0].uri, p);
                               await this.contextStateProvider.setStateForUris([uri], 'tree-only');
                           }
                       }
@@ -1801,7 +1809,7 @@ ${cumulativeBrain || "No observations yet."}
 
                   if (pathArg && allFiles.includes(pathArg)) {
                       actionLog.push(`🔍 **Peeking**: Inspecting logic in \`${pathArg}\`...`);
-                      const uri = vscode.Uri.joinPath(workspaceFolder.uri, pathArg);
+                      const uri = vscode.Uri.joinPath(folders[0].uri, pathArg);
                       const doc = await vscode.workspace.openTextDocument(uri);
                       const start = params.start_line || 0;
                       const end = params.end_line || Math.min(start + 400, doc.lineCount);
@@ -1812,7 +1820,7 @@ ${cumulativeBrain || "No observations yet."}
               } else if (toolName === 'search_keywords') {
                 const keywords = params.keywords || params.query;
                 if (Array.isArray(keywords)) {
-                    const results = await this.searchWorkspaceKeywords(keywords, workspaceFolder.uri.fsPath);
+                    const results = await this.searchWorkspaceKeywords(keywords, folders[0].uri.fsPath);
                     chatHistory.push({ role: 'system', content: results });
                     actionLog.push(`🔍 Searched: ${keywords.join(', ')}`);
                     renderUpdate("Searching...", false, step);
@@ -1990,7 +1998,8 @@ ${cumulativeBrain || "No observations yet."}
 
     const folders = workspaceFolders;
     const includedFiles = contextFiles.filter(f => !f.path.endsWith(path.sep));
-    
+    result.projectName = path.basename(workspaceFolder.uri.fsPath);
+
     if (useRLM) {
         result.selectedFilesContent += `### 🐢 LONG CONTEXT MODE (RLM ACTIVATED)\n`;
         result.selectedFilesContent += `Context limit reached. Contents are hidden. Refer to the tree for files marked [C].\n\n`;
@@ -2177,8 +2186,7 @@ ${cumulativeBrain || "No observations yet."}
             }
         }
     }
-    const projectName = path.basename(workspaceFolder.uri.fsPath);
-    result.projectName = projectName;
+    const projectName = result.projectName;
     result.importedSkills = [];
     result.text = `# 📂 PROJECT: ${projectName}\n`;
     result.text += `**Sandbox Protocol:** You are restricted to this project folder. Use ONLY relative paths for all file operations.\n`;
@@ -2290,67 +2298,86 @@ Based on the objective and the file tree, which files are the most relevant? Ret
         this._fileTreeObject = {};
 
         // Helper to inject a path into the hierarchical object
-        const injectPath = (pathInput: string, rootFolder?: vscode.WorkspaceFolder) => {
-            // Safety: Skip paths that contain error messages from UI bugs
-            if (pathInput.includes('Malformed Block') || pathInput.includes('<<<<<<< SEARCH')) return;
+        const injectPath = (relPath: string, rootFolderName?: string) => {
+            if (!relPath || relPath.includes('Malformed Block') || relPath.includes('<<<<<<< SEARCH')) return;
 
-            let relPath = '';
-            let targetFolder = rootFolder;
+            let normalizedPath = relPath.replace(/\\/g, '/');
 
-            if (path.isAbsolute(pathInput)) {
-                const uri = vscode.Uri.file(pathInput);
-                targetFolder = vscode.workspace.getWorkspaceFolder(uri);
-                relPath = targetFolder ? vscode.workspace.asRelativePath(uri, false) : path.basename(pathInput);
-            } else {
-                relPath = pathInput;
+            // In multi-root, if the path starts with the folder name, strip it to prevent duplication
+            if (folders.length > 1 && rootFolderName && normalizedPath.startsWith(rootFolderName + '/')) {
+                normalizedPath = normalizedPath.substring(rootFolderName.length + 1);
             }
 
-            // CRITICAL: If relPath is still an absolute path (meaning asRelativePath failed)
-            // we must manually strip the workspace root to ensure only the project structure is shown.
-            if (path.isAbsolute(relPath) && targetFolder) {
-                relPath = path.relative(targetFolder.uri.fsPath, relPath);
-            }
-
-            const parts = relPath.split(/[\\/]/).filter(p => p.length > 0 && p !== '.' && p !== '..');
+            const parts = normalizedPath.split('/').filter(p => p.length > 0 && p !== '.' && p !== '..');
             if (parts.length === 0) return;
 
             let current = this._fileTreeObject;
 
-            // If multi-root, ensure we start under the folder name
-            if (folders.length > 1 && targetFolder) {
-                if (!current[targetFolder.name]) current[targetFolder.name] = {};
-                current = current[targetFolder.name];
+            if (folders.length > 1 && rootFolderName) {
+                if (!current[rootFolderName]) current[rootFolderName] = {};
+                current = current[rootFolderName];
             }
 
             parts.forEach((part, index) => {
+                const isLast = index === parts.length - 1;
                 if (!current[part]) {
-                    current[part] = (index === parts.length - 1) ? null : {};
+                    current[part] = isLast ? null : {};
+                } else if (!isLast && current[part] === null) {
+                    current[part] = {};
                 }
-                if (current[part] !== null) current = current[part];
+                if (current[part] !== null) {
+                    current = current[part];
+                }
             });
         };
 
         // A. Prioritize files explicitly in context (Guarantees they appear in tree)
         for (const file of contextFiles) {
-            // Find which root this relative path belongs to
             const root = folders.find(f => {
                 try {
                     const stats = fs.statSync(path.join(f.uri.fsPath, file.path));
                     return true;
                 } catch { return false; }
             });
-            injectPath(file.path, root);
+            injectPath(file.path, root?.name);
         }
 
-        // B. Supplement with visible disk files
-        for (const folder of folders) {
-            const allFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
-            for (const filePath of allFiles) {
-                const uri = vscode.Uri.joinPath(folder.uri, filePath);
-                if (!(this.contextStateProvider as any).isStrictlyIgnored(uri)) {
-                    injectPath(filePath, folder);
+        // B. Deep Hybrid Discovery: combine VS Code indexing with a manual FS crawl
+        // This ensures .gitignore, images, and empty folders are always seen.
+        const allVisibleFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
+        for (const filePath of allVisibleFiles) {
+            const root = folders.find(f => filePath.startsWith(f.name + '/') || 
+                                          this.normalize(vscode.workspace.asRelativePath(vscode.Uri.joinPath(f.uri, filePath), false)) === filePath);
+            injectPath(filePath, root?.name);
+        }
+
+        // C. Manual crawl for structural integrity (detecting folders and ignored files)
+        const walkSync = async (dirUri: vscode.Uri, rootName: string, depth: number) => {
+            if (depth > 5 || (signal && signal.aborted)) return;
+            try {
+                const entries = await vscode.workspace.fs.readDirectory(dirUri);
+                for (const [name, type] of entries) {
+                    const entryUri = vscode.Uri.joinPath(dirUri, name);
+                    const relPath = this.normalize(vscode.workspace.asRelativePath(entryUri, false));
+
+                    // Filter out truly blocked system artifacts but keep everything else
+                    if (['.DS_Store', 'node_modules', '__pycache__'].includes(name)) continue;
+
+                    injectPath(relPath, rootName);
+
+                    // Recurse into directories that aren't collapsed
+                    if (type === vscode.FileType.Directory) {
+                        const state = this.contextStateProvider?.getStateForUri(entryUri);
+                        if (state !== 'collapsed' && !name.startsWith('.')) {
+                            await walkSync(entryUri, rootName, depth + 1);
+                        }
+                    }
                 }
-            }
+            } catch (e) {}
+        };
+
+        for (const folder of folders) {
+            await walkSync(folder.uri, folder.name, 0);
         }
         this._isTreeDirty = false;
     }
@@ -2403,10 +2430,13 @@ Based on the objective and the file tree, which files are the most relevant? Ret
             }
         }
 
-        out += prefix + connector + key + (isDirectory ? '/' : '') + suffix + '\n';
+        out += prefix + connector + key + (isDirectory ? '/' : '') + (suffix ? ` ${suffix}` : '') + '\n';
 
         if (isDirectory && !isCollapsed) {
           out += render(obj[key], prefix + (isLast ? '    ' : '│   '), subPath, activeRoot);
+        } else if (isDirectory && isCollapsed) {
+          // Visual hint that children are hidden
+          out += prefix + (isLast ? '    ' : '│   ') + '└── ... (contents truncated)\n';
         }
       });
 

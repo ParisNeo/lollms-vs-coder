@@ -44,19 +44,9 @@ import { LocalizationManager } from './utils/localizationManager';
 
 export async function activate(context: vscode.ExtensionContext) {
     try {
-        console.log("[Lollms Debug] Extension Activate Start");
         Logger.initialize(context);
-        console.log("[Lollms Debug] Logger Initialized");
-        
         await LocalizationManager.initialize(context);
-        console.log("[Lollms Debug] LocalizationManager Initialized");
-    const testTranslation = LocalizationManager.t("displayName");
-    const isLocalized = !testTranslation.includes("%") && testTranslation !== "displayName";
-    Logger.info(`Lollms VS Coder is now active! Locale: ${vscode.env.language}. L10n Status: ${isLocalized ? 'Active' : 'Using Keys (Check Cache)'}`);
-    
-    if (!isLocalized && vscode.env.language !== 'en') {
-        Logger.warn("Localization files found but not loaded by VS Code. Manifest strings may appear as %variables%.");
-    }
+        Logger.info(`Lollms VS Coder is now active! Locale: ${vscode.env.language}.`);
 
     let activeWorkspaceFolder: vscode.WorkspaceFolder | undefined;
     const getActiveWorkspace = () => activeWorkspaceFolder;
@@ -331,8 +321,12 @@ export async function activate(context: vscode.ExtensionContext) {
         });
 
         if (!isInitialLoad) {
-            // If it's the first time we detect a workspace on startup, leave open panels alone.
-            ChatPanel.panels.forEach(panel => panel.dispose());
+            // Preservation: Don't kill active agent panels if they are currently working
+            ChatPanel.panels.forEach(panel => {
+                if (!panel.agentManager?.getIsActive()) {
+                    panel.dispose();
+                }
+            });
             vscode.window.showInformationMessage(`Lollms workspace switched to '${folder.name}'.`);
         }
     }

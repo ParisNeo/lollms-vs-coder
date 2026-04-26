@@ -47,6 +47,7 @@ export class ActionsTreeProvider implements vscode.TreeDataProvider<ActionItem> 
             actions.push(new ActionItem(l.t('label.deepSearch'), 'lollms-vs-coder.showFileSearch', 'search', l.t('tooltip.deepSearch')));
             actions.push(new ActionItem(l.t('label.generateNotebook'), 'lollms-vs-coder.generateEducativeNotebookFromAction', 'book', l.t('tooltip.generateNotebook')));
             actions.push(new ActionItem(l.t('label.showLog'), 'lollms-vs-coder.showLog', 'output', l.t('tooltip.showLog')));
+            actions.push(new ActionItem('Clear System Logs', 'lollms-vs-coder.clearLog', 'trash', 'Wipe all log files and in-memory entries'));
             actions.push(new ActionItem(l.t('label.showHelp'), 'lollms-vs-coder.showHelp', 'question', l.t('tooltip.showHelp')));
         }
 

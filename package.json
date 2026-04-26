@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.8.41",
+  "version": "0.8.42",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -95,6 +95,11 @@
         "command": "lollms-vs-coder.showLog",
         "title": "Lollms: Show Log",
         "icon": "$(output)"
+      },
+      {
+        "command": "lollms-vs-coder.clearLog",
+        "title": "Lollms: Clear System Logs",
+        "icon": "$(trash)"
       },
       {
         "command": "lollms-vs-coder.triggerCodeAction",
@@ -899,6 +904,28 @@
           "default": 100,
           "description": "Maximum number of turns an agent can take before a Mission Timeout. High values are better for long tasks like training."
         },
+        "lollmsVsCoder.agent.executionPolicy": {
+          "type": "string",
+          "default": "manual",
+          "enum": ["blocked", "manual", "automatic"],
+          "description": "Code Execution Policy for the Agent.",
+          "enumDescriptions": [
+            "Agent is forbidden from running code or shell commands.",
+            "Agent must wait for a user button click before running code (Default).",
+            "Agent can run code and shell commands autonomously."
+          ]
+        },
+        "lollmsVsCoder.agent.activeProfile": {
+          "type": "string",
+          "default": "software_architect",
+          "enum": ["software_architect", "cve_hunter", "surgical_debugger", "game_builder", "embedded_expert"],
+          "description": "The active Mission Profile for the agent."
+        },
+        "lollmsVsCoder.agent.envActivationScript": {
+          "type": "string",
+          "default": "",
+          "description": "Command to run before every shell task (e.g., 'C:\\Path\\To\\vcvarsall.bat x64'). Useful for MSVC or specific toolchains."
+        },
         "lollmsVsCoder.agent.createBranchOnEdit": {
           "type": "boolean",
           "default": true,
@@ -1331,6 +1358,16 @@
           "type": "boolean",
           "default": true,
           "description": "If enabled, zooming will center on the mouse cursor position."
+        },
+        "lollmsVsCoder.memory.autoDream": {
+          "type": "boolean",
+          "default": false,
+          "description": "If enabled, Lollms will perform a Dream Cycle automatically at a specific time every day."
+        },
+        "lollmsVsCoder.memory.dreamSchedule": {
+          "type": "string",
+          "default": "01:00",
+          "description": "The time (HH:MM) to perform the automatic Dream Cycle. (e.g., '01:00' for 1 AM)."
         }
       }
     },

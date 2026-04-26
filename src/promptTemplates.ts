@@ -135,6 +135,7 @@ ${context.files || ''}
 - Preferred Shell: ${os.platform() === 'win32' ? 'PowerShell 7/5.1' : 'Bash'}
 - Available Shells: ${shells.join(', ')}
 - Current Date: ${new Date().toISOString().split('T')[0]}
+- **Execution Context**: All terminal commands and scripts execute at the WORKSPACE ROOT. If you are targeting files in a subfolder, you MUST \`cd\` into that subfolder first.
 `;
 
         const skillsAuthority = (context?.skills || capabilities?.hasSkills) ? `

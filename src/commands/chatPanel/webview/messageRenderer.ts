@@ -1416,16 +1416,25 @@ function renderAddFilesBlock(params: any, messageId: string): string {
             <div class="expansion-file-list" id="list-${blockId}" style="margin-bottom:12px;">
                 ${fileItems}
             </div>
-            <button class="code-action-btn ${btnClass} add-files-to-context-btn" 
-                id="btn-${blockId}" 
-                ${btnDisabled}
-                data-files="${fileListJson}" 
-                data-block-id="${blockId}">
-                <span class="codicon ${btnIcon}"></span> ${btnText}
-            </button>
-        </div>
-    </div>`;
-}
+            <div style="display:flex; gap: 8px;">
+                <button class="code-action-btn ${btnClass} add-files-to-context-btn" 
+                    id="btn-${blockId}" 
+                    ${btnDisabled}
+                    data-files="${fileListJson}" 
+                    data-block-id="${blockId}">
+                    <span class="codicon ${btnIcon}"></span> ${btnText}
+                </button>
+                <button class="code-action-btn ${btnClass} add-and-reprompt-btn" 
+                    id="btn-reprompt-${blockId}" 
+                    ${btnDisabled}
+                    data-files="${fileListJson}" 
+                    data-block-id="${blockId}">
+                    <span class="codicon ${allIncluded ? 'codicon-check' : 'codicon-sync'}"></span> ${allIncluded ? 'Added' : 'Add & Reprompt'}
+                </button>
+            </div>
+            </div>
+            </div>`;
+            }
 
 function renderImageEditBlock(params: any, messageId: string): string {
     const blockId = `img-edit-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
@@ -1617,8 +1626,9 @@ function renderFormBlock(xmlContent: string, messageId: string): string {
     const submitMatch = xmlContent.match(/<submit\s+label=["'](.*?)["']\s*\/>/i);
     const submitLabel = submitMatch ? submitMatch[1] : "Validate Choice";
 
+    const safeMsgId = messageId || "agent_plan";
     return `
-    <div class="lollms-form-block" data-form-id="${formId}">
+    <div class="lollms-form-block" data-form-id="${formId}" id="form-${formId}">
         <div class="lollms-form-header">
             <span class="codicon codicon-question"></span>
             <span>${sanitizer.sanitize(title)}</span>
@@ -1628,9 +1638,10 @@ function renderFormBlock(xmlContent: string, messageId: string): string {
         </div>
         <div class="lollms-form-footer">
             <button class="code-action-btn apply-btn lollms-form-submit-btn" 
+                    id="btn-submit-${formId}"
                     data-form-id="${formId}" 
-                    data-message-id="${messageId}">
-                <span class="codicon codicon-check"></span> ${sanitizer.sanitize(submitLabel)}
+                    data-message-id="${safeMsgId}">
+                <span class="codicon codicon-check"></span> <span>${sanitizer.sanitize(submitLabel)}</span>
             </button>
         </div>
     </div>`;
@@ -3345,7 +3356,14 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                 actionBtn.className = 'code-action-btn applied';
                 actionBtn.disabled = true;
             }
-        } catch (e) {
+
+            const repromptBtn = document.getElementById(`btn-reprompt-${blockId}`) as HTMLButtonElement;
+            if (repromptBtn && allIncluded && !repromptBtn.classList.contains('applied')) {
+                repromptBtn.innerHTML = `<span class="codicon codicon-check"></span> Added`;
+                repromptBtn.className = 'code-action-btn applied';
+                repromptBtn.disabled = true;
+            }
+            } catch (e) {
             console.error("Failed to sync expansion block:", e);
         }
     });
@@ -3648,13 +3666,27 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
             if (task.status === 'failed' && task.can_retry && !isPrevious) {
                 retryButtonHtml = `<button class="retry-btn" data-task-id="${task.id}" title="Retry this task"><span class="codicon codicon-debug-restart"></span> Retry</button>`;
             }
+
+            let approvalButtonHtml = '';
+            if ((task as any).needsApproval && task.status === 'pending' && !isPrevious) {
+                approvalButtonHtml = `<button class="code-action-btn apply-btn approve-task-btn" data-task-id="${task.id}" style="width:100%; justify-content:center; margin-bottom:8px; border: 2px solid var(--vscode-charts-green);"><span class="codicon codicon-play"></span> Run Task & Continue</button>`;
+            }
             
             let resultHtml = '';
             
             // Show Parameters for all tasks to allow inspection and editing
             if (task.parameters) {
                 let editHtml = '';
-                if (task.status === 'failed' || task.status === 'pending') {
+                let formHtml = '';
+                const hasForm = !!task.parameters.lollms_form;
+
+                // --- NEW: Render Forms inside Plan Tasks ---
+                // We use 'agent_plan' as the identifier since the Plan Zone is global to the session
+                if (hasForm) {
+                    formHtml = `<div style="margin-top: 10px;">${renderFormBlock(task.parameters.lollms_form, "agent_plan")}</div>`;
+                }
+
+                if (task.status === 'failed' || (task.status === 'pending' && !hasForm)) {
                     editHtml = `
                     <div class="task-edit-zone" style="margin-top: 8px; border-top: 1px solid var(--vscode-widget-border); padding-top: 8px;">
                         <button class="code-action-btn edit-params-btn" data-task-id="${task.id}" style="margin-bottom: 4px;">
@@ -3672,8 +3704,8 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
 
                 resultHtml += `
                     <div class="task-result" style="margin-bottom: 4px;">
-                        <details ${task.status === 'in_progress' || task.status === 'failed' ? 'open' : ''}>
-                            <summary class="task-result-summary" style="opacity:0.7;">Task Details & Parameters</summary>
+                        <details ${task.status === 'in_progress' || task.status === 'failed' || hasForm ? 'open' : ''}>
+                            <summary class="task-result-summary" style="opacity:0.7;">${hasForm ? '🛡️ SAFETY ACTION REQUIRED' : 'Task Details & Parameters'}</summary>
                             <div class="task-result-box" style="border-style: dashed; opacity: 0.9; padding: 12px;">
                                 ${task.model || (task.agent_skills && task.agent_skills.length > 0) ? `
                                 <div style="display:flex; gap:8px; margin-bottom: 10px; opacity: 0.7;">
@@ -3681,11 +3713,11 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
                                     ${task.agent_skills && task.agent_skills.length > 0 ? `<span class="tool-badge">💡 ${task.agent_skills.length} Skills</span>` : ''}
                                 </div>` : ''}
 
-                                ${renderFormFields(task.parameters)}
+                                ${task.parameters.lollms_form ? formHtml : renderFormFields(task.parameters)}
 
                                 ${editHtml}
                             </div>
-                        </details>
+                            </details>
                     </div>`;
             }
 
@@ -3706,6 +3738,30 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
 
             let metaTabsHtml = '';
             if (task.model) metaTabsHtml += `<div class="agent-meta-tab" title="Assigned Model"><span class="codicon codicon-hubot"></span> ${sanitizer.sanitize(task.model)}</div>`;
+
+            // Calculate Mini Brain Bar Segments
+            const hasThoughts = !!task.memory_delta?.thought;
+            const hasVariables = Object.keys(task.memory_delta?.variables || {}).length > 0;
+            const hasDiscoveries = (task.memory_delta?.discoveries || []).length > 0;
+            const hasOutput = !!task.result;
+
+            let memoryBarHtml = '';
+            if (task.status === 'completed' || task.status === 'failed') {
+                memoryBarHtml = `
+                    <div class="task-memory-bar" title="Task Memory Pattern (Click to inspect)">
+                        <div class="brain-segment segment-scratchpad" style="width: ${hasThoughts ? '25' : '0'}%" data-type="thoughts"></div>
+                        <div class="brain-segment segment-memory" style="width: ${(hasVariables || hasDiscoveries) ? '50' : '0'}%" data-type="memory"></div>
+                        <div class="brain-segment segment-history" style="width: ${hasOutput ? '25' : '0'}%" data-type="history"></div>
+                    </div>
+                    <div id="task-mem-render-${task.id}" class="task-memory-render-area">
+                        <div class="task-memory-header">
+                            <span class="mem-title">Memory Content</span>
+                            <span class="codicon codicon-close" style="cursor:pointer" onclick="this.parentElement.parentElement.classList.remove('visible')"></span>
+                        </div>
+                        <div class="task-memory-body markdown-body"></div>
+                    </div>
+                `;
+            }
             if (task.agent_persona) metaTabsHtml += `<div class="agent-meta-tab" title="Persona"><span class="codicon codicon-organization"></span> Persona Set</div>`;
             if (task.agent_skills && task.agent_skills.length > 0) metaTabsHtml += `<div class="agent-meta-tab" title="Skills"><span class="codicon codicon-lightbulb"></span> ${task.agent_skills.length} Skills</div>`;
             if (task.agent_files && task.agent_files.length > 0) metaTabsHtml += `<div class="agent-meta-tab" title="Files Context"><span class="codicon codicon-file-code"></span> ${task.agent_files.length} Files</div>`;
@@ -3725,7 +3781,9 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
                     </div>
                     <div class="agent-card-body">
                         <div class="task-description" style="margin-bottom: ${metaTabsHtml ? '8px' : '0'}; line-height: 1.4;">${sanitizer.sanitize(task.description)}</div>
+                        ${approvalButtonHtml}
                         ${metaTabsHtml ? `<div class="agent-meta-tabs">${metaTabsHtml}</div>` : ''}
+                        ${memoryBarHtml}
                         ${resultHtml}
                     </div>
                 </li>`;
@@ -3761,10 +3819,13 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
 
 export function displayPlan(plan: any) {
     if(!dom.agentPlanZone) return; 
-    
+
+    // CRITICAL: Store the plan globally so event handlers in events.ts can access task data on click.
+    (window as any).lastPlan = plan;
+
     // 1. Reset Container and visibility
     dom.agentPlanZone.innerHTML = '';
-    
+
     if (!plan) {
         dom.agentPlanZone.classList.remove('visible');
         dom.planResizer.classList.remove('visible');
@@ -3790,22 +3851,24 @@ export function displayPlan(plan: any) {
                 <span>${(m.total / 1024).toFixed(1)} KB</span>
             </div>
             <div class="brain-bar">
-                <div class="brain-segment segment-scratchpad" style="width: ${pScratch}%" title="Thoughts: ${m.scratchpad} chars" onclick="vscode.postMessage({command:'executeLollmsCommand', details:{command:'lollms-vs-coder.peekAgentBrain', params:'scratchpad'}})"></div>
-                <div class="brain-segment segment-memory" style="width: ${pMem}%" title="Working Memory: ${m.memory} chars" onclick="vscode.postMessage({command:'executeLollmsCommand', details:{command:'lollms-vs-coder.peekAgentBrain', params:'memory'}})"></div>
-                <div class="brain-segment segment-history" style="width: ${pHist}%" title="Mission History: ${m.history} chars" onclick="vscode.postMessage({command:'executeLollmsCommand', details:{command:'lollms-vs-coder.peekAgentBrain', params:'history'}})"></div>
+                <div class="brain-segment segment-scratchpad" data-type="scratchpad" style="width: ${pScratch}%" title="Thoughts: ${m.scratchpad} chars"></div>
+                <div class="brain-segment segment-memory" data-type="memory" style="width: ${pMem}%" title="Working Memory: ${m.memory} chars"></div>
+                <div class="brain-segment segment-history" data-type="history" style="width: ${pHist}%" title="Mission History: ${m.history} chars"></div>
             </div>
             <div class="brain-legend">
-                <div class="legend-item" onclick="vscode.postMessage({command:'executeLollmsCommand', details:{command:'lollms-vs-coder.peekAgentBrain', params:'scratchpad'}})">
+                <div class="legend-item" data-type="scratchpad">
                     <div class="dot segment-scratchpad"></div> Thoughts
                 </div>
-                <div class="legend-item" onclick="vscode.postMessage({command:'executeLollmsCommand', details:{command:'lollms-vs-coder.peekAgentBrain', params:'memory'}})">
+                <div class="legend-item" data-type="memory">
                     <div class="dot segment-memory"></div> Memory
                 </div>
-                <div class="legend-item" onclick="vscode.postMessage({command:'executeLollmsCommand', details:{command:'lollms-vs-coder.peekAgentBrain', params:'history'}})">
+                <div class="legend-item" data-type="history">
                     <div class="dot segment-history"></div> History
                 </div>
             </div>
         `;
+        // Listeners are now handled via global delegation in events.ts
+
         dom.agentPlanZone.appendChild(hud);
     }
 

@@ -110,8 +110,28 @@ export class Logger {
     public static getLogContent(): string {
         return this._entries.join('\n');
     }
-    
+
     public static getLogFilePath(): string | undefined {
         return this.logFilePath;
     }
-}
+
+    /** 
+     * Clears in-memory logs, truncates the physical log file, 
+     * and wipes the VS Code Output Channel.
+     */
+    public static clear() {
+        this._entries = [];
+        if (this.logFilePath && fs.existsSync(this.logFilePath)) {
+            try {
+                // Truncate file to 0 bytes
+                fs.writeFileSync(this.logFilePath, '');
+            } catch (e) {
+                console.error("Failed to clear log file:", e);
+            }
+        }
+        if (this.outputChannel) {
+            this.outputChannel.clear();
+        }
+        this.info("System logs cleared by user.");
+    }
+    }

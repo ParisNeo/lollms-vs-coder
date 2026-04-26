@@ -1,5 +1,6 @@
 import { ToolDefinition, ToolExecutionEnv } from '../tool';
 import fetch from 'node-fetch';
+const { YoutubeTranscript } = require('youtube-transcript');
 
 export const extractYoutubeTranscriptTool: ToolDefinition = {
     name: "extract_youtube_transcript",

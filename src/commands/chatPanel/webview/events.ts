@@ -162,7 +162,7 @@ export function initEventHandlers() {
                 e.stopPropagation();
                 e.stopImmediatePropagation();
                 // Only remove if we actually leave the window
-                if (e.relatedTarget === null) {
+                if ((e as MouseEvent).relatedTarget === null) {
                     inputArea.classList.remove('drag-over');
                 }
             }, true);
@@ -415,16 +415,17 @@ export function initEventHandlers() {
                     vscode.postMessage({ command: 'showError', message: 'Please enter a search query.' });
                     return;
                 }
-                
+
                 let limit = 5;
                 if (action === 'arxiv') {
                     const limitInp = document.getElementById('web-arxiv-limit') as HTMLInputElement;
                     limit = parseInt(limitInp.value, 10) || 5;
                 }
 
-                btn.innerHTML = '<div class="spinner"></div>';
-                btn.style.width = '80px'; // Maintain layout
-                btn.disabled = true;
+                const button = btn as HTMLButtonElement;
+                button.innerHTML = '<div class="spinner"></div>';
+                button.style.width = '80px'; // Maintain layout
+                button.disabled = true;
                 vscode.postMessage({ command: 'requestWebAction', action, params: { query: input.value, limit: limit } });
             }
         });
@@ -648,8 +649,22 @@ export function initEventHandlers() {
 
     if (dom.closeToolsModal) dom.closeToolsModal.addEventListener('click', () => dom.toolsModal.classList.remove('visible'));
     if (dom.saveToolsBtn) dom.saveToolsBtn.addEventListener('click', () => {
-        const selected = Array.from(dom.toolsListDiv.querySelectorAll('input:checked')).map((el: any) => el.value);
-        vscode.postMessage({ command: 'updateEnabledTools', tools: selected });
+        const policies: Record<string, string> = {};
+        dom.toolsListDiv.querySelectorAll('.tool-policy-select').forEach((el: any) => {
+            policies[el.dataset.tool] = el.value;
+        });
+
+        // 1. Update internal capability state
+        if (state.capabilities) {
+            state.capabilities.toolPolicies = policies;
+        }
+
+        // 2. Notify extension
+        vscode.postMessage({ 
+            command: 'updateDiscussionCapabilitiesPartial', 
+            partial: { toolPolicies: policies } 
+        });
+
         dom.toolsModal.classList.remove('visible');
     });
 
@@ -663,6 +678,10 @@ export function initEventHandlers() {
             container.style.display = 'flex';
         }
     });
+
+    // Register the shared handler on all relevant containers
+    if (dom.messagesDiv) dom.messagesDiv.addEventListener('click', handleGlobalClick);
+    if (dom.agentPlanZone) dom.agentPlanZone.addEventListener('click', handleGlobalClick);
 
     // --- Discussion Settings (Profiles) Event Listeners ---
     document.getElementById('modal-add-profile-btn')?.addEventListener('click', () => {
@@ -1126,11 +1145,11 @@ export function initEventHandlers() {
                 } else if (mode === 'replace') {
                     textToCopy = matches.map(m => m[2]).join('\n\n');
                 }
-            } else if (mode !== 'full') {
+                } else {
                 // If it's a code block but doesn't have markers, search/replace copy is invalid
                 vscode.postMessage({ command: 'showError', message: 'No SEARCH/REPLACE markers found in this block.' });
                 return;
-            }
+                }
         }
 
         if (textToCopy) {
@@ -1265,322 +1284,423 @@ export function initEventHandlers() {
         });
     }
 
-    // Handle dynamic buttons via delegation
-    if (dom.messagesDiv) {
-        dom.messagesDiv.addEventListener('click', (e) => {
-            const target = e.target as HTMLElement;
+    /**
+     * Shared Click Delegation Handler.
+     * Processes interactions for BOTH Chat Messages and the Agent Plan Zone.
+     */
+    function handleGlobalClick(e: MouseEvent) {
+        const target = e.target as HTMLElement;
 
-            // Toggle Edit Params
-            const editBtn = target.closest('.edit-params-btn') as HTMLButtonElement;
-            if (editBtn) {
-                e.stopPropagation();
-                const taskId = editBtn.dataset.taskId;
-                const container = document.getElementById(`edit-params-container-${taskId}`);
-                if (container) {
-                    container.style.display = container.style.display === 'none' ? 'flex' : 'none';
-                }
+        // --- 0. Form Submission (CRITICAL) ---
+        const formBtn = target.closest('.lollms-form-submit-btn') as HTMLButtonElement;
+        if (formBtn) {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            const formBlock = formBtn.closest('.lollms-form-block') as HTMLElement;
+            if (!formBlock) return;
+
+            // Collect Data
+            const data: Record<string, string> = {};
+            const radios = Array.from(formBlock.querySelectorAll('input[type="radio"]')) as HTMLInputElement[];
+            radios.forEach((input) => { if (input.checked) data[input.name] = input.value; });
+
+            const textInputs = Array.from(formBlock.querySelectorAll('input[type="text"], input[type="number"], textarea')) as (HTMLInputElement | HTMLTextAreaElement)[];
+            textInputs.forEach(input => { if (input.name) data[input.name] = input.value; });
+
+            // Validation check
+            if (Object.keys(data).length === 0 && radios.length > 0) {
+                formBlock.style.outline = "2px solid var(--vscode-charts-red)";
+                setTimeout(() => formBlock.style.outline = "none", 500);
                 return;
             }
-            // NEW: Handle Image Generation Button (CSP Safe)
-            const genImgBtn = target.closest('.generate-image-btn') as HTMLButtonElement;
-            if (genImgBtn) {
-                e.stopPropagation();
 
-                const block = genImgBtn.closest('.generation-block');
-                const folderInp = block?.querySelector('.asset-folder-input') as HTMLInputElement;
-                const nameInp = block?.querySelector('.asset-name-input') as HTMLInputElement;
+            // Visual State Update
+            formBtn.disabled = true;
+            formBtn.innerHTML = '<div class="spinner" style="display:inline-block; margin-right:5px;"></div> Submitting...';
 
-                let finalPath = decodeURIComponent(genImgBtn.dataset.path || '');
-                if (folderInp && nameInp) {
-                    const folder = folderInp.value.trim().replace(/\/+$/, '');
-                    finalPath = folder + '/' + nameInp.value.trim();
+            vscode.postMessage({
+                command: 'sendMessage',
+                message: { 
+                    id: 'form_response_' + Date.now(),
+                    role: 'user', 
+                    content: `FORM_SUBMISSION:${JSON.stringify(data)}`,
+                    skipInPrompt: true 
                 }
+            });
+            return;
+        }
 
-                genImgBtn.disabled = true;
-                genImgBtn.innerHTML = '<div class="spinner"></div> Generating...';
+        // 1. Granular Task Memory Bar Clicks (Inside Agent Cards)
+        console.log(`[Lollms] Global Click detected on:`, target.className, target.tagName);
 
+        // 1. Granular Task Memory Bar Clicks (Inside Agent Cards)
+        const segment = target.closest('.brain-segment') as HTMLElement;
+        if (segment) {
+            e.stopPropagation();
+            const type = segment.dataset.type;
+            const card = segment.closest('.agent-card') as HTMLElement;
+
+            // If it's the main Brain HUD (no card parent)
+            if (!card && type) {
                 vscode.postMessage({
-                    command: 'generateImage',
-                    prompt: decodeURIComponent(genImgBtn.dataset.prompt || ''),
-                    filePath: finalPath,
-                    width: genImgBtn.dataset.width || '',
-                    height: genImgBtn.dataset.height || '',
-                    buttonId: genImgBtn.id
+                    command: 'executeLollmsCommand', 
+                    details: { command: 'lollms-vs-coder.peekAgentBrain', params: type }
                 });
                 return;
             }
 
-            // Handle "Add Files to Context" Button (CSP Safe)
-            const addFilesBtn = target.closest('.add-files-to-context-btn') as HTMLButtonElement;
-            if (addFilesBtn) {
-                e.stopPropagation();
-                const filesRaw = addFilesBtn.dataset.files || '[]';
-                const blockId = addFilesBtn.dataset.blockId;
-                
-                try {
-                    const files = JSON.parse(filesRaw);
-                    addFilesBtn.disabled = true;
-                    addFilesBtn.innerHTML = '<div class="spinner"></div> Adding...';
-                    
-                    vscode.postMessage({
-                        command: 'addFilesToContext',
-                        files: files,
-                        blockId: blockId
-                    });
-                } catch (err) {
-                    console.error("Failed to parse file list from button:", err);
+            const taskId = card?.dataset.taskId;
+            if (!taskId) return;
+
+            const renderArea = document.getElementById(`task-mem-render-${taskId}`);
+            const body = renderArea?.querySelector('.task-memory-body');
+
+            const plan = (window as any).lastPlan; 
+            if (!plan) return;
+
+            const task = plan.tasks.find((t: any) => t.id == taskId);
+
+            if (renderArea && body && task) {
+                // Toggle Logic
+                if (renderArea.classList.contains('visible') && renderArea.dataset.lastType === type) {
+                    renderArea.classList.remove('visible');
+                } else {
+                    renderArea.classList.add('visible');
+                    renderArea.dataset.lastType = type;
+                    let content = "";
+                    if (type === 'thoughts' || type === 'scratchpad') {
+                        content = `### Step Reasoning\n${task.description}`;
+                    } else if (type === 'memory') {
+                        const vars = JSON.stringify(task.memory_delta?.variables || {}, null, 2);
+                        const discs = (task.memory_delta?.discoveries || []).map((d:string) => `• ${d}`).join('\n');
+                        content = `### Variables Updated\n\`\`\`json\n${vars}\n\`\`\`\n\n### New Discoveries\n${discs || 'None'}`;
+                    } else if (type === 'history') {
+                        content = `### Tool Output\n\`\`\`\n${task.result || 'No output recorded.'}\n\`\`\``;
+                    }
+                    body.innerHTML = (window as any).DOMPurify.sanitize((window as any).marked.parse(content));
                 }
-                return;
+            }
+            return;
+        }
+
+        // 2. Token Progress Bar Segments (Top HUD)
+        const tokenSeg = target.closest('.token-bar-segment') as HTMLElement;
+        const legendItem = target.closest('.legend-item') as HTMLElement;
+        const potentialTarget = tokenSeg || legendItem;
+
+        if (potentialTarget) {
+            e.stopPropagation();
+            const type = potentialTarget.dataset.type || potentialTarget.getAttribute('data-type');
+            if (type && type !== 'images') {
+                const cmdType = type === 'history' ? 'chat' : type;
+                vscode.postMessage({
+                    command: 'executeLollmsCommand', 
+                    details: { command: 'lollms-vs-coder.viewFullContext', params: cmdType }
+                });
+            }
+            return;
+        }
+
+        // 3. Close Button for Task Memory Areas
+        const closeMemBtn = target.closest('.task-memory-header .codicon-close');
+        if (closeMemBtn) {
+            closeMemBtn.closest('.task-memory-render-area')?.classList.remove('visible');
+            return;
+        }
+
+        // Legacy handler for remaining UI buttons inside messages
+        // Toggle Edit Params
+        const editBtn = target.closest('.edit-params-btn') as HTMLButtonElement;
+        if (editBtn) {
+            e.stopPropagation();
+            const taskId = editBtn.dataset.taskId;
+            const container = document.getElementById(`edit-params-container-${taskId}`);
+            if (container) {
+                container.style.display = container.style.display === 'none' ? 'flex' : 'none';
+            }
+            return;
+        }
+        // NEW: Handle Image Generation Button (CSP Safe)
+        const genImgBtn = target.closest('.generate-image-btn') as HTMLButtonElement;
+        if (genImgBtn) {
+            e.stopPropagation();
+
+            const block = genImgBtn.closest('.generation-block');
+            const folderInp = block?.querySelector('.asset-folder-input') as HTMLInputElement;
+            const nameInp = block?.querySelector('.asset-name-input') as HTMLInputElement;
+
+            let finalPath = decodeURIComponent(genImgBtn.dataset.path || '');
+            if (folderInp && nameInp) {
+                const folder = folderInp.value.trim().replace(/\/+$/, '');
+                finalPath = folder + '/' + nameInp.value.trim();
             }
 
-            // Handle File Deletion (Single)
-            const delSingleBtn = target.closest('.delete-single-btn') as HTMLButtonElement;
-            if (delSingleBtn) {
-                e.stopPropagation();
-                const path = delSingleBtn.dataset.path;
-                const rowId = delSingleBtn.dataset.rowId;
-                
-                vscode.postMessage({ command: 'deleteFile', filePaths: path });
-                
-                delSingleBtn.disabled = true;
-                delSingleBtn.textContent = 'Deleted';
-                const row = document.getElementById(rowId!);
-                if (row) {
+            genImgBtn.disabled = true;
+            genImgBtn.innerHTML = '<div class="spinner"></div> Generating...';
+
+            vscode.postMessage({
+                command: 'generateImage',
+                prompt: decodeURIComponent(genImgBtn.dataset.prompt || ''),
+                filePath: finalPath,
+                width: genImgBtn.dataset.width || '',
+                height: genImgBtn.dataset.height || '',
+                buttonId: genImgBtn.id
+            });
+            return;
+        }
+
+        // Handle "Add Files to Context" Button (CSP Safe)
+        const addFilesBtn = target.closest('.add-files-to-context-btn') as HTMLButtonElement;
+        const repromptBtn = target.closest('.add-and-reprompt-btn') as HTMLButtonElement;
+
+        if (addFilesBtn || repromptBtn) {
+            e.stopPropagation();
+            const btn = addFilesBtn || repromptBtn;
+            const filesRaw = btn.dataset.files || '[]';
+            const blockId = btn.dataset.blockId;
+            const isReprompt = !!repromptBtn;
+
+            try {
+                const files = JSON.parse(filesRaw);
+                btn.disabled = true;
+                btn.innerHTML = '<div class="spinner"></div> Adding...';
+
+                vscode.postMessage({
+                    command: 'addFilesToContext',
+                    files: files,
+                    blockId: blockId,
+                    reprompt: isReprompt
+                });
+            } catch (err) {
+                console.error("Failed to parse file list from button:", err);
+            }
+            return;
+        }
+
+        // Handle File Deletion (Single)
+        const delSingleBtn = target.closest('.delete-single-btn') as HTMLButtonElement;
+        if (delSingleBtn) {
+            e.stopPropagation();
+            const path = delSingleBtn.dataset.path;
+            const rowId = delSingleBtn.dataset.rowId;
+            
+            vscode.postMessage({ command: 'deleteFile', filePaths: path });
+            
+            delSingleBtn.disabled = true;
+            delSingleBtn.textContent = 'Deleted';
+            const row = document.getElementById(rowId!);
+            if (row) {
+                row.style.color = 'var(--vscode-errorForeground)';
+                row.style.opacity = '0.7';
+            }
+            return;
+        }
+
+        // Handle File Deletion (All)
+        const delAllBtn = target.closest('.delete-all-btn') as HTMLButtonElement;
+        if (delAllBtn) {
+            e.stopPropagation();
+            const paths = delAllBtn.dataset.paths;
+            const blockId = delAllBtn.dataset.blockId;
+
+            vscode.postMessage({ command: 'deleteFile', filePaths: paths });
+
+            delAllBtn.disabled = true;
+            delAllBtn.innerHTML = '<span class="codicon codicon-check"></span> All Files Deleted';
+            
+            // Update the visual state of all individual rows in this block
+            const container = document.getElementById(blockId!);
+            if (container) {
+                const items = container.querySelectorAll('.expansion-file-item');
+                items.forEach((row: any) => {
                     row.style.color = 'var(--vscode-errorForeground)';
                     row.style.opacity = '0.7';
-                }
-                return;
+                    const btn = row.querySelector('button');
+                    if (btn) {
+                        btn.disabled = true;
+                        btn.textContent = 'Deleted';
+                    }
+                });
             }
+            return;
+        }
 
-            // Handle File Deletion (All)
-            const delAllBtn = target.closest('.delete-all-btn') as HTMLButtonElement;
-            if (delAllBtn) {
-                e.stopPropagation();
-                const paths = delAllBtn.dataset.paths;
-                const blockId = delAllBtn.dataset.blockId;
-
-                vscode.postMessage({ command: 'deleteFile', filePaths: paths });
-
-                delAllBtn.disabled = true;
-                delAllBtn.innerHTML = '<span class="codicon codicon-check"></span> All Files Deleted';
+        // Handle File Move / Prune Actions
+        const fileOpBtn = target.closest('.file-op-action-btn') as HTMLButtonElement;
+        if (fileOpBtn) {
+            e.stopPropagation();
+            const command = fileOpBtn.dataset.command;
+            const payloadRaw = fileOpBtn.dataset.payload || '{}';
+            
+            try {
+                const payload = JSON.parse(payloadRaw);
+                vscode.postMessage({ command, ...payload });
                 
-                // Update the visual state of all individual rows in this block
-                const container = document.getElementById(blockId!);
-                if (container) {
-                    const items = container.querySelectorAll('.expansion-file-item');
-                    items.forEach((row: any) => {
-                        row.style.color = 'var(--vscode-errorForeground)';
-                        row.style.opacity = '0.7';
-                        const btn = row.querySelector('button');
-                        if (btn) {
-                            btn.disabled = true;
-                            btn.textContent = 'Deleted';
-                        }
-                    });
-                }
-                return;
+                fileOpBtn.disabled = true;
+                fileOpBtn.innerHTML = '<span class="codicon codicon-check"></span> Applied';
+            } catch (err) {
+                console.error("Failed to parse file operation payload:", err);
             }
+            return;
+        }
 
-            // Handle File Move / Prune Actions
-            const fileOpBtn = target.closest('.file-op-action-btn') as HTMLButtonElement;
-            if (fileOpBtn) {
-                e.stopPropagation();
-                const command = fileOpBtn.dataset.command;
-                const payloadRaw = fileOpBtn.dataset.payload || '{}';
-                
+        // Handle Manual Memory Sync
+        const syncMemBtn = target.closest('.sync-memory-btn') as HTMLButtonElement;
+        if (syncMemBtn) {
+            e.stopPropagation();
+            const { action, id, title, content, importance } = syncMemBtn.dataset;
+            
+            syncMemBtn.disabled = true;
+            syncMemBtn.innerHTML = '<i class="codicon codicon-loading spin"></i>';
+
+            vscode.postMessage({
+                command: 'executeLollmsCommand',
+                details: {
+                    command: 'lollms-vs-coder.applyMemoryTag',
+                    params: { 
+                        action, 
+                        id, 
+                        title: decodeURIComponent(title || ''), 
+                        content: decodeURIComponent(content || ''),
+                        importance: parseFloat(importance || "1.0")
+                    }
+                }
+            });
+
+            setTimeout(() => {
+                syncMemBtn.disabled = false;
+                syncMemBtn.innerHTML = '<i class="codicon codicon-check"></i>';
+                setTimeout(() => { syncMemBtn.innerHTML = '<i class="codicon codicon-sync"></i>'; }, 2000);
+            }, 1000);
+            return;
+        }
+
+        // Infer Prompt Button
+        const inferPromptBtn = target.closest('.infer-prompt-btn') as HTMLButtonElement;
+        if (inferPromptBtn) {
+            e.stopPropagation();
+            const msgId = inferPromptBtn.dataset.messageId;
+            if (msgId) {
+                inferPromptBtn.disabled = true;
+                inferPromptBtn.innerHTML = '<div class="spinner"></div> Inferring...';
+                vscode.postMessage({ command: 'inferPrompt', messageId: msgId });
+            }
+            return;
+        }
+
+
+        // Copy Asset Path
+        const copyPathBtn = target.closest('.copy-asset-path-btn') as HTMLButtonElement;
+        if (copyPathBtn) {
+            e.stopPropagation();
+            vscode.postMessage({ command: 'copyToClipboard', text: copyPathBtn.dataset.path });
+            return;
+        }
+
+        // Save Asset As (Binary)
+        const saveAssetBtn = target.closest('.save-asset-as-btn') as HTMLButtonElement;
+        if (saveAssetBtn) {
+            e.stopPropagation();
+            vscode.postMessage({ command: 'executeLollmsCommand', details: { 
+                command: 'lollms-vs-coder.saveAssetAs', 
+                params: { path: saveAssetBtn.dataset.path } 
+            }});
+            return;
+        }
+
+        // Edit Asset (Internal Image Editor)
+        const editAssetBtn = target.closest('.edit-asset-btn') as HTMLButtonElement;
+        if (editAssetBtn) {
+            e.stopPropagation();
+            const container = document.getElementById(editAssetBtn.dataset.targetId || '');
+            const img = container?.querySelector('img');
+            if (img && typeof (window as any).openImageEditorFromData === 'function') {
+                (window as any).openImageEditorFromData(img.src, editAssetBtn.dataset.path || 'edit.png');
+            } else {
+                vscode.postMessage({ command: 'showError', message: 'Asset not loaded or ready for editing.' });
+            }
+            return;
+        }
+
+        // Task Approval
+        const approveBtn = target.closest('.approve-task-btn') as HTMLButtonElement;
+        if (approveBtn) {
+            e.stopPropagation();
+            const taskId = approveBtn.dataset.taskId;
+            approveBtn.disabled = true;
+            approveBtn.innerHTML = '<div class="spinner"></div> Running...';
+            vscode.postMessage({ command: 'runAgent', taskId: taskId, objective: 'CONTINUE_AFTER_APPROVAL' });
+            return;
+        }
+
+        // Save & Retry Params
+        const saveRetryBtn = target.closest('.save-retry-params-btn') as HTMLButtonElement;
+        if (saveRetryBtn) {
+            e.stopPropagation();
+            const taskId = saveRetryBtn.dataset.taskId;
+            const textArea = document.getElementById(`edit-params-text-${taskId}`) as HTMLTextAreaElement;
+            if (textArea && taskId) {
                 try {
-                    const payload = JSON.parse(payloadRaw);
-                    vscode.postMessage({ command, ...payload });
+                    const newParams = JSON.parse(textArea.value);
+                    vscode.postMessage({ 
+                        command: 'editAndRetryAgentTask', 
+                        taskId: taskId,
+                        params: newParams 
+                    });
                     
-                    fileOpBtn.disabled = true;
-                    fileOpBtn.innerHTML = '<span class="codicon codicon-check"></span> Applied';
+                    saveRetryBtn.disabled = true;
+                    saveRetryBtn.innerHTML = '<span class="codicon codicon-sync spin"></span> Running...';
                 } catch (err) {
-                    console.error("Failed to parse file operation payload:", err);
+                    vscode.postMessage({ command: 'showError', message: 'Invalid JSON parameters. Please check your syntax.' });
                 }
-                return;
             }
+            return;
+        }
 
-            // Handle Manual Memory Sync
-            const syncMemBtn = target.closest('.sync-memory-btn') as HTMLButtonElement;
-            if (syncMemBtn) {
-                e.stopPropagation();
-                const { action, id, title, content, importance } = syncMemBtn.dataset;
+        const skillFileBtn = target.closest('.save-skill-file-btn') as HTMLButtonElement;
+        if (skillFileBtn) {
+            const content = skillFileBtn.dataset.content || '';
+            const title = skillFileBtn.dataset.title || '';
+            const desc = skillFileBtn.dataset.description || '';
+            const cat = skillFileBtn.dataset.category || '';
+            
+            vscode.postMessage({ 
+                command: 'saveSkillToFile', 
+                skillData: { 
+                    name: decodeURIComponent(title), 
+                    description: decodeURIComponent(desc), 
+                    content: decodeURIComponent(content), 
+                    category: decodeURIComponent(cat) 
+                } 
+            });
+            return;
+        }
+
+        const skillBtn = target.closest('.save-skill-btn') as HTMLButtonElement;
+        if (skillBtn) {
+            const content = skillBtn.dataset.content || '';
+            const scope = skillBtn.dataset.scope as 'global' | 'local';
+            const title = skillBtn.dataset.title || '';
+            const desc = skillBtn.dataset.description || '';
+            const cat = skillBtn.dataset.category || '';
+            
+            // Call the globally defined handler in main.ts
+            if (typeof (window as any).saveSkill === 'function') {
+                (window as any).saveSkill(content, scope, title, desc, cat);
                 
-                syncMemBtn.disabled = true;
-                syncMemBtn.innerHTML = '<i class="codicon codicon-loading spin"></i>';
-
-                vscode.postMessage({
-                    command: 'executeLollmsCommand',
-                    details: {
-                        command: 'lollms-vs-coder.applyMemoryTag',
-                        params: { 
-                            action, 
-                            id, 
-                            title: decodeURIComponent(title || ''), 
-                            content: decodeURIComponent(content || ''),
-                            importance: parseFloat(importance || "1.0")
-                        }
-                    }
-                });
-
+                // Provide immediate visual feedback
+                const originalHtml = skillBtn.innerHTML;
+                skillBtn.disabled = true;
+                skillBtn.classList.add('success');
+                skillBtn.innerHTML = '<span class="codicon codicon-check"></span> Saved';
+                
                 setTimeout(() => {
-                    syncMemBtn.disabled = false;
-                    syncMemBtn.innerHTML = '<i class="codicon codicon-check"></i>';
-                    setTimeout(() => { syncMemBtn.innerHTML = '<i class="codicon codicon-sync"></i>'; }, 2000);
-                }, 1000);
-                return;
+                    skillBtn.innerHTML = originalHtml;
+                    skillBtn.classList.remove('success');
+                    skillBtn.disabled = false;
+                }, 2000);
             }
-
-            // Infer Prompt Button
-            const inferPromptBtn = target.closest('.infer-prompt-btn') as HTMLButtonElement;
-            if (inferPromptBtn) {
-                e.stopPropagation();
-                const msgId = inferPromptBtn.dataset.messageId;
-                if (msgId) {
-                    inferPromptBtn.disabled = true;
-                    inferPromptBtn.innerHTML = '<div class="spinner"></div> Inferring...';
-                    vscode.postMessage({ command: 'inferPrompt', messageId: msgId });
-                }
-                return;
-            }
-
-            // Handle Form Submission
-            const formBtn = target.closest('.lollms-form-submit-btn') as HTMLButtonElement;
-            if (formBtn) {
-                e.stopPropagation();
-                const formBlock = formBtn.closest('.lollms-form-block') as HTMLElement;
-                const data: Record<string, string> = {};
-                
-                // Collect Radios
-                formBlock.querySelectorAll('input[type="radio"]:checked').forEach((input: any) => {
-                    data[input.name] = input.value;
-                });
-                
-                // Collect Text/Number inputs
-                formBlock.querySelectorAll('input[type="text"], input[type="number"]').forEach((input: any) => {
-                    data[input.name] = input.value;
-                });
-
-                if (Object.keys(data).length === 0) {
-                    vscode.postMessage({ command: 'showError', message: 'Please provide the requested information.' });
-                    return;
-                }
-
-                formBtn.disabled = true;
-                formBtn.innerHTML = '<div class="spinner"></div> Submitting...';
-
-                vscode.postMessage({
-                    command: 'sendMessage',
-                    message: { 
-                        role: 'user', 
-                        content: `FORM_SUBMISSION:${JSON.stringify(data)}`,
-                        skipInPrompt: true 
-                    }
-                });
-                return;
-            }
-
-            // Copy Asset Path
-            const copyPathBtn = target.closest('.copy-asset-path-btn') as HTMLButtonElement;
-            if (copyPathBtn) {
-                e.stopPropagation();
-                vscode.postMessage({ command: 'copyToClipboard', text: copyPathBtn.dataset.path });
-                return;
-            }
-
-            // Save Asset As (Binary)
-            const saveAssetBtn = target.closest('.save-asset-as-btn') as HTMLButtonElement;
-            if (saveAssetBtn) {
-                e.stopPropagation();
-                vscode.postMessage({ command: 'executeLollmsCommand', details: { 
-                    command: 'lollms-vs-coder.saveAssetAs', 
-                    params: { path: saveAssetBtn.dataset.path } 
-                }});
-                return;
-            }
-
-            // Edit Asset (Internal Image Editor)
-            const editAssetBtn = target.closest('.edit-asset-btn') as HTMLButtonElement;
-            if (editAssetBtn) {
-                e.stopPropagation();
-                const container = document.getElementById(editAssetBtn.dataset.targetId || '');
-                const img = container?.querySelector('img');
-                if (img && typeof (window as any).openImageEditorFromData === 'function') {
-                    (window as any).openImageEditorFromData(img.src, editAssetBtn.dataset.path || 'edit.png');
-                } else {
-                    vscode.postMessage({ command: 'showError', message: 'Asset not loaded or ready for editing.' });
-                }
-                return;
-            }
-
-            // Save & Retry Params
-            const saveRetryBtn = target.closest('.save-retry-params-btn') as HTMLButtonElement;
-            if (saveRetryBtn) {
-                e.stopPropagation();
-                const taskId = saveRetryBtn.dataset.taskId;
-                const textArea = document.getElementById(`edit-params-text-${taskId}`) as HTMLTextAreaElement;
-                if (textArea && taskId) {
-                    try {
-                        const newParams = JSON.parse(textArea.value);
-                        vscode.postMessage({ 
-                            command: 'editAndRetryAgentTask', 
-                            taskId: taskId,
-                            params: newParams 
-                        });
-                        
-                        saveRetryBtn.disabled = true;
-                        saveRetryBtn.innerHTML = '<span class="codicon codicon-sync spin"></span> Running...';
-                    } catch (err) {
-                        vscode.postMessage({ command: 'showError', message: 'Invalid JSON parameters. Please check your syntax.' });
-                    }
-                }
-                return;
-            }
-
-            const skillFileBtn = target.closest('.save-skill-file-btn') as HTMLButtonElement;
-            if (skillFileBtn) {
-                const content = skillFileBtn.dataset.content || '';
-                const title = skillFileBtn.dataset.title || '';
-                const desc = skillFileBtn.dataset.description || '';
-                const cat = skillFileBtn.dataset.category || '';
-                
-                vscode.postMessage({ 
-                    command: 'saveSkillToFile', 
-                    skillData: { 
-                        name: decodeURIComponent(title), 
-                        description: decodeURIComponent(desc), 
-                        content: decodeURIComponent(content), 
-                        category: decodeURIComponent(cat) 
-                    } 
-                });
-                return;
-            }
-
-            const skillBtn = target.closest('.save-skill-btn') as HTMLButtonElement;
-            if (skillBtn) {
-                const content = skillBtn.dataset.content || '';
-                const scope = skillBtn.dataset.scope as 'global' | 'local';
-                const title = skillBtn.dataset.title || '';
-                const desc = skillBtn.dataset.description || '';
-                const cat = skillBtn.dataset.category || '';
-                
-                // Call the globally defined handler in main.ts
-                if (typeof (window as any).saveSkill === 'function') {
-                    (window as any).saveSkill(content, scope, title, desc, cat);
-                    
-                    // Provide immediate visual feedback
-                    const originalHtml = skillBtn.innerHTML;
-                    skillBtn.disabled = true;
-                    skillBtn.classList.add('success');
-                    skillBtn.innerHTML = '<span class="codicon codicon-check"></span> Saved';
-                    
-                    setTimeout(() => {
-                        skillBtn.innerHTML = originalHtml;
-                        skillBtn.classList.remove('success');
-                        skillBtn.disabled = false;
-                    }, 2000);
-                }
-            }
-        });
+        }
     }
 }

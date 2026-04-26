@@ -49,9 +49,21 @@ import { editCodeTool } from './editCode';
 import { createAgentTool } from './createAgent';
 import { delegateTaskTool } from './delegateTask';
 import { requestSecureCredentialTool } from './requestSecureCredential';
+import { uiHelpTool } from './uiHelp';
+import { secureRunTool } from './secureRun';
+import { webDiveTool } from './webDive';
+import { webConsolidateTool } from './webConsolidate';
 import { editImageAssetTool } from './editImageAsset';
+import { manageExtensionTool } from './manageExtension';
+import { uiInteractionTool } from './uiInteraction';
+
 
 export const allTools: ToolDefinition[] = [
+    uiHelpTool,
+    secureRunTool,
+    manageExtensionTool,
+    webDiveTool,
+    webConsolidateTool,
     editImageAssetTool,
     requestSecureCredentialTool,
     editCodeTool,
@@ -99,7 +111,27 @@ export const allTools: ToolDefinition[] = [
     moveFileTool,
     storeKnowledgeTool,
     readMemoryCategoryTool, // NEW
-    promoteMemoryToSkillTool, // NEW
+    promoteMemoryToSkillTool, 
+    {
+        name: "search_deep_memory",
+        description: "Retrieves the full content of a memory engram from deep storage using its ID found in the TIER 2 index.",
+        isAgentic: true,
+        isDefault: true,
+        parameters: [
+            { name: "id", type: "string", description: "The ID of the engram to retrieve.", required: true }
+        ],
+        async execute(params, env) {
+            const manager = (env.agentManager as any)?.projectMemoryManager;
+            if (!manager) return { success: false, output: "Memory Manager not available." };
+            const engrams = await manager.getMemories();
+            const match = engrams.find((e: any) => e.id === params.id);
+            if (!match) return { success: false, output: `Engram ${params.id} not found.` };
+
+            // Reinforce on read so it doesn't decay
+            await manager.reinforceEngram(params.id);
+            return { success: true, output: `[RECOVERED MEMORY: ${match.title}]\n${match.content}` };
+        }
+    },
     summarizeTextTool,
     searchWikipediaTool,
     searchStackOverflowTool,

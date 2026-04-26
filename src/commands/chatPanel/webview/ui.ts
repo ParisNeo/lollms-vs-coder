@@ -1759,6 +1759,159 @@ export function renderSkillsTree(container: HTMLElement, node: any, activeSkillI
     container.appendChild(fragment);
 }
 
+/**
+ * Categorizes and renders the Agent Tools list with an advanced grid UI.
+ */
+export function renderAdvancedToolsList(allTools: any[], toolPolicies: Record<string, string>) {
+    const container = dom.toolsListDiv;
+    if (!container) return;
+
+    // 1. Setup Header, Profiles & Search
+    container.innerHTML = `
+        <div style="margin-bottom: 16px; position: sticky; top: 0; background: var(--vscode-editorWidget-background); z-index: 10; padding-bottom: 10px; display: flex; flex-direction: column; gap: 12px;">
+            <div style="display: flex; flex-direction: column; gap: 6px;">
+                <label style="font-size: 10px; font-weight: 800; opacity: 0.6; text-transform: uppercase;">Security Profiles</label>
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;">
+                    <button class="code-action-btn" id="profile-restrictive" title="Deactivate all critical tools">🛡️ Restrictive</button>
+                    <button class="code-action-btn" id="profile-cautious" title="Sensitive tools require manual approval">⚖️ Cautious</button>
+                    <button class="code-action-btn" id="profile-trust" title="All tools run autonomously">🚀 Full Trust</button>
+                </div>
+            </div>
+            <div class="input-container" style="border-radius: 4px;">
+                <i class="codicon codicon-search" style="margin-right: 8px; opacity: 0.7;"></i>
+                <input type="text" id="tool-search-input" placeholder="Search tools by name or capability..." style="font-size: 12px; background: transparent;">
+            </div>
+        </div>
+        <div id="tool-categories-root"></div>
+    `;
+
+    // --- Profile Logic ---
+    const applyProfile = (level: 'restrictive' | 'cautious' | 'trust') => {
+        const selects = container.querySelectorAll('.tool-policy-select') as NodeListOf<HTMLSelectElement>;
+        selects.forEach(select => {
+            const card = select.closest('.tool-card') as HTMLElement;
+            const isSensitive = card?.querySelector('.badge-perm-shell') || card?.querySelector('.badge-perm-fs');
+
+            if (level === 'restrictive') {
+                select.value = isSensitive ? 'disabled' : 'autonomous';
+            } else if (level === 'cautious') {
+                select.value = isSensitive ? 'manual' : 'autonomous';
+            } else {
+                select.value = 'autonomous';
+            }
+            // Trigger visual update for the card
+            card?.classList.toggle('active', select.value !== 'disabled');
+        });
+    };
+
+    document.getElementById('profile-restrictive')!.onclick = () => applyProfile('restrictive');
+    document.getElementById('profile-cautious')!.onclick = () => applyProfile('cautious');
+    document.getElementById('profile-trust')!.onclick = () => applyProfile('trust');
+
+    const root = document.getElementById('tool-categories-root')!;
+
+    // 2. Define Categories
+    const categories: Record<string, { label: string, icon: string, tools: any[] }> = {
+        'filesystem': { label: 'File System & Context', icon: 'files', tools: [] },
+        'execution': { label: 'Code Execution & Shell', icon: 'terminal', tools: [] },
+        'research': { label: 'Research & Discovery', icon: 'globe', tools: [] },
+        'knowledge': { label: 'RLM & Memory', icon: 'chip', tools: [] },
+        'internal': { label: 'Infrastructure & Planning', icon: 'hubot', tools: [] },
+        'mcp': { label: 'External MCP Tools', icon: 'plug', tools: [] }
+    };
+
+    // 3. Map Tools to Categories
+    allTools.forEach(tool => {
+        const name = tool.name.toLowerCase();
+        const group = (tool.permissionGroup || '').toLowerCase();
+
+        if (name.startsWith('mcp_') || name.includes('_mcp_')) categories.mcp.tools.push(tool);
+        else if (group.includes('filesystem') || name.includes('file')) categories.filesystem.tools.push(tool);
+        else if (group.includes('shell') || name.includes('run_') || name.includes('exec')) categories.execution.tools.push(tool);
+        else if (group.includes('internet') || name.includes('search') || name.includes('scrape')) categories.research.tools.push(tool);
+        else if (name.includes('memory') || name.includes('knowledge') || name.includes('repl')) categories.knowledge.tools.push(tool);
+        else categories.internal.tools.push(tool);
+    });
+
+    // 4. Render Sections
+    Object.entries(categories).forEach(([key, cat]) => {
+        if (cat.tools.length === 0) return;
+
+        const section = document.createElement('div');
+        section.className = 'tool-category-section';
+        section.dataset.category = key;
+
+        section.innerHTML = `
+            <div class="tool-category-header">
+                <i class="codicon codicon-${cat.icon}"></i>
+                <span>${cat.label}</span>
+            </div>
+            <div class="tool-grid">
+                ${cat.tools.map(tool => {
+                    const sensitiveGroups = ['shell_execution', 'filesystem_write'];
+                    const isSensitive = tool.permissionGroup && sensitiveGroups.includes(tool.permissionGroup);
+
+                    // Default to autonomous for safe tools, manual for sensitive ones
+                    const policy = toolPolicies[tool.name] || (isSensitive ? 'manual' : 'autonomous');
+                    const isEnabled = policy !== 'disabled';
+
+                    let permClass = '';
+                    if (tool.permissionGroup === 'shell_execution') permClass = 'badge-perm-shell';
+                    if (tool.permissionGroup === 'internet_access') permClass = 'badge-perm-net';
+                    if (tool.permissionGroup === 'filesystem_write') permClass = 'badge-perm-fs';
+
+
+                    return `
+                    <div class="tool-card ${isEnabled ? 'active' : ''}" data-name="${tool.name.toLowerCase()}" data-desc="${tool.description.toLowerCase()}">
+                        <div class="tool-card-header">
+                            <div class="tool-name-container">
+                                <div class="tool-card-name">${tool.name}</div>
+                                <div class="tool-badge-row">
+                                    <span class="tool-mini-badge">${tool.isAgentic ? 'Agentic' : 'Utility'}</span>
+                                    ${tool.permissionGroup ? `<span class="tool-mini-badge ${permClass}">${tool.permissionGroup.replace('_', ' ')}</span>` : ''}
+                                </div>
+                            </div>
+                            <div class="tool-policy-selector">
+                                <select class="tool-policy-select" data-tool="${tool.name}" style="font-size: 10px; padding: 2px; height: 22px; width: 90px; border-radius: 4px;">
+                                    <option value="disabled" ${policy === 'disabled' ? 'selected' : ''}>🚫 Disabled</option>
+                                    <option value="manual" ${policy === 'manual' ? 'selected' : ''}>🛡️ Manual</option>
+                                    <option value="autonomous" ${policy === 'autonomous' ? 'selected' : ''}>🤖 Auto</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="tool-card-description">${tool.description}</div>
+                    </div>`;
+                }).join('')}
+            </div>
+        `;
+        root.appendChild(section);
+    });
+
+    // 5. Card UI Sync Logic
+    container.querySelectorAll('.tool-policy-select').forEach((el: any) => {
+        el.onchange = () => {
+            const card = el.closest('.tool-card');
+            card?.classList.toggle('active', el.value !== 'disabled');
+        };
+    });
+
+    // 6. Search Filtering Logic
+    const searchInput = document.getElementById('tool-search-input') as HTMLInputElement;
+    searchInput.addEventListener('input', (e) => {
+        const q = (e.target as HTMLInputElement).value.toLowerCase();
+        document.querySelectorAll('.tool-card').forEach((card: any) => {
+            const match = card.dataset.name.includes(q) || card.dataset.desc.includes(q);
+            card.style.display = match ? 'flex' : 'none';
+        });
+
+        // Hide empty categories
+        document.querySelectorAll('.tool-category-section').forEach((sec: any) => {
+            const hasVisible = Array.from(sec.querySelectorAll('.tool-card')).some((c: any) => c.style.display !== 'none');
+            sec.style.display = hasVisible ? 'block' : 'none';
+        });
+    });
+}
+
 export function renderDiscussionSearchResults(results: any[], query: string) {
     const container = dom.discussionSearchResults;
     if (!container) return;
@@ -2099,18 +2252,12 @@ export function updateProgressBar(container: HTMLElement | null, current: number
             if (count > 0) {
                 const segDiv = document.createElement('div');
                 segDiv.className = `token-bar-segment segment-${type}`;
+                // Set metadata for both the bar and its parent for delegation
+                segDiv.dataset.type = type;
+                segDiv.setAttribute('data-type', type);
                 const pct = (count / total) * 100;
                 segDiv.style.width = `${pct}%`;
                 segDiv.title = `${type.toUpperCase()}: ${count.toLocaleString()} tokens`;
-
-                segDiv.onclick = (e) => {
-                    e.stopPropagation();
-                    const cmdType = type === 'history' ? 'chat' : type;
-                    vscode.postMessage({
-                        command: 'executeLollmsCommand', 
-                        details: { command: 'lollms-vs-coder.viewFullContext', params: cmdType }
-                    });
-                };
                 container.appendChild(segDiv);
             }
         });
@@ -2140,10 +2287,12 @@ export function updateProgressBar(container: HTMLElement | null, current: number
             legend.querySelectorAll('.legend-item').forEach(item => {
                 (item as HTMLElement).onclick = () => {
                     const type = (item as HTMLElement).dataset.type;
-                    window.vscode.postMessage({
-                        command: 'executeLollmsCommand', 
-                        details: { command: 'lollms-vs-coder.viewFullContext', params: type }
-                    });
+                    if (type && type !== 'images') {
+                        vscode.postMessage({
+                            command: 'executeLollmsCommand', 
+                            details: { command: 'lollms-vs-coder.viewFullContext', params: type }
+                        });
+                    }
                 };
             });
             container.parentElement?.appendChild(legend);

@@ -29,25 +29,43 @@ export class FailureMemory {
     public getMemoryContext(): string {
         if (this.failures.length === 0) return "";
 
-        // Only show the last 3 failures to keep context focused and avoid "Summary Snowball"
         const recentFailures = this.failures.slice(-3);
+        const lastTool = recentFailures[recentFailures.length - 1].toolName;
+
+        // SHAKER POOL: Different ways to wake up a small model
+        const shakerPrompts = [
+            `### 🔬 SCIENTIFIC AUDIT: REPEAT FAILURE DETECTED
+The previous hypothesis involving \`${lastTool}\` failed. Your current logic is falsified. 
+STRICT REQUIREMENT: You are now FORBIDDEN from using the parameters listed below. You MUST pivot to a different tool or a drastically different code pattern.`,
+
+            `### 🚨 SYSTEM DEADLOCK WARNING
+You are stuck in a repetitive loop. The last action provided zero progress. 
+INSTRUCTION: Discard your current plan. Read a DIFFERENT file or run a 'ls' command to gather fresh evidence. Do NOT repeat yourself.`,
+
+            `### 🕵️ DETECTIVE PROTOCOL: EVALUATE THE CLUES
+Why did the last attempt fail? Look at the error output carefully. 
+MANDATORY: Your next response MUST NOT contain the same JSON as before. If you provide the same 'params', the session will crash. Change your strategy now.`,
+
+            `### 🧠 SOCRATIC REFLEXION
+Your last three steps have been identical and unsuccessful. 
+QUESTION: If \`${lastTool}\` keeps failing, what information are you missing? Use 'read_file' to find the truth instead of guessing the same code again.`
+        ];
+
+        // Pick a random shaker to keep the small model from anchoring on one error message
+        const selectedShaker = shakerPrompts[Math.floor(Math.random() * shakerPrompts.length)];
 
         return `
-# 🛑 EVOLVING INTELLIGENCE: MISTAKES TO AVOID (STRICT)
-The following actions were ATTEMPTED and FAILED. You must change your technical approach.
+${selectedShaker}
 
+# 🚫 BLACKLISTED ACTIONS (DO NOT REPEAT)
 ${recentFailures.map((f, i) => `
-### FAILURE #${i + 1}
-- **Tool**: \`${f.toolName}\`
-- **Tried Params**: \`${JSON.stringify(f.parameters)}\`
-- **Resulting Error**: "${f.errorOutput.substring(0, 300)}"
+* ATTEMPT #${i + 1}: Tool \`${f.toolName}\` | Params: \`${JSON.stringify(this.cleanParams(f.parameters))}\`
+  Error observed: "${f.errorOutput.substring(0, 150)}..."
 `).join('\n')}
 
-**REFLEXIVE CONSTRAINTS**: 
-1. **STRICT BLOCK**: If you repeat any of the 'Tried Params' above, the system will terminate your turn.
-2. **ROOT CAUSE ANALYSIS**: If the error is a \`NameError\` (like \'nn\' is not defined), you MUST check the import section of the file before applying a fix.
-3. **DEVIATE**: If \`generate_code\` failed because a SEARCH block didn't match, use \`read_file\` to get the FRESH content of the file and try a smaller, more precise SEARCH block.
-4. **BREAK THE LOOP**: If you are failing repeatedly, STOP GUESSING. Use \`execute_command\` to run a test or diagnostic, or read a different file to gather more clues.
+**DIVERGENCE MANDATE**: 
+1. If you repeat a Blacklisted Action, the harness will automatically eject you.
+2. Small-Model Tip: If you are confused, use \`execute_command\` to run \`pwd\` or \`ls -R\` to reset your spatial awareness of the project.
 `;
     }
 

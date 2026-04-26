@@ -2,7 +2,7 @@ import { ToolDefinition, ToolExecutionEnv } from '../tool';
 
 export const delegateTaskTool: ToolDefinition = {
     name: "delegate_task",
-    description: "Delegates a complex analytical, coding, or planning task to a specific specialist agent.",
+    description: "Delegates a task to a specialist. Check your 'TOOLS AT YOUR DISPOSAL' block for valid IDs.",
     isAgentic: true,
     isDefault: true,
     parameters:[

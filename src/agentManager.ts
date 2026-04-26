@@ -17,6 +17,8 @@ import { PersonalityManager } from './personalityManager';
 import { runCommandInTerminal } from './extensionState';
 import { RLMDatabaseManager } from './rlmDatabaseManager';
 import { FailureMemory } from './agent/failureHandling'; 
+import { Logger } from './logger';
+
 
 // Interface decoupling the UI from the logic
 export interface IAgentUI {
@@ -24,7 +26,7 @@ export interface IAgentUI {
     updateMessageContent?(messageId: string, newContent: string): Promise<void>;
     displayPlan(plan: Plan | null): void;
     updateGeneratingState(): void;
-    requestUserInput(question: string, signal: AbortSignal): Promise<string>;
+    requestUserInput(question: string, signal: AbortSignal, options?: { isAgentZone?: boolean }): Promise<string>;
     updateAgentMode(isActive: boolean): void;
     // New methods to allow the Manager to control the pipeline stages
     runVerificationAgent(content: string, signal: AbortSignal): Promise<string>;
@@ -70,6 +72,7 @@ export class AgentManager {
 
     private failureMemory: FailureMemory = new FailureMemory();
     private isDebugging: boolean = false;
+    private isSafetyCheckPassed: boolean = false;
     public projectMemoryManager?: any; // Required for ChatPanel to process memory tags
     public personalityManager?: PersonalityManager;
     
@@ -126,7 +129,26 @@ export class AgentManager {
         if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
             this.currentWorkspaceFolder = vscode.workspace.workspaceFolders[0];
         }
-    }
+
+        this.setupDreamScheduler();
+        }
+
+        private setupDreamScheduler() {
+        // Check every hour
+        setInterval(async () => {
+            const config = vscode.workspace.getConfiguration('lollmsVsCoder.memory');
+            if (!config.get<boolean>('autoDream')) return;
+
+            const dreamTime = config.get<string>('dreamSchedule') || "01:00";
+            const now = new Date();
+            const currentTime = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+
+            if (currentTime === dreamTime && this.projectMemoryManager) {
+                Logger.info("Genie: Starting scheduled Dream Cycle...");
+                await this.projectMemoryManager.performDreamCycle();
+            }
+        }, 60000); // Check once a minute
+        }
     // Add this helper method inside the AgentManager class
     private async condenseObservations(model: string, signal: AbortSignal) {
         if (!this.currentPlan || !this.currentPlan.observations) return;
@@ -173,7 +195,18 @@ Keep it strictly technical and extremely concise.`
     }
     
     public getEnabledTools(): ToolDefinition[] {
-        const tools = this.toolManager.getEnabledTools();
+        const policies = this.currentDiscussion?.capabilities?.toolPolicies || {};
+        const tools = this.toolManager.getAllTools().filter(t => {
+            // Determine default if not set
+            let policy = policies[t.name];
+            if (!policy) {
+                const sensitiveGroups = ['shell_execution', 'filesystem_write'];
+                const isSensitive = t.permissionGroup && sensitiveGroups.includes(t.permissionGroup);
+                policy = isSensitive ? 'manual' : 'autonomous';
+            }
+            return policy !== 'disabled';
+        });
+
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const useRLM = config.get<boolean>('agent.useRLM') || false;
 
@@ -183,8 +216,10 @@ Keep it strictly technical and extremely concise.`
         return tools;
     }
 
-    public setEnabledTools(toolNames: string[]) {
-        this.toolManager.setEnabledTools(toolNames);
+    public setToolPolicies(policies: Record<string, 'disabled' | 'manual' | 'autonomous'>) {
+        if (this.currentDiscussion?.capabilities) {
+            this.currentDiscussion.capabilities.toolPolicies = policies;
+        }
     }
 
     public getCurrentDiscussion(): Discussion | undefined {
@@ -272,89 +307,189 @@ Keep it strictly technical and extremely concise.`
         };
         this.currentPlan.attempts.push(archive);
     }
-    /**
+/**
      * Programmatic implementation of Phase 0.
      * Ensures the Genie never works on a dangerous or unstable environment without consent.
      */
     private async preFlightSafetyCheck(folder: vscode.WorkspaceFolder, signal: AbortSignal): Promise<boolean> {
+        if (this.isSafetyCheckPassed) {
+            Logger.info(`[Phase 0] Safety check already passed for this session. Skipping.`);
+            return true;
+        }
+
+        Logger.info(`[Phase 0] Starting Pre-Flight Safety Check for: ${folder.name}`);
         let isRepo = await this.gitIntegration.isGitRepo(folder);
+
+        // Ensure we have a plan object to show the form in the sidebar
+        if (!this.currentPlan) {
+            this.currentPlan = {
+                objective: "Initializing Safety Protocols...",
+                current_sub_goal: "Verify Workspace Integrity",
+                observations: [],
+                tasks: [],
+                status: 'active'
+            };
+        }
 
         if (!isRepo) {
             const formPrompt = `
-<lollms_form id="no_git_repo" title="No Git Repository Detected">
-  <input type="radio" name="decision" label="Stop" value="stop" checked="true" />
-  <input type="radio" name="decision" label="Continue anyway (No automatic rollbacks)" value="continue" />
-  <input type="radio" name="decision" label="Create a new repository locally and start" value="init" />
-  <submit label="Confirm Action" />
-</lollms_form>`.trim();
+    <lollms_form id="no_git_repo" title="No Git Repository Detected">
+    <input type="radio" name="decision" label="Stop" value="stop" checked="true" />
+    <input type="radio" name="decision" label="Continue anyway (No automatic rollbacks)" value="continue" />
+    <input type="radio" name="decision" label="Create a new repository locally and start" value="init" />
+    <submit label="Confirm Action" />
+    </lollms_form>`.trim();
 
-            const response = await this.ui.requestUserInput(formPrompt, signal);
-            let choice = response;
+            const safetyTask: Task = {
+                id: -1,
+                description: "🛡️ Git missing. Decision required.",
+                action: "safety_check",
+                parameters: { lollms_form: formPrompt },
+                status: 'pending',
+                retries: 0
+            };
+            this.currentPlan.tasks.push(safetyTask);
+            await this.displayAndSavePlan(this.currentPlan);
 
-            if (response.startsWith('FORM_SUBMISSION:')) {
-                try {
-                    const data = JSON.parse(response.substring(16));
-                    choice = data.decision;
-                } catch(e) {}
+            const response = await this.ui.requestUserInput(formPrompt, signal, { isAgentZone: true });
+
+            // Remove the form task from sidebar immediately
+            if (this.currentPlan) {
+                this.currentPlan.tasks = this.currentPlan.tasks.filter(t => t.id !== -1);
+                await this.displayAndSavePlan(this.currentPlan);
             }
 
-            if (choice === 'stop' || (!choice.toLowerCase().includes('continue') && !choice.toLowerCase().includes('init') && !['stop', 'continue', 'init'].includes(choice))) {
-                return false;
-            } else if (choice === 'init' || choice.toLowerCase().includes('init')) {
-                await this.runCommand('git init', signal);
-                await this.runCommand('git add .', signal);
-                await this.runCommand('git commit -m "Initial commit"', signal);
+            let choice = this.parseFormResponse(response, "no_git_repo");
+
+            const safeChoice = (choice || "").toLowerCase().trim();
+
+            if (safeChoice === 'init') {
+                await this.runCommand('git init', folder, signal);
+                await this.runCommand('git add .', folder, signal);
+                await this.runCommand('git commit -m "Initial commit"', folder, signal);
                 this.ui.addMessageToDiscussion({ role: 'system', content: `🛡️ **Git Repository Initialized.**` });
                 isRepo = true;
-            } else {
+            } else if (safeChoice === 'continue') {
                 this.ui.addMessageToDiscussion({ role: 'system', content: `⚠️ **Proceeding without Git.** Automatic rollbacks are disabled.` });
                 return true;
+            } else {
+                // stop, cancelled, or any other value
+                this.ui.addMessageToDiscussion({ role: 'system', content: `🛑 **Operation cancelled** — no Git repository and user declined to continue.` });
+                return false;
             }
         }
 
-        if (!isRepo) return true;
+        // If we're proceeding without git (continue path), we already returned above.
+        // From here on, we assume git is available.
+        if (!isRepo) {
+            // Defensive: should never reach here, but prevents downstream errors
+            return false;
+        }
 
+        let currentBranch = await this.gitIntegration.getCurrentBranch(folder);
         const isClean = await this.gitIntegration.isClean(folder);
-        const currentBranch = await this.gitIntegration.getCurrentBranch(folder);
         const isMain = ['main', 'master', 'prod', 'production'].includes(currentBranch.toLowerCase());
 
         if (!isClean) {
             const formPrompt = `
-<lollms_form id="preflight_safety" title="Uncommitted Changes Detected">
-  <input type="radio" name="decision" label="Stash changes and create a clean AI branch" value="1" checked="true" />
-  <input type="radio" name="decision" label="Commit them now" value="2" />
-  <input type="radio" name="decision" label="Proceed anyway (Dangerous)" value="3" />
-  <submit label="Confirm Safety Action" />
-</lollms_form>`.trim();
+        <lollms_form id="preflight_safety" title="Uncommitted Changes Detected">
+        <input type="radio" name="decision" label="Stash changes and create a clean AI branch" value="stash" checked="true" />
+        <input type="radio" name="decision" label="Commit them now" value="commit" />
+        <input type="radio" name="decision" label="Proceed anyway (Dangerous)" value="proceed" />
+        <submit label="Confirm Safety Action" />
+        </lollms_form>`.trim();
 
-            const response = await this.ui.requestUserInput(formPrompt, signal);
-            let choice = response;
+            const safetyTask: Task = {
+                id: -1,
+                description: "🛡️ Uncommitted changes. Decision required.",
+                action: "safety_check",
+                parameters: { lollms_form: formPrompt },
+                status: 'pending',
+                retries: 0
+            };
+            this.currentPlan.tasks.push(safetyTask);
+            await this.displayAndSavePlan(this.currentPlan);
 
-            if (response.startsWith('FORM_SUBMISSION:')) {
-                try {
-                    const data = JSON.parse(response.substring(16));
-                    choice = data.decision;
-                } catch(e) {}
+            Logger.info(`[Phase 0] Requesting Safety Action via Form in Sidebar...`);
+            const response = await this.ui.requestUserInput(formPrompt, signal, { isAgentZone: true });
+            Logger.info(`[Phase 0] Raw response received from UI: "${response}"`);
+
+            // Remove the form task from sidebar immediately
+            if (this.currentPlan) {
+                this.currentPlan.tasks = this.currentPlan.tasks.filter(t => t.id !== -1);
+                await this.displayAndSavePlan(this.currentPlan);
             }
-            
-            if (choice === '1' || choice.includes('1')) {
+
+            let choice = this.parseFormResponse(response, "preflight_safety");
+            const safeChoice = (choice || "").toLowerCase().trim();
+            Logger.info(`[Phase 0] Parsed safeChoice: "${safeChoice}"`);
+
+            if (safeChoice === 'stash') {
                 await this.gitIntegration.stash(folder, "Genie: Stashed before mission");
-            } else if (choice === '2' || choice.includes('2')) {
+                this.completedActionsHistory.push(`[GIT] 📦 STASHED: Uncommitted changes moved to stash to ensure a clean mission start.`);
+                // Verify stash succeeded by re-checking
+                const stillDirty = !(await this.gitIntegration.isClean(folder));
+                if (stillDirty) {
+                    this.ui.addMessageToDiscussion({ role: 'system', content: `❌ **Stash failed** — working tree still dirty. Aborting for safety.` });
+                    return false;
+                }
+            } else if (safeChoice === 'commit') {
                 const msg = await this.gitIntegration.generateCommitMessage(folder);
-                await this.gitIntegration.commitWithMessage(msg || "Genie: pre-flight backup", folder);
-            } else if (!choice.toLowerCase().includes('proceed') && !choice.includes('3')) {
-                return false; // Cancelled
+                const finalMsg = msg?.trim() || "Genie: pre-flight backup";
+                await this.gitIntegration.commitWithMessage(folder, finalMsg);
+                this.completedActionsHistory.push(`[GIT] 💾 COMMITTED: Permanent backup created with message: "${finalMsg}"`);
+                // Re-verify
+                const stillDirty = !(await this.gitIntegration.isClean(folder));
+                if (stillDirty) {
+                    this.ui.addMessageToDiscussion({ role: 'system', content: `❌ **Commit failed** — working tree still dirty. Aborting for safety.` });
+                    return false;
+                }
+            } else if (safeChoice === 'proceed' || safeChoice === 'continue') {
+                this.ui.addMessageToDiscussion({ role: 'system', content: `⚠️ **Safety Bypass**: Proceeding with uncommitted changes on \`${currentBranch}\`.` });
+                this.completedActionsHistory.push(`[GIT] ⚠️ BYPASS: User chose to proceed with a dirty workspace.`);
+                return true; // Explicitly allow continuation
+            } else {
+                this.ui.addMessageToDiscussion({ role: 'system', content: `🛑 **Operation cancelled** by user.` });
+                return false;
             }
         }
 
-        // Automatic Branching for isolation
+        // Re-fetch current branch in case it changed (e.g., after commit in detached HEAD or other effects)
+        currentBranch = await this.gitIntegration.getCurrentBranch(folder);
+
+        // Automatic Branching for isolation — skip if already on AI task branch
         if (!currentBranch.startsWith('ai-task-')) {
             const branchName = `ai-task-${Date.now()}`;
             this.ui.addMessageToDiscussion({ role: 'system', content: `🛡️ **Safety Protocol**: Creating isolated branch \`${branchName}\`...` });
             await this.gitIntegration.createAndCheckoutBranch(folder, branchName);
+            this.completedActionsHistory.push(`[GIT] 🌿 BRANCHED: Switched from \`${currentBranch}\` to isolated workspace \`${branchName}\`.`);
+        } else {
+            this.ui.addMessageToDiscussion({ role: 'system', content: `ℹ️ Already on isolated branch \`${currentBranch}\`.` });
         }
 
+        this.isSafetyCheckPassed = true;
         return true;
+        }
+
+    /**
+     * Helper to parse form responses consistently.
+     */
+    private parseFormResponse(response: string, context: string): string {
+        if (response.startsWith('FORM_SUBMISSION:')) {
+            try {
+                const data = JSON.parse(response.substring(16));
+                Logger.info(`[AgentManager] Parsed ${context} form data:`, data);
+                // Return 'decision' or the first available value if 'decision' is missing
+                if (data.decision) return String(data.decision);
+                const values = Object.values(data);
+                return values.length > 0 ? String(values[0]) : "";
+            } catch (e) {
+                Logger.error(`[AgentManager] Failed to parse ${context} form JSON: ${response}`, e);
+                console.error(`[AgentManager] Failed to parse ${context} form data:`, e);
+                return "";
+            }
+        }
+        return response;
     }
 
     /**
@@ -382,7 +517,7 @@ Keep it strictly technical and extremely concise.`
             this.sessionState.secureCredentials = discussion.agentSession.secureCredentials || {};
             this.completedActionsHistory = discussion.agentSession.completedActionsHistory || [];
         }
-        
+
         if (!this.sessionState.secureCredentials) {
             this.sessionState.secureCredentials = {};
         }
@@ -390,11 +525,14 @@ Keep it strictly technical and extremely concise.`
         if (!this.currentPlan) {
             this.failureMemory.clear();
             this.consecutiveTaskFailures.clear();
+            this.isSafetyCheckPassed = false; // Reset for new mission
         } else {
             // --- CONTINUITY PROTOCOL ---
             // If a plan already exists, treat the incoming user message as a "Direct Intervention"
+            this.isActive = true; // Ensure agent is set to active to resume the loop
             this.completedActionsHistory.push(`[USER INTERVENTION]\n- FEEDBACK: "${content}"\n- ACTION: Adjusting strategy based on user input.`);
             this.ui.addMessageToDiscussion({ role: 'system', content: '🔄 **Integrating feedback...** Resuming mission.' });
+            this.ui.updateAgentMode(true);
         }
 
         // --- DEBUG MODE GIT SANDBOX ---
@@ -515,13 +653,28 @@ Please commit or stash your work before starting an iterative debug session to e
             });
 
             // 2. Build the ReAct prompt
-            const systemPrompt = await this.planParser.getArchitectSystemPrompt(this.getEnabledTools(), this.currentDiscussion.importedSkills);
-            
-            const historyContext = `
-### 🕒 MISSION TIMELINE (EXECUTED ACTIONS)
-${this.completedActionsHistory.length > 0 ? this.completedActionsHistory.slice(-12).join('\n\n') : "No actions taken yet."}
+            const availableSpecialists = this.personalityManager?.getPersonalities().map(p => p.id) || [];
+            const systemPrompt = await this.planParser.getArchitectSystemPrompt(
+                this.getEnabledTools(), 
+                this.currentDiscussion.importedSkills,
+                availableSpecialists
+            );
 
-**Current Status**: You have completed ${this.completedActionsHistory.length} steps. 
+            // Generate Context Inventory
+            const includedFiles = this.contextManager.getContextStateProvider()?.getIncludedFiles() || [];
+            const inventory = includedFiles.length > 0 
+                ? includedFiles.map(f => `- ${f.path} [${f.state === 'included' ? 'FULL CONTENT LOADED' : 'DEFINITIONS ONLY'}]`).join('\n')
+                : "No file content loaded yet.";
+
+            const historyContext = `
+            ### 📦 ACTIVE CONTEXT INVENTORY
+            ${inventory}
+            **STRICT RULE**: Do NOT use 'read_file' or 'read_files' for anything listed above. Use the provided content directly.
+
+            ### 🕒 MISSION TIMELINE (EXECUTED ACTIONS)
+            ${this.completedActionsHistory.length > 0 ? this.completedActionsHistory.slice(-12).join('\n\n') : "No actions taken yet."}
+
+            **Current Status**: You have completed ${this.completedActionsHistory.length} steps. 
 **Constraint**: Review the 'AUDIT REPORT' in the last observation. You MUST update your internal scratchpad or project memory with any significant technical discoveries or architectural fixes before proceeding.
 
 ### 🛑 REFLEXIVE MEMORY (MISTAKES TO AVOID)
@@ -663,6 +816,28 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
                 break;
             }
 
+            // --- GRANULAR SECURITY POLICY ENFORCEMENT ---
+            const toolPolicies = this.currentDiscussion?.capabilities?.toolPolicies || {};
+            const toolDef = this.toolManager.getTool(task.action);
+
+            const sensitiveGroups = ['shell_execution', 'filesystem_write'];
+            const isSensitive = toolDef?.permissionGroup && sensitiveGroups.includes(toolDef.permissionGroup);
+
+            const specificPolicy = toolPolicies[task.action] || (isSensitive ? 'manual' : 'autonomous');
+
+            if (specificPolicy === 'manual') {
+                task.status = 'pending'; 
+                (task as any).needsApproval = true;
+                this.ui.addMessageToDiscussion({ 
+                    role: 'system', 
+                    content: `🛡️ **Safety Gate:** The Architect wants to use \`${task.action}\`. Please review the parameters in the sidebar and click **Run Task** to allow this specific action.` 
+                });
+                await this.displayAndSavePlan(this.currentPlan);
+                this.isActive = false; // Halt autonomic loop
+                this.ui.updateAgentMode(false);
+                break; // Stop here and wait for UI event
+            }
+
             const result = await this.runSingleTask(task, signal, model);
 
             // --- 🛡️ CONTEXT GOVERNANCE (NEW) ---
@@ -768,42 +943,36 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
             const isRepo = await this.gitIntegration.isGitRepo(this.currentWorkspaceFolder);
             if (!isRepo) return;
 
+            const currentBranch = await this.gitIntegration.getCurrentBranch(this.currentWorkspaceFolder);
+            const isAiBranch = currentBranch.startsWith('ai-task-') || currentBranch.startsWith('debug/');
+
+            // LOGIC: If we are already on an isolated branch (from Phase 0), 
+            // just perform a quick checkpoint commit. DO NOT try to stash or re-branch.
+            if (isAiBranch) {
+                Logger.info(`[GitBackup] Already on isolated branch: ${currentBranch}. Creating checkpoint.`);
+                try {
+                    await this.gitIntegration.stageAllAndCommit(`Checkpoint: ${reason}`, this.currentWorkspaceFolder);
+                } catch (commitErr) {
+                    // Ignore "nothing to commit" errors during checkpoints
+                    Logger.debug(`[GitBackup] Checkpoint skipped: nothing to commit.`);
+                }
+                return;
+            }
+
+            // FALLBACK: If for some reason we aren't on an AI branch but edit is requested
             const config = vscode.workspace.getConfiguration('lollmsVsCoder');
             if (config.get<boolean>('agent.createBranchOnEdit') === false) {
                  await this.gitIntegration.stageAllAndCommit(`Auto-backup: ${reason}`, this.currentWorkspaceFolder);
                  return;
             }
 
-            const currentBranch = await this.gitIntegration.getCurrentBranch(this.currentWorkspaceFolder);
-            
-            // If we are already on an ai-generated branch, just commit to save state.
-            if (currentBranch.startsWith('ai-task-')) {
-                await this.gitIntegration.stageAllAndCommit(`Checkpoint: ${reason}`, this.currentWorkspaceFolder);
-                return;
-            }
-
-            // Commit pending changes first before branching
-            const status = await this.gitIntegration.getGitStatus(this.currentWorkspaceFolder);
-            if (status.unstaged.length > 0 || status.untracked.length > 0 || status.staged.length > 0) {
-                await this.gitIntegration.stageAllAndCommit(`Auto-backup before AI intervention`, this.currentWorkspaceFolder);
-            }
-
+            // Create new branch only if strictly necessary (usually handled by Phase 0)
             const branchName = `ai-task-${Date.now()}`;
             await this.gitIntegration.createAndCheckoutBranch(this.currentWorkspaceFolder, branchName);
-            
-            this.ui.addMessageToDiscussion({ 
-                role: 'system', 
-                content: `🔒 **Safety Mechanism Triggered:** Created and checked out to branch \`${branchName}\`.\nIf things break, you can safely switch back to \`${currentBranch}\`.` 
-            });
+            this.completedActionsHistory.push(`[GIT] 🔒 MID-MISSION ISOLATION: Switched to \`${branchName}\`.`);
 
-            // Update UI Git Status
-            if (this.currentDiscussion) {
-                this.currentDiscussion.gitState = { originalBranch: currentBranch, tempBranch: branchName };
-                await this.discussionManager.saveDiscussion(this.currentDiscussion);
-            }
-
-        } catch (e) {
-            console.error("Agent Git branching failed", e);
+        } catch (e: any) {
+            Logger.warn(`[GitBackup] Non-critical backup failure: ${e.message}`);
         }
     }
 
@@ -1104,15 +1273,25 @@ Please provide a clear, concise final response to the user summarizing the outco
             const isStuck = recentFailures.length >= 3 && recentFailures.every(t => t.action === task.action);
 
             if (this.failureMemory.hasFailedBefore(task.action, resolvedParams)) {
+                const shaker = [
+                    "COMPLIANCE ERROR: Repetitive thought pattern detected.",
+                    "CIRCUIT BREAKER: Action blocked. You already tried this and it didn't work.",
+                    "LOGIC OVERRIDE: Same input, same output. You are stuck. Change your params.",
+                    "STRICT BLOCK: I will not execute the same failing command twice."
+                ];
+                const randomMsg = shaker[Math.floor(Math.random() * shaker.length)];
+
                 result = { 
                     success: false, 
-                    output: `🛑 CRITICAL ERROR: LOOP BLOCKED.
-            You are attempting to execute '${task.action}' with parameters you have ALREADY tried and which ALREADY failed. 
+                    output: `🛑 ${randomMsg}
 
-            STRICT PROTOCOL: 
-            1. You are FORBIDDEN from calling this tool with these parameters again.
-            2. Use 'read_file' or 'search_files' to investigate why your previous assumption was wrong.
-            3. If stuck, ask the user for help using 'submit_response'.` 
+            TOOL: ${task.action}
+            REASON: Duplicate execution on a known failure path.
+
+            REQUIRED CHANGE:
+            - Change the 'path' or 'instructions'.
+            - Or switch to a completely different tool.
+            - DO NOT output this JSON again.` 
                 };
             } else if (redundantSuccess) {
                 result = {
@@ -1137,7 +1316,25 @@ Please provide a clear, concise final response to the user summarizing the outco
                     output: `ℹ️ NOTE: This file is already in your 'ACCESSIBLE FILE CONTENTS'. Reading it again is a wasted turn. Please analyze the code you already have and propose a fix.`
                 };
             } else {
+                // Snapshot state BEFORE
+                const varsBefore = JSON.stringify(this.sessionState.replVariables);
+                const memBefore = this.sessionState.workingMemory.length;
+
                 result = await this.executeTask(task.action, secureParams, signal, undefined, specialistModel, task.agent_persona, task.agent_skills, task.agent_files);
+
+                // Calculate Delta AFTER
+                const newVars: Record<string, any> = {};
+                for (const [k, v] of Object.entries(this.sessionState.replVariables)) {
+                    if (!varsBefore.includes(`"${k}":`)) {
+                        newVars[k] = v;
+                    }
+                }
+
+                task.memory_delta = {
+                    variables: newVars,
+                    discoveries: this.sessionState.workingMemory.slice(memBefore),
+                    thought: task.description
+                };
 
                 // --- SANITIZE OUTPUT (Hide real values) ---
                 if (Object.keys(credentials).length > 0 && result.output) {
@@ -1523,19 +1720,30 @@ A high importance (2.0+) ensures this lesson is prioritized in every prompt to p
     public async runCommand(command: string, signal: AbortSignal, options?: { shell?: any, timeoutMs?: number }): Promise<{ success: boolean, output: string }> {
         if (!this.currentWorkspaceFolder) return { success: false, output: "No workspace." };
         
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const activationScript = config.get<string>('agent.envActivationScript');
         let finalCommand = command;
         const isWin = process.platform === 'win32';
 
-        // Automatically handle Python Environment if one is active in the session
-        if (this.sessionState.activeEnv && (command.startsWith('python') || command.startsWith('pip'))) {
-            const envPath = this.sessionState.activeEnv;
+        // --- MSVC / GLOBAL ENV ACTIVATION ---
+        if (activationScript) {
             if (isWin) {
-                finalCommand = `& "${path.join(envPath, 'Scripts', 'Activate.ps1')}"; ${command}`;
+                finalCommand = `cmd /c "${activationScript} && ${command}"`;
             } else {
-                finalCommand = `. "${path.join(envPath, 'bin', 'activate')}" && ${command}`;
+                finalCommand = `source ${activationScript} && ${command}`;
             }
         }
 
+        // --- VIRTUAL ENV ACTIVATION ---
+        if (this.sessionState.activeEnv && (command.startsWith('python') || command.startsWith('pip'))) {
+            const envPath = this.sessionState.activeEnv;
+            if (isWin) {
+                finalCommand = `& "${path.join(envPath, 'Scripts', 'Activate.ps1')}"; ${finalCommand}`;
+            } else {
+                finalCommand = `. "${path.join(envPath, 'bin', 'activate')}" && ${finalCommand}`;
+            }
+        }
+        
         // Use a descriptive task name so the user sees what is running in the status bar/terminal tab
         const taskName = command.length > 30 ? command.substring(0, 27) + "..." : command;
         

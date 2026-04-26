@@ -341,7 +341,6 @@ document.getElementById('ttsButton')?.addEventListener('click', () => {
         window.addEventListener('message', handleExtensionMessage);
         
         document.addEventListener('DOMContentLoaded', () => {
-            console.log("DEBUG: DOMContentLoaded.");
             
             const strings = (window as any).l10n || {};
             

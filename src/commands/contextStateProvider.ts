@@ -48,7 +48,7 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     private _onDidChangeFileDecorations: vscode.EventEmitter<vscode.Uri | vscode.Uri[]> = new vscode.EventEmitter<vscode.Uri | vscode.Uri[]>();
     readonly onDidChangeFileDecorations: vscode.Event<vscode.Uri | vscode.Uri[]> = this._onDidChangeFileDecorations.event;
 
-    private context: vscode.ExtensionContext;
+    public context: vscode.ExtensionContext;
     private readonly stateKey: string = 'lollms-context-selection-unified';
     
     private defaultCollapsedFolders = new Set([
@@ -409,38 +409,30 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const exceptions = config.get<string[]>('contextFileExceptions') || [];
-        
-        // 1. Build a robust combined exclusion pattern for native findFiles
-        // We exclude hidden folders, environment folders, and common build artifacts
+
+        // 1. Minimum exclusions. We only hide truly irrelevant binary artifacts.
+        // We do NOT hide .git, .lollms, or venv here, as they must show as (Collapsed).
         const standardExcludes = [
-            '**/.*/**',           // Any hidden folder/file (.git, .vscode, .idea, etc.)
-            '**/node_modules/**',
             '**/__pycache__/**',
-            '**/venv/**',
-            '**/.venv/**',
-            '**/env/**',
-            '**/dist/**',
-            '**/build/**',
-            '**/out/**',
-            '**/target/**',
             '**/*.pyc',
-            '**/*.exe',
-            '**/*.dll',
-            '**/*.obj'
+            '**/*.pyo',
+            '**/*.pyd',
+            '**/*.obj',
+            '**/*.bin',
+            '**/.DS_Store'
         ];
 
-        // Combine user-defined exceptions with our robust defaults
         const combinedExcludes = Array.from(new Set([...exceptions, ...standardExcludes]));
         const excludePattern = combinedExcludes.length > 1 ? `{${combinedExcludes.join(',')}}` : (combinedExcludes[0] || "");
 
-        Logger.info(`Librarian: Scanning workspace with pattern: **/* and excludes: ${excludePattern}`);
+        Logger.info(`Librarian: Deep scan with excludes: ${excludePattern}`);
 
-        // 2. Use VS Code's native C++ multi-threaded file finder
-        // This is significantly faster than manual recursion.
+        // 2. Use findFiles with useIgnoreFiles: false to ensure dotfiles like .gitignore
+        // and images are visible regardless of user's local "hide" settings.
         const files = await vscode.workspace.findFiles(
             new vscode.RelativePattern(workspaceFolder, '**/*'),
             excludePattern,
-            10000
+            20000 // Increased limit
         );
 
         if (signal?.aborted) return [];

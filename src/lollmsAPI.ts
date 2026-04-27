@@ -431,14 +431,20 @@ export class LollmsAPI {
     }
 
     // FINAL FALLBACK: Use User Setting if provided, otherwise Heuristic
-    const { getContextLimitForModel } = require('./utils');
-    const heuristicSize = getContextLimitForModel(modelName);
-    
-    // If we reached here, the server API failed or returned 0.
-    // We only use the failsafe/manual override now.
+    let heuristicSize = 128000;
+    try {
+        const { getContextLimitForModel } = require('./utils');
+        heuristicSize = getContextLimitForModel(modelName);
+    } catch (e) {
+        // Module load fail in some environments
+    }
+
+    // Ensure we NEVER return 0 or negative numbers
+    const finalSize = Math.max(manualOverride || heuristicSize || 128000, 4096);
+
     return { 
-        context_size: manualOverride || heuristicSize || 128000, 
-        isEstimation: manualOverride === 0, // It's only an estimation if the user didn't set a hard value
+        context_size: finalSize, 
+        isEstimation: manualOverride === 0, 
         isUserDefined: manualOverride > 0
     };
   }

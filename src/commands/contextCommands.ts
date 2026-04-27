@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { LollmsServices } from '../lollmsContext';
-import { ContextState } from '../commands/contextStateProvider';
+import { ContextState } from './contextStateProvider';
 import { Logger } from '../logger';
 import * as path from 'path';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';

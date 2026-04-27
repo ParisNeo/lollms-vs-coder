@@ -1370,7 +1370,7 @@ function renderMissionControl(dataStr: string): string {
 }
 
 function renderAddFilesBlock(params: any, messageId: string): string {
-    const files: string[] = Array.isArray(params.paths) ? params.paths : [];
+    const files: string[] = Array.isArray(params.paths) ? params.paths : (params.files || []);
 
     if (files.length === 0) return "";
 
@@ -1396,9 +1396,10 @@ function renderAddFilesBlock(params: any, messageId: string): string {
         </div>`;
     }).join('');
 
-    const blockId = `add-files-${messageId}`;
+    // Use a more specific block ID that includes the current timestamp to avoid collisions
+    const blockId = `add-files-${messageId}-${Date.now()}`;
     const fileListJson = JSON.stringify(files).replace(/"/g, '&quot;');
-    
+
     const btnText = allIncluded ? 'Added to Context' : 'Add all to Context';
     const btnClass = allIncluded ? 'applied' : 'apply-btn';
     const btnDisabled = allIncluded ? 'disabled' : '';
@@ -1482,7 +1483,7 @@ function renderImageEditBlock(params: any, messageId: string): string {
     </div>`;
 }
 
-function renderFileOpBlock(type: 'delete' | 'move' | 'prune', params: any, messageId: string): string {
+export function renderFileOpBlock(type: 'delete' | 'move' | 'copy' | 'prune', params: any, messageId: string): string {
     const blockId = `file-op-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
     let title = "";
     let icon = "";
@@ -1493,7 +1494,7 @@ function renderFileOpBlock(type: 'delete' | 'move' | 'prune', params: any, messa
 
     switch (type) {
         case 'prune':
-            const prunePaths = Array.isArray(params.paths) ? params.paths : [];
+            const prunePaths = Array.isArray(params.paths) ? params.paths :[];
             title = "Propose Context Pruning";
             icon = "codicon-clear-all";
             buttonText = "Remove from Context";
@@ -1502,7 +1503,7 @@ function renderFileOpBlock(type: 'delete' | 'move' | 'prune', params: any, messa
             cmdData = { remove: prunePaths };
             break;
         case 'delete':
-            const delPaths: string[] = Array.isArray(params.paths) ? params.paths : (params.path ? [params.path] : []);
+            const delPaths: string[] = Array.isArray(params.paths) ? params.paths : (params.path ? [params.path] :[]);
             title = "Propose Deletion (Files/Folders)";
             icon = "codicon-trash";
             
@@ -1543,17 +1544,20 @@ function renderFileOpBlock(type: 'delete' | 'move' | 'prune', params: any, messa
                 </div>
             </div>`;
         case 'move':
-            title = "Propose File Move/Rename";
-            icon = "codicon-move";
-            buttonText = "Apply Move";
-            detailsHtml = `
-                <div class="file-operation-details">
-                    <span class="path-old">${sanitizer.sanitize(params.src || params.source)}</span>
-                    <span class="codicon codicon-arrow-right"></span>
-                    <span class="path-new">${sanitizer.sanitize(params.dest || params.destination)}</span>
-                </div>`;
-            command = "renameFile";
-            cmdData = { originalPath: params.src || params.source, newPath: params.dest || params.destination };
+        case 'copy':
+            const ops: {src: string, dest: string}[] = params.operations ||[];
+            title = type === 'move' ? "Propose Move/Rename" : "Propose Copy";
+            icon = type === 'move' ? "codicon-arrow-swap" : "codicon-files";
+            buttonText = type === 'move' ? "Apply Move" : "Apply Copy";
+            detailsHtml = ops.map((op: {src: string, dest: string}) => `
+                <div class="file-operation-details" style="margin-bottom:4px;">
+                    <span class="path-old">${sanitizer.sanitize(op.src)}</span>
+                    <span class="codicon codicon-arrow-right file-operation-arrow"></span>
+                    <span class="path-new">${sanitizer.sanitize(op.dest)}</span>
+                </div>
+            `).join('');
+            command = type === 'move' ? "bulkMoveFiles" : "bulkCopyFiles";
+            cmdData = { operations: ops };
             break;
     }
 
@@ -1787,6 +1791,8 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     const messageDiv = wrapper.querySelector('.message') as HTMLElement;
     if (!contentDiv || !messageDiv) return;
 
+    let processedContent = "";
+
     // PRESERVE STATE of Apply All List to prevent blinking/resetting during repair
     const existingResultsList = contentDiv.querySelector('.apply-results-list');
     const existingApplyBtn = contentDiv.querySelector('.apply-all-btn');
@@ -1814,6 +1820,16 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                         (typeof rawContent === 'string' && rawContent.trim() === '') || 
                         (Array.isArray(rawContent) && rawContent.length === 0);
 
+        const thoughts: { tag: string, content: string }[] = [];
+        const skills: { html: string, start: number, end: number }[] = [];
+        const images: { html: string, start: number, end: number }[] = [];
+        const fileOps: { html: string, start: number, end: number }[] = [];
+        const memTags: { html: string, start: number, end: number }[] = [];
+        const forms: { html: string, start: number, end: number }[] = [];
+        const milestones: { html: string, start: number, end: number }[] = [];
+        const debugReports: { html: string, start: number, end: number }[] = [];
+        const processingBlocks: { html: string, start: number, end: number }[] = [];
+
         if (isUser && isEmpty) {
             contentDiv.innerHTML = `<div style="opacity: 0.7; font-style: italic; margin-bottom: 8px;">Empty message</div>
             <button class="code-action-btn apply-btn infer-prompt-btn" data-message-id="${messageId}"><span class="codicon codicon-wand"></span> Infer Prompt</button>`;
@@ -1826,7 +1842,9 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             let html = '';
             rawContent.forEach(p => {
                 if (p.type === 'text'){
-                    html += `<div>${sanitizer.sanitize(marked.parse(p.text) as string)}</div>`;
+                    const { thoughts: textThoughts, processedContent: contentSnippet } = processThinkTags(p.text);
+                    thoughts.push(...textThoughts);
+                    html += `<div>${sanitizer.sanitize(marked.parse(contentSnippet) as string)}</div>`;
                 } else if (p.type === 'image_url') {
                     const isMuted = state.capabilities?.enableImages === false;
                     if (isMuted) {
@@ -1845,13 +1863,12 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             });
             contentDiv.innerHTML = html;
         } else if (typeof rawContent === 'string') {
-            const { thoughts, processedContent: contentWithoutThoughts } = processThinkTags(rawContent);
-
+            const { thoughts: thoughtsResult, processedContent: contentWithoutThoughts } = processThinkTags(rawContent);
+            thoughts.push(...thoughtsResult);
+            processedContent = contentWithoutThoughts;
+            
             // --- SKILL TAG PARSING ---
-            const skills: { html: string, start: number, end: number }[] = [];
-            let processedContent = contentWithoutThoughts;
-
-            const skillRegex = /<skill\s+([^>]*?)>([\s\S]*?)<\/skill>/gi;
+            const skillRegex = /<skill\s+([^>]*?)>([\s\S]*?)<\/skill>/gi; 
             let skillMatch;
             while ((skillMatch = skillRegex.exec(contentWithoutThoughts)) !== null) {
                 const attrStr = skillMatch[1];
@@ -1866,8 +1883,6 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             }
 
             // --- IMAGE GENERATION TAG PARSING ---
-            const images: { html: string, start: number, end: number }[] = [];
-
             // --- NEW: Image Result Parser (Already Exists on Disk) ---
             const resRegex = /<image_result\s+path=["']([^"']*)["']\s*\/>/gi;
             let resMatch;
@@ -1891,7 +1906,6 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             }
 
             // --- DEBUG REPORT TAG PARSING ---
-            const debugReports: { html: string, start: number, end: number }[] = [];
             const debugRegex = /<debug_report\s+data=['"]([\s\S]*?)['"]\s*\/>/gi;
             let dMatch;
             while ((dMatch = debugRegex.exec(contentWithoutThoughts)) !== null) {
@@ -1900,8 +1914,6 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             }
 
             // --- PROJECT MEMORY TAG PARSING ---
-            const memTags: { html: string, start: number, end: number }[] = [];
-
             // --- REINFORCE TAG PARSING ---
             const reinfRegex = /<memory_reinforce\s+id=["']([^"']*)["']\s*\/>/gi;
             let reinfMatch;
@@ -1926,9 +1938,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
             // --- FILE OPERATIONS & CONTEXT TAG PARSING ---
             // --- PROCESSING TAG PARSING ---
-            const processingBlocks: { html: string, start: number, end: number }[] = [];
             // --- FORM TAG PARSING ---
-            const forms: { html: string, start: number, end: number }[] = [];
             const formRegex = /<lollms_form\b[^>]*>([\s\S]*?)<\/lollms_form>/gi;
             let formMatch;
             while ((formMatch = formRegex.exec(contentWithoutThoughts)) !== null) {
@@ -1936,8 +1946,9 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 forms.push({ html, start: formMatch.index, end: formMatch.index + formMatch[0].length });
             }
 
-            const milestones: { html: string, start: number, end: number }[] = [];
             const milestoneRegex = /<milestone\s+([^>]*?)\s*\/>/gi;
+
+            const milestones: { html: string, start: number, end: number }[] = [];
             let mileMatch;
             while ((mileMatch = milestoneRegex.exec(contentWithoutThoughts)) !== null) {
                 const attrStr = mileMatch[1];
@@ -1957,40 +1968,67 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 processingBlocks.push({ html, start: procMatch.index, end: procMatch.index + procMatch[0].length });
             }
 
-            const fileOps: { html: string, start: number, end: number }[] = [];
-            const opRegex = /<(move_file|delete_file|add_files_to_context|remove_files_from_context|edit_image_asset)\s+([^>]*?)\s*(?:\/>|>(.*?)<\/edit_image_asset>)/gi;
-            let opMatch;
-            while ((opMatch = opRegex.exec(contentWithoutThoughts)) !== null) {
-                const tagName = opMatch[1].toLowerCase();
-                const attrStr = opMatch[2];
+            const fileOps: { html: string, start: number, end: number }[] =[];
+            
+            // 1. Parse New Multi-line Blocks
+            const blockOpRegex = /<(add_files_to_context|remove_files_from_context|delete_files|move_files|copy_files)>([\s\S]*?)<\/\1>/gi;
+            let blockOpMatch;
+            while ((blockOpMatch = blockOpRegex.exec(contentWithoutThoughts)) !== null) {
+                const tagName = blockOpMatch[1].toLowerCase();
+                const innerText = blockOpMatch[2].trim();
+                const lines = innerText.split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0);
+                
+                let opType: 'delete' | 'move' | 'copy' | 'prune' | 'add_ctx' = 'delete';
+                let params: any = {};
+
+                if (tagName === 'add_files_to_context') {
+                    opType = 'add_ctx';
+                    params = { paths: lines };
+                } else if (tagName === 'remove_files_from_context') {
+                    opType = 'prune';
+                    params = { paths: lines };
+                } else if (tagName === 'delete_files') {
+                    opType = 'delete';
+                    params = { paths: lines };
+                } else if (tagName === 'move_files' || tagName === 'copy_files') {
+                    opType = tagName === 'move_files' ? 'move' : 'copy';
+                    const operations = lines.map((l: string) => {
+                        const parts = l.split('->');
+                        return { src: parts[0]?.trim(), dest: parts[1]?.trim() };
+                    }).filter((op: any) => op.src && op.dest);
+                    params = { operations };
+                }
+
+                const opHtml = opType === 'add_ctx' ? renderAddFilesBlock(params, messageId) : 
+                               renderFileOpBlock(opType as any, params, messageId);
+                fileOps.push({ html: opHtml, start: blockOpMatch.index, end: blockOpMatch.index + blockOpMatch[0].length });
+            }
+
+            // 2. Parse Legacy / Single-line tags (edit_image_asset)
+            const legacyOpRegex = /<(edit_image_asset)\s+([^>]*?)>(.*?)<\/\1>/gi;
+            let legacyOpMatch;
+            while ((legacyOpMatch = legacyOpRegex.exec(contentWithoutThoughts)) !== null) {
+                const tagName = legacyOpMatch[1].toLowerCase();
+                const attrStr = legacyOpMatch[2];
                 const attrs: any = {};
-                // Enhanced attribute regex to handle single/double quotes and escaped sequences
                 const attrRegex = /(\w+)=(['"])([\s\S]*?)\2/g;
                 let m;
                 while ((m = attrRegex.exec(attrStr)) !== null) {
                     attrs[m[1]] = unescapeXml(m[3]);
                 }
                 
-                // Handle JSON arrays in paths (often wrapped in different quote types)
                 if (attrs.paths && (attrs.paths.trim().startsWith('[') || attrs.paths.trim().startsWith('{'))) {
                     try { 
-                        // First replace XML entities, then parse
                         const cleanJson = attrs.paths.replace(/&quot;/g, '"').replace(/&apos;/g, "'");
                         attrs.paths = JSON.parse(cleanJson); 
-                    } catch(e){
+                    } catch(e) {
                         console.error("Failed to parse paths attribute as JSON", e);
                     }
                 }
 
-                let opType: 'delete' | 'move' | 'prune' | 'add_ctx' | 'edit_img' = 'delete' ;
-                if (tagName === 'move_file') opType = 'move';
-                if (tagName === 'remove_files_from_context') opType = 'prune';
-                if (tagName === 'add_files_to_context') opType = 'add_ctx';
-                if (tagName === 'edit_image_asset') opType = 'edit_img';
-
-                const opHtml = opType === 'add_ctx' ? renderAddFilesBlock(attrs, messageId) : 
-                               (opType === 'edit_img' ? renderImageEditBlock(attrs, messageId) : renderFileOpBlock(opType as any, attrs, messageId));
-                fileOps.push({ html: opHtml, start: opMatch.index, end: opMatch.index + opMatch[0].length });
+                const opHtml = renderImageEditBlock(attrs, messageId);
+                fileOps.push({ html: opHtml, start: legacyOpMatch.index, end: legacyOpMatch.index + legacyOpMatch[0].length });
+            }
             }
 
             messageDiv.querySelectorAll('.plan-scratchpad, .skill-creation-block, .generation-block, .context-expansion-block, .file-operation-block').forEach(el => el.remove());
@@ -2587,7 +2625,6 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 // --- INITIAL SYNC ---
                 checkAndSyncMessageAppliedState(messageId);
             }
-        }
     } catch (e) {
         contentDiv.innerText = "Rendering Error: " + e;
     }
@@ -2908,13 +2945,11 @@ export function updateContext(contextText: string, files: string[] = [], skills:
     const displayContent = contextText || (files.length > 0 ? "_Loading project content..._" : "");
     const renderedMarkdown = displayContent ? sanitizer.sanitize(marked.parse(displayContent) as string, SANITIZE_CONFIG) : "";
 
-    // Categorize as external if it's in the cache, a web URL, or an absolute path (outside workspace)
-    // Strictly define what belongs in the "Project Files" list
-    // Only relative paths that don't belong to the internal cache are allowed.
+    // Categorize as external if it's in the cache or a web URL.
+    // Absolute paths are now pre-scrubbed by the extension host to look relative.
     const isProjectFile = (f: string) => {
-        const isAbsolute = f.includes(':') || f.startsWith('/') || f.startsWith('\\');
-        const isInternal = f.includes('.lollms/') || f.startsWith('http');
-        return !isAbsolute && !isInternal;
+        const isInternal = f.includes('.lollms/') || f.startsWith('http') || f.startsWith('external/');
+        return !isInternal;
     };
 
     const projectFiles = files.filter(isProjectFile);
@@ -2963,10 +2998,64 @@ export function updateContext(contextText: string, files: string[] = [], skills:
     const isMuted = state.capabilities?.disableProjectContext;
     const isAgentActive = state.capabilities?.agentMode === true;
     const currentModel = state.currentModelName;
-    
+
     const themeClass = isAgentActive ? 'agent-mode-bubble' : '';
     const muteClass = isMuted ? 'muted-bubble' : '';
 
+    const workspaceFolders = (window as any).workspaceFolders || [];
+    const folderSettings = state.capabilities?.folderSettings || {};
+
+    const renderWorkspaceSelector = () => {
+        if (workspaceFolders.length === 0) return '';
+
+        const rows = workspaceFolders.map(f => {
+            const uriKey = typeof f.uri === 'string' ? f.uri : (f.uri as any).toString();
+            const settings = folderSettings[uriKey] || { tree: true, content: true };
+            
+            return `
+                <div class="ws-matrix-row" data-uri="${uriKey}" style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; border-bottom: 1px solid var(--vscode-widget-border); gap: 12px;">
+                    <div class="ws-matrix-label" style="display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;">
+                        <span class="codicon codicon-root-folder" style="opacity: 0.6;"></span>
+                        <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 600;">${f.name}</span>
+                    </div>
+                    <div class="ws-matrix-controls" style="display: flex; gap: 6px;">
+                        <button class="matrix-toggle ${settings.tree ? 'active' : ''}" 
+                                data-type="tree" 
+                                style="font-size: 10px; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--vscode-widget-border); background: ${settings.tree ? 'var(--vscode-button-background)' : 'transparent'}; color: ${settings.tree ? 'var(--vscode-button-foreground)' : 'inherit'}; cursor: pointer;"
+                                title="${settings.tree ? 'Include in tree scan' : 'Hide from tree'}">
+                            <i class="codicon codicon-graph"></i> Tree
+                        </button>
+                        <button class="matrix-toggle ${settings.content ? 'active' : ''}" 
+                                data-type="content" 
+                                style="font-size: 10px; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--vscode-widget-border); background: ${settings.content ? 'var(--vscode-button-background)' : 'transparent'}; color: ${settings.content ? 'var(--vscode-button-foreground)' : 'inherit'}; cursor: pointer;"
+                                title="${settings.content ? 'Include file content' : 'Mute content'}">
+                            <i class="codicon codicon-file-code"></i> Content
+                        </button>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        return `
+        <details class="info-collapsible" style="margin-bottom: 8px; border-left: 4px solid var(--vscode-focusBorder);">
+            <summary style="font-weight: 800; font-size: 10px; color: var(--vscode-textLink-foreground); letter-spacing: 0.5px;">
+                <i class="codicon codicon-layers"></i> WORKSPACE ACCESS MATRIX
+            </summary>
+            <div class="collapsible-content" style="padding: 0; background: var(--vscode-sideBar-background);">
+                <div style="display: flex; justify-content: space-between; padding: 8px 10px; border-bottom: 1px solid var(--vscode-widget-border); opacity: 0.7;">
+                    <span style="font-size: 9px; font-weight: bold;">PROJECTS LIST</span>
+                    <div style="display: flex; gap: 10px;">
+                        <button id="ws-all-on" style="background:none; border:none; color: var(--vscode-textLink-foreground); font-size: 10px; cursor: pointer; padding: 0;">Enable All</button>
+                        <button id="ws-all-off" style="background:none; border:none; color: var(--vscode-errorForeground); font-size: 10px; cursor: pointer; padding: 0;">Disable All</button>
+                    </div>
+                </div>
+                <div class="ws-matrix-body" style="max-height: 180px; overflow-y: auto;">
+                    ${rows}
+                </div>
+            </div>
+        </details>`;
+    };
+    
     const renderDataBriefing = () => {
         const raw = briefing || "";
         if (!raw.trim()) return "Librarian is analyzing project state...";
@@ -2978,37 +3067,6 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                 return `<strong>[${title}]</strong><br>${entries[id]}`;
             }).join('<br><br>');
         } catch { return raw; }
-    };
-
-    const workspaceFolders = (window as any).workspaceFolders || [];
-    const selectedFolders = state.capabilities?.selectedFolders || [];
-
-    const renderWorkspaceSelector = () => {
-        if (workspaceFolders.length <= 1) return '';
-        
-        const folderItems = workspaceFolders.map(f => {
-            const isChecked = selectedFolders.length === 0 || selectedFolders.includes(f.uri);
-            return `
-                <label class="workspace-item">
-                    <input type="checkbox" class="ws-checkbox" value="${f.uri}" ${isChecked ? 'checked' : ''}>
-                    <span class="ws-name" title="${f.uri}">${f.name}</span>
-                </label>
-            `;
-        }).join('');
-
-        return `
-        <div class="workspace-scope-selector">
-            <div class="ws-selector-header">
-                <span class="ws-title"><i class="codicon codicon-root-folder"></i> Workspace Scope</span>
-                <div class="ws-bulk-actions">
-                    <button id="ws-select-all" class="ws-action-btn">All</button>
-                    <button id="ws-select-none" class="ws-action-btn">None (Regular LLM)</button>
-                </div>
-            </div>
-            <div class="ws-folder-list">
-                ${folderItems}
-            </div>
-        </div>`;
     };
 
     // Logic for segmented bar in header
@@ -3070,7 +3128,6 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                 </div>
             </div>
             <div class="message-content">
-                ${renderWorkspaceSelector()}
                 <details class="info-collapsible" style="margin-bottom: 6px; border-left: 4px solid var(--vscode-charts-purple);">
                     <summary>Team Technical Briefing</summary>
                     <div class="collapsible-content">
@@ -3082,7 +3139,13 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                 <details class="info-collapsible" style="margin-bottom: 6px;">
                     <summary>Selected Files (${files.length})</summary>
                     <div class="collapsible-content" style="padding-top: 8px;">
-                        <h4 style="margin: 0 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase;">Project Files</h4>
+                        <h4 style="margin: 0 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
+                            <span>Project Files</span>
+                            ${projectFiles.length > 0 ? `
+                            <button id="bulk-remove-project-btn" class="section-bulk-btn" title="Open Bulk Removal Tool">
+                                <span class="codicon codicon-checklist"></span> Bulk Remove
+                            </button>` : ''}
+                        </h4>
                         ${renderFileList(projectFiles, "No project files selected.", false)}
                         
                         <h4 style="margin: 12px 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
@@ -3320,6 +3383,66 @@ export function updateContext(contextText: string, files: string[] = [], skills:
         });
     }
 
+    const bulkRemoveProjectBtn = document.getElementById('bulk-remove-project-btn');
+    if (bulkRemoveProjectBtn) {
+        bulkRemoveProjectBtn.onclick = () => {
+            // Re-use the existing bulk delete modal logic but for project files
+            if (typeof (window as any).showBulkDeleteModal === 'function') {
+                (window as any).showBulkDeleteModal(projectFiles);
+            }
+        };
+    }
+
+    const muteBtn = document.getElementById('mute-context-btn');
+    if (muteBtn) {
+        muteBtn.addEventListener('click', () => {
+            const isMuted = !state.capabilities?.disableProjectContext;
+            vscode.postMessage({ 
+                command: 'updateDiscussionCapabilitiesPartial', 
+                partial: { disableProjectContext: isMuted } 
+            });
+        });
+    }
+
+    // Workspace Matrix Logic
+    const container = dom.contextContainer;
+    if (container) {
+        container.addEventListener('click', (e) => {
+            const target = e.target as HTMLElement;
+            const toggleBtn = target.closest('.matrix-toggle') as HTMLButtonElement;
+            const row = target.closest('.ws-matrix-row') as HTMLElement;
+
+            if (toggleBtn && row) {
+                const uri = row.dataset.uri!;
+                const type = toggleBtn.dataset.type as 'tree' | 'content';
+
+                const currentSettings = state.capabilities?.folderSettings || {};
+                const settings = currentSettings[uri] || { tree: true, content: true };
+
+                // Toggle the specific setting
+                settings[type] = !settings[type];
+
+                // Debounce matrix updates to prevent flooding the extension host
+                if ((window as any).matrixUpdateTimer) clearTimeout((window as any).matrixUpdateTimer);
+                (window as any).matrixUpdateTimer = setTimeout(() => {
+                    vscode.postMessage({ 
+                        command: 'updateDiscussionCapabilitiesPartial', 
+                        partial: { folderSettings: { ...currentSettings, [uri]: settings } } 
+                    });
+                }, 300);                
+            }
+
+            if (target.id === 'ws-all-on' || target.id === 'ws-all-off') {
+                const turnOn = target.id === 'ws-all-on';
+                const newSettings: Record<string, any> = {};
+                workspaceFolders.forEach(f => {
+                    newSettings[f.uri] = { tree: turnOn, content: turnOn };
+                });
+                vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { folderSettings: newSettings } });
+            }
+        });
+    }
+
     // --- REACTIVE CONTEXT SYNC FOR EXPANSION BLOCKS ---
     // Find all <add_files> blocks in the history and update them if files were added elsewhere
     const expansionBlocks = document.querySelectorAll('.expansion-request-block');
@@ -3368,54 +3491,10 @@ export function updateContext(contextText: string, files: string[] = [], skills:
         }
     });
 
-    const muteBtn = document.getElementById('mute-context-btn');
-    if (muteBtn) {
-        muteBtn.addEventListener('click', () => {
-            const isMuted = !state.capabilities?.disableProjectContext;
-            vscode.postMessage({ 
-                command: 'updateDiscussionCapabilitiesPartial', 
-                partial: { disableProjectContext: isMuted } 
-            });
-        });
-    }
-
-    // Workspace Selector Logic
-    const container = dom.contextContainer;
-    if (container) {
-        container.addEventListener('change', (e) => {
-            const target = e.target as HTMLInputElement;
-            if (target.classList.contains('ws-checkbox')) {
-                const checked = Array.from(container.querySelectorAll('.ws-checkbox:checked')).map((el: any) => el.value);
-                vscode.postMessage({ 
-                    command: 'updateDiscussionCapabilitiesPartial', 
-                    partial: { selectedFolders: checked } 
-                });
-            }
-        });
-
-        container.addEventListener('click', (e) => {
-            const target = e.target as HTMLElement;
-            if (target.id === 'ws-select-all') {
-                const all = Array.from(container.querySelectorAll('.ws-checkbox')).map((el: any) => el.value);
-                vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { selectedFolders: [] } }); // Empty = All
-            }
-            if (target.id === 'ws-select-none') {
-                vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { selectedFolders: ['__none__'] } });
-            }
-        });
-    }
-
     const refreshCtxBtn = document.getElementById('refresh-context-btn');
     if (refreshCtxBtn) {
         refreshCtxBtn.addEventListener('click', () => {
             vscode.postMessage({ command: 'calculateTokens' });
-        });
-    }
-
-    const cancelCtxBtn = document.getElementById('cancel-tokens-btn');
-    if (cancelCtxBtn) {
-        cancelCtxBtn.addEventListener('click', () => {
-            vscode.postMessage({ command: 'stopTokenCalculation' });
         });
     }
 
@@ -3425,7 +3504,68 @@ export function updateContext(contextText: string, files: string[] = [], skills:
             showBulkDeleteSkillsModal(skills);
         });
     }
+
+    const cancelCtxBtn = document.getElementById('cancel-tokens-btn');
+    if (cancelCtxBtn) {
+        cancelCtxBtn.addEventListener('click', () => {
+            vscode.postMessage({ command: 'stopTokenCalculation' });
+        });
+    }
 }
+
+
+/**
+ * Opens a modal to select multiple files for removal from context.
+ */
+export function showBulkDeleteModal(files: string[]) {
+    const modal = document.getElementById('bulk-delete-modal');
+    const list = document.getElementById('bulk-delete-files-list');
+    const master = document.getElementById('bulk-delete-select-all') as HTMLInputElement;
+    const closeBtn = document.getElementById('bulk-delete-close-btn');
+    const runBtn = document.getElementById('bulk-delete-run-btn');
+
+    if (!modal || !list) return;
+
+    // We sort alphabetically by the filename (not path) for easier browsing
+    const sortedFiles = [...files].sort((a, b) => a.split('/').pop()!.localeCompare(b.split('/').pop()!));
+
+    list.innerHTML = sortedFiles.map(f => {
+        const fileName = f.split('/').pop();
+        const dirName = f.includes('/') ? f.substring(0, f.lastIndexOf('/')) : '';
+        return `
+        <div class="checkbox-container" style="margin-bottom: 6px; padding: 4px; border-radius: 4px; background: rgba(0,0,0,0.15); display: flex; align-items: center;">
+            <input type="checkbox" class="bulk-delete-file-check" value="${f}" id="bulk-del-check-${f}" checked style="margin: 0 10px 0 5px;">
+            <label for="bulk-del-check-${f}" style="font-size: 11px; cursor: pointer; flex: 1; min-width: 0;">
+                <div style="font-weight: bold; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${fileName}</div>
+                <div style="font-size: 9px; opacity: 0.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${dirName}</div>
+            </label>
+        </div>`;
+    }).join('');
+
+    if (master) {
+        master.checked = true;
+        master.onchange = () => {
+            list.querySelectorAll('.bulk-delete-file-check').forEach((cb: any) => cb.checked = master.checked);
+        };
+    }
+
+    modal.classList.add('visible');
+
+    const close = () => modal.classList.remove('visible');
+    closeBtn!.onclick = close;
+
+    runBtn!.onclick = () => {
+        const selected = Array.from(document.querySelectorAll('.bulk-delete-file-check:checked')).map((el: any) => el.value);
+        if (selected.length > 0) {
+            // This command triggers bulkRemoveFiles in ChatPanel.ts
+            vscode.postMessage({ command: 'bulkRemoveFiles', paths: selected });
+            modal.classList.remove('visible');
+        }
+    };
+}
+
+// Expose to global so messageRenderer can trigger it
+(window as any).showBulkDeleteModal = showBulkDeleteModal;
 
 function showBulkDeleteSkillsModal(skills: any[]) {
     const modal = document.getElementById('bulk-delete-skills-modal');
@@ -3459,43 +3599,6 @@ function showBulkDeleteSkillsModal(skills: any[]) {
         const selected = Array.from(document.querySelectorAll('.bulk-skill-check:checked')).map((el: any) => el.value);
         if (selected.length > 0) {
             vscode.postMessage({ command: 'bulkRemoveSkills', skillIds: selected });
-            close();
-        }
-    };
-}
-
-function showBulkDeleteModal(files: string[]) {
-    const modal = document.getElementById('bulk-delete-modal');
-    const list = document.getElementById('bulk-delete-files-list');
-    const master = document.getElementById('bulk-delete-select-all') as HTMLInputElement;
-    const closeBtn = document.getElementById('bulk-delete-close-btn');
-    const runBtn = document.getElementById('bulk-delete-run-btn');
-
-    if (!modal || !list) return;
-
-    list.innerHTML = files.map(f => `
-        <div class="checkbox-container" style="margin-bottom: 4px;">
-            <input type="checkbox" class="bulk-delete-file-check" value="${f}" id="bulk-del-check-${f}" checked>
-            <label for="bulk-del-check-${f}" style="font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer;">${f}</label>
-        </div>
-    `).join('');
-
-    if (master) {
-        master.checked = true;
-        master.onchange = () => {
-            list.querySelectorAll('.bulk-delete-file-check').forEach((cb: any) => cb.checked = master.checked);
-        };
-    }
-
-    modal.classList.add('visible');
-
-    const close = () => modal.classList.remove('visible');
-    closeBtn!.onclick = close;
-
-    runBtn!.onclick = () => {
-        const selected = Array.from(document.querySelectorAll('.bulk-delete-file-check:checked')).map((el: any) => el.value);
-        if (selected.length > 0) {
-            vscode.postMessage({ command: 'bulkDeleteContextFiles', files: selected });
             close();
         }
     };

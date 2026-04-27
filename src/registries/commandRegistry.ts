@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { LollmsServices } from '../lollmsContext';
 import { registerUICommands } from './uiCommands';
 import { registerChatCommands } from './chatCommands';
-import { registerContextCommands } from './contextCommands';
+import { registerContextCommands } from '../commands/contextCommands';
 import { registerFileCommands } from './fileCommands';
 import { registerPromptCommands } from './promptCommands';
 import { registerDebugCommands } from './debugCommands';

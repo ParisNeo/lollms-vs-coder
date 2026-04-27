@@ -581,5 +581,11 @@ async function showQuickSetupWizard(context: vscode.ExtensionContext) {
 }
 
 export function deactivate(): void {
+    Logger.info("Deactivating Lollms VS Coder...");
+    // Dispose of the terminal to prevent the UNKNOWN service remoteAgentHostService error on next load
     disposeTerminal();
+
+    // Clear all active panels to ensure clean state
+    ChatPanel.panels.forEach(p => p.dispose());
+    ChatPanel.panels.clear();
 }

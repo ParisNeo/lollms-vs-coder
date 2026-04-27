@@ -256,6 +256,10 @@ export class CustomActionModal {
 
                     if (hasError) return;
 
+                    // Provide immediate visual feedback
+                    applyBtn.disabled = true;
+                    applyBtn.innerHTML = '<span style="display:flex; align-items:center; gap:8px; justify-content:center;">Initializing Agent...</span>';
+
                     vscode.postMessage({ 
                         command: 'submit', 
                         data: { prompt, actionType: currentType, save, title, useContext }

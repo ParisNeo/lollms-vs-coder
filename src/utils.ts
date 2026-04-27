@@ -557,14 +557,17 @@ export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
  */
 export function getContextLimitForModel(modelName: string): number {
     const lower = modelName.toLowerCase();
+
+    // Iterate through known limits in our local map
     for (const [key, limit] of Object.entries(MODEL_CONTEXT_LIMITS)) {
         if (lower.includes(key)) return limit;
     }
-    // Default fallback for unknown cloud models
+
+    // Default fallback for unknown cloud model families
     if (lower.startsWith('gpt-')) return 128000;
     if (lower.startsWith('claude-')) return 200000;
     if (lower.startsWith('gemini-')) return 1000000;
-    
+
     return 128000; // General safe default
 }
 

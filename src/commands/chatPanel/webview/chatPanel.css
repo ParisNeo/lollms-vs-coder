@@ -558,6 +558,11 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 .code-action-btn.applied:hover, .apply-all-btn.applied:hover {
     filter: brightness(1.1);
 }
+
+/* Force-hide any spinners inside an applied button */
+.code-action-btn.applied .spinner {
+    display: none !important;
+}
 .code-action-btn.applied:hover {
     filter: brightness(1.2);
 }
@@ -1394,7 +1399,11 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 }
 
 #badge-dashboard-panel.hidden-state {
-    display: none !important;
+    max-height: 0 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
 }
 
 #toggle-dashboard-btn .codicon {
@@ -1443,14 +1452,17 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     overflow: hidden; 
     border: 1px solid var(--vscode-widget-border);
     display: flex; /* Stack children horizontally */
+    cursor: pointer;
 }
 
 .token-bar-segment {
     height: 100%;
     transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+    pointer-events: auto !important;
 }
 
 .segment-system { background-color: #6a1b9a; } /* Purple */
+.segment-tree    { background-color: var(--vscode-charts-yellow); } /* Gold/Yellow */
 .segment-files  { background-color: var(--vscode-charts-blue); }
 .segment-history { background-color: var(--vscode-charts-green); }
 .segment-images  { background-color: var(--vscode-charts-orange); }

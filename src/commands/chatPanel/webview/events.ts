@@ -153,7 +153,7 @@ export function initEventHandlers() {
                 e.stopPropagation();
                 e.stopImmediatePropagation();
                 inputArea.classList.add('drag-over');
-            }, true);
+            }, { capture: true, passive: false });
         });
 
         ['dragleave'].forEach(eventName => {
@@ -165,7 +165,7 @@ export function initEventHandlers() {
                 if ((e as MouseEvent).relatedTarget === null) {
                     inputArea.classList.remove('drag-over');
                 }
-            }, true);
+            }, { capture: true, passive: false });
         });
 
         window.addEventListener('drop', (e: DragEvent) => {
@@ -682,6 +682,7 @@ export function initEventHandlers() {
     // Register the shared handler on all relevant containers
     if (dom.messagesDiv) dom.messagesDiv.addEventListener('click', handleGlobalClick);
     if (dom.agentPlanZone) dom.agentPlanZone.addEventListener('click', handleGlobalClick);
+    if (dom.inputAreaWrapper) dom.inputAreaWrapper.addEventListener('click', handleGlobalClick);
 
     // --- Discussion Settings (Profiles) Event Listeners ---
     document.getElementById('modal-add-profile-btn')?.addEventListener('click', () => {
@@ -862,8 +863,12 @@ export function initEventHandlers() {
 
     if (dom.skillsImportBtn) {
         dom.skillsImportBtn.addEventListener('click', () => {
-            const selectedSkills = Array.from(dom.skillsTreeContainer.querySelectorAll('.skill-checkbox:checked')).map((el: any) => el.value);
-            vscode.postMessage({ command: 'importSelectedSkills', skillIds: selectedSkills });
+            const discussionSkills = Array.from(dom.skillsTreeContainer.querySelectorAll('.skill-discussion-checkbox:checked'))
+                .map((el: any) => el.value);
+            const projectSkills = Array.from(dom.skillsTreeContainer.querySelectorAll('.skill-project-checkbox:checked'))
+                .map((el: any) => el.value);
+            
+            vscode.postMessage({ command: 'importSelectedSkills', discussionSkills, projectSkills });
             dom.skillsModal.classList.remove('visible');
         });
     }
@@ -1216,6 +1221,49 @@ export function initEventHandlers() {
     });
     if (dom.searchPrevBtn) dom.searchPrevBtn.addEventListener('click', () => navigateSearch(-1));
     if (dom.searchNextBtn) dom.searchNextBtn.addEventListener('click', () => navigateSearch(1));
+
+    // --- Workspace Matrix Events ---
+    if (dom.hudMatrixBtn) {
+        dom.hudMatrixBtn.onclick = () => {
+            import('./ui.js').then(ui => ui.renderWorkspaceMatrix());
+            dom.matrixModal.classList.add('visible');
+        };
+    }
+    if (dom.matrixCloseBtn) dom.matrixCloseBtn.onclick = () => dom.matrixModal.classList.remove('visible');
+    if (dom.matrixDoneBtn) dom.matrixDoneBtn.onclick = () => dom.matrixModal.classList.remove('visible');
+
+    const matrixAllOn = document.getElementById('matrix-all-on');
+    const matrixAllOff = document.getElementById('matrix-all-off');
+    if (matrixAllOn) {
+        matrixAllOn.onclick = () => {
+            const folders = (window as any).workspaceFolders || [];
+            const newSettings: Record<string, any> = {};
+            folders.forEach((f: any) => newSettings[f.uri.toString()] = { tree: true, content: true });
+            vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { folderSettings: newSettings } });
+        };
+    }
+    if (matrixAllOff) {
+        matrixAllOff.onclick = () => {
+            const folders = (window as any).workspaceFolders || [];
+            const newSettings: Record<string, any> = {};
+            folders.forEach((f: any) => newSettings[f.uri.toString()] = { tree: false, content: false });
+            vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { folderSettings: newSettings } });
+        };
+    }
+
+    // --- Context Viewer Modal Events ---
+    if (dom.contextViewerCloseBtn) dom.contextViewerCloseBtn.onclick = () => dom.contextViewerModal.classList.remove('visible');
+    if (dom.contextViewerDoneBtn) dom.contextViewerDoneBtn.onclick = () => dom.contextViewerModal.classList.remove('visible');
+    if (dom.contextViewerCopyBtn) {
+        dom.contextViewerCopyBtn.onclick = () => {
+            const text = dom.contextViewerDisplay.innerText;
+            vscode.postMessage({ command: 'copyToClipboard', text });
+
+            const originalHtml = dom.contextViewerCopyBtn.innerHTML;
+            dom.contextViewerCopyBtn.innerHTML = '<span class="codicon codicon-check"></span> Copied!';
+            setTimeout(() => { dom.contextViewerCopyBtn.innerHTML = originalHtml; }, 2000);
+        };
+    }
     if (dom.searchInput) {
         dom.searchInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') {

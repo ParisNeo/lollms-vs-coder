@@ -149,40 +149,84 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
      * Intelligent Workspace Resolver.
      * Maps namespaced paths (Folder/path) to URIs.
      */
+    /**
+     * Strict Namespace Resolver for Multi-Root Workspaces.
+     * Enforces that paths must start with the Project Name if multiple roots exist.
+     */
     async function resolveWorkspaceFromPath(namespacedPath: string): Promise<{ folder: vscode.WorkspaceFolder | undefined, relativePath: string, uri: vscode.Uri } | null> {
         const folders = vscode.workspace.workspaceFolders || [];
         const normalized = namespacedPath.replace(/\\/g, '/').trim();
-        
-        // 1. Check if it's already an absolute path
+        const segments = normalized.split('/');
+
         if (path.isAbsolute(normalized)) {
             const uri = vscode.Uri.file(normalized);
             return { folder: vscode.workspace.getWorkspaceFolder(uri), relativePath: normalized, uri };
         }
 
-        // 2. Try namespaced resolution (Folder/path/to/file)
-        const parts = normalized.split('/');
-        const candidateRoot = parts[0];
-        const namespacedFolder = folders.find(f => f.name === candidateRoot);
-        if (namespacedFolder) {
-            const rel = parts.slice(1).join('/');
-            return { folder: namespacedFolder, relativePath: rel, uri: vscode.Uri.joinPath(namespacedFolder.uri, rel) };
-        }
+        // --- MULTI-ROOT NAMESPACE ENFORCEMENT ---
+        if (folders.length > 1) {
+            // Check if first segment is a valid project name
+            const projectFolder = folders.find(f => f.name === segments[0]);
 
-        // 3. Search for the file existence across all roots
-        for (const folder of folders) {
-            const testUri = vscode.Uri.joinPath(folder.uri, normalized);
-            try {
-                await vscode.workspace.fs.stat(testUri);
-                return { folder, relativePath: normalized, uri: testUri };
-            } catch {
-                // Continue to next root if not found
+            if (projectFolder) {
+                const relativeToRoot = segments.slice(1).join('/');
+                const uri = vscode.Uri.joinPath(projectFolder.uri, relativeToRoot);
+
+                // VERIFICATION: Check if the file exists with the segment stripped.
+                // This prevents doubling if the file is "Project/Project/file.py"
+                try {
+                    await vscode.workspace.fs.stat(uri);
+                    return { folder: projectFolder, relativePath: relativeToRoot, uri };
+                } catch {
+                    // If stripped version doesn't exist, try keeping the segment
+                    const uriWithSegment = vscode.Uri.joinPath(projectFolder.uri, normalized);
+                    try {
+                        await vscode.workspace.fs.stat(uriWithSegment);
+                        return { folder: projectFolder, relativePath: normalized, uri: uriWithSegment };
+                    } catch {}
+                }
+            }
+
+            // Fallback: search relative to every root
+            for (const folder of folders) {
+                const testUri = vscode.Uri.joinPath(folder.uri, normalized);
+                try {
+                    await vscode.workspace.fs.stat(testUri);
+                    return { folder, relativePath: normalized, uri: testUri };
+                } catch {}
             }
         }
 
-        // 4. Default to active workspace or first folder
-        const fallbackFolder = getActiveWorkspace() || folders[0];
-        if (fallbackFolder) {
-            return { folder: fallbackFolder, relativePath: normalized, uri: vscode.Uri.joinPath(fallbackFolder.uri, normalized) };
+        // --- SINGLE ROOT FLEXIBLE RESOLUTION ---
+        const activeFolder = getActiveWorkspace() || folders[0];
+        if (activeFolder) {
+            // 1. Try absolute match (folder/path)
+            const uriDirect = vscode.Uri.joinPath(activeFolder.uri, normalized);
+            try {
+                await vscode.workspace.fs.stat(uriDirect);
+                return { folder: activeFolder, relativePath: normalized, uri: uriDirect };
+            } catch {
+                // 2. Try stripped match if namespaced (ProjectName/path -> path)
+                if (segments[0] === activeFolder.name && segments.length > 1) {
+                    const relStripped = segments.slice(1).join('/');
+                    const uriStripped = vscode.Uri.joinPath(activeFolder.uri, relStripped);
+                    try {
+                        await vscode.workspace.fs.stat(uriStripped);
+                        return { folder: activeFolder, relativePath: relStripped, uri: uriStripped };
+                    } catch { }
+                }
+            }
+
+            // 3. Fallback for new files: Use the most logical relative path
+            let finalRel = normalized;
+            if (segments[0] === activeFolder.name && segments.length > 1) {
+                finalRel = segments.slice(1).join('/');
+            }
+            return { 
+                folder: activeFolder, 
+                relativePath: finalRel, 
+                uri: vscode.Uri.joinPath(activeFolder.uri, finalRel) 
+            };
         }
 
         return null;
@@ -202,7 +246,7 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             targetMember = parts.slice(1);
         }
 
-        const resolution = await resolveWorkspaceFromPath(cleanPath);
+        const resolution = await services.contextManager.resolveWorkspaceFromPath(cleanPath);
         if (!resolution) {
             vscode.window.showErrorMessage("Could not resolve path: " + filePath);
             return { success: false, error: "Invalid path" };
@@ -469,9 +513,11 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
 
     
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string, panel?: any, messageId?: string, options?: { silent?: boolean, blockIndex?: number, hunkIndex?: number, autoSave?: boolean }): Promise<{ success: boolean; error?: string; repaired?: boolean; alreadyApplied?: boolean }> => {
-        // Clean up hallucinated metadata like "(2 hunks)" from the file path
+        // Clean up hallucinated metadata
         const sanitizedFilePath = filePath.replace(/\s*\(\d+\s*hunks?\)/i, '').trim();
         Logger.info(`Executing replaceCode for: ${sanitizedFilePath}`);
+
+        const folders = vscode.workspace.workspaceFolders || [];
 
         // Handle "REPAIR_REQUESTED" signal from UI
         if (content === "REPAIR_REQUESTED" && (!options || options.hunkIndex === undefined)) {
@@ -479,7 +525,8 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             return { success: false, error: "Invalid repair context" };
         }
 
-        const resolution = await resolveWorkspaceFromPath(sanitizedFilePath);
+        // Multi-root aware resolution
+        const resolution = await services.contextManager.resolveWorkspaceFromPath(sanitizedFilePath);
         if (!resolution || !resolution.uri) {
             Logger.error(`Resolution failed for path: ${sanitizedFilePath}`);
             return { success: false, error: "Invalid path or workspace not found" };
@@ -814,11 +861,45 @@ ${originalContent}
         const edit = new vscode.WorkspaceEdit();
         for (const p of paths) {
             const uri = vscode.Uri.joinPath(activeWorkspace.uri, p);
-            edit.deleteFile(uri, { ignoreIfNotExists: true });
+            edit.deleteFile(uri, { ignoreIfNotExists: true, recursive: true });
         }
         if (await vscode.workspace.applyEdit(edit)) {
-            vscode.window.showInformationMessage(`Deleted ${paths.length} file(s).`);
+            vscode.window.showInformationMessage(`Deleted ${paths.length} file(s)/folder(s).`);
         }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.bulkMoveFiles', async (operations: {src: string, dest: string}[]) => {
+        const edit = new vscode.WorkspaceEdit();
+        for (const op of operations) {
+            const srcRes = await services.contextManager.resolveWorkspaceFromPath(op.src);
+            if (srcRes) {
+                // Determine destination URI relative to the same workspace root as the source
+                const destUri = vscode.Uri.joinPath(srcRes.folder!.uri, op.dest);
+                edit.renameFile(srcRes.uri, destUri, { overwrite: false });
+            }
+        }
+        if (await vscode.workspace.applyEdit(edit)) {
+            vscode.window.showInformationMessage(`Moved/Renamed ${operations.length} item(s).`);
+        } else {
+            vscode.window.showErrorMessage(`Failed to move files.`);
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.bulkCopyFiles', async (operations: {src: string, dest: string}[]) => {
+        let successCount = 0;
+        for (const op of operations) {
+            const srcRes = await services.contextManager.resolveWorkspaceFromPath(op.src);
+            if (srcRes) {
+                const destUri = vscode.Uri.joinPath(srcRes.folder!.uri, op.dest);
+                try {
+                    await vscode.workspace.fs.copy(srcRes.uri, destUri, { overwrite: false });
+                    successCount++;
+                } catch(e: any) {
+                    vscode.window.showErrorMessage(`Failed to copy ${op.src}: ${e.message}`);
+                }
+            }
+        }
+        if (successCount > 0) vscode.window.showInformationMessage(`Copied ${successCount} item(s).`);
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.applyPatchContent', async (filePath: string, patchContent: string, options?: { silent?: boolean }) => {

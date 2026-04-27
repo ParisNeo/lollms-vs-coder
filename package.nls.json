@@ -70,6 +70,8 @@
     "command.setContextIncluded.title": "✓ Include Content in AI Context",
     "command.setContextTreeOnly.title": "□ Include in Tree Only (Default)",
     "command.setContextExcluded.title": "⊘ Exclude from AI Context",
+    "command.setContextCollapsed.title": "C Show Collapsed (Content Hidden)",
+    "command.setContextDefinitionsOnly.title": "D Show Definitions Only (Structure)",
     "command.saveContextSelection.title": "Lollms: Save Context Selection",
     "command.loadContextSelection.title": "Lollms: Load Context Selection",
     "command.resetContextSelection.title": "Lollms: Reset Context Selection",

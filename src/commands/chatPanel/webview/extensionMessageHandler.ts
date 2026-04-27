@@ -189,11 +189,25 @@ export async function handleExtensionMessage(event: MessageEvent) {
             case 'updateContext':
                 updateContext(message.context, message.files, message.skills, message.diagrams, message.briefing);
                 break;
+            case 'updateDiscussionSkillsMetadata':
+                if (state.lastContextData) {
+                    state.lastContextData.skillIds = message.skillIds;
+                    // Trigger a re-render of the context header specifically
+                    import('./messageRenderer.js').then(m => m.updateContext(
+                        state.lastContextData!.context, 
+                        state.lastContextData!.files, 
+                        state.lastContextData!.skills
+                    ));
+                }
+                break;
             case 'displayPlan':
                 displayPlan(message.plan);
                 break;
             case 'loadDiscussion':
                 {
+                    if (message.workspaceFolders) {
+                        (window as any).workspaceFolders = message.workspaceFolders;
+                    }
                     if (message.currentModel) {
                         state.currentModelName = message.currentModel;
                     }
@@ -247,8 +261,20 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
             case 'updateDiscussionCapabilities':
                 const caps = message.capabilities;
+                if (message.workspaceFolders) {
+                    (window as any).workspaceFolders = message.workspaceFolders;
+                }
                 if (caps) {
+                    const oldSettings = JSON.stringify(state.capabilities?.folderSettings || {});
                     state.capabilities = caps;
+
+                    // Reactive matrix update if open
+                    if (dom.matrixModal.classList.contains('visible')) {
+                        const newSettings = JSON.stringify(caps.folderSettings || {});
+                        if (oldSettings !== newSettings) {
+                            import('./ui.js').then(ui => ui.renderWorkspaceMatrix());
+                        }
+                    }
                     
                     if (message.profiles) {
                         state.profiles = message.profiles;
@@ -439,11 +465,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 updateBadges();
                 break;
             case 'tokenCalculationStarted':
+                if (dom.refreshContextBtn) dom.refreshContextBtn.style.display = 'none';
+                if (dom.cancelTokensBtn) dom.cancelTokensBtn.style.display = 'inline-block';
                 if (dom.contextLoadingSpinner) {
                     dom.contextLoadingSpinner.style.display = 'flex';
                     const text = dom.contextLoadingSpinner.querySelector('span');
                     if (text) text.textContent = message.text || 'Updating context...';
-                    
+
                     const barContainer = document.getElementById('file-tree-progress-container');
                     if (barContainer) barContainer.style.display = 'none';
                 }
@@ -461,6 +489,8 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
 
             case 'tokenCalculationFinished':
+                if (dom.refreshContextBtn) dom.refreshContextBtn.style.display = 'inline-block';
+                if (dom.cancelTokensBtn) dom.cancelTokensBtn.style.display = 'none';
                 if (dom.contextLoadingSpinner) {
                     dom.contextLoadingSpinner.style.display = 'none';
                 }
@@ -468,7 +498,15 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'updateTokenProgress':
                 if (dom.tokenCountLabel) {
-                    const { totalTokens, contextSize, error, isApproximate } = message;
+                    const { totalTokens, contextSize, error, isApproximate, folderStats } = message;
+
+                    if (folderStats) {
+                        state.matrixStats = folderStats;
+                        // Reactive matrix update if open
+                        if (dom.matrixModal.classList.contains('visible')) {
+                            import('./ui.js').then(ui => ui.renderWorkspaceMatrix());
+                        }
+                    }
 
                     if (error) {
                         dom.tokenCountLabel.textContent = `Tokens: ${error}`;
@@ -568,7 +606,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         // Force hide spinner if status is Ready or Error
                         dom.statusSpinner.style.display = (isReady || isError) ? 'none' : 'block';
                     }
-                    
+
                     // Also hide the separate token loading spinner if it exists
                     if (isReady && dom.contextLoadingSpinner) {
                         dom.contextLoadingSpinner.style.display = 'none';
@@ -584,25 +622,37 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'filesAddedToContext': {
                 const { results, blockId } = message;
-                const btnId = `btn-${blockId}`;
-                const actionBtn = document.getElementById(btnId) as HTMLButtonElement;
-                if (actionBtn) {
-                    actionBtn.innerHTML = `<span class="codicon codicon-check"></span> Added to Context`;
-                    actionBtn.classList.remove('apply-btn');
-                    actionBtn.classList.add('applied'); // Turns Green
-                    actionBtn.disabled = true;
+
+                // 1. Trigger token refresh immediately
+                vscode.postMessage({ command: 'calculateTokens' });
+
+                // 2. RESILIENT BUTTON FINDER: 
+                // Try ID first, then fallback to finding ANY active spinner button in the whole document.
+                let buttons = [
+                    document.getElementById(`btn-${blockId}`),
+                    document.getElementById(`btn-reprompt-${blockId}`)
+                ].filter(b => b !== null) as HTMLButtonElement[];
+
+                if (buttons.length === 0) {
+                    // Fallback: Find any button that says "Adding..." or has a spinner
+                    buttons = Array.from(document.querySelectorAll('.add-files-to-context-btn, .add-and-reprompt-btn'))
+                        .filter(b => b.innerHTML.includes('spinner') || b.textContent?.includes('Adding')) as HTMLButtonElement[];
                 }
 
-                const repromptBtn = document.getElementById(`btn-reprompt-${blockId}`) as HTMLButtonElement;
-                if (repromptBtn) {
-                    repromptBtn.innerHTML = `<span class="codicon codicon-check"></span> Added`;
-                    repromptBtn.classList.remove('apply-btn');
-                    repromptBtn.classList.add('applied');
-                    repromptBtn.disabled = true;
-                }
+                // 3. Update all identified buttons to 'Success' state
+                buttons.forEach(btn => {
+                    const isReprompt = btn.classList.contains('add-and-reprompt-btn');
+                    btn.innerHTML = isReprompt ? `<span class="codicon codicon-check"></span> Added` : `<span class="codicon codicon-check"></span> Added to Context`;
+                    btn.classList.remove('apply-btn');
+                    btn.classList.add('applied');
+                    btn.disabled = true;
+                    // Remove loading class if present
+                    btn.classList.remove('loading');
+                });
 
-                // Update the file list visualization within the expansion block
-                const listContainer = document.getElementById(`list-${blockId}`);
+                // 4. Update the individual file rows
+                const listContainer = document.getElementById(`list-${blockId}`) || 
+                                      buttons[0]?.closest('.context-expansion-block')?.querySelector('.expansion-file-list');
                 if (listContainer) {
                     const items = listContainer.querySelectorAll('.expansion-file-item');
                     items.forEach((item: any) => {
@@ -803,7 +853,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     } else {
                         dom.skillsTreeContainer.classList.remove('loading');
                         dom.skillsTreeContainer.innerHTML = '';
-                        renderSkillsTree(dom.skillsTreeContainer, message.skillsTree, message.activeSkillIds);
+                        renderSkillsTree(dom.skillsTreeContainer, message.skillsTree, message.discussionSkills, message.projectSkills);
                         dom.skillsImportBtn.disabled = false;
                     }
                 }
@@ -1082,6 +1132,22 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 {
                     const { filePath, content, options } = message;
                     vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, content, this, message.id, options ?? {});
+                }
+                break;
+            case 'showContextDetails':
+                {
+                    const { title, content } = message;
+                    if (dom.contextViewerModal && dom.contextViewerDisplay && dom.contextViewerTitle) {
+                        dom.contextViewerTitle.textContent = title;
+                        // Use marked to render it nicely in the modal
+                        dom.contextViewerDisplay.innerHTML = sanitizer.sanitize((window as any).marked.parse(content));
+                        dom.contextViewerModal.classList.add('visible');
+
+                        // Apply syntax highlighting to code blocks in the modal
+                        dom.contextViewerDisplay.querySelectorAll('pre code').forEach(block => {
+                            (window as any).Prism.highlightElement(block);
+                        });
+                    }
                 }
                 break;
             }

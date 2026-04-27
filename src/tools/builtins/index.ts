@@ -69,7 +69,6 @@ export const allTools: ToolDefinition[] = [
     requestSecureCredentialTool,
     editCodeTool,
     createAgentTool,
-    createAgentTool,
     delegateTaskTool,
     testWebPageTool,
     captureDesktopTool,

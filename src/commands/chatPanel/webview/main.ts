@@ -78,7 +78,7 @@ try {
     mermaid.initialize({ 
         startOnLoad: false,
         theme: 'dark', 
-        securityLevel: 'loose',
+        securityLevel: 'strict',
         fontFamily: 'var(--vscode-font-family)'
     });
 } catch(e) { 

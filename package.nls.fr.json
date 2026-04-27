@@ -69,6 +69,7 @@
     "command.setContextIncluded.title": "✓ Inclure le Contenu dans le Contexte IA",
     "command.setContextTreeOnly.title": "□ Inclure dans l'Arborescence Uniquement (Défaut)",
     "command.setContextExcluded.title": "⊘ Exclure du Contexte IA",
+    "command.setContextCollapsed.title": "C Réduire (Contenu Masqué)",
     "command.saveContextSelection.title": "Lollms: Enregistrer la Sélection du Contexte",
     "command.loadContextSelection.title": "Lollms: Charger la Sélection du Contexte",
     "command.resetContextSelection.title": "Lollms: Réinitialiser la Sélection du Contexte",

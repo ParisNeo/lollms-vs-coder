@@ -85,6 +85,7 @@ export interface DiscussionCapabilities {
     ttftTimeout: number;
     interTokenTimeout: number;
     selectedFolders?: string[];
+    folderSettings?: Record<string, { tree: boolean, content: boolean }>;
     contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
     clipboardInsertRole: 'user' | 'assistant';
     guiState?: {
@@ -104,9 +105,10 @@ export const state: {
     streamingMessages: { [key: string]: { buffer: string, timer: any } },
     isGenerating: boolean,
     appliedState: Record<string, Record<number, number[]>>, // Persistent applied hunks
+    matrixStats: Record<string, { tree: number, files: number }>, // Per-folder token stats
     usageData: { project: any[], extra: any[] },
     currentUsageSort: { column: 'name' | 'tokens', direction: 'asc' | 'desc' },
-    lastContextData: { context: string, files: string[], skills: any[], diagrams: any[], briefing: string } | null,
+    lastContextData: { context: string, files: string[], skills: any[], diagrams: any[], briefing: string, skillIds?: string[] } | null,
     capabilities: DiscussionCapabilities | null,
     currentBranch: string,
     lastCommitHash: string,
@@ -222,6 +224,7 @@ export const dom = {
     get addAiMessageBtn() { return document.getElementById('add-ai-message-btn') as HTMLButtonElement; },
     get copyContextButton() { return document.getElementById('copyContextButton') as HTMLButtonElement; },
     get statusLabel() { return document.getElementById('status-label') as HTMLDivElement; },
+    get hudMatrixBtn() { return document.getElementById('hud-matrix-btn') as HTMLButtonElement; },
     get statusText() { return document.getElementById('status-text') as HTMLSpanElement; },
     get statusSpinner() { return document.getElementById('status-spinner') as HTMLDivElement; },
     get tokenCountingOverlay() { return document.getElementById('token-counting-overlay') as HTMLDivElement; },
@@ -357,5 +360,21 @@ export const dom = {
     get rawFixAiBtn() { return document.getElementById('raw-fix-ai-btn') as HTMLButtonElement; },
     get markAppliedBtn() { return document.getElementById('mark-applied-btn') as HTMLButtonElement; },
     get searchSelectionBtn() { return document.getElementById('search-selection-btn') as HTMLButtonElement; },
-    get rawSearchResultsMini() { return document.getElementById('raw-search-results') as HTMLDivElement; }
-};
+    get rawSearchResultsMini() { return document.getElementById('raw-search-results') as HTMLDivElement; },
+    get bulkDeleteSkillsRunBtn() { return document.getElementById('bulk-delete-skills-run-btn') as HTMLButtonElement; },
+    get bulkDeleteSkillsList() { return document.getElementById('bulk-delete-skills-list') as HTMLDivElement; },
+
+    // Context Viewer Modal
+    get contextViewerModal() { return document.getElementById('context-viewer-modal') as HTMLDivElement; },
+    get contextViewerDisplay() { return document.getElementById('context-viewer-display') as HTMLDivElement; },
+    get contextViewerTitle() { return document.getElementById('context-viewer-title') as HTMLElement; },
+    get contextViewerCloseBtn() { return document.getElementById('context-viewer-close-btn') as HTMLSpanElement; },
+    get contextViewerCopyBtn() { return document.getElementById('context-viewer-copy-btn') as HTMLButtonElement; },
+    get contextViewerDoneBtn() { return document.getElementById('context-viewer-done-btn') as HTMLButtonElement; },
+
+    // Workspace Matrix Modal
+    get matrixModal() { return document.getElementById('workspace-matrix-modal') as HTMLDivElement; },
+    get matrixRowsContainer() { return document.getElementById('matrix-rows-container') as HTMLDivElement; },
+    get matrixCloseBtn() { return document.getElementById('matrix-close-btn') as HTMLSpanElement; },
+    get matrixDoneBtn() { return document.getElementById('matrix-done-btn') as HTMLButtonElement; }
+    };

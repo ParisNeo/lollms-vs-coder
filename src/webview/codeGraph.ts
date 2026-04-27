@@ -11,7 +11,7 @@ cytoscape.use(coseBilkent);
 mermaid.initialize({
     startOnLoad: false,
     theme: 'dark',
-    securityLevel: 'loose',
+    securityLevel: 'strict',
     fontFamily: 'var(--vscode-font-family)'
 });
 
@@ -456,7 +456,7 @@ function enablePanZoom(container: HTMLElement) {
         updateTransform();
     };
 
-    container.onwheel = (e) => {
+    container.addEventListener('wheel', (e) => {
         e.preventDefault();
         const intensity = currentConfig.zoomSensitivity * 0.2;
         const delta = e.deltaY > 0 ? -intensity : intensity;
@@ -474,7 +474,7 @@ function enablePanZoom(container: HTMLElement) {
         
         zoomScale = newScale;
         updateTransform();
-    };
+        }, { passive: false });
 
     if (!currentConfig.panningEnabled) {
         container.onmousedown = null;

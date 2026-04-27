@@ -278,8 +278,7 @@ export const myCustomTool: ToolDefinition = {
             InfoPanel.createOrShow(services.extensionUri, title, content || "No content available.");
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.viewFullContext', async (type: 'system' | 'files' | 'chat') => {
-        // Fallback: If currentPanel is out of focus, find the first available open chat panel
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.viewFullContext', async (type: 'system' | 'files' | 'chat' | 'tree') => {
         const panel = ChatPanel.currentPanel || Array.from(ChatPanel.panels.values())[0];
         if (!panel) {
             vscode.window.showWarningMessage("No active Chat found to display context from.");
@@ -289,49 +288,54 @@ export const myCustomTool: ToolDefinition = {
         let title = "";
         let content = "";
 
-        if (type === 'system' || type === 'files') {
-            const isSystem = type === 'system';
-            title = isSystem ? "Processed System Prompt" : "Project Context Files";
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Lollms: Preparing context view...",
+            cancellable: false
+        }, async () => {
+            try {
+                const disc = panel.getCurrentDiscussion();
+                const contextData = await services.contextManager.getContextContent({ 
+                    importedSkillIds: disc?.importedSkills,
+                    modelName: disc?.model || services.lollmsAPI.getModelName()
+                });
 
-            await vscode.window.withProgress({
-                location: vscode.ProgressLocation.Notification,
-                title: `Lollms: Extracting ${title}...`,
-                cancellable: false
-            }, async () => {
-                try {
-                    const disc = panel.getCurrentDiscussion();
-                    const contextData = await services.contextManager.getContextContent({ 
-                        importedSkillIds: disc?.importedSkills,
-                        modelName: disc?.model || services.lollmsAPI.getModelName()
-                    });
-
-                    if (isSystem) {
-                        const persona = services.personalityManager.getPersonality(disc?.personalityId || 'default_coder');
-                        const { getProcessedSystemPrompt } = await import('../utils');
-                        content = await getProcessedSystemPrompt(
-                            'chat', 
-                            (panel as any)._discussionCapabilities, 
-                            persona?.systemPrompt,
-                            undefined,
-                            false,
-                            { ...contextData, tree: '', files: '' }
-                        );
-                    } else {
-                        content = `# 🧊 ATTACHED PROJECT CONTEXT\n\n` + contextData.selectedFilesContent;
-                    }
-                } catch (e: any) {
-                    content = `Error loading content: ${e.message}`;
+                if (type === 'system') {
+                    title = "Processed System Prompt";
+                    const persona = services.personalityManager.getPersonality(disc?.personalityId || 'default_coder');
+                    const { getProcessedSystemPrompt } = await import('../utils');
+                    content = await getProcessedSystemPrompt(
+                        'chat', 
+                        (panel as any)._discussionCapabilities, 
+                        persona?.systemPrompt,
+                        undefined,
+                        false,
+                        { ...contextData, tree: '', files: '' }
+                    );
+                } else if (type === 'tree') {
+                    title = "Project Tree Structure";
+                    content = contextData.projectTree;
+                } else if (type === 'files') {
+                    title = "Project Context Files";
+                    content = `# 🧊 ATTACHED PROJECT CONTEXT\n\n` + contextData.selectedFilesContent;
+                } else if (type === 'chat') {
+                    title = "Conversation History";
+                    content = (disc?.messages || [])
+                        .map(m => `### ${m.role.toUpperCase()}\n${m.content}`)
+                        .join('\n\n');
                 }
-            });
-        } else if (type === 'chat') {
-            title = "History Sent to LLM";
-            content = (panel.getCurrentDiscussion()?.messages || [])
-                .map(m => `### ${m.role.toUpperCase()}\n${m.content}`)
-                .join('\n\n');
-        }
 
-        const { InfoPanel } = await import('../commands/infoPanel');
-        InfoPanel.createOrShow(services.extensionUri, title, content);
+                // Send to webview modal
+                panel._panel.webview.postMessage({
+                    command: 'showContextDetails',
+                    title: title,
+                    content: content
+                });
+
+            } catch (e: any) {
+                vscode.window.showErrorMessage(`Failed to load context details: ${e.message}`);
+            }
+        });
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.exportAgentTimeline', async () => {

@@ -198,8 +198,10 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.switchDiscussion', async (discussionId: string) => {
+        if (!discussionId) return;
         // 1. Create or show panel (sets internal discussionId)
         const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussionId, services.gitIntegration, services.skillsManager);
+        panel._panel.reveal();
         
         // 2. Inject dependencies BEFORE loading
         panel.setProcessManager(services.processManager);

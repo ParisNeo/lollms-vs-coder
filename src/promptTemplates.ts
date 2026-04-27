@@ -43,9 +43,10 @@ export class PromptTemplates {
 
         // ── FORMAT 1: FULL FILE (OVERWRITE) ──────────────────────────────────
         sections.push(`
-### 📄 FORMAT 1: FULL FILE CONTENT (OVERWRITE)
-**Header**: \`\`\`[language]:path/to/file.ext\`\`\` (e.g. \`\`\`typescript:src/utils.ts\`\`\`)
-**STRICT HEADER RULE**: Replace \`[language]\` with the actual language name. The header MUST contain ONLY the language and the relative path. You are FORBIDDEN from using the literal word "language" in the header.
+**ADDRESSING PROTOCOL**:
+- If MULTIPLE projects are open (see tree): Use \`ProjectName/path/to/file.ext\`.
+- If ONLY ONE project is open: Use the relative path directly (e.g., \`src/utils.ts\`). You may optionally include the root folder name as a prefix for consistency.
+**STRICT HEADER RULE**: Replace \`[language]\` with the actual language name. The header MUST contain ONLY the language and the path.
 **Usage**: Replaces the **entire** file on disk.
 - **Requirement**: The block MUST contain the complete, 1:1 content of the file.
 - **Warning**: Do NOT use this header for snippets or partial code. If you use this header, you MUST provide the whole file.
@@ -55,7 +56,7 @@ export class PromptTemplates {
         if (partialFormat === 'aider') {
             sections.push(`
 ### ⚡ FORMAT 2: SEARCH/REPLACE (Surgical Patch)
-**Header**: \`\`\`[language]:path/to/file.ext\`\`\` (e.g. \`\`\`python:app/main.py\`\`\`)
+**Header**: \`\`\`[language]:path/to/file.ext\`\`\`
 **STRICT HEADER RULE**: Replace \`[language]\` with the actual language name. The header MUST contain ONLY the language and the relative path. You are FORBIDDEN from using the literal word "language" in the header.
 **Structure**:
 \`\`\`
@@ -189,10 +190,17 @@ Provide a Debugger Final Report summarizing bugs found, evidence, and verificati
 
         if (promptType === 'surgical_agent') {
             return `${activeProfile.prefix || ''}# 🎭 ROLE: SURGICAL REPAIR ORCHESTRATOR
+        ${this.getFormatInstructions(capabilities, forceFullCodeSetting)}
 
-You are a senior debugger and refactoring expert. Your mission is to modify a specific code selection to meet a technical objective.
+        You are a senior debugger and refactoring expert. Your mission is to modify a specific code selection to meet a technical objective.
 
-### ⚡ THE FAST-PATH PROTOCOL (LATENCY OPTIMIZATION)
+        ### 🛑 CRITICAL INTEGRITY MANDATE: NO PLACEHOLDERS
+        You are strictly FORBIDDEN from using comments like \`// ... existing code\` or \`# ... rest of imports\`. 
+        1. If providing a SEARCH/REPLACE block, the REPLACE section must be 100% complete and functional.
+        2. If providing a FULL FILE, it must be the entire file from line 1 to the end.
+        Failure to follow this mandate will result in system corruption.
+
+        ### ⚡ THE FAST-PATH PROTOCOL (LATENCY OPTIMIZATION)
 You are provided with a "Surgical Target" including the selection and surrounding context.
 1. **IMMEDIATE FIX**: If the provided snippet contains all the logic needed to fulfill the request, output **AIDER SEARCH/REPLACE** blocks immediately (Coding Mode).
 2. **AGENTIC DISCOVERY**: If you identify a dependency (e.g., a function called in the selection but defined elsewhere) that you MUST see to ensure safety, switch to **TOOL MODE**. 
@@ -223,9 +231,23 @@ You have access to all Agent tools including:
 
         // Default prompt
         return `${projectHeader}${activeProfile.prefix || ''}# 🎭 ROLE & PERSONA
-${persona}
+        ${persona}
 
-# 🧠 BEHAVIOR & STYLE
+        # 🏢 WORKSPACE AWARENESS (ENVIRONMENT)
+        You are operating within a **Visual Studio Code Workspace**. 
+        Your "vision" of this workspace is defined by the **PROJECT STRUCTURE** tree and the **ACCESSIBLE FILE CONTENTS** sections provided in your context.
+
+        ### 🌐 Addressing Protocol
+        - **Multi-Project Workspace**: When multiple root folders are listed in the tree, you MUST address files using the format \`ProjectName/path/to/file.ext\`.
+        - **Single-Project Workspace**: Use the relative path directly (e.g., \`src/main.py\`).
+        - **Sandbox Rule**: You are restricted to these folders. Never attempt to access paths outside of the provided workspace roots.
+
+        ### 👁️ Contextual Vision (Markers)
+        - Files marked with **\`[C]\`** have their full content available below.
+        - Files marked with **\`[D]\`** have only their class/function signatures available.
+        - Files with **no marker** are hidden; you know they exist but you cannot see their code. You must use tools to peek inside them.
+
+        # 🧠 BEHAVIOR & STYLE
 ${activeProfile.systemPrompt ? `
 ### 📢 CRITICAL RESPONSE STYLE: ${activeProfile.name.toUpperCase()}
 ${activeProfile.systemPrompt}
@@ -262,11 +284,29 @@ Consistent parameter usage for file operations:
   - \`<skill title="..." description="..." category="...">[SKILL_CODE_OR_DOCS]</skill>\`
   - \`<generate_image path="..." width="..." height="...">[LONG_IMAGE_PROMPT]</generate_image>\`
 
-- **File Operations** (Use JSON arrays for paths):
-  - \`<move_file source="..." destination="..." />\`
-  - \`<delete_file paths='["path1", "path2"]' />\`
+- **File Operations** (One entry per line inside the tag, supports files AND folders):
+  <move_files>
+  source/path1->dest/path1
+  source/path2->dest/path2
+  </move_files>
+  <copy_files>
+  source/path1->dest/path1
+  </copy_files>
+  <delete_files>
+  path/to/file_or_folder1
+  path/to/file_or_folder2
+  </delete_files>
 
-- **Context & Memory Management (CRITICAL)**:
+- **Context Management** (One entry per line, supports files AND folders):
+  <add_files_to_context>
+  path/to/file_or_folder1
+  path/to/file_or_folder2
+  </add_files_to_context>
+  <remove_files_from_context>
+  path/to/file_or_folder1
+  </remove_files_from_context>
+
+- **Memory Management (CRITICAL)**:
   - \`<add_files_to_context paths='["path1", "path2"]' />\`
   - \`<remove_files_from_context paths='["path1", "path2"]' />\`
   - \`<project_memory action="add|update|delete" id="unique_id" title="Short Title">Detailed content to remember</project_memory>\`

@@ -216,6 +216,10 @@ Keep it strictly technical and extremely concise.`
         return tools;
     }
 
+    public setEnabledTools(toolNames: string[]) {
+        this.toolManager.setEnabledTools(toolNames);
+    }
+
     public setToolPolicies(policies: Record<string, 'disabled' | 'manual' | 'autonomous'>) {
         if (this.currentDiscussion?.capabilities) {
             this.currentDiscussion.capabilities.toolPolicies = policies;
@@ -902,46 +906,6 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
         return false;
     }
 
-    // Logic updated in main agentManager.ts file implementation
-
-    private parseToolCall(content: string): { name: string, params: any, scratchpad?: string, thought?: string } | null {
-        // 1. Try Markdown Code Block
-        const match = content.match(/```json\s*(\{[\s\S]*?"tool"[\s\S]*?\})\s*```/);
-        if (match) {
-            try {
-                const obj = JSON.parse(match[1]);
-                if (obj.tool) return { name: obj.tool, params: obj.params || {}, scratchpad: obj.scratchpad || obj.thought, thought: obj.thought };
-            } catch (e) { }
-        }
-
-        // 2. Scan for raw JSON objects
-        const jsonObjects: string[] = [];
-        let braceCount = 0;
-        let startIndex = -1;
-        
-        for (let i = 0; i < content.length; i++) {
-            if (content[i] === '{') {
-                if (braceCount === 0) startIndex = i;
-                braceCount++;
-            } else if (content[i] === '}') {
-                braceCount--;
-                if (braceCount === 0 && startIndex !== -1) {
-                    jsonObjects.push(content.substring(startIndex, i + 1));
-                    startIndex = -1;
-                }
-            }
-        }
-        
-        for (const json of jsonObjects) {
-            try {
-                const obj = JSON.parse(json);
-                if (obj.tool) return { name: obj.tool, params: obj.params || {}, scratchpad: obj.scratchpad || obj.thought, thought: obj.thought };
-            } catch (e) { }
-        }
-
-        return null;
-    }
-    
     public async run(initialObjective: string, discussion: Discussion, workspaceFolder: vscode.WorkspaceFolder, modelOverride?: string) {
         await this.handleUserMessage(initialObjective, discussion, workspaceFolder);
     }
@@ -1517,8 +1481,19 @@ A high importance (2.0+) ensures this lesson is prioritized in every prompt to p
             await this.displayAndSavePlan(this.currentPlan);
         }
     }
-    
-    // ... (analyzeStepResult, checkGlobalPermission, executeTask, submitFinalMessage - kept same) ...
+
+    private parseToolCall(text: string): { name: string, params: any } | null {
+        const jsonStr = this.planParser.extractJson(text);
+        if (!jsonStr) return null;
+        try {
+            const parsed = JSON.parse(jsonStr);
+            if (parsed.tool) {
+                return { name: parsed.tool, params: parsed.params || {} };
+            }
+        } catch {}
+        return null;
+    }
+
     private async analyzeStepResult(task: Task, output: string, model: string | undefined, signal: AbortSignal): Promise<{ decision: 'continue' | 'replan', reasoning: string, new_instruction?: string }> {
         if (output.includes("RLM_REPL_ERROR") || output.includes("NameError")) {
             return { decision: 'replan', reasoning: "Technical error detected. Must adjust code or imports.", new_instruction: "Fix the reported python error before continuing." };
@@ -1906,6 +1881,7 @@ I will be creating a sandbox branch and applying surgical patches. To ensure you
         // 3. Step 2: Verifier Audit (Guardian)
         this.processManager.updateDescription(processId, "Phase 2: Verifier auditing logic...");
         this.ui.updateGeneratingState();
+        // Ensure the call matches the implementation added to ChatPanel
         const auditedResponse = await this.ui.runVerificationAgent(workerResponse, signal);
 
         // 4. Step 3: Apply to Disk (Guardian Shield Enabled)

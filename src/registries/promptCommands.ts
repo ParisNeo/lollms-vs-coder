@@ -71,25 +71,24 @@ export function registerPromptCommands(context: vscode.ExtensionContext, service
 
         if (!prompts) return;
 
+        const activeFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!activeFolder) {
+            vscode.window.showErrorMessage("Please open a workspace folder to use surgical actions.");
+            return;
+        }
+
         if (prompt.action_type === 'information') {
-            const activeFolder = vscode.workspace.workspaceFolders?.[0];
-            if (activeFolder) {
-                await startDiscussionWithInitialPrompt(services, prompts.userPrompt, activeFolder, true, 'user');
-            }
+            await startDiscussionWithInitialPrompt(services, prompts.userPrompt, activeFolder, true, 'user');
         } else {
-            // --- AGENTIC SURGICAL MISSION ---
-            // We open a real Agent discussion so the user sees the Plan Zone
-            const activeFolder = vscode.workspace.workspaceFolders?.[0];
-            if (!activeFolder) return;
-
+            // --- FIXED: AGENTIC SURGICAL HANDOVER ---
             const discussion = services.discussionManager.createNewDiscussion();
-            discussion.title = `Surgical Mission: ${prompt.title}`;
+            discussion.title = `Surgical: ${prompt.title}`;
 
-            // Force Agent Mode and appropriate capabilities
             if (discussion.capabilities) {
                 discussion.capabilities.agentMode = true;
-                discussion.capabilities.autoApply = false; // Always show diff for manual selection
+                discussion.capabilities.autoApply = false; 
                 discussion.capabilities.autoFix = true;
+                discussion.capabilities.verifierMode = true;
             }
 
             await services.discussionManager.saveDiscussion(discussion);
@@ -103,22 +102,28 @@ export function registerPromptCommands(context: vscode.ExtensionContext, service
                 services.skillsManager
             );
 
-            // Connect dependencies
-            panel.setProcessManager(services.processManager);
+            // 1. Reconnect dependencies immediately
             panel.setContextManager(services.contextManager);
+            panel.setProcessManager(services.processManager);
             panel.setPersonalityManager(services.personalityManager);
 
+            // 2. Initialize Agent
             const agent = new AgentManager(
                 panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
-                services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager
+                services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
+                services.rlmDb
             );
+            agent.projectMemoryManager = services.projectMemoryManager;
             agent.setProcessManager(services.processManager);
-            agent.toggleAgentMode(); // Engage loop
+
+            // 3. Force UI sync and activate Agent
             panel.setAgentManager(agent);
+            if (!agent.getIsActive()) agent.toggleAgentMode();
 
             await panel.loadDiscussion();
 
-            // Handover to AgentManager with the detailed surgical briefing
+            // 4. TRIGGER AGENTIC EVENTS IMMEDIATELY
+            // This ensures the "Generating" overlay appears in the chat panel
             await agent.handleUserMessage(prompts.userPrompt, discussion, activeFolder);
         }
     }));

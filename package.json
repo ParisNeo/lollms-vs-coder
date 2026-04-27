@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.8.43",
+  "version": "0.8.50",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -485,11 +485,11 @@
       },
       {
         "command": "lollms-vs-coder.setContextCollapsed",
-        "title": "C Show Collapsed (Content Hidden)"
+        "title": "%command.setContextCollapsed.title%"
       },
       {
         "command": "lollms-vs-coder.setContextDefinitionsOnly",
-        "title": "D Show Definitions Only (Structure)"
+        "title": "%command.setContextDefinitionsOnly.title%"
       },
       {
         "command": "lollms-vs-coder.saveContextSelection",
@@ -769,7 +769,7 @@
           "type": "array",
           "default": [],
           "description": "Saved connection environments (URL, Key, Model, etc.) for quick switching."
-        },        
+        },
         "lollmsVsCoder.defaultResponseProfileId": {
           "type": "string",
           "default": "balanced",
@@ -907,7 +907,11 @@
         "lollmsVsCoder.agent.executionPolicy": {
           "type": "string",
           "default": "manual",
-          "enum": ["blocked", "manual", "automatic"],
+          "enum": [
+            "blocked",
+            "manual",
+            "automatic"
+          ],
           "description": "Code Execution Policy for the Agent.",
           "enumDescriptions": [
             "Agent is forbidden from running code or shell commands.",
@@ -918,7 +922,13 @@
         "lollmsVsCoder.agent.activeProfile": {
           "type": "string",
           "default": "software_architect",
-          "enum": ["software_architect", "cve_hunter", "surgical_debugger", "game_builder", "embedded_expert"],
+          "enum": [
+            "software_architect",
+            "cve_hunter",
+            "surgical_debugger",
+            "game_builder",
+            "embedded_expert"
+          ],
           "description": "The active Mission Profile for the agent."
         },
         "lollmsVsCoder.agent.envActivationScript": {
@@ -1190,17 +1200,41 @@
         "lollmsVsCoder.mcpServers": {
           "type": "object",
           "default": {
-             "filesystem": { "type": "stdio", "command": "npx -y @modelcontextprotocol/server-filesystem", "args": ["."], "env": {} },
-             "memory": { "type": "stdio", "command": "npx -y @modelcontextprotocol/server-memory", "env": {} }
+            "filesystem": {
+              "type": "stdio",
+              "command": "npx -y @modelcontextprotocol/server-filesystem",
+              "args": [
+                "."
+              ],
+              "env": {}
+            },
+            "memory": {
+              "type": "stdio",
+              "command": "npx -y @modelcontextprotocol/server-memory",
+              "env": {}
+            }
           },
           "description": "Configuration for MCP Servers. Support both local commands and remote SSE URLs.",
           "additionalProperties": {
             "type": "object",
             "properties": {
-                "type": { "type": "string", "enum": ["stdio", "sse"], "default": "stdio" },
-                "command": { "type": "string" },
-                "url": { "type": "string" },
-                "env": { "type": "object" }
+              "type": {
+                "type": "string",
+                "enum": [
+                  "stdio",
+                  "sse"
+                ],
+                "default": "stdio"
+              },
+              "command": {
+                "type": "string"
+              },
+              "url": {
+                "type": "string"
+              },
+              "env": {
+                "type": "object"
+              }
             }
           }
         },
@@ -1508,13 +1542,13 @@
           "group": "1_modification@3"
         },
         {
-          "command": "lollms-vs-coder.setContextExcluded",
-          "group": "1_modification@4"
+          "command": "lollms-vs-coder.setContextCollapsed",
+          "group": "1_modification@4",
+          "when": "resourceIsFolder"
         },
         {
-          "command": "lollms-vs-coder.setContextCollapsed",
-          "group": "1_modification@5",
-          "when": "resourceIsFolder"
+          "command": "lollms-vs-coder.setContextExcluded",
+          "group": "1_modification@5"
         }
       ],
       "scm/title": [
@@ -1568,61 +1602,61 @@
         }
       ],
       "view/title": [
-          {
-            "command": "lollms-vs-coder.showChatTab",
-            "when": "view == lollmsTabsView && lollms:activeTab != chat",
-            "group": "navigation@1"
-          },
-          {
-            "command": "lollms-vs-coder.showLibrarianTab",
-            "when": "view == lollmsTabsView && lollms:activeTab != librarian",
-            "group": "navigation@2"
-          },
-          {
-            "command": "lollms-vs-coder.showGitTab",
-            "when": "view == lollmsTabsView && lollms:activeTab != git",
-            "group": "navigation@3"
-          },
-          {
-            "command": "lollms-vs-coder.showGraphTab",
-            "when": "view == lollmsTabsView && lollms:activeTab != graph",
-            "group": "navigation@4"
-          },
-          {
-            "command": "lollms-vs-coder.showLabTab",
-            "when": "view == lollmsTabsView && lollms:activeTab != lab",
-            "group": "navigation@5"
-          },
-          {
-            "command": "lollms-vs-coder.showConfigView",
-            "when": "view == lollmsTabsView",
-            "group": "navigation@6"
-          },
-          {
-            "command": "lollms-vs-coder.showHelp",
-            "when": "view == lollmsTabsView",
-            "group": "navigation@7"
-          },
-          {
-              "command": "lollms-vs-coder.manageProjectMemory",
-              "when": "view == lollmsProjectMemoryView",
-              "group": "navigation@1"
-          },
-          {
-              "command": "lollms-vs-coder.newAgentDiscussion",
-              "when": "view == lollmsDiscussionsView",
-              "group": "navigation@1"
-          },          
-          {
-              "command": "lollms-vs-coder.addProjectMemory",
-              "when": "view == lollmsProjectMemoryView",
-              "group": "navigation@2"
-          },
-          {
-              "command": "lollms-vs-coder.refreshDiscussions",
-              "when": "view == lollmsDiscussionsView",
-              "group": "navigation"
-          },
+        {
+          "command": "lollms-vs-coder.showChatTab",
+          "when": "view == lollmsTabsView && lollms:activeTab != chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "lollms-vs-coder.showLibrarianTab",
+          "when": "view == lollmsTabsView && lollms:activeTab != librarian",
+          "group": "navigation@2"
+        },
+        {
+          "command": "lollms-vs-coder.showGitTab",
+          "when": "view == lollmsTabsView && lollms:activeTab != git",
+          "group": "navigation@3"
+        },
+        {
+          "command": "lollms-vs-coder.showGraphTab",
+          "when": "view == lollmsTabsView && lollms:activeTab != graph",
+          "group": "navigation@4"
+        },
+        {
+          "command": "lollms-vs-coder.showLabTab",
+          "when": "view == lollmsTabsView && lollms:activeTab != lab",
+          "group": "navigation@5"
+        },
+        {
+          "command": "lollms-vs-coder.showConfigView",
+          "when": "view == lollmsTabsView",
+          "group": "navigation@6"
+        },
+        {
+          "command": "lollms-vs-coder.showHelp",
+          "when": "view == lollmsTabsView",
+          "group": "navigation@7"
+        },
+        {
+          "command": "lollms-vs-coder.manageProjectMemory",
+          "when": "view == lollmsProjectMemoryView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "lollms-vs-coder.newAgentDiscussion",
+          "when": "view == lollmsDiscussionsView",
+          "group": "navigation@1"
+        },
+        {
+          "command": "lollms-vs-coder.addProjectMemory",
+          "when": "view == lollmsProjectMemoryView",
+          "group": "navigation@2"
+        },
+        {
+          "command": "lollms-vs-coder.refreshDiscussions",
+          "when": "view == lollmsDiscussionsView",
+          "group": "navigation"
+        },
         {
           "command": "lollms-vs-coder.loadContextSelection",
           "when": "view == lollmsFileTreeView",
@@ -1750,16 +1784,16 @@
         }
       ],
       "view/item/context": [
-          {
-              "command": "lollms-vs-coder.deleteProjectMemory",
-              "when": "view == lollmsProjectMemoryView && viewItem == projectMemory",
-              "group": "inline"
-          },
-          {
-              "command": "lollms-vs-coder.renameDiscussion",
-              "when": "view == lollmsDiscussionsView && viewItem == discussion",
-              "group": "inline"
-          },
+        {
+          "command": "lollms-vs-coder.deleteProjectMemory",
+          "when": "view == lollmsProjectMemoryView && viewItem == projectMemory",
+          "group": "inline"
+        },
+        {
+          "command": "lollms-vs-coder.renameDiscussion",
+          "when": "view == lollmsDiscussionsView && viewItem == discussion",
+          "group": "inline"
+        },
         {
           "command": "lollms-vs-coder.renameDiscussion",
           "when": "view == lollmsDiscussionsView && viewItem == 'discussion'",
@@ -1771,14 +1805,14 @@
           "group": "inline@2"
         },
         {
-            "command": "lollms-vs-coder.deleteDiscussion",
-            "when": "view == lollmsDiscussionsView && viewItem == 'discussion'",
-            "group": "inline@3"
+          "command": "lollms-vs-coder.deleteDiscussion",
+          "when": "view == lollmsDiscussionsView && viewItem == 'discussion'",
+          "group": "inline@3"
         },
         {
-            "command": "lollms-vs-coder.cancelProcess",
-            "when": "view == lollmsProcessesView && viewItem == 'process'",
-            "group": "inline"
+          "command": "lollms-vs-coder.cancelProcess",
+          "when": "view == lollmsProcessesView && viewItem == 'process'",
+          "group": "inline"
         },
         {
           "command": "lollms-vs-coder.renameDiscussion",
@@ -1931,7 +1965,7 @@
     "cytoscape-cose-bilkent": "^4.1.0",
     "cytoscape-dagre": "^2.5.0",
     "dagre": "^0.8.5",
-    "dompurify": "^3.1.5",
+    "dompurify": "^3.2.4",
     "exceljs": "^4.4.0",
     "js-yaml": "^4.1.0",
     "layout-base": "^1.0.2",
@@ -1939,13 +1973,13 @@
     "marked": "16.2.1",
     "mermaid": "^10.9.1",
     "minimatch": "^9.0.5",
-    "node-fetch": "2.7.0",
+    "node-fetch": "2.7.0",    
     "pdf-parse": "^1.1.1",
     "prismjs": "^1.29.0",
     "youtube-transcript": "^1.3.0"
   },
   "overrides": {
-    "tough-cookie": "^4.1.3",
+"tough-cookie": "^4.1.3",
     "jpeg-js": "^0.4.4",
     "minimist": "^1.2.8",
     "form-data": "^4.0.0",
@@ -1956,4 +1990,4 @@
       "ansi-styles": ">=6.0.0"
     }
   }
-}
+  }

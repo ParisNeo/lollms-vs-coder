@@ -753,45 +753,6 @@ function openProfileEditor(idx: number = -1) {
     container.style.display = 'none';
 }
 
-// Global exposure for events.ts
-(window as any).closeProfileEditor = () => {
-    const editor = document.getElementById('modal-profile-editor');
-    const container = document.getElementById('modal-profiles-container');
-    if (editor && container) {
-        editor.style.display = 'none';
-        container.style.display = 'flex';
-    }
-};
-
-(window as any).saveProfileFromModal = () => {
-    const name = (document.getElementById('modal-p-name') as HTMLInputElement).value;
-    const desc = (document.getElementById('modal-p-desc') as HTMLInputElement).value;
-    const prefix = (document.getElementById('modal-p-prefix') as HTMLInputElement).value;
-    const prompt = (document.getElementById('modal-p-prompt') as HTMLTextAreaElement).value;
-
-    if (!name || !prompt) {
-        vscode.postMessage({ command: 'showError', message: 'Name and System Instructions are required.' });
-        return;
-    }
-
-    const newProfile: ResponseProfile = {
-        id: currentEditingProfileIdx === -1 ? `custom_${Date.now()}` : state.profiles[currentEditingProfileIdx].id,
-        name,
-        description: desc,
-        prefix,
-        systemPrompt: prompt
-    };
-
-    if (currentEditingProfileIdx === -1) {
-        state.profiles.push(newProfile);
-    } else {
-        state.profiles[currentEditingProfileIdx] = newProfile;
-    }
-
-    (window as any).closeProfileEditor();
-    renderProfilesInModal();
-};
-
 export function updateBadges() {
     const container = dom.activeBadges;
     const dashboard = document.getElementById('badge-dashboard-panel');
@@ -1655,108 +1616,94 @@ export function filterSkillsTree(query: string) {
     });
 }
 
-export function renderSkillsTree(container: HTMLElement, node: any, activeSkillIds: string[] = []) {
+export function renderSkillsTree(container: HTMLElement, node: any, discussionSkills: string[] = [], projectSkills: string[] = []) {
+    if (node.id === 'root') {
+        // Add header for the columns
+        const header = document.createElement('div');
+        header.style.cssText = "display: flex; justify-content: flex-end; padding: 0 10px 8px 10px; border-bottom: 1px solid var(--vscode-widget-border); margin-bottom: 10px;";
+        header.innerHTML = `
+            <div style="display: flex; gap: 20px;">
+                <span style="font-size: 9px; font-weight: 800; opacity: 0.6;">CHAT</span>
+                <span style="font-size: 9px; font-weight: 800; opacity: 0.6;">PROJECT</span>
+            </div>
+        `;
+        container.appendChild(header);
+    }
+
     if (!node.children || node.children.length === 0) return;
-
-    const fragment = document.createDocumentFragment();
-
-    // Sort: Folders first, then files
-    node.children.sort((a: any, b: any) => {
-        if (a.isSkill === b.isSkill) return a.label.localeCompare(b.label);
-        return a.isSkill ? 1 : -1;
-    });
 
     const ul = document.createElement('ul');
     ul.className = 'skills-tree-list';
 
-    node.children.forEach((child: any) => {
+    node.children.sort((a: any, b: any) => {
+        if (a.isSkill === b.isSkill) return a.label.localeCompare(b.label);
+        return a.isSkill ? 1 : -1;
+    }).forEach((child: any) => {
         const li = document.createElement('li');
         li.className = 'skills-tree-item';
-        
+
+        const controlsHtml = `
+            <div class="skill-controls" style="display: flex; gap: 20px; flex-shrink: 0;">
+                <label class="switch" style="width: 24px; height: 14px;">
+                    <input type="checkbox" value="${child.id}" class="skill-discussion-checkbox ${child.isSkill ? '' : 'bundle-discussion'}" ${discussionSkills.includes(child.id) ? 'checked' : ''}>
+                    <span class="slider" style="border-radius: 14px;"></span>
+                </label>
+                <label class="switch" style="width: 24px; height: 14px;">
+                    <input type="checkbox" value="${child.id}" class="skill-project-checkbox ${child.isSkill ? '' : 'bundle-project'}" ${projectSkills.includes(child.id) ? 'checked' : ''}>
+                    <span class="slider" style="border-radius: 14px;"></span>
+                </label>
+            </div>
+        `;
+
         if (child.isSkill) {
-            // Leaf Node
-            const checkbox = document.createElement('input');
-            checkbox.type = 'checkbox';
-            checkbox.className = 'skill-checkbox';
-            checkbox.value = child.id;
-            checkbox.id = `skill-${child.id}`;
-            checkbox.checked = activeSkillIds.includes(child.id);
-
-            // Clean the label for the UI
             const displayLabel = child.label.replace(/SOURCE OF TRUTH:\s*/gi, '').trim();
-
-            const label = document.createElement('label');
-            label.htmlFor = `skill-${child.id}`;
-            label.innerHTML = `<span class="codicon codicon-bookmark"></span> 💎 ${displayLabel}`;
-            label.title = child.description || '';
-            
             const div = document.createElement('div');
             div.className = 'skill-node';
-            div.appendChild(checkbox);
-            div.appendChild(label);
+            div.style.cssText = "display: flex; justify-content: space-between; align-items: center; width: 100%;";
+            div.innerHTML = `
+                <label title="${child.description || ''}" style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                    <span class="codicon codicon-bookmark"></span> 💎 ${displayLabel}
+                </label>
+                ${controlsHtml}
+            `;
             li.appendChild(div);
         } else {
-            // Bundle Node (Folder)
             const details = document.createElement('details');
-            // Packed by default: set to false
-            details.open = false; 
-            
+            details.open = false;
             const summary = document.createElement('summary');
             summary.className = 'skill-summary';
-            
-            const checkbox = document.createElement('input');
-            checkbox.type = 'checkbox';
-            checkbox.className = 'bundle-checkbox';
-            checkbox.dataset.path = child.id;
-            
-            // Handle bundle checking (cascade)
-            checkbox.addEventListener('change', (e) => {
-                const checked = (e.target as HTMLInputElement).checked;
-                const childCheckboxes = li.querySelectorAll('input[type="checkbox"]');
-                childCheckboxes.forEach((cb: any) => cb.checked = checked);
+            summary.style.cssText = "display: flex; justify-content: space-between; align-items: center; width: 100%;";
+
+            summary.innerHTML = `
+                <div style="display: flex; align-items: center; flex: 1; min-width: 0;">
+                    <span class="folder-handle codicon"></span>
+                    <span class="skill-folder-label" style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+                        <span class="codicon codicon-folder"></span> ${child.label}
+                    </span>
+                </div>
+                ${controlsHtml}
+            `;
+
+            // Cascade Logic
+            summary.querySelectorAll('input').forEach(input => {
+                input.addEventListener('change', (e) => {
+                    const type = input.classList.contains('bundle-discussion') ? '.skill-discussion-checkbox' : '.skill-project-checkbox';
+                    const checked = (e.target as HTMLInputElement).checked;
+                    li.querySelectorAll(type).forEach((cb: any) => cb.checked = checked);
+                });
             });
 
-            const handle = document.createElement('span');
-            handle.className = 'folder-handle codicon';
-
-            const labelSpan = document.createElement('span');
-            labelSpan.className = 'skill-folder-label';
-            labelSpan.innerHTML = `
-                <span class="codicon codicon-folder"></span> 
-                ${child.label}
-            `;
-            
-            summary.appendChild(handle); // Handle first
-            summary.appendChild(checkbox); // Checkbox second
-            summary.appendChild(labelSpan); // Label last
             details.appendChild(summary);
-            
-            // Recursion
             const childrenContainer = document.createElement('div');
             childrenContainer.className = 'skill-children';
-            // CRITICAL FIX: Pass the activeSkillIds down to the next level of recursion
-            renderSkillsTree(childrenContainer, child, activeSkillIds);
+            renderSkillsTree(childrenContainer, child, discussionSkills, projectSkills);
             details.appendChild(childrenContainer);
-            
-            // UI Improvement: If any child is checked, ensure parent shows state
-            // (Wait until after recursion so children checkboxes are created)
-            const leafCheckboxes = childrenContainer.querySelectorAll('.skill-checkbox') as NodeListOf<HTMLInputElement>;
-            const anyChecked = Array.from(leafCheckboxes).some(cb => cb.checked);
-            const allChecked = leafCheckboxes.length > 0 && Array.from(leafCheckboxes).every(cb => cb.checked);
-            
-            if (allChecked) {
-                checkbox.checked = true;
-            } else if (anyChecked) {
-                checkbox.indeterminate = true;
-            }
-
             li.appendChild(details);
         }
         ul.appendChild(li);
     });
 
-    fragment.appendChild(ul);
-    container.appendChild(fragment);
+    container.appendChild(ul);
 }
 
 /**
@@ -2111,6 +2058,46 @@ export function renderContextUsage(usage: any[]) {
 
     container.innerHTML = html + renderTableSection('project', "Project Files", "codicon-root-folder") + renderTableSection('extra', "Research & External", "codicon-globe");
 
+    // Add Bulk Action Bar
+    const actionBar = document.createElement('div');
+    actionBar.style.cssText = "position: sticky; bottom: 0; background: var(--vscode-editorWidget-background); padding: 10px; border-top: 1px solid var(--vscode-widget-border); display: flex; justify-content: space-between; align-items: center;";
+    actionBar.innerHTML = `
+        <div style="display:flex; gap:10px; align-items:center;">
+            <input type="checkbox" id="usage-master-check" title="Select All">
+            <span id="usage-selected-count" style="font-size:11px; opacity:0.7;">0 selected</span>
+        </div>
+        <button id="usage-bulk-remove-btn" class="code-action-btn delete-btn" disabled style="width:auto; height:28px; padding: 0 12px;">
+            <i class="codicon codicon-trash"></i> Remove Selected
+        </button>
+    `;
+    container.appendChild(actionBar);
+
+    // Master Checkbox Logic
+    const master = document.getElementById('usage-master-check') as HTMLInputElement;
+    const bulkBtn = document.getElementById('usage-bulk-remove-btn') as HTMLButtonElement;
+    const countLabel = document.getElementById('usage-selected-count');
+
+    const updateUI = () => {
+        const checked = container.querySelectorAll('.usage-row-check:checked').length;
+        bulkBtn.disabled = checked === 0;
+        if (countLabel) countLabel.textContent = `${checked} selected`;
+    };
+
+    master.onchange = () => {
+        container.querySelectorAll('.usage-row-check').forEach((cb: any) => cb.checked = master.checked);
+        updateUI();
+    };
+
+    container.addEventListener('change', (e) => {
+        if ((e.target as HTMLElement).classList.contains('usage-row-check')) updateUI();
+    });
+
+    bulkBtn.onclick = () => {
+        const paths = Array.from(container.querySelectorAll('.usage-row-check:checked')).map((cb: any) => cb.value);
+        vscode.postMessage({ command: 'bulkRemoveFiles', paths });
+        dom.usageModal.classList.remove('visible');
+    };
+
     // Re-attach listeners for sort buttons
     container.querySelectorAll('.sort-btn').forEach(btn => {
         btn.onclick = (e) => {
@@ -2157,6 +2144,9 @@ function renderUsageRows(type: 'project' | 'extra', contextSize: number): string
         
         return `
             <tr data-path="${item.path}" style="border-bottom: 1px solid var(--vscode-widget-border);">
+                <td style="padding:10px 8px; width: 30px;">
+                    <input type="checkbox" class="usage-row-check" value="${item.path}">
+                </td>
                 <td style="padding:10px 8px; max-width:300px;">
                     <div style="font-weight: 500; overflow:hidden; text-overflow:ellipsis;">${item.path.split('/').pop()}</div>
                     <div style="font-size: 10px; opacity: 0.5; overflow:hidden; text-overflow:ellipsis;">${item.path}</div>
@@ -2239,20 +2229,97 @@ export function updateContextFileUsage(filePath: string, tokens: number) {
 /**
  * Updates a progress bar with segmented color logic.
  */
+/**
+ * Renders the Workspace Access Matrix rows inside the HUD modal.
+ */
+export function renderWorkspaceMatrix() {
+    const container = dom.matrixRowsContainer;
+    const workspaceFolders = (window as any).workspaceFolders || [];
+    const folderSettings = state.capabilities?.folderSettings || {};
+
+    if (!container) return;
+    container.innerHTML = '';
+
+    if (workspaceFolders.length === 0) {
+        container.innerHTML = '<div style="padding: 20px; opacity: 0.5; text-align: center;">No workspace folders open.</div>';
+        return;
+    }
+
+    workspaceFolders.forEach((f: any) => {
+        const uriKey = typeof f.uri === 'string' ? f.uri : (f.uri as any).toString();
+        const settings = folderSettings[uriKey] || { tree: true, content: true };
+        const stats = state.matrixStats?.[uriKey] || { tree: 0, files: 0 };
+
+        const row = document.createElement('div');
+        row.className = 'ws-matrix-row';
+        row.dataset.uri = uriKey;
+        row.style.cssText = "display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; border-bottom: 1px solid var(--vscode-widget-border); gap: 15px;";
+
+        row.innerHTML = `
+            <div style="display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0;">
+                <span class="codicon codicon-root-folder" style="opacity: 0.6; font-size: 16px;"></span>
+                <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 800;">${f.name}</span>
+            </div>
+            <div style="display: flex; gap: 8px;">
+                <button class="matrix-toggle-btn ${settings.tree ? 'active' : 'inactive'}" 
+                        data-type="tree" 
+                        style="display: flex; align-items: center; gap: 6px; font-size: 10px; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--vscode-widget-border); cursor: pointer; transition: all 0.1s;
+                        background: ${settings.tree ? 'var(--vscode-button-background)' : 'var(--vscode-button-secondaryBackground)'}; 
+                        color: ${settings.tree ? 'var(--vscode-button-foreground)' : 'var(--vscode-button-secondaryForeground)'};"
+                        title="${settings.tree ? 'Hide project structure (Tree)' : 'Include project structure (Tree)'}">
+                        <i class="codicon ${settings.tree ? 'codicon-check' : 'codicon-circle-slash'}"></i>
+                        <span>Tree</span>
+                        ${stats.tree > 0 ? `<span class="token-mini-badge" style="background: rgba(0,0,0,0.3); padding: 0 4px; border-radius: 3px; font-weight: 800; font-family: var(--vscode-editor-font-family);">${stats.tree}</span>` : ''}
+                </button>
+                <button class="matrix-toggle-btn ${settings.content ? 'active' : 'inactive'}" 
+                        data-type="content" 
+                        style="display: flex; align-items: center; gap: 6px; font-size: 10px; padding: 4px 12px; border-radius: 4px; border: 1px solid var(--vscode-widget-border); cursor: pointer; transition: all 0.1s;
+                        background: ${settings.content ? 'var(--vscode-button-background)' : 'var(--vscode-button-secondaryBackground)'}; 
+                        color: ${settings.content ? 'var(--vscode-button-foreground)' : 'var(--vscode-button-secondaryForeground)'};"
+                        title="${settings.content ? 'Mute file contents (Files)' : 'Include file contents (Files)'}">
+                        <i class="codicon ${settings.content ? 'codicon-check' : 'codicon-circle-slash'}"></i>
+                        <span>Content</span>
+                        ${stats.files > 0 ? `<span class="token-mini-badge" style="background: rgba(0,0,0,0.3); padding: 0 4px; border-radius: 3px; font-weight: 800; font-family: var(--vscode-editor-font-family);">${stats.files}</span>` : ''}
+                </button>
+            </div>
+        `;
+
+        // Attach listeners to buttons
+        row.querySelectorAll('.matrix-toggle-btn').forEach(btn => {
+            (btn as HTMLElement).onclick = (e) => {
+                e.stopPropagation();
+                const type = (btn as HTMLElement).dataset.type as 'tree' | 'content';
+                const currentSettings = JSON.parse(JSON.stringify(state.capabilities?.folderSettings || {}));
+                const nodeSettings = currentSettings[uriKey] || { tree: true, content: true };
+
+                // Toggle setting
+                nodeSettings[type] = !nodeSettings[type];
+
+                vscode.postMessage({ 
+                    command: 'updateDiscussionCapabilitiesPartial', 
+                    partial: { folderSettings: { ...currentSettings, [uriKey]: nodeSettings } } 
+                });
+            };
+        });
+
+        container.appendChild(row);
+    });
+}
+
 export function updateProgressBar(container: HTMLElement | null, current: number, total: number, segments?: any) {
     if (!container) return;
 
-    // Clear old segments if this is the first update
-    if (segments) {
+    if (segments && total > 0) {
         container.innerHTML = '';
-        const types = ['system', 'files', 'history', 'images'];
+        // Add 'skills' to the visual segments list
+        const types = ['system', 'tree', 'skills', 'files', 'history', 'images'];
 
         types.forEach(type => {
             const count = segments[type] || 0;
             if (count > 0) {
                 const segDiv = document.createElement('div');
                 segDiv.className = `token-bar-segment segment-${type}`;
-                // Set metadata for both the bar and its parent for delegation
+                // CRITICAL: Ensure dataset and attribute are synced for the event listener
                 segDiv.dataset.type = type;
                 segDiv.setAttribute('data-type', type);
                 const pct = (count / total) * 100;
@@ -2273,6 +2340,9 @@ export function updateProgressBar(container: HTMLElement | null, current: number
             legend.innerHTML = `
                 <div class="legend-item" data-type="system" title="View Processed System Prompt">
                     <div class="legend-dot segment-system"></div>System
+                </div>
+                <div class="legend-item" data-type="tree" title="View Project Tree Structure">
+                    <div class="legend-dot segment-tree"></div>Trees
                 </div>
                 <div class="legend-item" data-type="files" title="View Detailed File Usage">
                     <div class="legend-dot segment-files"></div>Files

@@ -90,9 +90,10 @@ Follow these specific instructions:
 ${params.instructions}
 
 ## 🛑 STRICTOR OUTPUT RULES:
-1. Provide the **100% COMPLETE** content of the file. No snippets. No placeholders.
-2. Output **ONLY** the code inside a standard Markdown block (e.g. \` \`\`\`python ... \`\`\` \`).
-3. Do **NOT** include any conversational chatter or explanations. Just the file content.
+1. Provide the **100% COMPLETE** content of the file. No snippets.
+2. **ZERO-PLACEHOLDER RULE**: You are strictly FORBIDDEN from using comments like \`// ... existing code\` or \`# ... rest of imports\`. Every single line must be written explicitly.
+3. Output **ONLY** the code inside a standard Markdown block (e.g. \` \`\`\`python ... \` \`).
+4. Do **NOT** include any conversational chatter or explanations. Just the file content.
 `;
 
         // 4. CALL SPECIALIST

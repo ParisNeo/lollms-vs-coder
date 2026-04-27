@@ -236,6 +236,54 @@ export class ContextManager {
       return this.extensionToLanguageMap[ext] || ext || 'plaintext';
   }
 
+  /**
+   * Enforces the Prime Directive: Converts any path (absolute or relative) 
+   * into a Namespaced Relative path (Project/path) for LLM and UI use.
+   */
+  public getScrubbedPath(filePath: string): string {
+    if (!filePath) return "";
+    const folders = vscode.workspace.workspaceFolders || [];
+    const normalizedIn = filePath.replace(/\\/g, '/');
+
+    // 1. If it's already relative and correctly namespaced, return it
+    const segments = normalizedIn.split('/');
+    if (folders.length > 1 && segments.length > 0 && folders.some(f => f.name === segments[0])) {
+        return normalizedIn;
+    }
+
+    // 2. Try to match against workspace folders
+    for (const folder of folders) {
+        const folderFsPath = folder.uri.fsPath.replace(/\\/g, '/');
+        const isWin = process.platform === 'win32';
+
+        const isMatch = isWin 
+            ? normalizedIn.toLowerCase().startsWith(folderFsPath.toLowerCase())
+            : normalizedIn.startsWith(folderFsPath);
+
+        // Check both absolute start and relative start (already relative)
+        if (isMatch || !path.isAbsolute(normalizedIn)) {
+            let rel = normalizedIn;
+            if (isMatch) {
+                rel = normalizedIn.substring(folderFsPath.length);
+            }
+            if (rel.startsWith('/')) rel = rel.substring(1);
+
+            // If the relative path starts with the folder name, it's already scrubbed
+            const relSegments = rel.split('/');
+            if (folders.length > 1 && relSegments[0] === folder.name) return rel;
+
+            return folders.length > 1 ? `${folder.name}/${rel}` : rel;
+        }
+    }
+
+    // 3. Fallback: If it's absolute but outside workspace, just show the filename
+    if (path.isAbsolute(normalizedIn)) {
+        return `external/${path.basename(normalizedIn)}`;
+    }
+
+    return normalizedIn;
+  }
+
   private async extractDefinitions(uri: vscode.Uri): Promise<string> {
       try {
           const symbols = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>('vscode.executeDocumentSymbolProvider', uri);
@@ -289,13 +337,41 @@ export class ContextManager {
   }
 
   public async readSpecificFiles(filePaths: string[]): Promise<string> {
-      const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-      if (!workspaceFolder || !filePaths || filePaths.length === 0) return '';
+      const folders = vscode.workspace.workspaceFolders || [];
+      if (folders.length === 0 || !filePaths || filePaths.length === 0) return '';
 
       let content = '';
       for (const filePath of filePaths) {
           try {
-              const fullPath = vscode.Uri.joinPath(workspaceFolder.uri, filePath);
+              let fullPath: vscode.Uri | undefined;
+              const normalizedPath = filePath.replace(/\\/g, '/');
+              const segments = normalizedPath.split('/');
+
+              for (const folder of folders) {
+                  // Strategy A: Direct path check
+                  const uriDirect = vscode.Uri.joinPath(folder.uri, normalizedPath);
+                  // Strategy B: Namespaced check (strip folder name)
+                  const uriStripped = (segments[0] === folder.name && segments.length > 1) 
+                    ? vscode.Uri.joinPath(folder.uri, segments.slice(1).join('/')) 
+                    : null;
+
+                  try {
+                      await vscode.workspace.fs.stat(uriDirect);
+                      fullPath = uriDirect;
+                      break;
+                  } catch {
+                      if (uriStripped) {
+                          try {
+                              await vscode.workspace.fs.stat(uriStripped);
+                              fullPath = uriStripped;
+                              break;
+                          } catch {}
+                      }
+                  }
+              }
+
+              if (!fullPath) continue;
+
               const stat = await vscode.workspace.fs.stat(fullPath);
               if (stat.type !== vscode.FileType.File) continue;
 
@@ -1390,9 +1466,6 @@ Your primary mission is to synchronize the project context for the Worker LLM wh
 6.  **NO GHOSTING**: Do not assume the Worker can see what you see. If you find a dependency, add it.
 7.  **EXACT PATHS**: Use the absolute paths provided in the tree. Never guess.
 
-### ⚖️ AGGRESSION MODE
-${aggressionInstruction}
-
 ### 🏗️ THE OPERATOR'S PROTOCOL (AUTONOMY MANDATE)
 You are an **Autonomous Software Engineer**, not a consultant. Your goal is to deliver a finished, verified result.
 
@@ -1416,6 +1489,7 @@ You are an **Autonomous Software Engineer**, not a consultant. Your goal is to d
 **PHASE 4: DEFINITION OF DONE**
 - The task is ONLY complete when the code runs without errors AND meets the objective.
 - Only then, provide your final synthesis.
+
 ### ⚖️ AGGRESSION MODE
 ${aggressionInstruction}
 
@@ -1984,20 +2058,40 @@ ${cumulativeBrain || "No observations yet."}
     const contextFiles = this.contextStateProvider.getIncludedFiles();
     const activeFolders = vscode.workspace.workspaceFolders || [];
     
-    // Filter selection based on Discussion Workspace Scope
-    const selectedFolderUris = options?.capabilities?.selectedFolders || [];
-    const workspaceFolders = activeFolders.filter(f => 
-        selectedFolderUris.length === 0 || selectedFolderUris.includes(f.uri.toString())
-    );
+    // --- GRANULAR MATRIX FILTERING ---
+    const folderSettings = options?.capabilities?.folderSettings || {};
+
+    // Determine which folders allow CONTENT
+    const contentAllowedUris = activeFolders
+        .filter(f => !folderSettings[f.uri.toString()] || folderSettings[f.uri.toString()].content !== false)
+        .map(f => f.uri.toString());
 
     if (includeTree) {
         if (signal?.aborted) throw new Error("Operation cancelled");
-        // We force a rebuild if the workspace scope changed
-        result.projectTree = await this.generateProjectTree(signal, options?.onProgress, selectedFolderUris);
+        // Pass the whole capabilities object to allow the tree generator to check .tree settings
+        result.projectTree = await this.generateProjectTree(signal, options?.onProgress, options?.capabilities);
     }
 
-    const folders = workspaceFolders;
-    const includedFiles = contextFiles.filter(f => !f.path.endsWith(path.sep));
+    const folders = activeFolders;
+    // Filter file contents: Only include if the root folder has content=true
+    const includedFiles = contextFiles.filter(f => {
+        // Find which root this file belongs to (namespaced resolution)
+        const pathParts = f.path.split('/');
+        const rootName = pathParts[0];
+
+        const root = activeFolders.find(folder => 
+            (activeFolders.length > 1 && folder.name === rootName) || 
+            (activeFolders.length === 1)
+        );
+
+        if (root) {
+            const settings = folderSettings[root.uri.toString()];
+            if (settings && settings.content === false) return false;
+        }
+
+        return true;
+    });
+
     result.projectName = path.basename(workspaceFolder.uri.fsPath);
 
     if (useRLM) {
@@ -2050,15 +2144,16 @@ ${cumulativeBrain || "No observations yet."}
           if (stat.type !== vscode.FileType.File) continue;
 
           const ext = path.extname(filePath).toLowerCase();
+          const scrubbedPath = this.getScrubbedPath(filePath);
 
           if (this.binaryExtensions.has(ext)) {
-              result.selectedFilesContent += `\`\`\`${this.getLanguageId(filePath)}:${filePath}\n(Binary file content excluded)\n\`\`\`\n\n`;
+              result.selectedFilesContent += `\`\`\`${this.getLanguageId(filePath)}:${scrubbedPath}\n(Binary file content excluded)\n\`\`\`\n\n`;
               continue;
           }
 
           if (contextState === 'definitions-only') {
               const definitions = await this.extractDefinitions(fullPath);
-              result.selectedFilesContent += `\`\`\`${this.getLanguageId(filePath)}:${filePath} (Definitions Only)\n${definitions}\n\`\`\`\n\n`;
+              result.selectedFilesContent += `\`\`\`${this.getLanguageId(filePath)}:${scrubbedPath} (Definitions Only)\n${definitions}\n\`\`\`\n\n`;
               continue;
           }
 
@@ -2136,7 +2231,7 @@ ${cumulativeBrain || "No observations yet."}
               }
           }
           
-          result.selectedFilesContent += `\`\`\`${this.getLanguageId(filePath)}:${filePath}\n${fileContent}\n\`\`\`\n\n`;
+          result.selectedFilesContent += `\`\`\`${this.getLanguageId(filePath)}:${scrubbedPath}\n${fileContent}\n\`\`\`\n\n`;
 
         } catch (error) {
           result.selectedFilesContent += `### ${filePath}\n\n⚠️ **Error processing entry:** ${error}\n\n`;
@@ -2284,12 +2379,22 @@ Based on the objective and the file tree, which files are the most relevant? Ret
     return null;
   }
 
-  private async generateProjectTree(signal?: AbortSignal, onProgress?: (percentage: number) => void, selectedFolders?: string[]): Promise<string> {
+  private async generateProjectTree(signal?: AbortSignal, onProgress?: (percentage: number) => void, capabilities?: DiscussionCapabilities): Promise<string> {
     if (!this.contextStateProvider || !vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
       return '## 🌳 PROJECT STRUCTURE\n\n*No project structure available - no workspace folder found.*\n';
     }
 
-    const folders = vscode.workspace.workspaceFolders;
+    const folderSettings = capabilities?.folderSettings || {};
+
+    // Filter folders based on the 'tree' setting in the matrix
+    const folders = vscode.workspace.workspaceFolders.filter(f => {
+        const settings = folderSettings[f.uri.toString()];
+        return !settings || settings.tree !== false;
+    });
+
+    if (folders.length === 0) {
+        return '## 🌳 PROJECT STRUCTURE\n(All project structures hidden by user settings)\n';
+    }
     const contextFiles = this.contextStateProvider.getIncludedFiles();
 
     // 1. Initial Scan Across ALL Roots
@@ -2384,7 +2489,7 @@ Based on the objective and the file tree, which files are the most relevant? Ret
 
     let treeString = '## 🌳 PROJECT STRUCTURE\n\n```text\n';
 
-    // 2. Recursive Helper with Root awareness
+    // Recursive Helper with strict Root namespacing
     const render = (obj: any, prefix: string = '', currentPath: string = '', rootFolder?: vscode.WorkspaceFolder): string => {
       if (!obj || typeof obj !== 'object') return '';
       let out = '';
@@ -2399,24 +2504,40 @@ Based on the objective and the file tree, which files are the most relevant? Ret
       keys.forEach((key, index) => {
         const isLast = index === keys.length - 1;
         const connector = isLast ? '└── ' : '├── ';
+        const isDirectory = obj[key] !== null;
 
+        // Determine the root for this node
         let activeRoot = rootFolder;
-        // In multi-root, the top-level keys ARE the folder names
         if (folders.length > 1 && !rootFolder) {
             activeRoot = folders.find(f => f.name === key);
         } else if (folders.length === 1) {
             activeRoot = folders[0];
         }
 
-        const isTopLevelHeader = folders.length > 1 && !rootFolder;
-        const subPath = isTopLevelHeader ? '' : (currentPath ? currentPath + '/' + key : key);
-        const isDirectory = obj[key] !== null;
+        // --- GRANULAR TREE FILTERING ---
+        if (activeRoot && !rootFolder) { // Only check at the root level of each project
+            const settings = folderSettings[activeRoot.uri.toString()];
+            if (settings && settings.tree === false) {
+                // Skip the entire project if 'tree' is disabled
+                return;
+            }
+        }
+
+        const isTopLevelProjectName = folders.length > 1 && !rootFolder;
+        
+        // Construct the logical path used by the AI
+        let subPath = '';
+        if (folders.length > 1) {
+            subPath = currentPath ? currentPath + '/' + key : (rootFolder ? key : '');
+        } else {
+            subPath = currentPath ? currentPath + '/' + key : key;
+        }
 
         let suffix = "";
         let isCollapsed = false;
 
-        if (this.contextStateProvider && activeRoot && !isTopLevelHeader) {
-            const uri = vscode.Uri.joinPath(activeRoot.uri, subPath);
+        if (this.contextStateProvider && activeRoot && !isTopLevelProjectName) {
+            const uri = vscode.Uri.joinPath(activeRoot.uri, subPath || '.');
             const state = this.contextStateProvider.getStateForUri(uri);
 
             if (state === 'fully-excluded') return;
@@ -2433,9 +2554,8 @@ Based on the objective and the file tree, which files are the most relevant? Ret
         out += prefix + connector + key + (isDirectory ? '/' : '') + (suffix ? ` ${suffix}` : '') + '\n';
 
         if (isDirectory && !isCollapsed) {
-          out += render(obj[key], prefix + (isLast ? '    ' : '│   '), subPath, activeRoot);
+          out += render(obj[key], prefix + (isLast ? '    ' : '│   '), subPath || key, activeRoot);
         } else if (isDirectory && isCollapsed) {
-          // Visual hint that children are hidden
           out += prefix + (isLast ? '    ' : '│   ') + '└── ... (contents truncated)\n';
         }
       });
@@ -2481,6 +2601,76 @@ Currently operating without project context.
 
   public async getActiveProjectSkills(): Promise<string[]> {
       return this.context.workspaceState.get<string[]>(ContextManager.PROJECT_SKILLS_KEY, []);
+  }
+
+  /**
+   * Namespaced Path Resolver.
+   * Maps "Project/path/to/file" to a full URI and identifies which workspace folder it belongs to.
+   */
+  public async resolveWorkspaceFromPath(namespacedPath: string): Promise<{ folder: vscode.WorkspaceFolder | undefined, relativePath: string, uri: vscode.Uri } | null> {
+      const folders = vscode.workspace.workspaceFolders || [];
+      const normalized = namespacedPath.replace(/\\/g, '/').trim();
+      const segments = normalized.split('/');
+
+      if (path.isAbsolute(normalized)) {
+          const uri = vscode.Uri.file(normalized);
+          return { folder: vscode.workspace.getWorkspaceFolder(uri), relativePath: normalized, uri };
+      }
+
+      if (folders.length > 1) {
+          const projectFolder = folders.find(f => f.name === segments[0]);
+          if (projectFolder) {
+              const relativeToRoot = segments.slice(1).join('/');
+              const uri = vscode.Uri.joinPath(projectFolder.uri, relativeToRoot);
+              try {
+                  await vscode.workspace.fs.stat(uri);
+                  return { folder: projectFolder, relativePath: relativeToRoot, uri };
+              } catch {
+                  const uriWithSegment = vscode.Uri.joinPath(projectFolder.uri, normalized);
+                  try {
+                      await vscode.workspace.fs.stat(uriWithSegment);
+                      return { folder: projectFolder, relativePath: normalized, uri: uriWithSegment };
+                  } catch {}
+              }
+          }
+
+          for (const folder of folders) {
+              const testUri = vscode.Uri.joinPath(folder.uri, normalized);
+              try {
+                  await vscode.workspace.fs.stat(testUri);
+                  return { folder, relativePath: normalized, uri: testUri };
+              } catch {}
+          }
+      }
+
+      const activeFolder = (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) ? vscode.workspace.workspaceFolders[0] : undefined;
+      if (activeFolder) {
+          const uriDirect = vscode.Uri.joinPath(activeFolder.uri, normalized);
+          try {
+              await vscode.workspace.fs.stat(uriDirect);
+              return { folder: activeFolder, relativePath: normalized, uri: uriDirect };
+          } catch {
+              if (segments[0] === activeFolder.name && segments.length > 1) {
+                  const relStripped = segments.slice(1).join('/');
+                  const uriStripped = vscode.Uri.joinPath(activeFolder.uri, relStripped);
+                  try {
+                      await vscode.workspace.fs.stat(uriStripped);
+                      return { folder: activeFolder, relativePath: relStripped, uri: uriStripped };
+                  } catch { }
+              }
+          }
+          let finalRel = normalized;
+          if (segments[0] === activeFolder.name && segments.length > 1) {
+              finalRel = segments.slice(1).join('/');
+          }
+          return { 
+              folder: activeFolder, 
+              relativePath: finalRel, 
+              uri: vscode.Uri.joinPath(activeFolder.uri, finalRel) 
+          };
+      }
+
+      return null;
   }
 
   public async addSkillToProject(skillId: string) {

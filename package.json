@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.8.50",
+  "version": "0.8.51",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -1602,6 +1602,12 @@
         }
       ],
       "view/title": [
+        {
+          "command": "lollms-vs-coder.selectActiveWorkspace",
+          "when": "view == lollmsDiscussionsView && workspaceFolderCount > 1",
+          "group": "navigation@0",
+          "icon": "$(arrow-swap)"
+        },
         {
           "command": "lollms-vs-coder.showChatTab",
           "when": "view == lollmsTabsView && lollms:activeTab != chat",

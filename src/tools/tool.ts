@@ -8,14 +8,15 @@ import { PersonalityManager } from '../personalityManager';
 
 export interface Task {
     id: number;
+    task_type: 'simple_action' | 'agentic_action' | 'markdown_coding' | 'safety_check';
     description: string;
     action: string;
     parameters: { [key: string]: any };
-    model?: string; // Specific model for this specialist
-    agent_persona?: string; // Custom instructions for the specialist
-    agent_skills?: string[]; // Specific skills for the specialist
-    agent_files?: string[]; // Specific files this agent needs to read
-    dependencies?: number[]; // Task IDs that must complete before this starts
+    model?: string; 
+    agent_persona?: string; 
+    agent_skills?: string[]; 
+    agent_files?: string[]; 
+    dependencies?: number[]; 
     status: 'pending' | 'in_progress' | 'completed' | 'failed';
     result: string | null;
     memory_delta?: {
@@ -33,16 +34,16 @@ export interface Milestone {
 }
 
 export interface Plan {
-    objective: string;      // Global Mission Goal
-    current_sub_goal: string; // Immediate task objective
-    observations: string[];  // Incremental list of technical remarks
+    objective: string;      
+    current_sub_goal: string; 
+    observations: string[];  
     tasks: Task[];
     milestones?: Milestone[]; 
     investigation?: any[]; 
     attempts?: Plan[];     
-    status?: 'active' | 'stale' | 'failed';
+    status?: 'active' | 'stale' | 'failed' | 'active';
     metrics?: any;
-    scratchpad?: string;    // Legacy fallback
+    scratchpad: string;    
 }
 
 export interface ToolExecutionEnv {

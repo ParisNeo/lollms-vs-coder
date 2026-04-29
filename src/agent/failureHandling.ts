@@ -43,8 +43,9 @@ export class FailureMemory {
         INSTRUCTION: Abandon your current plan. You are now FORBIDDEN from using \`${lastTool}\` on this specific path. Change your technical approach immediately.`,
 
             `### 🕵️ RCA MANDATE: ROOT CAUSE ANALYSIS
-        Your last actions produced zero delta. 
-        MANDATORY: Your next 'thought' MUST start with "RCA:" and explain exactly why the previous approach was wrong. Then, pivot to a different strategy.`,
+            Your last actions produced zero delta. 
+            MANDATORY: Your next 'thought' MUST start with "RCA:" and explain exactly why the previous approach was wrong. Then, pivot to a different strategy.
+            STRICT: If you are retrying a command, you MUST change the parameters or add debugging logs. NEVER repeat the same command twice.`,
 
             `### 🧠 META-COGNITIVE RESET
         You are in a rut. 
@@ -78,8 +79,12 @@ ${recentFailures.map((f, i) => `
         if (relevantFailures.length === 0) return "";
 
         return `
-### 🧬 META-HARNESS REFLECTION
-You just successfully executed \`${successfulTool}\` after previous failures.
+    ### 🧬 META-HARNESS REFLECTION: FAILURE OVERCOME
+    You just successfully executed \`${successfulTool}\` after ${relevantFailures.length} previous failures.
+
+    **CRITICAL TASK**: 
+    1. **LESSON (Pink Card)**: You MUST output a \`<project_memory action="add" importance="100" category="technical_lesson">\` tag. State the precise technical reason why previous attempts failed (e.g. "Always use absolute paths for tool X") so we never do it again.
+    2. **MILESTONE (Purple Card)**: You MUST output a \`<milestone title="Surpassed hurdle in ${successfulTool}" ... />\` to explain to the user what was broken and how you fixed it.
 
 **PREVIOUS FAILURES:**
 ${relevantFailures.map(f => `- Error: "${f.errorOutput.substring(0, 200)}..." with params: ${JSON.stringify(f.parameters)}`).join('\n')}

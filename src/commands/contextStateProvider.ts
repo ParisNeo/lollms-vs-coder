@@ -417,48 +417,67 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const exceptions = config.get<string[]>('contextFileExceptions') || [];
 
-        // 1. Minimum exclusions. We only hide truly irrelevant binary artifacts.
-        // We do NOT hide .git, .lollms, or venv here, as they must show as (Collapsed).
         const standardExcludes = [
-            '**/__pycache__/**',
-            '**/*.pyc',
-            '**/*.pyo',
-            '**/*.pyd',
-            '**/*.obj',
-            '**/*.bin',
-            '**/.DS_Store'
+            '**/__pycache__/**', '**/*.pyc', '**/*.pyo', '**/*.pyd',
+            '**/*.obj', '**/*.bin', '**/.DS_Store', '**/node_modules/**', '**/venv/**', '**/.venv/**'
         ];
 
         const combinedExcludes = Array.from(new Set([...exceptions, ...standardExcludes]));
         const excludePattern = combinedExcludes.length > 1 ? `{${combinedExcludes.join(',')}}` : (combinedExcludes[0] || "");
 
-        Logger.info(`Librarian: Deep scan with excludes: ${excludePattern}`);
+        Logger.info(`Librarian: Attempting native findFiles scan...`);
 
-        // 2. Use findFiles with useIgnoreFiles: false to ensure dotfiles like .gitignore
-        // and images are visible regardless of user's local "hide" settings.
-        const files = await vscode.workspace.findFiles(
-            new vscode.RelativePattern(workspaceFolder, '**/*'),
-            excludePattern,
-            20000 // Increased limit
-        );
+        let files: vscode.Uri[] = [];
+        try {
+            files = await vscode.workspace.findFiles(
+                new vscode.RelativePattern(workspaceFolder, '**/*'),
+                excludePattern,
+                20000
+            );
+        } catch (e) {
+            Logger.error(`Native findFiles failed: ${e}`);
+        }
+
+        // --- FALLBACK: MANUAL DIRECTORY CRAWL ---
+        // If findFiles yields nothing (often on large network drives or restricted workspaces)
+        // we perform a manual crawl of the first 3 levels to prove the workspace isn't empty.
+        if (files.length === 0) {
+            Logger.info(`Librarian: findFiles returned 0. Triggering manual crawl fallback...`);
+            const fallbackFiles: vscode.Uri[] = [];
+
+            const walk = async (uri: vscode.Uri, depth: number) => {
+                if (depth > 4 || (signal && signal.aborted)) return;
+                try {
+                    const entries = await vscode.workspace.fs.readDirectory(uri);
+                    for (const [name, type] of entries) {
+                        const entryUri = vscode.Uri.joinPath(uri, name);
+                        if (this.isExcluded(entryUri)) continue;
+
+                        if (type === vscode.FileType.File) {
+                            fallbackFiles.push(entryUri);
+                        } else if (type === vscode.FileType.Directory) {
+                            await walk(entryUri, depth + 1);
+                        }
+                    }
+                } catch (e) {}
+            };
+
+            await walk(workspaceFolder.uri, 0);
+            files = fallbackFiles;
+        }
 
         if (signal?.aborted) return [];
 
-        Logger.info(`Librarian: findFiles returned ${files.length} raw results.`);
-
-        // 3. Normalize paths and filter by custom state (exclusions/collapsed)
         const visibleFiles: string[] = [];
         for (const file of files) {
-            // isExcluded checks against settings and inherited states
             if (this.isExcluded(file)) continue;
-
             const state = this.getStateForUri(file);
             if (state !== 'fully-excluded') {
                 visibleFiles.push(this.normalize(vscode.workspace.asRelativePath(file, false)));
             }
         }
 
-        Logger.info(`Librarian: Discovery complete. ${visibleFiles.length} files visible after filtering.`);
+        Logger.info(`Librarian: Discovery complete. Found ${visibleFiles.length} files.`);
         return visibleFiles;
     }
     

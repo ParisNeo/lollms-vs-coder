@@ -87,10 +87,13 @@ export function registerViews(context: vscode.ExtensionContext, services: Lollms
     // Discussions
     const discussionTreeProvider = new DiscussionTreeProvider(services.discussionManager, services.extensionUri);
     services.treeProviders.discussion = discussionTreeProvider;
-    
+
     const discussionView = vscode.window.createTreeView('lollmsDiscussionsView', { treeDataProvider: discussionTreeProvider });
+
+    // Allow the provider to update the view description (subtitle)
+    discussionTreeProvider.bindView(discussionView);
+
     context.subscriptions.push(discussionView);
 
-   
     return discussionView;
-}
+    }

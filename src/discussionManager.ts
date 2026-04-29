@@ -27,6 +27,7 @@ export interface Discussion {
         workingMemory: string[];
         completedActionsHistory: string[];
         secureCredentials?: Record<string, string>;
+        isSafetyCheckPassed?: boolean;
     };
 }
 

@@ -57,10 +57,8 @@ export class ProjectMemoryPanel {
     }
 
     private async _update() {
-        // Show loading state first
-        this._panel.webview.html = this._getHtml([], true);
-        
         const memories = await this.manager.getMemories();
+        // Skip the intermediate loading state to prevent flickering during rapid AI updates
         this._panel.webview.html = this._getHtml(memories, false);
     }
 

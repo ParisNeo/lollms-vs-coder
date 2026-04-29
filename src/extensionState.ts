@@ -220,6 +220,11 @@ export async function runCommandInTerminal(
         try {
             executionTask = await vscode.tasks.executeTask(task);
 
+            // If the task failed to even start (invalid shell, missing binary)
+            if (!executionTask) {
+                return resolve({ success: false, output: "OS ERROR: Task execution failed to initialize. Verify your terminal settings." });
+            }
+
             if (signal) {
                 signal.addEventListener('abort', () => {
                     executionTask?.terminate();

@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { LollmsAPI, LollmsConfig } from './lollmsAPI';
 import { ContextManager } from './contextManager';
 import { GitIntegration } from './gitIntegration';
@@ -43,6 +44,11 @@ import { InfoPanel } from './commands/infoPanel';
 import { LocalizationManager } from './utils/localizationManager';
 
 export async function activate(context: vscode.ExtensionContext) {
+    process.on('unhandledRejection', (reason: any) => {
+        if (reason?.message?.includes('connection got disposed')) return;
+        Logger.error('Unhandled Rejection:', reason);
+    });
+
     try {
         Logger.initialize(context);
         await LocalizationManager.initialize(context);
@@ -237,11 +243,17 @@ export async function activate(context: vscode.ExtensionContext) {
     
     const isIgnored = (uri: vscode.Uri) => {
         const p = uri.fsPath;
+        // Allow .lollms/skills to pass through so we can refresh the library
+        if (p.includes(path.join('.lollms', 'skills'))) return false;
         return p.includes('.lollms') || p.includes('.git') || p.includes('node_modules') || p.includes('venv');
     };
 
     watcher.onDidChange(uri => {
         if (isIgnored(uri)) return;
+        if (uri.fsPath.includes('skills')) {
+            skillsManager.invalidateCache();
+            return;
+        }
         contextManager.refreshFileInCache(uri);
         contextManager.updateTreeStructure(uri, 'change');
         codeGraphManager.reset();
@@ -249,12 +261,20 @@ export async function activate(context: vscode.ExtensionContext) {
     
     watcher.onDidCreate(uri => {
         if (isIgnored(uri)) return;
+        if (uri.fsPath.includes('skills')) {
+            skillsManager.invalidateCache();
+            return;
+        }
         contextManager.updateTreeStructure(uri, 'create');
         codeGraphManager.reset();
     });
     
     watcher.onDidDelete(uri => {
         if (isIgnored(uri)) return;
+        if (uri.fsPath.includes('skills')) {
+            skillsManager.invalidateCache();
+            return;
+        }
         contextManager.refreshFileInCache(uri);
         contextManager.updateTreeStructure(uri, 'delete');
         codeGraphManager.reset();
@@ -319,6 +339,11 @@ export async function activate(context: vscode.ExtensionContext) {
         codeGraphManager.setContextSetter((key, value) => {
             vscode.commands.executeCommand('setContext', `lollms:${key}`, value);
         });
+
+        // Update the Discussion Tree header with the project name
+        if (services.treeProviders.discussion) {
+            services.treeProviders.discussion.setActiveProject(folder.name);
+        }
 
         if (!isInitialLoad) {
             // Preservation: Don't kill active agent panels if they are currently working

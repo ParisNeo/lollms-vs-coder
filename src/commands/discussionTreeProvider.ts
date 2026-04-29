@@ -6,6 +6,8 @@ export class DiscussionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
     readonly onDidChangeTreeData: vscode.Event<vscode.TreeItem | undefined | null | void> = this._onDidChangeTreeData.event;
 
     private filterQuery: string | undefined;
+    private _view?: vscode.TreeView<vscode.TreeItem>;
+    private _activeProjectName: string = "";
 
     constructor(
         private discussionManager: DiscussionManager,
@@ -15,6 +17,27 @@ export class DiscussionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
         this.discussionManager.onDidChangeDiscussions(() => {
             this.refresh();
         });
+    }
+
+    public bindView(view: vscode.TreeView<vscode.TreeItem>) {
+        this._view = view;
+        this.updateViewDescription();
+    }
+
+    public setActiveProject(name: string) {
+        this._activeProjectName = name;
+        this.updateViewDescription();
+    }
+
+    private updateViewDescription() {
+        if (this._view) {
+            const folders = vscode.workspace.workspaceFolders || [];
+            if (folders.length > 1) {
+                this._view.description = this._activeProjectName ? `[${this._activeProjectName}]` : "";
+            } else {
+                this._view.description = "";
+            }
+        }
     }
 
     refresh(): void {

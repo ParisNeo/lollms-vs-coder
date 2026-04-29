@@ -1769,14 +1769,14 @@ export function renderAdvancedToolsList(allTools: any[], toolPolicies: Record<st
 
     // 3. Map Tools to Categories
     allTools.forEach(tool => {
-        const name = tool.name.toLowerCase();
+        const toolName = tool.name.toLowerCase();
         const group = (tool.permissionGroup || '').toLowerCase();
 
-        if (name.startsWith('mcp_') || name.includes('_mcp_')) categories.mcp.tools.push(tool);
-        else if (group.includes('filesystem') || name.includes('file')) categories.filesystem.tools.push(tool);
-        else if (group.includes('shell') || name.includes('run_') || name.includes('exec')) categories.execution.tools.push(tool);
-        else if (group.includes('internet') || name.includes('search') || name.includes('scrape')) categories.research.tools.push(tool);
-        else if (name.includes('memory') || name.includes('knowledge') || name.includes('repl')) categories.knowledge.tools.push(tool);
+        if (toolName.startsWith('mcp_') || toolName.includes('_mcp_')) categories.mcp.tools.push(tool);
+        else if (group.includes('filesystem') || toolName.includes('file')) categories.filesystem.tools.push(tool);
+        else if (group.includes('shell') || toolName.includes('run_') || toolName.includes('exec')) categories.execution.tools.push(tool);
+        else if (group.includes('internet') || toolName.includes('search') || toolName.includes('scrape')) categories.research.tools.push(tool);
+        else if (toolName.includes('memory') || toolName.includes('knowledge') || toolName.includes('repl')) categories.knowledge.tools.push(tool);
         else categories.internal.tools.push(tool);
     });
 
@@ -2343,6 +2343,9 @@ export function updateProgressBar(container: HTMLElement | null, current: number
                 </div>
                 <div class="legend-item" data-type="tree" title="View Project Tree Structure">
                     <div class="legend-dot segment-tree"></div>Trees
+                </div>
+                <div class="legend-item" data-type="skills" title="View Active Skills">
+                    <div class="legend-dot segment-skills"></div>Skills
                 </div>
                 <div class="legend-item" data-type="files" title="View Detailed File Usage">
                     <div class="legend-dot segment-files"></div>Files

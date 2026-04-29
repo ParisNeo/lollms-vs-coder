@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-04-29 08:53]
+
+- feat: Update version and refine agent failure handling
+
 ## [2026-04-27 22:50]
 
 - feat: Release 0.8.50 and update core agent and command registration

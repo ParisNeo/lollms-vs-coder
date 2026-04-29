@@ -1784,6 +1784,28 @@ function renderImageGenBlock(prompt: string, path: string, width?: string, heigh
     </div>`;
 }
 
+/**
+ * Detects ranges of text that are formatted as code (blocks or inline) 
+ * to prevent custom XML tag parsing inside them.
+ */
+function getCodeRanges(text: string): { start: number, end: number }[] {
+    const ranges: { start: number, end: number }[] = [];
+    // 1. Triple backtick blocks (supporting unclosed blocks for streaming)
+    const blockRegex = /```[\s\S]*?(?:```|$)/g;
+    let m;
+    while ((m = blockRegex.exec(text)) !== null) {
+        ranges.push({ start: m.index, end: m.index + m[0].length });
+    }
+    // 2. Inline code spans (only if not overlapping with blocks)
+    const inlineRegex = /`[^`\n]+`/g;
+    while ((m = inlineRegex.exec(text)) !== null) {
+        if (!ranges.some(r => m!.index >= r.start && m!.index < r.end)) {
+            ranges.push({ start: m.index, end: m.index + m[0].length });
+        }
+    }
+    return ranges;
+}
+
 export function renderMessageContent(messageId: string, rawContent: any, isFinal: boolean = false) {
     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
     if (!wrapper) return;
@@ -1862,15 +1884,25 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 }
             });
             contentDiv.innerHTML = html;
+
+
+        
+
+
         } else if (typeof rawContent === 'string') {
             const { thoughts: thoughtsResult, processedContent: contentWithoutThoughts } = processThinkTags(rawContent);
             thoughts.push(...thoughtsResult);
             processedContent = contentWithoutThoughts;
+
+            // Pre-calculate code ranges to ignore tags inside backticks
+            const forbiddenRanges = getCodeRanges(contentWithoutThoughts);
+            const isInsideCode = (index: number) => forbiddenRanges.some(r => index >= r.start && index < r.end);
             
             // --- SKILL TAG PARSING ---
             const skillRegex = /<skill\s+([^>]*?)>([\s\S]*?)<\/skill>/gi; 
             let skillMatch;
             while ((skillMatch = skillRegex.exec(contentWithoutThoughts)) !== null) {
+                if (isInsideCode(skillMatch.index)) continue;
                 const attrStr = skillMatch[1];
                 const innerContent = skillMatch[2];
                 const attrs: any = {};
@@ -1887,6 +1919,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const resRegex = /<image_result\s+path=["']([^"']*)["']\s*\/>/gi;
             let resMatch;
             while ((resMatch = resRegex.exec(contentWithoutThoughts)) !== null) {
+                if (isInsideCode(resMatch.index)) continue;
                 const imgHtml = renderImageResultBlock(resMatch[1], messageId);
                 images.push({ html: imgHtml, start: resMatch.index, end: resMatch.index + resMatch[0].length });
             }
@@ -1894,6 +1927,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const imgRegex = /<generate_image\s+([^>]*?)>([\s\S]*?)<\/generate_image>/gi;
             let imgMatch;
             while ((imgMatch = imgRegex.exec(contentWithoutThoughts)) !== null) {
+                if (isInsideCode(imgMatch.index)) continue;
                 const attrStr = imgMatch[1];
                 const prompt = imgMatch[2].trim();
                 const attrs: any = {};
@@ -1909,6 +1943,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const debugRegex = /<debug_report\s+data=['"]([\s\S]*?)['"]\s*\/>/gi;
             let dMatch;
             while ((dMatch = debugRegex.exec(contentWithoutThoughts)) !== null) {
+                if (isInsideCode(dMatch.index)) continue;
                 const dHtml = renderDebugReport(dMatch[1]);
                 debugReports.push({ html: dHtml, start: dMatch.index, end: dMatch.index + dMatch[0].length });
             }
@@ -1918,6 +1953,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const reinfRegex = /<memory_reinforce\s+id=["']([^"']*)["']\s*\/>/gi;
             let reinfMatch;
             while ((reinfMatch = reinfRegex.exec(contentWithoutThoughts)) !== null) {
+                if (isInsideCode(reinfMatch.index)) continue;
                 const html = renderReinforceTag(reinfMatch[1]);
                 memTags.push({ html, start: reinfMatch.index, end: reinfMatch.index + reinfMatch[0].length });
             }
@@ -1925,6 +1961,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const pMemRegex = /<project_memory\s+([^>]*?)>([\s\S]*?)<\/project_memory>/gi;
             let pMemMatch;
             while ((pMemMatch = pMemRegex.exec(contentWithoutThoughts)) !== null) {
+                if (isInsideCode(pMemMatch.index)) continue;
                 const attrStr = pMemMatch[1];
                 const memContent = pMemMatch[2].trim();
                 const attrs: any = {};
@@ -1942,6 +1979,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const formRegex = /<lollms_form\b[^>]*>([\s\S]*?)<\/lollms_form>/gi;
             let formMatch;
             while ((formMatch = formRegex.exec(contentWithoutThoughts)) !== null) {
+                if (isInsideCode(formMatch.index)) continue;
                 const html = renderFormBlock(formMatch[0], messageId);
                 forms.push({ html, start: formMatch.index, end: formMatch.index + formMatch[0].length });
             }
@@ -1951,6 +1989,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const milestones: { html: string, start: number, end: number }[] = [];
             let mileMatch;
             while ((mileMatch = milestoneRegex.exec(contentWithoutThoughts)) !== null) {
+                if (isInsideCode(mileMatch.index)) continue;
                 const attrStr = mileMatch[1];
                 const attrs: any = {};
                 const attrRegex = /(\w+)=["']([^"']*)["']/g;
@@ -1962,6 +2001,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const procRegex = /<processing\b[^>]*>([\s\S]*?)(?:<\/processing>|$)/gi;
             let procMatch;
             while ((procMatch = procRegex.exec(contentWithoutThoughts)) !== null) {
+                if (isInsideCode(procMatch.index)) continue;
                 const innerContent = procMatch[1];
                 const isClosed = procMatch[0].toLowerCase().includes('</processing>');
                 const html = renderProcessingBlock(innerContent, isClosed);
@@ -1974,6 +2014,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const blockOpRegex = /<(add_files_to_context|remove_files_from_context|delete_files|move_files|copy_files)>([\s\S]*?)<\/\1>/gi;
             let blockOpMatch;
             while ((blockOpMatch = blockOpRegex.exec(contentWithoutThoughts)) !== null) {
+                if (isInsideCode(blockOpMatch.index)) continue;
                 const tagName = blockOpMatch[1].toLowerCase();
                 const innerText = blockOpMatch[2].trim();
                 const lines = innerText.split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0);
@@ -2008,6 +2049,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             const legacyOpRegex = /<(edit_image_asset)\s+([^>]*?)>(.*?)<\/\1>/gi;
             let legacyOpMatch;
             while ((legacyOpMatch = legacyOpRegex.exec(contentWithoutThoughts)) !== null) {
+                if (isInsideCode(legacyOpMatch.index)) continue;
                 const tagName = legacyOpMatch[1].toLowerCase();
                 const attrStr = legacyOpMatch[2];
                 const attrs: any = {};

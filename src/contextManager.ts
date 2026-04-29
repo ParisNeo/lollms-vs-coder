@@ -1389,157 +1389,80 @@ Google Available: ${canGoogle}` }
       const actionLog: string[] = [];
       const executedActions = new Set<string>();
       let cumulativeBrain = ""; 
-      
+
       const folders = vscode.workspace.workspaceFolders;
       if (!folders || folders.length === 0 || !this.contextStateProvider) {
-          // Graceful fallback: scouting bypassed silently as handled by UI
-          return { context: "", analysis: "No workspace available for project-wide scouting." };
+          return { context: "", analysis: "No workspace available." };
       }
+      // --- LEAN DISCOVERY CONTEXT (Optimized for Speed) ---
+      // 1. Generate Tree (Always reliable if workspace open)
+      const fileTree = await this.generateProjectTree(signal, undefined, discussion?.capabilities);
+      const sharedKnowledge = this.renderBriefing(discussion);
 
-      // Robust file discovery: ensure we have a valid list of files before starting the agent
+      // 2. Fetch candidates for Librarian verification
       let allFiles = await this.contextStateProvider.getAllVisibleFiles(signal);
-      
-      // If native findFiles failed, fallback to the current context state provider's known files
-      if (allFiles.length === 0) {
-          allFiles = this.contextStateProvider.getIncludedFiles().map(f => f.path);
-      }
 
-      if (allFiles.length === 0) {
-          Logger.error("Librarian: Zero files discovered in workspace.");
-          actionLog.push("⚠️ No files found in workspace.");
-          onUpdate(`**🧠 Librarian Mission Report**\n\n⚠️ **Blank Workspace**: I couldn't find any visible files in the project. Please ensure your project is indexed or add some files to context manually.`);
-          return { context: "", analysis: "Workspace is empty." };
+      // If the list is STILL empty but the tree exists, the workspace isn't actually empty.
+      // We populate allFiles from the tree itself to unblock the agent.
+      if (allFiles.length === 0 && fileTree.includes('├──')) {
+          Logger.warn("Librarian index empty but structure exists. Proceeding with structural mode.");
+          // Extract paths from the tree string as a last resort
+          const pathsFromTree = [...fileTree.matchAll(/([A-Za-z0-9_.\-\/]+\.[a-z0-9]+)\s*[\[(]/g)].map(m => m[1]);
+          allFiles = Array.from(new Set(pathsFromTree));
       }
-
-      Logger.info(`Librarian: Starting mission with ${allFiles.length} visible files.`);
 
       const currentContextFiles = this.contextStateProvider.getIncludedFiles().map(f => f.path);
       const selectedFiles = new Set<string>(currentContextFiles);
       const initialCount = selectedFiles.size;
 
-      // Show immediate intent before starting heavy tree generation
-      onUpdate(`**🧠 Auto-Context Agent**\n\n*Initializing Librarian...*`);
-
-      // 1. Fetch FULL context (Tree + Selected File Contents) BEFORE starting
-      const fullContext = await this.getContextContent({ 
-          includeTree: true, 
-          modelName: model,
-          signal 
-      });
-
-      
-
-      const fileTree = fullContext.projectTree;
-      const currentContents = fullContext.selectedFilesContent;
-      // Removed redundant local declaration of 'discussion' as it is now provided via method parameters
       const aggression = this.contextStateProvider.context.globalState.get<any>('lollms_last_capabilities')?.contextAggression || 'respect';
 
       let aggressionInstruction = "";
       switch(aggression) {
-          case 'minimal': 
-            aggressionInstruction = "STRICT BREVITY: Select the absolute minimum number of files. If you can answer with 1 file instead of 3, do it.";
-            break;
-          case 'none':
-            aggressionInstruction = "MAXIMUM CONTEXT: Recover as many potentially relevant files as possible to ensure the LLM has zero missing information.";
-            break;
-          case 'signatures':
-            aggressionInstruction = "SMART SIGNATURES: For files needed only for reference (API definitions, utilities), use the 'signatures' mode. Use 'full' only for files likely to be modified.";
-            break;
-          case 'respect':
-          default:
-            aggressionInstruction = "BALANCED: Aim to use about 75% of the available context window. Avoid over-filling but ensure core logic is present.";
-            break;
+          case 'minimal': aggressionInstruction = "STRICT BREVITY: Select the absolute minimum number of files."; break;
+          case 'none': aggressionInstruction = "MAXIMUM CONTEXT: Recover all potentially relevant files."; break;
+          default: aggressionInstruction = "BALANCED: Aim to use about 75% of the context window."; break;
       }
 
-      const isCollaborative = mode === 'collaborative';
-      const roleTitle = isCollaborative ? "Lead Architect & Librarian" : "Context Librarian";
-      
       const systemPrompt = `You are the **Lead Project Librarian**. 
-Your primary mission is to synchronize the project context for the Worker LLM who will execute the task next.
+  Your goal is to optimize the project context for the Worker LLM by selecting the right files.
 
-### 📜 THE LIBRARIAN'S CONSTITUTION
-1.  **FAST-PATH DISCOVERY (CRITICAL)**: Look at the "ACCESSIBLE FILE CONTENTS" section below. If the files required to solve the user's objective are ALREADY fully loaded, you are FORBIDDEN from using \`read_file\` or \`search_files\`. You must immediately output \`add_briefing_entry\` if needed, and then call \`done\`. DO NOT OVERTHINK IT.
-2.  **CONTEXT SYNC IS PRIMARY**: Your most important action is \`add_files\`. If you identify a relevant file missing from the context, you MUST add it. Peeking with \`read_file\` is only for temporary investigation.
-3.  **BRIEFING IS SECONDARY**: Use \`add_briefing_entry\` to record high-level facts (e.g. "Uses TensorFlow 2.x"). Do not solve the coding problem yourself.
-4.  **NO REDUNDANCY**: Do not "read" what you can already "see". If a file is listed in the context, assume you have its full contents.
-5.  **CLEAN THE SLATE**: If approaching the context limit, use \`remove_files\` to eject irrelevant files.
-6.  **NO GHOSTING**: Do not assume the Worker can see what you see. If you find a dependency, add it.
-7.  **EXACT PATHS**: Use the absolute paths provided in the tree. Never guess.
+  ### 📜 LIBRARIAN PROTOCOL (FAST DISCOVERY)
+  1.  **STRUCTURE OVER CONTENT**: You are provided with the Project Tree below. This is your primary vision. 
+  2.  **STATUS MARKERS**: Files marked \`[C]\` (Content Loaded) or \`[D]\` (Definitions Only) are ALREADY available to the Worker LLM. Your job is to find what is MISSING based on the objective.
+  3.  **NO REDUNDANCY**: Do not use \`read_file\` on a file already marked \`[C]\` unless you need to find a specific line number for a briefing update.
+  4.  **BRIEFING MANAGEMENT**: Use \`add_briefing_entry\` to record discoveries about tech stack, API versions, or logic flow. This persists across turns.
+  5.  **EXACT PATHS**: Use the paths exactly as shown in the tree.
 
-### 🏗️ THE OPERATOR'S PROTOCOL (AUTONOMY MANDATE)
-You are an **Autonomous Software Engineer**, not a consultant. Your goal is to deliver a finished, verified result.
+  **TOOLS:**
+  1. \`add_briefing_entry(id, info)\`: Record a technical discovery.
+  2. \`amend_briefing_entry(id, info)\`: Update a previous discovery.
+  3. \`add_files(files=[{"path", "mode"}])\`: Add files to the permanent context.
+  4. \`remove_files(paths=[])\`: Prune unnecessary files to save tokens.
+  5. \`read_file(path, start_line, end_line)\`: Peek at a file to decide if it's relevant.
+  6. \`search_files(pattern, path)\`: Perform a fast grep.
+  7. \`done()\`: Finish scouting.
 
-**PHASE 0: HYGIENE & SAFETY (MANDATORY)**
-- Before any change: Check \`git status\`.
-- If there are uncommitted changes, use \`request_user_input\` to ask: "Workspace is dirty. Should I commit/stash or continue anyway?".
-- Create a dedicated feature branch for the task (e.g., \`ai/test-trm-logic\`).
+  **OUTPUT**: JSON only.
+  \`\`\`json
+  {
+  "scratchpad": "Thinking...",
+  "tool": "tool_name",
+  "params": { ... }
+  }
+  \`\`\``;
 
-**PHASE 1: DEEP DISCOVERY**
-- Read relevant source code. Do NOT guess logic from filenames.
-- Identify how to run the current training/test suite.
+      // Build history context (Minimalist)
+      const objectiveContext = `**USER OBJECTIVE:** "${userPrompt}"\n\n`;
 
-**PHASE 2: EMPIRICAL VERIFICATION**
-- Run the code. Capture the failure or the baseline performance.
-- Only propose enhancements AFTER you have seen the current code run and fail (or provide metrics).
+      let initialUserContent = `${objectiveContext}
+  # SHARED TEAM BRIEFING (KNOWN KNOWLEDGE)
+  ${sharedKnowledge || "Scouting has just begun. No briefing entries yet."}
 
-**PHASE 3: IMPLEMENTATION & SELF-HEAL**
-- Apply changes.
-- Run tests again. If they fail, fix them immediately in a loop.
+  # PROJECT WORLD STATE (THE TREE)
+  ${fileTree}
 
-**PHASE 4: DEFINITION OF DONE**
-- The task is ONLY complete when the code runs without errors AND meets the objective.
-- Only then, provide your final synthesis.
-
-### ⚖️ AGGRESSION MODE
-${aggressionInstruction}
-
-**TEAM COORDINATION TOOLS:**
-1. \`add_briefing_entry(id="unique_id", info="technical details")\`: Record a new technical discovery (classes, logic, patterns).
-2. \`amend_briefing_entry(id="existing_id", info="updated details")\`: Correct or expand a previous discovery.
-3. \`summon_specialist(agent="web|skills", reason="why")\`: Call the Web Research or Skills agent if you need internet docs or library protocols.
-
-**INVESTIGATION TOOLS:**
-4. \`add_files(files=[{"path": "p1", "mode": "full|signatures"}])\`: Persistently add files to the AI's permanent memory.
-5. \`remove_files(paths=["path1", "path2"])\`: Remove files from the current context to save tokens.
-6. \`read_file(path="path", start_line=0, end_line=500)\`: "Peek" at a file to decide if it's relevant.
-6. \`search_files(pattern="regex", path=".")\`: performs a high-speed grep search through the codebase.
-7. \`read_code_graph(type="class_diagram|import_graph")\`: Get a structural overview of the project architecture.
-8. \`get_file_info(path="path")\`: Returns file size and total line count.
-9. \`done()\`: Finish context selection and mission.
-
-**OUTPUT FORMAT**: You must output a JSON object. 
-- \`scratchpad\`: Your internal thought process for this step.
-- \`tool\`: The tool name.
-- \`params\`: The tool parameters.
-
-Example:
-{
-  "scratchpad": "Found UserAuth class in auth.ts. It uses a custom JWT decorator. I need to find where that decorator is defined.",
-  "tool": "add_briefing_entry",
-  "params": { "id": "auth_logic", "info": "Authentication uses the UserAuth class which relies on a @verify_token decorator." }
-}
-`;
-
-      // Build history context for the Librarian
-      const historyContext = fullHistory.length > 0 
-          ? `### 📜 DISCUSSION HISTORY\n${fullHistory.map(m => `**${m.role.toUpperCase()}**: ${typeof m.content === 'string' ? m.content : '[Multipart content]'}`).join('\n\n')}\n\n---\n`
-          : "";
-
-      // 2. Inject previous agent findings (Inter-operability)
-      const sharedKnowledge = fullHistory.length > 0 ? (fullHistory[0] as any).discussion_data_zone || "" : "";
-
-      let initialUserContent = `${historyContext}
-# SHARED TEAM KNOWLEDGE (PREVIOUS AGENTS)
-${sharedKnowledge}
-
-**USER OBJECTIVE:** "${userPrompt}"
-
-# CURRENT PROJECT STATE
-${fileTree}
-
-# ACCESSIBLE FILE CONTENTS (Already Read)
-${currentContents || "No files read yet."}
-`;
+  **LIBRARIAN MANDATE**: Analyze the Objective and the Tree. If the required logic is in files marked \`[C]\`, call \`done\`. Otherwise, scout for missing dependencies.`;
       
       if (initialKeywords && initialKeywords.length > 0) {
           const status = `Searching keywords: ${initialKeywords.join(', ')}...`;
@@ -2001,7 +1924,7 @@ ${cumulativeBrain || "No observations yet."}
   }
   
   async getContextContent(options?: { includeTree?: boolean, signal?: AbortSignal, importedSkillIds?: string[], activeDiagramIds?: string[], modelName?: string, allowRLM?: boolean, onProgress?: (pct: number) => void, capabilities?: DiscussionCapabilities }): Promise<ContextResult> {
-    const result: ContextResult = { text: '', images:[], projectTree: '', selectedFilesContent: '', skillsContent: '', importedSkills:[] };
+    const result: ContextResult = { text: '', projectName: '', images:[], projectTree: '', selectedFilesContent: '', skillsContent: '', importedSkills:[] };
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const maxImageSize = config.get<number>('maxImageSize') || 1024;
     
@@ -2238,11 +2161,16 @@ ${cumulativeBrain || "No observations yet."}
         }
       }
     }
-
     const discussionSkillIds = options?.importedSkillIds || [];
     const projectSkillIds = await this.getActiveProjectSkills();
     
     const allSkillIds = Array.from(new Set([...discussionSkillIds, ...projectSkillIds]));
+
+    // 🛡️ RE-REFRESH CACHE: Ensure we have the latest skills from disk if needed
+    if (allSkillIds.length > 0) {
+        await this.skillsManager?.getSkills(); 
+    }
+
 
     // --- DIAGRAMS CONTEXT ---
     const activeDiagramIds = options?.activeDiagramIds ||[];
@@ -2282,7 +2210,6 @@ ${cumulativeBrain || "No observations yet."}
         }
     }
     const projectName = result.projectName;
-    result.importedSkills = [];
     result.text = `# 📂 PROJECT: ${projectName}\n`;
     result.text += `**Sandbox Protocol:** You are restricted to this project folder. Use ONLY relative paths for all file operations.\n`;
     result.text += `**Active Context:** ${includedFiles.length} Files | ${allSkillIds.length} Skills\n\n`;

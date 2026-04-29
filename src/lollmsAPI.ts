@@ -114,6 +114,7 @@ export class LollmsAPI {
       if (this.config.disableSslVerification) {
           process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
           Logger.warn("SSL Verification Disabled (NODE_TLS_REJECT_UNAUTHORIZED=0). TLS connections are now insecure.");
+          vscode.window.showWarningMessage("Security Warning: SSL Verification is disabled. Your connections to AI models are not private.");
       } else {
           // Re-enable if it was previously disabled
           process.env.NODE_TLS_REJECT_UNAUTHORIZED = '1';

@@ -311,27 +311,27 @@ Consistent parameter usage for file operations:
   - \`<remove_files_from_context paths='["path1", "path2"]' />\`
   - \`<project_memory action="add|update|delete" id="unique_id" title="Short Title">Detailed content to remember</project_memory>\`
 
-### 🧠 NEURAL MEMORY & REINFORCEMENT PROTOCOL
-You interact with a tiered cognitive storage system (ROM, Working Memory, Handles). 
+### 🧠 NEURAL MEMORY & REINFORCEMENT PROTOCOL (STRICT)
+You interact with a tiered cognitive storage system. 
 
-1. **REINFORCEMENT (CRITICAL)**: If a fact provided in the "WORKING MEMORY" section was useful in solving the current task, you MUST output \`<memory_reinforce id="exact_id" />\` at the end of your response. This prevents the memory from decaying or being forgotten.
-2. **EVOLUTION**: Use \`<memory operation="add" ...>\` only for critical non-obvious lessons.
+1. **THE SIGNIFICANCE THRESHOLD (MANDATORY)**:
+   You are FORBIDDEN from saving "Process Noise". Only use \`<project_memory>\` for **High-Density Technical Intelligence**.
+   
+   **✅ SAVE THESE (High Density):**
+   - **Library Quirks**: "Library X does NOT have method Y, use method Z instead."
+   - **Architectural Bounds**: "The user forbids use of Library A; always use Library B."
+   - **Fixed Failures**: "The previous race condition in module C was fixed by a mutex; do not revert to stateless logic."
+   - **Efficiency Tips**: "Doing X is pointless here because of Y; better to do Z."
+   - **User Constraints**: "The user strictly requires all UI components to use Tailwind spacing classes."
 
-**THE SIGNIFICANCE THRESHOLD:**
-Only use \`<project_memory>\` if the information satisfies ALL three criteria:
-1. **LONGEVITY**: Will this fact still be true and useful in 100 chat turns?
-2. **NON-OBVIOUS**: Is this a deep technical insight or a project-specific quirk that cannot be inferred from the code alone?
-3. **CRITICAL**: Would forgetting this lead to a regression or a repeated mistake?
+   **🚫 IGNORE THESE (Process Noise):**
+   - **Trivial Progress**: "I have finished the login page."
+   - **Summaries**: "The project consists of three main files."
+   - **Internal Steps**: "I read the file and found a bug."
+   - **Pleasantries**: "The user was helpful during the debug."
 
-**STRICT PROHIBITIONS:**
-- **NO SUMMARIES**: Never save "The user asked me to refactor X" or "I finished task Y".
-- **NO PLEASANTRIES**: Never save "The user likes concise code" or "The user was happy with the fix".
-- **NO TRIVIA**: Do not save specific variable names or minor local logic.
-
-**MANDATORY CATEGORIES:**
-- **Technical Lessons**: "In this specific version of PyQt, .exec() must be used instead of .exec_()."
-- **Architectural Constraints**: "The backend is strictly restricted to port 8081."
-- **Project DNA**: "All new modules must follow the Hexagonal Architecture pattern found in /src/core."
+2. **REINFORCEMENT**: Use \`<memory_reinforce id="..." />\` ONLY if a memory entry directly prevented a mistake this turn.
+3. **EVOLUTION**: Use \`<project_memory action="add|update" ...>\` to record a technical delta.
 
 **ACTIONS:**
 - **COMMIT**: \`<project_memory action="add" id="..." title="...">Detailed Fact</project_memory>\`

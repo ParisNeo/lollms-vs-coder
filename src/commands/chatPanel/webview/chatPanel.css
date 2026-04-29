@@ -1463,6 +1463,7 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 
 .segment-system { background-color: #6a1b9a; } /* Purple */
 .segment-tree    { background-color: var(--vscode-charts-yellow); } /* Gold/Yellow */
+.segment-skills  { background-color: #00bcd4; } /* Cyan/Teal */
 .segment-files  { background-color: var(--vscode-charts-blue); }
 .segment-history { background-color: var(--vscode-charts-green); }
 .segment-images  { background-color: var(--vscode-charts-orange); }

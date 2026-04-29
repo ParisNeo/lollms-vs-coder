@@ -123,6 +123,9 @@ export interface DiscussionCapabilities {
     gitAutoWorkflow: boolean;
     maxDebugSteps: number;
     autoContextMode: boolean;
+    toolPolicies?: Record<string, 'disabled' | 'manual' | 'autonomous'>;
+    selectedFolders?: string[];
+    folderSettings?: Record<string, { tree: boolean, content: boolean }>;
     autoSkillMode: boolean;
     contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
     disableProjectContext: boolean;

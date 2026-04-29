@@ -71,37 +71,46 @@ export class ProjectMemoryManager {
     public async updateMemory(action: 'add' | 'update' | 'delete', id: string, title?: string, content?: string, category: string = "general", importance?: number) {
         await this.getMemories();
 
+        // --- IMPORTANCE NORMALIZATION ---
+        // AI agents often use a 0.0 - 5.0 scale. The manager uses 0 - 100.
+        let finalImportance = importance;
+        if (finalImportance !== undefined && finalImportance <= 5.0 && finalImportance > 0) {
+            finalImportance = finalImportance * 20; // Scale 2.0 -> 40%
+        }
+
         if (action === 'delete') {
             this._cache = this._cache.filter(m => m.id !== id);
-        } else if (action === 'add') {
-            if (!this._cache.find(m => m.id === id)) {
+        } else {
+            const index = this._cache.findIndex(m => m.id === id);
+
+            if (index === -1) {
+                // ADD or UPSERT (if update was called on non-existent ID)
                 this._cache.push({
                     id,
                     title: title || id,
                     content: content || "",
                     timestamp: Date.now(),
-                    importance: importance !== undefined ? Math.max(0, Math.min(100, importance)) : 50, // Default to 50
+                    importance: finalImportance !== undefined ? Math.max(0, Math.min(100, finalImportance)) : 50,
                     lastUsed: Date.now(),
-                    category: category
-                } as any);
-            }
-        } else if (action === 'update') {
-            const index = this._cache.findIndex(m => m.id === id);
-            if (index !== -1) {
-                if (title) this._cache[index].title = title;
-                if (content) this._cache[index].content = content;
-                
-                if (importance !== undefined && !isNaN(Number(importance))) {
-                    // Standardize to 0-100 scale
-                    this._cache[index].importance = Math.max(0, Math.min(100, Number(importance)));
+                    category: category,
+                    tier: 1,
+                    scope: 'local'
+                });
+            } else {
+                // UPDATE
+                const entry = this._cache[index];
+                if (title) entry.title = title;
+                if (content) entry.content = content;
+
+                if (finalImportance !== undefined) {
+                    entry.importance = Math.max(0, Math.min(100, finalImportance));
                 } else {
-                    // Default reinforcement if importance not specifically given
-                    const currentImportance = this._cache[index].importance || 0;
-                    this._cache[index].importance = Math.min(100, currentImportance + 10);
+                    // Implicit reinforcement
+                    entry.importance = Math.min(100, (entry.importance || 0) + 10);
                 }
-                
-                this._cache[index].timestamp = Date.now();
-                this._cache[index].lastUsed = Date.now();
+
+                entry.timestamp = Date.now();
+                entry.lastUsed = Date.now();
             }
         }
 

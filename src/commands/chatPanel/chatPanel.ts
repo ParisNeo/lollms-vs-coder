@@ -1152,7 +1152,10 @@ export class ChatPanel {
     // 1. Show the UI immediately with loading state
     this._panel.webview.postMessage({ command: 'showSkillsModal', loading: true });
 
-    // 2. Perform the heavy disk operations asynchronously
+    // 2. Invalidate cache to ensure we pick up manually added files
+    this._skillsManager.invalidateCache();
+
+    // 3. Perform the heavy disk operations asynchronously
     const allSkills = await this._skillsManager.getSkills();
     
     if (allSkills.length === 0) {
@@ -4645,10 +4648,14 @@ Task:
                 break;
             case 'requestViewFullContext':
                 try {
+                    const importedIds = this._currentDiscussion?.importedSkills || [];
                     const contextResult = await this._contextManager.getContextContent({ 
+                        importedSkillIds: importedIds,
                         modelName: this._currentDiscussion?.model || this._lollmsAPI.getModelName() 
                     });
-                    InfoPanel.createOrShow(this._extensionUri, "Full AI Context Preview", contextResult.text);
+
+                    const contentToShow = contextResult.text || "No files or skills are currently included in the AI context.";
+                    InfoPanel.createOrShow(this._extensionUri, "Full AI Context Preview", contentToShow);
                 } catch (e: any) {
                     vscode.window.showErrorMessage(`Failed to load context preview: ${e.message}`);
                 }
@@ -5347,8 +5354,10 @@ Task:
                                     <div id="token-bar-legend" class="token-legend" style="display: none; margin: 0; gap: 10px; opacity: 0.9;">
                                         <div class="legend-item" data-type="system" style="font-size: 9px;"><div class="legend-dot segment-system"></div>SYSTEM</div>
                                         <div class="legend-item" data-type="tree" style="font-size: 9px;"><div class="legend-dot segment-tree"></div>TREES</div>
+                                        <div class="legend-item" data-type="skills" style="font-size: 9px;"><div class="legend-dot segment-skills"></div>SKILLS</div>
                                         <div class="legend-item" data-type="files" style="font-size: 9px;"><div class="legend-dot segment-files"></div>FILES</div>
                                         <div class="legend-item" data-type="chat" style="font-size: 9px;"><div class="legend-dot segment-history"></div>CHAT</div>
+                                        <div class="legend-item" data-type="images" style="font-size: 9px;"><div class="legend-dot segment-images"></div>IMAGES</div>
                                     </div>
                                 </div>
                             </div>

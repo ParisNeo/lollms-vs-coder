@@ -947,6 +947,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         checkAndSyncMessageAppliedState(message.messageId);
 
                     } else if (blockEl && !message.success) {
+                        // VISUAL RED ALERT: Set state to error
+                        blockEl.classList.add('malformed');
+                        blockEl.style.borderColor = 'var(--vscode-errorForeground)';
+
                         // FAILURE CASE: Restore the button so the user can try again
                         const mainApplyBtn = document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`);
                         if (mainApplyBtn && mainApplyBtn.dataset.originalHtml) {

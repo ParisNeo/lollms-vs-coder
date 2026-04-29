@@ -38,18 +38,7 @@ export interface UserPermissions {
     canRead: boolean;
 }
 
-interface Task {
-    id: number;
-    task_type: 'simple_action' | 'agentic_action';
-    action: string;
-    description: string;
-    parameters: { [key: string]: any };
-    status: 'pending' | 'in_progress' | 'completed' | 'failed';
-    result: string | null;
-    save_as?: string; 
-    retries: number;
-    can_retry?: boolean;
-}
+import { Task } from './tools/tool';
 
 export class AgentManager {
     private isActive: boolean = false;
@@ -91,16 +80,18 @@ export class AgentManager {
         replVariables: Record<string, any>; 
         installedPackages: string[];
         environmentHistory: string[];
-        workingMemory: string[]; // Ephemeral State (current session)
-        projectMemory: string[]; // Project State (persists in .lollms)
-        secureCredentials?: Record<string, string>;
-        isSafetyCheckPassed?: boolean;
+        workingMemory: string[]; 
+        projectMemory: string[]; 
+        secureCredentials: Record<string, string>;
+        isSafetyCheckPassed: boolean;
     } = {
         replVariables: {},
         installedPackages: [],
         environmentHistory: [],
         workingMemory: [],
-        secureCredentials: {}
+        projectMemory: [],
+        secureCredentials: {},
+        isSafetyCheckPassed: false
     };
 
     constructor(
@@ -124,6 +115,12 @@ export class AgentManager {
         this.sessionState.workingMemory.push(
             "LESSON: Avoid nesting shells. Do not use 'powershell -Command' or 'bash -c' inside 'execute_command'. " +
             "Submit the raw command directly. For complex logic involving pipes or variables, always generate a temporary .py or .sh script first."
+        );
+        this.sessionState.workingMemory.push(
+            "ENVIRONMENT: If 'isort' crashes, verify the VS Code Python Interpreter. Avoid disabling NODE_TLS_REJECT_UNAUTHORIZED in production environments."
+        );
+        this.sessionState.workingMemory.push(
+            "FIX: If 'isort' or 'pylance' extensions crash, verify the Python Interpreter path. Redundant indexing settings in settings.json should be merged."
         );
 
         if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
@@ -282,7 +279,7 @@ Keep it strictly technical and extremely concise.`
     public async exportTimelineToHtml() {
         if (!this.currentPlan) return;
 
-        const { generateMissionReport } = await import('./utils/exportUtils');
+        const { generateMissionReport } = await import('./utils/exportUtils.js');
         const html = generateMissionReport(this.currentPlan, this.completedActionsHistory);
 
         const uri = await vscode.window.showSaveDialog({
@@ -304,6 +301,8 @@ Keep it strictly technical and extremely concise.`
         }
         const archive: Plan = {
             objective: this.currentPlan.objective,
+            current_sub_goal: this.currentPlan.current_sub_goal,
+            observations: [...this.currentPlan.observations],
             scratchpad: this.currentPlan.scratchpad + `\n\n*(Plan archived because: ${reason})*`,
             tasks: JSON.parse(JSON.stringify(this.currentPlan.tasks)),
             investigation: this.currentPlan.investigation ? JSON.parse(JSON.stringify(this.currentPlan.investigation)) : [],
@@ -330,6 +329,7 @@ Keep it strictly technical and extremely concise.`
                 objective: "Initializing Safety Protocols...",
                 current_sub_goal: "Verify Workspace Integrity",
                 observations: [],
+                scratchpad: "Safety check initiated.",
                 tasks: [],
                 status: 'active'
             };
@@ -337,22 +337,24 @@ Keep it strictly technical and extremely concise.`
 
         if (!isRepo) {
             const formPrompt = `
-    <lollms_form id="no_git_repo" title="No Git Repository Detected">
-    <input type="radio" name="decision" label="Stop" value="stop" checked="true" />
-    <input type="radio" name="decision" label="Continue anyway (No automatic rollbacks)" value="continue" />
-    <input type="radio" name="decision" label="Create a new repository locally and start" value="init" />
-    <submit label="Confirm Action" />
-    </lollms_form>`.trim();
+        <lollms_form id="no_git_repo" title="No Git Repository Detected">
+        <input type="radio" name="decision" label="Stop" value="stop" checked="true" />
+        <input type="radio" name="decision" label="Continue anyway (No automatic rollbacks)" value="continue" />
+        <input type="radio" name="decision" label="Create a new repository locally and start" value="init" />
+        <submit label="Confirm Action" />
+        </lollms_form>`.trim();
 
             const safetyTask: Task = {
                 id: -1,
+                task_type: 'safety_check',
                 description: "🛡️ Git missing. Decision required.",
                 action: "safety_check",
                 parameters: { lollms_form: formPrompt },
                 status: 'pending',
+                result: null,
                 retries: 0
             };
-            this.currentPlan.tasks.push(safetyTask);
+            this.currentPlan!.tasks.push(safetyTask);
             await this.displayAndSavePlan(this.currentPlan);
 
             const response = await this.ui.requestUserInput(formPrompt, signal, { isAgentZone: true });
@@ -368,9 +370,9 @@ Keep it strictly technical and extremely concise.`
             const safeChoice = (choice || "").toLowerCase().trim();
 
             if (safeChoice === 'init') {
-                await this.runCommand('git init', folder, signal);
-                await this.runCommand('git add .', folder, signal);
-                await this.runCommand('git commit -m "Initial commit"', folder, signal);
+                await this.runCommand('git init', signal);
+                await this.runCommand('git add .', signal);
+                await this.runCommand('git commit -m "Initial commit"', signal);
                 this.ui.addMessageToDiscussion({ role: 'system', content: `🛡️ **Git Repository Initialized.**` });
                 isRepo = true;
             } else if (safeChoice === 'continue') {
@@ -405,13 +407,15 @@ Keep it strictly technical and extremely concise.`
 
             const safetyTask: Task = {
                 id: -1,
+                task_type: 'safety_check',
                 description: "🛡️ Uncommitted changes. Decision required.",
                 action: "safety_check",
                 parameters: { lollms_form: formPrompt },
                 status: 'pending',
+                result: null,
                 retries: 0
             };
-            this.currentPlan.tasks.push(safetyTask);
+            this.currentPlan!.tasks.push(safetyTask);
             await this.displayAndSavePlan(this.currentPlan);
 
             Logger.info(`[Phase 0] Requesting Safety Action via Form in Sidebar...`);
@@ -440,7 +444,7 @@ Keep it strictly technical and extremely concise.`
             } else if (safeChoice === 'commit') {
                 const msg = await this.gitIntegration.generateCommitMessage(folder);
                 const finalMsg = msg?.trim() || "Genie: pre-flight backup";
-                await this.gitIntegration.commitWithMessage(folder, finalMsg);
+                await this.gitIntegration.commitWithMessage(finalMsg, folder);
                 this.completedActionsHistory.push(`[GIT] 💾 COMMITTED: Permanent backup created with message: "${finalMsg}"`);
                 const stillDirty = !(await this.gitIntegration.isClean(folder));
                 if (stillDirty) {
@@ -631,6 +635,8 @@ Please commit or stash your work before starting an iterative debug session to e
         if (!this.currentPlan) {
             this.currentPlan = {
                 objective: objective,
+                current_sub_goal: "Discovery",
+                observations: [],
                 scratchpad: "Mission started. Initializing discovery...",
                 tasks: [],
                 status: 'active'
@@ -695,7 +701,7 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
             // --- ANTI-HALLUCINATION GUARD ---
             // If the tree shows files but no content is loaded, explicitly nudge the agent
             const structuralNudge = (contextData.projectTree.includes('├──') || contextData.projectTree.includes('└──')) && !contextData.selectedFilesContent
-                ? "\n**⚠️ NOTICE**: The Project Structure shows files EXIST. You must use 'read_files' to see their content before claiming the workspace is empty."
+                ? "\n**⚠️ NOTICE**: The Project Structure shows files EXIST. Content for files not marked '[C]' is hidden to save tokens. Use 'read_files' if you need to see their logic."
                 : "";
 
             // --- MISSION BUDGET AWARENESS ---
@@ -719,9 +725,9 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
 
             // --- AUTO-COMPRESSION CHECK ---
             // If observations grow too large, we condense them
-            if (this.currentPlan.observations && this.currentPlan.observations.length > 15) {
+            if (this.currentPlan!.observations && this.currentPlan!.observations.length > 15) {
                 this.processManager?.updateDescription(processId, `Genie: Compressing memories...`);
-                await this.condenseObservations(model, signal);
+                await this.condenseObservations(model || "default", signal);
             }
 
             const toolCall = this.planParser.extractJson(cleanResponse);
@@ -733,6 +739,7 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
                     // We treat the whole Markdown response as a "Coding Action"
                     const task: Task = {
                         id: stepCount,
+                        task_type: 'markdown_coding',
                         description: "Applying code modifications from Markdown response.",
                         action: "markdown_coding",
                         parameters: { content: cleanResponse },
@@ -740,7 +747,7 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
                         result: null,
                         retries: 0
                     };
-                    this.currentPlan.tasks.push(task);
+                    this.currentPlan!.tasks.push(task);
 
                     // Re-use the existing automation pipeline from ChatPanel
                     // Note: In a real implementation, we'd inject this via the UI interface
@@ -789,6 +796,7 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
             const taskId = stepCount;
             const task: Task = {
                 id: taskId,
+                task_type: 'simple_action',
                 description: action.thought || action.new_remark || "Executing tool...",
                 action: action.tool,
                 parameters: action.params || {},
@@ -797,7 +805,7 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
                 retries: 0
             };
 
-            this.currentPlan.tasks.push(task);
+            this.currentPlan!.tasks.push(task);
             await this.displayAndSavePlan(this.currentPlan);
 
             // 5. Execute Action
@@ -851,7 +859,23 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
                 break; // Stop here and wait for UI event
             }
 
-            const result = await this.runSingleTask(task, signal, model);
+            // --- WRAP EXECUTION IN TIMEOUT ---
+            const resultPromise = this.runSingleTask(task, signal, model);
+            const timeoutPromise = new Promise<{success: boolean, output: string}>((_, reject) => 
+                setTimeout(() => reject(new Error("EXECUTION_TIMEOUT")), 905000) // Slightly above default
+            );
+
+            let result;
+            try {
+                result = await Promise.race([resultPromise, timeoutPromise]);
+            } catch (e: any) {
+                task.status = 'failed';
+                task.result = e.message === "EXECUTION_TIMEOUT" ? "Hanging Error: The terminal did not return a result within the expected time." : e.message;
+                await this.displayAndSavePlan(this.currentPlan);
+                this.isActive = false;
+                this.ui.updateAgentMode(false);
+                return; // Stop the loop and let user see the RED card
+            }
 
             // --- 🛡️ CONTEXT GOVERNANCE (NEW) ---
             // After every action, check if we are approaching the context limit
@@ -1423,32 +1447,43 @@ Please provide a clear, concise final response to the user summarizing the outco
                 this.completedActionsHistory.push(`[MANDATE] PROGRESS DETECTED: You just modified the codebase. You MUST now use 'record_milestone' or update '<project_memory>' to document this fix before moving to the next file.`);
             }
 
-            // --- EVOLVING INTELLIGENCE: META-REFLECTION ---
+            // --- EVOLVING INTELLIGENCE: ARTIFACT GENERATION ---
+            const isCodeEdit = ['edit_code', 'generate_code', 'markdown_coding'].includes(task.action);
             const reflectionPrompt = this.failureMemory.getReflectionPrompt(task.action, resolvedParams);
-            if (reflectionPrompt) {
-                this.ui.addMessageToDiscussion({ 
-                    role: 'system', 
-                    content: `🧬 **Meta-Harness:** Success detected after previous failures. Evolving logic...`,
-                    skipInPrompt: true 
-                });
+
+            if (reflectionPrompt || (isCodeEdit && result.success)) {
+                this.ui.updateGeneratingState();
+
+                const artifactPrompt = reflectionPrompt 
+                    ? `### 🧬 EVOLUTIONARY REFLECTION\n${reflectionPrompt}\n\nSTRICT: You MUST output a pink <project_memory> tag with a lesson AND a purple <milestone> tag summarizing this win.`
+                    : `### 🚩 MILESTONE REACHED\nYou just successfully modified the code. You MUST now output a <milestone> tag to explain this win to the user.`;
 
                 try {
-                    const evolutionResponse = await this.lollmsApi.sendChat([
+                    const artifactResponse = await this.lollmsApi.sendChat([
                         { 
                             role: 'system', 
-                            content: `You are the Genie's Reflexive Memory. 
-Analyze why the recent fix worked where others failed. 
-Output a <project_memory action="add" importance="2.0"> tag describing the technical lesson (e.g. "Lesson: In PyQt6, always use .exec() not .exec_()"). 
-A high importance (2.0+) ensures this lesson is prioritized in every prompt to prevent the bug from returning.` 
+                            content: `You are the Project Historian. Your job is to manifest progress. 
+                            1. For Successes: Output <milestone title="..." achievements="..." challenges="..." solutions="..." />.
+                            2. For Lessons: Output <project_memory action="add" id="..." title="Lesson: ..." importance="100" category="technical_lesson">The lesson text...</project_memory>.` 
                         },
-                        { role: 'user', content: reflectionPrompt }
+                        { role: 'user', content: artifactPrompt }
                     ], null, signal, specialistModel);
 
+                    // Process tags so they appear in the UI and persistent storage
                     if (this.projectMemoryManager) {
-                        await this.projectMemoryManager.processTags(evolutionResponse);
+                        await this.projectMemoryManager.processTags(artifactResponse);
                     }
+
+                    // Add the response to the chat so the user sees the cards
+                    await this.ui.addMessageToDiscussion({
+                        role: 'assistant',
+                        content: artifactResponse,
+                        model: specialistModel,
+                        personalityName: '🧬 Project Historian',
+                        skipInPrompt: true // Don't bloat the history, just show the card
+                    });
                 } catch (e) {
-                    console.error("Harness evolution failed", e);
+                    Logger.error("Artifact generation failed", e);
                 }
             }
         }

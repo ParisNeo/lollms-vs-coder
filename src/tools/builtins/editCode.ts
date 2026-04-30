@@ -14,8 +14,12 @@ async function getEditorSystemPrompt(
     briefing: string
 ): Promise<ChatMessage> {
     const agentPersonaPrompt = await getProcessedSystemPrompt('agent', undefined, undefined, undefined, false, projectContext);
-    
+    const { getEnvironmentAwarenessBlock } = require('../../utils');
+    const envBlock = await getEnvironmentAwarenessBlock();
+
     const fullContent = `${agentPersonaPrompt}
+
+${envBlock}
 
 # 🎭 ROLE: PRECISION CODE EDITOR
 You are a specialized sub-agent tasked with surgically modifying an existing file.
@@ -148,8 +152,28 @@ export const editCodeTool: ToolDefinition = {
         }
 
         if (appliedCount > 0) {
+            // --- CRITICAL INTEGRITY CHECK ---
+            // If the resulting content still contains Aider markers, the LLM hallucinated them 
+            // as part of the code. We MUST NOT write this to disk.
+            const markerLeakage = workingContent.includes('<<<<<<< SEARCH') || 
+                                 workingContent.includes('>>>>>>> REPLACE') || 
+                                 workingContent.includes('=======');
+
+            if (markerLeakage) {
+                return { 
+                    success: false, 
+                    output: `🛑 INTEGRITY ERROR: Marker Leakage Detected. 
+                    The proposed update for \`${filePath}\` contains raw Aider markers inside the code body. 
+
+                    STRICT MANDATE: 
+                    1. Re-read the file to verify the current state.
+                    2. Provide NEW SEARCH/REPLACE blocks.
+                    3. Do NOT include the markers '<<<<<<< SEARCH', '=======', or '>>>>>>> REPLACE' as part of the code you are writing.`
+                };
+            }
+
             await vscode.workspace.fs.writeFile(fileUri, Buffer.from(workingContent, 'utf8'));
-            
+
             let output = `Successfully applied ${appliedCount} surgical edits to \`${filePath}\`.`;
             if (errors.length > 0) {
                 output += `\n\n⚠️ **WARNING**: ${errors.length} blocks failed to apply:\n- ${errors.join('\n- ')}`;

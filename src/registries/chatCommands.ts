@@ -82,11 +82,11 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         if (discussion.capabilities) {
             discussion.capabilities.agentMode = true;
         }
-        
+
         await services.discussionManager.saveDiscussion(discussion);
-        
+
         const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussion.id, services.gitIntegration, services.skillsManager);
-        
+
         const agent = new AgentManager(
             panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
             services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
@@ -95,10 +95,11 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         agent.projectMemoryManager = services.projectMemoryManager;
         agent.personalityManager = services.personalityManager;
         agent.setProcessManager(services.processManager);
-        
-        // Explicitly activate the agent instance immediately
-        agent.toggleAgentMode(); 
-        
+
+        // Synchronize the manager state silently (without sending a system message yet)
+        // This ensures the agent is ready but the chat remains clean for the user's first prompt
+        (agent as any).isActive = true; 
+
         panel.setAgentManager(agent);
         panel.setProcessManager(services.processManager);
         panel.setContextManager(services.contextManager);
@@ -314,6 +315,20 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         if (!workspaceFolder) return;
 
+        // --- NEW: FORCE WORKSPACE DIAGNOSTICS ---
+        // We attempt to trigger common language server 'check project' commands
+        // to populate the Problems tab before scanning.
+        await vscode.window.withProgress({
+            location: vscode.ProgressLocation.Notification,
+            title: "Lollms: Scanning entire workspace for errors...",
+            cancellable: false
+        }, async (progress) => {
+            // Trigger Python analysis if applicable
+            await vscode.commands.executeCommand('python.analysis.restart').then(undefined, () => {});
+            // Small delay to let the language server start reporting
+            await new Promise(r => setTimeout(r, 2000));
+        });
+
         const allDiagnostics = vscode.languages.getDiagnostics();
         const discoveryData: { path: string, uri: vscode.Uri, errors: any[] }[] = [];
 
@@ -334,7 +349,27 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         }
 
         if (discoveryData.length === 0) {
-            vscode.window.showInformationMessage("🎉 No errors found in the workspace!");
+            const deepCheck = "Run Deep Scan (CLI)";
+            const result = await vscode.window.showInformationMessage(
+                "🎉 No active errors found in the Problems tab. Should I run a Deep Scan using terminal tools?",
+                deepCheck, "Cancel"
+            );
+
+            if (result === deepCheck) {
+                // Determine tool based on project type
+                const isPython = discoveryData.some(f => f.path.endsWith('.py')) || (await vscode.workspace.findFiles('**/requirements.txt', null, 1)).length > 0;
+                const cmd = isPython ? "pip install mypy && mypy ." : "npm run build";
+
+                vscode.window.showInformationMessage(`Starting Deep Scan via: ${cmd}`);
+                // Use Agent to run the command and then re-trigger fixAllErrors
+                const agent = ChatPanel.currentPanel?.agentManager;
+                if (agent) {
+                    const res = await agent.runCommand(cmd, new AbortController().signal);
+                    // Re-run the fix command now that the terminal has populated diagnostics
+                    vscode.commands.executeCommand('lollms-vs-coder.fixAllErrors');
+                    return;
+                }
+            }
             return;
         }
 

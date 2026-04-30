@@ -55,7 +55,11 @@ export const generateCodeTool: ToolDefinition = {
             ? (await env.contextManager.getContextContent({ includeTree: true, modelName: model, signal })).projectTree
             : "(Tree omitted for brevity)";
 
-        // 2. DEFINE SPECIALIST PERSONA
+        // 2. GATHER ENVIRONMENT AWARENESS
+        const { getEnvironmentAwarenessBlock } = require('../../utils');
+        const envBlock = await getEnvironmentAwarenessBlock();
+
+        // 3. DEFINE SPECIALIST PERSONA
         const profileMap: Record<string, string> = {
             'frontend': 'You are a Senior Frontend Architect expert in UX, accessibility, and modern frameworks (React/Vue/Tailwind).',
             'backend': 'You are a Senior Backend Engineer expert in scalable APIs, database integrity, and security (Node/FastAPI/Python).',
@@ -67,6 +71,8 @@ export const generateCodeTool: ToolDefinition = {
 
         // 3. CONSTRUCT THE HUMAN-LIKE PROMPT
         const systemPrompt = `${persona}
+
+        ${envBlock}
 
         # 🎯 MISSION: CREATE FILE
         You are being delegated a task by the Lead Architect. 

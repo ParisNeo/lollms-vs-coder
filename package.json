@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.8.51",
+  "version": "0.8.53",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -1543,8 +1543,7 @@
         },
         {
           "command": "lollms-vs-coder.setContextCollapsed",
-          "group": "1_modification@4",
-          "when": "resourceIsFolder"
+          "group": "1_modification@4"
         },
         {
           "command": "lollms-vs-coder.setContextExcluded",
@@ -1602,12 +1601,6 @@
         }
       ],
       "view/title": [
-        {
-          "command": "lollms-vs-coder.selectActiveWorkspace",
-          "when": "view == lollmsDiscussionsView && workspaceFolderCount > 1",
-          "group": "navigation@0",
-          "icon": "$(arrow-swap)"
-        },
         {
           "command": "lollms-vs-coder.showChatTab",
           "when": "view == lollmsTabsView && lollms:activeTab != chat",

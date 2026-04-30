@@ -57,7 +57,7 @@ export class AgentManager {
     private globalFailureLog: string[] = []; 
     private currentUserPermissions: UserPermissions = { canExecute: true, canRead: true };
     private consecutiveTaskFailures: Map<number, number> = new Map();
-    private readonly MAX_TASK_REVISIONS = 3;
+    private taskEditRetries: Map<number, number> = new Map();
 
     private failureMemory: FailureMemory = new FailureMemory();
     private isDebugging: boolean = false;
@@ -84,6 +84,8 @@ export class AgentManager {
         projectMemory: string[]; 
         secureCredentials: Record<string, string>;
         isSafetyCheckPassed: boolean;
+        unverifiedFiles: Set<string>; 
+        backgroundProcesses: Map<string, { pid: number, logFile: string, startTime: number }>; // NEW
     } = {
         replVariables: {},
         installedPackages: [],
@@ -91,7 +93,9 @@ export class AgentManager {
         workingMemory: [],
         projectMemory: [],
         secureCredentials: {},
-        isSafetyCheckPassed: false
+        isSafetyCheckPassed: false,
+        unverifiedFiles: new Set(),
+        backgroundProcesses: new Map()
     };
 
     constructor(
@@ -117,10 +121,10 @@ export class AgentManager {
             "Submit the raw command directly. For complex logic involving pipes or variables, always generate a temporary .py or .sh script first."
         );
         this.sessionState.workingMemory.push(
-            "ENVIRONMENT: If 'isort' crashes, verify the VS Code Python Interpreter. Avoid disabling NODE_TLS_REJECT_UNAUTHORIZED in production environments."
+            "ENVIRONMENT: If 'isort' crashes (5 times in 3 minutes), the Python Environment is likely misconfigured. MANDATORY ACTION: Use 'execute_command' to run 'python --version' and 'pip show isort'."
         );
         this.sessionState.workingMemory.push(
-            "FIX: If 'isort' or 'pylance' extensions crash, verify the Python Interpreter path. Redundant indexing settings in settings.json should be merged."
+            "FIX: If 'isort' client fails to connect, trigger 'workbench.action.reloadWindow' via 'execute_command'. Ensure the user has selected a Python interpreter in the status bar."
         );
 
         if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
@@ -701,7 +705,7 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
             // --- ANTI-HALLUCINATION GUARD ---
             // If the tree shows files but no content is loaded, explicitly nudge the agent
             const structuralNudge = (contextData.projectTree.includes('├──') || contextData.projectTree.includes('└──')) && !contextData.selectedFilesContent
-                ? "\n**⚠️ NOTICE**: The Project Structure shows files EXIST. Content for files not marked '[C]' is hidden to save tokens. Use 'read_files' if you need to see their logic."
+                ? "\n**⚠️ LIBRARIAN NOTICE**: The Project Tree above lists all files. Stop using 'search_files' with complex regex. Look at the tree, find the exact paths that match the user's request, and use 'add_files' immediately."
                 : "";
 
             // --- MISSION BUDGET AWARENESS ---
@@ -862,12 +866,34 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
             // --- WRAP EXECUTION IN TIMEOUT ---
             const resultPromise = this.runSingleTask(task, signal, model);
             const timeoutPromise = new Promise<{success: boolean, output: string}>((_, reject) => 
-                setTimeout(() => reject(new Error("EXECUTION_TIMEOUT")), 905000) // Slightly above default
+                setTimeout(() => reject(new Error("EXECUTION_TIMEOUT")), 905000)
             );
 
             let result;
             try {
                 result = await Promise.race([resultPromise, timeoutPromise]);
+
+                // --- AUTOMATED EDIT REPAIR LOOP ---
+                const isEditAction = ['edit_code', 'generate_code', 'markdown_coding'].includes(task.action);
+                if (!result.success && isEditAction) {
+                    const editBudget = config.get<number>('agent.maxEditRetries') || 3;
+                    const currentRetries = this.taskEditRetries.get(taskId) || 0;
+
+                    if (currentRetries < editBudget) {
+                        this.taskEditRetries.set(taskId, currentRetries + 1);
+                        this.completedActionsHistory.push(`[REPAIR ATTEMPT ${currentRetries + 1}] Target: ${task.parameters.file_path || 'unknown'}. Error: ${result.output}`);
+
+                        // Shake the agent with a failure notification
+                        this.ui.addMessageToDiscussion({ 
+                            role: 'system', 
+                            content: `🔧 **Edit Failed:** ${result.output.substring(0, 100)}... Retrying (Budget: ${currentRetries + 1}/${editBudget})` 
+                        });
+
+                        // We remove the failed task from the list so the agent re-proposes it in the next loop iteration
+                        this.currentPlan!.tasks.pop(); 
+                        continue; // Re-run reasoning with failure in context
+                    }
+                }
             } catch (e: any) {
                 task.status = 'failed';
                 task.result = e.message === "EXECUTION_TIMEOUT" ? "Hanging Error: The terminal did not return a result within the expected time." : e.message;
@@ -891,17 +917,18 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
             }
 
             // --- PATIENCE & PERSISTENCE PROTOCOL ---
-            // If the agent is explicitly monitoring a long process (like training),
-            // and the action was successful, we give it a "bonus turn" to prevent timeout.
+            // If the agent is monitoring or has background tasks, refuel the turn budget.
+            const hasBackgroundTasks = this.sessionState.backgroundProcesses.size > 0;
             const isMonitoring = task.action === 'wait' || 
                                task.action === 'read_output_tail' || 
                                task.action === 'is_process_active';
-                               
-            if (result.success && isMonitoring && stepCount > (maxSteps * 0.8)) {
-                maxSteps += 10; // "Refuel" the mission length for patience
+
+            if (result.success && (isMonitoring || hasBackgroundTasks) && stepCount > (maxSteps * 0.7)) {
+                const bonus = 15;
+                maxSteps += bonus; 
                 this.ui.addMessageToDiscussion({ 
                     role: 'system', 
-                    content: `⏳ **Mission Extended**: The Architect is monitoring a live process. Turn limit increased to ${maxSteps}.` 
+                    content: `⏳ **Mission Budget Refueled**: Active background processes detected. Turn limit extended by ${bonus} to allow continued monitoring.` 
                 });
             }
 
@@ -1252,9 +1279,25 @@ Please provide a clear, concise final response to the user summarizing the outco
             }
 
             // --- REPETITION & LOOP DETECTION ---
-            const isRedundantRead = task.action === 'read_file' && 
-                                   this.contextManager.getContextStateProvider()?.getIncludedFiles().some(f => f.path === resolvedParams.path);
-                                   
+            const includedFiles = this.contextManager.getContextStateProvider()?.getIncludedFiles() || [];
+            let redundantPath = "";
+
+            if (task.action === 'read_file') {
+                const checkPath = this.contextManager.getScrubbedPath(resolvedParams.path || resolvedParams.file);
+                if (includedFiles.some(f => f.path === checkPath && f.state === 'included')) {
+                    redundantPath = checkPath;
+                }
+            } else if (task.action === 'read_files') {
+                const paths = resolvedParams.paths || [];
+                for (const p of paths) {
+                    const checkPath = this.contextManager.getScrubbedPath(p);
+                    if (includedFiles.some(f => f.path === checkPath && f.state === 'included')) {
+                        redundantPath = checkPath;
+                        break;
+                    }
+                }
+            }
+
             const pastTasks = this.currentPlan.tasks.filter(t => t.id !== task.id && (t.status === 'completed' || t.status === 'failed'));
 
             // --- 🛡️ REDUNDANCY HARNESS ---
@@ -1283,7 +1326,23 @@ Please provide a clear, concise final response to the user summarizing the outco
             const recentFailures = pastTasks.slice(-3).filter(t => t.status === 'failed');
             const isStuck = recentFailures.length >= 3 && recentFailures.every(t => t.action === task.action);
 
-            if (this.failureMemory.hasFailedBefore(task.action, resolvedParams)) {
+            // --- 🛡️ VERIFICATION ENFORCEMENT PROTOCOL ---
+            const isWriteAction = ['edit_code', 'generate_code', 'replaceCode', 'applyFileContent', 'markdown_coding'].includes(task.action);
+            const isVerifyAction = ['execute_command', 'run_file', 'execute_python_script', 'run_tests_and_fix', 'test_web_page', 'secure_run'].includes(task.action);
+            const targetFile = resolvedParams.file_path || resolvedParams.path || "";
+
+            if (isWriteAction && targetFile && this.sessionState.unverifiedFiles.has(targetFile)) {
+                result = {
+                    success: false,
+                    output: `🛑 HARNESS ERROR: VERIFICATION REQUIRED.
+            You are attempting to modify \`${targetFile}\` again, but you haven't verified your previous changes to this file. 
+
+            STRICT PROTOCOL:
+            1. You MUST run a test, execute the script, or run a diagnostic command to verify the current state of \`${targetFile}\`.
+            2. Only after a verification tool returns a result can you apply further modifications.
+            3. Do NOT repeat this edit until you have evidence that further changes are necessary.`
+                };
+            } else if (this.failureMemory.hasFailedBefore(task.action, resolvedParams)) {
                 const shaker = [
                     "COMPLIANCE ERROR: Repetitive thought pattern detected.",
                     "CIRCUIT BREAKER: Action blocked. You already tried this and it didn't work.",
@@ -1321,10 +1380,19 @@ Please provide a clear, concise final response to the user summarizing the outco
                     success: false,
                     output: `🛑 SYSTEM OVERRIDE: You have failed to use the '${task.action}' tool successfully 3 times in a row. You are stuck in a loop. You MUST step back, use 'read_file' to gather more context, use 'execute_command' to run a diagnostic, or ask the user for help using 'submit_response'. DO NOT use '${task.action}' again this turn.`
                 };
-            } else if (isRedundantRead) {
+            } else if (redundantPath) {
                 result = {
-                    success: true,
-                    output: `ℹ️ NOTE: This file is already in your 'ACCESSIBLE FILE CONTENTS'. Reading it again is a wasted turn. Please analyze the code you already have and propose a fix.`
+                    success: false,
+                    output: `🛑 HARNESS ERROR: REDUNDANT READ.
+            The file \`${redundantPath}\` is ALREADY in your 'ACCESSIBLE FILE CONTENTS' block below. 
+
+            REASON: You are attempting to read a file that you already possess. This is a waste of context and a sign of a "Thought Loop."
+
+            STRICT INSTRUCTION:
+            1. Look at the 'ACCESSIBLE FILE CONTENTS' section provided in every turn.
+            2. Locate the code for \`${redundantPath}\`.
+            3. Use the existing code to fulfill the request.
+            4. DO NOT use 'read_file' or 'read_files' for this path again.`
                 };
             } else {
                 // Snapshot state BEFORE
@@ -1400,6 +1468,23 @@ Please provide a clear, concise final response to the user summarizing the outco
         task.result = result.output;
         task.status = result.success ? 'completed' : 'failed';
 
+        // --- STATE UPDATE: VERIFICATION TRACKING ---
+        if (result.success) {
+            const isWriteAction = ['edit_code', 'generate_code', 'replaceCode', 'applyFileContent', 'markdown_coding'].includes(task.action);
+            const isVerifyAction = ['execute_command', 'run_file', 'execute_python_script', 'run_tests_and_fix', 'test_web_page', 'secure_run'].includes(task.action);
+
+            if (isWriteAction) {
+                const targetFile = resolvedParams.file_path || resolvedParams.path;
+                if (targetFile) this.sessionState.unverifiedFiles.add(targetFile);
+            }
+
+            if (isVerifyAction) {
+                // If a test/execution runs, we assume the agent is checking all dirty files
+                this.sessionState.unverifiedFiles.clear();
+                this.completedActionsHistory.push(`[SYSTEM] All file modifications marked as 'Verified' by execution of \`${task.action}\`.`);
+            }
+        }
+
         // --- STRIP REDUNDANT PREAMBLES FROM LOGGING ---
         // If the LLM still generates a preamble, we trim it for the prompt history 
         // to prevent the "Summary Snowball" effect.
@@ -1424,10 +1509,18 @@ Please provide a clear, concise final response to the user summarizing the outco
         }
 
         // 📊 STRUCTURED TIMELINE
-        // Record the action and the observation for the next prompt iteration.
-        const observation = result.output.substring(0, 1000) + (result.output.length > 1000 ? '...' : '');
+        // Optimization: Provide a larger observation window (3000 chars) 
+        // but explicitly label it so the agent understands it's a preview.
+        let observation = result.output;
+        const PREVIEW_LIMIT = 3000;
+
+        if (observation.length > PREVIEW_LIMIT) {
+            observation = observation.substring(0, PREVIEW_LIMIT) + 
+                         `\n\n[NOTICE: Output exceeds preview limit. Full size: ${result.output.length} characters. Use 'read_output_tail' if you need to see the end of the logs.]`;
+        }
+
         const statusEmoji = result.success ? '✅ SUCCESS' : '❌ FAILURE';
-        
+
         this.completedActionsHistory.push(
             `[STEP ${task.id}]
         - ACTION: ${task.action}
@@ -1435,7 +1528,7 @@ Please provide a clear, concise final response to the user summarizing the outco
         - INTENT: ${conciseThought}
         - STATUS: ${statusEmoji}
         - OBSERVATION: "${observation}"
-        - CONSEQUENCE: ${result.success ? 'Proceed with next step.' : 'CRITICAL: You must analyze why this failed and change approach immediately.'}`
+        - CONSEQUENCE: ${result.success ? 'Proceed with next step.' : 'CRITICAL: Analyze failure logs above.'}`
         );
 
         if (!result.success) {
@@ -1455,8 +1548,13 @@ Please provide a clear, concise final response to the user summarizing the outco
                 this.ui.updateGeneratingState();
 
                 const artifactPrompt = reflectionPrompt 
-                    ? `### 🧬 EVOLUTIONARY REFLECTION\n${reflectionPrompt}\n\nSTRICT: You MUST output a pink <project_memory> tag with a lesson AND a purple <milestone> tag summarizing this win.`
-                    : `### 🚩 MILESTONE REACHED\nYou just successfully modified the code. You MUST now output a <milestone> tag to explain this win to the user.`;
+                    ? `### 🧬 EVOLUTIONARY REFLECTION (FAILURE OVERCOME)
+                    You failed previously but just succeeded. This is a critical learning moment.
+                    1. **PINK CARD**: Output \`<project_memory action="add" ...>\` detailing why your previous hypothesis was wrong.
+                    2. **PURPLE CARD**: Output \`<milestone title="Resolved Recurring Issue" ... />\` to document the fix.`
+                    : `### 🚩 MILESTONE REACHED
+                    Implementation success. 
+                    1. **PURPLE CARD**: Output a \`<milestone />\` tag now to summarize the technical achievements for the user.`;
 
                 try {
                     const artifactResponse = await this.lollmsApi.sendChat([

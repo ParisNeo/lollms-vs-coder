@@ -512,10 +512,11 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
     }));
 
     
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string, panel?: any, messageId?: string, options?: { silent?: boolean, blockIndex?: number, hunkIndex?: number, autoSave?: boolean }): Promise<{ success: boolean; error?: string; repaired?: boolean; alreadyApplied?: boolean }> => {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.replaceCode', async (filePath: string, content: string, panel?: any, messageId?: string, options?: { silent?: boolean, blockIndex?: number, hunkIndex?: number, autoSave?: boolean, undo?: boolean }): Promise<{ success: boolean; error?: string; repaired?: boolean; alreadyApplied?: boolean }> => {
         // Clean up hallucinated metadata
         const sanitizedFilePath = filePath.replace(/\s*\(\d+\s*hunks?\)/i, '').trim();
-        Logger.info(`Executing replaceCode for: ${sanitizedFilePath}`);
+        const isUndo = options?.undo === true;
+        Logger.info(`Executing replaceCode (${isUndo ? 'UNDO' : 'APPLY'}) for: ${sanitizedFilePath}`);
 
         const folders = vscode.workspace.workspaceFolders || [];
 
@@ -548,12 +549,22 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
             document = await vscode.workspace.openTextDocument(fileUri);
         }
 
+        // Improved Regex: Allows for optional spaces before markers and handles \r?\n more gracefully
+        // Also supports blocks that might have been accidentally double-wrapped
+        const normalizedContent = content.replace(/^\s*(<<<<<<< SEARCH|=======|>>>>>>> REPLACE)/gm, '$1');
         const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
-        let matches = [...content.matchAll(aiderRegex)];
-        
+        let matches = [...normalizedContent.matchAll(aiderRegex)];
+
         if (matches.length === 0) {
-             if (!options?.silent) vscode.window.showErrorMessage("No valid Search/Replace blocks found.");
-             return { success: false, error: "Invalid Aider block format" };
+            // DEEP SCAN: If no blocks found at start of lines, try a less restrictive match 
+            // for models that put chatter inside the code block
+            const permissiveRegex = /<<<<<<< SEARCH[\s\S]*?=======[\s\S]*?>>>>>>> REPLACE/g;
+            matches = [...normalizedContent.matchAll(permissiveRegex)];
+
+            if (matches.length === 0) {
+                if (!options?.silent) vscode.window.showErrorMessage("No valid Search/Replace blocks found.");
+                return { success: false, error: "Invalid Aider block format: Markers must be on their own lines." };
+            }
         }
 
         if (options?.hunkIndex !== undefined && matches[options.hunkIndex]) {
@@ -576,8 +587,9 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
 
             for (let i = 0; i < matches.length; i++) {
                 const match = matches[i];
-                const searchCode = match[1];
-                const replaceCode = match[2];
+                // SWAP logic for Undo
+                const searchCode = isUndo ? match[2] : match[1];
+                const replaceCode = isUndo ? match[1] : match[2];
 
                 // Capture the location of the FIRST match for scrolling
                 if (i === 0 && !options?.silent) {

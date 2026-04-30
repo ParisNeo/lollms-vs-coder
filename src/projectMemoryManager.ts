@@ -39,32 +39,18 @@ export class ProjectMemoryManager {
     private _cache: MemoryEntry[] =[];
 
     public async getMemories(): Promise<MemoryEntry[]> {
-        const folders = vscode.workspace.workspaceFolders ||[];
-        if (folders.length === 0) {
+        const { getLollmsStorageUri } = require('./utils');
+        const storageRoot = getLollmsStorageUri(this.context);
+        const memoryPath = vscode.Uri.joinPath(storageRoot, 'project_memory.json');
+
+        try {
+            const content = await vscode.workspace.fs.readFile(memoryPath);
+            const data = JSON.parse(Buffer.from(content).toString('utf8'));
+            this._cache = Array.isArray(data) ? data : [];
+        } catch (error) {
             this._cache = [];
-            return[];
         }
-        
-        const memoryMap = new Map<string, MemoryEntry>();
-        
-        for (const folder of folders) {
-            const localPath = vscode.Uri.joinPath(folder.uri, '.lollms', 'project_memory.json');
-            try {
-                const content = await vscode.workspace.fs.readFile(localPath);
-                const data = JSON.parse(Buffer.from(content).toString('utf8'));
-                if (Array.isArray(data)) {
-                    for (const m of data) {
-                        if (!memoryMap.has(m.id) || memoryMap.get(m.id)!.timestamp < m.timestamp) {
-                            memoryMap.set(m.id, m);
-                        }
-                    }
-                }
-            } catch (error) {
-                // File might not exist
-            }
-        }
-        
-        this._cache = Array.from(memoryMap.values());
+
         return this._cache;
     }
 
@@ -263,13 +249,17 @@ export class ProjectMemoryManager {
     }
 
     private async saveEngrams(engrams: MemoryEntry[]) {
-        const folders = vscode.workspace.workspaceFolders || [];
+        const { getLollmsStorageUri } = require('./utils');
+        const storageRoot = getLollmsStorageUri(this.context);
+        const memoryPath = vscode.Uri.joinPath(storageRoot, 'project_memory.json');
         const buffer = Buffer.from(JSON.stringify(engrams, null, 2), 'utf8');
-        for (const folder of folders) {
-            const localPath = vscode.Uri.joinPath(folder.uri, '.lollms', 'project_memory.json');
-            try {
-                await vscode.workspace.fs.writeFile(localPath, buffer);
-            } catch (e) {}
+
+        try {
+            const dir = vscode.Uri.joinPath(memoryPath, '..');
+            await vscode.workspace.fs.createDirectory(dir);
+            await vscode.workspace.fs.writeFile(memoryPath, buffer);
+        } catch (e) {
+            Logger.error("Failed to save neural engrams", e);
         }
     }
 

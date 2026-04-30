@@ -912,19 +912,37 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const blockEl = document.getElementById(targetBlockId) as HTMLDetailsElement;
 
                     if (blockEl && message.success) {
-                        // Mark as applied in local memory immediately to prevent re-apply loops
+                        const isUndo = message.options?.undo === true;
+
+                        // 1. Sync Local Memory State
                         if (!state.appliedState[message.messageId]) state.appliedState[message.messageId] = {};
                         if (!state.appliedState[message.messageId][message.blockIndex]) state.appliedState[message.messageId][message.blockIndex] = [];
 
                         const hunkVal = message.hunkIndex !== undefined ? message.hunkIndex : -1;
-                        if (!state.appliedState[message.messageId][message.blockIndex].includes(hunkVal)) {
-                            state.appliedState[message.messageId][message.blockIndex].push(hunkVal);
+                        if (isUndo) {
+                            state.appliedState[message.messageId][message.blockIndex] = state.appliedState[message.messageId][message.blockIndex].filter(v => v !== hunkVal);
+                            if (hunkVal === -1) state.appliedState[message.messageId][message.blockIndex] = [];
+                        } else {
+                            if (!state.appliedState[message.messageId][message.blockIndex].includes(hunkVal)) {
+                                state.appliedState[message.messageId][message.blockIndex].push(hunkVal);
+                            }
                         }
 
-                        const restoreBtn = (btn) => {
-                            btn.disabled = true; // Disable after success in Apply All
-                            btn.classList.add('applied');
-                            btn.innerHTML = '<span class="codicon codicon-check"></span>';
+                        const restoreBtn = (btn: HTMLButtonElement) => {
+                            const bubble = btn.closest('.aider-hunk-bubble, .code-collapsible');
+                            const undoBtn = bubble?.querySelector('.delete-btn') as HTMLButtonElement;
+
+                            if (isUndo) {
+                                btn.disabled = false;
+                                btn.classList.remove('applied');
+                                btn.innerHTML = btn.dataset.originalHtml || '<span class="codicon codicon-tools"></span>';
+                                if (undoBtn) undoBtn.style.display = 'none';
+                            } else {
+                                btn.disabled = true;
+                                btn.classList.add('applied');
+                                btn.innerHTML = '<span class="codicon codicon-check"></span>';
+                                if (undoBtn) undoBtn.style.display = 'flex';
+                            }
                         };
 
                         if (message.hunkIndex !== undefined) {

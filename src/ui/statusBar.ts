@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { LollmsAPI } from '../lollmsAPI';
 
 export class LollmsStatusBar implements vscode.Disposable {
@@ -90,9 +91,15 @@ export class LollmsStatusBar implements vscode.Disposable {
     }
 
     public updateActiveWorkspace(folder: vscode.WorkspaceFolder | undefined) {
-        if (folder && (vscode.workspace.workspaceFolders?.length || 0) > 1) {
-            this.activeWorkspaceItem.text = `$(root-folder) Lollms: ${folder.name}`;
-            this.activeWorkspaceItem.tooltip = `Lollms is active in this workspace. Click to switch.`;
+        const workspaceFile = vscode.workspace.workspaceFile;
+        if (workspaceFile) {
+            const wsName = path.basename(workspaceFile.fsPath, '.code-workspace');
+            this.activeWorkspaceItem.text = `$(database) Sovereign: ${wsName}`;
+            this.activeWorkspaceItem.tooltip = `Lollms is managing this unified workspace. Data stored in ~/.lollms/workspaces/`;
+            this.activeWorkspaceItem.show();
+        } else if (folder && (vscode.workspace.workspaceFolders?.length || 0) > 1) {
+            // Edge case: multi-folder but no .code-workspace file
+            this.activeWorkspaceItem.text = `$(root-folder) Unified View`;
             this.activeWorkspaceItem.show();
         } else {
             this.activeWorkspaceItem.hide();

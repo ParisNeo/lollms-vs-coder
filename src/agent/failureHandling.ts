@@ -35,8 +35,11 @@ export class FailureMemory {
         // SHAKER POOL: Aggressive wake-up calls for repetitive agents
         const shakerPrompts = [
             `### 🔬 SCIENTIFIC AUDIT: LOGIC FALSIFIED
-        Your current hypothesis involving \`${lastTool}\` has been empirically disproven. 
-        STRICT MANDATE: Do NOT repeat the parameters listed below. Discard your current assumptions. You must now use 'read_file' or 'execute_command' to gather NEW EVIDENCE before proposing another fix.`,
+        Your current hypothesis involving \`${lastTool}\` has failed multiple times. 
+        STRICT DEBUGGING PROTOCOL:
+        1. **SKEPTICISM**: Your current understanding of the internal state is WRONG.
+        2. **INSTRUMENTATION**: Before proposing another fix, you MUST use \`edit_code\` to add print statements/logs to the failing area.
+        3. **EMPIRICAL DATA**: Run the code, observe the NEW logs, and only then proceed. Do not guess again.`,
 
             `### 🚨 REPETITION CIRCUIT BREAKER
         You are repeating yourself. This is a waste of context and compute. 
@@ -48,9 +51,13 @@ export class FailureMemory {
             STRICT: If you are retrying a command, you MUST change the parameters or add debugging logs. NEVER repeat the same command twice.`,
 
             `### 🧠 META-COGNITIVE RESET
-        You are in a rut. 
-        QUESTION: If your code fix didn't work the last two times, what hidden variable are you ignoring? Run a diagnostic command to inspect the environment state before trying again.`
-        ];
+            You are in a rut. 
+            QUESTION: If your code fix didn't work the last two times, what hidden variable are you ignoring? Run a diagnostic command to inspect the environment state before trying again.`,
+
+            `### 📉 CONTEXT AMNESIA DETECTED
+            You are asking for data that you already have. This indicates a failure in your internal state tracking.
+            MANDATORY: Stop using 'read_file'. You must now use 'execute_command' to run a test or 'search_files' to find something NEW. Reset your spatial awareness of the project.`
+            ];
 
         // Pick a random shaker to keep the small model from anchoring on one error message
         const selectedShaker = shakerPrompts[Math.floor(Math.random() * shakerPrompts.length)];

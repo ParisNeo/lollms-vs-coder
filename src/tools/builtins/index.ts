@@ -22,7 +22,8 @@ import { rlmReplTool } from './rlmRepl';
 import { runFileTool } from './runFile';
 import { scrapeWebsiteTool } from './scrapeWebsite';
 import { searchArxivTool } from './searchArxiv';
-import { searchFilesTool } from './searchFiles';
+import { grepSearchTool } from './searchFiles';
+import { findFilesByNameTool } from './findFilesByName';
 import { searchWebTool } from './searchWeb';
 import { setLaunchEntrypointTool } from './setLaunchEntrypoint';
 import { setVscodePythonInterpreterTool } from './setVscodePythonInterpreter';
@@ -94,7 +95,8 @@ export const allTools: ToolDefinition[] = [
     runFileTool,
     scrapeWebsiteTool,
     searchArxivTool,
-    searchFilesTool,
+    grepSearchTool,
+    findFilesByNameTool,
     searchWebTool,
     setLaunchEntrypointTool,
     setVscodePythonInterpreterTool,
@@ -171,6 +173,50 @@ export const allTools: ToolDefinition[] = [
                 const tail = linesArr.slice(-(params.lines || 50)).join('\n');
                 return { success: true, output: `[LAST ${params.lines || 50} LINES OF ${params.path}]:\n\n${tail}` };
             } catch (e: any) { return { success: false, output: `Failed to peek: ${e.message}` }; }
+        }
+    },
+    {
+        name: "start_background_process",
+        description: "Launches a long-running command (like model training or a server) in the background. It returns immediately with a handle. You MUST use 'read_output_tail' in future turns to monitor progress.",
+        isAgentic: true,
+        isDefault: true,
+        permissionGroup: 'shell_execution',
+        parameters: [
+            { name: "command", type: "string", description: "The command to run.", required: true },
+            { name: "handle", type: "string", description: "A unique name to track this process (e.g., 'training_run_1').", required: true },
+            { name: "log_file", type: "string", description: "Relative path to a file where output should be redirected (e.g., '.lollms/logs/train.log').", required: true }
+        ],
+        async execute(params, env, signal) {
+            if (!env.workspaceRoot) return { success: false, output: "No workspace." };
+
+            const isWin = process.platform === 'win32';
+            const logPath = params.log_file;
+            const logDir = path.dirname(path.join(env.workspaceRoot.uri.fsPath, logPath));
+
+            const fs = require('fs/promises');
+            await fs.mkdir(logDir, { recursive: true });
+
+            // Launch command with redirection
+            // We use 'start' on windows / '&' on unix to detach
+            let cmd = "";
+            if (isWin) {
+                // Use Start-Process in PowerShell to get a truly detached window/process
+                cmd = `Start-Process powershell.exe -ArgumentList "-NoProfile -Command ${params.command} > ${logPath} 2>&1" -WindowStyle Hidden`;
+            } else {
+                cmd = `nohup ${params.command} > "${logPath}" 2>&1 & echo $!`;
+            }
+
+            const result = await env.agentManager!.runCommand(cmd, signal);
+
+            if (result.success) {
+                env.agentManager!.sessionState.backgroundProcesses.set(params.handle, {
+                    pid: parseInt(result.output.trim()) || 0,
+                    logFile: logPath,
+                    startTime: Date.now()
+                });
+                return { success: true, output: `Process '${params.handle}' started in background. Output redirected to '${logPath}'.\n\n**ADVICE**: Your next task should be to 'wait' for a few seconds and then use 'read_output_tail' on '${logPath}' to verify it started correctly.` };
+            }
+            return result;
         }
     },
     {

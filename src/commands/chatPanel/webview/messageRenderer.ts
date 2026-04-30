@@ -634,7 +634,8 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
 
     for (let i = 0; i < lines.length; i++) {
         const lineWithNewline = lines[i] + (i < lines.length - 1 ? '\n' : '');
-        const line = lines[i].trim();
+        const lineText = lines[i]; // Use original line text for start-of-line checks
+        const line = lineText.trim();
         const match = line.match(/^(\s{0,3})(`{3,})/);
 
         if (!inBlock) {
@@ -723,7 +724,8 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
             }
         } else {
             // We are inside a block, check for Aider markers to auto-detect 'replace' type
-            if (line.includes('<<<<' + '<<< SEARCH')) {
+            // REQUIRE marker to be at the start of the line
+            if (lineText.startsWith('<<<<<<< SEARCH')) {
                 infos[infos.length - 1].type = 'replace';
             }
 
@@ -1813,8 +1815,6 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
     const messageDiv = wrapper.querySelector('.message') as HTMLElement;
     if (!contentDiv || !messageDiv) return;
 
-    let processedContent = "";
-
     // PRESERVE STATE of Apply All List to prevent blinking/resetting during repair
     const existingResultsList = contentDiv.querySelector('.apply-results-list');
     const existingApplyBtn = contentDiv.querySelector('.apply-all-btn');
@@ -1838,10 +1838,6 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
     try {
         const isUser = messageDiv.classList.contains('user-message');
-        const isEmpty = !rawContent || 
-                        (typeof rawContent === 'string' && rawContent.trim() === '') || 
-                        (Array.isArray(rawContent) && rawContent.length === 0);
-
         const thoughts: { tag: string, content: string }[] = [];
         const skills: { html: string, start: number, end: number }[] = [];
         const images: { html: string, start: number, end: number }[] = [];
@@ -1852,25 +1848,18 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         const debugReports: { html: string, start: number, end: number }[] = [];
         const processingBlocks: { html: string, start: number, end: number }[] = [];
 
-        if (isUser && isEmpty) {
-            contentDiv.innerHTML = `<div style="opacity: 0.7; font-style: italic; margin-bottom: 8px;">Empty message</div>
-            <button class="code-action-btn apply-btn infer-prompt-btn" data-message-id="${messageId}"><span class="codicon codicon-wand"></span> Infer Prompt</button>`;
-            if (shouldScroll && dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
-            return;
-        }
+        // --- UNIFIED CONTENT PREPARATION ---
+        let processedContent = "";
+        let visualImagesHtml = "";
 
         if (Array.isArray(rawContent)) {
-            // Handle Multipart
-            let html = '';
             rawContent.forEach(p => {
-                if (p.type === 'text'){
-                    const { thoughts: textThoughts, processedContent: contentSnippet } = processThinkTags(p.text);
-                    thoughts.push(...textThoughts);
-                    html += `<div>${sanitizer.sanitize(marked.parse(contentSnippet) as string)}</div>`;
+                if (p.type === 'text') {
+                    processedContent += (p.text || "") + "\n";
                 } else if (p.type === 'image_url') {
                     const isMuted = state.capabilities?.enableImages === false;
                     if (isMuted) {
-                        html += `
+                        visualImagesHtml += `
                         <div class="muted-image-container">
                             <img src="${p.image_url.url}" style="max-width:100%; border-radius:4px; opacity: 0.5; filter: grayscale(1);">
                             <div class="muted-image-warning">
@@ -1879,20 +1868,27 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                             </div>
                         </div>`;
                     } else {
-                        html += `<img src="${p.image_url.url}" style="max-width:100%; border-radius:4px; margin-top:8px;">`;
+                        visualImagesHtml += `<img src="${p.image_url.url}" style="max-width:100%; border-radius:4px; margin-top:8px; display:block;">`;
                     }
                 }
             });
-            contentDiv.innerHTML = html;
+        } else {
+            processedContent = String(rawContent || "");
+        }
 
+        const isEmpty = processedContent.trim() === "" && visualImagesHtml === "";
 
-        
+        if (isUser && isEmpty) {
+            contentDiv.innerHTML = `<div style="opacity: 0.7; font-style: italic; margin-bottom: 8px;">Empty message</div>
+            <button class="code-action-btn apply-btn infer-prompt-btn" data-message-id="${messageId}"><span class="codicon codicon-wand"></span> Infer Prompt</button>`;
+            if (shouldScroll && dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+            return;
+        }
 
-
-        } else if (typeof rawContent === 'string') {
-            const { thoughts: thoughtsResult, processedContent: contentWithoutThoughts } = processThinkTags(rawContent);
-            thoughts.push(...thoughtsResult);
-            processedContent = contentWithoutThoughts;
+        // --- EXTRACT THOUGHTS ---
+        const { thoughts: thoughtsResult, processedContent: contentWithoutThoughts } = processThinkTags(processedContent);
+        thoughts.push(...thoughtsResult);
+        processedContent = contentWithoutThoughts;
 
             // Pre-calculate code ranges to ignore tags inside backticks
             const forbiddenRanges = getCodeRanges(contentWithoutThoughts);
@@ -1986,7 +1982,6 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
             const milestoneRegex = /<milestone\s+([^>]*?)\s*\/>/gi;
 
-            const milestones: { html: string, start: number, end: number }[] = [];
             let mileMatch;
             while ((mileMatch = milestoneRegex.exec(contentWithoutThoughts)) !== null) {
                 if (isInsideCode(mileMatch.index)) continue;
@@ -2007,8 +2002,6 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 const html = renderProcessingBlock(innerContent, isClosed);
                 processingBlocks.push({ html, start: procMatch.index, end: procMatch.index + procMatch[0].length });
             }
-
-            const fileOps: { html: string, start: number, end: number }[] =[];
             
             // 1. Parse New Multi-line Blocks
             const blockOpRegex = /<(add_files_to_context|remove_files_from_context|delete_files|move_files|copy_files)>([\s\S]*?)<\/\1>/gi;
@@ -2070,7 +2063,6 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
                 const opHtml = renderImageEditBlock(attrs, messageId);
                 fileOps.push({ html: opHtml, start: legacyOpMatch.index, end: legacyOpMatch.index + legacyOpMatch[0].length });
-            }
             }
 
             messageDiv.querySelectorAll('.plan-scratchpad, .skill-creation-block, .generation-block, .context-expansion-block, .file-operation-block').forEach(el => el.remove());
@@ -2152,15 +2144,20 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 const codeOnly = lines.length >= 2 ? lines.slice(1, -1).join('\n') : "";
 
                 // Permit zero or one newline after SEARCH and before REPLACE markers
-                const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======[\r\n]*([\s\S]*?)[\r\n]*>>>>>>> REPLACE/g;
+                // Using ^ and m flag ensures markers must be at the start of a line
+                const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======[\r\n]*([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
                 const aiderMatches =[...codeOnly.matchAll(aiderRegex)];
                 const isAider = aiderMatches.length > 0;
-                
+
                 // MALFORMED DETECTION: Check if block contains bits of Aider but isn't valid
-                const hasAiderStart = codeOnly.includes('<<<<<<< SEARCH');
-                const hasAiderMid = codeOnly.includes('=======');
-                const hasAiderEnd = codeOnly.includes('>>>>>>> REPLACE');
-                const isMalformed = (hasAiderStart || hasAiderMid || hasAiderEnd) && !isAider;
+                // We only check for markers starting at the beginning of lines
+                const hasAiderStart = /^<<<<<<< SEARCH/m.test(codeOnly);
+                const hasAiderMid = /^=======/m.test(codeOnly);
+                const hasAiderEnd = /^>>>>>>> REPLACE/m.test(codeOnly);
+
+                // CRITICAL: A block is only "Malformed Aider" if it definitely tried to be one (has start marker)
+                // but failed the full structural regex. 
+                const isMalformed = hasAiderStart && (hasAiderMid || hasAiderEnd) && !isAider;
 
                 const details = document.createElement('details');
                 details.className = 'code-collapsible';
@@ -2172,7 +2169,40 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
                 const langLabel = document.createElement('span');
                 langLabel.className = 'summary-lang-label';
-                langLabel.textContent = `${language}${block.path ? ' : ' + block.path : ''}`;
+
+                const langPart = document.createElement('span');
+                langPart.textContent = language;
+                langLabel.appendChild(langPart);
+
+                if (block.path) {
+                    const sep = document.createTextNode(' : ');
+                    langLabel.appendChild(sep);
+
+                    const pathInput = document.createElement('input');
+                    pathInput.className = 'path-editor-input';
+                    pathInput.value = block.path;
+                    pathInput.title = "Click to edit hallucinated file path";
+
+                    // Update internal data model and extension on change
+                    pathInput.onchange = () => {
+                        const newPath = pathInput.value.trim();
+                        block.path = newPath; // Update local extractor info
+
+                        // Sync with extension to persist the correction
+                        const originalFullContent = JSON.parse(messageDiv.dataset.originalContent || '""');
+                        if (typeof originalFullContent === 'string') {
+                            const oldHeader = `\`\`\`${language}:${block.path}`;
+                            const newHeader = `\`\`\`${language}:${newPath}`;
+                            // This is a simplified replacement logic for the persistence
+                            vscode.postMessage({
+                                command: 'updateMessage',
+                                messageId: messageId,
+                                newContent: originalFullContent.replace(block.path, newPath)
+                            });
+                        }
+                    };
+                    langLabel.appendChild(pathInput);
+                }
                 
                 if (isMalformed) {
                     const badge = document.createElement('span');
@@ -2283,13 +2313,17 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                         const btn = document.getElementById(applyBtnId) as HTMLButtonElement;
                         if (!btn) return;
 
+                        // Force read the current path from the input field
+                        const pathInp = details.querySelector('.path-editor-input') as HTMLInputElement;
+                        const finalPath = pathInp ? pathInp.value.trim() : block.path;
+
                         btn.disabled = true;
                         btn.dataset.originalHtml = btn.innerHTML;
                         btn.innerHTML = '<div class="spinner"></div>';
 
                         vscode.postMessage({ 
                             command: cmd, 
-                            filePath: block.path, 
+                            filePath: finalPath, 
                             content: codeOnly, 
                             messageId,
                             blockIndex: blockIdx 
@@ -2452,24 +2486,44 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                                 hunkIndex: hIdx
                             });
                         }, 'code-action-btn apply-btn', 'Apply only this modification');
-                        
+
+                        // Undo Hunk Button
+                        const undoHunkBtn = createButton('Undo Hunk', 'codicon-discard', () => {
+                            vscode.postMessage({ 
+                                command: 'replaceCode', 
+                                filePath: block.path, 
+                                content: match[0], 
+                                messageId,
+                                blockIndex: blockIdx,
+                                hunkIndex: hIdx,
+                                options: { undo: true }
+                            });
+                        }, 'code-action-btn delete-btn', 'Revert this modification (swap Search/Replace)');
+
                         // Restore hunk state from persistence
                         const appliedHunks = state.appliedState?.[messageId]?.[blockIdx] || [];
-                        if (appliedHunks.includes(hIdx) || appliedHunks.includes(-1)) {
+                        const isHunkApplied = appliedHunks.includes(hIdx) || appliedHunks.includes(-1);
+
+                        if (isHunkApplied) {
                             applyHunkBtn.classList.add('applied');
                             applyHunkBtn.innerHTML = '<span class="codicon codicon-check"></span>';
                             hunkBubble.classList.add('collapsed');
+                            undoHunkBtn.style.display = 'flex';
+                        } else {
+                            undoHunkBtn.style.display = 'none';
                         }
 
                         if (isBlockGenerating) {
                             applyHunkBtn.disabled = true;
                             copySearchBtn.disabled = true;
                             copyReplaceBtn.disabled = true;
+                            undoHunkBtn.disabled = true;
                         }
                         
                         hunkActions.appendChild(copySearchBtn);
                         hunkActions.appendChild(copyReplaceBtn);
                         hunkActions.appendChild(rawHunkBtn);
+                        hunkActions.appendChild(undoHunkBtn);
                         hunkActions.appendChild(applyHunkBtn);
                         hunkHeader.appendChild(hunkActions);
                         hunkBubble.appendChild(hunkHeader);
@@ -3155,8 +3209,8 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                         <span class="codicon codicon-search"></span> Search
                     </button>
                     <div style="width: 1px; background: var(--vscode-widget-border); margin: 0 4px;"></div>
-                    <button id="mute-context-btn" class="code-action-btn ${isMuted ? 'applied' : 'apply-btn'}" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0; background-color: ${isMuted ? 'var(--vscode-charts-red)' : ''} !important; color: ${isMuted ? 'white' : ''} !important;" title="${isMuted ? 'Unmute Context' : 'Mute Context (Don\'t send project files to AI)'}">
-                        <span class="codicon ${isMuted ? 'codicon-mute' : 'codicon-unmute'}"></span> ${isMuted ? 'Muted' : 'Mute'}
+                    <button id="mute-context-btn" class="code-action-btn ${isMuted ? 'applied' : 'apply-btn'}" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0; background-color: ${isMuted ? 'var(--vscode-charts-red)' : ''} !important; color: ${isMuted ? 'white' : ''} !important;" title="Open Workspace Access Matrix to mute specific projects or files.">
+                        <span class="codicon ${isMuted ? 'codicon-mute' : 'codicon-layers'}"></span> Mute / Scope
                     </button>
                     <button id="save-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Save current file selection">
                         <span class="codicon codicon-save"></span>
@@ -3438,11 +3492,9 @@ export function updateContext(contextText: string, files: string[] = [], skills:
     const muteBtn = document.getElementById('mute-context-btn');
     if (muteBtn) {
         muteBtn.addEventListener('click', () => {
-            const isMuted = !state.capabilities?.disableProjectContext;
-            vscode.postMessage({ 
-                command: 'updateDiscussionCapabilitiesPartial', 
-                partial: { disableProjectContext: isMuted } 
-            });
+            // Instead of a binary toggle, open the matrix for granular muting
+            import('./ui.js').then(ui => ui.renderWorkspaceMatrix());
+            dom.matrixModal.classList.add('visible');
         });
     }
 
@@ -3464,14 +3516,31 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                 // Toggle the specific setting
                 settings[type] = !settings[type];
 
-                // Debounce matrix updates to prevent flooding the extension host
+                // Debounce matrix updates
                 if ((window as any).matrixUpdateTimer) clearTimeout((window as any).matrixUpdateTimer);
                 (window as any).matrixUpdateTimer = setTimeout(() => {
+                    // Locally update state so updateBadges() sees it immediately
+                    if (state.capabilities) {
+                        state.capabilities.folderSettings = { ...currentSettings, [uri]: settings };
+                        
+                        // CRITICAL FIX: If ANY project is now enabled, we MUST force global mute to FALSE
+                        const allSettings = Object.values(state.capabilities.folderSettings);
+                        const isAnythingActive = allSettings.some((s: any) => s.tree || s.content);
+                        
+                        if (isAnythingActive) {
+                            state.capabilities.disableProjectContext = false;
+                        }
+                    }
+                    
+                    // Sync with extension - explicitly include disableProjectContext: false
                     vscode.postMessage({ 
                         command: 'updateDiscussionCapabilitiesPartial', 
-                        partial: { folderSettings: { ...currentSettings, [uri]: settings } } 
+                        partial: { 
+                            folderSettings: { ...currentSettings, [uri]: settings },
+                            disableProjectContext: state.capabilities?.disableProjectContext ?? false
+                        } 
                     });
-                }, 300);                
+                }, 150);            
             }
 
             if (target.id === 'ws-all-on' || target.id === 'ws-all-off') {

@@ -182,20 +182,38 @@ export class ChatPanel {
         while ((match = blockRegex.exec(content)) !== null) {
             if (signal.aborted) break;
             let filePath = match[2];
-            
-            // Second level safety: if path starts with language name (e.g. typescript:src/file.ts)
+            let blockContent = match[3];
+
+            // --- HEURISTIC PATH RECOVERY ---
+            // If the header is a simple language (e.g. ```makefile), the Regex captures 'makefile' as 'filePath'.
+            // If the content INSIDE the block is Aider-style, we try to find the real path from the agent's intent.
+            const isAiderInside = blockContent.includes('<<<<<<< SEARCH');
+            const commonLangs = ['makefile', 'python', 'py', 'javascript', 'js', 'typescript', 'ts', 'json', 'bash', 'sh', 'css', 'html'];
+
+            if (isAiderInside && commonLangs.includes(filePath.toLowerCase())) {
+                // Look for a path in the text immediately preceding the block
+                const precedingText = content.substring(Math.max(0, match.index - 100), match.index);
+                const pathMatch = precedingText.match(/[`"']?([a-zA-Z0-9._\-\/]+\.[a-z0-9]+)[`"']?/i);
+                if (pathMatch) {
+                    filePath = pathMatch[1];
+                }
+            }
+
+            // Second level safety: strip language prefix if present in the header string
             if (filePath.includes(':')) {
                 const parts = filePath.split(':');
-                if (['typescript', 'ts', 'python', 'py', 'javascript', 'js', 'css', 'html'].includes(parts[0].toLowerCase())) {
+                if (commonLangs.includes(parts[0].toLowerCase())) {
                     filePath = parts.slice(1).join(':');
                 }
             }
-            const blockContent = match[3];
+
             modifiedFiles.add(filePath);
 
             const opts = { silent: true, autoSave: true };
-            if (blockContent.includes('<<<<<<< SEARCH')) {
-                await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, blockContent, this, messageId, opts);
+            if (isAiderInside) {
+                // Normalize markers: Ensure they start at the beginning of lines even if the LLM indented them
+                const normalizedAider = blockContent.replace(/^\s*(<<<<<<< SEARCH|=======|>>>>>>> REPLACE)/gm, '$1');
+                await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, normalizedAider, this, messageId, opts);
             } else {
                 await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', filePath, blockContent, opts);
             }
@@ -235,15 +253,17 @@ export class ChatPanel {
                 desc.toLowerCase().includes("title") || 
                 desc.toLowerCase().includes("counting");
             
-            // We show the overlay if there is a real process ID registered (and it's not background)
-            // or if a standard LLM generation is currently streaming.
-            // ADDED: or if the agent is active but hasn't started a sub-process yet (handover phase)
+            // Raise Hand only makes sense during an active autonomous agent loop
             const isAgentActive = this.agentManager?.getIsActive();
-            const isGenerating = ((process && !isBackgroundProcess) || !!activeGen || isAgentActive) && !this._inputResolver;
+            const showRaiseHand = isAgentActive && process && !isBackgroundProcess;
+
+            // CRITICAL FIX: isAgentActive alone should NOT trigger the generating overlay.
+            // If it does, a "New Agent Discussion" locks the input before the user can type.
+            // The Orchestrator process registered in AgentManager handles the lock during the loop.
+            const isGenerating = ((process && !isBackgroundProcess) || !!activeGen) && !this._inputResolver;
 
             let statusText = vscode.l10n.t("Lollms is thinking...");
-            
-            // Prioritize the real-time process description for better transparency
+
             if (process) {
                 statusText = process.description;
             } else if (activeGen) {
@@ -253,7 +273,8 @@ export class ChatPanel {
             this._panel.webview.postMessage({ 
                 command: 'setGeneratingState', 
                 isGenerating,
-                statusText
+                statusText,
+                showRaiseHand // NEW: Specific flag for the "Raise Hand" button
             });
         }
     }
@@ -305,11 +326,20 @@ export class ChatPanel {
 
   /**
    * Externally update discussion capabilities and sync with UI/Disk.
+   * UPGRADED: Syncs folder settings and muting to global workspace state.
    */
   public async updateCapabilities(partial: Partial<DiscussionCapabilities>) {
     if (this._isDisposed) return;
     this._discussionCapabilities = { ...this._discussionCapabilities, ...partial };
-    
+
+    // --- GLOBAL WORKSPACE SYNC ---
+    if (partial.folderSettings !== undefined) {
+        await this._discussionManager.context.workspaceState.update('lollms_global_folder_settings', partial.folderSettings);
+    }
+    if (partial.disableProjectContext !== undefined) {
+        await this._discussionManager.context.workspaceState.update('lollms_global_context_muted', partial.disableProjectContext);
+    }
+
     // Persist and Notify
     await this.saveCapabilities();
     this._panel.webview.postMessage({ 
@@ -758,47 +788,62 @@ export class ChatPanel {
                 const settings = folderSettings[uriKey] || { tree: true, content: true };
 
                 statsPromises.push((async () => {
-                    let treeTokens = 0;
-                    let filesTokens = 0;
+                    try {
+                        let treeTokens = 0;
+                        let filesTokens = 0;
 
-                    // 1. Calculate Folder Tree Weight
-                    if (settings.tree) {
-                        const folderTree = await this._contextManager.generateProjectTree(signal, undefined, {
-                            ...this._discussionCapabilities,
-                            folderSettings: { [uriKey]: { tree: true, content: false } }
-                        } as any);
-                        treeTokens = (await getTokenCount(folderTree)).count;
-                    }
-
-                    // 2. Calculate Folder Files Weight
-                    if (settings.content) {
-                        const projectIncludedFiles = includedFiles.filter(f => {
-                            // Check if file path is relative to this folder or namespaced
-                            return f.path.startsWith(folder.name + '/') || 
-                                   vscode.workspace.getWorkspaceFolder(vscode.Uri.joinPath(folder.uri, f.path))?.uri.toString() === uriKey;
-                        });
-
-                        if (projectIncludedFiles.length > 0) {
-                            // Temporary build content for this folder only
-                            let folderContent = "";
-                            for (const f of projectIncludedFiles) {
-                                const cached = (this._contextManager as any)._fileContentCache.get(f.path);
-                                if (cached) folderContent += cached.content;
-                            }
-                            filesTokens = (await getTokenCount(folderContent)).count;
+                        // 1. Calculate Folder Tree Weight
+                        if (settings.tree) {
+                            const folderTree = await this._contextManager.generateProjectTree(signal, undefined, {
+                                ...this._discussionCapabilities,
+                                folderSettings: { [uriKey]: { tree: true, content: false } }
+                            } as any);
+                            treeTokens = (await getTokenCount(folderTree)).count;
                         }
-                    }
 
-                    folderStats[uriKey] = { tree: treeTokens, files: filesTokens };
+                        // 2. Calculate Folder Files Weight
+                        if (settings.content) {
+                            const projectIncludedFiles = includedFiles.filter(f => {
+                                // Check if file path is relative to this folder or namespaced
+                                const isProjectFile = f.path.startsWith(folder.name + '/') || 
+                                                     vscode.workspace.getWorkspaceFolder(vscode.Uri.joinPath(folder.uri, f.path))?.uri.toString() === uriKey;
+
+                                if (!isProjectFile) return false;
+
+                                // Validate that the file is not excluded in the Matrix
+                                const fileUri = vscode.Uri.joinPath(folder.uri, (vscode.workspace.workspaceFolders?.length || 0) > 1 ? f.path.split('/').slice(1).join('/') : f.path);
+                                const state = this._contextManager.getContextStateProvider()?.getStateForUri(fileUri);
+                                return state !== 'fully-excluded';
+                            });
+
+                            if (projectIncludedFiles.length > 0) {
+                                // Temporary build content for this folder only
+                                let folderContent = "";
+                                for (const f of projectIncludedFiles) {
+                                    const cached = (this._contextManager as any)._fileContentCache.get(f.path);
+                                    if (cached) folderContent += cached.content;
+                                }
+                                filesTokens = (await getTokenCount(folderContent)).count;
+                            }
+                        }
+
+                        folderStats[uriKey] = { tree: treeTokens, files: filesTokens };
+                    } catch (err) {
+                        Logger.warn(`[TokenStats] Failed to calculate stats for folder ${folder.name}: ${err}`);
+                        folderStats[uriKey] = { tree: 0, files: 0 };
+                    }
                 })());
             });
+
+            // --- SYNC WITH MATRIX ---
+            const filteredFilesText = await this._getFilteredFilesContent(context, folderSettings);
 
             // Calculate Tree and Content independently for granular HUD
             const [systemRes, historyRes, treeRes, contentFilesRes, skillsRes, contextSizeRes] = await Promise.all([
                 getTokenCount(systemText),
                 getTokenCount(historyText),
                 getTokenCount(context.projectTree),
-                getTokenCount(context.selectedFilesContent),
+                getTokenCount(filteredFilesText),
                 getTokenCount(context.skillsContent || ""),
                 this._lollmsAPI.getContextSize(modelForTokenization).catch(e => {
                     Logger.error(`[TokenStats] Context Size API critically failed: ${e.message}`);
@@ -837,7 +882,14 @@ export class ChatPanel {
             // Segment 'files' represents actual code, while 'skills' will be added to the count
             const contentTokens = contentFilesRes.count;
             const skillTokens = skillsRes.count;
-            const totalTokens = systemRes.count + historyRes.count + treeRes.count + contentTokens + skillTokens + imageTokens;
+
+            // CRITICAL: Calculate the REAL total based on filtered content
+            const totalTokens = systemRes.count + 
+                                historyRes.count + 
+                                treeRes.count + 
+                                contentTokens + 
+                                skillTokens + 
+                                imageTokens;
             const ctxSize = finalCtxSize;
             const isActuallyApproximate = isLimitApproximate;
 
@@ -961,9 +1013,43 @@ export class ChatPanel {
             this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
         }
     }
-  }
+    }
 
-  private async waitForWebviewReady() { if (this._isWebviewReady) return; return this._viewReadyPromise; }
+    /**
+    * Helper to strip file blocks from context data if their parent folder is muted in the matrix.
+    */
+    private async _getFilteredFilesContent(contextData: ContextResult, folderSettings: any): Promise<string> {
+        const folders = vscode.workspace.workspaceFolders || [];
+        const blocks = contextData.selectedFilesContent.split('\n\n').filter(b => b.trim().length > 0);
+
+        const filteredBlocks = blocks.filter(block => {
+            // Robustly extract path from the code block header
+            const match = block.match(/```(?:\w+):([^\n]+)/);
+            if (!match) return false; // Discard malformed blocks
+
+            const filePath = match[1].trim();
+
+            // Find which root folder this file belongs to
+            const ownerFolder = folders.find(f => {
+                const rel = vscode.workspace.asRelativePath(vscode.Uri.joinPath(f.uri, filePath), false);
+                // In multi-root, files often start with the folder name
+                return filePath.startsWith(f.name + '/') || (folders.length === 1);
+            });
+
+            if (ownerFolder) {
+                const settings = folderSettings[ownerFolder.uri.toString()];
+                // If settings exist and content is explicitly FALSE, we MUST return false to filter it out
+                if (settings && settings.content === false) {
+                    return false;
+                }
+            }
+            return true;
+        });
+
+        return filteredBlocks.length > 0 ? filteredBlocks.join('\n\n') : "";
+    }
+
+    private async waitForWebviewReady() { if (this._isWebviewReady) return; return this._viewReadyPromise; }
   
   public async setInputText(text: string) {
       if (this._isDisposed) return;
@@ -1373,9 +1459,13 @@ Please provide the **FULL CONTENT** of the file instead using the format:
                   modelName: this._currentDiscussion?.model || this._lollmsAPI.getModelName()
               });
               
+              // --- MATRIX FILTERED EXPORT ---
+              const folderSettings = this._discussionCapabilities.folderSettings || {};
+              const filteredFilesContent = await this._getFilteredFilesContent(contextData, folderSettings);
+
               const context = {
                   tree: contextData.projectTree,
-                  files: contextData.selectedFilesContent,
+                  files: filteredFilesContent,
                   skills: contextData.skillsContent
               };
 
@@ -2240,7 +2330,19 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
             if (estimatedTokens > maxTokens) {
                 const pruneMsgId = 'system_prune_' + Date.now();
                 this.log(`Payload exceeds context limit (${estimatedTokens} > ${maxTokens}). Pruning...`, 'WARN');
-                
+
+                // CIRCUIT BREAKER: If history alone is too big, stop immediately
+                const nonFileTokens = estimatedTokens - (Math.ceil(context.files.length / 3.5));
+                if (nonFileTokens > maxTokens) {
+                    await this.addMessageToDiscussion({
+                        role: 'system',
+                        content: `🛑 **Context Overflow Blocked**\nYour conversation history and system instructions already exceed the limit (**${maxTokens.toLocaleString()}** tokens).\n\n**To continue:**\n1. Delete old messages using the Trash icon.\n2. Start a "New Discussion" to reset the history.`
+                    });
+                    this.processManager.unregister(processId);
+                    this.updateGeneratingState();
+                    return;
+                }
+
                 await this.addMessageToDiscussion({
                     id: pruneMsgId,
                     role: 'system',
@@ -2273,13 +2375,14 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
 
                     let keptBlocks = fileBlocks.filter(b => b.keep);
                     
-                    // 2. Secondary prune if still > 70% of max context
-                    const fileBudgetTokens = Math.floor(maxTokens * 0.7);
+                    // 2. Secondary prune if still > 60% of max context (lower budget for safety)
+                    const fileBudgetTokens = Math.floor(maxTokens * 0.6);
                     let currentFileTokens = keptBlocks.reduce((acc, b) => acc + Math.ceil(b.fullMatch.length / 3.5), 0);
 
                     while (currentFileTokens > fileBudgetTokens && keptBlocks.length > 0) {
-                        const removeIdx = Math.floor(Math.random() * keptBlocks.length);
-                        const removed = keptBlocks.splice(removeIdx, 1)[0];
+                        // Evict largest files first to reach the budget faster
+                        keptBlocks.sort((a, b) => b.fullMatch.length - a.fullMatch.length);
+                        const removed = keptBlocks.shift()!;
                         currentFileTokens -= Math.ceil(removed.fullMatch.length / 3.5);
                     }
 
@@ -2329,9 +2432,22 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                     if (currentPromptMessage) {
                         messagesToSend.push(currentPromptMessage);
                     }
-                }
-            }
-        } catch (e: any) {
+
+                    // FINAL PAYLOAD VALIDATION
+                    let finalSize = 0;
+                    messagesToSend.forEach(m => finalSize += typeof m.content === 'string' ? m.content.length : 0);
+                    if (Math.ceil(finalSize / 3.2) > maxTokens) {
+                        await this.addMessageToDiscussion({
+                            role: 'system',
+                            content: `🛑 **Context Still Overflowing**\nPruning could not reduce the payload enough for this model.\n\n**Action Required:** Click the **Mute** button on the Project Context bubble to hide file contents, then manually add only the files needed for this fix.`
+                        });
+                        this.processManager.unregister(processId);
+                        this.updateGeneratingState();
+                        return;
+                    }
+                    }
+                    }
+                    } catch (e: any) {
             this.log(`Error during context pruning: ${e.message}`, 'ERROR');
         }
 
@@ -3207,28 +3323,29 @@ ${targetContent}
       }
   }
   
-  public async updateAppliedState(messageId: string, blockIdx: number, hunkIdx?: number) {
+  public async updateAppliedState(messageId: string, blockIdx: number, hunkIdx?: number, isUndo: boolean = false) {
       if (!this._currentDiscussion || !messageId) return;
-      
-      // Lazily initialize persistent state containers
+
       if (!this._currentDiscussion.appliedState) this._currentDiscussion.appliedState = {};
       if (!this._currentDiscussion.appliedState[messageId]) this._currentDiscussion.appliedState[messageId] = {};
-      
+
       const msgState = this._currentDiscussion.appliedState[messageId];
 
-      if (!msgState[blockIdx]) {
-          msgState[blockIdx] = [];
-      }
+      if (!msgState[blockIdx]) msgState[blockIdx] = [];
 
-      if (hunkIdx !== undefined) {
-          // Add specific hunk to the list for this block
-          if (!msgState[blockIdx].includes(hunkIdx)) {
-              msgState[blockIdx].push(hunkIdx);
+      if (isUndo) {
+          const valToRemove = hunkIdx !== undefined ? hunkIdx : -1;
+          msgState[blockIdx] = msgState[blockIdx].filter(v => v !== valToRemove);
+          // If the block is now empty and was previously marked full (-1), check if we need to remove -1
+          if (hunkIdx !== undefined && msgState[blockIdx].includes(-1)) {
+               msgState[blockIdx] = msgState[blockIdx].filter(v => v !== -1);
           }
       } else {
-          // No hunk index means the whole block (all hunks or a full file) was applied
-          // We use -1 as a special marker for "Full Block Complete"
-          msgState[blockIdx] = [-1]; 
+          if (hunkIdx !== undefined) {
+              if (!msgState[blockIdx].includes(hunkIdx)) msgState[blockIdx].push(hunkIdx);
+          } else {
+              msgState[blockIdx] = [-1]; 
+          }
       }
 
       if (!this._currentDiscussion.id.startsWith('temp-')) {
@@ -4033,7 +4150,7 @@ ${targetContent}
                 this.updateContextAndTokens();
                 break;
             case 'markHunkApplied':
-                await this.updateAppliedState(message.messageId, message.blockIndex, message.hunkIndex);
+                await this.updateAppliedState(message.messageId, message.blockIndex, message.hunkIndex, message.undo === true);
                 break;
             case 'stopTokenCalculation':
                 if (this._tokenAbortController) {
@@ -4112,28 +4229,33 @@ Task:
                         this.agentManager.toggleAgentMode(); 
                     }
 
-                    // 2. Clear generation buffer
-                    ChatPanel.activeGenerations.delete(this.discussionId);
+                    // 2. Handle Pause for Agent
+                    if (isInterruption && this.agentManager && this.agentManager.getIsActive()) {
+                        // Mark the agent as inactive so it stops the loop, but keep the plan
+                        (this.agentManager as any).isActive = false; 
+                        if (this.agentManager['currentPlan']) {
+                            this.agentManager['currentPlan'].status = 'stale';
+                        }
+                    }
 
-                    // 3. Cancel current turn
+                    // 3. Clear generation buffer & Cancel current process
+                    ChatPanel.activeGenerations.delete(this.discussionId);
                     this.processManager.cancelForDiscussion(this.discussionId);
 
                     // 4. Reset metrics
-                    this._panel.webview.postMessage({
-                        command: 'updateGenerationMetrics',
-                        reset: true
-                    });
+                    this._panel.webview.postMessage({ command: 'updateGenerationMetrics', reset: true });
 
-                    // 5. If Interruption, add a visual marker to the chat
+                    // 5. User Feedback UI
                     if (isInterruption) {
                         await this.addMessageToDiscussion({
                             role: 'system',
-                            content: '✋ **User raised hand.** The Architect has paused to receive your feedback. Describe your changes or suggestions below.'
+                            content: '✋ **Mission Paused.** The Architect has stopped to receive your feedback. Please provide instructions to adjust the course.'
                         });
                     }
 
-                    // 6. Authoritatively hide overlay and unlock input
+                    // 6. Refresh UI
                     this.updateGeneratingState();
+                    this.updateAgentMode(this.agentManager?.getIsActive() || false);
                 }
                 break;
             case 'toggleAgentMode':
@@ -4213,10 +4335,20 @@ Task:
             case 'switchDiscussion':
                 vscode.commands.executeCommand('lollms-vs-coder.switchDiscussion', message.discussionId);
                 break;
-            case 'requestAvailableTools': {
+            case 'requestAgentSettings': {
+                const config = vscode.workspace.getConfiguration('lollmsVsCoder');
                 const allTools = this.agentManager.getTools();
                 const enabledTools = this.agentManager.getEnabledTools().map(t => t.name);
-                this._panel.webview.postMessage({ command: 'showAvailableTools', allTools, enabledTools });
+
+                this._panel.webview.postMessage({ 
+                    command: 'showAgentSettings', 
+                    allTools, 
+                    enabledTools,
+                    settings: {
+                        maxSteps: config.get('agent.maxSteps'),
+                        maxEditRetries: config.get('agent.maxEditRetries')
+                    }
+                });
                 break;
             }
             case 'requestLog':
@@ -4442,8 +4574,19 @@ Task:
                         delete partial.removeDiagram; // Don't save this key to capabilities
                     }
 
+                    // If the user is specifically updating folder settings via the matrix,
+                    // we should ensure the global 'disableProjectContext' is turned off
+                    // so the HUD badge doesn't stay stuck on "Context Muted".
+                    if (partial.folderSettings !== undefined) {
+                        const settings = Object.values(partial.folderSettings);
+                        const hasAnyContent = settings.some((s: any) => s.tree || s.content);
+                        if (hasAnyContent) {
+                            partial.disableProjectContext = false;
+                        }
+                    }
+
                     this._discussionCapabilities = { ...this._discussionCapabilities, ...partial };
-                    
+
                     if (partial.agentMode !== undefined) {
                         if (partial.agentMode && !this.agentManager.getIsActive()) {
                             this.agentManager.toggleAgentMode();
@@ -5245,7 +5388,7 @@ Task:
                             </div>
                             <div class="menu-separator"></div>
                             <button class="menu-item" id="discussionToolsButton"><i class="codicon codicon-settings"></i><span>Discussion Settings</span></button>
-                            <button class="menu-item" id="agentToolsButton"><i class="codicon codicon-briefcase"></i><span>Agent Tools List</span></button>
+                            <button class="menu-item" id="agentToolsButton"><i class="codicon codicon-briefcase"></i><span>Agent Settings</span></button>
                             <div class="menu-separator"></div>
                             <button class="menu-item" id="attachButton"><i class="codicon codicon-add"></i><span>Attach Files</span></button>
                             <button class="menu-item" id="importSkillsButton"><i class="codicon codicon-lightbulb"></i><span>Import Skill</span></button>
@@ -5416,15 +5559,42 @@ Task:
             <i class="codicon codicon-arrow-down"></i>
         </button>
 
-        <div id="tools-modal" class="modal">
+        <div id="agent-settings-modal" class="modal">
             <div class="modal-content">
                 <div class="modal-header">
-                    <h2>Agent Tools</h2>
-                    <span class="close-btn" id="close-tools-modal">&times;</span>
+                    <h2 style="display:flex; align-items:center; gap:8px;"><i class="codicon codicon-robot"></i> Agent Mission Configuration</h2>
+                    <span class="close-btn" id="close-agent-settings-modal">&times;</span>
                 </div>
-                <div class="modal-body" id="tools-list"></div>
+                <div class="modal-body" style="padding:0; overflow:hidden;">
+                    <div class="settings-grid-layout">
+                        <div class="settings-sidebar">
+                            <div class="modal-section" style="border:none; background:transparent; padding:0;">
+                                <h3 style="color:var(--vscode-charts-blue);"><i class="codicon codicon-dashboard"></i> Mission Budgets</h3>
+
+                                <label style="margin-top:10px;">Task Turn Limit</label>
+                                <input type="number" id="setting-maxSteps" min="1" max="500" style="margin-bottom:4px;">
+                                <p class="help-text">Max turns before mission timeout.</p>
+
+                                <label style="margin-top:15px;">File Edit Retries</label>
+                                <input type="number" id="setting-maxEditRetries" min="0" max="10" style="margin-bottom:4px;">
+                                <p class="help-text">Attempts to fix failed patches/marker leaks.</p>
+                            </div>
+
+                            <div style="flex:1"></div>
+
+                            <div class="security-warning" style="font-size:10px; padding:10px; margin:0;">
+                                <i class="codicon codicon-shield"></i> <strong>Sovereign Guard</strong><br>
+                                The harness automatically reverts files if Aider markers are detected in the code body.
+                            </div>
+                        </div>
+                        <div class="settings-main-content" style="padding:15px; overflow-y:auto;">
+                            <h3 style="margin-top:0;"><i class="codicon codicon-tools"></i> Tool Permissions & Policies</h3>
+                            <div id="tools-list"></div>
+                        </div>
+                    </div>
+                </div>
                 <div class="modal-footer">
-                    <button id="save-tools-btn">OK</button>
+                    <button id="save-agent-settings-btn" class="code-action-btn apply-btn" style="width:120px; justify-content:center;">Save Settings</button>
                 </div>
             </div>
         </div>

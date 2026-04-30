@@ -4,6 +4,49 @@ import * as os from 'os';
 import { MemoryManager } from './memoryManager';
 import { execSync } from 'child_process';
 import { PromptTemplates } from './promptTemplates';
+import * as crypto from 'crypto';
+
+/**
+ * DETERMINISTIC STORAGE RESOLVER
+ * Redirects .lollms data to a centralized workspace folder if in a .code-workspace session.
+ */
+export function getLollmsStorageUri(context: vscode.ExtensionContext, folder?: vscode.WorkspaceFolder): vscode.Uri {
+    const workspaceFile = vscode.workspace.workspaceFile;
+
+    if (workspaceFile) {
+        // --- CENTRALIZED WORKSPACE MODE ---
+        // Use a hash of the .code-workspace path to create a unique, persistent folder in user home
+        const wsHash = crypto.createHash('md5').update(workspaceFile.toString()).digest('hex').substring(0, 12);
+        const homeDir = vscode.Uri.file(os.homedir());
+        const storageUri = vscode.Uri.joinPath(homeDir, '.lollms', 'workspaces', wsHash);
+
+        // BACKGROUND: Update metadata so we can manage this workspace later
+        const infoPath = vscode.Uri.joinPath(storageUri, 'workspace_info.json');
+        const info = {
+            id: wsHash,
+            name: path.basename(workspaceFile.fsPath, '.code-workspace'),
+            originalPath: workspaceFile.fsPath,
+            lastUsed: Date.now()
+        };
+
+        // Fire and forget (don't block the UI thread)
+        vscode.workspace.fs.createDirectory(storageUri).then(() => {
+            vscode.workspace.fs.writeFile(infoPath, Buffer.from(JSON.stringify(info, null, 2)));
+        });
+
+        return storageUri;
+        }
+
+    // --- LOCAL PROJECT MODE ---
+    // Fallback to the local .lollms folder of the requested or first folder
+    const targetFolder = folder || (vscode.workspace.workspaceFolders?.[0]);
+    if (targetFolder) {
+        return vscode.Uri.joinPath(targetFolder.uri, '.lollms');
+    }
+
+    // --- GLOBAL FALLBACK ---
+    return context.globalStorageUri;
+}
 
 export interface HerdParticipant {
     model: string;
@@ -479,6 +522,27 @@ export async function applyDiff(diffContent: string, targetFilePath?: string) {
     }
 }
 
+/**
+ * Generates a standardized Environment Awareness block for all agent prompts.
+ */
+export async function getEnvironmentAwarenessBlock(): Promise<string> {
+    const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+    const userName = config.get<string>('userInfo.name') || os.userInfo().username || 'Developer';
+    const shells = await getAvailableShells();
+
+    return `
+### 💻 ENVIRONMENT AWARENESS
+- **User**: ${userName}
+- **Operating System**: ${os.platform()} (${os.type()} ${os.release()})
+- **Primary Shell**: ${os.platform() === 'win32' ? 'cmd / powershell' : 'bash / zsh'}
+- **Available Shells**: ${shells.join(', ')}
+- **Current Date**: ${new Date().toLocaleDateString()}
+- **Current Time**: ${new Date().toLocaleTimeString()}
+- **Timezone**: ${Intl.DateTimeFormat().resolvedOptions().timeZone}
+- **Workspace Root**: The execution context is the WORKSPACE ROOT. Use relative paths.
+`.trim();
+}
+
 export async function getProcessedSystemPrompt(
     promptType: 'chat' | 'agent' | 'inspector' | 'commit' | 'surgical_agent', 
     capabilities?: DiscussionCapabilities,
@@ -508,6 +572,7 @@ export async function getProcessedSystemPrompt(
     // Logic moved to dynamic system message for 'chat' and 'agent' types
 
     const shells = await getAvailableShells();
+    const envAwareness = await getEnvironmentAwarenessBlock();
 
     // CALL THE TEMPLATE BUILDER
     return PromptTemplates.build(
@@ -518,7 +583,7 @@ export async function getProcessedSystemPrompt(
         capabilities, 
         forceFullCode, 
         context
-    );
+    ) + "\n" + envAwareness;
 }
 
 export function stripAnsiCodes(text: string): string {
@@ -552,8 +617,10 @@ export const MODEL_CONTEXT_LIMITS: Record<string, number> = {
     'deepseek-v3': 64000,
     'deepseek-r1': 64000,
     'phi3': 128000,
-    'command-r': 128000
-};
+    'command-r': 128000,
+    'kimi': 128000,
+    'moonshot': 128000
+    };
 
 /**
  * Heuristic to detect context size based on model ID string.

@@ -56,10 +56,10 @@ export class PromptTemplates {
         if (partialFormat === 'aider') {
             sections.push(`
 ### ⚡ FORMAT 2: SEARCH/REPLACE (Surgical Patch)
-**Header**: \`\`\`[language]:path/to/file.ext\`\`\`
+**Header**: \`\`\`[language]:path/to/file.ext
 **STRICT HEADER RULE**: Replace \`[language]\` with the actual language name. The header MUST contain ONLY the language and the relative path. You are FORBIDDEN from using the literal word "language" in the header.
-**Structure**:
-\`\`\`
+**FULL Structure**:
+\`\`\`[language]:path/to/file.ext
 <<<<<<< SEARCH
 [EXACT current lines from the file]
 =======
@@ -130,14 +130,7 @@ ${context.files || ''}
         const activeProfileId = capabilities?.responseProfileId || 'balanced';
         const activeProfile = SYSTEM_RESPONSE_PROFILES.find(p => p.id === activeProfileId) || SYSTEM_RESPONSE_PROFILES[0];
 
-        const envInfo = `
-### 💻 ENVIRONMENT INFO
-- OS Platform: ${os.platform()}
-- Preferred Shell: ${os.platform() === 'win32' ? 'cmd' : 'Bash'}
-- Available Shells: ${shells.join(', ')}
-- Current Date: ${new Date().toISOString().split('T')[0]}
-- **Execution Context**: All terminal commands execute at the WORKSPACE ROOT.
-`;
+        const envInfo = ""; // We will handle this dynamically in the build call or pass it in
 
         const skillsAuthority = (context?.skills || capabilities?.hasSkills) ? `
 ### 📖 SKILLS AUTHORITY PROTOCOL
@@ -233,14 +226,18 @@ You have access to all Agent tools including:
         return `${projectHeader}${activeProfile.prefix || ''}# 🎭 ROLE & PERSONA
         ${persona}
 
-        # 🏢 WORKSPACE AWARENESS (ENVIRONMENT)
-        You are operating within a **Visual Studio Code Workspace**. 
-        Your "vision" of this workspace is defined by the **PROJECT STRUCTURE** tree and the **ACCESSIBLE FILE CONTENTS** sections provided in your context.
+        # 🏢 SOVEREIGN WORKSPACE AWARENESS
+        You are operating within a **Multi-Project VS Code Workspace**. 
+        Each project root is presented as an independent, sovereign block containing its own Tree Structure and File Contents.
 
-        ### 🌐 Addressing Protocol
-        - **Multi-Project Workspace**: When multiple root folders are listed in the tree, you MUST address files using the format \`ProjectName/path/to/file.ext\`.
-        - **Single-Project Workspace**: Use the relative path directly (e.g., \`src/main.py\`).
-        - **Sandbox Rule**: You are restricted to these folders. Never attempt to access paths outside of the provided workspace roots.
+        ### 🌐 SOVEREIGN ADDRESSING PROTOCOL
+        1. **NAMESPACING**: If the workspace contains multiple project roots, you MUST address EVERY file using the format \`ProjectName/path/to/file.ext\`. Do not drop the project name prefix when creating, moving, or editing files.
+        2. **STRICT HIERARCHY**: You are restricted to the folders listed in the context. Never attempt to access paths outside of these sovereign project roots.
+
+        ### 👁️ USER-DIRECTED VISION (PARTIAL CONTEXT)
+        - **PARTIAL SIGHT**: The \`LOADED FILE CONTENTS\` sections show ONLY the files the user has chosen to share with you.
+        - **THE BLIND SPOT**: If you see a file or folder in a \`STRUCTURE\` tree but its content is missing from \`LOADED FILE CONTENTS\`, you CANNOT see its code. 
+        - **MANDATORY ACTION**: If your task requires logic from a file in your "Blind Spot" (or inside a Collapsed Folder), you MUST stop and ask the user to add it to your context using the \`<add_files_to_context>\` tag.
 
         ### 👁️ Contextual Vision (Markers)
         - Files marked with **\`[C]\`** have their full content available below.
@@ -271,12 +268,13 @@ ${activeProfile.systemPrompt}
 4. **NO PLACEHOLDERS**: You are strictly forbidden from using comments like \`# ... rest of code\`.
 
 ### 🎨 INTEGRATED UI COMPONENTS & COMPOSITING
-You can trigger UI actions using these tags. 
+You are a vision-capable engineer. You can generate, look at, and edit images.
 
-**IMAGE COMPOSITING PROTOCOL**:
-- If the user provides multiple images, you can reference them as a set.
-- **Tools**: Use \`edit_image_asset\` with an array of paths for blending or character transfer.
-- **Logic**: You are capable of "Style Injection" (Style of A -> Content of B) and "Character Transfer" (Subject of A -> Scene of B).
+**IMAGE PROTOCOL**:
+1. **VISUAL VERIFICATION**: When modifying CSS, HTML, or UI code, use \`capture_desktop\` or \`test_web_page\` to verify the visual result.
+2. **ASSET CREATION**: Use \`generate_image\` for bitmaps or \`create_svg_asset\` for icons/logos.
+3. **COMPOSITING**: Use \`edit_image_asset\` with an array of paths for blending or character transfer (e.g. "Apply the style of paths[1] to the subject in paths[0]").
+4. **VISION**: When a user attaches an image, use \`analyze_image\` to understand its technical requirements before writing code.
 
 Consistent parameter usage for file operations:
 

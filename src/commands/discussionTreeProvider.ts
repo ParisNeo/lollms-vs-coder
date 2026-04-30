@@ -7,7 +7,6 @@ export class DiscussionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
 
     private filterQuery: string | undefined;
     private _view?: vscode.TreeView<vscode.TreeItem>;
-    private _activeProjectName: string = "";
 
     constructor(
         private discussionManager: DiscussionManager,
@@ -21,22 +20,16 @@ export class DiscussionTreeProvider implements vscode.TreeDataProvider<vscode.Tr
 
     public bindView(view: vscode.TreeView<vscode.TreeItem>) {
         this._view = view;
-        this.updateViewDescription();
+        // In unified mode, the description is static or identifies the whole workspace
+        this._view.description = vscode.workspace.workspaceFile ? "Unified Workspace" : "";
     }
 
-    public setActiveProject(name: string) {
-        this._activeProjectName = name;
-        this.updateViewDescription();
-    }
-
-    private updateViewDescription() {
+    /**
+     * Updates the TreeView description to show the currently focused project.
+     */
+    public setActiveProject(projectName: string) {
         if (this._view) {
-            const folders = vscode.workspace.workspaceFolders || [];
-            if (folders.length > 1) {
-                this._view.description = this._activeProjectName ? `[${this._activeProjectName}]` : "";
-            } else {
-                this._view.description = "";
-            }
+            this._view.description = projectName;
         }
     }
 

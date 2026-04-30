@@ -517,10 +517,15 @@ function showTextInput(x: number, y: number, w: number, h: number, screenPos: an
     };
 }
 
-export function setGeneratingState(isGenerating: boolean, statusText?: string) {
+export function setGeneratingState(isGenerating: boolean, statusText?: string, showRaiseHand: boolean = false) {
     if (state.isGenerating === isGenerating && !statusText) return;
-    
+
     state.isGenerating = isGenerating;
+
+    const raiseHandBtn = document.getElementById('raiseHandButton');
+    if (raiseHandBtn) {
+        raiseHandBtn.style.display = showRaiseHand ? 'flex' : 'none';
+    }
 
     if (statusText) {
         if (dom.statusText) dom.statusText.textContent = statusText;
@@ -1174,20 +1179,46 @@ export function updateBadges() {
             const label = ctxBadge.querySelector('.badge-label');
             const toggle = ctxBadge.querySelector('.badge-toggle-btn');
 
-            if (caps.disableProjectContext) {
+            const folders = (window as any).workspaceFolders || [];
+            const settings = caps.folderSettings || {};
+            let mutedCount = 0;
+            folders.forEach(f => {
+                const s = settings[f.uri.toString()];
+                if (s && s.content === false) mutedCount++;
+            });
+
+            // A discussion is "Muted" only if the global flag is ON AND no individual folders are active.
+            // If the user enabled folders in the matrix, they clearly want context.
+            const isFullyMuted = caps.disableProjectContext && (mutedCount === folders.length || folders.length === 0);
+            const isPartiallyMuted = mutedCount > 0 && mutedCount < folders.length;
+
+            if (isFullyMuted) {
                 ctxBadge.classList.remove('inactive');
                 ctxBadge.classList.add('active');
                 ctxBadge.style.setProperty('background-color', 'var(--vscode-charts-red)', 'important');
                 ctxBadge.style.setProperty('color', 'white', 'important');
-                ctxBadge.title = "Context is currently MUTED. Files won't be sent to AI.";
-                if (label) label.textContent = '🧠 Librarian Muted';
+                if (label) label.textContent = '🧠 Context Muted';
                 if (toggle) {
-                    toggle.classList.remove('codicon-circle-large-outline', 'codicon-pass-filled');
+                    toggle.classList.remove('codicon-pass-filled', 'codicon-circle-large-outline');
                     toggle.classList.add('codicon-mute');
                 }
-            } else {
-                ctxBadge.style.backgroundColor = "";
-                ctxBadge.style.color = "";
+            } else if (isPartiallyMuted) {
+                ctxBadge.classList.remove('inactive');
+                ctxBadge.classList.add('active');
+                ctxBadge.style.setProperty('background-color', 'var(--vscode-charts-orange)', 'important');
+                ctxBadge.style.setProperty('color', 'white', 'important');
+                ctxBadge.classList.remove('inactive');
+                ctxBadge.classList.add('active');
+                ctxBadge.style.setProperty('background-color', 'var(--vscode-charts-orange)', 'important');
+                ctxBadge.style.setProperty('color', 'white', 'important');
+                if (label) label.textContent = `🧠 Partial Scope (${folders.length - mutedCount}/${folders.length})`;
+                if (toggle) {
+                    toggle.classList.remove('codicon-mute', 'codicon-circle-large-outline');
+                    toggle.classList.add('codicon-pass-filled');
+                }
+                } else {
+                ctxBadge.style.removeProperty('background-color');
+                ctxBadge.style.removeProperty('color');
 
                 if (caps.autoContextMode) {
                     ctxBadge.classList.remove('inactive');
@@ -2299,6 +2330,9 @@ export function renderWorkspaceMatrix() {
                     command: 'updateDiscussionCapabilitiesPartial', 
                     partial: { folderSettings: { ...currentSettings, [uriKey]: nodeSettings } } 
                 });
+
+                // IMMEDIATE UI REFRESH: Trigger token calculation to update the bar
+                vscode.postMessage({ command: 'calculateTokens' });
             };
         });
 

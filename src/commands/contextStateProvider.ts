@@ -25,11 +25,11 @@ export class ContextItem extends vscode.TreeItem {
         );
         this.id = resourceUri.toString();
         this.contextValue = `contextItem:${state}`;
-
         if (state === 'collapsed') {
-            this.iconPath = vscode.ThemeIcon.Folder;
-            this.description = " (Content Hidden)";
+            this.iconPath = new vscode.ThemeIcon('folder-opened', new vscode.ThemeColor('descriptionForeground'));
+            this.description = " (Collapsed - Hidden)";
             this.tooltip = "Folder exists but content is hidden from AI context to save tokens.";
+            this.label = `[C] ${this.label}`;
         } else if (state === 'definitions-only') {
             this.description = " (Definitions)";
             this.tooltip = "Only structure (classes, functions signatures) is sent to AI.";
@@ -285,7 +285,12 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
 
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const exceptions = config.get<string[]>('contextFileExceptions') || [];
-        return exceptions.some(pattern => minimatch(relativePath, pattern, { dot: true }));
+
+        // Block if matches glob OR if explicitly tagged as excluded in workspace state
+        const isGlobIgnored = exceptions.some(pattern => minimatch(relativePath, pattern, { dot: true }));
+        const isManuallyExcluded = this.getStateForUri(uri) === 'fully-excluded';
+
+        return isGlobIgnored || isManuallyExcluded;
         }
 
     public async setStateForUris(uris: vscode.Uri[], state: ContextState) {

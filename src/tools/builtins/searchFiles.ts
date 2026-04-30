@@ -6,9 +6,9 @@ import * as os from 'os';
 
 const execAsync = promisify(exec);
 
-export const searchFilesTool: ToolDefinition = {
-    name: "search_files",
-    description: "Searches for a text pattern in files within the workspace using git grep (if available) or system tools.",
+export const grepSearchTool: ToolDefinition = {
+    name: "grep_search",
+    description: "Searches for a text pattern INSIDE file contents within the workspace using git grep (if available) or system tools. Use this to find where a variable or function is used.",
     isAgentic: true,
     isDefault: true,
     parameters: [
@@ -25,12 +25,14 @@ export const searchFilesTool: ToolDefinition = {
 
         const searchPath = params.path || '.';
         const cwd = path.join(env.workspaceRoot.uri.fsPath, searchPath);
-        const pattern = params.pattern.replace(/"/g, '\\"'); // Escape quotes
+
+        // Escape pattern for shell use, but handle regex symbols correctly
+        const pattern = params.pattern.replace(/"/g, '\\"'); 
 
         try {
-            // Try git grep first as it's fast and respects .gitignore
+            // Try git grep with -E (Extended Regex) to support the agent's pipe | symbols
             try {
-                const { stdout } = await execAsync(`git grep -n -I "${pattern}"`, { cwd });
+                const { stdout } = await execAsync(`git grep -n -I -E "${pattern}"`, { cwd });
                 if (stdout.trim()) {
                     return { success: true, output: stdout.trim() };
                 }

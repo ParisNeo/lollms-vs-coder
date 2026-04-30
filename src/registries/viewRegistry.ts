@@ -33,6 +33,7 @@ export class TabsTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
             new TabItem("Workspace Repair", "fix", "zap", activeTab === 'fix'),
             new TabItem("MCP Tools", "mcp", "plug", activeTab === 'mcp'),
             new TabItem("Environment", "env", "symbol-variable", activeTab === 'env'),
+            new TabItem("Manage Volumes", "lab", "database", false), // Use database icon for disk mgmt
             new TabItem("Git Manager", "git", "git-merge", activeTab === 'git'),
             new TabItem("Architecture Graph", "graph", "graph", activeTab === 'graph'),
             new TabItem("The Lab (Workflows/Tools)", "lab", "beaker", activeTab === 'lab')

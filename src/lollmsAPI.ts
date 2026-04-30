@@ -109,17 +109,6 @@ export class LollmsAPI {
   private createHttpsAgent(): https.Agent {
       const certPath = this.config.sslCertPath ? this.config.sslCertPath.replace(/^['"]|['"]$/g, '') : '';
       
-      // Mitigation: If user explicitly disabled SSL, force the Node environment to respect it.
-      // This helps with dependencies that might ignore the custom agent.
-      if (this.config.disableSslVerification) {
-          process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
-          Logger.warn("SSL Verification Disabled (NODE_TLS_REJECT_UNAUTHORIZED=0). TLS connections are now insecure.");
-          vscode.window.showWarningMessage("Security Warning: SSL Verification is disabled. Your connections to AI models are not private.");
-      } else {
-          // Re-enable if it was previously disabled
-          process.env.NODE_TLS_REJECT_UNAUTHORIZED = '1';
-      }
-
       const options: https.AgentOptions = {
           keepAlive: true,
           rejectUnauthorized: !this.config.disableSslVerification,
@@ -431,7 +420,8 @@ export class LollmsAPI {
         clearTimeout(timeout);
     }
 
-    // FINAL FALLBACK: Use User Setting if provided, otherwise Heuristic
+    // FINAL FALLBACK: Use Heuristic first, only use manual override if it's HIGHER
+    // This prevents accidentally limiting context with a low manual setting
     let heuristicSize = 128000;
     try {
         const { getContextLimitForModel } = require('./utils');
@@ -440,8 +430,10 @@ export class LollmsAPI {
         // Module load fail in some environments
     }
 
+    // Use the MAXIMUM of manual override and heuristic to avoid accidental limits
     // Ensure we NEVER return 0 or negative numbers
-    const finalSize = Math.max(manualOverride || heuristicSize || 128000, 4096);
+    const finalSize = Math.max(manualOverride || 0, heuristicSize || 128000, 4096);
+
 
     return { 
         context_size: finalSize, 

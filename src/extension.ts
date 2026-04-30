@@ -134,18 +134,7 @@ export async function activate(context: vscode.ExtensionContext) {
     // Register Commands
     await registerCommands(context, services, getActiveWorkspace);
 
-    // Register Workspace Switcher Command
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.selectActiveWorkspace', async () => {
-        const folders = vscode.workspace.workspaceFolders;
-        if (!folders || folders.length <= 1) { return; }
-        const selected = await vscode.window.showQuickPick(
-            folders.map(f => ({ label: f.name, folder: f })),
-            { placeHolder: 'Select active Lollms workspace' }
-        );
-        if (selected) {
-            switchActiveWorkspace(selected.folder);
-        }
-    }));
+    // Legacy Switcher Command removed - Now using Sovereign Workspace Protocol
 
     let recreateClientDisposable = vscode.commands.registerCommand('lollmsApi.recreateClient', async () => {
         console.log('[INFO] Recreating Lollms API Client...');
@@ -341,7 +330,7 @@ export async function activate(context: vscode.ExtensionContext) {
         });
 
         // Update the Discussion Tree header with the project name
-        if (services.treeProviders.discussion) {
+        if (services.treeProviders.discussion && typeof services.treeProviders.discussion.setActiveProject === 'function') {
             services.treeProviders.discussion.setActiveProject(folder.name);
         }
 

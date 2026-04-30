@@ -367,6 +367,53 @@ export const myCustomTool: ToolDefinition = {
     // Register the missing "selectModel" command
     registerSelectModelCommand(context, services);
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.manageWorkspaces', async () => {
+        const { WorkspaceManager } = await import('../utils/workspaceManager');
+        const workspaces = await WorkspaceManager.listStoredWorkspaces();
+
+        if (workspaces.length === 0) {
+            vscode.window.showInformationMessage("No sovereign workspace data found in ~/.lollms/workspaces");
+            return;
+        }
+
+        const items = workspaces.map(ws => ({
+            label: `$(repo) ${ws.name}`,
+            description: ws.id,
+            detail: `Path: ${ws.originalPath} | Last used: ${new Date(ws.lastUsed).toLocaleDateString()}`,
+            ws: ws
+        }));
+
+        const selected = await vscode.window.showQuickPick(items, {
+            placeHolder: "Manage Lollms Workspace Data",
+            title: "Stored Intelligence Volumes"
+        });
+
+        if (selected) {
+            const action = await vscode.window.showQuickPick([
+                { label: "$(folder-opened) Open Workspace", id: 'open' },
+                { label: "$(cloud-upload) Export Volume (.zip)", id: 'export' },
+                { label: "$(trash) Delete Volume (Free Space)", id: 'delete' }
+            ]);
+
+            if (action?.id === 'delete') {
+                const confirm = await vscode.window.showWarningMessage(
+                    `Are you sure you want to delete all AI intelligence (discussions, memory, skills) for "${selected.ws.name}"? This will free disk space but cannot be undone.`,
+                    { modal: true }, "Delete Volume"
+                );
+                if (confirm) {
+                    await WorkspaceManager.deleteWorkspace(selected.ws.id);
+                    vscode.window.showInformationMessage(`Volume ${selected.ws.id} deleted.`);
+                }
+            } else if (action?.id === 'export') {
+                // Future: Integration with a zip library to export ~/.lollms/workspaces/[id]
+                vscode.window.showInformationMessage("Export protocol: Copy the folder ~/.lollms/workspaces/" + selected.ws.id + " to your new device.");
+            } else if (action?.id === 'open') {
+                const uri = vscode.Uri.file(selected.ws.originalPath);
+                vscode.commands.executeCommand('vscode.openFolder', uri);
+            }
+        }
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.triggerSurgicalInsight', async (uri: vscode.Uri, symbol: vscode.SymbolInformation) => {
         const doc = await vscode.workspace.openTextDocument(uri);
         const code = doc.getText(symbol.location.range);

@@ -1545,6 +1545,19 @@ export function initEventHandlers() {
             return;
         }
 
+        // Handle clicking a file path in an expansion block to open it
+        const expansionItem = target.closest('.expansion-file-item') as HTMLElement;
+        if (expansionItem && !target.closest('button')) {
+            e.stopPropagation();
+            // The path is in the second span
+            const pathSpan = expansionItem.querySelector('span:last-child');
+            const filePath = pathSpan?.textContent?.trim();
+            if (filePath) {
+                vscode.postMessage({ command: 'openFile', path: filePath });
+            }
+            return;
+        }
+
         // Handle File Deletion (All)
         const delAllBtn = target.closest('.delete-all-btn') as HTMLButtonElement;
         if (delAllBtn) {

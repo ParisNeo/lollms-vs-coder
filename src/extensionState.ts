@@ -166,36 +166,37 @@ export async function runCommandInTerminal(
             if (executionTask && e.execution === executionTask) {
                 disposable.dispose();
                 // Delay reading to ensure the OS has flushed the file buffers to .lollms/
-                // Small delay to allow GUI apps to flush final logs to file
+                // INCREASED: 1200ms to ensure large buffers are fully flushed on slower disks
                 setTimeout(() => {
                     let output = "";
-                    let success = e.exitCode === 0 || e.exitCode === 1; // UI apps often exit with 1 on manual close
+                    let success = e.exitCode === 0 || e.exitCode === 1; 
                     try {
                         if (fs.existsSync(outputFile)) {
+                            const stats = fs.statSync(outputFile);
                             const buffer = fs.readFileSync(outputFile);
 
+                            // Resilient Decoding
                             if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
                                 output = buffer.toString('utf16le');
-                            } 
-                            else if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
+                            } else if (buffer.length >= 2 && buffer[0] === 0xfe && buffer[1] === 0xff) {
                                 output = buffer.swap16().toString('utf16le');
-                            } 
-                            else {
-                                // Default to UTF-8 with manual normalization
-                                // We use TextDecoder with fatal:false to replace bad sequences with placeholders
+                            } else {
                                 const decoder = new TextDecoder('utf-8', { fatal: false });
                                 output = decoder.decode(buffer);
                             }
 
-                            output = output.replace(/^\uFEFF/, '');
-                            output = output.replace(/\0/g, '');
+                            output = output.replace(/^\uFEFF/, '').replace(/\0/g, '');
 
                             if (output.trim() === '') {
                                 output = "[Command completed with no output]";
+                            } else {
+                                // METADATA INJECTION: Inform the agent of the exact payload size
+                                // to stop it from hallucinating that it's truncated.
+                                output = `[EXECUTION PAYLOAD: ${stats.size} bytes]\n${output}`;
                             }
                         } else {
-                            output = "[Command failed to execute. Check syntax (e.g. do not use && in PowerShell).]";
-                            success = false; // Force failure if output piping didn't even run
+                            output = "[OS ERROR: Output capture file missing. The process may have been terminated by the OS or Anti-Virus.]";
+                            success = false; 
                         }
                     } catch (err) {
                         output = `[Extension Error] Failed to read terminal output: ${err}`;

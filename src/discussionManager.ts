@@ -62,13 +62,13 @@ export class DiscussionManager {
     }
 
     public async initialize() {
-        const folders = vscode.workspace.workspaceFolders ||[];
-        for (const folder of folders) {
-            const dir = vscode.Uri.joinPath(folder.uri, '.lollms', 'discussions');
-            try {
-                await vscode.workspace.fs.createDirectory(dir);
-            } catch (e) {}
-        }
+        const { getLollmsStorageUri } = require('./utils');
+        const storageRoot = getLollmsStorageUri(this.context);
+        const dir = vscode.Uri.joinPath(storageRoot, 'discussions');
+        try {
+            await vscode.workspace.fs.createDirectory(dir);
+            Logger.info(`Discussion storage initialized at: ${dir.fsPath}`);
+        } catch (e) {}
     }
 
     public async saveLastCapabilities(caps: DiscussionCapabilities) {
@@ -156,9 +156,15 @@ export class DiscussionManager {
         };
 
         const saved = this.context.globalState.get<DiscussionCapabilities>('lollms_last_capabilities');
-        
+
+        // Pull Workspace-wide matrix settings
+        const globalFolderSettings = this.context.workspaceState.get<any>('lollms_global_folder_settings');
+        const isGlobalMuted = this.context.workspaceState.get<boolean>('lollms_global_context_muted');
+
         if (saved) {
             const merged = { ...defaults, ...saved };
+            if (globalFolderSettings) merged.folderSettings = globalFolderSettings;
+            if (isGlobalMuted !== undefined) merged.disableProjectContext = isGlobalMuted;
             if ((!merged.herdPreAnswerParticipants || merged.herdPreAnswerParticipants.length === 0) && (merged as any).herdPreCodeParticipants) {
                 merged.herdPreAnswerParticipants = (merged as any).herdPreCodeParticipants;
             }
@@ -200,60 +206,50 @@ export class DiscussionManager {
 
     async saveDiscussion(discussion: Discussion): Promise<void> {
         if (discussion.id.startsWith('temp-') || discussion.id.startsWith('remote-')) return;
-        
+
         this._onDidChangeDiscussions.fire();
-        
-        // Use a background task to avoid blocking the UI thread for large files
+
         this.saveMutex = this.saveMutex.then(async () => {
             const content = Buffer.from(JSON.stringify(discussion, null, 2), 'utf8');
-            const folders = vscode.workspace.workspaceFolders ||[];
-            
-            for (const folder of folders) {
-                const dir = vscode.Uri.joinPath(folder.uri, '.lollms', 'discussions');
-                const filePath = vscode.Uri.joinPath(dir, `${discussion.id}.json`);
-                const tempPath = vscode.Uri.joinPath(dir, `${discussion.id}.tmp`);
-                
-                try {
-                    await vscode.workspace.fs.createDirectory(dir);
-                    await vscode.workspace.fs.writeFile(tempPath, content);
-                    await vscode.workspace.fs.rename(tempPath, filePath, { overwrite: true });
-                } catch (e) {
-                    console.error(`Failed to save discussion ${discussion.id} in ${folder.name}:`, e);
-                    try { await vscode.workspace.fs.delete(tempPath, { useTrash: false }); } catch {}
-                }
+            const { getLollmsStorageUri } = require('./utils');
+            const dir = vscode.Uri.joinPath(getLollmsStorageUri(this.context), 'discussions');
+            const filePath = vscode.Uri.joinPath(dir, `${discussion.id}.json`);
+            const tempPath = vscode.Uri.joinPath(dir, `${discussion.id}.tmp`);
+
+            try {
+                await vscode.workspace.fs.createDirectory(dir);
+                await vscode.workspace.fs.writeFile(tempPath, content);
+                await vscode.workspace.fs.rename(tempPath, filePath, { overwrite: true });
+            } catch (e) {
+                Logger.error(`Failed to save discussion ${discussion.id}`, e);
             }
-        }).catch(e => {
-            console.error("Error in save mutex chain", e);
         });
 
         return this.saveMutex;
     }
-    
-    async getDiscussion(id: string): Promise<Discussion | null> {
-        const folders = vscode.workspace.workspaceFolders ||[];
-        for (const folder of folders) {
-            const filePath = vscode.Uri.joinPath(folder.uri, '.lollms', 'discussions', `${id}.json`);
-            try {
-                const content = await vscode.workspace.fs.readFile(filePath);
-                const jsonString = Buffer.from(content).toString('utf8').trim();
-                
-                if (!jsonString) {
-                    continue;
-                }
 
-                const data = JSON.parse(jsonString);
-                
-                // Migration: Ensure mandatory arrays exist
+    async getDiscussion(id: string): Promise<Discussion | null> {
+        const { getLollmsStorageUri } = require('./utils');
+        const filePath = vscode.Uri.joinPath(getLollmsStorageUri(this.context), 'discussions', `${id}.json`);
+        try {
+            const content = await vscode.workspace.fs.readFile(filePath);
+            const jsonString = Buffer.from(content).toString('utf8').trim();
+
+            if (!jsonString) {
+                throw new Error("File is empty");
+            }
+
+            const data = JSON.parse(jsonString);
+
+            // Migration: Ensure mandatory arrays exist
                 if (!data.messages) data.messages =[];
                 if (!data.importedSkills) data.importedSkills =[];
                 if (!data.capabilities) data.capabilities = this.getLastCapabilities();
                 
                 return data;
-            } catch (error) { 
-                // Skip to next folder if not found
-            }
+        } catch (error) { 
+            // Skip to next folder if not found
         }
-        
         Logger.warn(`Discussion file ${id}.json not found. Returning recovery skeleton.`);
         return this.createRecoverySkeleton(id);
     }
@@ -271,39 +267,26 @@ export class DiscussionManager {
     }
 
     async getAllDiscussions(): Promise<Discussion[]> {
-        const folders = vscode.workspace.workspaceFolders || [];
-        if (folders.length === 0) return[];
+        const { getLollmsStorageUri } = require('./utils');
+        const dir = vscode.Uri.joinPath(getLollmsStorageUri(this.context), 'discussions');
+        const results: Discussion[] = [];
 
-        const resultsMap = new Map<string, Discussion>();
+        try {
+            const entries = await vscode.workspace.fs.readDirectory(dir);
+            const jsonFiles = entries.filter(([name, type]) => 
+                type !== vscode.FileType.Directory && name.endsWith('.json')
+            );
 
-        for (const folder of folders) {
-            const dir = vscode.Uri.joinPath(folder.uri, '.lollms', 'discussions');
-            try {
-                await vscode.workspace.fs.stat(dir);
-                const entries = await vscode.workspace.fs.readDirectory(dir);
-                const jsonFiles = entries.filter(([name, type]) => 
-                    type !== vscode.FileType.Directory && name.endsWith('.json')
-                );
-                
-                for (const [name] of jsonFiles) {
-                    try {
-                        const id = path.parse(name).name;
-                        if (!resultsMap.has(id)) {
-                            const discussion = await this.getDiscussion(id);
-                            if (discussion && discussion.messages) {
-                                resultsMap.set(id, discussion);
-                            }
-                        }
-                    } catch (err) {
-                        console.error(`[DiscussionManager] Skipping corrupt discussion: ${name}`, err);
-                    }
-                }
-            } catch (error) {
-                // Directory might not exist, skip
+            for (const [name] of jsonFiles) {
+                const id = path.parse(name).name;
+                const discussion = await this.getDiscussion(id);
+                if (discussion) results.push(discussion);
             }
+        } catch (error) {
+            // Directory doesn't exist yet
         }
-        
-        return Array.from(resultsMap.values()).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+
+        return results.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
     }
 
     /**

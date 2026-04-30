@@ -420,24 +420,26 @@ export class LollmsAPI {
         clearTimeout(timeout);
     }
 
-    // FINAL FALLBACK: Use Heuristic first, only use manual override if it's HIGHER
-    // This prevents accidentally limiting context with a low manual setting
+    // FINAL FALLBACK: Robust Recovery
     let heuristicSize = 128000;
     try {
         const { getContextLimitForModel } = require('./utils');
         heuristicSize = getContextLimitForModel(modelName);
-    } catch (e) {
-        // Module load fail in some environments
-    }
+    } catch (e) {}
 
-    // Use the MAXIMUM of manual override and heuristic to avoid accidental limits
-    // Ensure we NEVER return 0 or negative numbers
-    const finalSize = Math.max(manualOverride || 0, heuristicSize || 128000, 4096);
+    // Ensure we don't stay at 16k if we can't detect the model
+    // 128k is the standard "modern" baseline.
+    const finalSize = Math.max(
+        manualOverride || 0, 
+        heuristicSize || 0, 
+        128000
+    );
 
+    Logger.warn(`[API] Using recovery context size: ${finalSize} for ${modelName}`);
 
     return { 
         context_size: finalSize, 
-        isEstimation: manualOverride === 0, 
+        isEstimation: true, 
         isUserDefined: manualOverride > 0
     };
   }

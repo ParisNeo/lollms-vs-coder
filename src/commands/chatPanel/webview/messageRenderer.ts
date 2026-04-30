@@ -1419,7 +1419,7 @@ function renderAddFilesBlock(params: any, messageId: string): string {
             <div class="expansion-file-list" id="list-${blockId}" style="margin-bottom:12px;">
                 ${fileItems}
             </div>
-            <div style="display:flex; gap: 8px;">
+            <div style="display:flex; gap: 8px; flex-wrap: wrap;">
                 <button class="code-action-btn ${btnClass} add-files-to-context-btn" 
                     id="btn-${blockId}" 
                     ${btnDisabled}
@@ -1433,6 +1433,11 @@ function renderAddFilesBlock(params: any, messageId: string): string {
                     data-files="${fileListJson}" 
                     data-block-id="${blockId}">
                     <span class="codicon ${allIncluded ? 'codicon-check' : 'codicon-sync'}"></span> ${allIncluded ? 'Added' : 'Add & Reprompt'}
+                </button>
+                <button class="code-action-btn apply-btn copy-files-to-clipboard-btn" 
+                    id="btn-copy-${blockId}" 
+                    data-files="${fileListJson}">
+                    <span class="codicon codicon-clippy"></span> Copy Contents
                 </button>
             </div>
             </div>
@@ -1653,6 +1658,37 @@ function renderFormBlock(xmlContent: string, messageId: string): string {
     </div>`;
 }
 
+function renderBreakpointBlock(attrs: any): string {
+    const path = attrs.path || "unknown_file";
+    const line = attrs.line || "0";
+    const msg = attrs.message || "Investigate state here.";
+    const blockId = `bp-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+
+    return `
+    <div class="file-operation-block" style="border-left-color: var(--vscode-charts-red);" id="${blockId}">
+        <div class="file-operation-header">
+            <span class="codicon codicon-debug-breakpoint-log" style="color:var(--vscode-charts-red)"></span> 
+            <span>Proposed Debug Point</span>
+        </div>
+        <div class="expansion-body">
+            <div style="font-family: var(--vscode-editor-font-family); font-size: 12px; margin-bottom: 8px;">
+                <strong style="color: var(--vscode-textLink-foreground);">${sanitizer.sanitize(path)}</strong> : Line ${sanitizer.sanitize(line)}
+            </div>
+            <div style="font-size: 11px; opacity: 0.8; font-style: italic; margin-bottom: 12px; padding: 6px; background: rgba(0,0,0,0.2); border-radius: 4px;">
+                "${sanitizer.sanitize(msg)}"
+            </div>
+            <div class="file-operation-actions">
+                <button class="code-action-btn apply-btn set-breakpoint-btn" 
+                    data-path="${sanitizer.sanitize(path)}" 
+                    data-line="${sanitizer.sanitize(line)}"
+                    data-block-id="${blockId}">
+                    <span class="codicon codicon-debug-stop"></span> Set Breakpoint
+                </button>
+            </div>
+        </div>
+    </div>`;
+}
+
 function renderMilestoneCard(attrs: any): string {
     return `
     <div class="milestone-card">
@@ -1845,6 +1881,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         const memTags: { html: string, start: number, end: number }[] = [];
         const forms: { html: string, start: number, end: number }[] = [];
         const milestones: { html: string, start: number, end: number }[] = [];
+        const breakpoints: { html: string, start: number, end: number }[] = [];
         const debugReports: { html: string, start: number, end: number }[] = [];
         const processingBlocks: { html: string, start: number, end: number }[] = [];
 
@@ -1993,6 +2030,28 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 milestones.push({ html: renderMilestoneCard(attrs), start: mileMatch.index, end: mileMatch.index + mileMatch[0].length });
             }
 
+            const bpRegex = /<set_breakpoint\s+([^>]*?)\s*\/>/gi;
+            let bpMatch;
+            while ((bpMatch = bpRegex.exec(contentWithoutThoughts)) !== null) {
+                if (isInsideCode(bpMatch.index)) continue;
+                const attrStr = bpMatch[1];
+                const attrs: any = {};
+                const attrRegex = /(\w+)=["']([^"']*)["']/g;
+                let m;
+                while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
+                breakpoints.push({ html: renderBreakpointBlock(attrs), start: bpMatch.index, end: bpMatch.index + bpMatch[0].length });
+            }
+
+            while ((mileMatch = milestoneRegex.exec(contentWithoutThoughts)) !== null) {
+                if (isInsideCode(mileMatch.index)) continue;
+                const attrStr = mileMatch[1];
+                const attrs: any = {};
+                const attrRegex = /(\w+)=["']([^"']*)["']/g;
+                let m;
+                while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
+                milestones.push({ html: renderMilestoneCard(attrs), start: mileMatch.index, end: mileMatch.index + mileMatch[0].length });
+            }
+
             const procRegex = /<processing\b[^>]*>([\s\S]*?)(?:<\/processing>|$)/gi;
             let procMatch;
             while ((procMatch = procRegex.exec(contentWithoutThoughts)) !== null) {
@@ -2089,6 +2148,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 ...memTags.map(m => ({ start: m.start, end: m.end, html: m.html, elementType: 'projectMemory' as const })),
                 ...forms.map(f => ({ start: f.start, end: f.end, html: f.html, elementType: 'form' as const })),
                 ...milestones.map(m => ({ start: m.start, end: m.end, html: m.html, elementType: 'milestone' as const })),
+                ...breakpoints.map(b => ({ start: b.start, end: b.end, html: b.html, elementType: 'breakpoint' as const })),
                 ...debugReports.map(d => ({ start: d.start, end: d.end, html: d.html, elementType: 'debugReport' as const })),
                 ...processingBlocks.map(p => ({ start: p.start, end: p.end, html: p.html, elementType: 'processing' as const }))
             ].sort((a, b) => a.start - b.start);
@@ -2122,7 +2182,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 }
 
                 // B. Render the UI element (Code Block or Skill or Image or AddFiles or FileOp or DebugReport or ProjectMemory or Processing or Form)
-                const uiTypes = ['skill', 'image', 'addFiles', 'fileOp', 'projectMemory', 'debugReport', 'processing', 'form', 'milestone'];
+                const uiTypes = ['skill', 'image', 'addFiles', 'fileOp', 'projectMemory', 'debugReport', 'processing', 'form', 'milestone', 'breakpoint'];
                 if (uiTypes.includes(el.elementType)) {
                     const uiDiv = document.createElement('div');
                     uiDiv.innerHTML = (el as any).html;
@@ -2338,6 +2398,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     if (isFullyApplied) {
                         applyBtn.classList.add('applied');
                         applyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
+                        // Button remains enabled to allow re-application
                     }
 
                     if (isBlockGenerating) {
@@ -2510,6 +2571,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                             hunkBubble.classList.add('collapsed');
                             undoHunkBtn.style.display = 'flex';
                         } else {
+                            applyHunkBtn.classList.remove('applied');
                             undoHunkBtn.style.display = 'none';
                         }
 
@@ -3209,9 +3271,6 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                         <span class="codicon codicon-search"></span> Search
                     </button>
                     <div style="width: 1px; background: var(--vscode-widget-border); margin: 0 4px;"></div>
-                    <button id="mute-context-btn" class="code-action-btn ${isMuted ? 'applied' : 'apply-btn'}" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0; background-color: ${isMuted ? 'var(--vscode-charts-red)' : ''} !important; color: ${isMuted ? 'white' : ''} !important;" title="Open Workspace Access Matrix to mute specific projects or files.">
-                        <span class="codicon ${isMuted ? 'codicon-mute' : 'codicon-layers'}"></span> Mute / Scope
-                    </button>
                     <button id="save-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Save current file selection">
                         <span class="codicon codicon-save"></span>
                     </button>

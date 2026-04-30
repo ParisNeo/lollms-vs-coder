@@ -162,39 +162,8 @@ export class ContextManager {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // PATH RESOLUTION (v2 improved version)
+  // PATH RESOLUTION
   // ─────────────────────────────────────────────────────────────
-
-  public getScrubbedPath(filePath: string): string {
-    if (!filePath) return "";
-    const folders = vscode.workspace.workspaceFolders || [];
-    const normalizedIn = filePath.replace(/\\/g, '/');
-
-    const segments = normalizedIn.split('/');
-    if (folders.length > 1 && segments.length > 0 && folders.some(f => f.name === segments[0])) {
-      return normalizedIn;
-    }
-
-    for (const folder of folders) {
-      const folderFsPath = folder.uri.fsPath.replace(/\\/g, '/');
-      const isWin = process.platform === 'win32';
-      const isMatch = isWin
-        ? normalizedIn.toLowerCase().startsWith(folderFsPath.toLowerCase())
-        : normalizedIn.startsWith(folderFsPath);
-
-      if (isMatch || !path.isAbsolute(normalizedIn)) {
-        let rel = normalizedIn;
-        if (isMatch) rel = normalizedIn.substring(folderFsPath.length);
-        if (rel.startsWith('/')) rel = rel.substring(1);
-        const relSegments = rel.split('/');
-        if (folders.length > 1 && relSegments[0] === folder.name) return rel;
-        return folders.length > 1 ? `${folder.name}/${rel}` : rel;
-      }
-    }
-
-    if (path.isAbsolute(normalizedIn)) return `external/${path.basename(normalizedIn)}`;
-    return normalizedIn;
-  }
 
   public async resolveWorkspaceFromPath(namespacedPath: string): Promise<{ folder: vscode.WorkspaceFolder | undefined, relativePath: string, uri: vscode.Uri } | null> {
     const folders = vscode.workspace.workspaceFolders || [];
@@ -583,14 +552,19 @@ export class ContextManager {
       } catch (e) { console.error("RLM check failed:", e); }
     }
 
-    // ── Header / legend ─────────────────────────────────────────
-    result.text = `# 📂 SOVEREIGN MULTI-PROJECT WORKSPACE\n`;
-    result.text += `Status: ${activeFolders.length} Project Root(s) Active.\n\n`;
-    result.text += `**TREE LEGEND:**\n`;
-    result.text += `- \`[C]\` Content Loaded — full file content is provided below.\n`;
-    result.text += `- \`[D]\` Definitions Only — only signatures/stubs are provided.\n`;
-    result.text += `- *(no annotation)* Content is **HIDDEN** — file exists but content is not loaded.\n`;
-    result.text += `**CRITICAL:** Do NOT guess or hallucinate content of hidden files. Use \`read_file\` or \`add_files_to_context\` if you need them.\n\n`;
+    // ── Workspace Structure Briefing ─────────────────────────────
+    result.text = `# 🏢 SOVEREIGN WORKSPACE STRUCTURE\n`;
+    result.text += `You are operating in a multi-root VS Code environment with ${activeFolders.length} independent project(s).\n\n`;
+
+    result.text += `### 🌐 HOW TO INTERACT\n`;
+    result.text += `1. **Addressing**: Always refer to files using the full namespaced path: \`ProjectName/path/to/file.ext\`.\n`;
+    result.text += `2. **Partial Vision**: The user has selected **${contextFiles.length}** file(s) for your primary context. You can see the full structure in the tree, but you only "possess" the code for specific files.\n`;
+    result.text += `3. **Expansion**: If you see a file in the tree that you need to read but its content is missing below, you MUST use the \`<add_files_to_context>\` tag (or \`read_file\` tool in Agent Mode) to request it. Do NOT guess the implementation.\n\n`;
+
+    result.text += `### 🏷️ CONTEXT MARKERS (LEGEND)\n`;
+    result.text += `- **\`[C]\` (Content Loaded)**: The full source code of this file is available in the 'LOADED FILE CONTENTS' section below.\n`;
+    result.text += `- **\`[D]\` (Definitions Only)**: Only the class/function signatures are loaded. High-level structure is known, but logic is hidden.\n`;
+    result.text += `- **(No Marker)**: The file is visible in the structure, but its content is completely **HIDDEN** from your current memory.\n\n`;
 
     // ── Skills (global, shown once) ─────────────────────────────
     const discussionSkillIds = options?.importedSkillIds || [];
@@ -662,72 +636,62 @@ export class ContextManager {
         continue;
       }
 
-      // Filter files that belong to this folder
-      const projectFiles = contextFiles.filter(f => {
-        // Multi-root: paths are namespaced as "FolderName/path/to/file"
-        // The ContextStateProvider stores files with this prefix in multi-root mode
-        if (activeFolders.length > 1) {
-          // Simple prefix check - the namespaced path is the source of truth
-          return f.path.startsWith(folder.name + '/');
-        }
-        // Single root: verify the file physically belongs to this workspace
-        const fileUri = vscode.Uri.joinPath(folder.uri, f.path);
-        const ownerFolder = vscode.workspace.getWorkspaceFolder(fileUri);
-        return ownerFolder?.uri.toString() === folder.uri.toString();
-      });
-
       result.text += `### 📄 ${projectName.toUpperCase()} — LOADED FILE CONTENTS\n\n`;
 
       if (useRLM) {
         result.text += `> **Long Context Mode (RLM):** Context limit approaching. File contents are hidden.\n`;
         result.text += `> Use \`read_file\` to inspect specific files, \`search_files\` to locate code.\n\n`;
-      } else if (projectFiles.length === 0) {
-        result.text += `*(No file contents currently loaded for ${projectName}. Right-click files in Explorer → Set Context State.)*\n\n`;
       } else {
-        result.selectedFilesContent += `## ${projectName} — Loaded Files\n\n`;
+        let projectContentBuffer = "";
+        let filesInThisFolderCount = 0;
 
-        for (let i = 0; i < projectFiles.length; i++) {
-          if (i % 10 === 0) await new Promise(resolve => setTimeout(resolve, 0));
+        // Use the contextFiles list (73 files in your case) and filter by ownership
+        for (const fileEntry of contextFiles) {
           if (signal?.aborted) throw new Error("Operation cancelled");
 
-          const fileEntry = projectFiles[i];
-          const filePath = fileEntry.path;
+          // CRITICAL: Use the existing resolver to handle namespacing/roots correctly
+          const resolution = await this.resolveWorkspaceFromPath(fileEntry.path);
+
+          // Verify if this file belongs to the CURRENT folder in the project block
+          if (!resolution || !resolution.folder || resolution.folder.uri.toString() !== folder.uri.toString()) {
+            continue; 
+          }
+
+          filesInThisFolderCount++;
+          const namespacedPath = fileEntry.path;
           const contextState = fileEntry.state;
+          const fileUri = resolution.uri;
+          const relativePath = resolution.relativePath;
 
-          // Resolve the relative path within this folder
-          const relativePath = activeFolders.length > 1
-            ? filePath.substring(folder.name.length + 1)
-            : filePath;
-          const fileUri = vscode.Uri.joinPath(folder.uri, relativePath);
+          // Header matches the "Sovereign" protocol: FolderName/Path
+          const headerPath = activeFolders.length > 1 ? `${folder.name}/${relativePath}` : relativePath;
 
-          // Double-check exclusion
-          const state = this.contextStateProvider.getStateForUri(fileUri);
-          if (state === 'fully-excluded' || this.contextStateProvider.isStrictlyIgnored(fileUri)) continue;
+          if (this.contextStateProvider.isStrictlyIgnored(fileUri)) continue;
 
           try {
             const stat = await vscode.workspace.fs.stat(fileUri);
             if (stat.type !== vscode.FileType.File) continue;
 
-            const ext = path.extname(filePath).toLowerCase();
-            const scrubbedPath = this.getScrubbedPath(filePath);
+            const languageId = this.getLanguageId(relativePath);
+            const ext = path.extname(relativePath).toLowerCase();
+            const cacheKey = headerPath;
 
             if (this.binaryExtensions.has(ext)) {
-              result.selectedFilesContent += `\`\`\`${this.getLanguageId(filePath)}:${scrubbedPath}\n(Binary file content excluded)\n\`\`\`\n\n`;
+              projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n(Binary file content excluded)\n\`\`\`\n\n`;
               continue;
             }
 
             if (contextState === 'definitions-only') {
               const definitions = await this.extractDefinitions(fileUri);
-              result.selectedFilesContent += `\`\`\`${this.getLanguageId(filePath)}:${scrubbedPath} (Definitions Only)\n${definitions}\n\`\`\`\n\n`;
+              projectContentBuffer += `\`\`\`${languageId}:${headerPath} (Definitions Only)\n${definitions}\n\`\`\`\n\n`;
               continue;
             }
 
             let fileContent = '';
-            const cached = this._fileContentCache.get(filePath);
+            const cached = this._fileContentCache.get(cacheKey);
             const openDoc = vscode.workspace.textDocuments.find(d => d.uri.toString() === fileUri.toString());
-            const isDirty = openDoc?.isDirty;
 
-            if (cached && cached.state === contextState && !isDirty) {
+            if (cached && cached.state === contextState && !openDoc?.isDirty) {
               fileContent = cached.content;
             } else {
               let fileBuffer: Buffer;
@@ -740,55 +704,54 @@ export class ContextManager {
 
               if (this.imageExtensions.has(ext)) {
                 if (!enableVision) {
-                  result.selectedFilesContent += `### \`${scrubbedPath}\` (Image Muted — Vision Disabled)\n\n`;
+                  projectContentBuffer += `### \`${headerPath}\` (Image Muted — Vision Disabled)\n\n`;
                   continue;
                 }
                 const base64Data = fileBuffer.toString('base64');
                 const mime = ext === '.svg' ? 'image/svg+xml' : `image/${ext.substring(1).replace('jpg', 'jpeg')}`;
-                result.images.push({ filePath, data: `data:${mime};base64,${base64Data}` });
-                result.selectedFilesContent += `### \`${scrubbedPath}\` (Image Attached)\n\n`;
+                result.images.push({ filePath: headerPath, data: `data:${mime};base64,${base64Data}` });
+                projectContentBuffer += `### \`${headerPath}\` (Image Attached)\n\n`;
                 continue;
               }
 
               if (this.isBinary(fileBuffer)) {
-                result.selectedFilesContent += `\`\`\`${this.getLanguageId(filePath)}:${scrubbedPath}\n(Binary content detected and excluded)\n\`\`\`\n\n`;
+                projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n(Binary content detected and excluded)\n\`\`\`\n\n`;
                 continue;
               }
 
               if (this.docExtensions.has(ext)) {
-                try {
-                  fileContent = await this.processFile(filePath, fileBuffer.toString('base64'), result.images);
-                } catch (e: any) {
-                  fileContent = `⚠️ **Extraction failed:** ${e.message}`;
-                }
+                fileContent = await this.processFile(relativePath, fileBuffer.toString('base64'), result.images);
               } else if (ext === '.ipynb') {
-                try {
-                  const notebookJson = JSON.parse(fileBuffer.toString('utf8'));
-                  if (notebookJson.cells && Array.isArray(notebookJson.cells)) {
+                const notebookJson = JSON.parse(fileBuffer.toString('utf8'));
+                if (notebookJson.cells && Array.isArray(notebookJson.cells)) {
                     notebookJson.cells.forEach((cell: any, index: number) => {
-                      const source = Array.isArray(cell.source) ? cell.source.join('') : '';
-                      if (cell.cell_type === 'code') fileContent += `--- Cell ${index + 1} (code) ---\n\`\`\`python\n${source}\n\`\`\`\n\n`;
-                      else if (cell.cell_type === 'markdown') fileContent += `--- Cell ${index + 1} (markdown) ---\n${source}\n\n`;
+                        const source = Array.isArray(cell.source) ? cell.source.join('') : (cell.source || '');
+                        if (cell.cell_type === 'code') fileContent += `--- Cell ${index + 1} (code) ---\n\`\`\`python\n${source}\n\`\`\`\n\n`;
+                        else if (cell.cell_type === 'markdown') fileContent += `--- Cell ${index + 1} (markdown) ---\n${source}\n\n`;
                     });
-                  }
-                } catch (e: any) { fileContent = `⚠️ **Error parsing Jupyter Notebook:** ${e.message}`; }
+                }
               } else {
                 fileContent = fileBuffer.toString('utf8');
               }
 
               if (fileContent.length < 500000) {
-                this._fileContentCache.set(filePath, { content: fileContent, state: contextState });
+                this._fileContentCache.set(cacheKey, { content: fileContent, state: contextState });
               }
             }
 
-            result.selectedFilesContent += `\`\`\`${this.getLanguageId(filePath)}:${scrubbedPath}\n${fileContent}\n\`\`\`\n\n`;
+            projectContentBuffer += `\`\`\`${languageId}:${headerPath}\n${fileContent}\n\`\`\`\n\n`;
 
           } catch (error) {
-            result.selectedFilesContent += `### ${filePath}\n\n⚠️ **Error processing:** ${error}\n\n`;
+            projectContentBuffer += `### ${headerPath}\n\n⚠️ **Error reading project file:** ${error}\n\n`;
           }
         }
 
-        result.text += result.selectedFilesContent;
+        if (filesInThisFolderCount === 0) {
+          result.text += `*(No file contents currently loaded for ${projectName}.)*\n\n`;
+        } else {
+          result.text += projectContentBuffer;
+          result.selectedFilesContent += `## Project: ${projectName}\n${projectContentBuffer}`;
+        }
       }
     }
 

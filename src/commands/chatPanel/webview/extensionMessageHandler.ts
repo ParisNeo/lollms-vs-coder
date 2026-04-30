@@ -935,10 +935,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             if (isUndo) {
                                 btn.disabled = false;
                                 btn.classList.remove('applied');
-                                btn.innerHTML = btn.dataset.originalHtml || '<span class="codicon codicon-tools"></span>';
+                                // Restore original icon based on block type
+                                const isSurgical = btn.closest('.aider-hunk-bubble') || btn.innerHTML.includes('arrow');
+                                btn.innerHTML = btn.dataset.originalHtml || (isSurgical ? '<span class="codicon codicon-arrow-swap"></span>' : '<span class="codicon codicon-tools"></span>');
                                 if (undoBtn) undoBtn.style.display = 'none';
                             } else {
-                                btn.disabled = true;
+                                // Keep enabled to allow re-application
+                                btn.disabled = false; 
                                 btn.classList.add('applied');
                                 btn.innerHTML = '<span class="codicon codicon-check"></span>';
                                 if (undoBtn) undoBtn.style.display = 'flex';

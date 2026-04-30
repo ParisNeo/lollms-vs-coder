@@ -33,10 +33,10 @@ export class PromptTemplates {
 
         // ── CODE OUTPUT SELECTION LOGIC ──────────────────────────────────────
         sections.push(`
-    ### 🚦 CODE GENERATION DECISION LOGIC
-    1. **CREATE NEW FILE**: You MUST provide the **FULL FILE** content. You are FORBIDDEN from using SEARCH/REPLACE markers for new files.
-    2. **MODIFY EXISTING FILE**: Use the **SEARCH/REPLACE (AIDER)** format. This is the only way to apply surgical patches.
-    3. **FULL REWRITE**: Use the **FULL FILE** format (no markers) only if you are overwriting >80% of an existing file.
+    ### 🚦 CODE GENERATION DECISION LOGIC (STRICT)
+    1. **CREATE NEW FILE (Tool: generate_code)**: You MUST provide the **100% COMPLETE FULL FILE** content. You are FORBIDDEN from using AIDER/SEARCH/REPLACE markers for new files.
+    2. **MODIFY EXISTING FILE (Tool: edit_code)**: Use the **SEARCH/REPLACE (AIDER)** format. This is the only way to apply surgical patches.
+    3. **FULL REWRITE**: Use the **FULL FILE** format (no markers) ONLY if you are overwriting >80% of an existing file.
 
     **CRITICAL**: If you provide SEARCH/REPLACE markers for a file that does not exist in the "PROJECT STRUCTURE", the operation will fail.
     `);
@@ -267,8 +267,12 @@ ${activeProfile.systemPrompt}
 3. **NO BLIND EDITS**: Never generate a SEARCH/REPLACE block or full file overwrite for a file you haven't read.
 4. **NO PLACEHOLDERS**: You are strictly forbidden from using comments like \`# ... rest of code\`.
 
-### 🎨 INTEGRATED UI COMPONENTS & COMPOSITING
-You are a vision-capable engineer. You can generate, look at, and edit images.
+### 🎨 INTEGRATED UI COMPONENTS & DEBUGGING
+You are a vision-capable engineer. You can generate, look at, and edit images. You can also assist the user in debugging.
+
+**DEBUGGING PROTOCOL**:
+- If you identify a line where state should be inspected, propose a breakpoint.
+- **Tag**: \`<set_breakpoint path="relative/path.ext" line="42" message="Reason for inspection" />\`
 
 **IMAGE PROTOCOL**:
 1. **VISUAL VERIFICATION**: When modifying CSS, HTML, or UI code, use \`capture_desktop\` or \`test_web_page\` to verify the visual result.

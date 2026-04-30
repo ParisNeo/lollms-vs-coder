@@ -462,7 +462,7 @@ export class ChatPanel {
 
       if (this._contextManager) {
           const cachedContext = this._contextManager.getLastContext();
-          const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles()?.map(f => this._contextManager.getScrubbedPath(f.path)) || [];
+          const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles()?.map(f => f.path) || [];
           const projectSkills = await this._contextManager.getActiveProjectSkills();
           const discussionSkills = this._currentDiscussion.importedSkills || [];
           
@@ -709,7 +709,7 @@ export class ChatPanel {
                     }
                 }
             });
-            
+
             if (signal.aborted) {
                 this.log("Token calculation aborted.");
                 return;
@@ -717,7 +717,7 @@ export class ChatPanel {
 
             if (this._isDisposed) return;
 
-            const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles()?.map(f => this._contextManager.getScrubbedPath(f.path)) ||[];
+            const includedFiles = this._contextManager.getContextStateProvider()?.getIncludedFiles()?.map(f => f.path) || [];
 
             // Aggressive truncation for Webview UI to prevent IPC Channel Closure
             const UI_PREVIEW_LIMIT = 10000; 
@@ -776,60 +776,52 @@ export class ChatPanel {
                 }
             };
 
-            // --- GRANULAR FOLDER STATS CALCULATION ---
+            // --- GRANULAR FOLDER STATS CALCULATION (PARALLEL) ---
             const folderStats: Record<string, { tree: number, files: number }> = {};
-            const statsPromises: Promise<void>[] = [];
-
             const activeFolders = vscode.workspace.workspaceFolders || [];
             const folderSettings = this._discussionCapabilities.folderSettings || {};
+            const statsPromises: Promise<void>[] = [];
 
             activeFolders.forEach(folder => {
                 const uriKey = folder.uri.toString();
                 const settings = folderSettings[uriKey] || { tree: true, content: true };
 
                 statsPromises.push((async () => {
+                    if (signal.aborted) return;
                     try {
                         let treeTokens = 0;
                         let filesTokens = 0;
 
-                        // 1. Calculate Folder Tree Weight
+                        // 1. Tree Weight
                         if (settings.tree) {
-                            const folderTree = await this._contextManager.generateProjectTree(signal, undefined, {
-                                ...this._discussionCapabilities,
-                                folderSettings: { [uriKey]: { tree: true, content: false } }
-                            } as any);
-                            treeTokens = (await getTokenCount(folderTree)).count;
+                            const folderTree = await this._contextManager.generateIsolatedProjectTree(folder, signal, this._discussionCapabilities);
+                            const res = await getTokenCount(folderTree);
+                            treeTokens = res.count;
                         }
 
-                        // 2. Calculate Folder Files Weight
+                        // 2. Content Weight (Fast Heuristic from Cache/Stats)
                         if (settings.content) {
-                            const projectIncludedFiles = includedFiles.filter(f => {
-                                // Check if file path is relative to this folder or namespaced
-                                const isProjectFile = f.path.startsWith(folder.name + '/') || 
-                                                     vscode.workspace.getWorkspaceFolder(vscode.Uri.joinPath(folder.uri, f.path))?.uri.toString() === uriKey;
+                            const provider = this._contextManager.getContextStateProvider();
+                            const included = provider?.getIncludedFiles() || [];
 
-                                if (!isProjectFile) return false;
-
-                                // Validate that the file is not excluded in the Matrix
-                                const fileUri = vscode.Uri.joinPath(folder.uri, (vscode.workspace.workspaceFolders?.length || 0) > 1 ? f.path.split('/').slice(1).join('/') : f.path);
-                                const state = this._contextManager.getContextStateProvider()?.getStateForUri(fileUri);
-                                return state !== 'fully-excluded';
-                            });
-
-                            if (projectIncludedFiles.length > 0) {
-                                // Temporary build content for this folder only
-                                let folderContent = "";
-                                for (const f of projectIncludedFiles) {
-                                    const cached = (this._contextManager as any)._fileContentCache.get(f.path);
-                                    if (cached) folderContent += cached.content;
+                            for (const file of included) {
+                                const resolution = await this._contextManager.resolveWorkspaceFromPath(file.path);
+                                if (resolution?.folder?.uri.toString() === uriKey) {
+                                    const cached = (this._contextManager as any)._fileContentCache.get(file.path);
+                                    if (cached) {
+                                        filesTokens += Math.ceil(cached.content.length / 3.5);
+                                    } else {
+                                        try {
+                                            const stats = await vscode.workspace.fs.stat(resolution.uri);
+                                            filesTokens += Math.ceil(stats.size / 3.5);
+                                        } catch {}
+                                    }
                                 }
-                                filesTokens = (await getTokenCount(folderContent)).count;
                             }
                         }
-
                         folderStats[uriKey] = { tree: treeTokens, files: filesTokens };
                     } catch (err) {
-                        Logger.warn(`[TokenStats] Failed to calculate stats for folder ${folder.name}: ${err}`);
+                        Logger.warn(`[TokenStats] Error for ${folder.name}: ${err}`);
                         folderStats[uriKey] = { tree: 0, files: 0 };
                     }
                 })());
@@ -849,7 +841,7 @@ export class ChatPanel {
                     Logger.error(`[TokenStats] Context Size API critically failed: ${e.message}`);
                     return { context_size: 128000, isEstimation: true }; 
                 }),
-                ...statsPromises
+                Promise.all(statsPromises)
             ]);
 
             if (this._isDisposed || signal.aborted) return;
@@ -898,6 +890,16 @@ export class ChatPanel {
             Logger.info(`[TokenStats] Breakdown: System=${systemRes.count}, Tree=${treeRes.count}, Content=${contentTokens}, History=${historyRes.count}, Images=${imageTokens}`);
             Logger.info(`[TokenStats] Final: ${totalTokens} / ${ctxSize} (Approx: ${isActuallyApproximate})`);
 
+            // --- CONTEXT GOVERNOR ---
+            if (totalTokens > ctxSize * 1.5) {
+                this._panel.webview.postMessage({ 
+                    command: 'updateStatus', 
+                    status: `CRITICAL OVERFLOW: ${totalTokens.toLocaleString()} tokens`, 
+                    type: 'error' 
+                });
+                Logger.warn(`[TokenStats] Context size is dangerously high (${totalTokens}). Model ${modelForTokenization} will likely fail.`);
+            }
+
             if (this._panel && this._panel.webview) {
                 this._panel.webview.postMessage({
                     command: 'updateTokenProgress',
@@ -930,16 +932,45 @@ export class ChatPanel {
 
             // --- DETAILED ERROR LOGGING ---
             Logger.error(`[TokenStats] API Pipeline Failed! Error: ${error.message}`);
-            if (error.stack) {
-                Logger.debug(`[TokenStats] Stack Trace: ${error.stack}`);
-            }
 
             if (this._isDisposed) return;
             
             try {
-                // FALLBACK STRATEGY
-                this.log("updateContextAndTokens: Building context...");
-                const context = await this._contextManager.getContextContent({ signal });
+                // RECOVERY: Try to get the real context size even in fallback.
+                // The API caches this, so it will return the last successful detection.
+                const contextSizeRes = await this._lollmsAPI.getContextSize(modelForTokenization).catch(() => null);
+                
+                const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+                let finalCtxSize = 128000;
+                let isLimitApproximate = true;
+
+                if (contextSizeRes && contextSizeRes.context_size > 0) {
+                    finalCtxSize = contextSizeRes.context_size;
+                    // If we got it from the API, we only mark it approximate if the API said it was an estimation
+                    isLimitApproximate = !!contextSizeRes.isEstimation && !contextSizeRes.isUserDefined;
+                } else {
+                    const manualOverride = config.get<number>('failsafeContextSize') || 0;
+                    if (manualOverride > 0) {
+                        finalCtxSize = manualOverride;
+                        isLimitApproximate = false;
+                    } else {
+                        finalCtxSize = 128000;
+                        isLimitApproximate = true;
+                    }
+                }
+
+
+                // 2. RECOVER FOLDER STATS (Lite Scan)
+                const folderStats: Record<string, { tree: number, files: number }> = {};
+                const activeFolders = vscode.workspace.workspaceFolders || [];
+                activeFolders.forEach(f => folderStats[f.uri.toString()] = { tree: 0, files: 0 });
+
+                // 3. RECOVER CONTENT (Heuristic)
+                this.log("updateContextAndTokens: Building context fallback...");
+                const context = await this._contextManager.getContextContent({ signal }).catch(() => ({
+                    text: '', projectTree: '', selectedFilesContent: '', skillsContent: '', images: [], importedSkills: []
+                }));
+                
                 if (signal.aborted) return;
 
                 const historyText = this._currentDiscussion!.messages.map(msg => {
@@ -951,18 +982,9 @@ export class ChatPanel {
 
                 const systemText = await getProcessedSystemPrompt('chat', this._discussionCapabilities, undefined, undefined, false, { ...context, tree: '', files: '' });
                 
-                // Use standard heuristic for initial log (tokens instead of chars)
-                const totalEstimatedTokens = Math.ceil((context.text.length + historyText.length + systemText.length) / 3.2);
-                this.log(`Starting API Tokenization. Model: ${modelForTokenization}, Est. Token Load: ${totalEstimatedTokens}`);
-
-                const fullText = context.text + '\n' + historyText;
-                const wordCount = fullText.trim().split(/\s+/).length;
+                const wordCount = (context.text + '\n' + historyText + '\n' + (systemText || '')).trim().split(/\s+/).length;
                 const estimatedTokens = Math.ceil(wordCount * 1.35); // Heuristic
-                
-                const config = vscode.workspace.getConfiguration('lollmsVsCoder');
-                const failsafeSize = config.get<number>('failsafeContextSize') || 128000;
-
-                Logger.warn(`[TokenStats] Recovered using Failsafe. Estimated Tokens: ${estimatedTokens}, Capacity: ${failsafeSize}`);
+                Logger.warn(`[TokenStats] Recovered after context error. Estimated Tokens: ${estimatedTokens}, Capacity: ${finalCtxSize} (Approx: ${isLimitApproximate})`);
 
                 const systemTokens = Math.ceil((systemText?.length || 0) / 3.5);
                 const historyTokens = Math.ceil((historyText?.length || 0) / 3.5);
@@ -973,8 +995,9 @@ export class ChatPanel {
                 this._panel.webview.postMessage({
                     command: 'updateTokenProgress',
                     totalTokens: estimatedTokens,
-                    contextSize: failsafeSize,
-                    isApproximate: true,
+                    contextSize: finalCtxSize,
+                    isApproximate: isLimitApproximate,
+                    folderStats: folderStats,
                     segments: {
                         system: systemTokens,
                         tree: treeTokens,
@@ -987,7 +1010,7 @@ export class ChatPanel {
 
                 this._panel.webview.postMessage({ command: 'updateStatus', status: 'Ready (Approx)', type: 'warning' });
 
-                } catch (fallbackError: any) {
+            } catch (fallbackError: any) {
                 if (signal.aborted || fallbackError.message === "Operation cancelled") return;
                 this.log(`Fallback token calculation failed: ${fallbackError.message}`, 'ERROR');
                 if (!this._isDisposed) {
@@ -1020,25 +1043,27 @@ export class ChatPanel {
     */
     private async _getFilteredFilesContent(contextData: ContextResult, folderSettings: any): Promise<string> {
         const folders = vscode.workspace.workspaceFolders || [];
-        const blocks = contextData.selectedFilesContent.split('\n\n').filter(b => b.trim().length > 0);
+        // The block format is ```lang:path\ncontent\n```
+        const blocks = contextData.selectedFilesContent.split('```\n\n').filter(b => b.trim().length > 0);
 
         const filteredBlocks = blocks.filter(block => {
-            // Robustly extract path from the code block header
-            const match = block.match(/```(?:\w+):([^\n]+)/);
-            if (!match) return false; // Discard malformed blocks
+            // Re-add the closing backticks stripped by split for regex matching
+            const testBlock = block.endsWith('```') ? block : block + '```';
+            const match = testBlock.match(/```(?:\w+)?:([^\n]+)/);
+            if (!match) return true; // Keep blocks without headers (like global notes)
 
             const filePath = match[1].trim();
+            const isMultiRoot = folders.length > 1;
 
-            // Find which root folder this file belongs to
             const ownerFolder = folders.find(f => {
-                const rel = vscode.workspace.asRelativePath(vscode.Uri.joinPath(f.uri, filePath), false);
-                // In multi-root, files often start with the folder name
-                return filePath.startsWith(f.name + '/') || (folders.length === 1);
+                if (isMultiRoot) {
+                    return filePath.startsWith(f.name + '/');
+                }
+                return true;
             });
 
             if (ownerFolder) {
                 const settings = folderSettings[ownerFolder.uri.toString()];
-                // If settings exist and content is explicitly FALSE, we MUST return false to filter it out
                 if (settings && settings.content === false) {
                     return false;
                 }
@@ -1046,7 +1071,7 @@ export class ChatPanel {
             return true;
         });
 
-        return filteredBlocks.length > 0 ? filteredBlocks.join('\n\n') : "";
+        return filteredBlocks.length > 0 ? filteredBlocks.join('```\n\n') : "";
     }
 
     private async waitForWebviewReady() { if (this._isWebviewReady) return; return this._viewReadyPromise; }
@@ -3596,6 +3621,30 @@ ${targetContent}
                 break;
             case 'deleteCodeBlock':
                 vscode.commands.executeCommand('lollms-vs-coder.deleteCodeBlock', message.filePath, message.content);
+                break;
+            case 'copyFilesToClipboard':
+                {
+                    const filesToCopy = Array.isArray(message.files) ? message.files : [];
+                    if (filesToCopy.length > 0) {
+                        vscode.window.withProgress({
+                            location: vscode.ProgressLocation.Notification,
+                            title: "Lollms: Copying files to clipboard...",
+                            cancellable: false
+                        }, async (progress) => {
+                            try {
+                                const content = await this._contextManager.readSpecificFiles(filesToCopy);
+                                if (content) {
+                                    await vscode.env.clipboard.writeText(content);
+                                    vscode.window.showInformationMessage(`✅ Copied ${filesToCopy.length} files to clipboard.`);
+                                } else {
+                                    vscode.window.showErrorMessage("Failed to read any of the requested files.");
+                                }
+                            } catch (e: any) {
+                                vscode.window.showErrorMessage(`Copy failed: ${e.message}`);
+                            }
+                        });
+                    }
+                }
                 break;
             case 'addFilesToContext':
                 {

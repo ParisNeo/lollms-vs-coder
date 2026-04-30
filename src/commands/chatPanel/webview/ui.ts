@@ -2300,7 +2300,7 @@ export function renderWorkspaceMatrix() {
                         title="${settings.tree ? 'Hide project structure (Tree)' : 'Include project structure (Tree)'}">
                         <i class="codicon ${settings.tree ? 'codicon-check' : 'codicon-circle-slash'}"></i>
                         <span>Tree</span>
-                        ${stats.tree > 0 ? `<span class="token-mini-badge" style="background: rgba(0,0,0,0.3); padding: 0 4px; border-radius: 3px; font-weight: 800; font-family: var(--vscode-editor-font-family);">${stats.tree}</span>` : ''}
+                        <span class="token-mini-badge" style="background: rgba(0,0,0,0.3); padding: 1px 5px; border-radius: 4px; font-weight: 800; font-family: var(--vscode-editor-font-family);">${stats.tree.toLocaleString()}</span>
                 </button>
                 <button class="matrix-toggle-btn ${settings.content ? 'active' : 'inactive'}" 
                         data-type="content" 
@@ -2310,7 +2310,7 @@ export function renderWorkspaceMatrix() {
                         title="${settings.content ? 'Mute file contents (Files)' : 'Include file contents (Files)'}">
                         <i class="codicon ${settings.content ? 'codicon-check' : 'codicon-circle-slash'}"></i>
                         <span>Content</span>
-                        ${stats.files > 0 ? `<span class="token-mini-badge" style="background: rgba(0,0,0,0.3); padding: 0 4px; border-radius: 3px; font-weight: 800; font-family: var(--vscode-editor-font-family);">${stats.files}</span>` : ''}
+                        ${stats.files > 0 ? `<span class="token-mini-badge" style="background: rgba(0,0,0,0.3); padding: 1px 5px; border-radius: 4px; font-weight: 800; font-family: var(--vscode-editor-font-family);">${stats.files.toLocaleString()}</span>` : ''}
                 </button>
             </div>
         `;

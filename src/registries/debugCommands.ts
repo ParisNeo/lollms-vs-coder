@@ -5,7 +5,26 @@ import { startDiscussionWithInitialPrompt } from '../utils/discussionUtils';
 import { ChatPanel } from '../commands/chatPanel/chatPanel';
 
 export function registerDebugCommands(context: vscode.ExtensionContext, services: LollmsServices, getActiveWorkspace: () => vscode.WorkspaceFolder | undefined) {
-    
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.setBreakpoint', async (filePath: string, line: number) => {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) return;
+
+        const resolution = await services.contextManager.resolveWorkspaceFromPath(filePath);
+        if (!resolution) {
+            vscode.window.showErrorMessage(`Could not resolve file path: ${filePath}`);
+            return;
+        }
+
+        const uri = resolution.uri;
+        const position = new vscode.Position(line - 1, 0);
+        const location = new vscode.Location(uri, position);
+        const breakpoint = new vscode.SourceBreakpoint(location);
+
+        vscode.debug.addBreakpoints([breakpoint]);
+        vscode.window.showInformationMessage(`✅ Breakpoint set at ${resolution.relativePath}:${line}`);
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.fixDiagnosticAtPosition', async (pos?: vscode.Position) => {
         const editor = vscode.window.activeTextEditor;
         if (!editor) return;

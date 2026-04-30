@@ -1283,16 +1283,15 @@ Please provide a clear, concise final response to the user summarizing the outco
             let redundantPath = "";
 
             if (task.action === 'read_file') {
-                const checkPath = this.contextManager.getScrubbedPath(resolvedParams.path || resolvedParams.file);
+                const checkPath = (resolvedParams.path || resolvedParams.file || "").replace(/\\/g, '/');
                 if (includedFiles.some(f => f.path === checkPath && f.state === 'included')) {
                     redundantPath = checkPath;
                 }
             } else if (task.action === 'read_files') {
-                const paths = resolvedParams.paths || [];
+                const paths = (resolvedParams.paths || []).map((p: string) => p.replace(/\\/g, '/'));
                 for (const p of paths) {
-                    const checkPath = this.contextManager.getScrubbedPath(p);
-                    if (includedFiles.some(f => f.path === checkPath && f.state === 'included')) {
-                        redundantPath = checkPath;
+                    if (includedFiles.some(f => f.path === p && f.state === 'included')) {
+                        redundantPath = p;
                         break;
                     }
                 }

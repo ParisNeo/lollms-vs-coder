@@ -95,11 +95,12 @@ Create the file: \`${params.file_path}\`
 Follow these specific instructions:
 ${params.instructions}
 
-## 🛑 STRICTOR OUTPUT RULES:
-1. Provide the **100% COMPLETE** content of the file. No snippets.
-2. **ZERO-PLACEHOLDER RULE**: You are strictly FORBIDDEN from using comments like \`// ... existing code\` or \`# ... rest of imports\`. Every single line must be written explicitly.
-3. Output **ONLY** the code inside a standard Markdown block (e.g. \` \`\`\`python ... \` \`).
-4. Do **NOT** include any conversational chatter or explanations. Just the file content.
+## 🛑 STRICTOR OUTPUT RULES (CRITICAL):
+1. **NO AIDER FORMAT**: You are creating a NEW file. You are STRICTLY FORBIDDEN from using \`<<<<<<< SEARCH\`, \`=======\`, or \`>>>>>>> REPLACE\` markers.
+2. **FULL BUFFER DELIVERY**: Provide the 100% COMPLETE content of the file from line 1 to the end. No snippets.
+3. **ZERO-PLACEHOLDER RULE**: You are strictly FORBIDDEN from using comments like \`// ... existing code\` or \`# ... rest of imports\`. Every single line must be written explicitly.
+4. Output **ONLY** the code inside a single standard Markdown block.
+5. Do **NOT** include any conversational chatter or explanations.
 `;
 
         // 4. CALL SPECIALIST

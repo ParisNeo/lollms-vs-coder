@@ -1526,6 +1526,31 @@ export function initEventHandlers() {
             return;
         }
 
+        const copyFilesBtn = target.closest('.copy-files-to-clipboard-btn') as HTMLButtonElement;
+        if (copyFilesBtn) {
+            e.stopPropagation();
+            const filesRaw = copyFilesBtn.dataset.files || '[]';
+            try {
+                const files = JSON.parse(filesRaw);
+                vscode.postMessage({
+                    command: 'copyFilesToClipboard',
+                    files: files
+                });
+
+                // Immediate visual feedback
+                const originalHtml = copyFilesBtn.innerHTML;
+                copyFilesBtn.innerHTML = '<span class="codicon codicon-check"></span> Copied!';
+                copyFilesBtn.classList.add('success');
+                setTimeout(() => {
+                    copyFilesBtn.innerHTML = originalHtml;
+                    copyFilesBtn.classList.remove('success');
+                }, 2000);
+            } catch (err) {
+                console.error("Failed to parse file list for clipboard:", err);
+            }
+            return;
+        }
+
         // Handle File Deletion (Single)
         const delSingleBtn = target.closest('.delete-single-btn') as HTMLButtonElement;
         if (delSingleBtn) {
@@ -1680,6 +1705,25 @@ export function initEventHandlers() {
                 (window as any).openImageEditorFromData(img.src, editAssetBtn.dataset.path || 'edit.png');
             } else {
                 vscode.postMessage({ command: 'showError', message: 'Asset not loaded or ready for editing.' });
+            }
+            return;
+        }
+
+        // Set Breakpoint
+        const bpBtn = target.closest('.set-breakpoint-btn') as HTMLButtonElement;
+        if (bpBtn) {
+            e.stopPropagation();
+            const filePath = bpBtn.dataset.path;
+            const line = parseInt(bpBtn.dataset.line || "0", 10);
+
+            if (filePath && line > 0) {
+                vscode.postMessage({ 
+                    command: 'executeLollmsCommand', 
+                    details: { command: 'lollms-vs-coder.setBreakpoint', params: [filePath, line] }
+                });
+                bpBtn.disabled = true;
+                bpBtn.innerHTML = '<span class="codicon codicon-check"></span> Active';
+                bpBtn.classList.replace('apply-btn', 'applied');
             }
             return;
         }

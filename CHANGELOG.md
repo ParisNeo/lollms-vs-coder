@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-04-30 14:44]
+
+- feat(chat): enhance webview event handling and improve system integration
+
 ## [2026-04-30 00:00]
 
 - refactor(agent): implement agentic system overhaul with ReAct protocol

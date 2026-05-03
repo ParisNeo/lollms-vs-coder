@@ -20,6 +20,7 @@ export function renderPendingImages() {
     dom.attachmentPreviewArea.innerHTML = '';
     
     state.pendingImages.forEach((img, idx) => {
+        if (!img.data) return; // Skip invalid entries
         const card = document.createElement('div');
         card.className = 'staged-image-card';
         card.style.backgroundImage = `url(${img.data})`;
@@ -518,13 +519,13 @@ function showTextInput(x: number, y: number, w: number, h: number, screenPos: an
 }
 
 export function setGeneratingState(isGenerating: boolean, statusText?: string, showRaiseHand: boolean = false) {
-    if (state.isGenerating === isGenerating && !statusText) return;
-
+    // Update internal state
     state.isGenerating = isGenerating;
 
     const raiseHandBtn = document.getElementById('raiseHandButton');
     if (raiseHandBtn) {
-        raiseHandBtn.style.display = showRaiseHand ? 'flex' : 'none';
+        // Force visibility based on the flag provided by the extension
+        raiseHandBtn.style.setProperty('display', (isGenerating && showRaiseHand) ? 'flex' : 'none', 'important');
     }
 
     if (statusText) {
@@ -565,18 +566,31 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string, s
     if (dom.generatingOverlay) {
         dom.generatingOverlay.style.display = isGenerating ? 'flex' : 'none';
         const statusEl = document.getElementById('generating-status-text');
-        
+        const raiseHandBtn = document.getElementById('raiseHandButton');
+
+        if (raiseHandBtn) {
+            // Use the function argument directly, not the undefined 'message' variable
+            raiseHandBtn.style.display = showRaiseHand ? 'flex' : 'none';
+        }
+
         if (statusEl && statusText) {
             const emoji = getStatusEmoji(statusText);
             statusEl.textContent = `${emoji} ${statusText}`;
 
-            // Check if we are in an "Application" phase to update the Stop button
-            const isApplying = statusText.includes("Applying") || 
-                               statusText.includes("Repairing") || 
-                               statusText.includes("Librarian");
-            
+            // Context-aware button labeling
+            const lowerStatus = statusText.toLowerCase();
+            const isApplying = lowerStatus.includes("apply") || lowerStatus.includes("repair") || lowerStatus.includes("writ");
+            const isSearching = lowerStatus.includes("search") || lowerStatus.includes("librarian");
+            const isThinking = lowerStatus.includes("reason") || lowerStatus.includes("plan");
+
             if (dom.stopButton) {
-                dom.stopButton.textContent = isApplying ? "Stop Application" : "Stop Generation";
+                const btnLabel = dom.stopButton.querySelector('span');
+                if (btnLabel) {
+                    if (isApplying) btnLabel.textContent = "STOP APPLICATION";
+                    else if (isSearching) btnLabel.textContent = "STOP SEARCH";
+                    else if (isThinking) btnLabel.textContent = "STOP REASONING";
+                    else btnLabel.textContent = "STOP GENERATION";
+                }
             }
         }
 
@@ -769,8 +783,7 @@ export function updateBadges() {
     const isAgentMode = caps.agentMode === true;
 
     // --- GROUP A: INFRASTRUCTURE (Environment & Git) ---
-    // Hide Infra group in Agent mode to focus on mission
-    if (!isAgentMode) {
+    if (true) { // Always show Infra, but change content based on mode
         const infraGroup = document.createElement('div');
         infraGroup.className = 'badge-group';
         infraGroup.innerHTML = '<span class="badge-group-label">INFRA</span>';
@@ -787,7 +800,7 @@ export function updateBadges() {
     }
 
     // Personality Badge
-    if (state.personalities && state.personalities.length > 0) {
+    if (!isAgentMode && state.personalities && state.personalities.length > 0) {
         const currentP = state.personalities.find(p => p.id === state.currentPersonalityId);
         if (currentP) {
             const wrapper = document.createElement('div');
@@ -1023,6 +1036,62 @@ export function updateBadges() {
         taskGroup.className = 'badge-group';
         taskGroup.innerHTML = `<span class="badge-group-label">${isAgentMode ? 'GENIE' : 'TASK'}</span>`;
         container.appendChild(taskGroup);
+
+        // --- NEW: AGENT MISSION PROFILE SELECTOR ---
+        if (isAgentMode && state.agentProfiles && state.agentProfiles.length > 0) {
+            const currentProfileId = state.capabilities?.activeAgentProfileId || 'software_architect';
+            const currentProfile = state.agentProfiles.find(p => p.id === currentProfileId) || state.agentProfiles[0];
+
+            if (currentProfile) {
+                const wrapper = document.createElement('div');
+                wrapper.className = 'badge-wrapper';
+                wrapper.style.position = 'relative';
+
+                const genieBadge = document.createElement('span');
+                genieBadge.className = 'mode-badge active clickable';
+                genieBadge.style.backgroundColor = 'var(--vscode-charts-orange)';
+                genieBadge.style.color = 'white';
+                genieBadge.title = `Genie Mission: ${currentProfile.name}. Click to change protocol.`;
+                genieBadge.innerHTML = `<span class="codicon codicon-target"></span> <span class="badge-label">${currentProfile.name}</span>`;
+
+                const menu = document.createElement('div');
+                menu.className = 'custom-menu';
+                menu.id = 'genie-profile-menu';
+
+                state.agentProfiles.forEach(p => {
+                    const item = document.createElement('div');
+                    item.className = 'custom-menu-item';
+                    const icon = (p.id === currentProfileId) ? 'codicon-check' : 'codicon-symbol-property';
+                    item.innerHTML = `<span class="codicon ${icon}"></span> ${p.name}`;
+
+                    if (p.id === currentProfileId) {
+                        item.style.fontWeight = 'bold';
+                        item.style.color = 'var(--vscode-textLink-foreground)';
+                    }
+
+                    item.onclick = (e) => {
+                        e.stopPropagation();
+                        vscode.postMessage({ 
+                            command: 'updateDiscussionCapabilitiesPartial', 
+                            partial: { activeAgentProfileId: p.id } 
+                        });
+                        menu.classList.remove('visible');
+                    };
+                    menu.appendChild(item);
+                });
+
+                genieBadge.onclick = (e) => {
+                    e.stopPropagation();
+                    const isVisible = menu.classList.contains('visible');
+                    document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
+                    if (!isVisible) menu.classList.add('visible');
+                };
+
+                wrapper.appendChild(genieBadge);
+                wrapper.appendChild(menu);
+                taskGroup.appendChild(wrapper);
+            }
+        }
 
         const agentBadge = createToggleBadge(
             '🤖 Agent',

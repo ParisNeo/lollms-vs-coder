@@ -59,7 +59,7 @@ import 'prismjs/components/prism-sass';
 import 'prismjs/components/prism-scss';
 import 'prismjs/components/prism-jsx';
 import 'prismjs/components/prism-tsx';
-import { setGeneratingState, updateBadges, renderPendingImages, openImageEditor, filterSkillsTree } from './ui.js';
+import { setGeneratingState, updateBadges, renderPendingImages, openImageEditor, filterSkillsTree, renderWorkspaceMatrix } from './ui.js';
 
 // Initialize DOMPurify
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;

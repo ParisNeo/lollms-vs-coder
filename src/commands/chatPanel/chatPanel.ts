@@ -219,12 +219,87 @@ export class ChatPanel {
             }
         }
 
-        // Auto Fix Loop if enabled
-        if (this._discussionCapabilities.autoFix && modifiedFiles.size > 0) {
+        // 🛡️ GUARDIAN PROTOCOL: Automated Audit after Bulk Apply
+        if (this._discussionCapabilities.verifierMode && modifiedFiles.size > 0) {
+            this.processManager.updateDescription(processId, "Guardian: Auditing all modified files...");
+            await this.runGuardianAudit(Array.from(modifiedFiles), signal, messageId);
+        } else if (this._discussionCapabilities.autoFix && modifiedFiles.size > 0) {
+            // Fallback to standard diagnostic-based repair if verifier is off
             const urisToFix = Array.from(modifiedFiles).map(fp => vscode.Uri.joinPath(workspaceFolder.uri, fp));
             await this.repairFilesIteratively(urisToFix, signal, processId, messageId);
         }
-    }
+        }
+
+        /**
+        * Proactive Guardian Audit: Scans files for structural flaws beyond simple diagnostics.
+        */
+        public async runGuardianAudit(filePaths: string[], signal: AbortSignal, originalMessageId: string) {
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) return;
+
+        this.log(`Guardian: Starting structural audit for ${filePaths.length} files.`);
+
+        const auditPrompt = `### 🛡️ GUARDIAN AUDIT MISSION
+        I have just applied changes to the following files: [${filePaths.join(', ')}].
+
+        **TASK:**
+        Perform a cold, critical audit of the current state of these files on disk. Look specifically for:
+        1. **Bad Indentation**: Are there mixed tabs/spaces or broken nesting levels?
+        2. **Missing Imports**: Did the last edit use a library or local module without importing it?
+        3. **Missing Definitions**: Are there calls to functions/classes that don't exist in the context?
+        4. **Structural Malformations**: Are there unclosed braces or leaked Aider markers?
+
+        **INSTRUCTIONS:**
+        - Provide surgical fixes using **AIDER SEARCH/REPLACE** blocks.
+        - If a file is perfect, do not include it.
+        - If everything is perfect, respond with "VERIFICATION PASSED".
+        - Output ONLY the code blocks. No conversational chatter.`;
+
+        try {
+            const model = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+            const systemPrompt = await getProcessedSystemPrompt('verifier');
+
+            // Gather the actual content of the files as they sit on disk right now
+            const diskContext = await this._contextManager.readSpecificFiles(filePaths);
+
+            const response = await this._lollmsAPI.sendChat([
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: `${auditPrompt}\n\n### CURRENT DISK STATE:\n${diskContext}` }
+            ], null, signal, model);
+
+            const cleanResponse = stripThinkingTags(response);
+
+            if (cleanResponse.includes("VERIFICATION PASSED") && cleanResponse.length < 50) {
+                this.addMessageToDiscussion({
+                    role: 'system',
+                    content: `**🛡️ Guardian Audit**: All ${filePaths.length} files verified structurally sound.`,
+                    skipInPrompt: true
+                });
+                return;
+            }
+
+            // If the Guardian found issues, provide them as a new assistant bubble
+            const verifierMsgId = 'guardian_fix_' + Date.now();
+            await this.addMessageToDiscussion({
+                id: verifierMsgId,
+                role: 'assistant',
+                content: `**🛡️ Guardian Audit: Structural Issues Detected**\n\nI've identified indentation or dependency issues in the applied files. Here are the surgical repairs:\n\n${cleanResponse}`,
+                model: model,
+                personalityName: '🛡️ Guardian'
+            });
+
+            // If auto-apply is on, we go one step deeper and apply the guardian's own fixes
+            if (this._discussionCapabilities.autoApply) {
+                const proc = this.processManager.getForDiscussion(this.discussionId);
+                if (proc) {
+                    await this.executeAutomationPipeline(cleanResponse, verifierMsgId, signal, proc.id);
+                }
+            }
+
+        } catch (e: any) {
+            this.log(`Guardian Audit failed: ${e.message}`, 'ERROR');
+        }
+        }
 
     public setAgentManager(agent: AgentManager) {
       if (ChatPanel.activeAgents.has(this.discussionId)) {
@@ -253,17 +328,16 @@ export class ChatPanel {
                 desc.toLowerCase().includes("title") || 
                 desc.toLowerCase().includes("counting");
             
-            // Raise Hand only makes sense during an active autonomous agent loop
+            // Identify if the agent is actively looping
             const isAgentActive = this.agentManager?.getIsActive();
-            const showRaiseHand = isAgentActive && process && !isBackgroundProcess;
 
-            // CRITICAL FIX: isAgentActive alone should NOT trigger the generating overlay.
-            // If it does, a "New Agent Discussion" locks the input before the user can type.
-            // The Orchestrator process registered in AgentManager handles the lock during the loop.
+            // Raise Hand only makes sense during an active autonomous agent loop 
+            // where the AI is actually performing a sequence of tasks.
+            const showRaiseHand = !!(isAgentActive && process && !isBackgroundProcess);
+
             const isGenerating = ((process && !isBackgroundProcess) || !!activeGen) && !this._inputResolver;
 
             let statusText = vscode.l10n.t("Lollms is thinking...");
-
             if (process) {
                 statusText = process.description;
             } else if (activeGen) {
@@ -274,7 +348,7 @@ export class ChatPanel {
                 command: 'setGeneratingState', 
                 isGenerating,
                 statusText,
-                showRaiseHand // NEW: Specific flag for the "Raise Hand" button
+                showRaiseHand 
             });
         }
     }
@@ -342,9 +416,11 @@ export class ChatPanel {
 
     // Persist and Notify
     await this.saveCapabilities();
+    const { AGENT_MISSION_PROFILES } = require('../../registries/agentProfiles');
     this._panel.webview.postMessage({ 
         command: 'updateDiscussionCapabilities', 
-        capabilities: this._discussionCapabilities 
+        capabilities: this._discussionCapabilities,
+        agentProfiles: AGENT_MISSION_PROFILES
     });
   }
   
@@ -509,6 +585,7 @@ export class ChatPanel {
           uri: f.uri.toString()
       }));
 
+      const { AGENT_MISSION_PROFILES } = require('../../registries/agentProfiles');
       this._panel.webview.postMessage({ 
           command: 'loadDiscussion', 
           messages: safeMessages,
@@ -516,7 +593,8 @@ export class ChatPanel {
           agentMode: !!this._discussionCapabilities.agentMode, // Explicitly pass mode for UI theme
           appliedState: this._currentDiscussion.appliedState || {},
           currentModel: this._currentDiscussion.model || this._lollmsAPI.getModelName(),
-          workspaceFolders: workspaceFolders
+          workspaceFolders: workspaceFolders,
+          agentProfiles: AGENT_MISSION_PROFILES
       });
       
       // Ensure capabilities are also pushed so badges can render immediately on load
@@ -607,9 +685,15 @@ export class ChatPanel {
       this.displayPlan(this._currentDiscussion.plan);
       this.updateGeneratingState();
 
-      setTimeout(() => {
-          this.updateContextAndTokens();
-      }, 100);
+      // Use a safer execution for context sync
+      setImmediate(async () => {
+          try {
+              await this.updateContextAndTokens();
+          } catch (e) {
+              this.log("Initial context sync failed", 'WARN');
+              this._panel.webview.postMessage({ command: 'tokenCalculationFinished' });
+          }
+      });
       
       await this._fetchAndSetModels(false);
   }
@@ -1882,8 +1966,18 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
                  this.agentManager.toggleAgentMode(); 
              }
              
+             let textContent = "User Input";
+             if (typeof message.content === 'string') {
+                 textContent = message.content;
+             } else if (Array.isArray(message.content)) {
+                 const textPart = message.content.find((p: any) => p.type === 'text');
+                 if (textPart && textPart.text) {
+                     textContent = textPart.text;
+                 }
+             }
+
              await this.agentManager.handleUserMessage(
-                 typeof message.content === 'string' ? message.content : "User Input", 
+                 textContent, 
                  this._currentDiscussion!, 
                  vscode.workspace.workspaceFolders[0]
              );
@@ -1907,7 +2001,13 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
         this.updateGeneratingState();
 
         const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
-        const userPromptText = (typeof message.content === 'string') ? message.content : "User request";
+        let userPromptText = "User request";
+        if (typeof message.content === 'string') {
+            userPromptText = message.content;
+        } else if (Array.isArray(message.content)) {
+            const textPart = message.content.find((p: any) => p.type === 'text');
+            if (textPart && textPart.text) userPromptText = textPart.text;
+        }
         const autoSkillMsgId = 'auto_skill_agent_' + Date.now();
 
         try {
@@ -1964,7 +2064,13 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
         this.updateGeneratingState();
 
         const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
-        const userPromptText = (typeof message.content === 'string') ? message.content : "User request";
+        let userPromptText = "User request";
+        if (typeof message.content === 'string') {
+            userPromptText = message.content;
+        } else if (Array.isArray(message.content)) {
+            const textPart = message.content.find((p: any) => p.type === 'text');
+            if (textPart && textPart.text) userPromptText = textPart.text;
+        }
         const contextAgentMsgId = 'ctx_agent_' + Date.now();
         
         await this.addMessageToDiscussion({
@@ -2024,7 +2130,13 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
 
         this.log("Web Search active. Starting research agent.");
         const model = this._currentDiscussion.model || this._lollmsAPI.getModelName();
-        const userPromptText = (typeof message.content === 'string') ? message.content : "User request";
+        let userPromptText = "User request";
+        if (typeof message.content === 'string') {
+            userPromptText = message.content;
+        } else if (Array.isArray(message.content)) {
+            const textPart = message.content.find((p: any) => p.type === 'text');
+            if (textPart && textPart.text) userPromptText = textPart.text;
+        }
         const webAgentMsgId = 'web_agent_' + Date.now();
         
         await this.addMessageToDiscussion({
@@ -2392,10 +2504,12 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                     const userPromptText = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
                     const keywords = (userPromptText.toLowerCase().match(/\b[a-z]{4,}\b/g) ||[]);
                     
-                    // 1. Mark files containing keywords
+                    // 1. Mark files containing keywords OR files explicitly required by the user
                     for (const b of fileBlocks) {
                         const contentLower = b.content.toLowerCase();
-                        b.keep = keywords.some(k => contentLower.includes(k));
+                        const fileName = b.path.toLowerCase();
+                        // Priority: Match keywords OR match explicit mention in the last user message
+                        b.keep = keywords.some(k => contentLower.includes(k) || fileName.includes(k));
                     }
 
                     let keptBlocks = fileBlocks.filter(b => b.keep);
@@ -2481,6 +2595,10 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
         // =========================================================================
         const targetModel = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
         
+        // --- DIAGNOSTIC: Log Context Payload ---
+        const includedFiles = fileBlocks.filter(b => b.keep).map(b => b.path);
+        Logger.info(`[ContextCheck] Sending ${includedFiles.length} files to LLM: ${includedFiles.join(', ')}`);
+
         messagesToSend.forEach((msg, idx) => {
             const role = msg.role.toUpperCase();
             let contentPrev = typeof msg.content === 'string' ? msg.content : "[Multipart Content]";
@@ -3106,6 +3224,26 @@ If there are no meaningful docs to update, find the README.md and add a "Latest 
           return;
       }
 
+      // 1. Resolve Dependencies via Graph
+      const graph = this.agentManager.codeGraphManager;
+      if (graph.getBuildState() !== 'ready') {
+          await graph.buildGraph();
+      }
+
+      const targetNode = graph.getGraphData().nodes.find(n => n.filePath === filePath);
+      let dependencyContent = "";
+      if (targetNode) {
+          const depFiles = graph.getGraphData().edges
+              .filter(e => e.source === targetNode.id && e.label === 'imports')
+              .map(e => graph.getGraphData().nodes.find(n => n.id === e.target)?.filePath)
+              .filter((path): path is string => !!path);
+
+          if (depFiles.length > 0) {
+              dependencyContent = await this._contextManager.readSpecificFiles(depFiles);
+              this.log(`Inspector: Including ${depFiles.length} dependencies for grounding.`);
+          }
+      }
+
       const fileUri = vscode.Uri.joinPath(workspaceFolder.uri, filePath);
       let currentContent = "";
       try {
@@ -3150,17 +3288,17 @@ If there are no meaningful docs to update, find the README.md and add a "Latest 
           }
       }
 
-      const prompt = `Please review the following code for \`${filePath}\` and answer these questions:
-1. Are there any indentation errors in this code?
-2. Are there any missing imports in this code?
-3. Are there any repeated declarations in this code?
-4. Are there any variables that were not declared in their scope but are being used?
-5. Are there any unused variables inside functions?
-6. Are there any character escape errors or unescaped characters in this code?
+      const prompt = `### 🔍 SURGICAL INSPECTION: ${filePath}
+      Please perform a deep structural audit of the code for \`${filePath}\`. 
+      Check specifically for:
+      1. **Indentation errors**: Mixed whitespace or broken blocks.
+      2. **Missing imports**: Usage of external or local symbols without declarations.
+      3. **Logic holes**: Unfinished functions or placeholders.
+      4. **Integration**: Does this code align with the rest of the project context?
 
-If you find ANY issues, fix them.
-- If the original block was a FULL FILE replacement, provide the fully corrected file content.
-- If the original block was an AIDER patch, provide NEW AIDER SEARCH/REPLACE blocks to fix the issues.
+      **STRICT REQUIREMENT:**
+      - Provide fixes using **AIDER SEARCH/REPLACE** blocks.
+      - If the code is structurally sound, respond with "FILE VERIFIED CLEAN".
 
 Original block type: ${type === 'file' ? 'FULL FILE' : 'AIDER PATCH'}
 
@@ -3174,14 +3312,14 @@ ${targetContent}
       this.updateGeneratingState();
 
       try {
-          const systemPrompt = await getProcessedSystemPrompt('agent');
-          
+          const systemPrompt = await getProcessedSystemPrompt('surgical_agent');
+
           const inspectionMessageId = 'inspection_' + Date.now();
           await this.addMessageToDiscussion({
               id: inspectionMessageId,
               role: 'user',
               content: `Inspect File: \`${filePath}\``,
-              skipInPrompt: false
+              skipInPrompt: true // Keep history clean
           });
 
           const assistantMessageId = 'assistant_insp_' + Date.now();
@@ -3198,11 +3336,14 @@ ${targetContent}
               } 
           });
 
+          // 2. Perform Initial Run
           let fullResponse = "";
-          await this._lollmsAPI.sendChat([
+          const messages: ChatMessage[] = [
               { role: 'system', content: systemPrompt },
-              { role: 'user', content: prompt }
-          ], (chunk) => {
+              { role: 'user', content: `${prompt}\n\n### DEPENDENCY REFERENCE CONTEXT:\n${dependencyContent}` }
+          ];
+
+          await this._lollmsAPI.sendChat(messages, (chunk) => {
               fullResponse += chunk;
               this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk });
           }, controller.signal);
@@ -3212,6 +3353,33 @@ ${targetContent}
               fullResponse, 
               controller.signal
           );
+
+          // 3. Handle Second Run (Keyword Escalation)
+          // If the AI suggests it needs to search the whole project
+          const searchMatch = processedResponse.match(/```json\s*(\{[\s\S]*?"tool"\s*:\s*"grep_search"[\s\S]*?\})\s*```/);
+          if (searchMatch) {
+              const toolCall = JSON.parse(searchMatch[1]);
+              const keyword = toolCall.params.pattern;
+
+              this.processManager.updateDescription(processId, `Inspector: Expanding search for "${keyword}"...`);
+              this.updateGeneratingState();
+
+              const searchResults = await this._contextManager.searchWorkspaceContent(keyword, { matchCase: false, wholeWord: false });
+              const uniquePaths = Array.from(new Set(searchResults.map(r => r.path)));
+              const expandedContext = await this._contextManager.readSpecificFiles(uniquePaths);
+
+              // Perform the Second Run
+              messages.push({ role: 'assistant', content: fullResponse });
+              messages.push({ role: 'user', content: `### EXPANDED PROJECT CONTEXT (Keyword: "${keyword}")\n${expandedContext}\n\nNow provide your final inspection report based on this new data.` });
+
+              let secondRunResponse = "";
+              await this._lollmsAPI.sendChat(messages, (chunk) => {
+                  secondRunResponse += chunk;
+                  this._panel.webview.postMessage({ command: 'appendMessageChunk', id: assistantMessageId, chunk: chunk });
+              }, controller.signal);
+
+              fullResponse = secondRunResponse;
+          }
 
           await this.addMessageToDiscussion({
               id: assistantMessageId,
@@ -4273,36 +4441,36 @@ Task:
                 if (this._currentDiscussion) {
                     const isInterruption = message.isInterruption === true;
 
-                    // 1. If it's a full stop (not raise hand), deactivate agent
-                    if (!isInterruption && this.agentManager && this.agentManager.getIsActive()) {
-                        this.agentManager.toggleAgentMode(); 
-                    }
-
-                    // 2. Handle Pause for Agent
-                    if (isInterruption && this.agentManager && this.agentManager.getIsActive()) {
-                        // Mark the agent as inactive so it stops the loop, but keep the plan
-                        (this.agentManager as any).isActive = false; 
-                        if (this.agentManager['currentPlan']) {
-                            this.agentManager['currentPlan'].status = 'stale';
-                        }
-                    }
-
-                    // 3. Clear generation buffer & Cancel current process
+                    // 1. Clear active generations and cancel current processes
                     ChatPanel.activeGenerations.delete(this.discussionId);
                     this.processManager.cancelForDiscussion(this.discussionId);
 
-                    // 4. Reset metrics
-                    this._panel.webview.postMessage({ command: 'updateGenerationMetrics', reset: true });
+                    // 2. State management for Agent
+                    if (this.agentManager) {
+                        if (isInterruption) {
+                            // PAUSE: Keep the agent in "Active" intent but stop the loop execution
+                            (this.agentManager as any).isActive = false; 
+                            if (this.agentManager['currentPlan']) {
+                                this.agentManager['currentPlan'].status = 'stale';
+                            }
 
-                    // 5. User Feedback UI
-                    if (isInterruption) {
-                        await this.addMessageToDiscussion({
-                            role: 'system',
-                            content: '✋ **Mission Paused.** The Architect has stopped to receive your feedback. Please provide instructions to adjust the course.'
-                        });
+                            await this.addMessageToDiscussion({
+                                role: 'system',
+                                content: '✋ **Mission Paused.** The Architect has stopped to receive your feedback. Provide your thoughts below to adjust the strategy.'
+                            });
+                        } else {
+                            // KILL: Complete exit from agent mode. 
+                            // Force isActive to false first to break any race conditions in the loop.
+                            (this.agentManager as any).isActive = false;
+                            if (this.agentManager['currentPlan']) {
+                                this.agentManager['currentPlan'].status = 'failed';
+                            }
+                            this.updateAgentMode(false);
+                        }
                     }
 
-                    // 6. Refresh UI
+                    // 3. Cleanup UI
+                    this._panel.webview.postMessage({ command: 'updateGenerationMetrics', reset: true });
                     this.updateGeneratingState();
                     this.updateAgentMode(this.agentManager?.getIsActive() || false);
                 }
@@ -4323,16 +4491,26 @@ Task:
 
                 // Handle continuation after manual approval
                 if (message.objective === 'CONTINUE_AFTER_APPROVAL') {
-                    const plan = this.agentManager['currentPlan'];
-                    const task = plan?.tasks.find(t => t.id == message.taskId);
-                    if (task) {
-                        (task as any).needsApproval = false;
-                        this.agentManager.toggleAgentMode(); // Re-engage autonomous loop
-                        await this.agentManager.handleUserMessage(
-                            "The user has approved the task. Please execute it now and continue your mission.",
-                            this._currentDiscussion,
-                            vscode.workspace.workspaceFolders![0]
-                        );
+                    const approvedTaskId = parseInt(message.taskId, 10);
+                    const alwaysAllow = !!message.alwaysAllow;
+
+                    if (alwaysAllow && this.agentManager['currentPlan']) {
+                        const task = this.agentManager['currentPlan'].tasks.find(t => t.id === approvedTaskId);
+                        if (task) {
+                            const policies = this._discussionCapabilities.toolPolicies || {};
+                            policies[task.action] = 'autonomous';
+                            await this.updateCapabilities({ toolPolicies: policies });
+                        }
+                    }
+
+                    const { id: processId, controller } = this.processManager.register(this.discussionId, 'Executing approved task...');
+                    this.updateGeneratingState();
+
+                    try {
+                        await this.agentManager.resumeTask(approvedTaskId, processId, controller.signal);
+                    } finally {
+                        this.processManager.unregister(processId);
+                        this.updateGeneratingState();
                     }
                     return;
                 }
@@ -4388,14 +4566,18 @@ Task:
                 const config = vscode.workspace.getConfiguration('lollmsVsCoder');
                 const allTools = this.agentManager.getTools();
                 const enabledTools = this.agentManager.getEnabledTools().map(t => t.name);
+                const { AGENT_MISSION_PROFILES } = require('../../registries/agentProfiles');
 
+                // Ensure the webview receives the full mission profile list for the dropdown
                 this._panel.webview.postMessage({ 
                     command: 'showAgentSettings', 
                     allTools, 
                     enabledTools,
+                    allProfiles: AGENT_MISSION_PROFILES,
                     settings: {
-                        maxSteps: config.get('agent.maxSteps'),
-                        maxEditRetries: config.get('agent.maxEditRetries')
+                        maxSteps: config.get('lollmsVsCoder.agent.maxSteps') || 100,
+                        maxEditRetries: config.get('lollmsVsCoder.agent.maxEditRetries') || 3,
+                        activeProfile: config.get('lollmsVsCoder.agent.activeProfile') || 'software_architect'
                     }
                 });
                 break;
@@ -5014,6 +5196,16 @@ Task:
                             Logger.warn(`Could not resolve image result path: ${message.path}`);
                         }
                     }
+                }
+                break;
+            case 'requestDiagnosticReport':
+                {
+                    const agent = this.agentManager;
+                    const plan = agent['currentPlan'];
+                    const logs = (agent as any).completedActionsHistory || [];
+                    const report = `### 🐛 BUG REPORT DIAGNOSTICS\n\n**OBJECTIVE**: ${plan?.objective || 'N/A'}\n\n**LAST PLAN STATE**:\n${JSON.stringify(plan, null, 2)}\n\n**ACTION LOGS**:\n${logs.join('\n')}`;
+                    await vscode.env.clipboard.writeText(report);
+                    vscode.window.showInformationMessage("Diagnostic report copied to clipboard. Paste it into a new issue.");
                 }
                 break;
             case 'runAutoSkill':
@@ -5637,6 +5829,31 @@ Task:
                             </div>
                         </div>
                         <div class="settings-main-content" style="padding:15px; overflow-y:auto;">
+                            <h3 style="margin-top:0;"><i class="codicon codicon-target"></i> Genie Mission Profiles</h3>
+                            <p class="help-text">Switch or customize the Architect's core operational logic.</p>
+
+                            <div style="display:flex; gap:10px; margin-bottom:15px;">
+                                <select id="setting-activeProfile" class="menu-select" style="flex:1; margin:0;"></select>
+                                <button id="add-agent-profile-btn" class="code-action-btn apply-btn" style="width:auto; height:32px;"><i class="codicon codicon-add"></i> New</button>
+                            </div>
+
+                            <div id="agent-profiles-list" style="display:flex; flex-direction:column; gap:8px; margin-bottom:24px;">
+                                <!-- Dynamic list of profiles -->
+                            </div>
+
+                            <!-- Profile Editor (Hidden) -->
+                            <div id="agent-profile-editor" style="display:none; border: 1px solid var(--vscode-focusBorder); padding:15px; border-radius:8px; background: rgba(0,0,0,0.2); margin-bottom:24px;">
+                                <h4 style="margin-top:0; font-size:12px;">Edit Mission Protocol</h4>
+                                <label>Display Name</label>
+                                <input type="text" id="ap-name" style="margin-bottom:8px;">
+                                <label>Architect Protocol (System Instructions)</label>
+                                <textarea id="ap-protocol" rows="8" style="font-family:monospace; font-size:11px;"></textarea>
+                                <div style="display:flex; gap:8px; justify-content:flex-end; margin-top:10px;">
+                                    <button id="ap-cancel" class="code-action-btn">Cancel</button>
+                                    <button id="ap-save" class="code-action-btn apply-btn">Update Protocol</button>
+                                </div>
+                            </div>
+
                             <h3 style="margin-top:0;"><i class="codicon codicon-tools"></i> Tool Permissions & Policies</h3>
                             <div id="tools-list"></div>
                         </div>
@@ -6609,11 +6826,12 @@ Task:
      */
     public async repairFilesIteratively(fileUris: vscode.Uri[], signal: AbortSignal, processId: string, messageId: string) {
         const max = this._discussionCapabilities.maxFixRetries || 3;
+        const agent = this.agentManager;
 
         for (const fileUri of fileUris) {
             const relativePath = vscode.workspace.asRelativePath(fileUri);
             let retries = 0;
-            
+
             // Give VS Code a moment to update diagnostics after the file write
             await new Promise(r => setTimeout(r, 1000));
 
@@ -6654,6 +6872,10 @@ ${doc.getText()}
                 const systemPrompt = "You are a surgical code repair expert. Output only Aider SEARCH/REPLACE blocks to fix the requested errors.";
                 
                 try {
+                    if (agent) {
+                        (agent as any).completedActionsHistory.push(`[GUARDIAN REPAIR] 🛡️ START: Attempting to fix ${diagnostics.length} errors in \`${relativePath}\` (Retry ${retries}/${max}).`);
+                    }
+
                     const response = await this._lollmsAPI.sendChat([
                         { role: 'system', content: systemPrompt },
                         { role: 'user', content: repairPrompt }
@@ -6661,9 +6883,18 @@ ${doc.getText()}
 
                     // Apply the fix silently and auto-save
                     await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', relativePath, response, this, messageId, { silent: true, autoSave: true });
-                    
+
+                    if (agent) {
+                        (agent as any).completedActionsHistory.push(`[GUARDIAN REPAIR] 📝 PATCH APPLIED: Sent surgical fix to \`${relativePath}\`. Waiting for linter verification...`);
+                    }
+
                     // Wait for diagnostics to refresh
-                    await new Promise(r => setTimeout(r, 1500));
+                    await new Promise(r => setTimeout(r, 2000));
+
+                    const remaining = vscode.languages.getDiagnostics(fileUri).filter(d => d.severity === vscode.DiagnosticSeverity.Error);
+                    if (agent && remaining.length === 0) {
+                        (agent as any).completedActionsHistory.push(`[GUARDIAN REPAIR] ✅ SUCCESS: \`${relativePath}\` is now clean.`);
+                    }
                 } catch (e: any) {
                     this.log(`Repair failed for ${relativePath}: ${e.message}`, 'ERROR');
                     break;

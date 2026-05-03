@@ -638,10 +638,31 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
     };
     let body: any = {};
 
-    const sanitizedMessages = messages.filter(m => !m.skipInPrompt).map(m => ({
-        role: m.role === 'system' && (backend === 'anthropic' || backend === 'google') ? 'user' : m.role,
-        content: m.content
-    }));
+    const sanitizedMessages = messages.filter(m => !m.skipInPrompt).map(m => {
+        let content = m.content;
+
+        // --- MULTIMODAL FORMATTING GUARD ---
+        if (Array.isArray(content)) {
+            content = content.map(part => {
+                if (part.type === 'image_url' && part.image_url?.url) {
+                    let url = part.image_url.url;
+                    // If it's a raw base64 string without data prefix, add it.
+                    // Most backends expect "data:image/png;base64,..."
+                    if (!url.startsWith('data:') && !url.startsWith('http')) {
+                        // Heuristic: default to png if unknown
+                        url = `data:image/png;base64,${url}`;
+                    }
+                    return { ...part, image_url: { ...part.image_url, url } };
+                }
+                return part;
+            });
+        }
+
+        return {
+            role: m.role === 'system' && (backend === 'anthropic' || backend === 'google') ? 'user' : m.role,
+            content: content
+        };
+    });
 
     // =========================================================================
     // 🛡️ FINAL API OUTBOUND LOG (DEBUG)

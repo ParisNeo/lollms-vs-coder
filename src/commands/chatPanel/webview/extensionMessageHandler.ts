@@ -14,7 +14,9 @@ import {
     renderWebSearchResults,
     renderContextUsage,
     updateProgressBar,
-    updateContextFileUsage
+    updateContextFileUsage,
+    renderAdvancedToolsList,
+    renderWorkspaceMatrix
 } from './ui.js';
 
 export async function handleExtensionMessage(event: MessageEvent) {
@@ -170,7 +172,8 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const input = document.querySelector('.input-area-wrapper') as HTMLElement;
                     if (input) input.style.display = 'block';
                 }
-                setGeneratingState(message.isGenerating, message.statusText);
+                // Forward the showRaiseHand flag to the UI renderer
+                setGeneratingState(message.isGenerating, message.statusText, message.showRaiseHand);
                 break;
             case 'updateGenerationMetrics':
                 const metricsEl = document.getElementById('generating-metrics');
@@ -223,6 +226,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         state.isInspectorEnabled = message.isInspectorEnabled;
                     }
                     state.appliedState = message.appliedState || {};
+                    if (message.agentProfiles) {
+                        state.agentProfiles = message.agentProfiles;
+                    }
 
                     // Restore Agent Mode UI state (Red vs Blue)
                     if (message.agentMode !== undefined && state.capabilities) {
@@ -261,6 +267,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
             case 'updateDiscussionCapabilities':
                 const caps = message.capabilities;
+                if (message.agentProfiles) {
+                    state.agentProfiles = message.agentProfiles;
+                }
                 if (message.workspaceFolders) {
                     (window as any).workspaceFolders = message.workspaceFolders;
                 }
@@ -272,7 +281,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (dom.matrixModal.classList.contains('visible')) {
                         const newSettings = JSON.stringify(caps.folderSettings || {});
                         if (oldSettings !== newSettings) {
-                            import('./ui.js').then(ui => ui.renderWorkspaceMatrix());
+                            renderWorkspaceMatrix();
                         }
                     }
                     
@@ -336,7 +345,17 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     if (dom.testModeCheckbox) dom.testModeCheckbox.checked = !!caps.testMode;
                     if (dom.docsModeCheckbox) dom.docsModeCheckbox.checked = !!caps.documentationMode;
                     if (dom.capClipboardRole) dom.capClipboardRole.value = caps.clipboardInsertRole || 'user';
-                    
+
+                    // Synchronize the generating overlay state if it exists
+                    if (dom.generatingOverlay) {
+                        dom.generatingOverlay.style.display = state.isGenerating ? 'flex' : 'none';
+                        const raiseHandBtn = document.getElementById('raiseHandButton');
+                        if (raiseHandBtn) {
+                            // During a capability update, we hide the button unless the generating state is already active
+                            raiseHandBtn.style.display = (state.isGenerating && caps.agentMode) ? 'flex' : 'none';
+                        }
+                    }
+
                     const langSelect = document.getElementById('modal-language') as HTMLSelectElement;
                     if (langSelect) langSelect.value = caps.language || 'auto';
 
@@ -381,6 +400,35 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
                     if (dom.webSearchIndicator) {
                         dom.webSearchIndicator.style.display = caps.webSearch ? 'flex' : 'none';
+                    }
+
+                    // --- DEVELOPER DEBUG MENU ---
+                    const config = (window as any).lollmsConfig; // We'll need to pass this in
+                    if (config?.developer?.debugTools) {
+                        const devGroup = document.createElement('div');
+                        devGroup.className = 'badge-group';
+                        devGroup.innerHTML = '<span class="dev-tool-badge">DEV</span>';
+                        
+                        const testBtn = document.createElement('button');
+                        testBtn.className = 'mode-badge active clickable';
+                        testBtn.style.background = 'var(--vscode-editorWidget-background)';
+                        testBtn.innerHTML = '<i class="codicon codicon-beaker"></i> Tool Tester';
+                        testBtn.onclick = () => {
+                            vscode.postMessage({ command: 'requestAgentSettings' }); // To get tool list
+                            // Logic to open a sub-modal for raw testing would go here
+                        };
+
+                        const bugBtn = document.createElement('button');
+                        bugBtn.className = 'mode-badge active clickable';
+                        bugBtn.style.background = 'var(--vscode-editorWidget-background)';
+                        bugBtn.innerHTML = '<i class="codicon codicon-bug"></i> Report Bug';
+                        bugBtn.onclick = () => {
+                            vscode.postMessage({ command: 'requestDiagnosticReport' });
+                        };
+
+                        devGroup.appendChild(testBtn);
+                        devGroup.appendChild(bugBtn);
+                        container.appendChild(devGroup);
                     }
                     
                     updateBadges();
@@ -504,7 +552,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         state.matrixStats = folderStats;
                         // Reactive matrix update if open
                         if (dom.matrixModal.classList.contains('visible')) {
-                            import('./ui.js').then(ui => ui.renderWorkspaceMatrix());
+                            renderWorkspaceMatrix();
                         }
                     }
 
@@ -581,14 +629,32 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
                 }
                 break;
-            case 'showAvailableTools':
-                import('./ui.js').then(ui => {
+            case 'showAgentSettings':
+                {
                     const policies = state.capabilities?.toolPolicies || {};
-                    ui.renderAdvancedToolsList(message.allTools, policies);
-                    if (dom.toolsModal) {
-                        dom.toolsModal.classList.add('visible');
+
+                    // 1. Populate standard settings inputs
+                    const maxStepsInp = document.getElementById('setting-maxSteps') as HTMLInputElement;
+                    const maxRetriesInp = document.getElementById('setting-maxEditRetries') as HTMLInputElement;
+                    if (maxStepsInp) maxStepsInp.value = message.settings.maxSteps;
+                    if (maxRetriesInp) maxRetriesInp.value = message.settings.maxEditRetries;
+
+                    // 2. Populate Mission Profile Dropdown
+                    const profileSelect = document.getElementById('setting-activeProfile') as HTMLSelectElement;
+                    if (profileSelect && message.allProfiles) {
+                        profileSelect.innerHTML = message.allProfiles.map((p: any) => 
+                            `<option value="${p.id}" ${p.id === message.settings.activeProfile ? 'selected' : ''}>${p.name}</option>`
+                        ).join('');
                     }
-                });
+
+                    // 3. Render the tools grid
+                    renderAdvancedToolsList(message.allTools, policies);
+
+                    // 4. Show the modal
+                    if (dom.agentSettingsModal) {
+                        dom.agentSettingsModal.classList.add('visible');
+                    }
+                }
                 break;
             case 'updateStatus':
                 if (dom.statusLabel && dom.statusText) {
@@ -1032,11 +1098,28 @@ export async function handleExtensionMessage(event: MessageEvent) {
 
                         if (actionsEl) {
                             actionsEl.style.display = 'flex';
-                            actionsEl.innerHTML = `<button class="icon-btn view-diff-row-btn" title="View Changes (Diff)" style="height:20px; width:20px;"><i class="codicon codicon-diff"></i></button>`;
+                            actionsEl.innerHTML = `
+                                <button class="icon-btn view-diff-row-btn" title="View Changes (Diff)" style="height:20px; width:20px;"><i class="codicon codicon-diff"></i></button>
+                                <button class="code-action-btn secondary-btn post-apply-inspect-btn" title="Guardian: Audit this file for indentation/imports" style="height:20px; font-size:9px; padding: 0 6px;">Inspect</button>
+                            `;
                             const diffBtn = actionsEl.querySelector('.view-diff-row-btn') as HTMLElement;
                             diffBtn.onclick = (e) => {
                                 e.stopPropagation();
                                 vscode.postMessage({ command: 'executeLollmsCommand', details: { command: 'lollms-vs-coder.showDiff', params: message.filePath }});
+                            };
+
+                            const inspectBtn = actionsEl.querySelector('.post-apply-inspect-btn') as HTMLElement;
+                            inspectBtn.onclick = (e) => {
+                                e.stopPropagation();
+                                vscode.postMessage({ 
+                                    command: 'inspectPatch', 
+                                    filePath: message.filePath, 
+                                    content: "", // Content will be read from disk
+                                    messageId: message.messageId,
+                                    blockIndex: message.blockIndex,
+                                    type: 'replace',
+                                    isApplied: true
+                                });
                             };
                         }
                     } else if (row) {
@@ -1174,8 +1257,8 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         });
                     }
                 }
-                break;
-            }
+                break;                
+        }
     } catch(e: any) {
         console.error("Lollms Webview Error: Failed to process message from extension.", e);
         vscode.postMessage({ command: 'showError', message: 'Webview error: ' + e.message });

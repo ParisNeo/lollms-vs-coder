@@ -164,30 +164,16 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         }
 
         // --- MULTI-ROOT NAMESPACE ENFORCEMENT ---
+        // If the path starts with "ProjectName/", we prioritize that folder
+        const projectFolder = folders.find(f => f.name === segments[0]);
+        if (projectFolder && segments.length > 1) {
+            const relativeToRoot = segments.slice(1).join('/');
+            const uri = vscode.Uri.joinPath(projectFolder.uri, relativeToRoot);
+            return { folder: projectFolder, relativePath: relativeToRoot, uri };
+        }
+
+        // Fallback for relative paths: check existence across all roots
         if (folders.length > 1) {
-            // Check if first segment is a valid project name
-            const projectFolder = folders.find(f => f.name === segments[0]);
-
-            if (projectFolder) {
-                const relativeToRoot = segments.slice(1).join('/');
-                const uri = vscode.Uri.joinPath(projectFolder.uri, relativeToRoot);
-
-                // VERIFICATION: Check if the file exists with the segment stripped.
-                // This prevents doubling if the file is "Project/Project/file.py"
-                try {
-                    await vscode.workspace.fs.stat(uri);
-                    return { folder: projectFolder, relativePath: relativeToRoot, uri };
-                } catch {
-                    // If stripped version doesn't exist, try keeping the segment
-                    const uriWithSegment = vscode.Uri.joinPath(projectFolder.uri, normalized);
-                    try {
-                        await vscode.workspace.fs.stat(uriWithSegment);
-                        return { folder: projectFolder, relativePath: normalized, uri: uriWithSegment };
-                    } catch {}
-                }
-            }
-
-            // Fallback: search relative to every root
             for (const folder of folders) {
                 const testUri = vscode.Uri.joinPath(folder.uri, normalized);
                 try {
@@ -207,13 +193,17 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 return { folder: activeFolder, relativePath: normalized, uri: uriDirect };
             } catch {
                 // 2. Try stripped match if namespaced (ProjectName/path -> path)
-                if (segments[0] === activeFolder.name && segments.length > 1) {
+                if ((segments[0] === activeFolder.name || segments[0] === activeFolder.uri.fsPath.split(/[\\\/]/).pop()) && segments.length > 1) {
                     const relStripped = segments.slice(1).join('/');
                     const uriStripped = vscode.Uri.joinPath(activeFolder.uri, relStripped);
                     try {
                         await vscode.workspace.fs.stat(uriStripped);
                         return { folder: activeFolder, relativePath: relStripped, uri: uriStripped };
-                    } catch { }
+                    } catch { 
+                        // Even if it doesn't exist yet (new file), if the first segment matches the project name, 
+                        // we should treat the rest as the relative path to avoid doubling.
+                        return { folder: activeFolder, relativePath: relStripped, uri: uriStripped };
+                    }
                 }
             }
 
@@ -882,18 +872,24 @@ ${originalContent}
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.bulkMoveFiles', async (operations: {src: string, dest: string}[]) => {
         const edit = new vscode.WorkspaceEdit();
+        let validOps = 0;
         for (const op of operations) {
             const srcRes = await services.contextManager.resolveWorkspaceFromPath(op.src);
-            if (srcRes) {
-                // Determine destination URI relative to the same workspace root as the source
-                const destUri = vscode.Uri.joinPath(srcRes.folder!.uri, op.dest);
-                edit.renameFile(srcRes.uri, destUri, { overwrite: false });
+            const destRes = await services.contextManager.resolveWorkspaceFromPath(op.dest);
+
+            if (srcRes && destRes) {
+                // Ensure parent directory exists for destination
+                const destDir = vscode.Uri.joinPath(destRes.uri, '..');
+                await vscode.workspace.fs.createDirectory(destDir);
+
+                edit.renameFile(srcRes.uri, destRes.uri, { overwrite: false });
+                validOps++;
             }
         }
-        if (await vscode.workspace.applyEdit(edit)) {
-            vscode.window.showInformationMessage(`Moved/Renamed ${operations.length} item(s).`);
-        } else {
-            vscode.window.showErrorMessage(`Failed to move files.`);
+        if (validOps > 0 && await vscode.workspace.applyEdit(edit)) {
+            vscode.window.showInformationMessage(`Moved/Renamed ${validOps} item(s).`);
+        } else if (validOps > 0) {
+            vscode.window.showErrorMessage(`Failed to apply move operations.`);
         }
     }));
 
@@ -901,13 +897,16 @@ ${originalContent}
         let successCount = 0;
         for (const op of operations) {
             const srcRes = await services.contextManager.resolveWorkspaceFromPath(op.src);
-            if (srcRes) {
-                const destUri = vscode.Uri.joinPath(srcRes.folder!.uri, op.dest);
+            const destRes = await services.contextManager.resolveWorkspaceFromPath(op.dest);
+
+            if (srcRes && destRes) {
                 try {
-                    await vscode.workspace.fs.copy(srcRes.uri, destUri, { overwrite: false });
+                    const destDir = vscode.Uri.joinPath(destRes.uri, '..');
+                    await vscode.workspace.fs.createDirectory(destDir);
+                    await vscode.workspace.fs.copy(srcRes.uri, destRes.uri, { overwrite: false });
                     successCount++;
                 } catch(e: any) {
-                    vscode.window.showErrorMessage(`Failed to copy ${op.src}: ${e.message}`);
+                    vscode.window.showErrorMessage(`Failed to copy ${op.src} to ${op.dest}: ${e.message}`);
                 }
             }
         }

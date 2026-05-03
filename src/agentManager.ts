@@ -126,6 +126,9 @@ export class AgentManager {
         this.sessionState.workingMemory.push(
             "FIX: If 'isort' client fails to connect, trigger 'workbench.action.reloadWindow' via 'execute_command'. Ensure the user has selected a Python interpreter in the status bar."
         );
+        this.sessionState.workingMemory.push(
+            "DIAGNOSTIC: If you see 'OS ERROR: Output capture file missing', this is a Windows File Lock issue. Do NOT refactor your code. Simply 'wait' for 2 seconds and retry the command exactly as it was. It is not a logic error."
+        );
 
         if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
             this.currentWorkspaceFolder = vscode.workspace.workspaceFolders[0];
@@ -197,7 +200,13 @@ Keep it strictly technical and extremely concise.`
     
     public getEnabledTools(): ToolDefinition[] {
         const policies = this.currentDiscussion?.capabilities?.toolPolicies || {};
+        const activeIds = (this.sessionState as any).activeToolIds as Set<string> | undefined;
+
         const tools = this.toolManager.getAllTools().filter(t => {
+            // If the agent is in an autonomous loop, only tools in the "equipped" active list are available.
+            if (this.isActive && activeIds && !activeIds.has(t.name)) {
+                return false;
+            }
             // Determine default if not set
             let policy = policies[t.name];
             if (!policy) {
@@ -325,6 +334,11 @@ Keep it strictly technical and extremely concise.`
         }
 
         Logger.info(`[Phase 0] Starting Pre-Flight Safety Check for: ${folder.name}`);
+        
+        // Timeout protection for slow Git operations
+        const gitTimeout = new Promise<never>((_, reject) => 
+            setTimeout(() => reject(new Error("Git safety check timed out.")), 10000)
+        );
         let isRepo = await this.gitIntegration.isGitRepo(folder);
 
         // Ensure we have a plan object to show the form in the sidebar
@@ -374,10 +388,66 @@ Keep it strictly technical and extremely concise.`
             const safeChoice = (choice || "").toLowerCase().trim();
 
             if (safeChoice === 'init') {
-                await this.runCommand('git init', signal);
+                this.ui.addMessageToDiscussion({ role: 'system', content: `⚙️ **Initializing Atomic Clean Repository...**` });
+
+                await Promise.race([this.runCommand('git init', signal), gitTimeout]);
+
+                const ignoreContent = [
+                "# Lollms Internal State",
+                ".lollms/",
+                ".lollms_workspaces/",
+                ".lollms_scripts/",
+                ".lollms_snapshots/",
+                "",
+                "# Dependencies (Strict)",
+                "venv/",
+                ".venv/",
+                "env/",
+                "node_modules/",
+                "__pycache__/",
+                "*.pyc",
+                "*.pyo",
+                "*.pyd",
+                "/bin/",
+                "/lib/",
+                "/include/",
+                "/share/",
+                "pyvenv.cfg",
+                "",
+                "# Build & System",
+                "dist/",
+                "build/",
+                "out/",
+                "target/",
+                ".vscode/",
+                ".idea/",
+                ".DS_Store",
+                "Thumbs.db",
+                "",
+                "# Temp Files",
+                "*.log",
+                "*.tmp",
+                "*.bak"
+                ].join('\n');
+
+                const ignorePath = path.join(folder.uri.fsPath, '.gitignore');
+
+                // 1. Write the file
+                await fs.writeFile(ignorePath, ignoreContent, 'utf8');
+
+                // 2. COMMIT THE IGNORE FIRST (Phase 1)
+                // This makes the ignore rules the "law" of the repo before any mass add
+                await this.runCommand('git add .gitignore', signal);
+                await this.runCommand('git commit -m "chore: establish ignore rules"', signal);
+
+                // 3. PURGE AND RE-ADD (Phase 2)
+                // We reset the index to be absolutely sure nothing is lingering from a previous failed attempt
+                await this.runCommand('git reset', signal);
                 await this.runCommand('git add .', signal);
-                await this.runCommand('git commit -m "Initial commit"', signal);
-                this.ui.addMessageToDiscussion({ role: 'system', content: `🛡️ **Git Repository Initialized.**` });
+
+                await this.runCommand('git commit -m "Initial commit (clean content)"', signal);
+
+                this.ui.addMessageToDiscussion({ role: 'system', content: `🛡️ **Repository Secured**: Ignore rules established and confirmed. \`venv\` is excluded.` });
                 isRepo = true;
             } else if (safeChoice === 'continue') {
                 this.ui.addMessageToDiscussion({ role: 'system', content: `⚠️ **Proceeding without Git.** Automatic rollbacks are disabled.` });
@@ -419,7 +489,8 @@ Keep it strictly technical and extremely concise.`
                 result: null,
                 retries: 0
             };
-            this.currentPlan!.tasks.push(safetyTask);
+            // Clear tasks to ensure the safety check is the ONLY thing visible
+            this.currentPlan!.tasks = [safetyTask];
             await this.displayAndSavePlan(this.currentPlan);
 
             Logger.info(`[Phase 0] Requesting Safety Action via Form in Sidebar...`);
@@ -716,113 +787,158 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
                 budgetBlock += `\n**🚨 CRITICAL WARNING: LOW BUDGET**\nYou are about to run out of turns. You are FORBIDDEN from starting new deep research, long tests, or complex refactors. You MUST use your remaining turns to:\n1. Wrap up your current work safely.\n2. Use the \`submit_response\` tool to explain to the user what you accomplished and what remains to be done before you are forcefully terminated.\n`;
             }
 
+            // --- VISION STACK ASSEMBLY ---
+            const visionParts: any[] = [];
+            // 1. Add Textual Context
+            visionParts.push({ type: 'text', text: `${historyContext}${structuralNudge}\n\n${budgetBlock}\n\n**OBJECTIVE:** ${objective}\n\nWhat is your next technical action? Output JSON only.` });
+
+            // Helper to ensure image data is a valid Data URI
+            const ensureDataUri = (data: string) => {
+                if (!data) return "";
+                if (data.startsWith('data:') || data.startsWith('http')) return data;
+                // Default to png if prefix is missing
+                return `data:image/png;base64,${data}`;
+            };
+
+            // 2. Add Project Images (Librarian/Context)
+            contextData.images.forEach(img => {
+                const safeUrl = ensureDataUri(img.data);
+                if (safeUrl) {
+                    visionParts.push({ type: 'image_url', image_url: { url: safeUrl } });
+                }
+            });
+
+            // 3. Add Discussion Images (History)
+            this.chatHistory.forEach(msg => {
+                if (Array.isArray(msg.content)) {
+                    msg.content.forEach((part: any) => {
+                        if (part.type === 'image_url' && part.image_url?.url) {
+                            const safeUrl = ensureDataUri(part.image_url.url);
+                            if (safeUrl) {
+                                visionParts.push({ ...part, image_url: { ...part.image_url, url: safeUrl } });
+                            }
+                        }
+                    });
+                }
+            });
+
             const messages: ChatMessage[] =[
                 systemPrompt,
                 ...this.chatHistory,
                 ...extraHistory,
-                { role: 'user', content: `${historyContext}${structuralNudge}\n\n${budgetBlock}\n\n**OBJECTIVE:** ${objective}\n\nWhat is your next technical action? Output JSON only.` }
+                { role: 'user', content: visionParts }
             ];
 
-            // 3. Ask Genie for the next action
-            const response = await this.lollmsApi.sendChat(messages, null, signal, model);
-            const cleanResponse = stripThinkingTags(response);
+            let task: Task | null = null;
+            const lastTask = this.currentPlan!.tasks.length > 0 ? this.currentPlan!.tasks[this.currentPlan!.tasks.length - 1] : null;
 
-            // --- AUTO-COMPRESSION CHECK ---
-            // If observations grow too large, we condense them
-            if (this.currentPlan!.observations && this.currentPlan!.observations.length > 15) {
-                this.processManager?.updateDescription(processId, `Genie: Compressing memories...`);
-                await this.condenseObservations(model || "default", signal);
-            }
+            if (lastTask && lastTask.status === 'pending' && (lastTask as any).needsApproval === false) {
+                // Task was approved manually by the user. Skip LLM generation.
+                task = lastTask;
+                this.processManager?.updateDescription(processId, `Genie: Executing approved task...`);
+                this.ui.updateGeneratingState();
+            } else {
+                // 3. Ask Genie for the next action
+                let fullResponse = "";
+                const response = await this.lollmsApi.sendChat(messages, (chunk) => {
+                    fullResponse += chunk;
+                    if (this.currentPlan) {
+                        // Update internal state only. DO NOT call displayAndSavePlan here.
+                        // This prevents the high-frequency UI blinking.
+                        this.currentPlan.scratchpad = fullResponse;
+                    }
+                }, signal, model);
 
-            const toolCall = this.planParser.extractJson(cleanResponse);
-            if (!toolCall) {
-                // If no JSON tool is found, check if it's a "Coding Mode" response (contains code blocks)
-                if (cleanResponse.includes('```')) {
-                    this.processManager?.updateDescription(processId, `Genie: Extracting and applying code...`);
+                const cleanResponse = stripThinkingTags(response);
 
-                    // We treat the whole Markdown response as a "Coding Action"
-                    const task: Task = {
-                        id: stepCount,
-                        task_type: 'markdown_coding',
-                        description: "Applying code modifications from Markdown response.",
-                        action: "markdown_coding",
-                        parameters: { content: cleanResponse },
-                        status: 'in_progress',
-                        result: null,
-                        retries: 0
-                    };
-                    this.currentPlan!.tasks.push(task);
+                // --- AUTO-COMPRESSION CHECK ---
+                if (this.currentPlan!.observations && this.currentPlan!.observations.length > 15) {
+                    this.processManager?.updateDescription(processId, `Genie: Compressing memories...`);
+                    await this.condenseObservations(model || "default", signal);
+                }
 
-                    // Re-use the existing automation pipeline from ChatPanel
-                    // Note: In a real implementation, we'd inject this via the UI interface
+                const toolCall = this.planParser.extractJson(cleanResponse);
+                if (!toolCall) {
+                    // If no JSON tool is found, check if it's a "Coding Mode" response (contains code blocks)
+                    if (cleanResponse.includes('```')) {
+                        this.processManager?.updateDescription(processId, `Genie: Extracting and applying code...`);
 
-                    // --- PRE-WRITE SANITIZATION ---
-                    // Some models include leading/trailing garbage around the code block in coding mode.
-                    await (this.ui as any).executeAutomationPipeline(cleanResponse, `agent_step_${stepCount}`, signal, processId);
+                        const codingTask: Task = {
+                            id: stepCount,
+                            task_type: 'markdown_coding',
+                            description: "Applying code modifications from Markdown response.",
+                            action: "markdown_coding",
+                            parameters: { content: cleanResponse },
+                            status: 'in_progress',
+                            result: null,
+                            retries: 0
+                        };
+                        this.currentPlan!.tasks.push(codingTask);
 
-                    task.status = 'completed';
-                    task.result = "Code extracted and applied.";
-                    this.completedActionsHistory.push(`[STEP ${task.id}] COMPLETED: Applied code changes via Markdown Coding Mode.`);
+                        // --- PRE-WRITE SANITIZATION ---
+                        await (this.ui as any).executeAutomationPipeline(cleanResponse, `agent_step_${stepCount}`, signal, processId);
 
-                    await this.displayAndSavePlan(this.currentPlan);
+                        codingTask.status = 'completed';
+                        codingTask.result = "Code extracted and applied.";
+                        this.completedActionsHistory.push(`[STEP ${codingTask.id}] COMPLETED: Applied code changes via Markdown Coding Mode.`);
+
+                        await this.displayAndSavePlan(this.currentPlan);
+                        continue;
+                    }
+
+                    // Conversational fallback
+                    if (cleanResponse.length < 1000) {
+                        this.ui.addMessageToDiscussion({ role: 'assistant', content: cleanResponse, model });
+                        break; 
+                    }
+                    continue; 
+                }
+
+                let action;
+                try {
+                    action = JSON.parse(toolCall);
+                    if (stepCount === 1 && action.milestones) {
+                        this.currentPlan.milestones = action.milestones.map((m: any) => ({ label: m, status: 'pending' }));
+                    }
+                } catch (jsonErr: any) {
+                    this.completedActionsHistory.push(`[SYSTEM ERROR] Malformed JSON.`);
                     continue;
                 }
-
-                // Conversational fallback
-                if (cleanResponse.length < 1000) {
-                    this.ui.addMessageToDiscussion({ role: 'assistant', content: cleanResponse, model });
-                    break; 
+                
+                // 4. Update UI Timeline (Incremental)
+                if (action.new_remark) {
+                    if (!this.currentPlan.observations) this.currentPlan.observations =[];
+                    this.currentPlan.observations.push(action.new_remark);
                 }
-                continue; 
-            }
-
-            let action;
-            try {
-                action = JSON.parse(toolCall);
-                // Auto-detect milestones from Architect's initial plan if present
-                if (stepCount === 1 && action.milestones) {
-                    this.currentPlan.milestones = action.milestones.map((m: any) => ({ label: m, status: 'pending' }));
+                if (action.current_sub_goal) {
+                    this.currentPlan.current_sub_goal = action.current_sub_goal;
                 }
-            } catch (jsonErr: any) {
-                this.completedActionsHistory.push(`[SYSTEM ERROR] Malformed JSON.`);
-                continue;
-            }
-            
-            // 4. Update UI Timeline (Incremental)
-            if (action.new_remark) {
-                if (!this.currentPlan.observations) this.currentPlan.observations = [];
-                this.currentPlan.observations.push(action.new_remark);
-            }
-            if (action.current_sub_goal) {
-                this.currentPlan.current_sub_goal = action.current_sub_goal;
-            }
 
-            const taskId = stepCount;
-            const task: Task = {
-                id: taskId,
-                task_type: 'simple_action',
-                description: action.thought || action.new_remark || "Executing tool...",
-                action: action.tool,
-                parameters: action.params || {},
-                status: 'in_progress',
-                result: null,
-                retries: 0
-            };
+                task = {
+                    id: stepCount,
+                    task_type: 'simple_action',
+                    description: action.thought || action.new_remark || "Executing tool...",
+                    action: action.tool,
+                    parameters: action.params || {},
+                    status: 'in_progress',
+                    result: null,
+                    retries: 0
+                };
 
-            this.currentPlan!.tasks.push(task);
-            await this.displayAndSavePlan(this.currentPlan);
+                this.currentPlan!.tasks.push(task);
+                await this.displayAndSavePlan(this.currentPlan);
+            }
 
             // 5. Execute Action
-            this.processManager?.updateDescription(processId, `Genie: Executing ${action.tool}...`);
+            this.processManager?.updateDescription(processId, `Genie: Executing ${task.action}...`);
             this.ui.updateGeneratingState();
 
-            if (action.tool === 'submit_response') {
+            if (task.action === 'submit_response') {
                 task.status = 'completed';
                 task.result = "Response submitted to chat.";
                 await this.displayAndSavePlan(this.currentPlan);
 
-                // Check for successful recovery from failures before finishing
-                const reflectionPrompt = this.failureMemory.getReflectionPrompt(task.action, action.params);
+                const reflectionPrompt = this.failureMemory.getReflectionPrompt(task.action, task.parameters);
                 if (reflectionPrompt && this.projectMemoryManager) {
                     const evolutionResponse = await this.lollmsApi.sendChat([
                         { role: 'system', content: "You are the Genie's Reflexive Memory. Analyze the success and update Project Memory." },
@@ -831,11 +947,10 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
                     await this.projectMemoryManager.processTags(evolutionResponse);
                 }
 
-                // Directly add the agent's response to the discussion
                 await this.ui.addMessageToDiscussion({
                     id: `agent_final_${Date.now()}`,
                     role: 'assistant',
-                    content: action.params.response,
+                    content: task.parameters.response,
                     model: model
                 });
                 break;
@@ -850,18 +965,23 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
 
             const specificPolicy = toolPolicies[task.action] || (isSensitive ? 'manual' : 'autonomous');
 
-            if (specificPolicy === 'manual') {
+            // Block ONLY IF it hasn't just been approved
+            if (specificPolicy === 'manual' && (task as any).needsApproval !== false) {
                 task.status = 'pending'; 
                 (task as any).needsApproval = true;
                 this.ui.addMessageToDiscussion({ 
                     role: 'system', 
-                    content: `🛡️ **Safety Gate:** The Architect wants to use \`${task.action}\`. Please review the parameters in the sidebar and click **Run Task** to allow this specific action.` 
+                    content: `🛡️ **Safety Gate:** The Architect wants to use \`${task.action}\`. Please review the parameters in the sidebar and click **Run Task & Continue** to allow this specific action.` 
                 });
                 await this.displayAndSavePlan(this.currentPlan);
                 this.isActive = false; // Halt autonomic loop
                 this.ui.updateAgentMode(false);
                 break; // Stop here and wait for UI event
             }
+            
+            task.status = 'in_progress';
+            (task as any).needsApproval = false; // Reset for next potential run
+            await this.displayAndSavePlan(this.currentPlan);
 
             // --- WRAP EXECUTION IN TIMEOUT ---
             const resultPromise = this.runSingleTask(task, signal, model);
@@ -877,10 +997,10 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
                 const isEditAction = ['edit_code', 'generate_code', 'markdown_coding'].includes(task.action);
                 if (!result.success && isEditAction) {
                     const editBudget = config.get<number>('agent.maxEditRetries') || 3;
-                    const currentRetries = this.taskEditRetries.get(taskId) || 0;
+                    const currentRetries = this.taskEditRetries.get(task.id) || 0;
 
                     if (currentRetries < editBudget) {
-                        this.taskEditRetries.set(taskId, currentRetries + 1);
+                        this.taskEditRetries.set(task.id, currentRetries + 1);
                         this.completedActionsHistory.push(`[REPAIR ATTEMPT ${currentRetries + 1}] Target: ${task.parameters.file_path || 'unknown'}. Error: ${result.output}`);
 
                         // Shake the agent with a failure notification
@@ -998,6 +1118,21 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
         } catch (e: any) {
             Logger.warn(`[GitBackup] Non-critical backup failure: ${e.message}`);
         }
+    }
+
+        public async resumeTask(taskId: number, processId: string, signal: AbortSignal) {
+        if (!this.currentPlan || !this.currentDiscussion) return;
+        const task = this.currentPlan.tasks.find(t => t.id === taskId);
+        if (!task) return;
+
+        (task as any).needsApproval = false;
+        task.status = 'pending'; // Leave it as pending so runAutonomousLoop picks it up
+        await this.displayAndSavePlan(this.currentPlan);
+
+        this.isActive = true;
+        this.ui.updateAgentMode(true);
+        
+        await this.runAutonomousLoop("User approved the task.", signal, processId, this.currentDiscussion.model);
     }
 
     public async editAndRetryTask(taskId: number, newParams: any) {
@@ -1284,15 +1419,21 @@ Please provide a clear, concise final response to the user summarizing the outco
 
             if (task.action === 'read_file') {
                 const checkPath = (resolvedParams.path || resolvedParams.file || "").replace(/\\/g, '/');
-                if (includedFiles.some(f => f.path === checkPath && f.state === 'included')) {
-                    redundantPath = checkPath;
+                // BYPASS: If the file has been modified in this session, allow the read to verify results
+                if (!this.sessionState.unverifiedFiles.has(checkPath)) {
+                    if (includedFiles.some(f => f.path === checkPath && f.state === 'included')) {
+                        redundantPath = checkPath;
+                    }
                 }
             } else if (task.action === 'read_files') {
                 const paths = (resolvedParams.paths || []).map((p: string) => p.replace(/\\/g, '/'));
                 for (const p of paths) {
-                    if (includedFiles.some(f => f.path === p && f.state === 'included')) {
-                        redundantPath = p;
-                        break;
+                    // BYPASS: Only block if the file is NOT dirty
+                    if (!this.sessionState.unverifiedFiles.has(p)) {
+                        if (includedFiles.some(f => f.path === p && f.state === 'included')) {
+                            redundantPath = p;
+                            break;
+                        }
                     }
                 }
             }
@@ -1308,7 +1449,16 @@ Please provide a clear, concise final response to the user summarizing the outco
             );
 
             // --- STATE-AWARE INVALIDATION ---
-            // If we found a redundant success, check if any "Write" actions happened in between.
+            // 1. Explicit Bypass: If the agent is reading a file it recently modified, it's NOT redundant.
+            if (redundantSuccess && (task.action === 'read_file' || task.action === 'read_files')) {
+                const checkPath = (resolvedParams.path || resolvedParams.file || (resolvedParams.paths && resolvedParams.paths[0]) || "").replace(/\\/g, '/');
+                if (this.sessionState.unverifiedFiles.has(checkPath)) {
+                    Logger.info(`[Harness] Redundancy bypassed for Task ${task.id}: Reading dirty file ${checkPath} for verification.`);
+                    redundantSuccess = undefined;
+                }
+            }
+
+            // 2. Chronological Invalidation: Check if any "Write" actions happened in between.
             if (redundantSuccess) {
                 const intermediateTasks = pastTasks.filter(t => t.id > redundantSuccess!.id);
                 const filesystemModified = intermediateTasks.some(t => 
@@ -1329,6 +1479,42 @@ Please provide a clear, concise final response to the user summarizing the outco
             const isWriteAction = ['edit_code', 'generate_code', 'replaceCode', 'applyFileContent', 'markdown_coding'].includes(task.action);
             const isVerifyAction = ['execute_command', 'run_file', 'execute_python_script', 'run_tests_and_fix', 'test_web_page', 'secure_run'].includes(task.action);
             const targetFile = resolvedParams.file_path || resolvedParams.path || "";
+
+            // --- SURGICAL ENFORCEMENT GUARD ---
+            if (task.action === 'generate_code' && resolvedParams.file_path) {
+                const fileExists = includedFiles.some(f => f.path === resolvedParams.file_path.replace(/\\/g, '/'));
+                if (fileExists) {
+                    result = {
+                        success: false,
+                        output: `🛑 RESOURCE VIOLATION: You are attempting to use 'generate_code' on \`${resolvedParams.file_path}\`, but this file already exists. 
+
+                        STRICT PROTOCOL:
+                        1. You MUST use 'edit_code' with SEARCH/REPLACE blocks for existing files.
+                        2. This prevents token waste and protects against accidental code deletion.
+                        3. Switch tools immediately.`
+                    };
+                    return result;
+                }
+            }
+
+            // --- SURGICAL ENFORCEMENT GUARD ---
+            if (task.action === 'generate_code' && resolvedParams.file_path) {
+                const normalizedPath = resolvedParams.file_path.replace(/\\/g, '/');
+                const fileExists = includedFiles.some(f => f.path === normalizedPath);
+
+                if (fileExists) {
+                    result = {
+                        success: false,
+                        output: `🛑 RESOURCE VIOLATION: You are attempting to use 'generate_code' to rewrite \`${resolvedParams.file_path}\`, but this file already exists in the tree. 
+
+                        STRICT PROTOCOL:
+                        1. You MUST use 'edit_code' with SEARCH/REPLACE blocks for existing files.
+                        2. Rewriting a full file is a waste of context and dangerous.
+                        3. Switch to 'edit_code' now.`
+                    };
+                    return result;
+                }
+            }
 
             if (isWriteAction && targetFile && this.sessionState.unverifiedFiles.has(targetFile)) {
                 result = {
@@ -1461,6 +1647,8 @@ Please provide a clear, concise final response to the user summarizing the outco
                 }
             }
         } catch (error: any) {
+            console.error(`[AgentManager] Runtime Error during task ${task.id} (${task.action}):`, error);
+            Logger.error(`Runtime Error during task ${task.id}:`, error);
             result = { success: false, output: `Specialist Runtime Error:\n${error.stack || error.message}` };
         }
 
@@ -1547,11 +1735,17 @@ Please provide a clear, concise final response to the user summarizing the outco
                 this.ui.updateGeneratingState();
 
                 const artifactPrompt = reflectionPrompt 
-                    ? `### 🧬 EVOLUTIONARY REFLECTION (FAILURE OVERCOME)
-                    You failed previously but just succeeded. This is a critical learning moment.
-                    1. **PINK CARD**: Output \`<project_memory action="add" ...>\` detailing why your previous hypothesis was wrong.
-                    2. **PURPLE CARD**: Output \`<milestone title="Resolved Recurring Issue" ... />\` to document the fix.`
-                    : `### 🚩 MILESTONE REACHED
+                ? `### 🧬 EVOLUTIONARY REFLECTION (FAILURE OVERCOME)
+                You failed previously but just succeeded. This is a critical learning moment.
+                1. **GENIE MEMORY (PINK CARD)**: You MUST output a \`<project_memory action="add" importance="100" category="technical_lesson" ...>\` tag. State the precise technical reason why previous attempts failed.
+
+                **STRICT ANTI-HALLUCINATION RULES:**
+                - If the failure was an 'OS ERROR' or 'Capture file missing', the lesson MUST be about 'System Latency' or 'Environment Timing'.
+                - NEVER mention 'OAuth', 'API Scopes', or 'Tokens' unless you were explicitly using an authentication tool.
+                - Do not invent complex logic errors to explain a simple terminal timeout.
+
+                2. **PROGRESS MILESTONE (PURPLE CARD)**: Output \`<milestone title="Resolved Recurring Issue" ... />\` to document the fix.`
+                : `### 🚩 MILESTONE REACHED
                     Implementation success. 
                     1. **PURPLE CARD**: Output a \`<milestone />\` tag now to summarize the technical achievements for the user.`;
 
@@ -1571,14 +1765,9 @@ Please provide a clear, concise final response to the user summarizing the outco
                         await this.projectMemoryManager.processTags(artifactResponse);
                     }
 
-                    // Add the response to the chat so the user sees the cards
-                    await this.ui.addMessageToDiscussion({
-                        role: 'assistant',
-                        content: artifactResponse,
-                        model: specialistModel,
-                        personalityName: '🧬 Project Historian',
-                        skipInPrompt: true // Don't bloat the history, just show the card
-                    });
+                    // ATTACH TO TASK INSTEAD OF CHAT
+                    if (!task.artifacts) task.artifacts = [];
+                    task.artifacts.push(artifactResponse);
                 } catch (e) {
                     Logger.error("Artifact generation failed", e);
                 }
@@ -1701,6 +1890,9 @@ Please provide a clear, concise final response to the user summarizing the outco
         try {
             return await tool.execute(params, env, signal);
         } catch (error: any) {
+            console.error(`[Tool Failure] ${action}:`, error);
+            Logger.error(`Tool '${action}' crashed with exception:`, error);
+
             if (error.message && (error.message.includes('EACCES') || error.message.includes('permission denied'))) {
                 return { success: false, output: `❌ **OS Permission Error.**\nRaw Error: ${error.message}` };
             }

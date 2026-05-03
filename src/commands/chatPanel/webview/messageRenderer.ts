@@ -4,6 +4,7 @@ import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 import mermaid from 'mermaid';
 import Prism from 'prismjs';
+import { renderWorkspaceMatrix } from './ui.js';
 
 // CodeMirror imports
 import { EditorState } from "@codemirror/state";
@@ -264,47 +265,43 @@ function renderReinforceTag(id: string): string {
 
 function renderMemoryTag(action: string, id: string, title: string, content: string): string {
     const isDelete = action === 'delete';
-    const actionLabel = isDelete ? 'REMOVED FROM' : (action === 'update' ? 'UPDATED IN' : 'ADDED TO');
-    const headerTitle = `AI ${actionLabel} MEMORY: ${sanitizer.sanitize(id)}`;
-    const iconClass = isDelete ? 'codicon-trash' : 'codicon-chip';
-    const blockClass = isDelete ? 'memory-deleted' : '';
+    const actionLabel = isDelete ? 'Forgotten' : (action === 'update' ? 'Reinforced' : 'Learned');
+    const headerTitle = `Genie Memory: ${actionLabel}`;
+
+    if (isDelete) {
+        return `
+        <div class="project-memory-block memory-deleted" data-mem-id="${id}">
+            <div class="memory-summary" style="padding: 10px;">
+                <span class="codicon codicon-trash" style="color:var(--vscode-charts-red)"></span>
+                <span class="memory-summary-text">REMOVED FROM MEMORY: ${sanitizer.sanitize(id)}</span>
+            </div>
+        </div>`;
+    }
 
     const safeContent = encodeURIComponent(content);
     const safeTitle = encodeURIComponent(title);
 
     return `
-    <div class="project-memory-block ${blockClass}" data-mem-id="${id}">
-        <details>
-            <summary class="memory-summary">
-                <div style="display:flex; align-items:center; gap:10px; flex:1;">
-                    <span class="codicon ${iconClass}"></span>
-                    <span class="memory-summary-text">${headerTitle}</span>
-                </div>
-                <button class="msg-action-btn sync-memory-btn" 
+    <div class="learning-card" data-mem-id="${id}">
+        <div class="learning-card-header">
+            <span class="codicon codicon-chip"></span>
+            <span>${headerTitle}</span>
+        </div>
+        <div class="learning-body">
+            <div class="learning-title">${sanitizer.sanitize(title || id)}</div>
+            <div class="learning-content">${sanitizer.sanitize(content)}</div>
+            <div class="learning-meta">
+                <span>Identity: ${sanitizer.sanitize(id)}</span>
+                <button class="icon-btn sync-memory-btn" 
                         data-action="${action}" 
                         data-id="${id}" 
                         data-title="${safeTitle}" 
                         data-content="${safeContent}"
-                        title="Manually apply/sync this fact to project memory">
+                        title="Sync this discovery to project vault">
                     <i class="codicon codicon-sync"></i>
                 </button>
-            </summary>
-            <div class="memory-expanded-content">
-                <div class="memory-header">
-                    <div class="memory-title-info">
-                        <div class="memory-label">KNOWLEDGE CONTENT</div>
-                        <div class="memory-title">${sanitizer.sanitize(title || id)}</div>
-                    </div>
-                </div>
-                <div class="memory-content">
-                    ${sanitizer.sanitize(content)}
-                </div>
-                <div class="memory-status-line">
-                    <span class="codicon codicon-pass-filled"></span>
-                    Synced to .lollms/project_memory.json
-                </div>
             </div>
-        </details>
+        </div>
     </div>`;
 }
 
@@ -1689,6 +1686,44 @@ function renderBreakpointBlock(attrs: any): string {
     </div>`;
 }
 
+function renderPlanStatusCard(attrs: any): string {
+    let tasks: any[] = [];
+    try {
+        tasks = JSON.parse(attrs.tasks || '[]');
+    } catch (e) {}
+
+    const checklist = tasks.map(t => {
+        const isDone = t.status === 'completed';
+        const icon = isDone ? 'pass-filled' : (t.status === 'in_progress' ? 'sync~spin' : 'circle-outline');
+        return `
+            <div class="checklist-item ${isDone ? 'done' : ''}">
+                <i class="codicon codicon-${icon}" style="color:${isDone ? 'var(--vscode-charts-green)' : 'inherit'}"></i>
+                <span>${sanitizer.sanitize(t.desc)}</span>
+            </div>`;
+    }).join('');
+
+    return `
+    <div class="plan-status-card">
+        <div class="plan-status-header">
+            <span><i class="codicon codicon-checklist"></i> MISSION PROGRESS</span>
+            <span>${attrs.percent}%</span>
+        </div>
+        <div class="plan-status-body">
+            <div style="font-size: 11px; opacity: 0.7; font-weight: bold; text-transform: uppercase;">Current Sub-Goal</div>
+            <div class="plan-subgoal-box">${sanitizer.sanitize(attrs.sub_goal)}</div>
+
+            <div class="plan-progress-bar-container">
+                <div class="plan-progress-bar-fill" style="width: ${attrs.percent}%"></div>
+            </div>
+
+            <div style="font-size: 10px; opacity: 0.5; margin-top: 15px; font-weight: bold; text-transform: uppercase;">Task Roadmap (${attrs.completed}/${attrs.total})</div>
+            <div class="plan-mini-checklist">
+                ${checklist}
+            </div>
+        </div>
+    </div>`;
+}
+
 function renderMilestoneCard(attrs: any): string {
     return `
     <div class="milestone-card">
@@ -1713,6 +1748,8 @@ function renderMilestoneCard(attrs: any): string {
     </div>`;
 }
 
+
+
 function renderProcessingBlock(rawContent: string, isClosed: boolean): string {
     const lines = rawContent.trim().split('\n').filter(l => l.trim().length > 0);
     const displayTitle = lines.length > 0 ? lines[lines.length - 1].replace(/^\*\s*/, '') : "Processing...";
@@ -1735,6 +1772,7 @@ function renderProcessingBlock(rawContent: string, isClosed: boolean): string {
         </details>
     </div>`;
 }
+
 
 function renderImageResultBlock(path: string, messageId: string): string {
     const id = `img-res-${messageId}-${Math.random().toString(36).substr(2, 5)}`;
@@ -2052,6 +2090,19 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 milestones.push({ html: renderMilestoneCard(attrs), start: mileMatch.index, end: mileMatch.index + mileMatch[0].length });
             }
 
+            const planStatusRegex = /<plan_status\s+([^>]*?)\s*\/>/gi;
+            let psMatch;
+            const planStatuses: { html: string, start: number, end: number }[] = [];
+            while ((psMatch = planStatusRegex.exec(contentWithoutThoughts)) !== null) {
+                if (isInsideCode(psMatch.index)) continue;
+                const attrStr = psMatch[1];
+                const attrs: any = {};
+                const attrRegex = /(\w+)=["']([^"']*)["']/g;
+                let m;
+                while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
+                planStatuses.push({ html: renderPlanStatusCard(attrs), start: psMatch.index, end: psMatch.index + psMatch[0].length });
+            }
+
             const procRegex = /<processing\b[^>]*>([\s\S]*?)(?:<\/processing>|$)/gi;
             let procMatch;
             while ((procMatch = procRegex.exec(contentWithoutThoughts)) !== null) {
@@ -2150,6 +2201,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 ...milestones.map(m => ({ start: m.start, end: m.end, html: m.html, elementType: 'milestone' as const })),
                 ...breakpoints.map(b => ({ start: b.start, end: b.end, html: b.html, elementType: 'breakpoint' as const })),
                 ...debugReports.map(d => ({ start: d.start, end: d.end, html: d.html, elementType: 'debugReport' as const })),
+                ...planStatuses.map(ps => ({ start: ps.start, end: ps.end, html: ps.html, elementType: 'planStatus' as const })),
                 ...processingBlocks.map(p => ({ start: p.start, end: p.end, html: p.html, elementType: 'processing' as const }))
             ].sort((a, b) => a.start - b.start);
 
@@ -2182,7 +2234,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 }
 
                 // B. Render the UI element (Code Block or Skill or Image or AddFiles or FileOp or DebugReport or ProjectMemory or Processing or Form)
-                const uiTypes = ['skill', 'image', 'addFiles', 'fileOp', 'projectMemory', 'debugReport', 'processing', 'form', 'milestone', 'breakpoint'];
+                const uiTypes = ['skill', 'image', 'addFiles', 'fileOp', 'projectMemory', 'debugReport', 'processing', 'form', 'milestone', 'breakpoint', 'planStatus'];
                 if (uiTypes.includes(el.elementType)) {
                     const uiDiv = document.createElement('div');
                     uiDiv.innerHTML = (el as any).html;
@@ -2661,6 +2713,14 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 const lastTextDiv = document.createElement('div');
                 lastTextDiv.innerHTML = sanitizer.sanitize(marked.parse(remaining) as string, SANITIZE_CONFIG);
                 fragment.appendChild(lastTextDiv);
+            }
+
+            if (visualImagesHtml) {
+                const imgDiv = document.createElement('div');
+                imgDiv.className = 'message-visuals';
+                imgDiv.style.marginTop = '8px';
+                imgDiv.innerHTML = visualImagesHtml;
+                fragment.appendChild(imgDiv);
             }
 
             contentDiv.innerHTML = '';
@@ -3552,7 +3612,7 @@ export function updateContext(contextText: string, files: string[] = [], skills:
     if (muteBtn) {
         muteBtn.addEventListener('click', () => {
             // Instead of a binary toggle, open the matrix for granular muting
-            import('./ui.js').then(ui => ui.renderWorkspaceMatrix());
+            renderWorkspaceMatrix();
             dom.matrixModal.classList.add('visible');
         });
     }
@@ -3942,15 +4002,50 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
 
             let approvalButtonHtml = '';
             if ((task as any).needsApproval && task.status === 'pending' && !isPrevious) {
-                approvalButtonHtml = `<button class="code-action-btn apply-btn approve-task-btn" data-task-id="${task.id}" style="width:100%; justify-content:center; margin-bottom:8px; border: 2px solid var(--vscode-charts-green);"><span class="codicon codicon-play"></span> Run Task & Continue</button>`;
+                approvalButtonHtml = `
+                <div style="margin-bottom: 8px; background: rgba(0,0,0,0.2); padding: 10px; border-radius: 6px; border: 1px dashed var(--vscode-charts-orange);">
+                    <div style="font-size: 11px; margin-bottom: 8px; font-weight: bold; color: var(--vscode-charts-orange);">
+                        <i class="codicon codicon-shield"></i> Action Requires Approval
+                    </div>
+                    <button class="code-action-btn apply-btn approve-task-btn" data-task-id="${task.id}" style="width:100%; justify-content:center; margin-bottom:8px; border: 2px solid var(--vscode-charts-green);"><span class="codicon codicon-play"></span> Run Task & Continue</button>
+                    <div class="checkbox-container" style="margin-top:0; padding:0; background:transparent;">
+                        <input type="checkbox" id="always-allow-${task.id}" class="always-allow-check">
+                        <label for="always-allow-${task.id}" style="font-size:10px; opacity:0.8;">Always allow <b>${task.action}</b> in this session</label>
+                    </div>
+                </div>`;
             }
             
             let resultHtml = '';
-            
+
+            // 1. Render Associated Artifacts (Milestones/Learnings)
+            let artifactsHtml = '';
+            if (task.artifacts && task.artifacts.length > 0) {
+                artifactsHtml = task.artifacts.map((art: string) => {
+                    // Reuse the existing tag-to-card parsing logic
+                    const { processedContent } = (window as any).processThinkTags(art);
+                    const milestoneRegex = /<milestone\s+([^>]*?)\s*\/>/gi;
+                    const pMemRegex = /<project_memory\s+([^>]*?)>([\s\S]*?)<\/project_memory>/gi;
+
+                    let out = art;
+                    out = out.replace(milestoneRegex, (match, attrStr) => {
+                        const attrs: any = {};
+                        attrStr.replace(/(\w+)=["']([^"']*)["']/g, (m:any, k:any, v:any) => attrs[k] = v);
+                        return renderMilestoneCard(attrs);
+                    });
+                    out = out.replace(pMemRegex, (match, attrStr, content) => {
+                        const attrs: any = {};
+                        attrStr.replace(/(\w+)=["']([^"']*)["']/g, (m:any, k:any, v:any) => attrs[k] = v);
+                        return renderMemoryTag(attrs.action || 'add', attrs.id, attrs.title, content.trim());
+                    });
+                    return out;
+                }).join('');
+            }
+
             // Show Parameters for all tasks to allow inspection and editing
             if (task.parameters) {
                 let editHtml = '';
                 let formHtml = '';
+                const isDebuggable = ['execute_command', 'run_file', 'execute_python_script', 'read_file', 'read_files', 'scrape_website', 'search_web'].includes(task.action);
                 const hasForm = !!task.parameters.lollms_form;
 
                 // --- NEW: Render Forms inside Plan Tasks ---
@@ -3962,9 +4057,15 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
                 if (task.status === 'failed' || (task.status === 'pending' && !hasForm)) {
                     editHtml = `
                     <div class="task-edit-zone" style="margin-top: 8px; border-top: 1px solid var(--vscode-widget-border); padding-top: 8px;">
-                        <button class="code-action-btn edit-params-btn" data-task-id="${task.id}" style="margin-bottom: 4px;">
-                            <span class="codicon codicon-edit"></span> Edit & Retry
-                        </button>
+                        <div style="display:flex; gap: 4px; margin-bottom: 4px;">
+                            <button class="code-action-btn edit-params-btn" data-task-id="${task.id}" style="flex:1;">
+                                <span class="codicon codicon-edit"></span> Edit Params
+                            </button>
+                            ${isDebuggable ? `
+                            <button class="code-action-btn secondary-btn view-full-log-btn" data-task-id="${task.id}" style="flex:1;">
+                                <span class="codicon codicon-output"></span> System Log
+                            </button>` : ''}
+                        </div>
                         <div id="edit-params-container-${task.id}" style="display: none; flex-direction: column; gap: 6px; margin-top: 4px;">
                             <label style="font-size: 10px; font-weight: bold; color: var(--vscode-descriptionForeground);">Edit JSON Parameters:</label>
                             <textarea id="edit-params-text-${task.id}" style="width: 100%; height: 120px; font-family: monospace; background: var(--vscode-input-background); color: var(--vscode-input-foreground); border: 1px solid var(--vscode-input-border); padding: 8px; border-radius: 4px;">${sanitizer.sanitize(JSON.stringify(task.parameters, null, 2))}</textarea>
@@ -4040,26 +4141,38 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
             if (task.agent_files && task.agent_files.length > 0) metaTabsHtml += `<div class="agent-meta-tab" title="Files Context"><span class="codicon codicon-file-code"></span> ${task.agent_files.length} Files</div>`;
             if (task.dependencies && task.dependencies.length > 0) metaTabsHtml += `<div class="agent-meta-tab" title="Waiting for Tasks"><span class="codicon codicon-git-merge"></span> Dep: [${task.dependencies.join(', ')}]</div>`;
 
-            return `
-                <li class="agent-card status-${task.status}" data-task-id="${task.id}">
+            const isActive = task.status === 'in_progress';
+
+            // 1. Standalone Reasoning Card
+            const thoughtHtml = task.description ? `
+                <div class="agent-thought-step">
+                    <span class="thought-label">Reasoning for Step ${task.id}</span>
+                    ${sanitizer.sanitize(task.description)}
+                </div>` : '';
+
+            // 2. Simplified Execution Card (No description inside)
+            const cardHtml = `
+                <li class="agent-card status-${task.status} ${isActive ? 'active-task' : ''}" data-task-id="${task.id}" style="margin-top: -5px;">
                     <div class="agent-card-header">
                         <div style="display:flex; align-items:center; gap:8px;">
                             <div class="${statusClass}">${icon}</div>
-                            <span style="font-weight:bold;">Agent Task ${task.id}</span>
+                            <span style="font-weight:bold;">Task ${task.id}</span>
                         </div>
                         <div style="display:flex; gap:8px; align-items:center;">
                             ${toolBadge}
                             ${retryButtonHtml}
                         </div>
                     </div>
-                    <div class="agent-card-body">
-                        <div class="task-description" style="margin-bottom: ${metaTabsHtml ? '8px' : '0'}; line-height: 1.4;">${sanitizer.sanitize(task.description)}</div>
+                    <div class="agent-card-body" style="padding-top: 8px;">
                         ${approvalButtonHtml}
                         ${metaTabsHtml ? `<div class="agent-meta-tabs">${metaTabsHtml}</div>` : ''}
                         ${memoryBarHtml}
                         ${resultHtml}
-                    </div>
+                        ${artifactsHtml}
+                        </div>
                 </li>`;
+
+            return thoughtHtml + cardHtml;
         }).join('');
     }
 
@@ -4090,15 +4203,78 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
     return attemptDiv;
 }
 
+let lastPlanRenderTime = 0;
+const RENDER_THROTTLE = 150; // ms
+let lastTaskCount = 0;
+let lastTaskStates = "";
+
 export function displayPlan(plan: any) {
     if(!dom.agentPlanZone) return; 
 
-    // CRITICAL: Store the plan globally so event handlers in events.ts can access task data on click.
+    const now = Date.now();
+    const isStreaming = plan?.status === 'active' && state.isGenerating;
+    
+    // 1. SURGICAL HUD UPDATE (The "Streaming" Path)
+    // If we are just streaming thoughts, only update the HUD text
+    const thoughtBox = dom.agentPlanZone.querySelector('.live-thought-box');
+    if (thoughtBox && plan.scratchpad && isStreaming && (now - lastPlanRenderTime < RENDER_THROTTLE)) {
+        thoughtBox.textContent = plan.scratchpad;
+        return;
+    }
+
+    // 2. STATE CHANGE DETECTION
+    // Check if tasks actually changed (count or status) before re-rendering the list
+    const currentTaskStates = plan?.tasks?.map((t:any) => t.status).join(',') || "";
+    const taskListChanged = (plan?.tasks?.length !== lastTaskCount) || (currentTaskStates !== lastTaskStates);
+    
+    // If nothing structural changed and we are just streaming, skip the full render
+    if (!taskListChanged && isStreaming && (now - lastPlanRenderTime < RENDER_THROTTLE)) {
+        return;
+    }
+
+    lastPlanRenderTime = now;
+    lastTaskCount = plan?.tasks?.length || 0;
+    lastTaskStates = currentTaskStates;
     (window as any).lastPlan = plan;
 
-    // 1. Reset Container and visibility
+    if (!plan) {
+        dom.agentPlanZone.innerHTML = ''; // Full wipe
+        dom.agentPlanZone.classList.remove('visible');
+        dom.planResizer.classList.remove('visible');
+        return;
+    }
+
+    const oldScroll = dom.agentPlanZone.scrollTop;
+    dom.agentPlanZone.classList.add('visible');
+    dom.planResizer.classList.add('visible');
+
+    // CRITICAL FIX: Explicitly clear the container before starting a structural render
+    // to prevent the "Double HUD" effect seen in the screenshot.
     dom.agentPlanZone.innerHTML = '';
 
+    // Build the fragment
+    const fragment = document.createDocumentFragment();
+
+    // 1. LIVE ACTIVITY HUD (Persistent wrapper)
+    const isGenerating = state.isGenerating;
+    if (isGenerating || (plan.scratchpad && plan.status === 'active')) {
+        const hud = document.createElement('div');
+        hud.className = 'agent-activity-hud';
+        const status = document.getElementById('status-text')?.textContent || "Thinking...";
+        hud.innerHTML = `
+            <div class="activity-status-row">
+                <div class="spinner" style="border-color: var(--vscode-charts-orange); border-bottom-color: transparent;"></div>
+                <span>${status}</span>
+            </div>
+            <div class="live-thought-box">${sanitizer.sanitize(plan.scratchpad || "")}</div>
+        `;
+        fragment.appendChild(hud);
+    }
+
+    // Restore scroll position to prevent the "jump"
+    requestAnimationFrame(() => {
+        if (dom.agentPlanZone) dom.agentPlanZone.scrollTop = oldScroll;
+    });
     if (!plan) {
         dom.agentPlanZone.classList.remove('visible');
         dom.planResizer.classList.remove('visible');

@@ -522,7 +522,11 @@ export class GitIntegration {
   private async updateChangelog(folder: vscode.WorkspaceFolder, commitMessage: string) {
       const changelogPath = vscode.Uri.joinPath(folder.uri, 'CHANGELOG.md');
       try {
-          await vscode.workspace.fs.stat(changelogPath);
+          try {
+              await vscode.workspace.fs.stat(changelogPath);
+          } catch {
+              return; // Silently skip if file doesn't exist
+          }
           const document = await vscode.workspace.openTextDocument(changelogPath);
           const text = document.getText();
           const lines = commitMessage.split('\n');

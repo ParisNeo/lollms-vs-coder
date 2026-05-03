@@ -24,6 +24,7 @@ export interface Task {
         discoveries?: string[];
         thought?: string;
     };
+    artifacts?: string[]; // XML tags like <milestone /> or <project_memory />
     retries: number;
     can_retry?: boolean;
 }

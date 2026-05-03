@@ -12,13 +12,16 @@ export const analyzeImageTool: ToolDefinition = {
         { name: "prompt", type: "string", description: "Specific question about the image (e.g., 'What is the date in this photo?', 'Describe the landscape').", required: false }
     ],
     async execute(params: { file_path: string, prompt?: string }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
-        if (!params.file_path || !env.workspaceRoot) {
-            return { success: false, output: "Error: file_path and active workspace required." };
+        if (!params.file_path) {
+            return { success: false, output: "Error: 'file_path' is required." };
         }
 
         try {
-            const uri = vscode.Uri.joinPath(env.workspaceRoot.uri, params.file_path);
-            const data = await vscode.workspace.fs.readFile(uri);
+            // Correctly use the contextManager for path resolution
+            const res = await env.contextManager.resolveWorkspaceFromPath(params.file_path);
+            if (!res) return { success: false, output: `Could not resolve path: ${params.file_path}` };
+
+            const data = await vscode.workspace.fs.readFile(res.uri);
             const base64 = Buffer.from(data).toString('base64');
             const ext = path.extname(params.file_path).replace('.', '').toLowerCase();
             const mime = ext === 'svg' ? 'svg+xml' : (ext === 'jpg' ? 'jpeg' : ext);

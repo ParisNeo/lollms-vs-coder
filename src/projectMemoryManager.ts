@@ -142,6 +142,14 @@ export class ProjectMemoryManager {
         // 2. Identify core rules
         await this.updateMemory('add', 'scripting_protocol', 'Clean Scripting Protocol', 'Complex logic must never be executed inline via terminal one-liners. Always generate a script file in .lollms/scripts/ first, then execute it. This prevents shell-escaping and character-encoding failures.', 'standards', 100);
 
+        await this.updateMemory('add', 'asset_usage_protocol', 'User-Provided Assets', 'If the user provides an image or file in the chat, prioritize using `save_chat_image` to persist it to the workspace instead of generating a new one with AI. This preserves user intent and saves tokens.', 'standards', 100);
+
+        await this.updateMemory('add', 'headless_pygame_protocol', 'Headless Testing', 'When working on Pygame projects, DO NOT use `execute_python_script` to run the main game loop, as it will hang in this headless environment. Instead, use `check_python_syntax` or run small isolated logic tests.', 'standards', 100);
+
+        await this.updateMemory('add', 'ui_validation_protocol', 'UI Validation', 'To test User Interfaces, always use the specialized test tools (test_web_ui, test_desktop_python_ui, etc.). These tools prevent hang-ups in the headless environment. IMPORTANT: Image tokens are expensive. Set `capture_visual: true` only if text logs (titles, status codes) are insufficient to verify the result.', 'standards', 100);
+
+        await this.updateMemory('add', 'asset_usage_protocol', 'User-Provided Assets', 'If the user provides an image or file in the chat, prioritize using `save_chat_image` to persist it to the workspace instead of generating a new one with AI. This preserves user intent and saves tokens.', 'standards', 100);
+
         const filesToPeek = ['package.json', 'requirements.txt', 'tsconfig.json', '.eslintrc', 'pyproject.toml'];
         for (const file of filesToPeek) {
             try {

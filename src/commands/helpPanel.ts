@@ -179,6 +179,7 @@ export class HelpPanel {
                     <div class="nav-item" onclick="showSection('agent')"><i class="codicon codicon-robot"></i> Agent Mode</div>
                     <div class="nav-item" onclick="showSection('automation')"><i class="codicon codicon-zap"></i> Auto-Repair</div>
                     <div class="nav-item" onclick="showSection('advanced-debug')"><i class="codicon codicon-bug"></i> Live Debugging</div>
+                    <div class="nav-item" onclick="showSection('surgical-intel')"><i class="codicon codicon-target"></i> Surgical Intel</div>
                     <div class="nav-item" onclick="showSection('manual-stitching')"><i class="codicon codicon-tools"></i> Manual Stitching</div>
                 </div>
             </div>
@@ -345,7 +346,23 @@ export class HelpPanel {
             </ul>
         </section>
 
-        <!-- CONTEXT -->
+        <!-- SURGICAL INTEL -->
+        <section id="surgical-intel">
+            <h1>🎯 Surgical Intelligence (The Fast Path)</h1>
+            <p>Lollms uses a multi-stage grounding system for Companion (Ctrl+Shift+L) and File Inspection tasks.</p>
+
+            <div class="card">
+                <h3>⚡ How it Works</h3>
+                <ol>
+                    <li><strong>Dependency Injection</strong>: Instead of sending your whole project, Lollms looks at the <b>Code Graph</b> and only sends the file you are editing plus the files it imports.</li>
+                    <li><strong>Agentic Escalation</strong>: If the AI finds a keyword (like a unique error code or variable) it doesn't recognize, it will call <code>grep_search</code> automatically.</li>
+                    <li><strong>The Second Run</strong>: Lollms catches this request, performs the project-wide search, and restarts the reasoning with the new relevant files in context.</li>
+                </ol>
+            </div>
+            <div class="tip">
+                <strong>Result:</strong> Extremely precise code modifications with zero token waste and perfect awareness of related modules.
+            </div>
+        </section>
         <section id="context">
             <h1>🧠 Smart Context Management</h1>
             <p>LLMs have limited context windows. Lollms helps you manage what the AI "sees" to save tokens and improve accuracy.</p>

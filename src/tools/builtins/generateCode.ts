@@ -18,9 +18,10 @@ export const generateCodeTool: ToolDefinition = {
         { name: "equip_skills", type: "array", description: "List of skill IDs from the library to give the agent (e.g. ['fastapi_standards']).", required: false },
         { name: "instructions", type: "string", description: "Detailed implementation requirements for this specific file.", required: true },
         { name: "reference_files", type: "array", description: "List of existing relative file paths the specialist should read for context.", required: false },
+        { name: "inject_task_outputs", type: "array", description: "List of task IDs to pull results from and inject into the system prompt (e.g., [1, 3]).", required: false },
         { name: "include_tree", type: "boolean", description: "Set to true if the specialist needs to see the whole project structure.", required: false }
-    ],
-    async execute(params: { 
+        ],
+        async execute(params: { 
         file_path: string, 
         specialist_profile: string, 
         technical_briefing: string, 
@@ -28,8 +29,9 @@ export const generateCodeTool: ToolDefinition = {
         equip_skills?: string[],
         instructions: string, 
         reference_files?: string[],
+        inject_task_outputs?: number[],
         include_tree?: boolean 
-    }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
+        }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
         if (!env.workspaceRoot) return { success: false, output: "Error: No workspace root." };
 
         const model = env.taskModel || env.lollmsApi.getModelName();
@@ -70,9 +72,21 @@ export const generateCodeTool: ToolDefinition = {
         const persona = profileMap[params.specialist_profile.toLowerCase()] || "You are a Senior Software Engineer.";
 
         // 3. CONSTRUCT THE HUMAN-LIKE PROMPT
+        let injectedData = "";
+        if (params.inject_task_outputs && env.currentPlan) {
+            params.inject_task_outputs.forEach(id => {
+                const task = env.currentPlan?.tasks.find(t => t.id === id);
+                if (task && task.result) {
+                    injectedData += `\n### 📥 INPUT DATA (TASK ${id} RESULT):\n${task.result}\n`;
+                }
+            });
+        }
+
         const systemPrompt = `${persona}
 
         ${envBlock}
+
+        ${injectedData}
 
         # 🎯 MISSION: CREATE FILE
         You are being delegated a task by the Lead Architect. 
@@ -124,6 +138,8 @@ ${params.instructions}
         
         await vscode.workspace.fs.createDirectory(parentDir);
         await vscode.workspace.fs.writeFile(fullUri, Buffer.from(finalCode, 'utf8'));
+        // Clear cache for the new/overwritten file
+        env.contextManager.refreshFileInCache(fullUri);
 
         // 6. GENERATE FINAL AUDIT REPORT
         await new Promise(r => setTimeout(r, 800)); // Wait for VS Code diagnostics

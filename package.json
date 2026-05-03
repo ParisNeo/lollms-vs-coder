@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.8.55",
+  "version": "0.8.56",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -922,14 +922,31 @@
         "lollmsVsCoder.agent.activeProfile": {
           "type": "string",
           "default": "software_architect",
-          "enum": [
-            "software_architect",
-            "cve_hunter",
-            "surgical_debugger",
-            "game_builder",
-            "embedded_expert"
-          ],
-          "description": "The active Mission Profile for the agent."
+          "description": "The default Mission Profile for the AI Agent."
+        },
+        "lollmsVsCoder.agentProfiles": {
+          "type": "array",
+          "description": "Customizable mission protocols for the Agent Architect.",
+          "default": [
+            {
+              "id": "software_architect",
+              "name": "Software Architect (General)",
+              "description": "General-purpose engineering, refactoring, and feature building.",
+              "protocol": "### 🏗️ MISSION PROTOCOL: SOFTWARE ARCHITECT\n1. **ANALYSIS**: Map out dependencies before touching any code.\n2. **MODULARITY**: Prefer small, testable modules.\n3. **VERIFICATION**: Always run a build or test command after implementation."
+            },
+            {
+              "id": "game_builder",
+              "name": "Game Builder",
+              "description": "Expert in Pygame, Godot, and Unity.",
+              "protocol": "### 🎮 MISSION PROTOCOL: GAME BUILDER\n1. **STACK DETECTION**: Identify engine (Pygame, Godot, Unity).\n2. **ASSET PIPELINE**: Use 'generate_image' and 'create_svg_asset'.\n3. **LOGIC**: Build the game loop and state management.\n4. **VISUAL TEST**: Use 'capture_desktop' to verify visual state."
+            },
+            {
+              "id": "pentester_cve",
+              "name": "Pentester (CVE Builder)",
+              "description": "Hunts for vulnerabilities and builds documented CVE reports.",
+              "protocol": "### 🛡️ MISSION PROTOCOL: PENTESTER (CVE BUILDER)\n1. **RECON**: Find dangerous sinks (eval, SQLi).\n2. **EXPLOIT**: Write a reproduction script to prove the flaw.\n3. **REPORT**: Use CVE Builder tool.\n4. **PATCH**: Apply fix and verify it's blocked."
+            }
+          ]
         },
         "lollmsVsCoder.agent.envActivationScript": {
           "type": "string",
@@ -1402,8 +1419,13 @@
           "type": "string",
           "default": "01:00",
           "description": "The time (HH:MM) to perform the automatic Dream Cycle. (e.g., '01:00' for 1 AM)."
+        },
+        "lollmsVsCoder.developer.debugTools": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable internal debugger UI to test tools and export diagnostic logs."
         }
-      }
+        }
     },
     "viewsContainers": {
       "activitybar": [

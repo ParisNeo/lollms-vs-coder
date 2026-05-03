@@ -13,27 +13,20 @@ export const moveFileTool: ToolDefinition = {
         { name: "destination", type: "string", description: "New relative path (including filename).", required: true }
     ],
     async execute(params: { source: string, destination: string }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
-        if (!env.workspaceRoot) return { success: false, output: "No workspace." };
-
-        let srcPath = params.source.trim();
-        let destPath = params.destination.trim();
-        if (srcPath.startsWith('/') || srcPath.startsWith('\\')) srcPath = srcPath.substring(1);
-        if (destPath.startsWith('/') || destPath.startsWith('\\')) destPath = destPath.substring(1);
-
         try {
-            const srcUri = vscode.Uri.joinPath(env.workspaceRoot.uri, srcPath);
-            const destUri = vscode.Uri.joinPath(env.workspaceRoot.uri, destPath);
+            // Use namespaced resolution to support cross-project movement
+            const srcRes = await env.contextManager.resolveWorkspaceFromPath(params.source);
+            const destRes = await env.contextManager.resolveWorkspaceFromPath(params.destination);
 
-            // Ensure source exists
-            try { await vscode.workspace.fs.stat(srcUri); } 
-            catch { return { success: false, output: `Source file not found: ${srcPath}` }; }
+            if (!srcRes) return { success: false, output: `Source file not found: ${params.source}` };
+            if (!destRes) return { success: false, output: `Could not resolve destination path: ${params.destination}` };
 
-            // Ensure dest folder exists
-            const destFolder = vscode.Uri.joinPath(destUri, '..');
+            // Ensure destination parent folder exists
+            const destFolder = vscode.Uri.joinPath(destRes.uri, '..');
             await vscode.workspace.fs.createDirectory(destFolder);
 
-            await vscode.workspace.fs.rename(srcUri, destUri, { overwrite: false });
-            return { success: true, output: `Moved: ${srcPath} -> ${destPath}` };
+            await vscode.workspace.fs.rename(srcRes.uri, destRes.uri, { overwrite: false });
+            return { success: true, output: `Successfully moved: ${params.source} -> ${params.destination}` };
         } catch (e: any) {
             return { success: false, output: `Move failed: ${e.message}` };
         }

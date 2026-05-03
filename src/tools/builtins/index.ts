@@ -1,8 +1,9 @@
 import * as vscode from 'vscode';
 import { ToolDefinition } from '../tool';
+import { addFilesToContextTool } from './addFilesToContext';
 import { autoSelectContextFilesTool } from './autoSelectContextFiles';
 import { createPythonEnvironmentTool } from './createPythonEnvironment';
-import { deselectContextFilesTool } from './deselectContextFiles';
+import { removeFilesFromContextTool } from './removeFilesFromContext';
 import { editPlanTool } from './editPlan';
 import { executeCommandTool } from './executeCommand';
 import { executePythonScriptTool } from './executePythonScript';
@@ -34,6 +35,7 @@ import { researchWebPageTool } from './researchWebPage';
 import { moltbookActionTool } from './moltbookAction';
 import { waitTool } from './wait';
 import { analyzeImageTool } from './analyzeImage';
+import { projectMemoryTool } from './projectMemory';
 import { createSvgAssetTool } from './createSvgAsset';
 import { processImageAssetTool } from './processImageAsset';
 import { runVerificationTool } from './runVerification';
@@ -43,6 +45,7 @@ import { readMemoryCategoryTool } from './readMemoryCategory';
 import { promoteMemoryToSkillTool } from './promoteMemoryToSkill';
 import { extractYoutubeTranscriptTool } from './extractYoutubeTranscript';
 import { summarizeTextTool } from './summarizeText';
+import { reportPlanStatusTool } from './reportPlanStatus';
 import { searchWikipediaTool } from './searchWikipedia';
 import { searchStackOverflowTool } from './searchStackOverflow';
 import { testWebPageTool } from './testWebPage';
@@ -56,17 +59,41 @@ import { secureRunTool } from './secureRun';
 import { webDiveTool } from './webDive';
 import { webConsolidateTool } from './webConsolidate';
 import { editImageAssetTool } from './editImageAsset';
+import { buildGamePersonaTool } from './buildGamePersona';
+import { buildGameAssetsTool } from './buildGameAssets';
+import { requestFormInputTool } from './requestFormInput';
+import { drawDebugAnnotationsTool } from './drawDebugAnnotations';
 import { manageExtensionTool } from './manageExtension';
 import { uiInteractionTool } from './uiInteraction';
+import { manageToolsTool } from './manageTools';
+import { manageSkillsTool } from './manageSkills';
+import { extractImageTilesTool } from './extractImageTiles';
+import { saveChatImageTool } from './saveChatImage';
+import { checkPythonSyntaxTool } from './checkPythonSyntax';
+import { testWebUiTool } from './testWebUi';
+import { testDesktopPythonUiTool } from './testDesktopPythonUi';
+import { testNativeUiTool } from './testNativeUi';
 
 
 export const allTools: ToolDefinition[] = [
+    testWebUiTool,
+    testDesktopPythonUiTool,
+    testNativeUiTool,
+    checkPythonSyntaxTool,
+    saveChatImageTool,
+    extractImageTilesTool,
     uiHelpTool,
     secureRunTool,
     manageExtensionTool,
     webDiveTool,
     webConsolidateTool,
     editImageAssetTool,
+    buildGamePersonaTool,
+    buildGameAssetsTool,
+    drawDebugAnnotationsTool,
+    requestFormInputTool,
+    manageToolsTool,
+    manageSkillsTool,
     requestSecureCredentialTool,
     editCodeTool,
     createAgentTool,
@@ -74,9 +101,10 @@ export const allTools: ToolDefinition[] = [
     testWebPageTool,
     captureDesktopTool,
     deleteFileTool,
+    addFilesToContextTool,
     autoSelectContextFilesTool,
     createPythonEnvironmentTool,
-    deselectContextFilesTool,
+    removeFilesFromContextTool,
     editPlanTool,
     executeCommandTool,
     executePythonScriptTool,
@@ -107,6 +135,7 @@ export const allTools: ToolDefinition[] = [
     moltbookActionTool,
     waitTool,
     analyzeImageTool,
+    projectMemoryTool,
     createSvgAssetTool,
     processImageAssetTool,
     runVerificationTool,
@@ -114,6 +143,7 @@ export const allTools: ToolDefinition[] = [
     storeKnowledgeTool,
     readMemoryCategoryTool, // NEW
     promoteMemoryToSkillTool, 
+    reportPlanStatusTool,
     {
         name: "search_deep_memory",
         description: "Retrieves the full content of a memory engram from deep storage using its ID found in the TIER 2 index.",

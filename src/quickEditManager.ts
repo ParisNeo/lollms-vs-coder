@@ -126,14 +126,33 @@ export class QuickEditManager {
 
             prompt += `Please respond with markdown. If you provide code, use code blocks.`;
 
-            // --- ADD GLOBAL CONTEXT (Project Tree + Selected Files) ---
+            // --- SURGICAL INTELLIGENCE: GRAPH-BASED GROUNDING ---
+            const graph = this.contextManager['codeGraphManager'];
+            let dependencyContext = "";
+
+            if (graph) {
+                if (graph.getBuildState() !== 'ready') await graph.buildGraph();
+
+                const targetNode = graph.getGraphData().nodes.find(n => n.filePath === relativePath);
+                if (targetNode) {
+                    const depFiles = graph.getGraphData().edges
+                        .filter(e => e.source === targetNode.id && e.label === 'imports')
+                        .map(e => graph.getGraphData().nodes.find(n => n.id === e.target)?.filePath)
+                        .filter((path): path is string => !!path);
+
+                    if (depFiles.length > 0) {
+                        dependencyContext = await this.contextManager.readSpecificFiles(depFiles);
+                    }
+                }
+            }
+
             const globalContext = await this.contextManager.getContextContent({
                 modelName: this.lollmsAPI.getModelName()
             });
-            
+
             const contextData = {
                 tree: globalContext.projectTree,
-                files: globalContext.selectedFilesContent,
+                files: globalContext.selectedFilesContent + "\n\n### SURGICAL DEPENDENCIES (GRAPH GROUNDED)\n" + dependencyContext,
                 skills: globalContext.skillsContent,
                 projectName: globalContext.projectName
             };

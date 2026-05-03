@@ -34,9 +34,10 @@ export class PromptTemplates {
         // ── CODE OUTPUT SELECTION LOGIC ──────────────────────────────────────
         sections.push(`
     ### 🚦 CODE GENERATION DECISION LOGIC (STRICT)
-    1. **CREATE NEW FILE (Tool: generate_code)**: You MUST provide the **100% COMPLETE FULL FILE** content. You are FORBIDDEN from using AIDER/SEARCH/REPLACE markers for new files.
-    2. **MODIFY EXISTING FILE (Tool: edit_code)**: Use the **SEARCH/REPLACE (AIDER)** format. This is the only way to apply surgical patches.
-    3. **FULL REWRITE**: Use the **FULL FILE** format (no markers) ONLY if you are overwriting >80% of an existing file.
+    1. **CREATE NEW FILE (Tool: generate_code)**: ONLY use this for files that DO NOT EXIST in the tree. You MUST provide 100% complete content.
+    2. **MODIFY EXISTING FILE (Tool: edit_code)**: This is MANDATORY for all files already present in the codebase. You are FORBIDDEN from using 'generate_code' to update an existing file.
+    3. **SURGICAL PRECISION**: Do not replace 200 lines to change 5. Use multiple small SEARCH/REPLACE blocks.
+    4. **ECONOMY OF TOKENS**: Rewriting a full file via 'generate_code' is considered a failure of architectural skill.
 
     **CRITICAL**: If you provide SEARCH/REPLACE markers for a file that does not exist in the "PROJECT STRUCTURE", the operation will fail.
     `);
@@ -216,7 +217,10 @@ Markers MUST start at the absolute beginning of the line.
 
 ### 🛠️ TOOLS AT YOUR DISPOSAL
 You have access to all Agent tools including:
-- \`read_file\`, \`read_code_graph\`, \`search_files\`, \`execute_command\`.
+- \`read_file\`, \`read_code_graph\`, \`grep_search\`, \`execute_command\`.
+
+**ESCALATION PROTOCOL**: 
+If you identify a keyword (e.g., a custom error code or unique variable) that appears to be global but isn't in your context, you MUST output a JSON block calling \`grep_search\`. The system will then perform a second run with the matching files.
 
 **MANDATORY**: After you apply a fix, use \`execute_command\` or \`run_file\` to verify that the code still compiles or passes tests before calling \`submit_response\`.
 `;
@@ -278,8 +282,10 @@ You are a vision-capable engineer. You can generate, look at, and edit images. Y
 1. **VISUAL VERIFICATION**: When modifying CSS, HTML, or UI code, use \`capture_desktop\` or \`test_web_page\` to verify the visual result.
 2. **ASSET CREATION**: Use \`generate_image\` for bitmaps or \`create_svg_asset\` for icons/logos.
 3. **COMPOSITING**: Use \`edit_image_asset\` with an array of paths for blending or character transfer (e.g. "Apply the style of paths[1] to the subject in paths[0]").
-4. **VISION**: When a user attaches an image, use \`analyze_image\` to understand its technical requirements before writing code.
-
+4. **VISION-DRIVEN DEVELOPMENT**: When a user attaches an image (Design Doc/Concept Art):
+    - **Identify**: Use \`analyze_image\` to find pixel coordinates of sprites.
+    - **Extract**: Use \`extract_image_tiles\` to slice the document into individual assets.
+    - **Verify**: Use \`process_image_asset\` to check tile integrity before using them in code.
 Consistent parameter usage for file operations:
 
 - **Library & Content** (NEVER wrap these tags in markdown code blocks/backticks):
@@ -299,19 +305,20 @@ Consistent parameter usage for file operations:
   path/to/file_or_folder2
   </delete_files>
 
-- **Context Management** (One entry per line, supports files AND folders):
+- **Context & Memory Management (CRITICAL)**:
+  - **STRICT RULE**: Do NOT use attributes like 'paths='. You MUST put paths inside the tag, one per line.
   <add_files_to_context>
-  path/to/file_or_folder1
-  path/to/file_or_folder2
+  path/to/file1
+  path/to/file2
   </add_files_to_context>
+
   <remove_files_from_context>
-  path/to/file_or_folder1
+  path/to/file1
   </remove_files_from_context>
 
-- **Memory Management (CRITICAL)**:
-  - \`<add_files_to_context paths='["path1", "path2"]' />\`
-  - \`<remove_files_from_context paths='["path1", "path2"]' />\`
-  - \`<project_memory action="add|update|delete" id="unique_id" title="Short Title">Detailed content to remember</project_memory>\`
+  <project_memory action="add|update|delete" id="unique_id" title="Short Title">
+  Detailed content to remember
+  </project_memory>
 
 ### 🧠 NEURAL MEMORY & REINFORCEMENT PROTOCOL (STRICT)
 You interact with a tiered cognitive storage system. 

@@ -83,6 +83,69 @@ body {
     justify-content: center;
 }
 
+/* --- LIVE ACTIVITY HUD (THE THINKING ZONE) --- */
+.agent-activity-hud {
+    padding: 12px;
+    background: var(--vscode-sideBar-background);
+    border-bottom: 2px solid var(--vscode-focusBorder);
+    display: flex; 
+    flex-direction: column;
+    gap: 8px;
+    position: sticky;
+    top: 0;
+    z-index: 110;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+    /* Optimize for high-frequency updates */
+    contain: content;
+}
+
+#agent-tasks-timeline {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    padding-bottom: 50px;
+}
+
+.activity-status-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 11px;
+    font-weight: bold;
+    color: var(--vscode-charts-orange);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.live-thought-box {
+    font-size: 11px;
+    line-height: 1.4;
+    padding: 8px;
+    background: rgba(214, 122, 13, 0.05);
+    border-left: 2px solid var(--vscode-charts-orange);
+    border-radius: 0 4px 4px 0;
+    font-style: italic;
+    opacity: 0.9;
+    max-height: 80px;
+    overflow-y: auto;
+    /* Prevent layout thrashing when text grows */
+    overflow-wrap: break-word;
+    white-space: pre-wrap;
+}
+
+.agent-card.active-task {
+    border-color: var(--vscode-charts-orange) !important;
+    box-shadow: 0 0 12px rgba(214, 122, 13, 0.3) !important;
+    animation: task-pulse 2s infinite;
+}
+
+@keyframes task-pulse {
+    0% { border-color: var(--vscode-charts-orange); }
+    50% { border-color: var(--vscode-focusBorder); }
+    100% { border-color: var(--vscode-charts-orange); }
+}
+
 /* --- TIERED BRAIN BAR HUD --- */
 .brain-bar-container {
     padding: 10px 15px;
@@ -1879,7 +1942,7 @@ mark.current-match {
 .plan-content { padding: 0; }
 .plan-objective { padding: 12px; border-bottom: 1px solid var(--vscode-widget-border); font-size: 13px; background-color: var(--vscode-editor-background); }
 .plan-objective strong { color: var(--vscode-textLink-foreground); }
-.plan-tasks { list-style: none; padding: 12px; margin: 0; display: flex; flex-direction: column; gap: 16px; }
+.plan-tasks { list-style: none; padding: 12px; margin: 0; display: flex; flex-direction: column; gap: 20px; }
 
 /* New Agent Card Styling */
 .agent-card {
@@ -1888,7 +1951,9 @@ mark.current-match {
     border-radius: 8px;
     box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     overflow: hidden;
-    transition: border-color 0.2s;
+    transition: border-color 0.3s, box-shadow 0.3s, transform 0.2s;
+    /* Prevent content reflow jitters */
+    contain: content;
 }
 
 .agent-card.status-in_progress { border-color: var(--vscode-charts-blue); box-shadow: 0 0 8px rgba(0, 122, 204, 0.4); }
@@ -2107,27 +2172,35 @@ mark.current-match {
     border: 1px solid rgba(155, 89, 182, 0.2);
 }
 
-.agent-thought-card {
-    background: var(--vscode-editor-inactiveSelectionBackground);
-    border: 1px solid var(--vscode-widget-border);
-    border-radius: 8px;
-    margin-bottom: 8px;
-    overflow: hidden;
-}
-
-.agent-thought-header {
-    padding: 6px 12px;
-    background: rgba(255, 255, 255, 0.05);
-    font-size: 11px;
-    font-weight: bold;
-    border-bottom: 1px solid var(--vscode-widget-border);
-}
-
-.agent-thought-body {
-    padding: 10px 12px;
+.agent-thought-step {
+    margin: 10px 15px;
+    padding: 12px 16px;
+    background: var(--vscode-editor-background);
+    border-left: 3px solid var(--vscode-charts-purple);
+    border-radius: 0 8px 8px 0;
     font-size: 12px;
-    font-style: italic;
-    opacity: 0.9;
+    line-height: 1.5;
+    position: relative;
+    box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
+}
+
+.agent-thought-step::before {
+    content: '💭';
+    position: absolute;
+    left: -10px;
+    top: 10px;
+    background: var(--vscode-editor-background);
+    padding: 2px;
+}
+
+.agent-thought-step .thought-label {
+    font-size: 9px;
+    font-weight: 800;
+    text-transform: uppercase;
+    color: var(--vscode-charts-purple);
+    margin-bottom: 4px;
+    display: block;
+    letter-spacing: 0.5px;
 }
 
 .discussion-bubble {
@@ -4122,6 +4195,127 @@ details[open] > summary .folder-handle::before {
     box-shadow: 0 8px 24px rgba(0,0,0,0.3);
 }
 
+/* 🔷 PLAN STATUS CARD */
+.plan-status-card {
+    background: linear-gradient(135deg, rgba(0, 122, 204, 0.05) 0%, var(--vscode-editorWidget-background) 100%) !important;
+    border: 1px solid var(--vscode-focusBorder) !important;
+    border-radius: 12px !important;
+    margin: 15px 0 !important;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+    overflow: hidden;
+}
+
+.plan-status-header {
+    background: var(--vscode-button-background);
+    color: var(--vscode-button-foreground);
+    padding: 10px 15px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-weight: bold;
+    font-size: 12px;
+}
+
+.plan-status-body {
+    padding: 15px;
+}
+
+.plan-progress-bar-container {
+    height: 6px;
+    background: var(--vscode-editor-inactiveSelectionBackground);
+    border-radius: 3px;
+    margin: 10px 0;
+    overflow: hidden;
+}
+
+.plan-progress-bar-fill {
+    height: 100%;
+    background: var(--vscode-charts-blue);
+    transition: width 0.5s ease;
+}
+
+.plan-subgoal-box {
+    margin-top: 10px;
+    padding: 10px;
+    background: rgba(0, 122, 204, 0.1);
+    border-radius: 6px;
+    border-left: 3px solid var(--vscode-charts-blue);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.plan-mini-checklist {
+    margin-top: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.checklist-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+    opacity: 0.8;
+}
+
+.checklist-item.done {
+    text-decoration: line-through;
+    opacity: 0.5;
+}
+
+/* 🌸 PINK LEARNING CARD */
+.learning-card {
+    background: linear-gradient(135deg, rgba(232, 67, 147, 0.1) 0%, var(--vscode-editorWidget-background) 100%) !important;
+    border: 2px solid #e84393 !important;
+    border-radius: 12px !important;
+    margin: 20px 0 !important;
+    box-shadow: 0 8px 20px rgba(232, 67, 147, 0.2);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.learning-card-header {
+    background: #d63031;
+    color: white;
+    padding: 10px 15px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: bold;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-size: 12px;
+}
+
+.learning-body {
+    padding: 15px;
+}
+
+.learning-title {
+    font-weight: bold;
+    color: #e84393;
+    margin-bottom: 8px;
+    font-size: 14px;
+}
+
+.learning-content {
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    opacity: 0.9;
+}
+
+.learning-meta {
+    margin-top: 10px;
+    font-size: 10px;
+    opacity: 0.6;
+    font-style: italic;
+    display: flex;
+    justify-content: space-between;
+}
+
 .milestone-card .agent-card-header {
     background: #6a1b9a;
     color: white;
@@ -4170,4 +4364,19 @@ details[open] > summary .folder-handle::before {
     background: var(--vscode-button-secondaryBackground);
     color: var(--vscode-button-secondaryForeground);
     opacity: 0.6;
+}
+
+/* 🛠️ DEVELOPER DEBUG UI */
+.dev-tool-badge {
+    background: var(--vscode-charts-purple) !important;
+    color: white !important;
+    font-weight: 800;
+    font-size: 9px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    margin-right: 8px;
+}
+
+#dev-tools-view {
+    border-top: 2px solid var(--vscode-charts-purple);
 }

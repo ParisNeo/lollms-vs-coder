@@ -646,8 +646,9 @@ export function getContextLimitForModel(modelName: string): number {
  * Heuristic based on April 2026 provider documentation.
  */
 export function estimateImageTokens(modelName: string, width?: number, height?: number): number {
+    if (!modelName) return 0;
     const model = modelName.toLowerCase();
-    
+
     // Fallback dimensions if not provided (standard HD)
     const w = width || 1024;
     const h = height || 1024;

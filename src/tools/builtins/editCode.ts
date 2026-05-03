@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import { ToolDefinition, ToolExecutionEnv } from '../tool';
 import { applySearchReplace, getProcessedSystemPrompt, stripThinkingTags } from '../../utils';
 import { ChatMessage } from '../../lollmsAPI';
-
+import * as path from 'path';
+import { Logger } from '../../logger';
 /**
  * Enhanced System Prompt for the Editor sub-agent.
  * Similar to generateCode but specialized for surgical modification.
@@ -11,17 +12,31 @@ async function getEditorSystemPrompt(
     customPrompt: string, 
     planObjective: string, 
     projectContext: any, 
-    briefing: string
+    briefing: string,
+    params: any,
+    env: ToolExecutionEnv
 ): Promise<ChatMessage> {
     const agentPersonaPrompt = await getProcessedSystemPrompt('agent', undefined, undefined, undefined, false, projectContext);
     const { getEnvironmentAwarenessBlock } = require('../../utils');
     const envBlock = await getEnvironmentAwarenessBlock();
 
+    let injectedData = "";
+    if (params.inject_task_outputs && env.currentPlan) {
+        params.inject_task_outputs.forEach((id: number) => {
+            const task = env.currentPlan?.tasks.find(t => t.id === id);
+            if (task && task.result) {
+                injectedData += `\n### 📥 INPUT DATA (TASK ${id} RESULT):\n${task.result}\n`;
+            }
+        });
+    }
+
     const fullContent = `${agentPersonaPrompt}
 
-${envBlock}
+    ${envBlock}
 
-# 🎭 ROLE: PRECISION CODE EDITOR
+    ${injectedData}
+
+    # 🎭 ROLE: PRECISION CODE EDITOR
 You are a specialized sub-agent tasked with surgically modifying an existing file.
 
 ## 🎯 MISSION BRIEFING (YOUR SOURCE OF TRUTH)
@@ -69,14 +84,15 @@ export const editCodeTool: ToolDefinition = {
         { name: "file_path", type: "string", description: "The relative path of the file to edit.", required: true },
         { name: "equip_skills", type: "array", description: "List of skill IDs to inject into the sub-agent context.", required: false },
         { name: "research_briefing", type: "string", description: "Distilled research results to inform the refactor.", required: false },
+        { name: "inject_task_outputs", type: "array", description: "List of task IDs to pull results from and inject into the system prompt.", required: false },
         { name: "instructions", type: "string", description: "Detailed instructions on what to change.", required: true }
-    ],
-    async execute(params: { file_path: string, equip_skills?: string[], research_briefing?: string, instructions: string }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
+        ],
+        async execute(params: { file_path: string, equip_skills?: string[], research_briefing?: string, inject_task_outputs?: number[], instructions: string }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
         if (!env.workspaceRoot || !env.currentPlan) return { success: false, output: "Error: Workspace root or active plan missing." };
-        
-        let filePath = params.file_path.trim().replace(/^[\\\/]+/, '');
+
+        let filePath = params.file_path.trim().replace(/^[\\\/]+/, '').replace(/^[A-Z]:[\\\/]/i, '');
         const fileUri = vscode.Uri.joinPath(env.workspaceRoot.uri, filePath);
-        
+
         let originalContent = "";
         try {
             const bytes = await vscode.workspace.fs.readFile(fileUri);
@@ -87,17 +103,27 @@ export const editCodeTool: ToolDefinition = {
 
         const currentDiscussion = env.agentManager?.getCurrentDiscussion();
         const modelOverride = env.taskModel || currentDiscussion?.model;
-        
-        // 1. GATHER GROUNDING INFO
+
+        // 1. BACKUP (Protocol Step 1)
+        const crypto = require('crypto');
+        const hash = crypto.createHash('md5').update(filePath).digest('hex').substring(0, 8);
+        const patchesDir = vscode.Uri.joinPath(env.workspaceRoot.uri, '.lollms', 'patches');
+        const backupUri = vscode.Uri.joinPath(patchesDir, `${hash}_${path.basename(filePath)}.bak`);
+
+        try {
+            await vscode.workspace.fs.createDirectory(patchesDir);
+            await vscode.workspace.fs.writeFile(backupUri, Buffer.from(originalContent, 'utf8'));
+        } catch (err) {
+            Logger.warn(`[edit_code] Backup failed for ${filePath}, proceeding anyway.`);
+        }
+
+        // 2. GATHER GROUNDING INFO
         const briefing = env.contextManager.renderBriefing(currentDiscussion);
-        
         const discussionSkills = currentDiscussion?.importedSkills || [];
         const taskSkills = env.taskSkills || [];
         const importedSkills = Array.from(new Set([...discussionSkills, ...taskSkills]));
-        
+
         let contextData = { tree: '', files: '', skills: '' };
-        
-        // Peek at dependencies assigned by Architect
         if (env.taskFiles && env.taskFiles.length > 0) {
             const depContext = await env.contextManager.readSpecificFiles(env.taskFiles);
             contextData.files = `\n### CRITICAL DEPENDENCIES\n${depContext}\n\n`;
@@ -108,79 +134,142 @@ export const editCodeTool: ToolDefinition = {
             modelName: modelOverride || env.lollmsApi.getModelName(),
             signal
         });
-        
         contextData.tree = baseContext.projectTree;
         contextData.files += baseContext.selectedFilesContent;
         contextData.skills = baseContext.skillsContent;
 
-        // 2. CALL EDITOR SUB-AGENT
-        const systemPrompt = await getEditorSystemPrompt(
-            params.instructions, 
-            env.currentPlan.objective, 
-            contextData, 
-            briefing
-        );
-
-        const userPrompt = `### TARGET FILE: ${filePath}\n\`\`\`\n${originalContent}\n\`\`\`\n\n### INSTRUCTION\n${params.instructions}`;
-
-        const response = await env.lollmsApi.sendChat([
-            systemPrompt,
-            { role: 'user', content: userPrompt }
-        ], null, signal, modelOverride);
-
-        // 3. STRICT EXTRACTION & APPLICATION
-        const cleanResponse = stripThinkingTags(response);
-        const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
-        const matches =[...cleanResponse.matchAll(aiderRegex)];
-
-        if (matches.length === 0) {
-            return { success: false, output: `Error: The editor sub-agent produced conversational text or invalid Aider blocks instead of SEARCH/REPLACE modifications. Response was:\n${cleanResponse.substring(0, 500)}...` };
-        }
-
+        // 3. SURGICAL REPAIR LOOP (Protocol Step 2-4)
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const maxRetries = config.get<number>('agentMaxRetries') || 2;
+        let attempts = 0;
+        let lastFailureReason = "";
         let workingContent = originalContent;
-        let appliedCount = 0;
-        let errors: string[] = [];
-        
-        for (const match of matches) {
-            const result = applySearchReplace(workingContent, match[1], match[2]);
-            if (result.success) {
-                workingContent = result.result;
-                appliedCount++;
+
+        const objective = env.currentPlan.objective;
+
+        while (attempts <= maxRetries) {
+            if (signal.aborted) return { success: false, output: "Operation cancelled." };
+
+            const systemPrompt = await getEditorSystemPrompt(
+                params.instructions,
+                objective,
+                contextData,
+                briefing,
+                params,
+                env
+            );
+
+            let userPrompt = `### TARGET FILE: ${filePath}\n\`\`\`\n${originalContent}\n\`\`\`\n\n### INSTRUCTION\n${params.instructions}`;
+            if (attempts > 0) {
+                userPrompt = `### 🚨 PREVIOUS ATTEMPT FAILED\nREASON: ${lastFailureReason}\n\n${userPrompt}\n\n**STRICT**: Fix your search block. It must match the file content ABOVE character-for-character.`;
+            }
+
+            const response = await env.lollmsApi.sendChat([
+                systemPrompt,
+                { role: 'user', content: userPrompt }
+            ], null, signal, modelOverride);
+
+            const cleanResponse = stripThinkingTags(response);
+            const normalizedResponse = cleanResponse.replace(/^\s*(<<<<<<< SEARCH|=======|>>>>>>> REPLACE)/gm, '$1');
+            const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
+            const matches = [...normalizedResponse.matchAll(aiderRegex)];
+
+            if (matches.length === 0) {
+                attempts++;
+                lastFailureReason = "No valid Aider SEARCH/REPLACE blocks found in your response.";
+                continue;
+            }
+
+            let currentAppliedCount = 0;
+            let currentErrors: string[] = [];
+            let tempWorkingContent = originalContent;
+
+            for (const match of matches) {
+                const result = applySearchReplace(tempWorkingContent, match[1], match[2]);
+                if (result.success) {
+                    tempWorkingContent = result.result;
+                    currentAppliedCount++;
+                } else {
+                    currentErrors.push(result.error || "Unknown match error");
+                }
+            }
+
+            // Verify Structural Success (Protocol Step 3)
+            if (currentAppliedCount === matches.length) {
+                workingContent = tempWorkingContent;
+
+                // Integrity Check (Protocol Step 4 - Marker Leakage)
+                const markerLeakage = workingContent.includes('<<<<<<< SEARCH') || 
+                                     workingContent.includes('>>>>>>> REPLACE') || 
+                                     workingContent.includes('=======');
+
+                if (markerLeakage) {
+                    attempts++;
+                    lastFailureReason = "CRITICAL ERROR: Aider markers (SEARCH/REPLACE) leaked into the actual code content.";
+                    continue;
+                }
+
+                // 4. THE GUARDIAN PASS (Protocol Step 5)
+                // Write to disk first so diagnostics can see it
+                await vscode.workspace.fs.writeFile(fileUri, Buffer.from(workingContent, 'utf8'));
+                // Force context refresh so subsequent turns/reads see the updated content
+                env.contextManager.refreshFileInCache(fileUri);
+
+                let output = `Successfully applied ${currentAppliedCount} surgical edits to \`${filePath}\`.`;
+                await new Promise(r => setTimeout(r, 1200)); // Wait for language server
+
+                const diagnostics = vscode.languages.getDiagnostics(fileUri)
+                    .filter(d => d.severity === vscode.DiagnosticSeverity.Error);
+
+                if (diagnostics.length > 0) {
+                    const errorReport = diagnostics.map(d => `[Line ${d.range.start.line + 1}] ${d.message}`).join('\n');
+
+                    // Shake the model with the Guardian's report
+                    const guardianPrompt = `### 🛡️ GUARDIAN AUDIT: ERRORS DETECTED
+        I successfully applied your text changes, but the resulting file has functional errors:
+        ${errorReport}
+
+        **CURRENT FILE STATE:**
+        \`\`\`
+        ${workingContent}
+        \`\`\`
+
+        Please provide a new set of SEARCH/REPLACE blocks to fix these specific errors.`;
+
+                    attempts++;
+                    lastFailureReason = `Guardian Audit failed:\n${errorReport}`;
+
+                    // Rollback for next attempt
+                    await vscode.workspace.fs.writeFile(fileUri, Buffer.from(originalContent, 'utf8'));
+                    continue;
+                }
+
+                // 5. FINAL SUCCESS REPORT (Protocol Step 6)
+                const report = `### ✅ EDIT SUCCESSFUL: ${filePath}
+        - **Retries**: ${attempts}
+        - **Matches**: ${currentAppliedCount} blocks applied.
+        - **Guardian**: Syntax and imports verified clean.
+
+        **Changes Summary**: 
+        ${params.instructions}`;
+
+                return { success: true, output: report };
+
             } else {
-                errors.push(result.error || "Unknown match error");
+                attempts++;
+                lastFailureReason = `Failed to match ${matches.length - currentAppliedCount} out of ${matches.length} blocks.\nErrors: ${currentErrors.join(', ')}`;
+                // Restore logic: simply don't update workingContent and let loop retry with original
             }
         }
 
-        if (appliedCount > 0) {
-            // --- CRITICAL INTEGRITY CHECK ---
-            // If the resulting content still contains Aider markers, the LLM hallucinated them 
-            // as part of the code. We MUST NOT write this to disk.
-            const markerLeakage = workingContent.includes('<<<<<<< SEARCH') || 
-                                 workingContent.includes('>>>>>>> REPLACE') || 
-                                 workingContent.includes('=======');
+        // Final Failure: Restore from backup (Protocol Step 4 fallback)
+        try {
+            await vscode.workspace.fs.writeFile(fileUri, Buffer.from(originalContent, 'utf8'));
+        } catch {}
 
-            if (markerLeakage) {
-                return { 
-                    success: false, 
-                    output: `🛑 INTEGRITY ERROR: Marker Leakage Detected. 
-                    The proposed update for \`${filePath}\` contains raw Aider markers inside the code body. 
-
-                    STRICT MANDATE: 
-                    1. Re-read the file to verify the current state.
-                    2. Provide NEW SEARCH/REPLACE blocks.
-                    3. Do NOT include the markers '<<<<<<< SEARCH', '=======', or '>>>>>>> REPLACE' as part of the code you are writing.`
-                };
-            }
-
-            await vscode.workspace.fs.writeFile(fileUri, Buffer.from(workingContent, 'utf8'));
-
-            let output = `Successfully applied ${appliedCount} surgical edits to \`${filePath}\`.`;
-            if (errors.length > 0) {
-                output += `\n\n⚠️ **WARNING**: ${errors.length} blocks failed to apply:\n- ${errors.join('\n- ')}`;
-            }
-            return { success: true, output };
-        } else {
-            return { success: false, output: `Match Failure: None of the provided SEARCH blocks matched the file content. Ensure your search blocks are identical to the source code.\nErrors:\n- ${errors.join('\n- ')}` };
+        return { 
+            success: false, 
+            output: `🛑 MISSION FAILED after ${attempts} attempts.\n\nLAST ERROR: ${lastFailureReason}\n\nADVICE: Re-read the file to ensure your mental model matches the current disk state before trying again.` 
+        };
         }
-    }
 };

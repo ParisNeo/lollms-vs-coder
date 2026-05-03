@@ -96,11 +96,10 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         agent.personalityManager = services.personalityManager;
         agent.setProcessManager(services.processManager);
 
-        // Synchronize the manager state silently (without sending a system message yet)
-        // This ensures the agent is ready but the chat remains clean for the user's first prompt
-        (agent as any).isActive = true; 
-
+        // --- FIXED: ORDER OF OPERATIONS ---
         panel.setAgentManager(agent);
+        // Explicitly set active AFTER linking to panel to ensure updateAgentMode fires
+        (agent as any).isActive = true; 
         panel.setProcessManager(services.processManager);
         panel.setContextManager(services.contextManager);
         panel.setPersonalityManager(services.personalityManager);

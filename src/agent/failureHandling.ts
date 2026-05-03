@@ -56,7 +56,12 @@ export class FailureMemory {
 
             `### 📉 CONTEXT AMNESIA DETECTED
             You are asking for data that you already have. This indicates a failure in your internal state tracking.
-            MANDATORY: Stop using 'read_file'. You must now use 'execute_command' to run a test or 'search_files' to find something NEW. Reset your spatial awareness of the project.`
+            MANDATORY: Stop using 'read_file'. You must now use 'execute_command' to run a test or 'search_files' to find something NEW. Reset your spatial awareness of the project.`,
+
+            `### 🐚 SHELL HYGIENE VIOLATION
+            Your last command failed because you tried to run complex logic inside 'execute_command' on a Windows host.
+            The error "is not recognized as an internal or external command" proves that your quoting or newlines broke the shell.
+            MANDATORY: You are now FORBIDDEN from using Python one-liners. You MUST use 'generate_code' to create a script file in '.lollms/scripts/' and then run it.`
             ];
 
         // Pick a random shaker to keep the small model from anchoring on one error message

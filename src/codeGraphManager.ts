@@ -599,11 +599,14 @@ export class CodeGraphManager {
     }
 
     generateTextSummary(): string {
-        if (this.buildState !== 'ready') return "Graph not built.";
-        let out = "Project Architecture Summary:\n";
+        if (this.buildState !== 'ready') return "Graph not built. Run 'update_code_graph' to generate.";
+
+        let out = "# 🗺️ ARCHITECTURAL MAP\n";
         const files = this.graph.nodes.filter(n => n.type === 'file');
+
         files.forEach(f => {
-            out += `- ${f.filePath}:\n`;
+            const namespacedPath = f.filePath || "unknown";
+            out += `## FILE: ${namespacedPath}\n`;
             
             const contains = this.graph.edges.filter(e => e.source === f.id && e.label === 'contains').map(e => this.graph.nodes.find(n => n.id === e.target));
             const imports = this.graph.edges.filter(e => e.source === f.id && e.label === 'imports').map(e => this.graph.nodes.find(n => n.id === e.target));

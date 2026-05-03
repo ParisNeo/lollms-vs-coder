@@ -135,8 +135,8 @@ export async function runCommandInTerminal(
             batFileToCleanup = batFile;
 
             const utf8Setup = `[Console]::InputEncoding = [Console]::OutputEncoding =[System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8;`;
-            const psCommand = `${utf8Setup} & "${batFile}" 2>&1 | Tee-Object -FilePath "${relOutputFile}"; $LASTEXITCODE | Out-File -FilePath "${relExitCodeFile}" -Encoding utf8`;
-            execution = new vscode.ShellExecution("powershell.exe",["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psCommand], { cwd });
+            const psCommand = `${utf8Setup} cmd /c "${batFile}" 2>&1 | Tee-Object -FilePath "${relOutputFile}"; $LASTEXITCODE | Out-File -FilePath "${relExitCodeFile}" -Encoding utf8`;
+            execution = new vscode.ShellExecution("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psCommand], { cwd });
         } else {
             const targetShell = options?.shell || 'bash';
             const shCommand = `export LANG=en_US.UTF-8; export FORCE_COLOR=1; export TERM=xterm-256color; export CLICOLOR_FORCE=1; (${sanitizedCommand}) 2>&1 | tee "${relOutputFile}"; echo $? > "${relExitCodeFile}"`;
@@ -165,15 +165,29 @@ export async function runCommandInTerminal(
         const disposable = vscode.tasks.onDidEndTaskProcess(e => {
             if (executionTask && e.execution === executionTask) {
                 disposable.dispose();
-                // Delay reading to ensure the OS has flushed the file buffers to .lollms/
-                // INCREASED: 1200ms to ensure large buffers are fully flushed on slower disks
-                setTimeout(() => {
+                // NEW: Polling Retry Loop for Windows File Latency
+                const readOutputWithRetry = async (attempts = 5) => {
+                    for (let i = 0; i < attempts; i++) {
+                        if (fs.existsSync(outputFile)) {
+                            try {
+                                const stats = fs.statSync(outputFile);
+                                // Ensure file isn't empty or still being written (lock check)
+                                if (stats.size > 0) return fs.readFileSync(outputFile);
+                            } catch (e) {
+                                // File locked, wait and retry
+                            }
+                        }
+                        await new Promise(r => setTimeout(r, 400));
+                    }
+                    return null;
+                };
+
+                readOutputWithRetry().then((buffer) => {
                     let output = "";
                     let success = e.exitCode === 0 || e.exitCode === 1; 
                     try {
-                        if (fs.existsSync(outputFile)) {
+                        if (buffer) {
                             const stats = fs.statSync(outputFile);
-                            const buffer = fs.readFileSync(outputFile);
 
                             // Resilient Decoding
                             if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {

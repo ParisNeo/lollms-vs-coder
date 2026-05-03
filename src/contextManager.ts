@@ -117,7 +117,16 @@ export class ContextManager {
 
   public refreshFileInCache(uri: vscode.Uri) {
     const relPath = this.normalize(vscode.workspace.asRelativePath(uri, false));
+    // Clear the specific file from cache to force a fresh disk read in getContextContent
     this._fileContentCache?.delete(relPath);
+    // Also clear namespaced path if it exists
+    const folders = vscode.workspace.workspaceFolders || [];
+    if (folders.length > 1) {
+        const folder = vscode.workspace.getWorkspaceFolder(uri);
+        if (folder) {
+            this._fileContentCache?.delete(`${folder.name}/${relPath}`);
+        }
+    }
     this.markTreeDirty();
   }
 
@@ -691,8 +700,12 @@ export class ContextManager {
             const cached = this._fileContentCache.get(cacheKey);
             const openDoc = vscode.workspace.textDocuments.find(d => d.uri.toString() === fileUri.toString());
 
-            if (cached && cached.state === contextState && !openDoc?.isDirty) {
-              fileContent = cached.content;
+            // If the document is open in VS Code, ALWAYS use the editor content to ensure
+            // the AI sees what the user sees, even before saving.
+            if (openDoc) {
+                fileContent = openDoc.getText();
+            } else if (cached && cached.state === contextState) {
+                fileContent = cached.content;
             } else {
               let fileBuffer: Buffer;
               if (openDoc) {
@@ -708,8 +721,13 @@ export class ContextManager {
                   continue;
                 }
                 const base64Data = fileBuffer.toString('base64');
-                const mime = ext === '.svg' ? 'image/svg+xml' : `image/${ext.substring(1).replace('jpg', 'jpeg')}`;
-                result.images.push({ filePath: headerPath, data: `data:${mime};base64,${base64Data}` });
+                let mime = ext.substring(1).replace('jpg', 'jpeg');
+                if (ext === '.svg') mime = 'svg+xml';
+
+                // Ensure data URI format is standard
+                const dataUri = `data:image/${mime};base64,${base64Data}`;
+
+                result.images.push({ filePath: headerPath, data: dataUri });
                 projectContentBuffer += `### \`${headerPath}\` (Image Attached)\n\n`;
                 continue;
               }

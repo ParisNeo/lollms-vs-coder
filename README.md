@@ -130,6 +130,7 @@ Lollms provides two distinct ways to work. Choose the one that fits your current
 | 🎭 **Expert Personas**     | Over 10+ built-in professional roles (Architect, Embedded Expert, Security Lead, etc.) that change the AI's logic, tone, and technical priorities.                      |
 | 💎 **Skills Library**      | A modular library of verified code patterns, API docs, and standards. Acts as a "Source of Truth" that overrides generic model behavior.                                |
 | 🤖 **Autonomous Agent**      | Give the AI a complex objective, and it will generate and execute a multi-step plan, including creating files, writing code, running commands, and self-correcting.      |
+| **Surgical Intelligence**      | Both the Quick Companion (Ctrl+Shift+L) and File Inspector automatically use the **Architecture Graph** to pull in direct dependencies for context. If the AI needs more info, it can perform a "Second Run" escalation using keyword search.      |
 | 📊 **Architecture Graph**  | Visualize your project structure with interactive call graphs and class diagrams. Supports SPARQL queries for deep dependency analysis.                               |
 | 🛡️ **Guardian Audit**       | Background self-healing loop. The AI automatically detects and repairs linting or import errors in generated code before finalizing tasks.                             |
 | ⚡ **Quick Edit Companion**  | A lightweight, floating window for fast code edits, explanations, or questions without leaving your current context (Ctrl+Shift+L).                                     |

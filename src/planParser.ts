@@ -5,6 +5,7 @@ import { stripThinkingTags, getProcessedSystemPrompt } from './utils';
 import * as os from 'os';
 import { ToolManager } from './tools/toolManager';
 import { Plan, ToolDefinition } from './tools/tool';
+import { AGENT_MISSION_PROFILES } from './registries/agentProfiles';
 
 export class PlanParser {
     private maxRetries = 3;
@@ -92,14 +93,15 @@ ${memoryBlock}
                 ${memoryBlock}
 
 # ARCHITECT PROTOCOL (STRICT DELTA):
-1. **WORKSPACE RESIDENCY**: You are the resident Lead Architect of this VS Code workspace. Your plan must account for all projects listed in the tree.
+1. **WORKSPACE RESIDENCY**: You are the resident Lead Architect of this VS Code workspace. Your plan must account for all projects listed in the tree. You are authorized to move or copy files BETWEEN different project roots using namespaced paths (e.g., \`ProjectA/file\` to \`ProjectB/file\`).
 2. **DELTA ENFORCEMENT**: Every turn must produce a new technical DELTA. If you fixed a bug, you MUST record it using \`<project_memory action="add" importance="100">\` or \`record_milestone\`. 
 3. **NEW FILE PROTOCOL**: When using \`generate_code\`, your specialist MUST provide the full file content. SEARCH/REPLACE is for \`edit_code\` only.
 4. **NO AMNESIA**: Review "COMPLETED ACTIONS". If you see you've already tried something, trying it again with the same parameters is a CRITICAL FAILURE.
 5. **MILESTONES**: Every time a "Phase" in the logs (e.g., Phase 3: Evaluation) is completed, you MUST call \`record_milestone\` to summarize the technical wins and hurdles.
-6. **RCA**: If the last turn was a FAILURE, your 'scratchpad' MUST begin with "RCA: [Reason why the last step failed]".
-7. **JSON ONLY**: Your response must be a single valid JSON object.
-8. **SPATIAL AWARENESS**: Check the "ACTIVE CONTEXT INVENTORY". If a file is listed, you possess its content. Reading it again is a violation of turn economy.
+6. **STRUCTURAL RECONNAISSANCE**: For any task involving more than two files, your FIRST action should be \`read_code_graph(type="summary")\`. This is 10x faster than reading files one-by-one and prevents architectural errors.
+7. **RCA**: If the last turn was a FAILURE, your 'scratchpad' MUST begin with "RCA: [Reason why the last step failed]".
+8. **JSON ONLY**: Your response must be a single valid JSON object.
+9. **SPATIAL AWARENESS**: Check the "ACTIVE CONTEXT INVENTORY". If a file is listed, you possess its content. Reading it again is a violation of turn economy.
 
 ### ⏳ MISSION BUDGET
 Turns wasted on repetition directly decrease your mission score. Optimize for the minimum number of steps to reach the objective.
@@ -243,38 +245,18 @@ Turns wasted on repetition directly decrease your mission score. Optimize for th
         return result;
     }
 
-    public async getArchitectSystemPrompt(allowedTools: ToolDefinition[], importedSkillIds?: string[], specialistsList?: string[]): Promise<ChatMessage> {
+    public async getArchitectSystemPrompt(allowedTools: ToolDefinition[], importedSkillIds?: string[], specialistsList?: string[], env?: any): Promise<ChatMessage> {
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const agentPersona = config.get<string>('agentPersona') || "You are an autonomous AI Agent.";
-        const activeProfile = config.get<string>('agent.activeProfile') || 'software_architect';
 
-        let profileProtocol = "";
-        switch(activeProfile) {
-            case 'cve_hunter':
-                profileProtocol = `
-    ### 🛡️ MISSION PROTOCOL: CVE HUNTER
-    1. **RECON**: Search the web for vulnerabilities in the current tech stack.
-    2. **EXPLOIT**: Write a reproduction script to prove the vulnerability exists.
-    3. **REPORT**: Use 'record_discovery' to document the flaw.
-    4. **PATCH**: Apply a surgical fix and re-run the exploit to verify it fails.`;
-                break;
-            case 'surgical_debugger':
-                profileProtocol = `
-    ### 🔬 MISSION PROTOCOL: SURGICAL DEBUGGER
-    1. **INSTRUMENT**: Use 'edit_code' to add strategic print/log statements.
-    2. **EXECUTE**: Run the code and capture STDOUT/STDERR.
-    3. **ITERATE**: Don't guess. Use the logs to narrow down the file and line.
-    4. **CLEAN**: After fixing, you MUST remove all instrumentation code before committing.`;
-                break;
-            case 'embedded_expert':
-                profileProtocol = `
-    ### 🔌 MISSION PROTOCOL: EMBEDDED EXPERT
-    1. **TOOLCHAIN**: Check for compilers (arm-none-eabi-gcc, etc.) using 'get_environment_details'.
-    2. **EQUIP**: If needed, use 'manage_extension' to install vendor-specific VS Code extensions.
-    3. **FLASH**: Use 'execute_command' to trigger build/flash cycles.
-    4. **VERIFY**: Use the debugger to inspect hardware registers if the app hangs.`;
-                break;
-        }
+        // 1. Fetch the dynamic list of profiles from settings
+        const userProfiles = config.get<any[]>('agentProfiles') || [];
+
+        // 2. Identify the active one (prioritize discussion-specific override from the UI badge)
+        const discussionProfileId = env?.agentManager?.getCurrentDiscussion()?.capabilities?.activeAgentProfileId;
+        const activeProfileId = discussionProfileId || (this as any)._activeProfileOverride || config.get<string>('agent.activeProfile') || 'software_architect';
+        const profile = userProfiles.find(p => p.id === activeProfileId) || userProfiles[0];
+        const profileProtocol = profile ? profile.protocol : "";
 
         // We pass 'agent' type to get formatting rules for AIDER and Code Generation
         const baseSystemInfo = await getProcessedSystemPrompt('agent', undefined, agentPersona);
@@ -286,15 +268,26 @@ Turns wasted on repetition directly decrease your mission score. Optimize for th
 3. **NO GHOST RETRIES**: Never assume a tool failed because of a "glitch". Tools fail because your parameters or your understanding of the file system are incorrect.
 `;
 
-        const toolDescriptions = allowedTools.map(tool => {
+        const session = (env?.agentManager?.sessionState as any) || {};
+        // If no explicit active IDs, default all tools to active (for new sessions)
+        const activeIds = session.activeToolIds || new Set(allowedTools.filter(t => t.isDefault).map(t => t.name));
+
+        const activeTools = allowedTools.filter(t => activeIds.has(t.name));
+        const latentTools = allowedTools.filter(t => !activeIds.has(t.name));
+
+        const toolDescriptions = activeTools.map(tool => {
             let desc = tool.description;
-            // Inject specialist list into delegate_task documentation
             if (tool.name === 'delegate_task' && specialistsList && specialistsList.length > 0) {
                 desc += ` (Available Specialist IDs: [${specialistsList.join(', ')}])`;
             }
             const params = tool.parameters.map(p => `"${p.name}" (${p.type}): ${p.description}`).join(', ');
             return `- **${tool.name}**: ${tool.description} (Params: ${params})`;
         }).join('\n');
+
+        const latentCatalogue = latentTools.length > 0 
+            ? `\n### 📦 LATENT TOOL CATALOGUE (Equip via manage_tools)\n` + 
+              latentTools.map(t => `- ${t.name}: ${t.description.split('.')[0]}.`).join('\n')
+            : "";
 
         const skillsDesc = (importedSkillIds && importedSkillIds.length > 0) 
             ? importedSkillIds.map(id => `- ${id}`).join('\n')
@@ -324,9 +317,10 @@ You operate in a high-frequency loop: **Reason -> Act -> Observe**.
     - **Step 3 (Verify)**: Analyze the screenshot returned by the tool to confirm the UI reached the intended state.
 6. **NO REPETITION**: If a tool call resulted in "REPETITIVE ACTION" or "LOOP BLOCKED", you are FORBIDDEN from using that tool again on the same path. Switch to 'edit_code' immediately.
 7.  **DISCOVERY & GROUNDING**: You cannot fix what you cannot see. 
-    - Use \`read_files\` to gather dependencies.
-    - **MANDATORY**: After reading a file, if you find critical logic or variables, you MUST use \`record_discovery\` to save them. 
-    - The Harness will BLOCK you if you try to read the same file twice.
+    - Use \`add_files_to_context\` to expand your vision. This moves files from the tree to the 'ACCESSIBLE FILE CONTENTS' block permanently.
+    - Use \`read_files\` for temporary, quick peeks into dependencies.
+    - **MANDATORY**: After gaining vision of a file, if you find critical logic or variables, you MUST use \`record_discovery\` to save them. 
+    - The Harness will BLOCK you if you try to perform redundant reads.
 8.  **NEURAL MEMORY (TWO-STAGE)**:
     - **Working Memory**: Use \`record_discovery\` for transient facts discovered *this session* (e.g., "The server is on port 3000").
     - **Project Memory**: Use \`<project_memory action="add" importance="100">\` for permanent technical lessons, coding standards, or fixed bugs.
@@ -352,14 +346,20 @@ You operate in a high-frequency loop: **Reason -> Act -> Observe**.
       2. **DIVE**: Use \`web_dive\` on the most promising URLs to extract specific implementation details. Never rely on snippets alone.
       3. **CONSOLIDATE**: Use \`web_consolidate\` to save the distilled findings into your memory. 
     - You are FORBIDDEN from starting the implementation phase (\`generate_code\` or \`edit_code\`) until you have verified the API via research.
-16.  **NO INLINE SCRIPTING**: Never write logic in \`execute_command\`. Manifest logic into a script file via \`generate_code\` first, then run it.
-17.  **SCRIPT WORKING DIRECTORY**: All shell commands and scripts you generate execute from the WORKSPACE ROOT. If your target is in a subfolder, include \`cd subfolder_name\` as the first line.
+16.  **NO INLINE SCRIPTING & HYGIENE**: Never write logic in \`execute_command\`.
+    - **WINDOWS ALERT**: Windows shells (cmd/powershell) cannot parse multi-line Python strings or complex nested quotes. 
+    - **PROTOCOL**: You are FORBIDDEN from running logic as a one-liner. You MUST manifest logic into a script file via \`generate_code\` in the \`.lollms/scripts/\` folder first, then run it using \`execute_python_script\`.
+    - **STRICT HYGIENE**: Do NOT create temporary scripts, logs, or test images in the project root.
+17.  **SCRIPT WORKING DIRECTORY**: All shell commands and scripts you generate execute from the WORKSPACE ROOT. If your target is in a subfolder (like \`experiments/\`), include \`cd experiments\` as the first line or use absolute-relative paths.
 18.  **GROUNDING**: Update your \`scratchpad\` after every delegation to record the result of the audit.
 19.  **FINISH**: Only use \`submit_response\` when you have verified the fix works by running the code again.
 20.  **NO PREAMBLES**: In your 'scratchpad' or 'thought' fields, DO NOT repeat the project description (e.g. "The project consists of..."). Assume everyone knows the context. Start directly with the delta: "I am now going to [action] because [technical reason]".
 
-### 🛠️ TOOLS AT YOUR DISPOSAL
+### 🛠️ ACTIVE TOOLS (Equipped)
 ${toolDescriptions}
+
+${latentCatalogue}
+
 ${errorManagementProtocol}
 
 ### 💡 SKILLS & CONTEXT
@@ -394,6 +394,16 @@ You have two modes of operation:
     }
 
     public async getPlannerSystemPrompt(isRevision: boolean = false, allowedTools: ToolDefinition[], importedSkills?: string[]): Promise<ChatMessage> {
-        return this.getArchitectSystemPrompt(allowedTools, importedSkills);
+        // To ensure the planner uses the UI-selected profile, we pass the current discussion context
+        const { ChatPanel } = require('./commands/chatPanel/chatPanel');
+        const activeDiscussion = ChatPanel.currentPanel?.getCurrentDiscussion();
+
+        const dummyEnv: any = { 
+            agentManager: { 
+                getCurrentDiscussion: () => activeDiscussion 
+            } 
+        };
+
+        return this.getArchitectSystemPrompt(allowedTools, importedSkills, undefined, dummyEnv);
     }
 }

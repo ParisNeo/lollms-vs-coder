@@ -1,7 +1,7 @@
 import { dom, vscode, state } from './dom.js';
 import { performSearch, navigateSearch, clearSearch } from './search.js';
 import { insertNewMessageEditor } from './messageRenderer.js';
-import { setGeneratingState, updateBadges, openImageEditor, renderPendingImages } from './ui.js';
+import { setGeneratingState, updateBadges, openImageEditor, renderPendingImages, renderWorkspaceMatrix } from './ui.js';
 import { isScrolledToBottom } from './utils.js';
 
 export function initEventHandlers() {
@@ -219,6 +219,10 @@ export function initEventHandlers() {
 
     if (dom.stopButton) {
         dom.stopButton.addEventListener('click', () => {
+            // Force reset generating state UI-side if it's hanging
+            if (state.isGenerating) {
+                setGeneratingState(false);
+            }            
             // Stop any ongoing speech synthesis
             if (window.speechSynthesis) {
                 window.speechSynthesis.cancel();
@@ -290,7 +294,12 @@ export function initEventHandlers() {
         });
     };
 
-    bindClick(dom.agentToolsButton, 'requestAvailableTools');
+    if (dom.agentToolsButton) {
+        dom.agentToolsButton.addEventListener('click', () => {
+            vscode.postMessage({ command: 'requestAgentSettings' });
+            dom.moreActionsMenu.classList.remove('visible');
+        });
+    }
     // Removed old attachButton bindClick as it's now handled with processing state
     if (dom.discussionToolsButton) {
         dom.discussionToolsButton.addEventListener('click', () => {
@@ -654,18 +663,30 @@ export function initEventHandlers() {
             policies[el.dataset.tool] = el.value;
         });
 
+        const maxSteps = parseInt((document.getElementById('setting-maxSteps') as HTMLInputElement).value, 10);
+        const maxEditRetries = parseInt((document.getElementById('setting-maxEditRetries') as HTMLInputElement).value, 10);
+        const activeProfile = (document.getElementById('setting-activeProfile') as HTMLSelectElement).value;
+
         // 1. Update internal capability state
         if (state.capabilities) {
             state.capabilities.toolPolicies = policies;
+            state.capabilities.maxSteps = maxSteps;
+            state.capabilities.maxEditRetries = maxEditRetries;
+            state.capabilities.activeAgentProfileId = activeProfile;
         }
 
         // 2. Notify extension
         vscode.postMessage({ 
             command: 'updateDiscussionCapabilitiesPartial', 
-            partial: { toolPolicies: policies } 
+            partial: { 
+                toolPolicies: policies,
+                maxSteps,
+                maxEditRetries,
+                activeAgentProfileId: activeProfile
+            } 
         });
 
-        dom.toolsModal.classList.remove('visible');
+        dom.agentSettingsModal.classList.remove('visible');
     });
 
     if (dom.closeDiscussionToolsModal) dom.closeDiscussionToolsModal.addEventListener('click', () => {
@@ -1222,10 +1243,10 @@ export function initEventHandlers() {
     if (dom.searchPrevBtn) dom.searchPrevBtn.addEventListener('click', () => navigateSearch(-1));
     if (dom.searchNextBtn) dom.searchNextBtn.addEventListener('click', () => navigateSearch(1));
 
-    // --- Workspace Matrix Events ---
+    // Workspace Matrix Events ---
     if (dom.hudMatrixBtn) {
         dom.hudMatrixBtn.onclick = () => {
-            import('./ui.js').then(ui => ui.renderWorkspaceMatrix());
+            renderWorkspaceMatrix();
             dom.matrixModal.classList.add('visible');
         };
     }
@@ -1733,9 +1754,17 @@ export function initEventHandlers() {
         if (approveBtn) {
             e.stopPropagation();
             const taskId = approveBtn.dataset.taskId;
+            const alwaysAllowCheck = document.getElementById(`always-allow-${taskId}`) as HTMLInputElement;
+            const alwaysAllow = alwaysAllowCheck ? alwaysAllowCheck.checked : false;
+
             approveBtn.disabled = true;
             approveBtn.innerHTML = '<div class="spinner"></div> Running...';
-            vscode.postMessage({ command: 'runAgent', taskId: taskId, objective: 'CONTINUE_AFTER_APPROVAL' });
+            vscode.postMessage({ 
+                command: 'runAgent', 
+                taskId: taskId, 
+                objective: 'CONTINUE_AFTER_APPROVAL',
+                alwaysAllow: alwaysAllow 
+            });
             return;
         }
 
@@ -1743,14 +1772,16 @@ export function initEventHandlers() {
         const saveRetryBtn = target.closest('.save-retry-params-btn') as HTMLButtonElement;
         if (saveRetryBtn) {
             e.stopPropagation();
-            const taskId = saveRetryBtn.dataset.taskId;
-            const textArea = document.getElementById(`edit-params-text-${taskId}`) as HTMLTextAreaElement;
-            if (textArea && taskId) {
+            const taskIdStr = saveRetryBtn.dataset.taskId;
+            if (!taskIdStr) return;
+
+            const textArea = document.getElementById(`edit-params-text-${taskIdStr}`) as HTMLTextAreaElement;
+            if (textArea) {
                 try {
                     const newParams = JSON.parse(textArea.value);
                     vscode.postMessage({ 
                         command: 'editAndRetryAgentTask', 
-                        taskId: taskId,
+                        taskId: taskIdStr,
                         params: newParams 
                     });
                     

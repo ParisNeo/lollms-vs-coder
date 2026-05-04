@@ -47,3 +47,8 @@ Implement add from search feature to be abele to add new files to context by doi
 UI problems in the modify with lollms ui
 
 When there are images in the prompt, the user bubble is blank.
+
+
+# IMPORTANT
+When the llm executes the same tool with the same parameters more than once, it gets rejected. This is not good. For example testing/fixing cycle is done by executing the same test over and over again.
+

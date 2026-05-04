@@ -23,36 +23,49 @@ body {
 .chat-content-wrapper {
     display: flex;
     flex-direction: row;
-    flex: 1;
+    height: 100vh;
+    width: 100vw;
     overflow: hidden;
     position: relative;
-    width: 100%;
+    background-color: var(--vscode-editor-background);
 }
 
 .chat-main-column {
     display: flex;
     flex-direction: column;
     flex: 1;
-    min-width: 0;
+    min-width: 0; /* Important for flex child visibility */
     height: 100%;
     position: relative;
-    overflow: visible !important;
+    overflow: hidden;
 }
 
 #agent-plan-zone {
     width: 400px;
+    min-width: 150px;
     flex-shrink: 0;
     background-color: var(--vscode-sideBar-background);
-    border-left: 1px solid var(--vscode-widget-border);
-    display: none;
+    border-right: 1px solid var(--vscode-widget-border);
+    display: none; /* Controlled by .visible class */
     overflow-y: auto;
-    padding: 0;
-    z-index: 5;
-    flex-direction: column;
+    height: 100%;
 }
 
 #agent-plan-zone.visible {
-    display: flex;
+    display: flex !important;
+    flex-direction: column;
+}
+
+#plan-resizer {
+    width: 4px;
+    background-color: var(--vscode-widget-border);
+    cursor: col-resize;
+    display: none;
+    flex-shrink: 0;
+}
+
+#plan-resizer.visible {
+    display: block;
 }
 
 /* NEW: Prominent Sticky Toolbar for Agent Actions */
@@ -86,15 +99,17 @@ body {
 /* --- LIVE ACTIVITY HUD (THE THINKING ZONE) --- */
 .agent-activity-hud {
     padding: 12px;
-    background: var(--vscode-sideBar-background);
+    /* Force solid background to prevent overlap transparency during scroll */
+    background: var(--vscode-sideBar-background) !important;
     border-bottom: 2px solid var(--vscode-focusBorder);
     display: flex; 
     flex-direction: column;
     gap: 8px;
     position: sticky;
     top: 0;
-    z-index: 110;
-    box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+    /* High z-index to stay above the cards */
+    z-index: 1000;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.3);
     /* Optimize for high-frequency updates */
     contain: content;
 }
@@ -266,18 +281,15 @@ body {
 }
 
 .messages { 
-    flex: 1; 
-    overflow-y: auto; 
+    flex: 1 1 auto; /* Fill vertical space in the main column */
+    overflow-y: auto;
+    overflow-x: hidden;
     padding: 0; 
-    display: flex; 
-    flex-direction: column; 
-    align-items: stretch;
-    width: 100%;
-    max-width: 100%;
-    gap: 10px; 
-    padding-bottom: 20px; 
-    scroll-behavior: smooth; 
-    min-width: 0; 
+    display: flex;
+    flex-direction: column;
+    background-color: var(--vscode-editor-background);
+    height: 0; /* Important for flex-grow to work in some browsers */
+    min-height: 0;
 }
 .message-wrapper { 
     width: 100%; 
@@ -354,15 +366,91 @@ body {
     color: var(--vscode-charts-red) !important;
 }
 
-/* 🤖 AGENT MODE RED UI THEME */
+/* 🤖 GLOBAL AGENT MODE "POSSESSED" THEME */
+body.agent-mode-active {
+    background-image: radial-gradient(circle at top right, rgba(214, 122, 13, 0.05), transparent 40%);
+}
+
+body.agent-mode-active .chat-container {
+    border: 1px solid rgba(214, 122, 13, 0.3);
+    box-shadow: inset 0 0 30px rgba(214, 122, 13, 0.05);
+}
+
+/* 🧬 THE GENIE ORB (High Fidelity) */
+.genie-orb-portal {
+    position: relative;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.orb-core {
+    width: 14px;
+    height: 14px;
+    background: radial-gradient(circle, #fff 0%, #ff9d00 40%, #ff4400 100%);
+    border-radius: 50%;
+    z-index: 2;
+    box-shadow: 0 0 15px #ff4400, 0 0 30px #ff9d00;
+    animation: orb-breathe 2.5s ease-in-out infinite;
+}
+
+.orb-ring-outer {
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    border: 1px solid rgba(255, 157, 0, 0.3);
+    border-radius: 50%;
+    animation: orb-rotate 4s linear infinite;
+}
+
+.orb-ring-inner {
+    position: absolute;
+    width: 70%;
+    height: 70%;
+    border: 2px solid rgba(255, 68, 0, 0.5);
+    border-top-color: transparent;
+    border-radius: 50%;
+    animation: orb-rotate-rev 2s linear infinite;
+}
+
+@keyframes orb-breathe {
+    0%, 100% { transform: scale(1); filter: brightness(1); }
+    50% { transform: scale(1.2); filter: brightness(1.4); box-shadow: 0 0 25px #ff4400, 0 0 50px #ff9d00; }
+}
+
+@keyframes orb-rotate {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+@keyframes orb-rotate-rev {
+    from { transform: rotate(360deg); }
+    to { transform: rotate(0deg); }
+}
+
+/* 🤖 AGENT MODE RED UI THEME (ACTIVE AGENCY) */
 .context-message.agent-mode-bubble {
-    border-color: var(--vscode-charts-red) !important;
-    background-image: linear-gradient(135deg, rgba(244, 71, 71, 0.1) 0%, transparent 100%) !important;
-    box-shadow: 0 0 15px rgba(244, 71, 71, 0.2) !important;
+    border: 2px solid var(--vscode-charts-orange) !important;
+    background-image: linear-gradient(135deg, rgba(214, 122, 13, 0.1) 0%, transparent 100%) !important;
+    box-shadow: 0 0 25px rgba(214, 122, 13, 0.2) !important;
 }
 
 .agent-mode-bubble .role-name {
-    color: var(--vscode-charts-red) !important;
+    color: var(--vscode-charts-orange) !important;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    text-shadow: 0 0 5px rgba(214, 122, 13, 0.5);
+}
+
+.agent-active-indicator {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .agent-mode-bubble .apply-btn {
@@ -871,7 +959,31 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 .select-line-valid::before { content: '✓ '; font-family: "codicon"; margin-right: 6px; font-weight: normal; }
 .select-line-invalid { color: var(--vscode-errorForeground); text-decoration: line-through; opacity: 0.8; display: block; padding: 2px 0; white-space: pre; }
 .select-line-invalid::before { content: '✕ '; font-family: "codicon"; margin-right: 6px; font-weight: normal; }
-#scrollToBottomBtn { display: none; position: absolute; bottom: 120px; right: 30px; width: 36px; height: 36px; border-radius: 50%; background-color: var(--vscode-button-background); color: var(--vscode-button-foreground); border: 1px solid var(--vscode-widget-border); box-shadow: 0 4px 8px rgba(0,0,0,0.3); cursor: pointer; z-index: 100; align-items: center; justify-content: center; transition: transform 0.1s, opacity 0.2s; }
+#scrollToBottomBtn { 
+    display: none; 
+    position: absolute; 
+    bottom: 120px; 
+    /* Offset by sidebar width to stay in main chat */
+    right: 30px; 
+    width: 36px; 
+    height: 36px; 
+    border-radius: 50%; 
+    background-color: var(--vscode-button-background); 
+    color: var(--vscode-button-foreground); 
+    border: 1px solid var(--vscode-widget-border); 
+    box-shadow: 0 4px 15px rgba(0,0,0,0.4); 
+    cursor: pointer; 
+    /* Ensure it is above the chat but below the sidebar resizer */
+    z-index: 100; 
+    align-items: center; 
+    justify-content: center; 
+    transition: transform 0.1s, opacity 0.2s; 
+}
+
+/* Adjust button position when Agent Plan is visible */
+#agent-plan-zone.visible ~ #scrollToBottomBtn {
+    right: 430px;
+}
 #scrollToBottomBtn:hover { background-color: var(--vscode-button-hoverBackground); transform: translateY(-2px); }
 #scrollToBottomBtn:active { transform: translateY(0); }
 #message-insertion-controls { display: flex; gap: 12px; justify-content: center; margin: 20px 0; opacity: 0; transition: opacity 0.2s; }
@@ -913,7 +1025,7 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 }
 
 .input-area-wrapper {
-    padding: 16px;
+    padding: 12px 16px 16px 16px; /* Slightly reduced top padding now that controls are gone */
     background-color: var(--vscode-sideBar-background);
     border-top: 1px solid var(--vscode-panel-border);
     position: relative;
@@ -1487,32 +1599,58 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 .control-buttons button:hover { background-color: var(--vscode-toolbar-hoverBackground); }
 #sendButton { color: var(--vscode-button-background); }
 
-.top-controls {
-    display: flex;
-    position: sticky;
-    top: 0;
-    z-index: 2000;
-    width: 100%;
-    box-sizing: border-box;
-    flex-direction: column;
-    gap: 4px;
-    padding: 4px 12px;
-    background: var(--vscode-sideBar-background);
-    border-bottom: 1px solid var(--vscode-widget-border);
+.context-message {
+    transition: box-shadow 0.3s ease;
 }
 
-.hud-center-zone {
-    transition: opacity 0.2s;
+.context-message:hover {
+    box-shadow: 0 8px 25px rgba(0,0,0,0.3) !important;
+}
+
+#jump-to-context-btn {
+    color: var(--vscode-textLink-foreground);
+}
+
+#jump-to-context-btn:hover {
+    background: var(--vscode-editor-inactiveSelectionBackground);
+}
+
+.fused-hud-header {
+    background: rgba(0, 0, 0, 0.15);
+    padding: 8px 12px;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    /* CRITICAL: Allow menus to "exit" the header */
+    overflow: visible !important;
+}
+
+.fused-hud-header .badge-group {
+    background: transparent;
+    border: none;
+    padding: 0;
+    margin-right: 5px;
+}
+
+.hud-upper-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    width: 100%;
+}
+
+.hud-lower-row {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    gap: 4px;
 }
 
 #badge-dashboard-panel {
-    overflow: hidden;
-    max-height: 200px;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    width: 100%;
-    transition: all 0.3s ease;
+    gap: 12px;
+    flex: 1;
+    min-width: 0;
 }
 
 #badge-dashboard-panel.hidden-state {
@@ -1581,6 +1719,7 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 .segment-system { background-color: #6a1b9a; } /* Purple */
 .segment-tree    { background-color: var(--vscode-charts-yellow); } /* Gold/Yellow */
 .segment-skills  { background-color: #00bcd4; } /* Cyan/Teal */
+.segment-memory  { background-color: var(--vscode-charts-purple); } /* Purple for Project Memory */
 .segment-files  { background-color: var(--vscode-charts-blue); }
 .segment-history { background-color: var(--vscode-charts-green); }
 .segment-images  { background-color: var(--vscode-charts-orange); }
@@ -1690,22 +1829,20 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
 
 .active-badges {
     display: flex;
-    gap: 8px;
+    gap: 10px;
     align-items: center;
-    margin-right: 10px;
     position: relative; 
     overflow: visible;
-    flex-wrap: wrap; /* Fix: allow badges to wrap on small windows */
 }
 
 .badge-group {
     display: flex;
     align-items: center;
     gap: 4px;
-    padding: 2px 4px;
-    background: var(--vscode-editor-inactiveSelectionBackground);
-    border-radius: 16px;
-    border: 1px solid var(--vscode-widget-border);
+    padding: 1px 4px;
+    background: rgba(255,255,255,0.03);
+    border-radius: 4px;
+    border: 1px solid rgba(255,255,255,0.05);
 }
 
 .badge-group-label {
@@ -1795,21 +1932,29 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
 .custom-menu {
     display: none;
     position: absolute;
-    bottom: 100%; 
-    top: auto;
+    /* Default to opening downwards now that HUD is at the top */
+    top: calc(100% + 4px);
     left: 0;
     background-color: var(--vscode-menu-background);
     color: var(--vscode-menu-foreground);
     border: 1px solid var(--vscode-menu-border);
-    border-radius: 4px;
-    box-shadow: 0 -4px 12px rgba(0,0,0,0.4); 
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4); 
     z-index: 100001; 
-    min-width: 200px;
+    min-width: 220px;
     padding: 4px 0;
     flex-direction: column;
-    max-height: 60vh; 
-    overflow-y: auto; 
-    margin-bottom: 12px; 
+    /* Prevent cutting off at screen edges */
+    max-height: 400px;
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+/* Flip class added dynamically via JS if no space at bottom */
+.custom-menu.open-up {
+    top: auto;
+    bottom: calc(100% + 4px);
+    box-shadow: 0 -8px 24px rgba(0,0,0,0.4);
 }
 
 .custom-menu.visible {
@@ -1956,7 +2101,54 @@ mark.current-match {
     contain: content;
 }
 
-.agent-card.status-in_progress { border-color: var(--vscode-charts-blue); box-shadow: 0 0 8px rgba(0, 122, 204, 0.4); }
+.agent-card.status-in_progress { 
+    border-color: #00e5ff !important; 
+    box-shadow: 0 0 15px rgba(0, 229, 255, 0.2); 
+}
+
+.agent-card.active-task {
+    border-color: #00e5ff !important;
+    box-shadow: 0 0 20px rgba(0, 229, 255, 0.4) !important;
+    animation: task-glow-pulse 1.5s infinite ease-in-out;
+}
+
+/* Substep Progress UI */
+.task-progress-container {
+    margin-top: 10px;
+    padding: 8px;
+    background: rgba(0, 229, 255, 0.05);
+    border-radius: 4px;
+}
+
+.task-substep-text {
+    font-size: 10px;
+    font-weight: bold;
+    color: #00e5ff;
+    text-transform: uppercase;
+    margin-bottom: 5px;
+    display: flex;
+    justify-content: space-between;
+}
+
+.task-progress-bar {
+    height: 4px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 2px;
+    overflow: hidden;
+}
+
+.task-progress-fill {
+    height: 100%;
+    background: #00e5ff;
+    box-shadow: 0 0 10px #00e5ff;
+    transition: width 0.3s ease;
+}
+
+@keyframes task-glow-pulse {
+    0% { box-shadow: 0 0 5px rgba(0, 229, 255, 0.2); border-color: rgba(0, 229, 255, 0.5); }
+    50% { box-shadow: 0 0 20px rgba(0, 229, 255, 0.6); border-color: #00e5ff; }
+    100% { box-shadow: 0 0 5px rgba(0, 229, 255, 0.2); border-color: rgba(0, 229, 255, 0.5); }
+}
 .agent-card.status-failed { border-color: var(--error-fg); }
 .agent-card.status-completed { border-color: var(--success-fg); }
 
@@ -2102,10 +2294,14 @@ mark.current-match {
 }
 
 .task-result-box.success { border-color: var(--success-fg); color: var(--success-fg); }
-.task-result-box.failure { border-color: var(--error-fg); color: var(--error-fg); background-color: var(--vscode-inputValidation-errorBackground); }
+.task-result-box.failure { 
+    border-color: var(--vscode-charts-red) !important; 
+    color: var(--vscode-charts-red) !important; 
+    background-color: var(--vscode-inputValidation-errorBackground); 
+}
 
 .success-text { color: var(--success-fg) !important; font-weight: 600; }
-.failure-text { color: var(--error-fg) !important; font-weight: 600; }
+.failure-text { color: var(--vscode-charts-red) !important; font-weight: 600; }
 
 .thinking-indicator {
     display: flex;
@@ -2545,8 +2741,9 @@ mark.current-match {
     overflow: hidden;
     backdrop-filter: blur(5px);
     height: 32px;
-    /* Ensure it stays above input area and other content */
+    /* Ensure it stays above input area but stays inside the main column */
     z-index: 5000 !important;
+    max-width: calc(100% - 24px);
 }
 
 .generating-content { 
@@ -2578,6 +2775,7 @@ mark.current-match {
     box-shadow: 0 0 8px #ff0000;
     animation: eye-pulse 2s ease-in-out infinite;
 }
+
 
 @keyframes eye-pulse {
     0%, 100% { transform: scale(1); opacity: 1; }

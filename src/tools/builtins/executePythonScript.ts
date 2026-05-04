@@ -14,20 +14,18 @@ export const executePythonScriptTool: ToolDefinition = {
         { name: "args", type: "string", description: "Optional: Command line arguments to pass to the script.", required: false },
         { name: "timeout_s", type: "number", description: "Optional: Execution timeout in seconds. Default is 900s (15 minutes). For model training or heavy data processing, set this to 3600 or higher.", required: false }
         ],
-        async execute(params: { env_name: string, script_path: string, args?: string, timeout_s?: number }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
-        if (!params.env_name || !params.script_path) {
-            return { success: false, output: "Error: 'env_name' and 'script_path' are required." };
-        }
-        
-        let actualEnvName = params.env_name;
-        
-        if (env.workspaceRoot) {
-            const fs = require('fs/promises');
-            const rootPath = env.workspaceRoot.uri.fsPath;
-            try {
-                await fs.access(path.join(rootPath, actualEnvName));
-            } catch {
-                const possibleEnvs = ['.venv', 'venv', 'env'];
+        async execute(params: { env_name?: string, script_path: string, args?: string, timeout_s?: number, is_gui?: boolean }, env: ToolExecutionEnv, signal: AbortSignal): Promise<{ success: boolean; output: string; }> {
+            if (!params.script_path) {
+                return { success: false, output: "Error: 'script_path' is required." };
+            }
+
+            let actualEnvName = params.env_name || "";
+            const rootPath = env.workspaceRoot?.uri.fsPath || "";
+
+            // --- SMART VENV DETECTION ---
+            if (!actualEnvName && rootPath) {
+                const possibleEnvs = ['.venv', 'venv', 'env', 'virtualenv'];
+                const fs = require('fs/promises');
                 for (const e of possibleEnvs) {
                     try {
                         await fs.access(path.join(rootPath, e));
@@ -36,11 +34,21 @@ export const executePythonScriptTool: ToolDefinition = {
                     } catch {}
                 }
             }
-        }
 
-        const pythonScriptExec = os.platform() === 'win32'
-            ? path.join(actualEnvName, 'Scripts', 'python.exe')
-            : path.join(actualEnvName, 'bin', 'python');
+            // If still no venv found, fallback to system python
+            const pythonScriptExec = actualEnvName 
+                ? (os.platform() === 'win32' ? path.join(actualEnvName, 'Scripts', 'python.exe') : path.join(actualEnvName, 'bin', 'python'))
+                : 'python';
+
+            // --- HEADLESS / GUI SAFETY ---
+            let commandPrefix = "";
+            if (params.is_gui) {
+                if (process.platform === 'linux') commandPrefix = "xvfb-run ";
+                // On Windows/Mac, we assume the environment has a display unless specified
+            } else {
+                // Force dummy driver for Pygame/SDL to prevent timeouts in headless environments
+                commandPrefix = os.platform() === 'win32' ? "$env:SDL_VIDEODRIVER='dummy'; " : "export SDL_VIDEODRIVER=dummy; ";
+            }
             
         const argsStr = params.args ? ` ${params.args}` : '';
         const timeoutMs = params.timeout_s ? params.timeout_s * 1000 : 900000; // 15 minute default

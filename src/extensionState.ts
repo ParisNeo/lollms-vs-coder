@@ -122,20 +122,21 @@ export async function runCommandInTerminal(
         let batFileToCleanup: string | null = null;
 
         if (isWin) {
-            // ROBUST WINDOWS EXECUTION:
-            // Write the exact command to a temporary .bat file. 
-            // This natively bypasses PowerShell's strict quote/string parsing and && syntax errors.
-            // We execute the .bat file inside PowerShell purely to capture live output via Tee-Object.
-            const batFile = path.join(outputDir, `run_${executionId}.bat`);
-            const relBatFile = `.lollms\\run_${executionId}.bat`;
+            // Use absolute paths for everything to prevent "Path not found" errors
+            const batFile = path.resolve(outputDir, `run_${executionId}.bat`);
+            const absOutputFile = path.resolve(outputFile);
+            const absExitCodeFile = path.resolve(exitCodeFile);
             
-            const envSetters = Object.entries(envVars).map(([k, v]) => `set ${k}=${v}`).join('\n');
-            const batContent = `@echo off\nchcp 65001 >nul\n${envSetters}\n${sanitizedCommand}`;
+            const envSetters = Object.entries(envVars).map(([k, v]) => `set "${k}=${v}"`).join('\n');
+            // Ensure the bat file changes to the correct drive and directory immediately
+            const drive = cwd.substring(0, 2);
+            const batContent = `@echo off\nchcp 65001 >nul\n${drive}\ncd "${cwd}"\n${envSetters}\n${sanitizedCommand}`;
             fs.writeFileSync(batFile, batContent);
             batFileToCleanup = batFile;
 
             const utf8Setup = `[Console]::InputEncoding = [Console]::OutputEncoding =[System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8;`;
-            const psCommand = `${utf8Setup} cmd /c "${batFile}" 2>&1 | Tee-Object -FilePath "${relOutputFile}"; $LASTEXITCODE | Out-File -FilePath "${relExitCodeFile}" -Encoding utf8`;
+            // Execute using the absolute path to the .bat file
+            const psCommand = `${utf8Setup} cmd /c "${batFile}" 2>&1 | Tee-Object -FilePath "${absOutputFile}"; $LASTEXITCODE | Out-File -FilePath "${absExitCodeFile}" -Encoding utf8`;
             execution = new vscode.ShellExecution("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psCommand], { cwd });
         } else {
             const targetShell = options?.shell || 'bash';
@@ -184,7 +185,7 @@ export async function runCommandInTerminal(
 
                 readOutputWithRetry().then((buffer) => {
                     let output = "";
-                    let success = e.exitCode === 0 || e.exitCode === 1; 
+                    let success = e.exitCode === 0; 
                     try {
                         if (buffer) {
                             const stats = fs.statSync(outputFile);

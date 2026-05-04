@@ -73,9 +73,13 @@ import { checkPythonSyntaxTool } from './checkPythonSyntax';
 import { testWebUiTool } from './testWebUi';
 import { testDesktopPythonUiTool } from './testDesktopPythonUi';
 import { testNativeUiTool } from './testNativeUi';
+import { smartScoutTool } from './smartScout';
+import { interactiveUiTestTool } from './interactiveUiTest';
 
 
 export const allTools: ToolDefinition[] = [
+    interactiveUiTestTool,
+    smartScoutTool,
     testWebUiTool,
     testDesktopPythonUiTool,
     testNativeUiTool,

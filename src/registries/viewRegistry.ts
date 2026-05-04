@@ -22,9 +22,11 @@ export class TabsTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
 
     async getChildren(): Promise<vscode.TreeItem[]> {
         const activeTab = this.context.globalState.get('lollms.activeTab', 'chat');
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const debugEnabled = config.get<boolean>('developer.debugTools', false);
         const { TabItem } = await import('../commands/treeItems');
-        
-        return [
+
+        const tabs = [
             new TabItem("Chat & Discussions", "chat", "comment-discussion", activeTab === 'chat'),
             new TabItem("Expert Personas", "personas", "account", activeTab === 'personas'),
             new TabItem("Skills Library", "skills", "lightbulb", activeTab === 'skills'),
@@ -33,11 +35,18 @@ export class TabsTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
             new TabItem("Workspace Repair", "fix", "zap", activeTab === 'fix'),
             new TabItem("MCP Tools", "mcp", "plug", activeTab === 'mcp'),
             new TabItem("Environment", "env", "symbol-variable", activeTab === 'env'),
-            new TabItem("Manage Volumes", "lab", "database", false), // Use database icon for disk mgmt
+            new TabItem("Manage Volumes", "lab", "database", false), 
             new TabItem("Git Manager", "git", "git-merge", activeTab === 'git'),
-            new TabItem("Architecture Graph", "graph", "graph", activeTab === 'graph'),
-            new TabItem("The Lab (Workflows/Tools)", "lab", "beaker", activeTab === 'lab')
+            new TabItem("Architecture Graph", "graph", "graph", activeTab === 'graph')
         ];
+
+        if (debugEnabled) {
+            tabs.push(new TabItem("Tool Tester", "developer", "beaker", activeTab === 'developer'));
+        } else {
+            tabs.push(new TabItem("The Lab (Workflows)", "lab", "beaker", activeTab === 'lab'));
+        }
+
+        return tabs;
     }
 }
 
@@ -61,7 +70,17 @@ export function registerViews(context: vscode.ExtensionContext, services: Lollms
     services.treeProviders.codeAction = codeActionTreeProvider;
     context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsCodeActionsView', codeActionTreeProvider));
 
-    // Explorer
+    // tool tester
+    const toolTesterProvider = new (require('../commands/toolTesterProvider').ToolTesterProvider)(services.toolManager);
+    services.treeProviders.toolTester = toolTesterProvider;
+    vscode.window.registerTreeDataProvider('lollmsDevToolsView', toolTesterProvider);
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.openToolTester', (tool) => {
+        const { ToolTesterPanel } = require('../commands/toolTesterPanel');
+        ToolTesterPanel.createOrShow(context.extensionUri, services, tool);
+    }));
+
+    // explorer
     const codeExplorerTreeProvider = new CodeExplorerTreeProvider(services.codeGraphManager);
     services.treeProviders.codeExplorer = codeExplorerTreeProvider;
     context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsCodeExplorerView', codeExplorerTreeProvider));

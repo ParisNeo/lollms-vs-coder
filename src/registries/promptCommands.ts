@@ -80,16 +80,26 @@ export function registerPromptCommands(context: vscode.ExtensionContext, service
         if (prompt.action_type === 'information') {
             await startDiscussionWithInitialPrompt(services, prompts.userPrompt, activeFolder, true, 'user');
         } else {
-            // --- FIXED: AGENTIC SURGICAL HANDOVER ---
+            // --- FIXED: DIRECT SURGICAL AGENT ACTIVATION ---
             const discussion = services.discussionManager.createNewDiscussion();
-            discussion.title = `Surgical: ${prompt.title}`;
+            discussion.title = `Modify: ${prompt.title}`;
 
+            // Initialize capabilities for surgical work
             if (discussion.capabilities) {
                 discussion.capabilities.agentMode = true;
-                discussion.capabilities.autoApply = false; 
+                discussion.capabilities.autoApply = false; // Require user to click 'Apply' on the diff
                 discussion.capabilities.autoFix = true;
                 discussion.capabilities.verifierMode = true;
+                discussion.capabilities.responseProfileId = 'minimalist'; // Keep it clean
             }
+
+            // Manually inject the first user message into the discussion state before revealing
+            discussion.messages.push({
+                id: 'surgical_init_' + Date.now(),
+                role: 'user',
+                content: prompts.userPrompt,
+                timestamp: Date.now()
+            });
 
             await services.discussionManager.saveDiscussion(discussion);
 
@@ -102,28 +112,30 @@ export function registerPromptCommands(context: vscode.ExtensionContext, service
                 services.skillsManager
             );
 
-            // 1. Reconnect dependencies immediately
+            // Sync services to the new panel
             panel.setContextManager(services.contextManager);
             panel.setProcessManager(services.processManager);
             panel.setPersonalityManager(services.personalityManager);
+            panel.setHerdManager(services.herdManager);
 
-            // 2. Initialize Agent
+            // Create and link the agent manager immediately
             const agent = new AgentManager(
                 panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
                 services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
                 services.rlmDb
             );
             agent.projectMemoryManager = services.projectMemoryManager;
+            agent.personalityManager = services.personalityManager;
             agent.setProcessManager(services.processManager);
-
-            // 3. Force UI sync and activate Agent
+            
             panel.setAgentManager(agent);
-            if (!agent.getIsActive()) agent.toggleAgentMode();
+            (agent as any).isActive = true; // Set raw property to bypass the "engaged" system message
 
+            // Reveal and load the discussion (UI now sees the initial message)
+            panel._panel.reveal();
             await panel.loadDiscussion();
 
-            // 4. TRIGGER AGENTIC EVENTS IMMEDIATELY
-            // This ensures the "Generating" overlay appears in the chat panel
+            // Start the actual processing loop
             await agent.handleUserMessage(prompts.userPrompt, discussion, activeFolder);
         }
     }));

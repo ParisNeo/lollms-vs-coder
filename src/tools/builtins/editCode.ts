@@ -210,18 +210,26 @@ export const editCodeTool: ToolDefinition = {
                 }
 
                 // 4. THE GUARDIAN PASS (Protocol Step 5)
-                // Write to disk first so diagnostics can see it
                 await vscode.workspace.fs.writeFile(fileUri, Buffer.from(workingContent, 'utf8'));
-                // Force context refresh so subsequent turns/reads see the updated content
                 env.contextManager.refreshFileInCache(fileUri);
 
                 let output = `Successfully applied ${currentAppliedCount} surgical edits to \`${filePath}\`.`;
-                await new Promise(r => setTimeout(r, 1200)); // Wait for language server
 
+                // --- INTEGRATED SMOKE TEST ---
+                const isPython = filePath.endsWith('.py');
+                let smokeTestResult = "";
+                if (isPython) {
+                    const checkResult = await env.agentManager!.runCommand(`python -m py_compile "${filePath}"`, signal);
+                    if (!checkResult.success) {
+                        smokeTestResult = `\n⚠️ SYNTAX ERROR DETECTED: ${checkResult.output}`;
+                    }
+                }
+
+                await new Promise(r => setTimeout(r, 1200)); // Wait for language server
                 const diagnostics = vscode.languages.getDiagnostics(fileUri)
                     .filter(d => d.severity === vscode.DiagnosticSeverity.Error);
 
-                if (diagnostics.length > 0) {
+                if (diagnostics.length > 0 || smokeTestResult) {
                     const errorReport = diagnostics.map(d => `[Line ${d.range.start.line + 1}] ${d.message}`).join('\n');
 
                     // Shake the model with the Guardian's report

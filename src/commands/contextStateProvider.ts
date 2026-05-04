@@ -361,8 +361,28 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         await this.setStateForUris([uri], state);
     }
 
+    /**
+     * Checks if a file is suitable for direct inclusion in the LLM text context.
+     * Excludes binaries, images, and complex docs (PDF/Office).
+     */
+    private isLightweightTextFile(uri: vscode.Uri): boolean {
+        const ext = path.extname(uri.fsPath).toLowerCase();
+        const complexDocs = new Set(['.pdf', '.docx', '.pptx', '.xlsx', '.msg', '.odt', '.rtf']);
+        const images = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.ico', '.tiff']);
+        const commonBinaries = new Set(['.exe', '.dll', '.so', '.dylib', '.pyc', '.o', '.obj', '.bin', '.dat']);
+
+        if (complexDocs.has(ext) || images.has(ext) || commonBinaries.has(ext)) {
+            return false;
+        }
+
+        return true;
+    }
+
     private async updateChildrenState(dirUri: vscode.Uri, state: ContextState, workspaceState: { [key: string]: ContextState }): Promise<vscode.Uri[]> {
         const urisToFire: vscode.Uri[] = [dirUri];
+        let filesIncludedCount = 0;
+        let filesSkippedCount = 0;
+
         const processDirectory = async (currentDirUri: vscode.Uri) => {
             let entries;
             try {
@@ -370,23 +390,46 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
             } catch (error) {
                 return;
             }
-    
+
             for (const [name, type] of entries) {
                 const entryUri = vscode.Uri.joinPath(currentDirUri, name);
                 if (this.isExcluded(entryUri)) {
                     continue;
                 }
-                urisToFire.push(entryUri);
-    
+
                 if (type === vscode.FileType.Directory) {
-                    await processDirectory(entryUri);
+                    // Folders are always added to the 'fire' list to update decorations
+                    urisToFire.push(entryUri);
+                    // Inherit state only if not collapsed or excluded
+                    if (state !== 'collapsed' && state !== 'fully-excluded') {
+                        await processDirectory(entryUri);
+                    } else {
+                         const relativePath = this.normalize(vscode.workspace.asRelativePath(entryUri, false));
+                         workspaceState[relativePath] = state;
+                    }
                 } else if (type === vscode.FileType.File) {
+                    // Only include if it's a genuine text file
+                    if (state === 'included' && !this.isLightweightTextFile(entryUri)) {
+                        filesSkippedCount++;
+                        continue; 
+                    }
+
                     const relativePath = this.normalize(vscode.workspace.asRelativePath(entryUri, false));
                     workspaceState[relativePath] = state;
+                    urisToFire.push(entryUri);
+                    filesIncludedCount++;
                 }
             }
         };
+
         await processDirectory(dirUri);
+
+        if (state === 'included' && filesSkippedCount > 0) {
+            vscode.window.showInformationMessage(
+                `Lollms: Included ${filesIncludedCount} text files. Skipped ${filesSkippedCount} non-text files (PDF, images, etc).`
+            );
+        }
+
         this._onDidChangeFileDecorations.fire(urisToFire);
         return urisToFire;
     }

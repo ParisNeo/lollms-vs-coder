@@ -1252,6 +1252,10 @@ function enhanceWithCommandButtons(container: HTMLElement) {
 }
 
 export function processThinkTags(content: string): { thoughts: { tag: string, content: string }[], processedContent: string } {
+    // Expose to window so that artifacts inside Agent Cards can use it during dynamic rendering
+    if (!(window as any).processThinkTags) {
+        (window as any).processThinkTags = processThinkTags;
+    }
     const thoughts: { tag: string, content: string }[] = [];
     if (typeof content !== 'string') return { thoughts, processedContent: '' };
     
@@ -3151,14 +3155,25 @@ function addChatMessage(message: any, isFinal: boolean = true) {
     }
 }
 
-
+const renderDataBriefing = (briefing: string) => {
+    const raw = briefing || "";
+    if (!raw.trim()) return "Librarian is analyzing project state...";
+    try {
+        if (!raw.startsWith('{')) return raw;
+        const entries = JSON.parse(raw);
+        return Object.keys(entries).map(id => {
+            const title = id.replace(/_/g, ' ').toUpperCase();
+            return `<strong>[${title}]</strong><br>${entries[id]}`;
+        }).join('<br><br>');
+    } catch { return raw; }
+};
 
 export function updateContext(contextText: string, files: string[] = [], skills: any[] = [], diagrams: any[] = [], briefing: string = "") {
     if(!dom.contextContainer) return;
 
     // Cache the data so we can re-render if capabilities (like Mute) change
-    state.lastContextData = { context: contextText, files, skills, diagrams };
-    
+    state.lastContextData = { context: contextText, files, skills, diagrams, briefing };
+
     // If no context text but we have files/skills, show "Loading content..." in the preview
     const displayContent = contextText || (files.length > 0 ? "_Loading project content..._" : "");
     const renderedMarkdown = displayContent ? sanitizer.sanitize(marked.parse(displayContent) as string, SANITIZE_CONFIG) : "";
@@ -3213,105 +3228,57 @@ export function updateContext(contextText: string, files: string[] = [], skills:
            </div>`
         : '<div class="empty-context-msg">No skills learned.</div>';
 
-    const isMuted = state.capabilities?.disableProjectContext;
     const isAgentActive = state.capabilities?.agentMode === true;
-    const currentModel = state.currentModelName;
 
-    const themeClass = isAgentActive ? 'agent-mode-bubble' : '';
-    const muteClass = isMuted ? 'muted-bubble' : '';
-
-    const workspaceFolders = (window as any).workspaceFolders || [];
-    const folderSettings = state.capabilities?.folderSettings || {};
-
-    const renderWorkspaceSelector = () => {
-        if (workspaceFolders.length === 0) return '';
-
-        const rows = workspaceFolders.map(f => {
-            const uriKey = typeof f.uri === 'string' ? f.uri : (f.uri as any).toString();
-            const settings = folderSettings[uriKey] || { tree: true, content: true };
-            
-            return `
-                <div class="ws-matrix-row" data-uri="${uriKey}" style="display: flex; align-items: center; justify-content: space-between; padding: 6px 10px; border-bottom: 1px solid var(--vscode-widget-border); gap: 12px;">
-                    <div class="ws-matrix-label" style="display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0;">
-                        <span class="codicon codicon-root-folder" style="opacity: 0.6;"></span>
-                        <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 600;">${f.name}</span>
-                    </div>
-                    <div class="ws-matrix-controls" style="display: flex; gap: 6px;">
-                        <button class="matrix-toggle ${settings.tree ? 'active' : ''}" 
-                                data-type="tree" 
-                                style="font-size: 10px; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--vscode-widget-border); background: ${settings.tree ? 'var(--vscode-button-background)' : 'transparent'}; color: ${settings.tree ? 'var(--vscode-button-foreground)' : 'inherit'}; cursor: pointer;"
-                                title="${settings.tree ? 'Include in tree scan' : 'Hide from tree'}">
-                            <i class="codicon codicon-graph"></i> Tree
-                        </button>
-                        <button class="matrix-toggle ${settings.content ? 'active' : ''}" 
-                                data-type="content" 
-                                style="font-size: 10px; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--vscode-widget-border); background: ${settings.content ? 'var(--vscode-button-background)' : 'transparent'}; color: ${settings.content ? 'var(--vscode-button-foreground)' : 'inherit'}; cursor: pointer;"
-                                title="${settings.content ? 'Include file content' : 'Mute content'}">
-                            <i class="codicon codicon-file-code"></i> Content
-                        </button>
-                    </div>
-                </div>
-            `;
-        }).join('');
-
-        return `
-        <details class="info-collapsible" style="margin-bottom: 8px; border-left: 4px solid var(--vscode-focusBorder);">
-            <summary style="font-weight: 800; font-size: 10px; color: var(--vscode-textLink-foreground); letter-spacing: 0.5px;">
-                <i class="codicon codicon-layers"></i> WORKSPACE ACCESS MATRIX
-            </summary>
-            <div class="collapsible-content" style="padding: 0; background: var(--vscode-sideBar-background);">
-                <div style="display: flex; justify-content: space-between; padding: 8px 10px; border-bottom: 1px solid var(--vscode-widget-border); opacity: 0.7;">
-                    <span style="font-size: 9px; font-weight: bold;">PROJECTS LIST</span>
-                    <div style="display: flex; gap: 10px;">
-                        <button id="ws-all-on" style="background:none; border:none; color: var(--vscode-textLink-foreground); font-size: 10px; cursor: pointer; padding: 0;">Enable All</button>
-                        <button id="ws-all-off" style="background:none; border:none; color: var(--vscode-errorForeground); font-size: 10px; cursor: pointer; padding: 0;">Disable All</button>
-                    </div>
-                </div>
-                <div class="ws-matrix-body" style="max-height: 180px; overflow-y: auto;">
-                    ${rows}
-                </div>
-            </div>
-        </details>`;
-    };
-    
-    const renderDataBriefing = () => {
-        const raw = briefing || "";
-        if (!raw.trim()) return "Librarian is analyzing project state...";
-        try {
-            if (!raw.startsWith('{')) return raw;
-            const entries = JSON.parse(raw);
-            return Object.keys(entries).map(id => {
-                const title = id.replace(/_/g, ' ').toUpperCase();
-                return `<strong>[${title}]</strong><br>${entries[id]}`;
-            }).join('<br><br>');
-        } catch { return raw; }
-    };
-
-    // Logic for segmented bar in header
-    const tokenParts = state.lastContextData?.segments || { system: 0, files: 0, history: 0, images: 0 };
-    const total = Math.max(tokenParts.system + tokenParts.files + tokenParts.history + tokenParts.images, 1);
+    // THEME LOGIC:
+    // Agent Mode = Red (Genie has taken over)
+    // Standard = Blue (Librarian/Architect mode)
+    const themeClass = isAgentActive ? 'agent-mode-bubble' : 'standard-mode-bubble';
 
     const innerHTML = `
-    <div class="message special-zone-message context-message ${themeClass} ${muteClass}">
+    <div class="message special-zone-message context-message ${themeClass}" id="fused-context-dashboard">
         <div class="message-avatar">
             ${isAgentActive 
-                ? '<div class="agent-active-indicator" title="Autonomous Agent Mode Active"><span class="codicon codicon-robot"></span></div>' 
+                ? `<div class="agent-active-indicator">
+                    <div class="genie-orb-portal" style="transform: scale(0.7);">
+                        <div class="orb-ring-outer"></div>
+                        <div class="orb-ring-inner"></div>
+                        <div class="orb-core"></div>
+                    </div>
+                   </div>` 
                 : '<span class="codicon codicon-library"></span>'}
         </div>
         <div class="message-body">
-            <div class="message-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 10px; flex-wrap: wrap; gap: 10px;">
+            <!-- 🚀 FUSED TOP HUD (Inside Context Bubble) -->
+            <div class="fused-hud-header" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div id="badge-dashboard-panel">
+                        <div class="active-badges" id="active-badges"></div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <button id="hud-matrix-btn" class="icon-btn" title="Workspace Access Matrix" style="color: var(--vscode-textLink-foreground); padding: 2px;">
+                            <i class="codicon codicon-layers" style="font-size: 14px;"></i>
+                        </button>
+                        <span id="status-text" style="font-size: 10px; font-weight: 900; opacity: 0.4; letter-spacing: 0.5px;">READY</span>
+                    </div>
+                </div>
+
+                <div class="token-fused-bar">
+                    <div class="token-progress-container" id="token-progress-container" style="height: 6px; border-radius: 3px; background: rgba(255,255,255,0.03);">
+                        <div class="token-progress-bar" id="token-progress-bar"></div>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px;">
+                        <span id="token-count-label" style="font-size: 10px; opacity: 0.4; font-family: var(--vscode-editor-font-family);">Calculating...</span>
+                        <div id="token-bar-legend" class="token-legend" style="display: none; gap: 10px;"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="message-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 12px;">
                 <div style="display:flex; align-items:center; gap:8px;">
-                    <span class="role-name">Project Context</span>
-                    ${state.lastContextData?.images?.length ? `<div class="mode-badge" style="background:var(--vscode-charts-orange); color:white; font-size:9px; padding:1px 6px; height:14px;"><i class="codicon codicon-device-camera" style="font-size:9px;"></i> Images (${state.lastContextData.images.length})</div>` : ''}
+                    <span class="role-name">Intelligence Context</span>
                 </div>
                 <div style="display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; flex: 1;">
-                    <button id="view-full-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="View Full Context and Structure">
-                        <span class="codicon codicon-book"></span> View
-                    </button>
-                    <button id="view-usage-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="View per-file token usage">
-                        <span class="codicon codicon-dashboard"></span> Usage
-                    </button>
-                    <div style="width: 1px; background: var(--vscode-widget-border); margin: 0 4px;"></div>
                     <button id="add-file-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Add File to Context">
                         <span class="codicon codicon-add"></span> File
                     </button>
@@ -3638,27 +3605,21 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                 // Debounce matrix updates
                 if ((window as any).matrixUpdateTimer) clearTimeout((window as any).matrixUpdateTimer);
                 (window as any).matrixUpdateTimer = setTimeout(() => {
-                    // Locally update state so updateBadges() sees it immediately
-                    if (state.capabilities) {
-                        state.capabilities.folderSettings = { ...currentSettings, [uri]: settings };
-                        
-                        // CRITICAL FIX: If ANY project is now enabled, we MUST force global mute to FALSE
-                        const allSettings = Object.values(state.capabilities.folderSettings);
-                        const isAnythingActive = allSettings.some((s: any) => s.tree || s.content);
-                        
-                        if (isAnythingActive) {
-                            state.capabilities.disableProjectContext = false;
-                        }
-                    }
-                    
-                    // Sync with extension - explicitly include disableProjectContext: false
-                    vscode.postMessage({ 
-                        command: 'updateDiscussionCapabilitiesPartial', 
-                        partial: { 
-                            folderSettings: { ...currentSettings, [uri]: settings },
-                            disableProjectContext: state.capabilities?.disableProjectContext ?? false
-                        } 
-                    });
+                // Locally update state so updateBadges() sees it immediately
+                if (state.capabilities) {
+                    state.capabilities.folderSettings = { ...currentSettings, [uri]: settings };
+                }
+
+                // Sync with extension
+                vscode.postMessage({ 
+                    command: 'updateDiscussionCapabilitiesPartial', 
+                    partial: { 
+                        folderSettings: { ...currentSettings, [uri]: settings }
+                    } 
+                });
+
+                // Force badge refresh because Matrix might have changed "Librarian" status
+                updateBadges();
                 }, 150);            
             }
 
@@ -3741,7 +3702,11 @@ export function updateContext(contextText: string, files: string[] = [], skills:
             vscode.postMessage({ command: 'stopTokenCalculation' });
         });
     }
-}
+
+    // CRITICAL: Force badge rendering immediately after injecting the Dashboard HTML
+    const { updateBadges } = require('./ui.js');
+    updateBadges();
+    }
 
 
 /**
@@ -4096,7 +4061,14 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
             }
 
             if (task.result) {
+                const resultText = String(task.result);
+
+                // 🛡️ REFINED ERROR DETECTION
+                // We only render as a 'Failure' if the backend explicitly set the status to 'failed'.
+                // Keyword detection (like 'error') is now a fallback ONLY for 'failed' tasks
+                // to avoid misclassifying successful analyses of faulty assets.
                 const isFailure = task.status === 'failed';
+
                 const label = isFailure ? 'Failure Details' : 'Output';
                 const resultBoxClass = isFailure ? 'failure' : 'success';
                 const summaryClass = isFailure ? 'failure-text' : 'success-text';
@@ -4105,7 +4077,7 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
                     <div class="task-result">
                         <details ${isFailure ? 'open' : ''}>
                             <summary class="task-result-summary ${summaryClass}">${label}</summary>
-                            <div class="task-result-box ${resultBoxClass}">${sanitizer.sanitize(task.result)}</div>
+                            <div class="task-result-box ${resultBoxClass}">${sanitizer.sanitize(resultText)}</div>
                         </details>
                     </div>`;
             }
@@ -4143,6 +4115,23 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
 
             const isActive = task.status === 'in_progress';
 
+            // --- SUBSTEP PROGRESS BAR ---
+            let progressHtml = '';
+            if (isActive && (task.progress !== undefined || task.current_substep)) {
+                const pct = task.progress || 0;
+                progressHtml = `
+                    <div class="task-progress-container">
+                        <div class="task-substep-text">
+                            <span>${sanitizer.sanitize(task.current_substep || 'Processing...')}</span>
+                            <span>${pct}%</span>
+                        </div>
+                        <div class="task-progress-bar">
+                            <div class="task-progress-fill" style="width: ${pct}%"></div>
+                        </div>
+                    </div>
+                `;
+            }
+
             // 1. Standalone Reasoning Card
             const thoughtHtml = task.description ? `
                 <div class="agent-thought-step">
@@ -4150,9 +4139,9 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
                     ${sanitizer.sanitize(task.description)}
                 </div>` : '';
 
-            // 2. Simplified Execution Card (No description inside)
+            // 2. Simplified Execution Card
             const cardHtml = `
-                <li class="agent-card status-${task.status} ${isActive ? 'active-task' : ''}" data-task-id="${task.id}" style="margin-top: -5px;">
+                <li class="agent-card status-${task.status} ${isActive ? 'active-task' : ''}" data-task-id="${task.id}" style="margin-top: 15px;">
                     <div class="agent-card-header">
                         <div style="display:flex; align-items:center; gap:8px;">
                             <div class="${statusClass}">${icon}</div>
@@ -4165,7 +4154,8 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
                     </div>
                     <div class="agent-card-body" style="padding-top: 8px;">
                         ${approvalButtonHtml}
-                        ${metaTabsHtml ? `<div class="agent-meta-tabs">${metaTabsHtml}</div>` : ''}
+                        ${progressHtml}
+                        ${metaTabsHtml}
                         ${memoryBarHtml}
                         ${resultHtml}
                         ${artifactsHtml}

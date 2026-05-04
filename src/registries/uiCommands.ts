@@ -84,6 +84,7 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
         vscode.commands.executeCommand('lollms-vs-coder.showCodeGraphPanel');
     }));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showLabTab', () => setTab('lab')));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showDeveloperTab', () => setTab('developer')));
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.openCveBuilder', () => {
         const { CvePanel } = require('../commands/cvePanel');
         CvePanel.createOrShow(services.extensionUri, services.lollmsAPI, services.contextManager);
@@ -278,7 +279,7 @@ export const myCustomTool: ToolDefinition = {
             InfoPanel.createOrShow(services.extensionUri, title, content || "No content available.");
     }));
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.viewFullContext', async (type: 'system' | 'files' | 'chat' | 'tree') => {
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.viewFullContext', async (type: 'system' | 'files' | 'chat' | 'tree' | 'images') => {
         const panel = ChatPanel.currentPanel || Array.from(ChatPanel.panels.values())[0];
         if (!panel) {
             vscode.window.showWarningMessage("No active Chat found to display context from.");
@@ -323,6 +324,15 @@ export const myCustomTool: ToolDefinition = {
                     content = (disc?.messages || [])
                         .map(m => `### ${m.role.toUpperCase()}\n${m.content}`)
                         .join('\n\n');
+                } else if (type === 'images') {
+                    title = "Visual Context (Images)";
+                    if (contextData.images && contextData.images.length > 0) {
+                        content = contextData.images.map(img => 
+                            `### ${img.filePath}\n<img src="${img.data}" style="max-width:100%; border-radius:8px; border:1px solid var(--vscode-widget-border);" />`
+                        ).join('\n\n---\n\n');
+                    } else {
+                        content = "*No images currently in context.*";
+                    }
                 }
 
                 // Send to webview modal
@@ -341,6 +351,27 @@ export const myCustomTool: ToolDefinition = {
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.exportAgentTimeline', async () => {
         if (ChatPanel.currentPanel?.agentManager) {
             await ChatPanel.currentPanel.agentManager.exportTimelineToHtml();
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.promoteTool', async (item: vscode.TreeItem) => {
+        const agent = ChatPanel.currentPanel?.agentManager;
+        if (agent && item.label) {
+            const session = agent.sessionState as any;
+            if (!session.activeToolIds) session.activeToolIds = new Set();
+            session.activeToolIds.add(String(item.label));
+            services.treeProviders.genieTools?.refresh();
+            vscode.window.showInformationMessage(`Genie: '${item.label}' moved to Foreground.`);
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.demoteTool', async (item: vscode.TreeItem) => {
+        const agent = ChatPanel.currentPanel?.agentManager;
+        if (agent && item.label) {
+            const session = agent.sessionState as any;
+            session.activeToolIds?.delete(String(item.label));
+            services.treeProviders.genieTools?.refresh();
+            vscode.window.showInformationMessage(`Genie: '${item.label}' moved to Background.`);
         }
     }));
 

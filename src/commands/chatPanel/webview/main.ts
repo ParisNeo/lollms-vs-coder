@@ -73,6 +73,10 @@ const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) :
 (window as any).openImageEditor = openImageEditor;
 (window as any).filterSkillsTree = filterSkillsTree;
 
+// Ensure messageRenderer utilities are exposed for the Agent Plan Zone
+import { processThinkTags } from './messageRenderer.js';
+(window as any).processThinkTags = processThinkTags;
+
 // --- Initialize Mermaid ---
 try {
     mermaid.initialize({ 

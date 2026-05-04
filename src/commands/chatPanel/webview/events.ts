@@ -135,7 +135,22 @@ export function initEventHandlers() {
 
     document.querySelectorAll('.toolbar-tool').forEach(btn => {
         btn.addEventListener('click', (e) => {
-            const type = (btn as HTMLElement).dataset.wrapType;
+            const btnEl = btn as HTMLElement;
+            if (btnEl.id === 'jump-to-context-btn') {
+                const container = document.getElementById('chat-messages-container');
+                const dashboard = document.getElementById('fused-context-dashboard');
+                if (dashboard && container) {
+                    // Smoothly scroll the chat container to the top
+                    container.parentElement?.scrollTo({ top: 0, behavior: 'smooth' });
+
+                    // Visual feedback
+                    dashboard.style.transition = "outline 0.3s ease";
+                    dashboard.style.outline = "2px solid var(--vscode-focusBorder)";
+                    setTimeout(() => dashboard.style.outline = "none", 800);
+                }
+                return;
+            }
+            const type = btnEl.dataset.wrapType;
             if (type) wrapText(type);
         });
     });
@@ -1298,30 +1313,6 @@ export function initEventHandlers() {
     }
     if (dom.capAutoFix && state.capabilities) dom.capAutoFix.checked = state.capabilities.autoFix !== false;
     if (dom.capAutoBranch && state.capabilities) dom.capAutoBranch.checked = !!state.capabilities.autoBranch;
-    const dashboardBtn = document.getElementById('toggle-dashboard-btn');
-    const dashboardPanel = document.getElementById('badge-dashboard-panel');
-    const dashboardChevron = document.getElementById('dashboard-chevron');
-
-    if (dashboardBtn && dashboardPanel && dashboardChevron) {
-        dashboardBtn.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-
-            const isCurrentlyHidden = dashboardPanel.classList.contains('hidden-state');
-
-            if (isCurrentlyHidden) {
-                // OPENING
-                dashboardPanel.classList.remove('hidden-state');
-                dashboardChevron.classList.remove('codicon-chevron-down');
-                dashboardChevron.classList.add('codicon-chevron-up');
-            } else {
-                // CLOSING
-                dashboardPanel.classList.add('hidden-state');
-                dashboardChevron.classList.remove('codicon-chevron-up');
-                dashboardChevron.classList.add('codicon-chevron-down');
-            }
-        });
-    }
 
     if (dom.refreshContextBtn) dom.refreshContextBtn.addEventListener('click', () => {
         vscode.postMessage({ command: 'calculateTokens' });
@@ -1461,7 +1452,7 @@ export function initEventHandlers() {
         if (potentialTarget) {
             e.stopPropagation();
             const type = potentialTarget.dataset.type || potentialTarget.getAttribute('data-type');
-            if (type && type !== 'images') {
+            if (type) {
                 const cmdType = type === 'history' ? 'chat' : type;
                 vscode.postMessage({
                     command: 'executeLollmsCommand', 

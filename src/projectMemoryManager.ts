@@ -14,6 +14,7 @@ export interface MemoryEntry {
     category: string;
     tier: MemoryTier;
     scope: 'local' | 'global';
+    origin?: 'architect' | 'agent' | 'user'; // Track who created the engram
 }
 
 export interface AffectiveMatrix {
@@ -146,7 +147,7 @@ export class ProjectMemoryManager {
 
         await this.updateMemory('add', 'headless_pygame_protocol', 'Headless Testing', 'When working on Pygame projects, DO NOT use `execute_python_script` to run the main game loop, as it will hang in this headless environment. Instead, use `check_python_syntax` or run small isolated logic tests.', 'standards', 100);
 
-        await this.updateMemory('add', 'ui_validation_protocol', 'UI Validation', 'To test User Interfaces, always use the specialized test tools (test_web_ui, test_desktop_python_ui, etc.). These tools prevent hang-ups in the headless environment. IMPORTANT: Image tokens are expensive. Set `capture_visual: true` only if text logs (titles, status codes) are insufficient to verify the result.', 'standards', 100);
+        await this.updateMemory('add', 'ui_validation_protocol', 'UI Validation', 'To test User Interfaces, prefer the `interactive_ui_test` tool. This allows the user to perform manual interactions without a timeout. This is the SAFEST way to test complex event loops (Pygame, PyQt, React). If logs are excessive, the system will automatically provide you with a compressed summary.', 'standards', 100);
 
         await this.updateMemory('add', 'asset_usage_protocol', 'User-Provided Assets', 'If the user provides an image or file in the chat, prioritize using `save_chat_image` to persist it to the workspace instead of generating a new one with AI. This preserves user intent and saves tokens.', 'standards', 100);
 
@@ -222,38 +223,130 @@ export class ProjectMemoryManager {
      * 2. Consolidation: Refreshed engrams stay in T1, others move to T2.
      * 3. Forgetting: Importance 0 is deleted.
      */
-    public async performDreamCycle(): Promise<{ decayed: number, consolidated: number, forgotten: number }> {
+    /**
+     * THE DREAM CYCLE: Reorganizes and consolidates neural connections.
+     * 1. Decay: Reduces importance of all engrams.
+     * 2. Consolidation: Refreshed engrams stay in T1, others move to T2.
+     * 3. Forgetting: Importance 0 is deleted.
+     */
+    public async performDreamCycle(onProgress?: (event: { type: 'decay' | 'reinforce' | 'archive' | 'forget' | 'fuse' | 'summary', id?: string, title?: string, value?: number, data?: any }) => void): Promise<void> {
         const engrams = await this.getMemories();
-        let decayed = 0, consolidated = 0, forgotten = 0;
+        let decayed = 0, consolidated = 0, forgotten = 0, fused = 0;
         const logs: string[] = [];
 
-        const updated = engrams.map(e => {
+        const updatedEngrams: MemoryEntry[] = [];
+
+        for (const e of engrams) {
             const oldImp = e.importance;
-            const newImp = Math.max(0, oldImp - this.DECAY_STEP);
+            // 🛡️ ANTI-POISONING PROTOCOL
+            let decayPenalty = this.DECAY_STEP;
 
-            if (newImp < oldImp) decayed++;
+            // 1. Identify Process Noise (Self-generated failure loops)
+            const isFailureLesson = e.content.toLowerCase().includes('previous attempt') || 
+                                   e.content.toLowerCase().includes('failed because') ||
+                                   e.title.toLowerCase().includes('lesson');
 
-            if (newImp < this.TIER_THRESHOLD && oldImp >= this.TIER_THRESHOLD) {
-                consolidated++;
-                logs.push(`Transition: '${e.title}' moved to Deep Memory (Handles).`);
-            } else if (newImp === 0) {
-                forgotten++;
-                logs.push(`Pruning: '${e.title}' forgotten permanently.`);
+            // 2. Identify Meta-Noise (Agent talking about its own tags)
+            const isMetaNoise = e.content.includes('<project_memory') || e.content.includes('<milestone');
+
+            if (isFailureLesson || isMetaNoise) {
+                // Decay these 5x faster. Failure context is only useful for 1-2 turns.
+                decayPenalty = this.DECAY_STEP * 5;
+
+                // If it's very old or importance is already low, drop it to zero immediately
+                if (oldImp < 40) decayPenalty = 100; 
             }
 
-            return { ...e, importance: newImp };
-        }).filter(e => e.importance > 0);
+            // 3. Persistent Facts (User provided or high importance)
+            if (e.importance >= 90) decayPenalty = 0.1; // Rule-tier engrams are nearly permanent
+
+            const newImp = Math.max(0, oldImp - decayPenalty);
+
+            if (onProgress) {
+                // Determine action for animation
+                if (newImp === 0) {
+                    onProgress({ type: 'forget', id: e.id, title: e.title });
+                    forgotten++;
+                } else if (newImp < this.TIER_THRESHOLD && oldImp >= this.TIER_THRESHOLD) {
+                    onProgress({ type: 'archive', id: e.id, title: e.title, value: newImp });
+                    consolidated++;
+                } else {
+                    onProgress({ type: 'decay', id: e.id, title: e.title, value: newImp });
+                    decayed++;
+                }
+                // Simulate neural processing time for cool visual flow
+                await new Promise(r => setTimeout(r, 150));
+            }
+
+            if (newImp > 0) {
+                updatedEngrams.push({ ...e, importance: newImp });
+            }
+        }
+
+        // 🧬 NEW PHASE: SYNAPTIC FUSION (AI CONSOLIDATION)
+        // Find "Lessons" that can be merged
+        const lessons = updatedEngrams.filter(e => e.title.toLowerCase().includes('lesson') || e.content.toLowerCase().includes('failed because'));
+
+        if (lessons.length >= 2) {
+            if (onProgress) onProgress({ type: 'fuse', title: "Consolidating Failure Patterns..." });
+
+            const lollms = (this as any).lollmsAPI || (vscode.extensions.getExtension('parisneo.lollms-vs-coder')?.exports?.lollmsAPI);
+
+            if (lollms) {
+                const fusionPrompt = `You are the Neural Architect. Consolidate these redundant technical lessons into a single, high-density "Sovereign Rule". 
+                - Strip all narrative fluff ("Previous attempt failed", "The model should").
+                - Use clear, imperative technical language.
+                - Keep the importance high.
+
+                LESSONS TO MERGE:
+                ${lessons.map(l => `- [${l.title}]: ${l.content}`).join('\n')}
+
+                OUTPUT FORMAT: JSON only: {"title": "Sovereign Rule: [Topic]", "content": "..."}`;
+
+                try {
+                    const response = await lollms.sendChat([{ role: 'system', content: fusionPrompt }]);
+                    const result = JSON.parse(response.replace(/```json|```/g, ''));
+
+                    // Create the new "Fused" memory
+                    const newId = 'rule_' + Date.now();
+                    updatedEngrams.push({
+                        id: newId,
+                        title: result.title,
+                        content: result.content,
+                        timestamp: Date.now(),
+                        importance: 95, // High initial power
+                        lastUsed: Date.now(),
+                        category: "rules",
+                        tier: 1,
+                        scope: 'local',
+                        origin: 'architect'
+                    });
+
+                    // Remove the old source lessons
+                    lessons.forEach(l => {
+                        const idx = updatedEngrams.findIndex(ue => ue.id === l.id);
+                        if (idx !== -1) updatedEngrams.splice(idx, 1);
+                    });
+
+                    fused = lessons.length;
+                    if (onProgress) onProgress({ type: 'fuse', title: `Fused ${fused} lessons into 1 Rule: "${result.title}"` });
+                } catch (err) {
+                    console.error("Fusion failed", err);
+                }
+            }
+        }
 
         // Save back
-        await this.saveEngrams(updated);
+        await this.saveEngrams(updatedEngrams);
+
+        const summary = { decayed, consolidated, forgotten, fused, total: updatedEngrams.length };
+        if (onProgress) onProgress({ type: 'summary', data: summary });
 
         // Store maintenance log
         await this.context.workspaceState.update('lollms_dream_log', {
             timestamp: Date.now(),
             events: logs
         });
-
-        return { decayed, consolidated, forgotten };
     }
 
     private async saveEngrams(engrams: MemoryEntry[]) {

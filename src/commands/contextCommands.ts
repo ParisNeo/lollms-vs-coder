@@ -13,7 +13,7 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
         let validUri: vscode.Uri | undefined;
         if (uri instanceof vscode.Uri) validUri = uri;
         else if (uri && typeof uri === 'object' && 'scheme' in uri && 'path' in uri) validUri = vscode.Uri.file(uri.path).with({ scheme: uri.scheme });
-        
+
         let validUris: vscode.Uri[] = [];
         if (Array.isArray(uris)) {
             validUris = uris.map(u => {
@@ -24,14 +24,28 @@ export function registerContextCommands(context: vscode.ExtensionContext, servic
         }
 
         const targetUris = validUris.length > 0 ? validUris : (validUri ? [validUri] : []);
-        
+
         Logger.info(`Command setContextState triggered for ${targetUris.length} files. State: ${state}`);
         if (targetUris.length > 0) {
-            await services.contextManager.getContextStateProvider()?.setStateForUris(targetUris, state);
-            
-            // Immediately refresh the current chat bubble if open
-            if (ChatPanel.currentPanel) {
-                ChatPanel.currentPanel.updateContextAndTokens();
+            const provider = services.contextManager.getContextStateProvider();
+            if (provider) {
+                // If it's an 'included' request, show progress because it's a disk-heavy recursive walk
+                if (state === 'included' && targetUris.some(u => u.fsPath.includes(path.sep))) {
+                    await vscode.window.withProgress({
+                        location: vscode.ProgressLocation.Notification,
+                        title: `Lollms: Recursively adding folder contents...`,
+                        cancellable: false
+                    }, async () => {
+                        await provider.setStateForUris(targetUris, state);
+                    });
+                } else {
+                    await provider.setStateForUris(targetUris, state);
+                }
+
+                // Immediately refresh the current chat bubble if open
+                if (ChatPanel.currentPanel) {
+                    ChatPanel.currentPanel.updateContextAndTokens();
+                }
             }
         } else {
             Logger.warn("setContextState: No valid URIs provided from command arguments.");

@@ -121,6 +121,13 @@ export class AgentManager {
             "Submit the raw command directly. For complex logic involving pipes or variables, always generate a temporary .py or .sh script first."
         );
         this.sessionState.workingMemory.push(
+            "DIAGNOSTIC: If you see 'isort server crashed', it is an Extension Host failure, NOT a code bug. MANDATORY: Do not edit user code to fix this. Tell the user to 'Reload Window' or check the Python Interpreter selection."
+        );
+        this.sessionState.workingMemory.push(
+            "LESSON: Avoid nesting shells. Do not use 'powershell -Command' or 'bash -c' inside 'execute_command'. " +
+            "Submit the raw command directly. For complex logic involving pipes or variables, always generate a temporary .py or .sh script first."
+        );
+        this.sessionState.workingMemory.push(
             "ENVIRONMENT: If 'isort' crashes (5 times in 3 minutes), the Python Environment is likely misconfigured. MANDATORY ACTION: Use 'execute_command' to run 'python --version' and 'pip show isort'."
         );
         this.sessionState.workingMemory.push(
@@ -202,7 +209,13 @@ Keep it strictly technical and extremely concise.`
         const policies = this.currentDiscussion?.capabilities?.toolPolicies || {};
         const activeIds = (this.sessionState as any).activeToolIds as Set<string> | undefined;
 
+        const attachments = this.currentDiscussion?.messages
+            .filter(m => (m as any).attachmentData).length || 0;
+
         const tools = this.toolManager.getAllTools().filter(t => {
+            // --- HIDE read_discussion_file IF NO ATTACHMENTS ---
+            if (t.name === 'read_discussion_file' && attachments === 0) return false;
+
             // If the agent is in an autonomous loop, only tools in the "equipped" active list are available.
             if (this.isActive && activeIds && !activeIds.has(t.name)) {
                 return false;
@@ -335,11 +348,27 @@ Keep it strictly technical and extremely concise.`
 
         Logger.info(`[Phase 0] Starting Pre-Flight Safety Check for: ${folder.name}`);
         
-        // Timeout protection for slow Git operations
-        const gitTimeout = new Promise<never>((_, reject) => 
-            setTimeout(() => reject(new Error("Git safety check timed out.")), 10000)
-        );
-        let isRepo = await this.gitIntegration.isGitRepo(folder);
+        // --- FIXED: Use a managed timeout helper to prevent unhandled rejections ---
+        const withTimeout = async <T>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
+            let timeoutHandle: NodeJS.Timeout;
+            const timeoutPromise = new Promise<never>((_, reject) => {
+                timeoutHandle = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+            });
+            try {
+                return await Promise.race([promise, timeoutPromise]);
+            } finally {
+                // @ts-ignore
+                clearTimeout(timeoutHandle);
+            }
+        };
+
+        let isRepo = false;
+        try {
+            isRepo = await withTimeout(this.gitIntegration.isGitRepo(folder), 10000, "Git check");
+        } catch (e: any) {
+            Logger.warn(`[Phase 0] ${e.message}. Proceeding as non-repo.`);
+            isRepo = false; 
+        }
 
         // Ensure we have a plan object to show the form in the sidebar
         if (!this.currentPlan) {
@@ -390,7 +419,17 @@ Keep it strictly technical and extremely concise.`
             if (safeChoice === 'init') {
                 this.ui.addMessageToDiscussion({ role: 'system', content: `⚙️ **Initializing Atomic Clean Repository...**` });
 
-                await Promise.race([this.runCommand('git init', signal), gitTimeout]);
+                // Use the same timeout safety for init
+                const initPromise = this.runCommand('git init', signal);
+                let timeoutHandle: NodeJS.Timeout;
+                const timeoutP = new Promise<any>((_, reject) => timeoutHandle = setTimeout(() => reject(new Error("Git init timed out")), 15000));
+                
+                try {
+                    await Promise.race([initPromise, timeoutP]);
+                } finally {
+                    // @ts-ignore
+                    clearTimeout(timeoutHandle);
+                }
 
                 const ignoreContent = [
                 "# Lollms Internal State",
@@ -517,13 +556,20 @@ Keep it strictly technical and extremely concise.`
                 }
                 this.sessionState.isSafetyCheckPassed = true;
             } else if (safeChoice === 'commit') {
+                this.ui.addMessageToDiscussion({ role: 'system', content: `⚙️ **Backing up workspace...**` });
+
+                // Fetch commit message but skip the manual staging modal
                 const msg = await this.gitIntegration.generateCommitMessage(folder);
                 const finalMsg = msg?.trim() || "Genie: pre-flight backup";
-                await this.gitIntegration.commitWithMessage(finalMsg, folder);
-                this.completedActionsHistory.push(`[GIT] 💾 COMMITTED: Permanent backup created with message: "${finalMsg}"`);
+
+                // Bypass UI entirely
+                await this.gitIntegration.stageAllAndCommit(finalMsg, folder);
+
+                this.completedActionsHistory.push(`[GIT] 💾 COMMITTED ALL: Permanent backup created with message: "${finalMsg}"`);
+
                 const stillDirty = !(await this.gitIntegration.isClean(folder));
                 if (stillDirty) {
-                    this.ui.addMessageToDiscussion({ role: 'system', content: `❌ **Commit failed** — working tree still dirty. Aborting for safety.` });
+                    this.ui.addMessageToDiscussion({ role: 'system', content: `❌ **Commit failed** — Workspace still contains changes. Aborting.` });
                     return false;
                 }
                 this.sessionState.isSafetyCheckPassed = true;
@@ -542,11 +588,11 @@ Keep it strictly technical and extremely concise.`
 
         if (!currentBranch.startsWith('ai-task-')) {
             const branchName = `ai-task-${Date.now()}`;
-            this.ui.addMessageToDiscussion({ role: 'system', content: `🛡️ **Safety Protocol**: Creating isolated branch \`${branchName}\`...` });
             await this.gitIntegration.createAndCheckoutBranch(folder, branchName);
             this.completedActionsHistory.push(`[GIT] 🌿 BRANCHED: Switched from \`${currentBranch}\` to isolated workspace \`${branchName}\`.`);
         } else {
-            this.ui.addMessageToDiscussion({ role: 'system', content: `ℹ️ Already on isolated branch \`${currentBranch}\`.` });
+            // Log to timeline only
+            this.completedActionsHistory.push(`[GIT] ℹ️ Persistence: Already on isolated branch \`${currentBranch}\`.`);
         }
 
         this.sessionState.isSafetyCheckPassed = true;
@@ -750,11 +796,22 @@ Please commit or stash your work before starting an iterative debug session to e
             const includedFiles = this.contextManager.getContextStateProvider()?.getIncludedFiles() || [];
             const inventory = includedFiles.length > 0 
                 ? includedFiles.map(f => `- ${f.path} [${f.state === 'included' ? 'FULL CONTENT LOADED' : 'DEFINITIONS ONLY'}]`).join('\n')
-                : "No file content loaded yet.";
+                : "No project files loaded into memory yet.";
+
+            // --- IMPORTED DISCUSSION DATA (PDFs/Web) ---
+            const attachments = this.currentDiscussion?.messages
+                .filter(m => (m as any).attachmentData)
+                .map(m => (m as any).attachmentData.name) || [];
+
+            const discussionFilesBlock = attachments.length > 0 
+                ? `\n### 📚 IMPORTED DISCUSSION DATA (ATTACHMENTS)\n` + 
+                  attachments.map(name => `- ${name} (Use 'read_discussion_file' to see content)`).join('\n')
+                : "";
 
             const historyContext = `
             ### 📦 ACTIVE CONTEXT INVENTORY
             ${inventory}
+            ${discussionFilesBlock}
             **STRICT RULE**: Do NOT use 'read_file' or 'read_files' for anything listed above. Use the provided content directly.
 
             ### 🕒 MISSION TIMELINE (EXECUTED ACTIONS)
@@ -1001,13 +1058,8 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
 
                     if (currentRetries < editBudget) {
                         this.taskEditRetries.set(task.id, currentRetries + 1);
+                        // Log to timeline only to keep chat clean
                         this.completedActionsHistory.push(`[REPAIR ATTEMPT ${currentRetries + 1}] Target: ${task.parameters.file_path || 'unknown'}. Error: ${result.output}`);
-
-                        // Shake the agent with a failure notification
-                        this.ui.addMessageToDiscussion({ 
-                            role: 'system', 
-                            content: `🔧 **Edit Failed:** ${result.output.substring(0, 100)}... Retrying (Budget: ${currentRetries + 1}/${editBudget})` 
-                        });
 
                         // We remove the failed task from the list so the agent re-proposes it in the next loop iteration
                         this.currentPlan!.tasks.pop(); 
@@ -1731,7 +1783,17 @@ Please provide a clear, concise final response to the user summarizing the outco
             const isCodeEdit = ['edit_code', 'generate_code', 'markdown_coding'].includes(task.action);
             const reflectionPrompt = this.failureMemory.getReflectionPrompt(task.action, resolvedParams);
 
-            if (reflectionPrompt || (isCodeEdit && result.success)) {
+            // --- MEMORY POLLUTION GUARD ---
+            // Check current memory weight before allowing the Historian to add more "Lessons"
+            const currentMemories = await this.projectMemoryManager.getMemories();
+            const workingMemTokens = currentMemories
+                .filter((m: any) => m.importance >= 25)
+                .reduce((acc: number, m: any) => acc + (m.content.length / 4), 0);
+
+            const limit = (await this.lollmsApi.getContextSize()).context_size;
+            const isMemoryFull = (workingMemTokens / limit) > 0.15; // Cap lessons at 15% of context
+
+            if (!isMemoryFull && (reflectionPrompt || (isCodeEdit && result.success))) {
                 this.ui.updateGeneratingState();
 
                 const artifactPrompt = reflectionPrompt 

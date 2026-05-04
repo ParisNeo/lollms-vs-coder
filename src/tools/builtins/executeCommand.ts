@@ -22,6 +22,11 @@ export const executeCommandTool: ToolDefinition = {
         const timeoutMs = params.timeout_s ? params.timeout_s * 1000 : 900000; // 15 minute default
 
         // MITIGATION: Prevent the agent from accidentally staging internal extension files
+        if (params.command === "workbench.action.reloadWindow") {
+            await vscode.commands.executeCommand(params.command);
+            return { success: true, output: "Window reload triggered." };
+        }
+
         if (params.command.includes("git add") && !params.command.includes(".gitignore")) {
             const warning = "\n[SYSTEM ADVICE]: You are using 'git add'. Ensure you have a proper .gitignore to avoid staging internal folders like .lollms/ or venv/.";
             const result = await (env.agentManager as any).runCommand(params.command, signal, { shell: params.shell, timeoutMs });

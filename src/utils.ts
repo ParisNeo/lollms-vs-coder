@@ -171,7 +171,6 @@ export interface DiscussionCapabilities {
     folderSettings?: Record<string, { tree: boolean, content: boolean }>;
     autoSkillMode: boolean;
     contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
-    disableProjectContext: boolean;
     projectMemoryEnabled: boolean;
     temperature: number;
     ttftTimeout: number;
@@ -575,7 +574,7 @@ export async function getProcessedSystemPrompt(
     const envAwareness = await getEnvironmentAwarenessBlock();
 
     // CALL THE TEMPLATE BUILDER
-    return PromptTemplates.build(
+    const basePrompt = PromptTemplates.build(
         promptType, 
         finalPersona, 
         memory, 
@@ -583,8 +582,16 @@ export async function getProcessedSystemPrompt(
         capabilities, 
         forceFullCode, 
         context
-    ) + "\n" + envAwareness;
-}
+    );
+
+    // 🛡️ PROTOCOL GATE: Ensure Agentic Tools never leak to the Architect
+    // Standard Architects only use <add_files_to_context>.
+    // Autonomous Agents (Genie) use JSON tool calls.
+    const isAutonomous = capabilities?.agentMode === true || promptType === 'agent';
+    const toolInstructions = isAutonomous ? "" : "\n### 🛑 ARCHITECT RESTRICTION\nYou are NOT an autonomous agent. You are FORBIDDEN from using tool calls like <read_file> or JSON snippets. If you need to see a file that is not in your context, you MUST use the <add_files_to_context> tag.\n";
+
+    return basePrompt + toolInstructions + "\n" + envAwareness;
+    }
 
 export function stripAnsiCodes(text: string): string {
     // eslint-disable-next-line no-control-regex

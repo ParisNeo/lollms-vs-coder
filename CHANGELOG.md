@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-05-04 00:23]
+
+- refactor(core): bump v0.8.57 with chat UI, tool system and context management overhaul
+
 ## [2026-05-03 14:06]
 
 - fix(agent): improve context amnesia detection and failure recovery messaging

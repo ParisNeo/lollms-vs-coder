@@ -529,7 +529,6 @@ export class ContextManager {
     const enableVision = options?.capabilities?.enableImages !== false;
     const includeTree = options?.includeTree !== false;
     const folderSettings = options?.capabilities?.folderSettings || {};
-    const isGlobalMuted = this.context.workspaceState.get<boolean>('lollms_global_context_muted', false);
 
     if (!this.contextStateProvider || !vscode.workspace.workspaceFolders || vscode.workspace.workspaceFolders.length === 0) {
       result.text = this.getNoWorkspaceMessage();
@@ -620,7 +619,7 @@ export class ContextManager {
       if (signal?.aborted) throw new Error("Operation cancelled");
 
       const settings = folderSettings[folder.uri.toString()] || { tree: true, content: true };
-      if (isGlobalMuted || (!settings.tree && !settings.content)) continue;
+      if (!settings.tree && !settings.content) continue;
 
       const projectName = folder.name;
 

@@ -44,7 +44,14 @@ export class ProjectMemoryPanel {
                         await this.manager.updateMemory('add', id, msg.title, msg.content, "general", msg.importance);
                         vscode.window.showInformationMessage(`Lollms: New memory "${msg.title}" created.`);
                         break;
-                }
+                    case 'force_dream':
+                        await this.manager.performDreamCycle((event) => {
+                            this._panel.webview.postMessage({ command: 'dream_event', event });
+                        });
+                        // Final refresh of the static list
+                        this._update();
+                        break;
+                    }
             } catch (e: any) {
                 vscode.window.showErrorMessage(`Failed to manage memory: ${e.message}`);
             }
@@ -118,10 +125,89 @@ export class ProjectMemoryPanel {
                     --card-bg: var(--vscode-editorWidget-background);
                     --input-bg: var(--vscode-input-background);
                     --border: var(--vscode-widget-border);
+                    --dream-color: #9b59b6;
                 }
-                body { font-family: var(--vscode-font-family); color: var(--vscode-editor-foreground); padding: 25px; background: var(--vscode-editor-background); margin: 0; }
+                body { font-family: var(--vscode-font-family); color: var(--vscode-editor-foreground); padding: 25px; background: var(--vscode-editor-background); margin: 0; overflow-x: hidden; }
+
+                /* 🌪️ THE NEURAL ARENA (DREAM OVERLAY) */
+                #dream-overlay {
+                    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+                    background: rgba(0, 0, 0, 0.7);
+                    backdrop-filter: blur(8px);
+                    z-index: 500;
+                    display: none;
+                    flex-direction: column;
+                    align-items: center;
+                    justify-content: center;
+                    color: white;
+                    text-align: center;
+                }
+
+                .dream-brain {
+                    width: 200px; height: 200px;
+                    background: radial-gradient(circle, var(--dream-color) 0%, transparent 70%);
+                    border-radius: 50%;
+                    filter: blur(20px);
+                    animation: brain-throb 3s infinite ease-in-out;
+                    margin-bottom: 30px;
+                    display: flex; align-items: center; justify-content: center;
+                }
+
+                @keyframes brain-throb {
+                    0%, 100% { transform: scale(1); opacity: 0.5; }
+                    50% { transform: scale(1.3); opacity: 0.8; }
+                }
+
+                .dream-log {
+                    max-width: 400px;
+                    height: 100px;
+                    overflow: hidden;
+                    font-family: 'Courier New', monospace;
+                    font-size: 12px;
+                    opacity: 0.8;
+                }
+
+                /* 🧬 ANIMATED MEMORY STATES */
+                .memory-card { 
+                    transition: all 0.5s cubic-bezier(0.175, 0.885, 0.32, 1.275); 
+                }
+
+                .memory-card.decaying {
+                    transform: scale(0.98);
+                    opacity: 0.7;
+                    border-color: var(--dream-color) !important;
+                }
+
+                .memory-card.forgetting {
+                    transform: translateX(100px) rotate(15deg);
+                    opacity: 0;
+                    filter: blur(10px);
+                }
+
+                .memory-card.archiving {
+                    transform: translateY(200px) scale(0.5);
+                    opacity: 0;
+                }
+
+                .memory-card.reinforcing {
+                    animation: reinforce-pulse 0.5s ease-out;
+                    box-shadow: 0 0 20px var(--vscode-charts-green);
+                }
+
+                .memory-card.fusing {
+                    transform: scale(1.2);
+                    filter: brightness(2) blur(5px);
+                    box-shadow: 0 0 50px var(--dream-color);
+                    z-index: 1000;
+                }
+
+                @keyframes reinforce-pulse {
+                    0% { transform: scale(1); }
+                    50% { transform: scale(1.05); }
+                    100% { transform: scale(1); }
+                }
+
                 .header-sticky { position: sticky; top: 0; background: var(--vscode-editor-background); padding-bottom: 15px; border-bottom: 1px solid var(--vscode-panel-border); margin-bottom: 25px; z-index: 100; display: flex; justify-content: space-between; align-items: center; }
-                
                 h2 { margin: 0; font-size: 18px; font-weight: 400; display: flex; align-items: center; gap: 10px; }
                 h3 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; opacity: 0.5; margin: 30px 0 15px 0; border-bottom: 1px dashed var(--border); padding-bottom: 5px; }
 
@@ -192,16 +278,74 @@ export class ProjectMemoryPanel {
                 ${deepMemory.length === 0 ? '<div class="empty-hint">No facts archived in deep memory.</div>' : deepMemory.map(renderMemoryCard).join('')}
             </div>
 
+            <div id="dream-overlay">
+                <div class="dream-brain">
+                    <i class="codicon codicon-circuit-board" style="font-size: 60px; color: white;"></i>
+                </div>
+                <h1 style="margin: 0; letter-spacing: 4px;">REORGANIZING SYNAPSES</h1>
+                <p id="dream-status">Consolidating neural engrams...</p>
+                <div id="dream-progress-log" class="dream-log"></div>
+            </div>
+
             <script>
                 const vscode = acquireVsCodeApi();
                 const newForm = document.getElementById('new-memory-form');
+                const overlay = document.getElementById('dream-overlay');
+                const log = document.getElementById('dream-progress-log');
+                const status = document.getElementById('dream-status');
+
+                function addLog(text) {
+                    const div = document.createElement('div');
+                    div.textContent = "> " + text;
+                    log.prepend(div);
+                }
 
                 document.getElementById('dream-btn').onclick = () => {
-                    const btn = document.getElementById('dream-btn');
-                    btn.innerHTML = '<i class="codicon codicon-loading spin"></i> Dreaming...';
-                    btn.disabled = true;
+                    overlay.style.display = 'flex';
+                    log.innerHTML = '';
+                    addLog("Dream sequence initiated...");
                     vscode.postMessage({ command: 'force_dream' });
                 };
+
+                window.addEventListener('message', event => {
+                    const m = event.data;
+                    if (m.command === 'dream_event') {
+                        const ev = m.event;
+                        const card = document.querySelector(\`.memory-card[data-id="\${ev.id}"]\`);
+
+                        switch (ev.type) {
+                            case 'decay':
+                                addLog(\`Decaying importance of "\${ev.title}" to \${Math.round(ev.value)}%\`);
+                                if (card) card.classList.add('decaying');
+                                break;
+                            case 'archive':
+                                addLog(\`ARCHIVING: "\${ev.title}" moved to deep storage.\`);
+                                if (card) card.classList.add('archiving');
+                                break;
+                            case 'forget':
+                                const isNoise = ev.title.toLowerCase().includes('lesson') || ev.title.toLowerCase().includes('attempt');
+                                addLog(isNoise ? \`PURGING POISON: Redundant loop "\${ev.title}" destroyed.\` : \`PRUNING: "\${ev.title}" erased from memory.\`);
+                                if (card) card.classList.add('forgetting');
+                                break;
+                            case 'fuse':
+                                addLog(\`🧬 FUSION: \${ev.title}\`);
+                                status.textContent = "Synthesizing High-Density Rules...";
+                                document.querySelectorAll('.memory-card').forEach(c => {
+                                    if(c.textContent.toLowerCase().includes('lesson')) c.classList.add('fusing');
+                                });
+                                break;
+                            case 'summary':
+                                status.textContent = "Cognitive Maintenance Complete.";
+                                addLog(\`Finished: Decayed \${ev.data.decayed}, Archived \${ev.data.consolidated}, Pruned \${ev.data.forgotten}.\`);
+                                setTimeout(() => {
+                                    overlay.style.display = 'none';
+                                    document.getElementById('dream-btn').disabled = false;
+                                    document.getElementById('dream-btn').innerHTML = '<i class="codicon codicon-cloud"></i> Dream Session';
+                                }, 2500);
+                                break;
+                        }
+                    }
+                });
 
                 document.getElementById('show-add-btn').onclick = () => {
                     newForm.style.display = 'block';

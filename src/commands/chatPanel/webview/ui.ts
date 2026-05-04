@@ -522,6 +522,13 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string, s
     // Update internal state
     state.isGenerating = isGenerating;
 
+    // Toggle global "Genie Presence" class
+    if (state.capabilities?.agentMode) {
+        document.body.classList.add('agent-mode-active');
+    } else {
+        document.body.classList.remove('agent-mode-active');
+    }
+
     const raiseHandBtn = document.getElementById('raiseHandButton');
     if (raiseHandBtn) {
         // Force visibility based on the flag provided by the extension
@@ -529,6 +536,8 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string, s
     }
 
     if (statusText) {
+        const topStatus = document.getElementById('status-text');
+        if (topStatus) topStatus.textContent = statusText;
         if (dom.statusText) dom.statusText.textContent = statusText;
         
         // --- STEP TIMELINE LOGIC ---
@@ -565,6 +574,18 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string, s
 
     if (dom.generatingOverlay) {
         dom.generatingOverlay.style.display = isGenerating ? 'flex' : 'none';
+        
+        // --- INJECT HIGH-FIDELITY ORB ---
+        const orbContainer = dom.generatingOverlay.querySelector('.ai-orb-container');
+        if (orbContainer) {
+            orbContainer.innerHTML = `
+                <div class="genie-orb-portal">
+                    <div class="orb-ring-outer"></div>
+                    <div class="orb-ring-inner"></div>
+                    <div class="orb-core"></div>
+                </div>
+            `;
+        }
         const statusEl = document.getElementById('generating-status-text');
         const raiseHandBtn = document.getElementById('raiseHandButton');
 
@@ -625,6 +646,34 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string, s
         dom.scrollToBottomBtn.style.display = 'none';
         if (dom.inputArea) dom.inputArea.classList.add('disabled');
     }
+}
+
+/**
+ * Detects if the menu will go off-screen and flips it if necessary.
+ */
+function adjustMenuPosition(trigger: HTMLElement, menu: HTMLElement) {
+    // Reset classes first
+    menu.classList.remove('open-up');
+
+    // Temporarily show to measure
+    menu.style.display = 'flex';
+    menu.style.visibility = 'hidden';
+
+    const menuRect = menu.getBoundingClientRect();
+    const triggerRect = trigger.getBoundingClientRect();
+    const viewportHeight = window.innerHeight;
+
+    // Check if opening DOWN would hit the bottom of the screen
+    const spaceBelow = viewportHeight - triggerRect.bottom;
+    const needsFlip = spaceBelow < menuRect.height && triggerRect.top > menuRect.height;
+
+    if (needsFlip) {
+        menu.classList.add('open-up');
+    }
+
+    // Restore state
+    menu.style.display = '';
+    menu.style.visibility = '';
 }
 
 function createToggleBadge(
@@ -773,8 +822,8 @@ function openProfileEditor(idx: number = -1) {
 }
 
 export function updateBadges() {
-    const container = dom.activeBadges;
-    const dashboard = document.getElementById('badge-dashboard-panel');
+    // RESILIENT TARGETING: Look for the container in the Fused Dashboard
+    const container = document.getElementById('active-badges');
     if (!container || !state.capabilities) return;
 
     const caps = state.capabilities;
@@ -782,11 +831,13 @@ export function updateBadges() {
 
     const isAgentMode = caps.agentMode === true;
 
-    // --- GROUP A: INFRASTRUCTURE (Environment & Git) ---
-    if (true) { // Always show Infra, but change content based on mode
+    // Set high-level presence on body for HUD-aware styling
+    document.body.classList.toggle('agent-mode-active', isAgentMode);
+
+    // --- GROUP A: INFRASTRUCTURE ---
+    if (true) {
         const infraGroup = document.createElement('div');
         infraGroup.className = 'badge-group';
-        infraGroup.innerHTML = '<span class="badge-group-label">INFRA</span>';
         container.appendChild(infraGroup);
 
         // Model Badge
@@ -841,10 +892,13 @@ export function updateBadges() {
 
             pBadge.onclick = (e) => {
                 e.stopPropagation();
-                document.querySelectorAll('.custom-menu').forEach(m => {
-                    if (m.id !== 'personality-menu') m.classList.remove('visible');
-                });
-                menu.classList.toggle('visible');
+                const isOpening = !menu.classList.contains('visible');
+                document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
+
+                if (isOpening) {
+                    adjustMenuPosition(pBadge, menu);
+                    menu.classList.add('visible');
+                }
             };
 
             wrapper.appendChild(pBadge);
@@ -988,10 +1042,13 @@ export function updateBadges() {
 
         modeBadge.onclick = (e) => {
             e.stopPropagation();
-             document.querySelectorAll('.custom-menu').forEach(m => {
-                if (m.id !== 'profile-menu') m.classList.remove('visible');
-            });
-            menu.classList.toggle('visible');
+            const isOpening = !menu.classList.contains('visible');
+            document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
+
+            if (isOpening) {
+                adjustMenuPosition(modeBadge, menu);
+                menu.classList.add('visible');
+            }
         };
 
         wrapper.appendChild(modeBadge);
@@ -1005,7 +1062,6 @@ export function updateBadges() {
     if (!caps.agentMode) {
     const thinkingGroup = document.createElement('div');
     thinkingGroup.className = 'badge-group';
-    thinkingGroup.innerHTML = '<span class="badge-group-label">Logic</span>';
     container.appendChild(thinkingGroup);
 
     const thinkBadge = createToggleBadge(
@@ -1034,7 +1090,6 @@ export function updateBadges() {
     if (guiState.agentBadge || (!isAgentMode && (guiState.debugBadge || caps.herdMode || caps.testMode))) {
         const taskGroup = document.createElement('div');
         taskGroup.className = 'badge-group';
-        taskGroup.innerHTML = `<span class="badge-group-label">${isAgentMode ? 'GENIE' : 'TASK'}</span>`;
         container.appendChild(taskGroup);
 
         // --- NEW: AGENT MISSION PROFILE SELECTOR ---
@@ -1082,9 +1137,13 @@ export function updateBadges() {
 
                 genieBadge.onclick = (e) => {
                     e.stopPropagation();
-                    const isVisible = menu.classList.contains('visible');
+                    const isOpening = !menu.classList.contains('visible');
                     document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
-                    if (!isVisible) menu.classList.add('visible');
+
+                    if (isOpening) {
+                        adjustMenuPosition(genieBadge, menu);
+                        menu.classList.add('visible');
+                    }
                 };
 
                 wrapper.appendChild(genieBadge);
@@ -1212,7 +1271,6 @@ export function updateBadges() {
     if (!isAgentMode && (guiState.autoContextBadge || guiState.autoSkillBadge !== false || guiState.webSearchBadge !== false)) {
         const knowledgeGroup = document.createElement('div');
         knowledgeGroup.className = 'badge-group';
-        knowledgeGroup.innerHTML = '<span class="badge-group-label">Knowledge</span>';
         container.appendChild(knowledgeGroup);
 
         const memBadge = createToggleBadge(
@@ -1250,63 +1308,25 @@ export function updateBadges() {
 
             const folders = (window as any).workspaceFolders || [];
             const settings = caps.folderSettings || {};
-            let mutedCount = 0;
+            let totalActive = 0;
             folders.forEach(f => {
                 const s = settings[f.uri.toString()];
-                if (s && s.content === false) mutedCount++;
+                if (!s || s.content !== false || s.tree !== false) totalActive++;
             });
 
-            // A discussion is "Muted" only if the global flag is ON AND no individual folders are active.
-            // If the user enabled folders in the matrix, they clearly want context.
-            const isFullyMuted = caps.disableProjectContext && (mutedCount === folders.length || folders.length === 0);
-            const isPartiallyMuted = mutedCount > 0 && mutedCount < folders.length;
+            const isRestricted = totalActive < folders.length;
 
-            if (isFullyMuted) {
-                ctxBadge.classList.remove('inactive');
+            if (totalActive === 0) {
                 ctxBadge.classList.add('active');
                 ctxBadge.style.setProperty('background-color', 'var(--vscode-charts-red)', 'important');
-                ctxBadge.style.setProperty('color', 'white', 'important');
-                if (label) label.textContent = '🧠 Context Muted';
-                if (toggle) {
-                    toggle.classList.remove('codicon-pass-filled', 'codicon-circle-large-outline');
-                    toggle.classList.add('codicon-mute');
-                }
-            } else if (isPartiallyMuted) {
-                ctxBadge.classList.remove('inactive');
+                if (label) label.textContent = '🧠 Matrix Offline';
+            } else if (isRestricted) {
                 ctxBadge.classList.add('active');
                 ctxBadge.style.setProperty('background-color', 'var(--vscode-charts-orange)', 'important');
-                ctxBadge.style.setProperty('color', 'white', 'important');
-                ctxBadge.classList.remove('inactive');
-                ctxBadge.classList.add('active');
-                ctxBadge.style.setProperty('background-color', 'var(--vscode-charts-orange)', 'important');
-                ctxBadge.style.setProperty('color', 'white', 'important');
-                if (label) label.textContent = `🧠 Partial Scope (${folders.length - mutedCount}/${folders.length})`;
-                if (toggle) {
-                    toggle.classList.remove('codicon-mute', 'codicon-circle-large-outline');
-                    toggle.classList.add('codicon-pass-filled');
-                }
-                } else {
-                ctxBadge.style.removeProperty('background-color');
-                ctxBadge.style.removeProperty('color');
-
-                if (caps.autoContextMode) {
-                    ctxBadge.classList.remove('inactive');
-                    ctxBadge.classList.add('active');
-                    if (toggle) {
-                        toggle.classList.remove('codicon-circle-large-outline', 'codicon-mute');
-                        toggle.classList.add('codicon-pass-filled');
-                    }
-                } else {
-                    ctxBadge.classList.remove('active');
-                    ctxBadge.classList.add('inactive');
-                    if (toggle) {
-                        toggle.classList.remove('codicon-pass-filled', 'codicon-mute');
-                        toggle.classList.add('codicon-circle-large-outline');
-                    }
-                }
-
+                if (label) label.textContent = `🧠 Selective (${totalActive}/${folders.length})`;
+            } else {
                 if (label) label.textContent = '🧠 Librarian';
-                ctxBadge.title = caps.autoContextMode ? "Librarian Active (Click to disable, Right-click to run manually)" : "Librarian Inactive (Click to enable)";
+                ctxBadge.style.removeProperty('background-color');
             }
             knowledgeGroup.appendChild(ctxBadge);
         }
@@ -1434,30 +1454,14 @@ export function updateBadges() {
 
         badge.onclick = (e) => {
             e.stopPropagation();
-            document.querySelectorAll('.custom-menu').forEach(m => {
-                if (m.id !== 'git-menu') m.classList.remove('visible');
-            });
-            menu.classList.toggle('visible');
-        };
-        }
+            const isOpening = !menu.classList.contains('visible');
+            document.querySelectorAll('.custom-menu').forEach(m => m.classList.remove('visible'));
 
-        // --- RE-SIZE DISCUSSION SPACE ---
-        if (dashboard) {
-            const hasContent = container.children.length > 0;
-            const chevron = document.getElementById('dashboard-chevron');
-            const isUserCollapsed = chevron?.classList.contains('codicon-chevron-down');
-
-            // If there is no content, we force hide it regardless of chevron to save space
-            if (!hasContent) {
-                dashboard.classList.add('hidden-state');
-                if (chevron) {
-                    chevron.classList.remove('codicon-chevron-up');
-                    chevron.classList.add('codicon-chevron-down');
-                }
-            } else if (!isUserCollapsed) {
-                // Only show if there is content AND the user didn't manually collapse it
-                dashboard.classList.remove('hidden-state');
+            if (isOpening) {
+                adjustMenuPosition(badge, menu);
+                menu.classList.add('visible');
             }
+        };
         }
         }
 }
@@ -2414,8 +2418,8 @@ export function updateProgressBar(container: HTMLElement | null, current: number
 
     if (segments && total > 0) {
         container.innerHTML = '';
-        // Add 'skills' to the visual segments list
-        const types = ['system', 'tree', 'skills', 'files', 'history', 'images'];
+        // Add 'memory' to the visual segments list
+        const types = ['system', 'tree', 'skills', 'memory', 'files', 'history', 'images'];
 
         types.forEach(type => {
             const count = segments[type] || 0;
@@ -2449,6 +2453,9 @@ export function updateProgressBar(container: HTMLElement | null, current: number
                 </div>
                 <div class="legend-item" data-type="skills" title="View Active Skills">
                     <div class="legend-dot segment-skills"></div>Skills
+                </div>
+                <div class="legend-item" data-type="memory" title="View Project Memory">
+                    <div class="legend-dot segment-memory"></div>Memory
                 </div>
                 <div class="legend-item" data-type="files" title="View Detailed File Usage">
                     <div class="legend-dot segment-files"></div>Files

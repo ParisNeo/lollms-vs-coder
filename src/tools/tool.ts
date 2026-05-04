@@ -18,6 +18,8 @@ export interface Task {
     agent_files?: string[]; 
     dependencies?: number[]; 
     status: 'pending' | 'in_progress' | 'completed' | 'failed';
+    progress?: number; // 0 to 100
+    current_substep?: string; // e.g. "Downloading package 3/10..."
     result: string | null;
     memory_delta?: {
         variables?: Record<string, any>;

@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.8.56",
+  "version": "0.8.57",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -1494,9 +1494,19 @@
           "when": "lollms:activeTab == lab && workspaceFolderCount > 0"
         },
         {
-          "id": "lollmsRLMView",
-          "name": "RLM Database",
-          "when": "lollms:activeTab == lab"
+            "id": "lollmsRLMView",
+            "name": "RLM Database",
+            "when": "lollms:activeTab == lab"
+        },
+        {
+            "id": "lollmsDevToolsView",
+            "name": "Developer: Tool Tester",
+            "when": "lollms:activeTab == developer"
+        },
+        {
+          "id": "lollmsGenieToolsView",
+          "name": "Genie Toolbelt (Dynamic)",
+          "when": "lollms:activeTab == chat && lollms:agentModeActive"
         },
         {
           "id": "lollmsActionsView",

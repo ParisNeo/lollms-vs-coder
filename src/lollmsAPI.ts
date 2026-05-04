@@ -504,47 +504,80 @@ export class LollmsAPI {
   }
 
 public async editImage(prompt: string, imageBase64: string, maskBase64?: string, model?: string, token?: vscode.CancellationToken): Promise<string> {
-  if (!this.baseUrl) throw new Error("Lollms API URL is not configured correctly.");
+    if (!this.baseUrl) throw new Error("Lollms API URL is not configured correctly.");
 
-  const url = `${this.baseUrl}/v1/images/edit`;
-  const isHttps = url.startsWith('https');
+    const url = `${this.baseUrl}/v1/images/edits`;
+    const isHttps = url.startsWith('https');
 
-  const requestBody = {
-      prompt,
-      image: imageBase64,
-      mask: maskBase64,
-      model: model
-  };
+    // Manual conversion from Data URI to Buffer (Node.js compatible)
+    const dataUriToBuffer = (dataUri: string) => {
+        const base64Data = dataUri.split(',')[1];
+        return Buffer.from(base64Data, 'base64');
+    };
 
-  const controller = new AbortController();
-  if (token) token.onCancellationRequested(() => controller.abort());
+    const FormData = require('form-data');
+    const formData = new FormData();
+    formData.append('prompt', prompt);
 
-  try {
-      const response = await fetch(url, {
-          method: 'POST',
-          headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${this.config.apiKey}`
-          },
-          body: JSON.stringify(requestBody),
-          signal: controller.signal,
-          agent: isHttps ? this.httpsAgent : undefined
-      });
+    // Convert main image to Buffer. 
+    // Explicitly using form-data's append for Node.js compatibility.
+    const imageBuffer = dataUriToBuffer(imageBase64);
+    formData.append('image', imageBuffer, {
+        filename: 'source.png',
+        contentType: 'image/png',
+        knownLength: imageBuffer.length
+    });
 
-      if (!response.ok) {
-          const err = await response.text();
-          throw new Error(`Image Edit Error: ${response.status} - ${err}`);
-      }
+    if (maskBase64) {
+        const maskBuffer = dataUriToBuffer(maskBase64);
+        formData.append('mask', maskBuffer, {
+            filename: 'mask.png',
+            contentType: 'image/png',
+            knownLength: maskBuffer.length
+        });
+    }
 
-      const data = await response.json() as ImageGenerationResponse;
-      if (data.data && data.data[0]?.b64_json) {
-          return data.data[0].b64_json;
-      }
-      throw new Error('API did not return image data.');
-  } catch (error: any) {
-      if (error.name === 'AbortError') throw new Error("Image edit timed out or was cancelled.");
-      throw error;
-  }
+    if (model) {
+        formData.append('model', model);
+    }
+
+    // Default response format to match your server's default
+    formData.append('response_format', 'b64_json');
+
+    const controller = new AbortController();
+    if (token) token.onCancellationRequested(() => controller.abort());
+
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${this.config.apiKey}`,
+                ...formData.getHeaders() // CRITICAL: Standard node fetch needs the boundary from form-data
+            },
+            body: formData,
+            signal: controller.signal,
+            agent: isHttps ? this.httpsAgent : undefined
+        });
+
+        if (!response.ok) {
+            const err = await response.text();
+            throw new Error(`Image Edit Error: ${response.status} - ${err}`);
+        }
+
+        const data = await response.json() as ImageGenerationResponse;
+        
+        // Handle OpenAI format response: { data: [ { b64_json: "..." } ] }
+        if (data.data && data.data[0]) {
+            const result = data.data[0];
+            if (result.b64_json) return result.b64_json;
+            if (result.url) return result.url; // Fallback if server returned URL
+        }
+        
+        throw new Error('API did not return recognizable image data.');
+    } catch (error: any) {
+        if (error.name === 'AbortError') throw new Error("Image edit timed out or was cancelled.");
+        throw error;
+    }
 }
 
 public async generateImage(prompt: string, options?: { size?: string, quality?: 'standard' | 'hd' }, token?: vscode.CancellationToken): Promise<string> {
@@ -807,12 +840,20 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
 
 
     try {
+        // --- DEFENSIVE CONNECTION GUARD ---
+        // If underlying vscode channels are crashing (like isort), fetch might throw 
+        // a "connection disposed" error before even starting.
         const response = await fetch(url, {
             method: 'POST',
             headers,
             body: JSON.stringify(body),
             signal: controller.signal,
             agent: url.startsWith('https') ? this.httpsAgent : undefined
+        }).catch(err => {
+            if (err.message?.includes('disposed')) {
+                throw new Error("Local VS Code extension host is unstable (see isort errors). Please reload window.");
+            }
+            throw err;
         });
 
         if (!response.ok) {

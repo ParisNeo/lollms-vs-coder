@@ -40,13 +40,13 @@ export class ActionsTreeProvider implements vscode.TreeDataProvider<ActionItem> 
         const actions: ActionItem[] = [];
 
         if (hasWorkspace) {
-            actions.push(new ActionItem(l.t('label.lollmsStudio'), 'lollms-vs-coder.openStudio', 'beaker', l.t('tooltip.openStudio')));
-            actions.push(new ActionItem(l.t('label.cveBuilder'), 'lollms-vs-coder.openCveBuilder', 'shield', l.t('tooltip.cveBuilder')));
-            actions.push(new ActionItem(l.t('label.fixAllErrors'), 'lollms-vs-coder.fixAllErrors', 'zap', l.t('tooltip.fixAllErrors')));
-            actions.push(new ActionItem(l.t('label.copyErrors'), 'lollms-vs-coder.copyAllErrors', 'clippy', l.t('tooltip.copyErrors')));
-            actions.push(new ActionItem(l.t('label.deepSearch'), 'lollms-vs-coder.showFileSearch', 'search', l.t('tooltip.deepSearch')));
-            actions.push(new ActionItem(l.t('label.generateNotebook'), 'lollms-vs-coder.generateEducativeNotebookFromAction', 'book', l.t('tooltip.generateNotebook')));
-            actions.push(new ActionItem(l.t('label.showLog'), 'lollms-vs-coder.showLog', 'output', l.t('tooltip.showLog')));
+            actions.push(new ActionItem(vscode.l10n.t('Lollms Studio (Skills/Personas)'), 'lollms-vs-coder.openStudio', 'beaker', 'Open the building studio'));
+            actions.push(new ActionItem(vscode.l10n.t('CVE Report Builder'), 'lollms-vs-coder.openCveBuilder', 'shield', 'Build a vulnerability report'));
+            actions.push(new ActionItem(vscode.l10n.t('Fix All Workspace Errors'), 'lollms-vs-coder.fixAllErrors', 'zap', 'Autonomous repair loop'));
+            actions.push(new ActionItem(vscode.l10n.t('Copy All Problems'), 'lollms-vs-coder.copyAllErrors', 'clippy', 'Copy error list to clipboard'));
+            actions.push(new ActionItem(vscode.l10n.t('Deep Workspace Search'), 'lollms-vs-coder.showFileSearch', 'search', 'Search code content'));
+            actions.push(new ActionItem(vscode.l10n.t('Generate Tutorial Notebook'), 'lollms-vs-coder.generateEducativeNotebookFromAction', 'book', 'Generate ipynb file'));
+            actions.push(new ActionItem(vscode.l10n.t('Show System Logs'), 'lollms-vs-coder.showLog', 'output', 'Open output channel'));
             actions.push(new ActionItem('Clear System Logs', 'lollms-vs-coder.clearLog', 'trash', 'Wipe all log files and in-memory entries'));
             actions.push(new ActionItem(l.t('label.showHelp'), 'lollms-vs-coder.showHelp', 'question', l.t('tooltip.showHelp')));
         }

@@ -105,7 +105,8 @@ export class SettingsPanel {
     moltbookApiKey: '',
     moltbookBotName: 'Lollms-VS-Bot',
     moltbookBotPurpose: 'An autonomous software engineering assistant integrated with VS Code.',
-    
+    developerDebugTools: false,
+
     // Remote Integration Settings
     remoteServerPort: 3000,
     remoteDiscordEnabled: false,
@@ -235,6 +236,7 @@ export class SettingsPanel {
     this._pendingConfig.moltbookApiKey = config.get<string>('moltbook.apiKey') || '';
     this._pendingConfig.moltbookBotName = config.get<string>('moltbook.botName') || 'Lollms-VS-Bot';
     this._pendingConfig.moltbookBotPurpose = config.get<string>('moltbook.botPurpose') || 'An autonomous software engineering assistant integrated with VS Code.';
+    this._pendingConfig.developerDebugTools = config.get<boolean>('developer.debugTools') || false;
 
     // Load Remote Configuration
     this._pendingConfig.remoteServerPort = config.get<number>('remote.server.port') || 3000;
@@ -617,8 +619,9 @@ export class SettingsPanel {
                   ['remote.slack.signingSecret', this._pendingConfig.remoteSlackSigningSecret],
                   ['remote.allowedUsers', this._pendingConfig.remoteAllowedUsers],
                   ['remote.adminUsers', this._pendingConfig.remoteAdminUsers],
-                  ['remote.allowedChannels', this._pendingConfig.remoteAllowedChannels]
-                ];
+                  ['remote.allowedChannels', this._pendingConfig.remoteAllowedChannels],
+                  ['developer.debugTools', this._pendingConfig.developerDebugTools]
+                  ];
 
                 for (const [key, value] of updates) {
                   await safeUpdate(key, value);
@@ -928,8 +931,9 @@ personalities: this._personalityManager.getPersonalities()
               <button class="tab-link" onclick="openTab(event, 'TabGit')">🐙 Git</button>
               <button class="tab-link" onclick="openTab(event, 'TabPersonas')">🎭 Personas</button>
               <button class="tab-link" onclick="openTab(event, 'TabUi')">🎨 UI & Graph</button>
+              <button class="tab-link" onclick="openTab(event, 'TabAdvanced')">🛠️ Advanced</button>
               <button class="tab-link" onclick="openTab(event, 'TabLog')">📋 Log</button>
-            </div>
+              </div>
 
             <div id="saveToast" class="save-success-toast">
                 <i class="codicon codicon-check"></i> Saved Successfully
@@ -1355,6 +1359,23 @@ personalities: this._personalityManager.getPersonalities()
                 </div>
             </div>
 
+            <!-- TabAdvanced -->
+            <div id="TabAdvanced" class="tab-content">
+              <h2>Advanced Settings</h2>
+
+              <h3>Developer & Debugging</h3>
+              <div class="security-warning" style="color: var(--vscode-charts-purple); border-color: var(--vscode-charts-purple); background: rgba(155, 89, 182, 0.1);">
+                <strong>🛠️ INTERNAL DEBUGGER</strong>
+                Enabling debug tools adds the "Tool Tester" to your navigation. This is intended for extension developers to verify tool behavior and inspect raw payloads.
+              </div>
+
+              <div class="checkbox-container">
+                  <input type="checkbox" id="developerDebugTools">
+                  <label for="developerDebugTools">Enable Developer Debug Tools (Adds Tool Tester to Navigation)</label>
+              </div>
+              <p class="help-text">Requires a sidebar refresh to appear in the Navigation list.</p>
+            </div>
+
             <!-- TabLog -->
             <div id="TabLog" class="tab-content">
               <h2>Log</h2>
@@ -1549,7 +1570,8 @@ personalities: this._personalityManager.getPersonalities()
                 safeSet('remoteSlackEnabled', config.remoteSlackEnabled, true);
                 safeSet('remoteSlackToken', config.remoteSlackToken);
                 safeSet('remoteSlackSigningSecret', config.remoteSlackSigningSecret);
-                
+                safeSet('developerDebugTools', config.developerDebugTools, true);
+
                 if(config.contextFileExceptions) document.getElementById('contextFileExceptions').value = config.contextFileExceptions.join('\\n');
                 if(config.remoteAllowedUsers) document.getElementById('remoteAllowedUsers').value = config.remoteAllowedUsers.join('\\n');
                 if(config.remoteAdminUsers) document.getElementById('remoteAdminUsers').value = config.remoteAdminUsers.join('\\n');
@@ -1810,7 +1832,7 @@ personalities: this._personalityManager.getPersonalities()
 
             // Bind inputs
             ['apiKey','apiUrl','backendType','useLollmsExtensions','requestTimeout','agentMaxRetries','maxImageSize','language','failsafeContextSize','userInfoName','userInfoEmail','userInfoLicense','userInfoCodingStyle','searchApiKey','searchCx','halApiKey','scopusApiKey','clipboardInsertRole','mcpServers','unstagedChangesBehavior','systemCustomInfo','moltbookApiKey','moltbookBotName','moltbookBotPurpose','remoteServerPort','remoteDiscordToken','remoteSlackToken','remoteSlackSigningSecret'].forEach(k => bind(k, k));
-            ['disableSsl','enableCodeInspector','verifyAndCorrectCodeBlocks','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','companionEnableWebSearch','companionEnableArxivSearch','enableCodeActions','enableInlineSuggestions','deleteBranchAfterMerge','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','agentScreenCapture','agentWebTesting','agentUseRLM','explainCode','moltbookEnable','remoteDiscordEnabled','remoteSlackEnabled'].forEach(id => {
+            ['disableSsl','enableCodeInspector','verifyAndCorrectCodeBlocks','autoUpdateChangelog','autoGenerateTitle','addPedagogicalInstruction','companionEnableWebSearch','companionEnableArxivSearch','enableCodeActions','enableInlineSuggestions','deleteBranchAfterMerge','showOs','showIp','showShells','agentShellExecution','agentFilesystemWrite','agentFilesystemRead','agentInternetAccess','agentScreenCapture','agentWebTesting','agentUseRLM','explainCode','moltbookEnable','remoteDiscordEnabled','remoteSlackEnabled', 'developerDebugTools'].forEach(id => {
                 const map = { 'disableSsl': 'disableSslVerification', 'deleteBranchAfterMerge': 'git.deleteBranchAfterMerge', 'showOs': 'systemEnv.showOs', 'showIp': 'systemEnv.showIp', 'showShells': 'systemEnv.showShells', 'systemCustomInfo': 'systemEnv.customInfo', 'agentUseRLM': 'agent.useRLM' };
                 bind(id, map[id] || id);
             });

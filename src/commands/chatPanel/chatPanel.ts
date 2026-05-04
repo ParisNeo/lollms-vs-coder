@@ -683,7 +683,12 @@ export class ChatPanel {
       }
 
       this.displayPlan(this._currentDiscussion.plan);
-      this.updateGeneratingState();
+      
+      // If we are already generating (e.g. handover from surgical), ensure overlay is visible
+      const isGenerating = !!this.processManager.getForDiscussion(this.discussionId);
+      if (isGenerating) {
+          this.updateGeneratingState();
+      }
 
       // Use a safer execution for context sync
       setImmediate(async () => {
@@ -809,7 +814,7 @@ export class ChatPanel {
                 ? context.text.substring(0, UI_PREVIEW_LIMIT) + `\n\n... [Truncated for UI performance. Total: ${context.text.length} chars]`
                 : context.text;
 
-            if (!this._isDisposed && this._panel.webview) {
+            if (!this._isDisposed) {
                 this._panel.webview.postMessage({ 
                     command: 'updateContext', 
                     context: contextTextForUI,
@@ -822,13 +827,18 @@ export class ChatPanel {
             }
             this._panel.webview.postMessage({ command: 'updateImageContext', images: context.images });
 
+            // --- MOVED: Extract Project Memory early for tokenization ---
+            const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && this.agentManager?.projectMemoryManager)
+                ? await this.agentManager.projectMemoryManager.getFormattedMemoryBlock()
+                : "";
+
             this._panel.webview.postMessage({ command: 'tokenCalculationStarted', text: 'Counting tokens...' });
             this._panel.webview.postMessage({ command: 'updateStatus', status: 'Computing tokens length...', type: 'info' });
 
             const { estimateImageTokens } = require('../../utils');
 
             const personaContent = this.getCurrentPersonaSystemPrompt();
-            const systemText = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, false, { ...context, tree: '', files: '' });
+            const systemText = await getProcessedSystemPrompt('chat', this._discussionCapabilities, personaContent, undefined, false, { ...context, tree: '', files: '', memory: projectMemory });
 
             const historyText = this._currentDiscussion!.messages.map(msg => {
                 const content = msg.content;
@@ -915,12 +925,13 @@ export class ChatPanel {
             const filteredFilesText = await this._getFilteredFilesContent(context, folderSettings);
 
             // Calculate Tree and Content independently for granular HUD
-            const [systemRes, historyRes, treeRes, contentFilesRes, skillsRes, contextSizeRes] = await Promise.all([
+            const [systemRes, historyRes, treeRes, contentFilesRes, skillsRes, memoryRes, contextSizeRes] = await Promise.all([
                 getTokenCount(systemText),
                 getTokenCount(historyText),
                 getTokenCount(context.projectTree),
                 getTokenCount(filteredFilesText),
                 getTokenCount(context.skillsContent || ""),
+                getTokenCount(projectMemory || ""),
                 this._lollmsAPI.getContextSize(modelForTokenization).catch(e => {
                     Logger.error(`[TokenStats] Context Size API critically failed: ${e.message}`);
                     return { context_size: 128000, isEstimation: true }; 
@@ -995,6 +1006,7 @@ export class ChatPanel {
                         system: systemRes.count || 0,
                         tree: treeRes.count || 0,
                         skills: skillTokens || 0,
+                        memory: memoryRes.count || 0,
                         files: contentTokens || 0,
                         history: historyRes.count || 0,
                         images: imageTokens || 0
@@ -1075,6 +1087,7 @@ export class ChatPanel {
                 const treeTokens = Math.ceil((context.projectTree?.length || 0) / 3.5);
                 const filesTokens = Math.ceil((context.selectedFilesContent?.length || 0) / 3.5);
                 const skillsTokens = Math.ceil((context.skillsContent?.length || 0) / 3.5);
+                const memoryTokens = Math.ceil((projectMemory?.length || 0) / 3.5);
 
                 this._panel.webview.postMessage({
                     command: 'updateTokenProgress',
@@ -1086,6 +1099,7 @@ export class ChatPanel {
                         system: systemTokens,
                         tree: treeTokens,
                         skills: skillsTokens,
+                        memory: memoryTokens,
                         files: filesTokens,
                         history: historyTokens,
                         images: 0
@@ -1843,6 +1857,11 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
   }
   
   public async requestUserInput(question: string, signal: AbortSignal, options?: { isAgentZone?: boolean }): Promise<string> {
+      // Ensure webview is ready before trying to send the form
+      if (!this._isWebviewReady) {
+          await this.waitForWebviewReady();
+      }
+
       return new Promise((resolve, reject) => {
           this._inputResolver = resolve;
           
@@ -2228,8 +2247,8 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
     : "";
 
     const context = { 
-        tree: isContextMuted ? "## Project Structure\n(Muted by user for this turn)" : contextData.projectTree, 
-        files: isContextMuted ? "## File Contents\n(Muted by user for this turn)" : contextData.selectedFilesContent, 
+        tree: contextData.projectTree, 
+        files: contextData.selectedFilesContent, 
         skills: contextData.skillsContent,
         memory: projectMemory
     };
@@ -2437,16 +2456,20 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
         // =========================================================================
         // 🛡️ CONTEXT LIMIT CHECK & FAST PRUNING (V3: Image LUT Aware)
         // =========================================================================
+
+        // 1. Initialize fileBlocks at the start of the try block to ensure global scope safety
+        const fileBlocks: { fullMatch: string, path: string, content: string, keep: boolean }[] = [];
+
         try {
             const targetModel = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
             const limitRes = await this._lollmsAPI.getContextSize(targetModel);
             const maxTokens = limitRes.context_size > 0 ? limitRes.context_size : 128000;
-            
+
             // Accurate Estimation: Using Model-Specific Image LUT
             const { estimateImageTokens } = require('../../utils');
             let textOnlySize = 0;
             let imageTokens = 0;
-            
+
             messagesToSend.forEach(m => {
                 if (typeof m.content === 'string') {
                     textOnlySize += m.content.length;
@@ -2455,12 +2478,34 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                         if (part.type === 'text') {
                             textOnlySize += part.text.length;
                         } else if (part.type === 'image_url') {
-                            // Pass model name for specific calculation (e.g. Claude vs GPT)
                             imageTokens += estimateImageTokens(targetModel);
                         }
                     });
                 }
             });
+
+            // 2. Pre-parse file blocks regardless of size to allow visibility protection
+            const blockRegex = /```(?:[^\n:]+):([^\n]+)\n([\s\S]*?)\n```/g;
+            let fileMatch;
+            while ((fileMatch = blockRegex.exec(context.files)) !== null) {
+                fileBlocks.push({
+                    fullMatch: fileMatch[0],
+                    path: fileMatch[1].trim(),
+                    content: fileMatch[2],
+                    keep: false
+                });
+            }
+
+            // 2. Identify keywords from user prompt
+            const userPromptText = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
+            const keywords = (userPromptText.toLowerCase().match(/\b[a-z]{4,}\b/g) || []);
+
+            // 3. Mark protected files (keywords or explicit names)
+            for (const b of fileBlocks) {
+                const contentLower = b.content.toLowerCase();
+                const fileName = b.path.toLowerCase();
+                b.keep = keywords.some(k => contentLower.includes(k) || fileName.includes(k));
+            }
 
             let estimatedTokens = Math.ceil(textOnlySize / 3.5) + imageTokens;
 
@@ -2487,31 +2532,7 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                     skipInPrompt: true
                 });
 
-                // Extract file blocks from context.files
-                const fileBlocks: { fullMatch: string, path: string, content: string, keep: boolean }[] =[];
-                const blockRegex = /```(?:[^\n:]+):([^\n]+)\n([\s\S]*?)\n```/g;
-                let match;
-                while ((match = blockRegex.exec(context.files)) !== null) {
-                    fileBlocks.push({
-                        fullMatch: match[0],
-                        path: match[1].trim(),
-                        content: match[2],
-                        keep: false
-                    });
-                }
-
                 if (fileBlocks.length > 0) {
-                    const userPromptText = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
-                    const keywords = (userPromptText.toLowerCase().match(/\b[a-z]{4,}\b/g) ||[]);
-                    
-                    // 1. Mark files containing keywords OR files explicitly required by the user
-                    for (const b of fileBlocks) {
-                        const contentLower = b.content.toLowerCase();
-                        const fileName = b.path.toLowerCase();
-                        // Priority: Match keywords OR match explicit mention in the last user message
-                        b.keep = keywords.some(k => contentLower.includes(k) || fileName.includes(k));
-                    }
-
                     let keptBlocks = fileBlocks.filter(b => b.keep);
                     
                     // 2. Secondary prune if still > 60% of max context (lower budget for safety)
@@ -2532,7 +2553,11 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                     if (removedBlocks.length > 0) {
                         const removedList = removedBlocks.map(b => `  - \`${b.path}\``).join('\n');
                         const keptList = keptBlocks.map(b => `  - \`${b.path}\``).join('\n');
-                        
+
+                        // NEW: Inject a hidden system warning so the LLM knows it has been blinded to these files
+                        const evictionNudge = `\n[SYSTEM NOTICE]: To fit the context window, the following files were EVICTED from this prompt: ${removedBlocks.map(b => b.path).join(', ')}. Use <add_files_to_context> if you need them back.`;
+                        messagesToSend.push({ role: 'system', content: evictionNudge });
+
                         await this.updateMessageContent(pruneMsgId, `⚖️ **Context Governor: Optimization Complete**
 To fit within the **${maxTokens.toLocaleString()}** token limit, I have reorganized the context:
 
@@ -5500,11 +5525,12 @@ Task:
     const l10nStrings = LocalizationManager.getBundleForWebview();
 
     return `<!DOCTYPE html>
-<html lang="en">
-<head>
+    <html lang="en">
+    <head>
     <meta charset="UTF-8" />
     <meta http-equiv="Content-Security-Policy" content="
         default-src 'none';
+        connect-src ${webview.cspSource} https:;
         style-src ${webview.cspSource} 'unsafe-inline';
         font-src ${webview.cspSource};
         img-src ${webview.cspSource} data: blob:;
@@ -5529,11 +5555,16 @@ Task:
             --lollms-icon: url("${lollmsIconUri}");
         }
     </style>
-</head>
-<body>
+    </head>
+    <body>
     <div class="chat-container">
-        
+
         <div class="chat-content-wrapper">
+            <!-- 🤖 Sidebar ON THE LEFT -->
+            <div id="agent-plan-zone"></div>
+            <div id="plan-resizer"></div>
+
+            <!-- 💬 Main Chat ON THE RIGHT -->
             <div class="chat-main-column">
                 <div class="messages" id="messages">
                     <div class="search-bar" id="search-bar" style="display: none;">
@@ -5543,9 +5574,9 @@ Task:
                         <button id="search-next" title="Next match"><i class="codicon codicon-arrow-down"></i></button>
                         <button id="search-close" title="Close search"><i class="codicon codicon-close"></i></button>
                     </div>
-                    
+
                     <div id="context-container"></div>
-                    
+
                     <div class="message special-zone-message" style="display: none;">
                         <div class="message-avatar">
                             <span class="codicon codicon-file-text"></span>
@@ -5557,7 +5588,7 @@ Task:
                             </div>
                         </div>
                     </div>
-                    
+
                     <div id="welcome-message" style="display: none;">
                         <h3 id="welcome-title"></h3>
                         <ul>
@@ -5579,11 +5610,10 @@ Task:
                 <div id="generating-overlay" class="generating-overlay" style="display: none;">
                     <div class="generating-content">
                         <div class="ai-orb-container">
-                            <div class="orb-ring"></div>
                             <div class="ai-orb"></div>
                         </div>
+                        <span id="generating-status-text">Processing...</span>
                         <div class="generating-details">
-                            <span id="generating-status-text">Processing...</span>
                             <div class="step-timeline" id="step-timeline">
                                 <div class="step-dot active"></div>
                                 <div class="step-dot"></div>
@@ -5612,7 +5642,7 @@ Task:
                             <span>Cancel Task</span>
                         </button>
                     </div>
-                    </div>
+                </div>
 
                 <div class="input-area-wrapper">
                     <div id="more-actions-menu">
@@ -5691,74 +5721,11 @@ Task:
 
                     </div>
 
-                    <div class="top-controls">
 
-                        <!-- TIER 1: ACTIVE STATUS BADGES -->
-                        <div id="badge-dashboard-panel">
-                            <div class="active-badges" id="active-badges">
-                                <!-- Badges injected here via updateBadges() -->
-                            </div>
-
-                            <div style="display: flex; align-items: center; gap: 12px;">
-                                <div id="websearch-indicator" class="websearch-indicator" title="Web Search Active" style="display: none;">
-                                    <i class="codicon codicon-globe"></i>
-                                    <span>Web</span>
-                                </div>
-                                <div id="active-tools-indicator" class="active-tools-indicator"></div>
-                            </div>
-                        </div>
-
-                        <!-- TIER 2: METRICS & SYSTEM STATUS -->
-                        <div class="hud-center-zone" style="display: flex; align-items: center; gap: 20px; width: 100%; border-top: 1px solid var(--vscode-editor-inactiveSelectionBackground); padding-top: 8px;">
-                            <div id="status-label" class="status-label" style="display:flex; align-items:center; gap:8px; min-width: 120px;">
-                                <button id="toggle-dashboard-btn" class="icon-btn" title="Toggle Badges Dashboard" style="padding:0; margin-right:4px;">
-                                    <i class="codicon codicon-chevron-up" id="dashboard-chevron"></i>
-                                </button>
-                                <button id="hud-matrix-btn" class="icon-btn" title="Workspace Access Matrix (Toggle projects)" style="padding:0; margin-right:8px; color: var(--vscode-textLink-foreground);">
-                                    <i class="codicon codicon-layers"></i>
-                                </button>
-                                <div id="status-spinner" class="spinner" style="display:none;"></div>
-                                <span id="status-text" style="font-size: 11px; font-weight: 600; opacity: 0.8;">Ready</span>
-                            </div>
-
-                            <div class="token-progress-wrap" style="flex: 1; max-width: 400px;">
-                                <div class="token-progress-container" id="token-progress-container" style="height: 6px; margin-bottom: 4px; border-radius: 3px;">
-                                    <div class="token-progress-bar" id="token-progress-bar"></div>
-                                </div>
-                                <div style="display: flex; justify-content: space-between; align-items: center;">
-                                    <div style="display: flex; align-items: center; gap: 6px;">
-                                        <span id="token-count-label" style="font-size: 10px; font-family: var(--vscode-editor-font-family); opacity: 0.7;">Calculating capacity...</span>
-                                        <button id="refresh-context-btn" class="icon-btn" title="Refresh Context & Tokens" style="padding: 0; width: 14px; height: 14px; opacity: 0.5;">
-                                            <i class="codicon codicon-refresh" style="font-size: 10px;"></i>
-                                        </button>
-                                        <button id="cancel-tokens-btn" class="icon-btn" title="Stop Calculation" style="padding: 0; width: 14px; height: 14px; opacity: 0.5; display: none;">
-                                            <i class="codicon codicon-stop" style="font-size: 10px; color: var(--vscode-errorForeground);"></i>
-                                        </button>
-                                    </div>
-                                    <div id="token-bar-legend" class="token-legend" style="display: none; margin: 0; gap: 10px; opacity: 0.9;">
-                                        <div class="legend-item" data-type="system" style="font-size: 9px;"><div class="legend-dot segment-system"></div>SYSTEM</div>
-                                        <div class="legend-item" data-type="tree" style="font-size: 9px;"><div class="legend-dot segment-tree"></div>TREES</div>
-                                        <div class="legend-item" data-type="skills" style="font-size: 9px;"><div class="legend-dot segment-skills"></div>SKILLS</div>
-                                        <div class="legend-item" data-type="files" style="font-size: 9px;"><div class="legend-dot segment-files"></div>FILES</div>
-                                        <div class="legend-item" data-type="chat" style="font-size: 9px;"><div class="legend-dot segment-history"></div>CHAT</div>
-                                        <div class="legend-item" data-type="images" style="font-size: 9px;"><div class="legend-dot segment-images"></div>IMAGES</div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div id="context-loading-spinner" style="display: none; align-items: center; gap: 8px; font-size: 0.9em; color: var(--vscode-descriptionForeground);">
-                            <div class="spinner"></div>
-                            <div style="display:flex; flex-direction:column; gap:2px;">
-                                <span id="loading-files-text" style="font-size: 11px;"></span>
-                                <div class="token-progress-container" id="file-tree-progress-container" style="width: 80px; height: 4px; display: none;">
-                                    <div class="token-progress-bar range-safe" id="file-tree-progress-bar" style="width: 0%;"></div>
-                                </div>
-                            </div>
-                        </div>
-                        </div>
                     <div class="input-area-container">
                         <div class="rich-input-toolbar">
+                            <button class="toolbar-tool" id="jump-to-context-btn" title="Jump to Project Context / Dashboard"><i class="codicon codicon-dashboard"></i><span>Context</span></button>
+                            <div class="toolbar-separator"></div>
                             <button class="toolbar-tool" data-wrap-type="python" title="Python Block"><i class="codicon codicon-symbol-method"></i><span>Python</span></button>
                             <button class="toolbar-tool" data-wrap-type="code" title="Code Block"><i class="codicon codicon-code"></i><span>Code</span></button>
                             <div class="toolbar-separator"></div>
@@ -5794,9 +5761,11 @@ Task:
 
             <div id="plan-resizer"></div>
             <div id="agent-plan-zone"></div>
-        </div>
-        
-        <button id="scrollToBottomBtn" title="Scroll to bottom" style="display: none;">
+            <!-- Move button here to be a sibling of plan-zone for CSS logic -->
+            <button id="scrollToBottomBtn" title="Scroll to bottom" style="display: none;">
+                <i class="codicon codicon-arrow-down"></i>
+            </button>
+            </div>
             <i class="codicon codicon-arrow-down"></i>
         </button>
 

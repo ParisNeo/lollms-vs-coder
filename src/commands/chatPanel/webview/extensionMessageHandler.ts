@@ -199,7 +199,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     import('./messageRenderer.js').then(m => m.updateContext(
                         state.lastContextData!.context, 
                         state.lastContextData!.files, 
-                        state.lastContextData!.skills
+                        state.lastContextData!.skills,
+                        state.lastContextData!.diagrams,
+                        state.lastContextData!.briefing
                     ));
                 }
                 break;
@@ -259,6 +261,9 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             (wrapper as HTMLElement).style.display = dom.attachmentsContainer.children.length > 0 ? 'flex' : 'none';
                         }
                     }
+
+                    // CRITICAL: Refresh badges after the fused container is rendered in the message stream
+                    setTimeout(() => updateBadges(), 50);
 
                     setGeneratingState(false);
                     if(dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
@@ -1247,8 +1252,12 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const { title, content } = message;
                     if (dom.contextViewerModal && dom.contextViewerDisplay && dom.contextViewerTitle) {
                         dom.contextViewerTitle.textContent = title;
-                        // Use marked to render it nicely in the modal
-                        dom.contextViewerDisplay.innerHTML = sanitizer.sanitize((window as any).marked.parse(content));
+                        // Use marked to render it nicely in the modal. 
+                        // Note: We allow <img> tags for the Visual Context view.
+                        dom.contextViewerDisplay.innerHTML = sanitizer.sanitize((window as any).marked.parse(content), {
+                            ADD_TAGS: ['img'],
+                            ADD_ATTR: ['src', 'style']
+                        });
                         dom.contextViewerModal.classList.add('visible');
 
                         // Apply syntax highlighting to code blocks in the modal

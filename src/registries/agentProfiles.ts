@@ -3,6 +3,7 @@ export interface AgentMissionProfile {
     name: string;
     description: string;
     protocol: string;
+    defaultTools: string[]; // Foreground tools
 }
 
 export const AGENT_MISSION_PROFILES: AgentMissionProfile[] = [
@@ -10,15 +11,18 @@ export const AGENT_MISSION_PROFILES: AgentMissionProfile[] = [
         id: "software_architect",
         name: "Software Architect (General)",
         description: "General-purpose engineering, refactoring, and feature building.",
+        defaultTools: ["read_file", "read_files", "edit_code", "generate_code", "execute_command", "submit_response", "read_code_graph"],
         protocol: `
-### 🏗️ MISSION PROTOCOL: SOFTWARE ARCHITECT
-1. **ANALYSIS**: Map out dependencies before touching any code.
-2. **MODULARITY**: Prefer small, testable modules over large monoliths.
-3. **VERIFICATION**: Always run a build or test command after implementation.`
+        ### 🏗️ MISSION PROTOCOL: SOFTWARE ARCHITECT
+        1. **ANALYSIS**: Map out dependencies before touching any code.
+        2. **WORKSPACE AWARENESS**: Your execution root is the WORKSPACE ROOT. Look at the 'PROJECT STRUCTURE' tree. If the files are at the top level, DO NOT use subfolder prefixes (e.g., use 'src/main.py', not 'project_name/src/main.py').
+        3. **MODULARITY**: Prefer small, testable modules over large monoliths.
+        4. **VERIFICATION**: Always run a build or test command after implementation.`
     },
     {
         id: "game_builder",
         name: "Game Development Specialist",
+        defaultTools: ["generate_image", "create_svg_asset", "extract_image_tiles", "draw_debug_annotations", "edit_code", "generate_code", "capture_desktop", "submit_response"],
         description: "Expert in Pygame, Godot, and Unity. Handles assets, interactive design, and game loops.",
         protocol: `
     ### 🎮 MISSION PROTOCOL: GAME BUILDER

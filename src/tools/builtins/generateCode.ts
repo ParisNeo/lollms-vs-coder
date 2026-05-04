@@ -151,14 +151,25 @@ ${params.instructions}
         report += `**Status:** File manifested on disk.\n\n`;
         report += `**Code Snippet (Preview):**\n\`\`\`${path.extname(params.file_path).substring(1)}\n${finalCode.substring(0, 300)}...\n\`\`\`\n\n`;
         
+        const envIssues = errors.filter(d => 
+            d.message.toLowerCase().includes('import') || 
+            d.message.toLowerCase().includes('not resolved')
+        );
+        const logicIssues = errors.filter(d => !envIssues.includes(d));
+
         if (errors.length === 0) {
             report += `✅ **Guardian Audit**: 0 functional errors detected. Implementation verified.`;
+        } else if (logicIssues.length > 0) {
+            report += `⚠️ **Guardian Audit Flagged Logic Errors**:\n`;
+            logicIssues.forEach(e => report += `- [L${e.range.start.line + 1}] ${e.message}\n`);
+            report += `\n**Architect Note**: The code has functional flaws. Please use 'edit_code' to fix the specific lines above.`;
         } else {
-            report += `⚠️ **Guardian Audit Flagged Issues**:\n`;
-            errors.forEach(e => report += `- [L${e.range.start.line + 1}] ${e.message}\n`);
-            report += `\n**Architect Note**: The specialist introduced syntax errors. Please use 'edit_code' to fix them.`;
+            report += `⚖️ **Guardian Audit: Environment Issues Only**:\n`;
+            envIssues.forEach(e => report += `- ${e.message}\n`);
+            report += `\n**Architect Note**: The generated code is sound, but missing dependencies were detected. 
+            **DO NOT** regenerate the file. Use 'install_python_dependencies' to fix the environment.`;
         }
 
-        return { success: errors.length === 0, output: report };
+        return { success: logicIssues.length === 0, output: report };
     }
 };

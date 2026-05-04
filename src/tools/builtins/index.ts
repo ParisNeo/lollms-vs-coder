@@ -131,7 +131,7 @@ export const allTools: ToolDefinition[] = [
     findFilesByNameTool,
     searchWebTool,
     setLaunchEntrypointTool,
-    setVscodePythonInterpreterTool,
+    setVscodePythonInterpreterTool, // Now renamed to set_default_environment
     buildSkillTool,
     submitResponseTool,
     prepareEnvironmentTool,

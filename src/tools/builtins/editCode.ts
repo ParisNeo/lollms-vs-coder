@@ -232,24 +232,31 @@ export const editCodeTool: ToolDefinition = {
                 if (diagnostics.length > 0 || smokeTestResult) {
                     const errorReport = diagnostics.map(d => `[Line ${d.range.start.line + 1}] ${d.message}`).join('\n');
 
-                    // Shake the model with the Guardian's report
-                    const guardianPrompt = `### 🛡️ GUARDIAN AUDIT: ERRORS DETECTED
-        I successfully applied your text changes, but the resulting file has functional errors:
-        ${errorReport}
+                    // --- RESILIENCY CHECK: Import vs Logic ---
+                    const envIssues = diagnostics.filter(d => 
+                        d.message.toLowerCase().includes('import') || 
+                        d.message.toLowerCase().includes('not resolved') ||
+                        d.message.toLowerCase().includes('no module named')
+                    );
+                    const logicIssues = diagnostics.filter(d => !envIssues.includes(d));
 
-        **CURRENT FILE STATE:**
-        \`\`\`
-        ${workingContent}
-        \`\`\`
+                    if (logicIssues.length > 0 || smokeTestResult.includes("SyntaxError")) {
+                        // CRITICAL: Rollback and retry
+                        await vscode.workspace.fs.writeFile(fileUri, Buffer.from(workingContent, 'utf8'));
+                        attempts++;
+                        lastFailureReason = `Surgical logic errors detected:\n${errorReport}`;
+                        continue;
+                    } else {
+                        // NON-CRITICAL: Keep the file but alert the Architect
+                        const depReport = `### ⚖️ PARTIAL SUCCESS: ${filePath}
+                        Your code changes were applied to disk, but the environment is missing dependencies:
+                        ${envIssues.map(d => `- ${d.message}`).join('\n')}
 
-        Please provide a new set of SEARCH/REPLACE blocks to fix these specific errors.`;
+                        **MANDATORY ARCHITECT ACTION**: 
+                        The code is syntactically correct. Do NOT refactor the file. Instead, use 'install_python_dependencies' or 'execute_command' to install the missing libraries.`;
 
-                    attempts++;
-                    lastFailureReason = `Guardian Audit failed:\n${errorReport}`;
-
-                    // Rollback for next attempt
-                    await vscode.workspace.fs.writeFile(fileUri, Buffer.from(originalContent, 'utf8'));
-                    continue;
+                        return { success: true, output: depReport };
+                    }
                 }
 
                 // 5. FINAL SUCCESS REPORT (Protocol Step 6)

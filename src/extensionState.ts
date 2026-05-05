@@ -135,8 +135,8 @@ export async function runCommandInTerminal(
             batFileToCleanup = batFile;
 
             const utf8Setup = `[Console]::InputEncoding = [Console]::OutputEncoding =[System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8;`;
-            // Execute using the absolute path to the .bat file
-            const psCommand = `${utf8Setup} cmd /c "${batFile}" 2>&1 | Tee-Object -FilePath "${absOutputFile}"; $LASTEXITCODE | Out-File -FilePath "${absExitCodeFile}" -Encoding utf8`;
+            // Execute using the absolute path to the .bat file, ensuring full quoting for Windows paths
+            const psCommand = `${utf8Setup} cmd /c ""${batFile}"" 2>&1 | Tee-Object -FilePath "${absOutputFile}"; $LASTEXITCODE | Out-File -FilePath "${absExitCodeFile}" -Encoding utf8`;
             execution = new vscode.ShellExecution("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psCommand], { cwd });
         } else {
             const targetShell = options?.shell || 'bash';

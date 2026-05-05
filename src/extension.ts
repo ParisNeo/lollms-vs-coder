@@ -26,6 +26,7 @@ import { registerViews } from './registries/viewRegistry';
 import { registerCommands } from './registries/commandRegistry';
 import { setPythonApi, debugErrorManager, disposeTerminal } from './extensionState';
 import { LollmsServices } from './lollmsContext';
+import { ToolManager } from './tools/toolManager';
 import { ChatPanel } from './commands/chatPanel/chatPanel';
 import { DiscussionItem } from './commands/discussionTreeProvider';
 import { DiffManager } from './diffManager';
@@ -81,7 +82,6 @@ export async function activate(context: vscode.ExtensionContext) {
     // Initialize Managers
     const memoryManager = new MemoryManager(context.globalStorageUri);
     const contextManager = new ContextManager(context, lollmsAPI);
-    // Pass global storage URI
     const skillsManager = new SkillsManager(context.globalStorageUri); 
     const scriptRunner = new ScriptRunner(pythonExtApi);
     const promptManager = new PromptManager(context.globalStorageUri);
@@ -90,6 +90,7 @@ export async function activate(context: vscode.ExtensionContext) {
     const gitIntegration = new GitIntegration(lollmsAPI);
     const processManager = new ProcessManager();
     const codeGraphManager = new CodeGraphManager();
+    const toolManager = new ToolManager(); // Clean instantiation
     const notebookManager = new NotebookManager(lollmsAPI);
     const inlineDiffProvider = new InlineDiffProvider(lollmsAPI);
     const quickEditManager = new QuickEditManager(lollmsAPI, inlineDiffProvider, contextManager, memoryManager);
@@ -123,6 +124,7 @@ export async function activate(context: vscode.ExtensionContext) {
         personalityManager, skillsManager, codeGraphManager, notebookManager,
         gitIntegration, scriptRunner, quickEditManager, workflowManager,
         inlineDiffProvider, diffManager, herdManager,
+        toolManager,
         rlmDb,
         projectMemoryManager: projectMemoryManager, // MUST be here for uiCommands
         treeProviders: {}
@@ -131,7 +133,7 @@ export async function activate(context: vscode.ExtensionContext) {
     // Register Views
     registerViews(context, services);
 
-    // Register Commands
+    // Register Commands (This calls registerUICommands internally)
     await registerCommands(context, services, getActiveWorkspace);
 
     // Legacy Switcher Command removed - Now using Sovereign Workspace Protocol

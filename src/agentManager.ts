@@ -85,8 +85,11 @@ export class AgentManager {
         secureCredentials: Record<string, string>;
         isSafetyCheckPassed: boolean;
         unverifiedFiles: Set<string>; 
-        backgroundProcesses: Map<string, { pid: number, logFile: string, startTime: number }>; // NEW
-    } = {
+        lastFilesystemWriteTime: number; 
+        blacklistedTools: Set<string>; 
+        extensionVersion: string; // Track version to invalidate blacklist on update
+        backgroundProcesses: Map<string, { pid: number, logFile: string, startTime: number }>;
+        } = {
         replVariables: {},
         installedPackages: [],
         environmentHistory: [],
@@ -95,8 +98,11 @@ export class AgentManager {
         secureCredentials: {},
         isSafetyCheckPassed: false,
         unverifiedFiles: new Set(),
+        lastFilesystemWriteTime: 0,
+        blacklistedTools: new Set(),
+        extensionVersion: "",
         backgroundProcesses: new Map()
-    };
+        };
 
     constructor(
         private ui: IAgentUI,
@@ -107,11 +113,12 @@ export class AgentManager {
         private extensionUri: vscode.Uri,
         codeGraphManager: CodeGraphManager,
         skillsManager: SkillsManager,
+        toolManager?: ToolManager,
         rlmDb?: RLMDatabaseManager
     ) {
         this.codeGraphManager = codeGraphManager;
         this.skillsManager = skillsManager;
-        this.toolManager = new ToolManager();
+        this.toolManager = toolManager || new ToolManager();
         this.planParser = new PlanParser(this.lollmsApi, this.contextManager, this.toolManager);
         this.rlmDb = rlmDb;
 
@@ -212,7 +219,15 @@ Keep it strictly technical and extremely concise.`
         const attachments = this.currentDiscussion?.messages
             .filter(m => (m as any).attachmentData).length || 0;
 
+        if (!this.toolManager || typeof this.toolManager.getAllTools !== 'function') {
+            Logger.error("ToolManager not properly initialized in AgentManager");
+            return [];
+        }
+
         const tools = this.toolManager.getAllTools().filter(t => {
+            // --- CIRCUIT BREAKER: HIDE BROKEN TOOLS ---
+            if (this.sessionState.blacklistedTools.has(t.name)) return false;
+
             // --- HIDE read_discussion_file IF NO ATTACHMENTS ---
             if (t.name === 'read_discussion_file' && attachments === 0) return false;
 
@@ -341,6 +356,15 @@ Keep it strictly technical and extremely concise.`
      * Ensures the Genie never works on a dangerous or unstable environment without consent.
      */
     private async preFlightSafetyCheck(folder: vscode.WorkspaceFolder, signal: AbortSignal): Promise<boolean> {
+        // If we already have a plan and history, safety has already been established
+        if (this.currentPlan && this.completedActionsHistory.length > 0) {
+            this.sessionState.isSafetyCheckPassed = true;
+            return true;
+        }
+
+        const proc = this.processManager?.getForDiscussion(this.currentDiscussion?.id || "");
+        if (proc) this.processManager?.updateDescription(proc.id, "🛡️ Safety: Checking Git Integrity...");
+
         if (this.sessionState.isSafetyCheckPassed) {
             Logger.info(`[Phase 0] Safety check already passed for this session. Skipping.`);
             return true;
@@ -376,7 +400,7 @@ Keep it strictly technical and extremely concise.`
                 objective: "Initializing Safety Protocols...",
                 current_sub_goal: "Verify Workspace Integrity",
                 observations: [],
-                scratchpad: "Safety check initiated.",
+                scratchpad: "Waiting for workspace safety confirmation...",
                 tasks: [],
                 status: 'active'
             };
@@ -521,19 +545,22 @@ Keep it strictly technical and extremely concise.`
             const safetyTask: Task = {
                 id: -1,
                 task_type: 'safety_check',
-                description: "🛡️ Uncommitted changes. Decision required.",
+                description: "🛡️ Uncommitted changes detected. Please choose a safety action to continue.",
                 action: "safety_check",
                 parameters: { lollms_form: formPrompt },
                 status: 'pending',
                 result: null,
                 retries: 0
             };
-            // Clear tasks to ensure the safety check is the ONLY thing visible
+
+            // Push the safety task to the plan for internal tracking
             this.currentPlan!.tasks = [safetyTask];
             await this.displayAndSavePlan(this.currentPlan);
 
-            Logger.info(`[Phase 0] Requesting Safety Action via Form in Sidebar...`);
-            const response = await this.ui.requestUserInput(formPrompt, signal, { isAgentZone: true });
+            // RENDER DIRECTLY IN DISCUSSION:
+            // We put the form in a system message so it appears exactly where the user is looking.
+            Logger.info(`[Phase 0] Emitting Safety Form to Discussion Stream...`);
+            const response = await this.ui.requestUserInput(`🛡️ **Safety Gate**: Uncommitted changes detected.\n\n${formPrompt}`, signal, { isAgentZone: false });
             Logger.info(`[Phase 0] Raw response received from UI: "${response}"`);
 
             // Remove the form task from sidebar immediately
@@ -547,31 +574,16 @@ Keep it strictly technical and extremely concise.`
             Logger.info(`[Phase 0] Parsed safeChoice: "${safeChoice}"`);
 
             if (safeChoice === 'stash') {
+                // Perform silently
                 await this.gitIntegration.stash(folder, "Genie: Stashed before mission");
-                this.completedActionsHistory.push(`[GIT] 📦 STASHED: Uncommitted changes moved to stash to ensure a clean mission start.`);
-                const stillDirty = !(await this.gitIntegration.isClean(folder));
-                if (stillDirty) {
-                    this.ui.addMessageToDiscussion({ role: 'system', content: `❌ **Stash failed** — working tree still dirty. Aborting for safety.` });
-                    return false;
-                }
+                this.completedActionsHistory.push(`[GIT] 📦 STASHED: Uncommitted changes moved to stash.`);
                 this.sessionState.isSafetyCheckPassed = true;
             } else if (safeChoice === 'commit') {
-                this.ui.addMessageToDiscussion({ role: 'system', content: `⚙️ **Backing up workspace...**` });
-
-                // Fetch commit message but skip the manual staging modal
+                // Perform silently without adding system messages
                 const msg = await this.gitIntegration.generateCommitMessage(folder);
                 const finalMsg = msg?.trim() || "Genie: pre-flight backup";
-
-                // Bypass UI entirely
                 await this.gitIntegration.stageAllAndCommit(finalMsg, folder);
-
-                this.completedActionsHistory.push(`[GIT] 💾 COMMITTED ALL: Permanent backup created with message: "${finalMsg}"`);
-
-                const stillDirty = !(await this.gitIntegration.isClean(folder));
-                if (stillDirty) {
-                    this.ui.addMessageToDiscussion({ role: 'system', content: `❌ **Commit failed** — Workspace still contains changes. Aborting.` });
-                    return false;
-                }
+                this.completedActionsHistory.push(`[GIT] 💾 COMMITTED: Pre-flight backup created.`);
                 this.sessionState.isSafetyCheckPassed = true;
             } else if (safeChoice === 'proceed' || safeChoice === 'continue') {
                 this.ui.addMessageToDiscussion({ role: 'system', content: `⚠️ **Safety Bypass**: Proceeding with uncommitted changes on \`${currentBranch}\`.` });
@@ -589,7 +601,15 @@ Keep it strictly technical and extremely concise.`
         if (!currentBranch.startsWith('ai-task-')) {
             const branchName = `ai-task-${Date.now()}`;
             await this.gitIntegration.createAndCheckoutBranch(folder, branchName);
-            this.completedActionsHistory.push(`[GIT] 🌿 BRANCHED: Switched from \`${currentBranch}\` to isolated workspace \`${branchName}\`.`);
+            const gitMsg = `[GIT] 🌿 BRANCHED: Switched from \`${currentBranch}\` to isolated workspace \`${branchName}\`.`;
+            this.completedActionsHistory.push(gitMsg);
+
+            // Emit Sovereign Git Card to Discussion
+            await this.ui.addMessageToDiscussion({
+                role: 'system',
+                content: `<git_event type="branch" from="${currentBranch}" to="${branchName}" />`,
+                skipInPrompt: true
+            });
         } else {
             // Log to timeline only
             this.completedActionsHistory.push(`[GIT] ℹ️ Persistence: Already on isolated branch \`${currentBranch}\`.`);
@@ -639,12 +659,43 @@ Keep it strictly technical and extremely concise.`
         this.currentUserPermissions = permissions;
 
         // --- RELOAD GENIE PERSISTENT SESSION ---
+        const currentVersion = vscode.extensions.getExtension('parisneo.lollms-vs-coder')?.packageJSON.version || "0.0.0";
+
         if (discussion.agentSession) {
+            // Check if the extension was updated since the last turn
+            const lastSessionVersion = (discussion.agentSession as any).extensionVersion || "";
+            const isUpdated = lastSessionVersion !== currentVersion;
+
+
+
             this.sessionState.replVariables = discussion.agentSession.replVariables || {};
-            this.sessionState.workingMemory = discussion.agentSession.workingMemory ||[];
+            this.sessionState.workingMemory = discussion.agentSession.workingMemory || [];
             this.sessionState.secureCredentials = discussion.agentSession.secureCredentials || {};
             this.sessionState.isSafetyCheckPassed = discussion.agentSession.isSafetyCheckPassed || false;
-            this.completedActionsHistory = discussion.agentSession.completedActionsHistory ||[];
+            
+            // HYDRATE AUDIT TRAIL FROM DISK
+            this.completedActionsHistory = discussion.agentSession.completedActionsHistory || [];
+            Logger.info(`[Sovereign] Restored audit trail: ${this.completedActionsHistory.length} events loaded.`);
+
+            this.sessionState.blacklistedTools = new Set(discussion.agentSession.blacklistedTools || []);
+            this.sessionState.extensionVersion = currentVersion;
+
+            if (isUpdated && this.sessionState.blacklistedTools.size > 0) {
+                Logger.info(`[Sovereign] Extension update detected (${lastSessionVersion} -> ${currentVersion}). Clearing tool blacklist.`);
+                this.sessionState.blacklistedTools.clear();
+
+                // Clean working memory of "BROKEN" warnings to let the agent try again
+                this.sessionState.workingMemory = this.sessionState.workingMemory.filter(
+                    m => !m.includes("BROKEN and now FORBIDDEN") && !m.includes("DIAGNOSTIC: Tool")
+                );
+
+                this.ui.addMessageToDiscussion({ 
+                    role: 'system', 
+                    content: `🚀 **Extension Update Detected:** Infrastructure state reset. Previously broken tools are now available for testing.` 
+                });
+            }
+        } else {
+            this.sessionState.extensionVersion = currentVersion;
         }
         
         if (!this.sessionState.secureCredentials) {
@@ -654,13 +705,23 @@ Keep it strictly technical and extremely concise.`
         if (!this.currentPlan) {
             this.failureMemory.clear();
             this.consecutiveTaskFailures.clear();
-            this.sessionState.isSafetyCheckPassed = false; // Reset for new mission
+            // Only reset safety check if there is no existing session history
+            if (this.completedActionsHistory.length === 0) {
+                this.sessionState.isSafetyCheckPassed = false;
+            }
         } else {
             // --- CONTINUITY PROTOCOL ---
             // If a plan already exists, treat the incoming user message as a "Direct Intervention"
             this.isActive = true; // Ensure agent is set to active to resume the loop
-            this.completedActionsHistory.push(`[USER INTERVENTION]\n- FEEDBACK: "${content}"\n- ACTION: Adjusting strategy based on user input.`);
-            this.ui.addMessageToDiscussion({ role: 'system', content: '🔄 **Integrating feedback...** Resuming mission.' });
+
+            // Avoid double-logging the same intervention if re-entering the tab
+            const lastLog = this.completedActionsHistory[this.completedActionsHistory.length - 1];
+            const newLog = `[USER INTERVENTION]\n- FEEDBACK: "${content}"\n- ACTION: Adjusting strategy based on user input.`;
+
+            if (lastLog !== newLog) {
+                this.completedActionsHistory.push(newLog);
+                this.ui.addMessageToDiscussion({ role: 'system', content: '🔄 **Integrating feedback...** Resuming mission.' });
+            }
             this.ui.updateAgentMode(true);
         }
 
@@ -697,16 +758,22 @@ Please commit or stash your work before starting an iterative debug session to e
 
         try {
             // --- PHASE 0: HYGIENE & SAFETY CHECK ---
+            this.processManager.updateDescription(processId, "🛡️ Sovereign: Verifying workspace safety...");
             const safetyPassed = await this.preFlightSafetyCheck(workspaceFolder, controller.signal);
             if (!safetyPassed) return;
 
-            // --- BLOCKING DEBUG FLOW ---
-            if (isDebugActive) {
-                this.processManager.updateDescription(processId, "🛰️ Orchestrator: Initializing Debug Sandbox...");
-                await this.runDebuggingOrchestrator(content, controller.signal);
-                // After Debug finishes, we synthesize.
-                await this.synthesizeFinalResponse(content, controller.signal, this.currentDiscussion.model);
-                return; 
+            // --- PHASE 0.5: CONTEXT BOOTSTRAP ---
+            this.processManager.updateDescription(processId, "🧠 Librarian: Scanning project structure...");
+            // Pre-warm the file index so the first reasoning step is instant
+            await this.contextManager.getContextContent({ includeTree: true, signal: controller.signal });
+
+            // --- PHASE 0.6: MISSION DISPATCHING ---
+            this.processManager.updateDescription(processId, "🎯 Dispatcher: Selecting mission profile...");
+            await this.dispatchMissionProfile(content, controller.signal);
+
+            // FORCE UI SYNC
+            if (this.currentPlan) {
+                await this.displayAndSavePlan(this.currentPlan);
             }
 
             // --- CONTINUOUS AUTONOMOUS AGENT FLOW ---
@@ -729,7 +796,9 @@ Please commit or stash your work before starting an iterative debug session to e
                     workingMemory: this.sessionState.workingMemory,
                     secureCredentials: this.sessionState.secureCredentials,
                     isSafetyCheckPassed: this.sessionState.isSafetyCheckPassed,
-                    completedActionsHistory: this.completedActionsHistory
+                    completedActionsHistory: this.completedActionsHistory,
+                    blacklistedTools: Array.from(this.sessionState.blacklistedTools),
+                    extensionVersion: this.sessionState.extensionVersion
                 };
                 await this.discussionManager.saveDiscussion(this.currentDiscussion);
             }
@@ -762,6 +831,7 @@ Please commit or stash your work before starting an iterative debug session to e
                 tasks: [],
                 status: 'active'
             };
+            this.completedActionsHistory.push(`[MISSION START]\n- OBJECTIVE: "${objective}"\n- TIMESTAMP: ${new Date().toISOString()}`);
             await this.displayAndSavePlan(this.currentPlan);
         }
 
@@ -945,6 +1015,7 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
 
                     // Conversational fallback
                     if (cleanResponse.length < 1000) {
+                        this.completedActionsHistory.push(`[CONVERSATIONAL FALLBACK]\n- CONTENT: ${cleanResponse.substring(0, 200)}...`);
                         this.ui.addMessageToDiscussion({ role: 'assistant', content: cleanResponse, model });
                         break; 
                     }
@@ -984,15 +1055,24 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
 
                 this.currentPlan!.tasks.push(task);
                 await this.displayAndSavePlan(this.currentPlan);
-            }
+                }
 
-            // 5. Execute Action
-            this.processManager?.updateDescription(processId, `Genie: Executing ${task.action}...`);
-            this.ui.updateGeneratingState();
+                // 5. Emit In-Stream Activity Card
+                await this.ui.addMessageToDiscussion({
+                id: `agent_task_${task.id}`,
+                role: 'assistant',
+                content: `<agent_task id="${task.id}" />`, // Tag for renderer to build the merged card
+                skipInPrompt: true // Don't feed the UI card back to LLM context
+                });
 
-            if (task.action === 'submit_response') {
+                // Execute Action
+                this.processManager?.updateDescription(processId, `Genie: Executing ${task.action}...`);
+                this.ui.updateGeneratingState();
+
+                if (task.action === 'submit_response') {
                 task.status = 'completed';
                 task.result = "Response submitted to chat.";
+                this.completedActionsHistory.push(`[MISSION COMPLETE]\n- ACTION: submit_response\n- RESPONSE: ${task.parameters.response.substring(0, 100)}...`);
                 await this.displayAndSavePlan(this.currentPlan);
 
                 const reflectionPrompt = this.failureMemory.getReflectionPrompt(task.action, task.parameters);
@@ -1049,6 +1129,11 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
             let result;
             try {
                 result = await Promise.race([resultPromise, timeoutPromise]);
+
+                // Update In-Stream Activity Card with result
+                if (this.ui.updateMessageContent) {
+                    await this.ui.updateMessageContent(`agent_task_${task.id}`, `<agent_task id="${task.id}" />`);
+                }
 
                 // --- AUTOMATED EDIT REPAIR LOOP ---
                 const isEditAction = ['edit_code', 'generate_code', 'markdown_coding'].includes(task.action);
@@ -1173,19 +1258,27 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
     }
 
         public async resumeTask(taskId: number, processId: string, signal: AbortSignal) {
-        if (!this.currentPlan || !this.currentDiscussion) return;
-        const task = this.currentPlan.tasks.find(t => t.id === taskId);
-        if (!task) return;
+            if (!this.currentPlan || !this.currentDiscussion) return;
+            const task = this.currentPlan.tasks.find(t => t.id === taskId);
+            if (!task) return;
 
-        (task as any).needsApproval = false;
-        task.status = 'pending'; // Leave it as pending so runAutonomousLoop picks it up
-        await this.displayAndSavePlan(this.currentPlan);
+            (task as any).needsApproval = false;
 
-        this.isActive = true;
-        this.ui.updateAgentMode(true);
-        
-        await this.runAutonomousLoop("User approved the task.", signal, processId, this.currentDiscussion.model);
-    }
+            // If it was a safety check, we don't re-run it, we assume the form handled it
+            if (task.action === 'safety_check') {
+                task.status = 'completed';
+                task.result = "Confirmed by user.";
+            } else {
+                task.status = 'pending'; 
+            }
+
+            await this.displayAndSavePlan(this.currentPlan);
+
+            this.isActive = true;
+            this.ui.updateAgentMode(true);
+
+            await this.runAutonomousLoop("User approved the task.", signal, processId, this.currentDiscussion.model);
+        }
 
     public async editAndRetryTask(taskId: number, newParams: any) {
         if (!this.currentPlan || !this.processManager || !this.currentDiscussion) return;
@@ -1224,10 +1317,21 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
             const res = await this.executeTask(task.action, newParams, controller.signal, tempEnv as any);
             task.status = res.success ? 'completed' : 'failed';
             task.result = res.output;
+
+            // Clean up unverified files if the manual run was a test/execution
+            if (['execute_command', 'run_file', 'execute_python_script'].includes(task.action) && res.success) {
+                this.sessionState.unverifiedFiles.clear();
+            }
+
             await this.displayAndSavePlan(this.currentPlan);
 
-            const msg = `Manual Override: User re-ran ${task.action} with ${JSON.stringify(newParams)}.\nResult:\n${res.output}\nPlease continue your autonomous loop based on this new result.`;
-            await this.runAutonomousLoop(this.currentPlan.objective + `\n${msg}`, controller.signal, processId, this.currentDiscussion.model, [{ role: 'user', content: msg }]);
+            const msg = `Manual Override Applied: Task ${task.id} (${task.action}) was manually executed by the user with corrected parameters. 
+            Result of Manual Execution:
+            ${res.output}
+
+            INSTRUCTION: Integrate this result into your world model and resume the mission immediately.`;
+
+            await this.runAutonomousLoop(this.currentPlan.objective, controller.signal, processId, this.currentDiscussion.model, [{ role: 'system', content: msg }]);
 
         } catch (e: any) {
             task.status = 'failed';
@@ -1471,17 +1575,24 @@ Please provide a clear, concise final response to the user summarizing the outco
 
             if (task.action === 'read_file') {
                 const checkPath = (resolvedParams.path || resolvedParams.file || "").replace(/\\/g, '/');
-                // BYPASS: If the file has been modified in this session, allow the read to verify results
-                if (!this.sessionState.unverifiedFiles.has(checkPath)) {
+                // BYPASS 1: If the file has been modified (dirty), allow the read to verify changes.
+                // BYPASS 2: If the context was recently pruned (context usage > 80%), allow the read 
+                // because the file might have been evicted from the prompt to save space.
+                const isDirty = this.sessionState.unverifiedFiles.has(checkPath);
+                const isContextHeavy = (this.completedActionsHistory.some(h => h.includes("Context usage is at")));
+
+                if (!isDirty && !isContextHeavy) {
                     if (includedFiles.some(f => f.path === checkPath && f.state === 'included')) {
                         redundantPath = checkPath;
                     }
                 }
             } else if (task.action === 'read_files') {
                 const paths = (resolvedParams.paths || []).map((p: string) => p.replace(/\\/g, '/'));
+                const isContextHeavy = (this.completedActionsHistory.some(h => h.includes("Context usage is at")));
+
                 for (const p of paths) {
-                    // BYPASS: Only block if the file is NOT dirty
-                    if (!this.sessionState.unverifiedFiles.has(p)) {
+                    const isDirty = this.sessionState.unverifiedFiles.has(p);
+                    if (!isDirty && !isContextHeavy) {
                         if (includedFiles.some(f => f.path === p && f.state === 'included')) {
                             redundantPath = p;
                             break;
@@ -1510,18 +1621,20 @@ Please provide a clear, concise final response to the user summarizing the outco
                 }
             }
 
-            // 2. Chronological Invalidation: Check if any "Write" actions happened in between.
+            // 2. Chronological Invalidation: If the filesystem was touched AFTER the last execution, it is NO LONGER redundant.
+            // This allows the "Test -> Fix -> Run same test" cycle.
             if (redundantSuccess) {
-                const intermediateTasks = pastTasks.filter(t => t.id > redundantSuccess!.id);
-                const filesystemModified = intermediateTasks.some(t => 
-                    ['edit_code', 'generate_code', 'replaceCode', 'applyFileContent', 'delete_file', 'move_file', 'markdown_coding'].includes(t.action)
-                );
-
-                if (filesystemModified) {
-                    Logger.info(`[Harness] Redundancy ignored for Task ${task.id}: Filesystem was modified since Task ${redundantSuccess.id}.`);
-                    redundantSuccess = undefined; // Force re-execution
+                const lastExecTime = (redundantSuccess as any)._executionTimestamp || 0;
+                if (this.sessionState.lastFilesystemWriteTime > lastExecTime) {
+                    Logger.info(`[Harness] Redundancy invalidated for Task ${task.id}: Filesystem state changed since previous run.`);
+                    redundantSuccess = undefined;
                 }
             }
+
+            // 3. Failure Reset: If code was modified, allow retrying failed commands (e.g. retrying a test that previously failed)
+            const hasFailedBefore = this.failureMemory.hasFailedBefore(task.action, resolvedParams);
+            const lastFailureTime = (this.failureMemory as any)._lastFailureTime || 0;
+            const allowRetryAfterFix = hasFailedBefore && (this.sessionState.lastFilesystemWriteTime > lastFailureTime);
 
             // Stuck in a rut detector (high failure rate on same tool consecutively)
             const recentFailures = pastTasks.slice(-3).filter(t => t.status === 'failed');
@@ -1579,7 +1692,7 @@ Please provide a clear, concise final response to the user summarizing the outco
             2. Only after a verification tool returns a result can you apply further modifications.
             3. Do NOT repeat this edit until you have evidence that further changes are necessary.`
                 };
-            } else if (this.failureMemory.hasFailedBefore(task.action, resolvedParams)) {
+            } else if (hasFailedBefore && !allowRetryAfterFix) {
                 const shaker = [
                     "COMPLIANCE ERROR: Repetitive thought pattern detected.",
                     "CIRCUIT BREAKER: Action blocked. You already tried this and it didn't work.",
@@ -1705,7 +1818,19 @@ Please provide a clear, concise final response to the user summarizing the outco
         }
 
         task.result = result.output;
-        task.status = result.success ? 'completed' : 'failed';
+
+        // --- 🛡️ ERROR HEURISTIC ---
+        // If the command "succeeded" (exit 0) but the output contains clear OS error strings
+        // like "path not found" or "not recognized", force the status to failed.
+        const osErrorPatterns = [
+            "chemin d'accès spécifié est introuvable",
+            "is not recognized as an internal or external command",
+            "cannot find the path specified"
+        ];
+        const containsOsError = osErrorPatterns.some(p => result.output.toLowerCase().includes(p));
+
+        task.status = (result.success && !containsOsError) ? 'completed' : 'failed';
+        (task as any)._executionTimestamp = Date.now();
 
         // --- STATE UPDATE: VERIFICATION TRACKING ---
         if (result.success) {
@@ -1715,6 +1840,7 @@ Please provide a clear, concise final response to the user summarizing the outco
             if (isWriteAction) {
                 const targetFile = resolvedParams.file_path || resolvedParams.path;
                 if (targetFile) this.sessionState.unverifiedFiles.add(targetFile);
+                this.sessionState.lastFilesystemWriteTime = Date.now();
             }
 
             if (isVerifyAction) {
@@ -1836,9 +1962,66 @@ Please provide a clear, concise final response to the user summarizing the outco
             }
         }
         
-        // Scan task output (or evolution response) for memory updates
+        // --- 🛡️ AUTONOMOUS MEMORY & MILESTONE TRIGGER ---
+        if (result.success) {
+            const isSignificant = ['edit_code', 'generate_code', 'markdown_coding', 'execute_command', 'run_file'].includes(task.action);
+
+            if (isSignificant && this.projectMemoryManager) {
+                // Determine if we should reflect based on the tool output
+                const model = task.model || specialistModel;
+
+                const artifactPrompt = `
+        ### 🚩 MILESTONE ANALYZER
+        You just successfully executed: \`${task.action}\`.
+        **Result**: ${result.output.substring(0, 1000)}
+
+        **TASK**:
+        1. If this step represents a technical "win" or discovery, output a \`<milestone title="..." achievements="..." challenges="..." solutions="..." />\` tag.
+        2. If you learned a permanent lesson (e.g. "Library X requires parameter Y"), output a \`<project_memory action="add" id="..." title="..." importance="100">...</project_memory>\` tag.
+        3. If no significant progress was made, respond with "NO_ARTIFACT".
+        Output ONLY the tags.`.trim();
+
+                try {
+                    const artifactResponse = await this.lollmsApi.sendChat([
+                        { role: 'system', content: "You are the Project Historian. Your job is to manifest technical progress and memories." },
+                        { role: 'user', content: artifactPrompt }
+                    ], null, signal, model);
+
+                    if (!artifactResponse.includes("NO_ARTIFACT")) {
+                        // 1. Process the tags for persistent storage (DNA)
+                        await this.projectMemoryManager.processTags(artifactResponse);
+
+                        // 2. Emit the tags to the chat stream so the renderer shows the Pink/Purple cards
+                        await this.ui.addMessageToDiscussion({
+                            id: `artifact_${task.id}_${Date.now()}`,
+                            role: 'system',
+                            content: artifactResponse,
+                            skipInPrompt: true // Don't loop this UI data back to the LLM
+                        });
+                    }
+                } catch (e) {
+                    Logger.error("Failed to generate autonomous artifact", e);
+                }
+            }
+        }
+
+        // Scan task output directly as well for any tags the specialist might have added natively
         if (this.projectMemoryManager) {
             await this.projectMemoryManager.processTags(result.output);
+        }
+
+        // PERSIST SESSION STATE AFTER EVERY ACTION
+        if (this.currentDiscussion) {
+            this.currentDiscussion.agentSession = {
+                replVariables: this.sessionState.replVariables,
+                workingMemory: this.sessionState.workingMemory,
+                secureCredentials: this.sessionState.secureCredentials,
+                isSafetyCheckPassed: this.sessionState.isSafetyCheckPassed,
+                completedActionsHistory: this.completedActionsHistory, // Save the log
+                blacklistedTools: Array.from(this.sessionState.blacklistedTools),
+                extensionVersion: this.sessionState.extensionVersion
+            };
+            await this.discussionManager.saveDiscussion(this.currentDiscussion);
         }
 
         await this.displayAndSavePlan(this.currentPlan);
@@ -1906,6 +2089,120 @@ Please provide a clear, concise final response to the user summarizing the outco
             : { allowed: false, message: `Permission Denied: Access to ${filePath} is outside the selected workspace scope.` };
     }
 
+    /**
+     * Analyzes the objective and switches the active mission profile if a better match is found.
+     */
+    private async dispatchMissionProfile(objective: string, signal: AbortSignal): Promise<void> {
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        if (!config.get<boolean>('agent.autoProfileSwitch')) return;
+
+        const profiles = config.get<any[]>('agentProfiles') || [];
+        const currentProfileId = this.currentDiscussion?.capabilities?.activeAgentProfileId || config.get<string>('agent.activeProfile');
+
+        const profileCatalogue = profiles.map(p => `- ID: ${p.id}\n  Name: ${p.name}\n  Focus: ${p.description}`).join('\n');
+
+        const dispatchPrompt = `You are the Mission Dispatcher.
+    Your goal is to select the most specialized Mission Profile for the user's objective.
+
+    ### AVAILABLE PROFILES:
+    ${profileCatalogue}
+
+    ### USER OBJECTIVE:
+    "${objective}"
+
+    ### INSTRUCTION:
+    1. Identify if one of the specialized profiles above is a significantly better fit than a general 'software_architect'.
+    2. If the current profile is already optimal, or if no specialized profile fits perfectly, stay with the current one.
+    3. Return ONLY the ID of the chosen profile. No prose.
+
+    Current Profile ID: ${currentProfileId}
+    Chosen Profile ID:`;
+
+        try {
+            const response = await this.lollmsApi.sendChat([
+                { role: 'system', content: "You are a specialized router. Output only a Profile ID." },
+                { role: 'user', content: dispatchPrompt }
+            ], null, signal, this.lollmsApi.getModelName(), { temperature: 0.1 });
+
+            const chosenId = response.trim();
+            const exists = profiles.find(p => p.id === chosenId);
+
+            if (exists && chosenId !== currentProfileId) {
+                Logger.info(`[Dispatcher] Switching profile from ${currentProfileId} to ${chosenId}`);
+
+                // Update local session and discussion
+                if (this.currentDiscussion?.capabilities) {
+                    this.currentDiscussion.capabilities.activeAgentProfileId = chosenId;
+                }
+
+                const switchLog = `[DISPATCHER] 🎯 Objective Analysis: Detected specialized mission requirements. \n- ACTION: Automatically switched from \`${currentProfileId}\` to specialized profile \`${chosenId}\` (${exists.name}).`;
+                this.completedActionsHistory.push(switchLog);
+
+                this.ui.addMessageToDiscussion({ 
+                    role: 'system', 
+                    content: `🎯 **Specialized Protocol Engaged:** Detected a ${exists.name} mission. Switching to optimized profile.` 
+                });
+            }
+        } catch (e: any) {
+            Logger.warn(`[Dispatcher] Profile analysis failed: ${e.message}`);
+        }
+    }
+
+    /**
+     * Specialized Security Audit pass.
+     * Uses an isolated context to prevent mission bias from overriding safety rules.
+     */
+    private async performSecurityAudit(command: string, signal: AbortSignal): Promise<{ safe: boolean, reason: string }> {
+        const config = vscode.workspace.getConfiguration('lollmsVsCoder');
+        const model = config.get<string>('inspectorModelName') || this.lollmsApi.getModelName();
+
+        const systemPrompt = `You are the Sovereign Security Auditor. 
+    Your ONLY goal is to prevent malicious shell execution while allowing legitimate software engineering tasks.
+
+    ### 🛡️ SECURITY RULES:
+    1. **CRITICAL BLOCKS**: 
+    - No downloading and executing unknown binaries/scripts from the internet (malware risk).
+    - No searching for or exfiltrating credentials (~/.ssh, ~/.aws, .env files outside workspace).
+    - No operations on system directories (/etc, /windows, /bin).
+    2. **WORKSPACE BOUNDARIES**: No path traversal (../../) to access files outside the current project roots.
+    3. **DESTRUCTIVE ACTIONS**:
+    - Deleting code is ALLOWED only if it is inside a Git repository (recoverable).
+    - Massive deletions in non-git folders are FORBIDDEN.
+    4. **CREDENTIAL STEALING**: Block any command that tries to 'cat' or 'grep' for API keys to pipe them to an external URL.
+
+    ### 📝 DECISION LOGIC:
+    - If the command is safe for a developer environment: "STATUS: PASS"
+    - If dangerous: "STATUS: FAIL" followed by a 1-sentence reason.
+
+    Output ONLY the status and the reason.`;
+
+        const userPrompt = `### ENVIRONMENT
+    Workspace Root: ${this.currentWorkspaceFolder?.uri.fsPath}
+    Platform: ${process.platform}
+
+    ### COMMAND TO AUDIT
+    \`\`\`bash
+    ${command}
+    \`\`\`
+
+    Is this command safe?`;
+
+        try {
+            const response = await this.lollmsApi.sendChat([
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt }
+            ], null, signal, model, { temperature: 0.1 });
+
+            const clean = response.trim();
+            const safe = clean.includes("STATUS: PASS");
+            const reason = clean.split("STATUS: FAIL")[1]?.trim() || "Security violation detected.";
+
+            return { safe, reason };
+        } catch (e: any) {
+            return { safe: false, reason: `Security Audit Timeout/Error: ${e.message}` };
+        }
+    }
+
     private checkGlobalPermission(tool: ToolDefinition, params?: any): { allowed: boolean, message?: string } {
         // 1. Check Project-Level Whitelist
         if (params?.path || params?.file_path || params?.source || params?.destination) {
@@ -1952,13 +2249,36 @@ Please provide a clear, concise final response to the user summarizing the outco
         try {
             return await tool.execute(params, env, signal);
         } catch (error: any) {
-            console.error(`[Tool Failure] ${action}:`, error);
-            Logger.error(`Tool '${action}' crashed with exception:`, error);
+            const isDebugOn = this.currentDiscussion?.capabilities?.debugMode === true;
+            
+            console.error(`[Tool implementation Error] ${action}:`, error);
+            Logger.error(`Tool '${action}' implementation crashed:`, error);
+
+            let errorOutput = `❌ **CRITICAL TOOL ERROR**: The tool implementation for \`${action}\` crashed.`;
+            
+            if (isDebugOn) {
+                const stack = error.stack || "No stack trace available.";
+                const sanitizedStack = stack.replace(new RegExp(os.homedir(), 'g'), '~'); // Redact local user path
+
+                errorOutput += `\n\n### 🛠️ TOOL BUG REPORT (Debug Mode Active)\n` +
+                              `- **Exception**: \`${error.name}: ${error.message}\`\n` +
+                              `- **Action**: \`${action}\`\n` +
+                              `- **Stack Trace**:\n\`\`\`\n${sanitizedStack}\n\`\`\`\n` +
+                              `**INSTRUCTION**: This error comes from the Lollms Extension tool code. \n` +
+                              `MANDATORY: Tool \`${action}\` is now **FORBIDDEN** for the rest of this session. I have blacklisted it to protect your budget.\n` +
+                              `If there is NO OTHER tool to complete the mission, you MUST use \`submit_response\` immediately to inform the user and STOP.\n\n` +
+                              `<lollms_tool_bug_report action="${action}" error="${encodeURIComponent(error.message)}" stack="${encodeURIComponent(sanitizedStack)}" />`;
+
+                // Active Circuit Breaker
+                this.sessionState.blacklistedTools.add(action);
+                this.sessionState.workingMemory.push(`CRITICAL: Tool '${action}' is BROKEN and now FORBIDDEN. Do not attempt to use it again.`);
+            }
 
             if (error.message && (error.message.includes('EACCES') || error.message.includes('permission denied'))) {
                 return { success: false, output: `❌ **OS Permission Error.**\nRaw Error: ${error.message}` };
             }
-            throw error;
+
+            return { success: false, output: errorOutput };
         }
     }
     public async submitFinalMessage(message: ChatMessage) {

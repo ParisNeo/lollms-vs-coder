@@ -29,6 +29,7 @@ export class TabsTreeProvider implements vscode.TreeDataProvider<vscode.TreeItem
         const tabs = [
             new TabItem("Chat & Discussions", "chat", "comment-discussion", activeTab === 'chat'),
             new TabItem("Expert Personas", "personas", "account", activeTab === 'personas'),
+            new TabItem("Workflow Studio", "studio", "type-hierarchy", activeTab === 'studio'),
             new TabItem("Skills Library", "skills", "lightbulb", activeTab === 'skills'),
             new TabItem("Project Memory", "memory", "chip", activeTab === 'memory'),
             new TabItem("Librarian (Knowledge)", "librarian", "library", activeTab === 'librarian'),
@@ -71,8 +72,16 @@ export function registerViews(context: vscode.ExtensionContext, services: Lollms
     context.subscriptions.push(vscode.window.registerTreeDataProvider('lollmsCodeActionsView', codeActionTreeProvider));
 
     // tool tester
-    const toolTesterProvider = new (require('../commands/toolTesterProvider').ToolTesterProvider)(services.toolManager);
+    // tool tester
+    const { ToolTesterProvider } = require('../commands/toolTesterProvider');
+    const toolTesterProvider = new ToolTesterProvider(services.toolManager);    
     services.treeProviders.toolTester = toolTesterProvider;
+    // Allow toolManager to notify provider when MCP tools load
+    if (services.toolManager) {
+        vscode.commands.registerCommand('lollms-vs-coder.refreshTools', () => {
+            toolTesterProvider.refresh();
+        });
+    }
     vscode.window.registerTreeDataProvider('lollmsDevToolsView', toolTesterProvider);
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.openToolTester', (tool) => {

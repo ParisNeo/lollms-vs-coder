@@ -14,7 +14,12 @@ export class ToolTesterProvider implements vscode.TreeDataProvider<ToolItem> {
 
     async getChildren(element?: ToolItem): Promise<ToolItem[]> {
         if (element) return [];
-        return this.toolManager.getAllTools().map(t => new ToolItem(t));
+        if (!this.toolManager) {
+            console.error("[ToolTester] ToolManager is undefined");
+            return [];
+        }
+        const tools = this.toolManager.getAllTools() || [];
+        return tools.map((t: any) => new ToolItem(t));
     }
 }
 

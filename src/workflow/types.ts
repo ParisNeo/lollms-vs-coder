@@ -2,13 +2,36 @@ export interface NodeData {
     [key: string]: any;
 }
 
+export type WorkflowNodeType = 
+    | 'start' 
+    | 'agent' 
+    | 'tool' 
+    | 'condition' 
+    | 'parallel' 
+    | 'merge' 
+    | 'loop' 
+    | 'memory_update';
+
 export interface WorkflowNode {
     id: string;
-    type: string; // 'start', 'end', 'llm', 'file_iterator', 'move_file', 'code_exec'
+    type: WorkflowNodeType;
     position: { x: number; y: number };
-    data: NodeData;
-    inputs: { [key: string]: string }; // Map input name to source node ID
-    outputs: { [key: string]: any };   // Runtime outputs
+    data: {
+        label: string;
+        // For Agent Nodes
+        persona?: string;
+        model?: string;
+        // For Tool Nodes
+        toolName?: string;
+        params?: Record<string, any>;
+        // For Condition Nodes
+        criteria?: string; 
+        // For Loop Nodes
+        maxIterations?: number;
+    };
+    // Runtime State
+    status?: 'idle' | 'running' | 'completed' | 'error';
+    lastOutput?: any;
 }
 
 export interface WorkflowEdge {

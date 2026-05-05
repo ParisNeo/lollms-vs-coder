@@ -588,10 +588,15 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string, s
         }
         const statusEl = document.getElementById('generating-status-text');
         const raiseHandBtn = document.getElementById('raiseHandButton');
+        const stopBtn = document.getElementById('stopButton');
 
         if (raiseHandBtn) {
-            // Use the function argument directly, not the undefined 'message' variable
             raiseHandBtn.style.display = showRaiseHand ? 'flex' : 'none';
+        }
+
+        if (stopBtn) {
+            // The stop button should only be visible while generating
+            stopBtn.style.display = isGenerating ? 'flex' : 'none';
         }
 
         if (statusEl && statusText) {

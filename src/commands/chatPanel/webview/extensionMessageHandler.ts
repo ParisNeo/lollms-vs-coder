@@ -643,6 +643,8 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const maxRetriesInp = document.getElementById('setting-maxEditRetries') as HTMLInputElement;
                     if (maxStepsInp) maxStepsInp.value = message.settings.maxSteps;
                     if (maxRetriesInp) maxRetriesInp.value = message.settings.maxEditRetries;
+                    const autoSwitchInp = document.getElementById('setting-autoProfileSwitch') as HTMLInputElement;
+                    if (autoSwitchInp) autoSwitchInp.checked = !!message.settings.autoProfileSwitch;
 
                     // 2. Populate Mission Profile Dropdown
                     const profileSelect = document.getElementById('setting-activeProfile') as HTMLSelectElement;
@@ -943,36 +945,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 }
                 break;
             }
-            case 'verifyAllResult':
-                {
-                    const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
-                    const verifyBtn = wrapper?.querySelector('.apply-all-btn.secondary-btn') as HTMLButtonElement;
-                    if (verifyBtn) {
-                        verifyBtn.disabled = false;
-                        verifyBtn.innerHTML = '<span class="codicon codicon-search"></span> Verify Status';
-                    }
 
-                    const results = message.results; // { "block-hunk": "status" }
-                    const rows = wrapper?.querySelectorAll('.apply-row');
-                    rows?.forEach((row: any) => {
-                        const bIdx = row.dataset.blockIndex;
-                        const hIdx = row.dataset.hunkIndex || 'full';
-                        const status = results[`${bIdx}-${hIdx}`];
-                        const iconEl = row.querySelector('.status-icon');
-
-                        if (status === 'applied') {
-                            row.style.background = 'rgba(15, 157, 88, 0.1)';
-                            iconEl.innerHTML = '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span>';
-                        } else if (status === 'ready') {
-                            row.style.background = 'rgba(0, 122, 204, 0.1)';
-                            iconEl.innerHTML = '<span class="codicon codicon-clock" style="color:var(--vscode-charts-blue)"></span>';
-                        } else {
-                            row.style.background = 'rgba(244, 71, 71, 0.1)';
-                            iconEl.innerHTML = '<span class="codicon codicon-error" style="color:var(--vscode-charts-red)"></span>';
-                        }
-                    });
-                    break;
-                }
             case 'applyAllResult':
                 {
                     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);

@@ -1902,7 +1902,6 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
     if (this._inputResolver) {
         let rawText = (typeof userMessage.content === 'string') ? userMessage.content : "User provided input.";
 
-        // Handle potential multipart content
         if (Array.isArray(userMessage.content)) {
             const textPart = userMessage.content.find(p => p.type === 'text');
             if (textPart) rawText = textPart.text;
@@ -1911,25 +1910,14 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
         const resolver = this._inputResolver;
         this._inputResolver = null;
 
-        // Create a visual-only copy for the chat bubble
-        let visualContent = rawText;
-        if (rawText.startsWith('FORM_SUBMISSION:')) {
-            try {
-                const data = JSON.parse(rawText.substring(16));
-                const vals = Object.values(data);
-                // Map internal values to readable labels if possible, else use raw values
-                visualContent = `🛡️ **Safety Action Confirmed:** ${vals.join(', ')}`;
-            } catch(e) {
-                visualContent = "Form submitted.";
-            }
+        // SILENT SIGNAL: If it's a form submission, don't add the "You" bubble to chat
+        // @ts-ignore
+        if (!message.isSilentSignal) {
+            await this.addMessageToDiscussion(userMessage);
         }
-
-        userMessage.content = visualContent;
-        await this.addMessageToDiscussion(userMessage);
 
         // Resolve with the RAW text so AgentManager can parse the JSON
         resolver(rawText);
-
         this.updateGeneratingState();
         return;
     }
@@ -4472,11 +4460,16 @@ Task:
 
                     // 2. State management for Agent
                     if (this.agentManager) {
+                        const plan = (this.agentManager as any).currentPlan;
                         if (isInterruption) {
                             // PAUSE: Keep the agent in "Active" intent but stop the loop execution
                             (this.agentManager as any).isActive = false; 
-                            if (this.agentManager['currentPlan']) {
-                                this.agentManager['currentPlan'].status = 'stale';
+                            if (plan) {
+                                plan.status = 'stale';
+                                // Mark active tasks as stale so they stop spinning
+                                plan.tasks.forEach((t: any) => {
+                                    if (t.status === 'in_progress') t.status = 'pending';
+                                });
                             }
 
                             await this.addMessageToDiscussion({
@@ -4485,13 +4478,21 @@ Task:
                             });
                         } else {
                             // KILL: Complete exit from agent mode. 
-                            // Force isActive to false first to break any race conditions in the loop.
                             (this.agentManager as any).isActive = false;
-                            if (this.agentManager['currentPlan']) {
-                                this.agentManager['currentPlan'].status = 'failed';
+                            if (plan) {
+                                plan.status = 'failed';
+                                // Force fail all unfinished tasks
+                                plan.tasks.forEach((t: any) => {
+                                    if (t.status === 'in_progress' || t.status === 'pending') {
+                                        t.status = 'failed';
+                                        t.result = t.result || "Terminated by user.";
+                                    }
+                                });
                             }
                             this.updateAgentMode(false);
                         }
+                        // Refresh the UI plan state immediately
+                        this.agentManager.displayPlan(plan);
                     }
 
                     // 3. Cleanup UI
@@ -5788,6 +5789,12 @@ Task:
                                 <label style="margin-top:15px;">File Edit Retries</label>
                                 <input type="number" id="setting-maxEditRetries" min="0" max="10" style="margin-bottom:4px;">
                                 <p class="help-text">Attempts to fix failed patches/marker leaks.</p>
+
+                                <div class="checkbox-container" style="margin-top:15px; border:none; background:transparent; padding:0;">
+                                    <label class="switch" style="width:24px; height:14px;"><input type="checkbox" id="setting-autoProfileSwitch"><span class="slider"></span></label>
+                                    <label for="setting-autoProfileSwitch" style="font-size:11px; font-weight:bold;">Auto Profile Switch</label>
+                                </div>
+                                <p class="help-text">AI auto-selects best mission protocol.</p>
                             </div>
 
                             <div style="flex:1"></div>

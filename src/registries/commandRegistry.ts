@@ -18,6 +18,7 @@ export async function registerCommands(
     services: LollmsServices,
     getActiveWorkspace: () => vscode.WorkspaceFolder | undefined
 ) {
+    // CRITICAL: Ensure UI commands (tabs, logs, etc.) are registered first
     registerUICommands(context, services);
     await registerChatCommands(context, services, getActiveWorkspace);
     registerContextCommands(context, services);

@@ -108,14 +108,16 @@ export class LollmsAPI {
 
   private createHttpsAgent(): https.Agent {
       const certPath = this.config.sslCertPath ? this.config.sslCertPath.replace(/^['"]|['"]$/g, '') : '';
-      
+
       const options: https.AgentOptions = {
           keepAlive: true,
           rejectUnauthorized: !this.config.disableSslVerification,
+          // Support older/custom TLS configurations often found in local AI servers
+          ciphers: this.config.disableSslVerification ? 'ALL' : undefined
       };
 
       if (this.config.disableSslVerification) {
-          // Additional layer of bypass for some node versions
+          // Additional layer of bypass for hostname/identity mismatches on local IPs
           options.checkServerIdentity = () => undefined;
       }
 
@@ -125,12 +127,12 @@ export class LollmsAPI {
               if (stat.isFile()) {
                   const certBuffer = fs.readFileSync(certPath);
                   options.ca = certBuffer;
-                  Logger.info(`Loaded custom SSL cert buffer: ${certPath}`);
+                  Logger.info(`[SSL] Custom CA loaded: ${certPath}`);
               } else {
-                  Logger.warn(`SSL Cert Path is a directory, skipping: ${certPath}`);
+                  Logger.warn(`[SSL] Path is a directory: ${certPath}`);
               }
           } catch (e) {
-              Logger.error(`Failed to read SSL cert: ${certPath}`, e);
+              Logger.error(`[SSL] Failed to load cert file: ${certPath}`, e);
           }
       }
 
@@ -255,12 +257,15 @@ export class LollmsAPI {
 
     try {
         const isHttps = url.startsWith('https');
+        // Only use the custom agent if the URL belongs to the user-configured API host.
+        // This prevents using the self-signed CA cert for cloud APIs like Google or Anthropic.
+        const useAgent = isHttps && (url.startsWith(this.baseUrl) || backend === 'lollms' || backend === 'ollama' || backend === 'openwebui');
+
         const response = await fetch(url, {
             method: 'GET',
             headers,
             signal: controller.signal,
-            // Use the agent for all HTTPS calls regardless of backend
-            agent: isHttps ? this.httpsAgent : undefined
+            agent: useAgent ? this.httpsAgent : undefined
         });
 
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -328,7 +333,8 @@ export class LollmsAPI {
                 text: safeText 
             }),
             signal: controller.signal,
-            agent: isHttps ? this.httpsAgent : undefined
+            // Custom agent only for our own host
+            agent: isHttps && tokenizeUrl.startsWith(this.baseUrl) ? this.httpsAgent : undefined
         });
 
         if (response.ok) {
@@ -389,7 +395,7 @@ export class LollmsAPI {
         signal: controller.signal
     };
 
-    if (isHttps) {
+    if (isHttps && contextSizeUrl.startsWith(this.baseUrl)) {
         options.agent = this.httpsAgent;
     }
 
@@ -471,7 +477,7 @@ export class LollmsAPI {
 
     const response = await fetch(extractUrl, {
         ...options,
-        agent: isHttps ? this.httpsAgent : undefined
+        agent: isHttps && extractUrl.startsWith(this.baseUrl) ? this.httpsAgent : undefined
     });
 
     if (!response.ok) {
@@ -497,7 +503,10 @@ export class LollmsAPI {
         body: JSON.stringify({ file: base64Data, filename: fileName }),
     };
 
-    const response = await fetch(extractUrl, { ...options, agent: isHttps ? this.httpsAgent : undefined });
+    const response = await fetch(extractUrl, { 
+        ...options, 
+        agent: isHttps && extractUrl.startsWith(this.baseUrl) ? this.httpsAgent : undefined 
+    });
     if (!response.ok) throw new Error(`Failed to extract text: ${response.status}`);
     const data = await response.json();
     return data.text || '';
@@ -556,7 +565,7 @@ public async editImage(prompt: string, imageBase64: string, maskBase64?: string,
             },
             body: formData,
             signal: controller.signal,
-            agent: isHttps ? this.httpsAgent : undefined
+            agent: isHttps && url.startsWith(this.baseUrl) ? this.httpsAgent : undefined
         });
 
         if (!response.ok) {
@@ -624,7 +633,10 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
             options.agent = this.httpsAgent;
         }
 
-        const response = await fetch(imageUrl, options);
+        const response = await fetch(imageUrl, {
+            ...options,
+            agent: isHttps && imageUrl.startsWith(this.baseUrl) ? this.httpsAgent : undefined
+        });
 
         if (!response.ok) {
             const errorBody = await response.text();
@@ -840,6 +852,13 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
 
 
     try {
+        // Only use custom agent for the targeted API host or local servers.
+        // Cloud providers should use the default system CA bundle.
+        const useAgent = url.startsWith('https') && (
+            url.startsWith(this.baseUrl) || 
+            (backend !== 'openai' && backend !== 'anthropic' && backend !== 'google' && backend !== 'perplexity' && backend !== 'together' && backend !== 'openrouter')
+        );
+
         // --- DEFENSIVE CONNECTION GUARD ---
         // If underlying vscode channels are crashing (like isort), fetch might throw 
         // a "connection disposed" error before even starting.
@@ -848,7 +867,7 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
             headers,
             body: JSON.stringify(body),
             signal: controller.signal,
-            agent: url.startsWith('https') ? this.httpsAgent : undefined
+            agent: useAgent ? this.httpsAgent : undefined
         }).catch(err => {
             if (err.message?.includes('disposed')) {
                 throw new Error("Local VS Code extension host is unstable (see isort errors). Please reload window.");

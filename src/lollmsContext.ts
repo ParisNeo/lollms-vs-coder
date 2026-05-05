@@ -35,6 +35,7 @@ export interface LollmsServices {
     inlineDiffProvider: InlineDiffProvider;
     diffManager: DiffManager;
     herdManager: HerdManager;
+    toolManager: any; // Add ToolManager to shared services
     rlmDb: RLMDatabaseManager; 
     projectMemoryManager: any; // Added here
     

@@ -58,6 +58,7 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         const agent = new AgentManager(
             panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
             services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
+            services.toolManager, // Passed correctly in 9th position
             services.rlmDb 
         );
         agent.projectMemoryManager = services.projectMemoryManager;
@@ -90,6 +91,7 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
         const agent = new AgentManager(
             panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
             services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
+            services.toolManager,
             services.rlmDb
         );
         agent.projectMemoryManager = services.projectMemoryManager;
@@ -217,6 +219,7 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
             const agent = new AgentManager(
                 panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
                 services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
+                services.toolManager,
                 services.rlmDb 
             );
             agent.projectMemoryManager = services.projectMemoryManager;

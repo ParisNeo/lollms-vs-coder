@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-05-05 00:07]
+
+- release: version 0.8.58 with multi-area improvements
+
 ## [2026-05-04 19:54]
 
 - feat(tools): enhance code tools diagnostics and Python interpreter setup

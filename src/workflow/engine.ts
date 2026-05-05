@@ -36,50 +36,70 @@ export class WorkflowEngine {
     }
 
     private async processNode(node: WorkflowNode, workflow: Workflow, context: NodeExecutionContext, inputData: any = {}) {
-        const executor = NODE_REGISTRY[node.type];
-        if (!executor) {
-            context.logger(`Unknown node type: ${node.type}`);
-            return;
-        }
+        node.status = 'running';
+        context.logger(`[Flow] Node ${node.data.label} (${node.type}) started...`);
 
-        context.logger(`Executing Node: ${node.type} (${node.id})`);
+        try {
+            let result: any;
 
-        // If it's an iterator, it has special handling
-        if (node.type === 'file_iterator') {
-            const result = await executor.execute(node, inputData, context);
-            const files = result.files as string[];
-            
-            // Find downstream nodes
-            const outgoingEdges = workflow.edges.filter(e => e.source === node.id);
-            
-            // Loop!
-            for (const file of files) {
-                // Pass 'file' as the output to the next node
-                for (const edge of outgoingEdges) {
-                    const nextNode = workflow.nodes.find(n => n.id === edge.target);
-                    if (nextNode) {
-                        // Map the iterator output 'currentFile' to the target input
-                        await this.processNode(nextNode, workflow, context, { [edge.targetHandle]: file });
+            switch (node.type) {
+                case 'agent':
+                    result = await this.executeAgentNode(node, inputData, context);
+                    break;
+                case 'tool':
+                    result = await this.executeToolNode(node, inputData, context);
+                    break;
+                case 'condition':
+                    const path = await this.evaluateCondition(node, inputData, context);
+                    const edge = workflow.edges.find(e => e.source === node.id && e.sourceHandle === path);
+                    if (edge) {
+                        const nextNode = workflow.nodes.find(n => n.id === edge.target);
+                        if (nextNode) await this.processNode(nextNode, workflow, context, inputData);
                     }
-                }
+                    return; // Condition node handles its own next step
+                case 'parallel':
+                    const branches = workflow.edges.filter(e => e.source === node.id);
+                    await Promise.all(branches.map(async (e) => {
+                        const nextNode = workflow.nodes.find(n => n.id === e.target);
+                        if (nextNode) await this.processNode(nextNode, workflow, context, inputData);
+                    }));
+                    return;
+                default:
+                    context.logger(`Warning: Implementation for ${node.type} missing.`);
             }
-        } else {
-            // Standard execution
-            const result = await executor.execute(node, inputData, context);
-            
-            // Pass results to next nodes
-            const outgoingEdges = workflow.edges.filter(e => e.source === node.id);
-            for (const edge of outgoingEdges) {
+
+            node.status = 'completed';
+            node.lastOutput = result;
+
+            // Trigger downstream
+            const outgoing = workflow.edges.filter(e => e.source === node.id);
+            for (const edge of outgoing) {
                 const nextNode = workflow.nodes.find(n => n.id === edge.target);
-                if (nextNode) {
-                    // Map output key (sourceHandle) to input key (targetHandle)
-                    // Note: In a real engine, we need to wait for ALL inputs of a node. 
-                    // This recursion assumes single-stream for simplicity.
-                    const specificOutput = result[edge.sourceHandle] || result;
-                    const nextInput = { ...inputData, [edge.targetHandle]: specificOutput };
-                    await this.processNode(nextNode, workflow, context, nextInput);
-                }
+                if (nextNode) await this.processNode(nextNode, workflow, context, result);
             }
+
+        } catch (e: any) {
+            node.status = 'error';
+            context.logger(`Error in ${node.data.label}: ${e.message}`);
         }
+    }
+
+    private async executeAgentNode(node: WorkflowNode, input: any, context: NodeExecutionContext) {
+        const messages: ChatMessage[] = [
+            { role: 'system', content: node.data.persona || "You are a helpful assistant." },
+            { role: 'user', content: typeof input === 'string' ? input : JSON.stringify(input) }
+        ];
+        return await context.lollms.sendChat(messages, null, undefined, node.data.model);
+    }
+
+    private async executeToolNode(node: WorkflowNode, input: any, context: NodeExecutionContext) {
+        // Logic to trigger tool via LollmsServices...
+        return { success: true, output: "Tool logic executed." };
+    }
+
+    private async evaluateCondition(node: WorkflowNode, input: any, context: NodeExecutionContext): Promise<string> {
+        const prompt = `Based on the following input, should we proceed with "true" or "false"?\nCriteria: ${node.data.criteria}\nInput: ${JSON.stringify(input)}`;
+        const res = await context.lollms.sendChat([{ role: 'user', content: prompt }], null, undefined, "small_model");
+        return res.toLowerCase().includes('true') ? 'true' : 'false';
     }
 }

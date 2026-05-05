@@ -179,6 +179,7 @@ export class HelpPanel {
                     <div class="nav-item" onclick="showSection('agent')"><i class="codicon codicon-robot"></i> Agent Mode</div>
                     <div class="nav-item" onclick="showSection('automation')"><i class="codicon codicon-zap"></i> Auto-Repair</div>
                     <div class="nav-item" onclick="showSection('advanced-debug')"><i class="codicon codicon-bug"></i> Live Debugging</div>
+                    <div class="nav-item" onclick="showSection('infrastructure-resilience')"><i class="codicon codicon-shield"></i> Infrastructure Resilience</div>
                     <div class="nav-item" onclick="showSection('surgical-intel')"><i class="codicon codicon-target"></i> Surgical Intel</div>
                     <div class="nav-item" onclick="showSection('manual-stitching')"><i class="codicon codicon-tools"></i> Manual Stitching</div>
                 </div>
@@ -518,6 +519,40 @@ export class HelpPanel {
                     <strong>$(debug-restart) Fix Error</strong>
                     <p>Appears when a cell fails. Analyzes the stack trace and patches the code.</p>
                 </div>
+            </div>
+        </section>
+
+        <!-- INFRASTRUCTURE RESILIENCE -->
+        <section id="infrastructure-resilience">
+            <h1>🛡️ Infrastructure Resilience</h1>
+            <p>LoLLMs is designed to be "Self-Aware" of its own limitations and bugs to protect your project and your wallet.</p>
+
+            <div class="card">
+                <h3>The Tool Circuit Breaker</h3>
+                <p>If an internal tool (e.g., a file reader or search tool) crashes due to a bug in the extension code:</p>
+                <ul>
+                    <li><strong>Automatic Blacklist</strong>: The tool is marked as <b>FORBIDDEN</b> for the rest of the session.</li>
+                    <li><strong>Loop Prevention</strong>: The agent is instructed to find a workaround (like using raw shell commands) or stop entirely if no safe path exists.</li>
+                    <li><strong>Pocket Protection</strong>: This prevents the AI from repeatedly trying a broken tool, which would otherwise waste thousands of tokens.</li>
+                </ul>
+            </div>
+
+            <h2>🛰️ Zero-Telemetry Reporting</h2>
+            <p>In accordance with our <b>Sovereign PC</b> philosophy, LoLLMs <u>never</u> sends crash data to our servers automatically.</p>
+
+            <div class="tip">
+                <strong>How to help:</strong> When a tool bug is detected, an orange <b>Review & Report Bug</b> button appears in the chat.
+            </div>
+
+            <h3>Reporting Workflow:</h3>
+            <ol>
+                <li><strong>Redaction</strong>: The extension automatically replaces local user paths (e.g., <code>C:/Users/YourName</code>) with <code>~</code> in the logs.</li>
+                <li><strong>Transparency</strong>: Clicking the button copies the <b>entire sanitized report</b> to your clipboard so you can see exactly what is being shared.</li>
+                <li><strong>User Agency</strong>: It opens our GitHub Issues or Discord channel. You perform the final "Paste" and "Submit" actions.</li>
+            </ol>
+
+            <div class="tip">
+                <strong>Hot-Fix Awareness:</strong> If you update or reload the extension while debugging a tool, the blacklist is automatically cleared so you can immediately test the fix.
             </div>
         </section>
 

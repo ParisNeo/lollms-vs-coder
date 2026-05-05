@@ -33,39 +33,29 @@ body {
 .chat-main-column {
     display: flex;
     flex-direction: column;
+    width: 100%;
     flex: 1;
-    min-width: 0; /* Important for flex child visibility */
+    min-width: 0;
     height: 100%;
     position: relative;
     overflow: hidden;
 }
 
-#agent-plan-zone {
-    width: 400px;
-    min-width: 150px;
-    flex-shrink: 0;
-    background-color: var(--vscode-sideBar-background);
-    border-right: 1px solid var(--vscode-widget-border);
-    display: none; /* Controlled by .visible class */
-    overflow-y: auto;
-    height: 100%;
+.pinned-dashboard {
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+    background: var(--vscode-editor-background);
+    width: 100%;
+    box-shadow: 0 4px 10px rgba(0,0,0,0.3);
 }
 
-#agent-plan-zone.visible {
-    display: flex !important;
-    flex-direction: column;
+#agent-plan-zone {
+    display: none !important; /* Force hide sidebar for unified stream */
 }
 
 #plan-resizer {
-    width: 4px;
-    background-color: var(--vscode-widget-border);
-    cursor: col-resize;
-    display: none;
-    flex-shrink: 0;
-}
-
-#plan-resizer.visible {
-    display: block;
+    display: none !important;
 }
 
 /* NEW: Prominent Sticky Toolbar for Agent Actions */
@@ -319,11 +309,29 @@ body {
 .user-message .message-avatar { background-color: var(--vscode-button-background); color: var(--vscode-button-foreground); font-size: 16px; }
 .assistant-message .message-avatar { background-image: var(--lollms-icon); background-color: transparent; border: none; }
 
-/* 🤖 AGENT MODE VISUAL OVERRIDE */
-.message.agent-mode-message {
-    border-left: 4px solid var(--vscode-charts-orange) !important;
-    background-color: rgba(214, 122, 13, 0.03);
-    box-shadow: inset 2px 0 10px rgba(214, 122, 13, 0.05);
+/* 🤖 TECHNICAL EVENT SOVEREIGNTY */
+.message.technical-event {
+    background-color: transparent !important;
+    border: none !important;
+    padding: 0 12px !important;
+    margin: 8px 0 !important;
+    box-shadow: none !important;
+    gap: 0 !important;
+}
+
+.message.technical-event:hover {
+    background-color: transparent !important;
+}
+
+/* Hide standard chat elements for technical events */
+.message.technical-event .message-avatar,
+.message.technical-event .message-header,
+.message.technical-event .message-actions {
+    display: none !important;
+}
+
+.message.technical-event .message-body {
+    padding: 0 !important;
 }
 
 .message.agent-mode-message .role-name {
@@ -1229,13 +1237,14 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 #agent-settings-modal .modal-content {
     width: 90%; 
     max-width: 1000px;
+    max-height: 90vh; /* Prevent modal from growing beyond screen */
 }
 
 .settings-grid-layout {
     display: grid;
     grid-template-columns: 280px 1fr;
-    gap: 20px;
-    height: 100%;
+    gap: 0; /* Remove gap to avoid scrollbar overlapping layout gap */
+    height: 70vh; /* Set a definitive height for the scrolling area */
     overflow: hidden;
 }
 
@@ -1246,6 +1255,13 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     display: flex;
     flex-direction: column;
     gap: 20px;
+    overflow-y: auto; /* Allow sidebar to scroll if budget inputs grow */
+}
+
+.settings-main-content {
+    overflow-y: auto; /* CRITICAL: Allow tools and profiles to scroll */
+    padding: 15px;
+    background: var(--vscode-editorWidget-background);
 }
 
 .modal-header {
@@ -2167,6 +2183,17 @@ mark.current-match {
     font-size: 13px;
 }
 
+.task-controls .code-action-btn {
+    height: 28px;
+    padding: 0 10px;
+    font-size: 11px;
+}
+
+.param-json-input:focus {
+    outline: 1px solid var(--vscode-focusBorder);
+    border-color: transparent;
+}
+
 .agent-meta-tabs {
     display: flex;
     gap: 8px;
@@ -2279,6 +2306,19 @@ mark.current-match {
     white-space: pre-wrap;
 }
 
+/* Collapsible Parameters UI */
+.task-params-collapsible summary::-webkit-details-marker {
+    display: none;
+}
+
+.task-params-collapsible[open] .param-chevron {
+    transform: rotate(90deg);
+}
+
+.task-params-collapsible:hover {
+    background: rgba(255, 255, 255, 0.03) !important;
+}
+
 .task-edit-zone {
     margin-top: 12px;
     padding: 8px 12px;
@@ -2372,7 +2412,7 @@ mark.current-match {
     margin: 10px 15px;
     padding: 12px 16px;
     background: var(--vscode-editor-background);
-    border-left: 3px solid var(--vscode-charts-purple);
+    border-left: 4px solid var(--vscode-charts-purple);
     border-radius: 0 8px 8px 0;
     font-size: 12px;
     line-height: 1.5;
@@ -2398,6 +2438,15 @@ mark.current-match {
     display: block;
     letter-spacing: 0.5px;
 }
+
+.agent-thought-step.status-completed { border-left-color: var(--vscode-charts-green); background: rgba(15, 157, 88, 0.03); }
+.agent-thought-step.status-completed .thought-label { color: var(--vscode-charts-green); }
+
+.agent-thought-step.status-failed { border-left-color: var(--vscode-charts-red); background: rgba(244, 71, 71, 0.03); }
+.agent-thought-step.status-failed .thought-label { color: var(--vscode-charts-red); }
+
+.agent-thought-step.status-in_progress { border-left-color: var(--vscode-charts-blue); background: rgba(0, 122, 204, 0.03); }
+.agent-thought-step.status-in_progress .thought-label { color: var(--vscode-charts-blue); }
 
 .discussion-bubble {
     margin: 8px 0;
@@ -3721,8 +3770,34 @@ details[open] > summary .folder-handle::before {
     content: '\eab4'; /* codicon-chevron-down */
 }
 
-.info-collapsible summary, .skill-summary, .attachment-item-summary, .code-summary, .scratchpad-header {
+.info-collapsible summary::-webkit-details-marker {
+    display: none;
+}
+
+.info-collapsible summary {
+    list-style: none;
     cursor: pointer;
+    display: flex;
+    align-items: center;
+    padding: 4px 0;
+}
+
+/* Custom chevron that doesn't overlap text */
+.info-collapsible summary::before {
+    content: '\eab6'; /* codicon-chevron-right */
+    font-family: codicon;
+    margin-right: 8px;
+    font-size: 14px;
+    transition: transform 0.2s;
+    flex-shrink: 0;
+}
+
+.info-collapsible[open] summary::before {
+    transform: rotate(90deg);
+}
+
+.info-collapsible summary span {
+    pointer-events: none;
 }
 .skill-children {
     padding-left: 20px;

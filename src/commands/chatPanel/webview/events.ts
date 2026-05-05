@@ -680,6 +680,7 @@ export function initEventHandlers() {
 
         const maxSteps = parseInt((document.getElementById('setting-maxSteps') as HTMLInputElement).value, 10);
         const maxEditRetries = parseInt((document.getElementById('setting-maxEditRetries') as HTMLInputElement).value, 10);
+        const autoProfileSwitch = (document.getElementById('setting-autoProfileSwitch') as HTMLInputElement).checked;
         const activeProfile = (document.getElementById('setting-activeProfile') as HTMLSelectElement).value;
 
         // 1. Update internal capability state
@@ -697,6 +698,7 @@ export function initEventHandlers() {
                 toolPolicies: policies,
                 maxSteps,
                 maxEditRetries,
+                autoProfileSwitch,
                 activeAgentProfileId: activeProfile
             } 
         });
@@ -1351,7 +1353,28 @@ export function initEventHandlers() {
     function handleGlobalClick(e: MouseEvent) {
         const target = e.target as HTMLElement;
 
-        // --- 0. Form Submission (CRITICAL) ---
+        // --- 0. Dashboard Export Handlers (CSP Safe) ---
+        const mdBtn = target.closest('.export-audit-md-btn');
+        if (mdBtn) {
+            e.stopPropagation();
+            vscode.postMessage({
+                command: 'executeLollmsCommand',
+                details: { command: 'lollms-vs-coder.exportAgentAuditMarkdown', params: [] }
+            });
+            return;
+        }
+
+        const htmlBtn = target.closest('.export-audit-html-btn');
+        if (htmlBtn) {
+            e.stopPropagation();
+            vscode.postMessage({
+                command: 'executeLollmsCommand',
+                details: { command: 'lollms-vs-coder.exportAgentTimeline', params: [] }
+            });
+            return;
+        }
+
+        // --- 0.5. Form Submission (CRITICAL) ---
         const formBtn = target.closest('.lollms-form-submit-btn') as HTMLButtonElement;
         if (formBtn) {
             e.preventDefault();
@@ -1375,9 +1398,13 @@ export function initEventHandlers() {
                 return;
             }
 
-            // Visual State Update
-            formBtn.disabled = true;
-            formBtn.innerHTML = '<div class="spinner" style="display:inline-block; margin-right:5px;"></div> Submitting...';
+            // Visual State Update: Remove the form immediately to prevent "Hanging" feel
+            const formContainer = formBlock.closest('.message-wrapper');
+            if (formContainer) {
+                formContainer.remove();
+            } else {
+                formBlock.remove();
+            }
 
             vscode.postMessage({
                 command: 'sendMessage',
@@ -1385,7 +1412,8 @@ export function initEventHandlers() {
                     id: 'form_response_' + Date.now(),
                     role: 'user', 
                     content: `FORM_SUBMISSION:${JSON.stringify(data)}`,
-                    skipInPrompt: true 
+                    skipInPrompt: true,
+                    isSilentSignal: true // Flag to tell backend not to add a "You" bubble
                 }
             });
             return;
@@ -1470,14 +1498,14 @@ export function initEventHandlers() {
         }
 
         // Legacy handler for remaining UI buttons inside messages
-        // Toggle Edit Params
+        // Toggle Edit Params (Universal Task Editor)
         const editBtn = target.closest('.edit-params-btn') as HTMLButtonElement;
         if (editBtn) {
             e.stopPropagation();
-            const taskId = editBtn.dataset.taskId;
-            const container = document.getElementById(`edit-params-container-${taskId}`);
-            if (container) {
-                container.style.display = container.style.display === 'none' ? 'flex' : 'none';
+            const card = editBtn.closest('.agent-card');
+            const editor = card?.querySelector('.task-param-editor') as HTMLElement;
+            if (editor) {
+                editor.style.display = (editor.style.display === 'none' || !editor.style.display) ? 'flex' : 'none';
             }
             return;
         }
@@ -1755,6 +1783,48 @@ export function initEventHandlers() {
                 taskId: taskId, 
                 objective: 'CONTINUE_AFTER_APPROVAL',
                 alwaysAllow: alwaysAllow 
+            });
+            return;
+        }
+
+        // Tool Bug Reporting
+        const reportBugBtn = target.closest('.report-tool-bug-btn') as HTMLButtonElement;
+        if (reportBugBtn) {
+            e.stopPropagation();
+            const action = reportBugBtn.dataset.action;
+            const error = decodeURIComponent(reportBugBtn.dataset.error || "");
+            const stack = decodeURIComponent(reportBugBtn.dataset.stack || "");
+            const version = state.extensionVersion || "unknown";
+
+            const reportMarkdown = `### 🐞 LoLLMs Tool Bug Report
+        **Tool**: \`${action}\`
+        **Extension Version**: \`${version}\`
+        **Error**: \`${error}\`
+
+        **Stack Trace**:
+        \`\`\`
+        ${stack}
+        \`\`\``;
+
+            // 1. Copy to clipboard for easy Discord pasting
+            vscode.postMessage({ command: 'copyToClipboard', text: reportMarkdown });
+
+            // 2. Open GitHub Issue link with pre-filled body
+            const body = encodeURIComponent(reportMarkdown);
+            const githubUrl = `https://github.com/ParisNeo/lollms-vs-coder/issues/new?title=[Tool Bug] ${action}: ${error.substring(0, 50)}&body=${body}`;
+
+            // Explicitly notify user about clipboard
+            vscode.postMessage({ 
+                command: 'executeLollmsCommand', 
+                details: { 
+                    command: 'vscode.open', 
+                    params: [githubUrl] 
+                } 
+            });
+
+            vscode.postMessage({ 
+                command: 'showWarning', 
+                message: "Bug report data copied to clipboard. You can paste it into Discord or the GitHub issue that just opened." 
             });
             return;
         }

@@ -473,14 +473,20 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
         const combinedExcludes = Array.from(new Set([...exceptions, ...standardExcludes]));
         const excludePattern = combinedExcludes.length > 1 ? `{${combinedExcludes.join(',')}}` : (combinedExcludes[0] || "");
 
+        // --- FAST PATH DISCOVERY ---
+        if (this._cachedVisibleFiles && !this._isTreeDirty) {
+            return this._cachedVisibleFiles;
+        }
+
         Logger.info(`Librarian: Attempting native findFiles scan...`);
 
         let files: vscode.Uri[] = [];
         try {
+            // Optimization: Filter by common code extensions first to reduce array size
             files = await vscode.workspace.findFiles(
                 new vscode.RelativePattern(workspaceFolder, '**/*'),
                 excludePattern,
-                20000
+                15000 // Slightly lower cap for snappier start
             );
         } catch (e) {
             Logger.error(`Native findFiles failed: ${e}`);

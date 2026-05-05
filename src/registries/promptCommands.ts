@@ -122,6 +122,7 @@ export function registerPromptCommands(context: vscode.ExtensionContext, service
             const agent = new AgentManager(
                 panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
                 services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
+                services.toolManager,
                 services.rlmDb
             );
             agent.projectMemoryManager = services.projectMemoryManager;

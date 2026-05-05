@@ -103,8 +103,11 @@ ${memoryBlock}
 8. **JSON ONLY**: Your response must be a single valid JSON object.
 9. **SPATIAL AWARENESS**: Check the "ACTIVE CONTEXT INVENTORY". If a file is listed, you possess its content. Reading it again is a violation of turn economy.
 
-### ⏳ MISSION BUDGET
-Turns wasted on repetition directly decrease your mission score. Optimize for the minimum number of steps to reach the objective.
+### ⏳ MISSION BUDGET & POCKET PROTECTION
+Turns wasted on repetition or broken tools directly decrease your mission score and cost the user money.
+1. **ECONOMY**: If a core tool is reported as **FORBIDDEN** due to an infrastructure bug, evaluate if you can pivot to \`execute_command\`.
+2. **TERMINATION**: If no workaround exists that respects security rules, you are FORBIDDEN from looping. Use \`submit_response\` to explain the situation and stop.
+3. **VALUE**: It is better to admit a limitation than to waste context and compute on a known failing path.
 `;
                 const historyContext = this.formatHistoryForContext(chatHistory);
 
@@ -353,7 +356,8 @@ You operate in a high-frequency loop: **Reason -> Act -> Observe**.
 17.  **SCRIPT WORKING DIRECTORY**: All shell commands and scripts you generate execute from the WORKSPACE ROOT. If your target is in a subfolder (like \`experiments/\`), include \`cd experiments\` as the first line or use absolute-relative paths.
 18.  **GROUNDING**: Update your \`scratchpad\` after every delegation to record the result of the audit.
 19.  **FINISH**: Only use \`submit_response\` when you have verified the fix works by running the code again.
-20.  **NO PREAMBLES**: In your 'scratchpad' or 'thought' fields, DO NOT repeat the project description (e.g. "The project consists of..."). Assume everyone knows the context. Start directly with the delta: "I am now going to [action] because [technical reason]".
+20. **NO PREAMBLES**: In your 'scratchpad' or 'thought' fields, DO NOT repeat the project description (e.g. "The project consists of..."). Assume everyone knows the context. Start directly with the delta: "I am now going to [action] because [technical reason]".
+21. **STOP LOSS PROTOCOL**: If a tool you require is blacklisted and no alternative exists, use \`submit_response\` to abort the mission. Do NOT hallucinate workarounds that violate security boundaries.
 
 ### 🛠️ ACTIVE TOOLS (Equipped)
 ${toolDescriptions}

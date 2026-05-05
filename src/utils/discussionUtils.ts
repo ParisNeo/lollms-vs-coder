@@ -35,6 +35,7 @@ export async function startDiscussionWithInitialPrompt(
         const agent = new AgentManager(
             panel, services.lollmsAPI, services.contextManager, services.gitIntegration, 
             services.discussionManager, services.extensionUri, services.codeGraphManager, services.skillsManager,
+            services.toolManager,
             services.rlmDb 
         );
         agent.setProcessManager(services.processManager);

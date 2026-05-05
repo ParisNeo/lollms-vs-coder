@@ -86,11 +86,14 @@ Lollms mimics human cognition with a **Tiered Recursive Language Model (RLM)**:
 *   **Tier 2 (Latent)**: Searchable handles to archived knowledge.
 *   **The Dream Cycle**: An automated background process that "decays" obsolete information and reinforces critical architectural decisions, keeping your context window focused on what matters.
 
-### 🛡️ The Guardian Protocol
-The agent's "Definition of Done" is functional verification. 
-1.  **Surgical Edit**: Changes are applied via Aider Search/Replace.
-2.  **Diagnostic Pulse**: Lollms triggers a background VS Code diagnostic check.
-3.  **Autonomous Self-Heal**: If errors are found, the agent re-opens the file and fixes the logic recursively until **0 errors** remain.
+## 🛡️ The Guardian Protocol (Self-Healing)
+The system follows a strict **Reason-Act-Verify** loop. When code is generated, the Guardian triggers a real-time diagnostic scan. If errors (linting, missing imports) are found, the agent automatically enters a **Self-Heal** loop to patch the file until it is verified clean.
+
+## 🔌 Infrastructure Resilience & Privacy
+If a built-in tool (e.g., `read_file`, `grep_search`) crashes due to an internal extension bug:
+1. **Budget Protection**: The tool is immediately blacklisted for the current session. The agent is forbidden from retrying it to save your context and money.
+2. **Sovereign Reporting**: No telemetry is sent. Instead, a **"🛡️ Report this Bug"** button appears.
+3. **Manual Review**: Clicking report scrubs your local paths, copies a sanitized diagnostic to your clipboard, and opens GitHub/Discord for you to paste the report manually.
 
 ### 👥 Hybrid Agent Hierarchy
 Tasks are delegated through a chain of command:
@@ -130,7 +133,9 @@ Lollms provides two distinct ways to work. Choose the one that fits your current
 | 🎭 **Expert Personas**     | Over 10+ built-in professional roles (Architect, Embedded Expert, Security Lead, etc.) that change the AI's logic, tone, and technical priorities.                      |
 | 💎 **Skills Library**      | A modular library of verified code patterns, API docs, and standards. Acts as a "Source of Truth" that overrides generic model behavior.                                |
 | 🤖 **Autonomous Agent**      | Give the AI a complex objective, and it will generate and execute a multi-step plan, including creating files, writing code, running commands, and self-correcting.      |
+| **Infrastructure Circuit Breaker**|  Automatically detects and blacklists broken extension tools to prevent infinite loops and protect your token budget.| 
 | **Surgical Intelligence**      | Both the Quick Companion (Ctrl+Shift+L) and File Inspector automatically use the **Architecture Graph** to pull in direct dependencies for context. If the AI needs more info, it can perform a "Second Run" escalation using keyword search.      |
+
 | 📊 **Architecture Graph**  | Visualize your project structure with interactive call graphs and class diagrams. Supports SPARQL queries for deep dependency analysis.                               |
 | 🛡️ **Guardian Audit**       | Background self-healing loop. The AI automatically detects and repairs linting or import errors in generated code before finalizing tasks.                             |
 | ⚡ **Quick Edit Companion**  | A lightweight, floating window for fast code edits, explanations, or questions without leaving your current context (Ctrl+Shift+L).                                     |

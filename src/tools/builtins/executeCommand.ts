@@ -21,6 +21,16 @@ export const executeCommandTool: ToolDefinition = {
         
         const timeoutMs = params.timeout_s ? params.timeout_s * 1000 : 900000; // 15 minute default
 
+        // --- 🛡️ SOVEREIGN SECURITY AUDIT ---
+        const audit = await (env.agentManager as any).performSecurityAudit(params.command, signal);
+        if (!audit.safe) {
+            Logger.error(`[SECURITY BLOCK] Command: ${params.command}. Reason: ${audit.reason}`);
+            return { 
+                success: false, 
+                output: `🛑 SECURITY VIOLATION: Execution blocked by Sovereign Auditor.\nReason: ${audit.reason}` 
+            };
+        }
+
         // MITIGATION: Prevent the agent from accidentally staging internal extension files
         if (params.command === "workbench.action.reloadWindow") {
             await vscode.commands.executeCommand(params.command);

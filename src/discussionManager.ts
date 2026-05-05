@@ -25,9 +25,11 @@ export interface Discussion {
     agentSession?: {
         replVariables: Record<string, any>;
         workingMemory: string[];
-        completedActionsHistory: string[];
+        completedActionsHistory: string[]; // This stores the raw technical logs
         secureCredentials?: Record<string, string>;
         isSafetyCheckPassed?: boolean;
+        extensionVersion: string;
+        blacklistedTools: string[];
     };
 }
 

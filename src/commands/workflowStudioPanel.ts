@@ -63,79 +63,76 @@ export class WorkflowStudioPanel {
     }
 
     private _getHtmlForWebview(): string {
-        // This is a placeholder for a complex graph editor like Rete.js or React Flow.
-        // Since we can't bundle those easily here, we provide a conceptual JSON editor + Visualization placeholder.
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Lollms Flow Studio</title>
+    <link rel="stylesheet" href="https://unpkg.com/@xyflow/react/dist/style.css">
     <style>
-        body { font-family: var(--vscode-font-family); background: var(--vscode-editor-background); color: var(--vscode-editor-foreground); display: flex; flex-direction: column; height: 100vh; margin: 0; }
-        .toolbar { padding: 10px; background: var(--vscode-editorWidget-background); border-bottom: 1px solid var(--vscode-widget-border); display: flex; gap: 10px; }
-        .main { flex: 1; display: flex; }
-        .palette { width: 200px; border-right: 1px solid var(--vscode-widget-border); padding: 10px; }
-        .canvas { flex: 1; position: relative; background-image: radial-gradient(var(--vscode-widget-border) 1px, transparent 1px); background-size: 20px 20px; }
-        .console { height: 150px; border-top: 1px solid var(--vscode-widget-border); padding: 10px; overflow-y: auto; background: var(--vscode-terminal-background); font-family: monospace; }
-        
-        /* Node Styling Placeholder */
-        .node { 
-            position: absolute; width: 150px; background: var(--vscode-editorWidget-background); 
-            border: 1px solid var(--vscode-focusBorder); border-radius: 5px; padding: 10px; 
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3); cursor: move;
-        }
-        .node-header { font-weight: bold; border-bottom: 1px solid var(--vscode-widget-border); margin-bottom: 5px; padding-bottom: 2px; }
-        .socket { width: 10px; height: 10px; background: var(--vscode-textLink-foreground); border-radius: 50%; margin: 5px 0; }
-        
-        button { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border: none; padding: 6px 12px; cursor: pointer; }
-        button:hover { background: var(--vscode-button-hoverBackground); }
+        body { margin: 0; display: flex; flex-direction: column; height: 100vh; background: #1e1e1e; color: #fff; font-family: sans-serif; }
+        #app { flex: 1; position: relative; }
+        .toolbar { padding: 10px; background: #2d2d2d; border-bottom: 1px solid #333; display: flex; gap: 10px; }
+        .node-palette { width: 200px; background: #252526; border-right: 1px solid #333; padding: 10px; }
+        .node-type { padding: 8px; background: #3c3c3c; border-radius: 4px; margin-bottom: 8px; cursor: grab; font-size: 12px; }
+        .node-type:hover { background: #505050; }
+        button { background: #007acc; color: white; border: none; padding: 6px 12px; border-radius: 2px; cursor: pointer; }
     </style>
-</head>
-<body>
+    </head>
+    <body>
     <div class="toolbar">
-        <button id="runBtn">▶ Run Workflow</button>
-        <button id="saveBtn">💾 Save</button>
-        <span style="margin-left: auto;">Photo Organization Demo</span>
+        <button id="runBtn">▶ Run Protocol</button>
+        <button id="saveBtn">💾 Save Mission Profile</button>
+        <button id="aiBuildBtn" style="background: #6a1b9a;">✨ Build with AI</button>
     </div>
-    <div class="main">
-        <div class="palette">
-            <h3>Nodes</h3>
-            <div>📄 File Iterator</div>
-            <div>👁️ Lollms Vision</div>
-            <div>📂 Move File</div>
-            <div>🐍 Code Exec</div>
+    <div style="display: flex; flex: 1; overflow: hidden;">
+        <div class="node-palette">
+            <h3>Building Blocks</h3>
+            <div class="node-type" draggable="true" data-type="agent">👤 Specialist Agent</div>
+            <div class="node-type" draggable="true" data-type="tool">🛠️ Execution Tool</div>
+            <div class="node-type" draggable="true" data-type="condition">⚖️ Logic Gate</div>
+            <div class="node-type" draggable="true" data-type="parallel">🌿 Parallel Fork</div>
+            <div class="node-type" draggable="true" data-type="loop">🔄 Iterative Loop</div>
         </div>
-        <div class="canvas" id="canvas">
-            <!-- Mockup of the Photo Workflow -->
-            <div class="node" style="top: 50px; left: 50px;">
-                <div class="node-header">File Iterator</div>
-                <div class="socket" style="float: right;"></div>
-                <small>Folder: /photos</small>
-            </div>
-            
-            <div class="node" style="top: 50px; left: 300px;">
-                <div class="node-header">Lollms Vision</div>
-                <div class="socket" style="float: left;"></div>
-                <div class="socket" style="float: right;"></div>
-                <small>Prompt: Extract Date</small>
-            </div>
-
-            <div class="node" style="top: 50px; left: 550px;">
-                <div class="node-header">Move File</div>
-                <div class="socket" style="float: left;"></div>
-                <small>Target: /organized</small>
-            </div>
-            
-            <!-- SVG lines would go here -->
-        </div>
-    </div>
-    <div class="console" id="console">
-        <div>> System Ready.</div>
+        <div id="app" style="width: 100%; height: 100%;"></div>
     </div>
 
-    <script>
-        const vscode = acquireVsCodeApi();
+    <!-- Load as Module to support ESM imports from CDN -->
+    <script type="module">
+        // Fix: Use pinned versions and force dependency sharing to prevent "useState is null" errors
+        import React, { useState, useCallback } from 'https://esm.sh/react@18.2.0';
+        import ReactDOM from 'https://esm.sh/react-dom@18.2.0?deps=react@18.2.0';
+        import { ReactFlow, Background, Controls } from 'https://esm.sh/@xyflow/react?deps=react@18.2.0';
+
+        // Fix: Idempotent VSCode API acquisition
+        if (!window.vscode) {
+            window.vscode = acquireVsCodeApi();
+        }
+        const vscode = window.vscode;
+
+        const initialNodes = [
+          { id: '1', type: 'input', data: { label: 'Start Mission' }, position: { x: 250, y: 5 } },
+        ];
+
+        function Flow() {
+          const [nodes, setNodes] = useState(initialNodes);
+          const [edges, setEdges] = useState([]);
+
+          return React.createElement('div', { style: { width: '100%', height: '100%' } }, 
+            React.createElement(ReactFlow, {
+              nodes: nodes,
+              edges: edges,
+              fitView: true
+            }, 
+              React.createElement(Background),
+              React.createElement(Controls)
+            )
+          );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('app'));
+        root.render(React.createElement(Flow));
+
         const consoleDiv = document.getElementById('console');
 
         function log(msg) {
@@ -170,10 +167,13 @@ export class WorkflowStudioPanel {
             ]
         };
 
-        document.getElementById('runBtn').addEventListener('click', () => {
-            log('Sending workflow to engine...');
-            vscode.postMessage({ command: 'runWorkflow', workflow: demoWorkflow });
-        });
+        const runBtn = document.getElementById('runBtn');
+        if (runBtn) {
+            runBtn.addEventListener('click', () => {
+                log('Sending workflow to engine...');
+                vscode.postMessage({ command: 'runWorkflow', workflow: demoWorkflow });
+            });
+        }
 
         window.addEventListener('message', event => {
             const message = event.data;

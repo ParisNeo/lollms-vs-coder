@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.8.57",
+  "version": "0.8.58",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -924,6 +924,11 @@
           "default": "software_architect",
           "description": "The default Mission Profile for the AI Agent."
         },
+        "lollmsVsCoder.agent.autoProfileSwitch": {
+          "type": "boolean",
+          "default": false,
+          "description": "If enabled, the agent will analyze your objective at the start of a mission and automatically switch to a more suitable profile if one is found."
+        },
         "lollmsVsCoder.agentProfiles": {
           "type": "array",
           "description": "Customizable mission protocols for the Agent Architect.",
@@ -1480,8 +1485,8 @@
         },
         {
           "id": "lollmsWorkflowsView",
-          "name": "Workflows",
-          "when": "lollms:activeTab == lab && workspaceFolderCount > 0"
+          "name": "Saved Agentic Flows",
+          "when": "lollms:activeTab == studio && workspaceFolderCount > 0"
         },
         {
           "id": "lollmsChatPromptsView",

@@ -1926,6 +1926,8 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         const breakpoints: { html: string, start: number, end: number }[] = [];
         const debugReports: { html: string, start: number, end: number }[] = [];
         const processingBlocks: { html: string, start: number, end: number }[] = [];
+        const agentTaskBlocks: { html: string, start: number, end: number }[] = [];
+        const gitEventBlocks: { html: string, start: number, end: number }[] = [];
 
         // --- UNIFIED CONTENT PREPARATION ---
         let processedContent = "";
@@ -2059,8 +2061,42 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 forms.push({ html, start: formMatch.index, end: formMatch.index + formMatch[0].length });
             }
 
-            const milestoneRegex = /<milestone\s+([^>]*?)\s*\/>/gi;
+            // --- TOOL BUG REPORT TAG PARSING ---
+            const toolBugRegex = /<lollms_tool_bug_report\s+([^>]*?)\s*\/>/gi;
+            let tbMatch;
+            const toolBugReports: { html: string, start: number, end: number }[] = [];
+            while ((tbMatch = toolBugRegex.exec(contentWithoutThoughts)) !== null) {
+                if (isInsideCode(tbMatch.index)) continue;
+                const attrStr = tbMatch[1];
+                const attrs: any = {};
+                const attrRegex = /(\w+)=["']([^"']*)["']/g;
+                let m;
+                while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
 
+                const html = `
+                <div class="security-warning" style="color: var(--vscode-foreground); border-color: var(--vscode-charts-orange); background: rgba(214, 122, 13, 0.1); margin-top: 10px;">
+                    <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
+                        <i class="codicon codicon-warning" style="color: var(--vscode-charts-orange);"></i>
+                        <strong>Infrastructure Bug Detected in Tool: ${sanitizer.sanitize(attrs.action)}</strong>
+                    </div>
+                    <p style="font-size: 11px; margin-bottom: 12px; opacity: 0.9;">
+                        LoLLMs has detected a crash in its own internal tool code. To help the community fix this, you can manually report it. 
+                        <strong>No data will be sent without your review.</strong>
+                    </p>
+                    <div style="display:flex; gap:8px;">
+                        <button class="code-action-btn apply-btn report-tool-bug-btn" 
+                            data-action="${attrs.action}" 
+                            data-error="${attrs.error}" 
+                            data-stack="${attrs.stack}"
+                            style="background-color: var(--vscode-charts-orange) !important; color: white !important; flex: 1;">
+                            <i class="codicon codicon-github"></i> Review & Report Bug
+                        </button>
+                    </div>
+                </div>`;
+                toolBugReports.push({ html, start: tbMatch.index, end: tbMatch.index + tbMatch[0].length });
+            }
+
+            const milestoneRegex = /<milestone\s+([^>]*?)\s*\/>/gi;
             let mileMatch;
             while ((mileMatch = milestoneRegex.exec(contentWithoutThoughts)) !== null) {
                 if (isInsideCode(mileMatch.index)) continue;
@@ -2116,7 +2152,117 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 const html = renderProcessingBlock(innerContent, isClosed);
                 processingBlocks.push({ html, start: procMatch.index, end: procMatch.index + procMatch[0].length });
             }
-            
+
+            // --- AGENT TASK TAG PARSING ---
+            const taskTagRegex = /<agent_task\s+id=["']([^"']+)["']\s*\/>/gi;
+            let taskMatch;
+            while ((taskMatch = taskTagRegex.exec(contentWithoutThoughts)) !== null) {
+                if (isInsideCode(taskMatch.index)) continue;
+                const taskId = parseInt(taskMatch[1], 10);
+                const plan = (window as any).lastPlan;
+                const task = plan?.tasks.find((t: any) => t.id === taskId);
+                
+                if (task) {
+                    const icon = getStatusIcon(task.status);
+                    
+                    // Restore full rich task card logic (variables, discovers, artifacts)
+                    const hasThoughts = !!task.memory_delta?.thought;
+                    const hasVariables = Object.keys(task.memory_delta?.variables || {}).length > 0;
+                    const hasDiscoveries = (task.memory_delta?.discoveries || []).length > 0;
+                    const hasOutput = !!task.result;
+
+                    // RENDERER FOR IN-STREAM INTERACTIVE AGENT CARD
+                    const isPending = task.status === 'pending';
+                    const isFailed = task.status === 'failed';
+                    const isSafety = task.action === 'safety_check';
+
+                    const isRunning = task.status === 'in_progress' || task.status === 'pending';
+                    const controls = `
+                        <div class="task-controls" style="display:flex; gap:8px; margin-top:12px;">
+                            ${isPending ? `<button class="code-action-btn apply-btn" onclick="vscode.postMessage({command:'runAgent', taskId:'${task.id}', objective:'CONTINUE_AFTER_APPROVAL'})"><i class="codicon codicon-play"></i> Run & Continue</button>` : ''}
+                            <button class="code-action-btn secondary-btn edit-params-btn" data-task-id="${task.id}"><i class="codicon codicon-edit"></i> Edit Params</button>
+                            ${isFailed ? `<button class="code-action-btn" onclick="vscode.postMessage({command:'retryAgentTask', taskId:'${task.id}'})"><i class="codicon codicon-refresh"></i> Retry</button>` : ''}
+                            ${isRunning ? `<button class="code-action-btn delete-btn" onclick="vscode.postMessage({command:'stopGeneration'})"><i class="codicon codicon-primitive-square"></i> Stop</button>` : ''}
+                        </div>
+                    `;
+
+                    const paramEditor = `
+                        <div class="task-param-editor" style="display:none; flex-direction:column; gap:8px; margin-top:10px; padding:10px; background:rgba(0,0,0,0.3); border-radius:4px; border:1px solid var(--vscode-widget-border);">
+                            <label style="font-size:10px; font-weight:800; opacity:0.6;">MANUAL PARAMETER OVERRIDE (JSON)</label>
+                            <textarea class="param-json-input" style="width:100%; height:100px; font-family:monospace; font-size:11px; background:var(--vscode-input-background); color:var(--vscode-input-foreground); border:1px solid var(--vscode-input-border);">${JSON.stringify(task.parameters, null, 2)}</textarea>
+                            <button class="code-action-btn apply-btn" onclick="const p=JSON.parse(this.previousElementSibling.value); vscode.postMessage({command:'editAndRetryAgentTask', taskId:'${task.id}', params:p})">Execute Manually</button>
+                        </div>
+                    `;
+
+                    const taskHtml = `
+                        <div class="agent-thought-step status-${task.status}" style="margin: 20px 0 10px 0;">
+                            <span class="thought-label">Agent Step ${task.id}</span>
+                            ${sanitizer.sanitize(task.description)}
+                        </div>
+                        <div class="agent-card status-${task.status}" style="margin: 0 0 20px 0;">
+                            <div class="agent-card-header">
+                                <div style="display:flex; align-items:center; gap:8px;">
+                                    <div class="status-${task.status}">${icon}</div>
+                                    <span style="font-weight:bold;">Sovereign Operation</span>
+                                </div>
+                                <span class="tool-badge"><span class="codicon codicon-tools"></span> ${task.action}</span>
+                            </div>
+                            <div class="agent-card-body">
+                                <div class="task-memory-bar">
+                                    <div class="brain-segment segment-scratchpad" style="width: ${hasThoughts ? '25' : '0'}%" data-type="scratchpad"></div>
+                                    <div class="brain-segment segment-memory" style="width: ${(hasVariables || hasDiscoveries) ? '50' : '0'}%" data-type="memory"></div>
+                                    <div class="brain-segment segment-history" style="width: ${hasOutput ? '25' : '0'}%" data-type="history"></div>
+                                </div>
+
+                                <!-- 📂 COLLAPSIBLE PARAMETER PREVIEW -->
+                                <details class="task-params-collapsible" style="margin-top: 10px; border-left: 2px solid var(--vscode-widget-border); border-radius: 4px; background: rgba(0,0,0,0.15);">
+                                    <summary style="font-size: 9px; font-weight: 800; opacity: 0.5; padding: 8px 10px; text-transform: uppercase; cursor: pointer; list-style: none; outline: none; display: flex; align-items: center; gap: 6px;">
+                                        <i class="codicon codicon-chevron-right param-chevron" style="font-size: 10px; transition: transform 0.2s;"></i>
+                                        <span>Execution Parameters</span>
+                                    </summary>
+                                    <div style="padding: 0 10px 10px 10px;">
+                                        ${renderFormFields(task.parameters)}
+                                    </div>
+                                </details>
+                                
+                                ${task.result ? `
+                                <details style="margin-top: 10px;" open>
+                                    <summary class="task-result-summary">View Operation Output</summary>
+                                    <div class="task-result-box status-${task.status}">${sanitizer.sanitize(task.result)}</div>
+                                </details>` : (task.status === 'in_progress' && !isSafety ? '<div class="waiting-animation" style="margin-top:10px;"><div class="spinner"></div> <span>Executing technical logic...</span></div>' : '')}
+
+                                ${task.status === 'in_progress' || task.status === 'pending' ? controls : ''}
+                                ${paramEditor}
+                            </div>
+                        </div>`;
+                    agentTaskBlocks.push({ html: taskHtml, start: taskMatch.index, end: taskMatch.index + taskMatch[0].length });
+                }
+            }
+
+            // --- GIT EVENT TAG PARSING ---
+            const gitRegex = /<git_event\s+([^>]*?)\s*\/>/gi;
+            let gitMatch;
+            while ((gitMatch = gitRegex.exec(contentWithoutThoughts)) !== null) {
+                if (isInsideCode(gitMatch.index)) continue;
+                const attrStr = gitMatch[1];
+                const attrs: any = {};
+                attrStr.replace(/(\w+)=["']([^"']*)["']/g, (m:any, k:any, v:any) => attrs[k] = v);
+
+                let gitHtml = "";
+                if (attrs.type === 'branch') {
+                    gitHtml = `
+                    <div class="technical-briefing-card" style="border-left-color: var(--vscode-charts-blue); margin: 15px 0;">
+                        <div class="briefing-header" style="color: var(--vscode-charts-blue);">
+                            <span class="codicon codicon-git-branch"></span> GIT WORKFLOW: ISOLATION
+                        </div>
+                        <div class="briefing-content" style="padding: 10px 16px;">
+                            Switched workspace from <code>${attrs.from}</code> to fresh AI branch <code>${attrs.to}</code>.
+                        </div>
+                    </div>`;
+                }
+                gitEventBlocks.push({ html: gitHtml, start: gitMatch.index, end: gitMatch.index + gitMatch[0].length });
+            }
+
             // 1. Parse New Multi-line Blocks
             const blockOpRegex = /<(add_files_to_context|remove_files_from_context|delete_files|move_files|copy_files)>([\s\S]*?)<\/\1>/gi;
             let blockOpMatch;
@@ -2206,8 +2352,11 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 ...breakpoints.map(b => ({ start: b.start, end: b.end, html: b.html, elementType: 'breakpoint' as const })),
                 ...debugReports.map(d => ({ start: d.start, end: d.end, html: d.html, elementType: 'debugReport' as const })),
                 ...planStatuses.map(ps => ({ start: ps.start, end: ps.end, html: ps.html, elementType: 'planStatus' as const })),
-                ...processingBlocks.map(p => ({ start: p.start, end: p.end, html: p.html, elementType: 'processing' as const }))
-            ].sort((a, b) => a.start - b.start);
+                ...agentTaskBlocks.map(at => ({ start: at.start, end: at.end, html: at.html, elementType: 'agentTask' as const })),
+                ...gitEventBlocks.map(ge => ({ start: ge.start, end: ge.end, html: ge.html, elementType: 'gitEvent' as const })),
+                ...processingBlocks.map(p => ({ start: p.start, end: p.end, html: p.html, elementType: 'processing' as const })),
+                ...toolBugReports.map(tb => ({ start: tb.start, end: tb.end, html: tb.html, elementType: 'toolBug' as const }))
+                ].sort((a, b) => a.start - b.start);
 
             // 2. Filter to keep only TOP-LEVEL elements
             const elements = allCandidates.filter((el, idx) => {
@@ -2238,7 +2387,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 }
 
                 // B. Render the UI element (Code Block or Skill or Image or AddFiles or FileOp or DebugReport or ProjectMemory or Processing or Form)
-                const uiTypes = ['skill', 'image', 'addFiles', 'fileOp', 'projectMemory', 'debugReport', 'processing', 'form', 'milestone', 'breakpoint', 'planStatus'];
+                const uiTypes = ['skill', 'image', 'addFiles', 'fileOp', 'projectMemory', 'debugReport', 'processing', 'form', 'milestone', 'breakpoint', 'planStatus', 'agentTask', 'gitEvent'];
                 if (uiTypes.includes(el.elementType)) {
                     const uiDiv = document.createElement('div');
                     uiDiv.innerHTML = (el as any).html;
@@ -2814,30 +2963,13 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                     vscode.postMessage({ command: 'applyAllChanges', changes, messageId });
                 };
 
-                const verifyBtn = document.createElement('button');
-                verifyBtn.className = 'apply-all-btn secondary-btn'; // Use secondary style
-                verifyBtn.style.width = 'auto';
-                verifyBtn.style.flex = '0 0 auto';
-                verifyBtn.style.margin = '16px 8px 4px 0';
-                verifyBtn.innerHTML = '<span class="codicon codicon-search"></span> Verify Status';
-                
-                verifyBtn.onclick = () => {
-                    const changes = gatherChangesFromBlocks(messageId);
-                    if (changes.length === 0) return;
-
-                    verifyBtn.disabled = true;
-                    verifyBtn.innerHTML = '<div class="spinner"></div> Verifying...';
-                    vscode.postMessage({ command: 'verifyAllChanges', changes, messageId });
-                };
-
                 const btnContainer = document.createElement('div');
                 btnContainer.className = 'apply-all-buttons-container';
                 btnContainer.style.display = 'flex';
-                btnContainer.style.gap = '8px';
                 btnContainer.style.width = '100%';
                 btnContainer.style.alignItems = 'center';
-                
-                btnContainer.appendChild(verifyBtn);
+
+                // Only primary button now
                 btnContainer.appendChild(btn);
 
                 wrapper.appendChild(btnContainer);
@@ -2859,30 +2991,33 @@ function gatherChangesFromBlocks(messageId: string) {
     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
     if (!wrapper) return changes;
 
+    // Select all potential containers (Aider blocks and standard file blocks)
     const blocks = wrapper.querySelectorAll('details.code-collapsible');
-    
+
     blocks.forEach((block: any) => {
-        const blockIdParts = block.id.split('-');
-        if (blockIdParts.length < 3) return;
-        const blockIndex = parseInt(blockIdParts[2], 10);
-        
+        // Extract indices from the ID (format: block-{messageId}-{idx})
+        const idParts = block.id.split('-');
+        const blockIndex = parseInt(idParts[idParts.length - 1], 10);
+
         const codeText = block.dataset.rawCode || "";
         const summaryText = block.querySelector('.summary-lang-label')?.textContent || "";
+
+        // Clean path extraction (Project/path.ext)
         const parts = summaryText.split(' : ');
         const path = parts.length > 1 ? parts[1].replace('Diff: ', '').trim() : "";
         if (!path) return;
 
+        // 1. Check for Aider Multi-Hunk Bubbles
         const hunkBubbles = block.querySelectorAll('.aider-hunk-bubble');
-
         if (hunkBubbles.length > 0) {
-            // Aider Multi-Hunk: Send each hunk separately for verification/application
             hunkBubbles.forEach((hunk: any, hIdx: number) => {
                 const hunkBtn = hunk.querySelector('.apply-btn');
+                // Include if not already applied
                 if (hunkBtn && !hunkBtn.classList.contains('applied')) {
                     changes.push({
                         type: 'replace',
                         path: path,
-                        content: codeText, // Backend will use hunkIndex to pick the right part
+                        content: codeText, 
                         label: `${path} (Hunk ${hIdx + 1})`,
                         blockIndex: blockIndex,
                         hunkIndex: hIdx
@@ -2890,12 +3025,14 @@ function gatherChangesFromBlocks(messageId: string) {
                 }
             });
         } else {
+            // 2. Standard Single-Action Blocks (Full File, Insert, Replace)
             const applyBtn = block.querySelector('.code-actions .apply-btn') as HTMLButtonElement;
             if (applyBtn && !applyBtn.classList.contains('applied')) {
                 let type: any = 'file';
-                if (summaryText.toLowerCase().includes('diff')) type = 'diff';
-                else if (summaryText.toLowerCase().includes('insert')) type = 'insert';
-                else if (summaryText.toLowerCase().includes('replace')) type = 'replace';
+                const lowerSummary = summaryText.toLowerCase();
+                if (lowerSummary.includes('diff')) type = 'diff';
+                else if (lowerSummary.includes('insert')) type = 'insert';
+                else if (lowerSummary.includes('replace')) type = 'replace';
 
                 changes.push({
                     type: type,
@@ -2926,15 +3063,27 @@ function sanitizeForTTS(text: string): string {
 }
 
 export function addMessage(message: any, isFinal: boolean = true) {
-    // Hide welcome message as soon as any content is added
     if (dom.welcomeMessage) {
         dom.welcomeMessage.style.display = 'none';
     }
 
-    if (message.role === 'system' && message.content && typeof message.content === 'string' && message.content.startsWith('Attached file:')) {
+    const content = typeof message.content === 'string' ? message.content : "";
+    
+    // DETECTOR: Identify purely technical messages to un-wrap them
+    const technicalPatterns = [
+        '<agent_task', 
+        '<milestone', 
+        '<project_memory', 
+        '<git_event', 
+        '<lollms_form'
+    ];
+    
+    const isPurelyTechnical = technicalPatterns.some(p => content.trim().includes(p));
+
+    if (message.role === 'system' && content.startsWith('Attached file:')) {
         addAttachment(message);
     } else {
-        addChatMessage(message, isFinal);
+        addChatMessage(message, isFinal, isPurelyTechnical);
     }
 }
 
@@ -3022,7 +3171,7 @@ function addAttachment(message: any) {
     if(headerTitle) headerTitle.textContent = `Attached Files (${count})`;
 }
 
-function addChatMessage(message: any, isFinal: boolean = true) {
+function addChatMessage(message: any, isFinal: boolean = true, isTechnical: boolean = false) {
     const { role, id, content: rawContent, startTime, model, personalityName } = message;
     
     if (!dom.chatMessagesContainer) return;
@@ -3041,7 +3190,7 @@ function addChatMessage(message: any, isFinal: boolean = true) {
     if (personalityName) messageWrapper.dataset.personalityName = personalityName;
 
     const messageDiv = document.createElement('div');
-    messageDiv.className = `message ${role}-message`;
+    messageDiv.className = `message ${role}-message ${isTechnical ? 'technical-event' : ''}`;
     messageDiv.dataset.originalContent = JSON.stringify(rawContent);
 
     const avatarDiv = document.createElement('div');
@@ -3156,12 +3305,14 @@ function addChatMessage(message: any, isFinal: boolean = true) {
 }
 
 const renderDataBriefing = (briefing: string) => {
-    const raw = briefing || "";
-    if (!raw.trim()) return "Librarian is analyzing project state...";
+    const raw = (briefing || "").trim();
+    if (!raw) return ""; // Return empty if truly empty
     try {
         if (!raw.startsWith('{')) return raw;
         const entries = JSON.parse(raw);
-        return Object.keys(entries).map(id => {
+        const keys = Object.keys(entries);
+        if (keys.length === 0) return "";
+        return keys.map(id => {
             const title = id.replace(/_/g, ' ').toUpperCase();
             return `<strong>[${title}]</strong><br>${entries[id]}`;
         }).join('<br><br>');
@@ -3278,48 +3429,47 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                 <div style="display:flex; align-items:center; gap:8px;">
                     <span class="role-name">Intelligence Context</span>
                 </div>
-                <div style="display: flex; gap: 5px; flex-wrap: wrap; justify-content: flex-end; flex: 1;">
-                    <button id="add-file-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Add File to Context">
-                        <span class="codicon codicon-add"></span> File
-                    </button>
-                    <button id="add-skill-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Add Skill to Context">
-                        <span class="codicon codicon-lightbulb"></span> Skill
-                    </button>
-                    <button id="web-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Web Discovery (URL, YouTube, Wiki, etc.)">
-                        <span class="codicon codicon-globe"></span> Web
-                    </button>
-                    <button id="edit-briefing-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0; border-color: var(--vscode-charts-purple);" title="Set the Technical Briefing (Prime Directive)">
-                        <span class="codicon codicon-shield"></span> Briefing
-                    </button>
-                    <button id="add-diagram-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Add Architecture Diagram to Context">
-                        <span class="codicon codicon-graph"></span> Diagram
-                    </button>
-                    <button id="search-add-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Search and Add Files (supports wildcards)">
-                        <span class="codicon codicon-search"></span> Search
-                    </button>
-                    <div style="width: 1px; background: var(--vscode-widget-border); margin: 0 4px;"></div>
-                    <button id="save-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Save current file selection">
-                        <span class="codicon codicon-save"></span>
-                    </button>
-                    <button id="load-context-btn" class="code-action-btn apply-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Load file selection">
-                        <span class="codicon codicon-folder-opened"></span>
-                    </button>
-                    <button id="reset-context-bubble-btn" class="code-action-btn delete-btn" style="height: 22px; padding: 0 10px; font-size: 11px; margin: 0;" title="Reset context">
-                        <span class="codicon codicon-clear-all"></span> Reset
-                    </button>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                    <!-- 📥 EXPORT TOOLS -->
+                    <div style="display:flex; gap:4px; margin-right:8px; padding-right:8px; border-right:1px solid var(--vscode-widget-border);">
+                        <button class="icon-btn" title="Copy Discussion as Markdown" onclick="vscode.postMessage({command:'executeLollmsCommand', details:{command:'lollms-vs-coder.copyDiscussionMarkdown'}})"><i class="codicon codicon-markdown"></i></button>
+                        <button class="icon-btn" title="Export Discussion as HTML" onclick="vscode.postMessage({command:'executeLollmsCommand', details:{command:'lollms-vs-coder.exportDiscussionHtml'}})"><i class="codicon codicon-cloud-download"></i></button>
+                    </div>
+
+                    <button id="save-context-btn" class="icon-btn" title="Save file selection" style="padding: 2px;"><i class="codicon codicon-save"></i></button>
+                    <button id="load-context-btn" class="icon-btn" title="Load file selection" style="padding: 2px;"><i class="codicon codicon-folder-opened"></i></button>
+                    <button id="reset-context-bubble-btn" class="icon-btn" title="Full Context Reset" style="padding: 2px; color: var(--vscode-errorForeground);"><i class="codicon codicon-clear-all"></i></button>
                 </div>
             </div>
             <div class="message-content">
-                <details class="info-collapsible" style="margin-bottom: 6px; border-left: 4px solid var(--vscode-charts-purple);">
-                    <summary>Team Technical Briefing</summary>
+                <!-- 🎯 MISSION BRIEFING (TEAM GROUND TRUTH) -->
+                <details class="info-collapsible" style="margin-bottom: 6px; border-left: 4px solid var(--vscode-charts-purple);" ${briefing ? 'open' : ''}>
+                    <summary>
+                        <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
+                            <span>Mission Briefing & Constraints</span>
+                            <button id="edit-briefing-btn" class="icon-btn" title="Edit Briefing" style="color: var(--vscode-charts-purple);"><i class="codicon codicon-shield"></i></button>
+                        </div>
+                    </summary>
                     <div class="collapsible-content">
-                        <div class="briefing-content" style="padding: 10px; font-size: 12px; line-height: 1.5;">
-                            ${renderDataBriefing()}
+                        <div class="briefing-content" style="padding: 10px; font-size: 12px; line-height: 1.5; opacity: 0.9;">
+                            ${briefing ? renderDataBriefing(briefing) : '<div style="font-style:italic; opacity:0.5;">No specific task constraints defined. Click the shield to add instructions.</div>'}
                         </div>
                     </div>
                 </details>
+
                 <details class="info-collapsible" style="margin-bottom: 6px;">
-                    <summary>Selected Files (${files.length})</summary>
+                    <summary>
+                        <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
+                            <span>Selected Files (${files.length})</span>
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <button id="view-usage-context-btn" class="icon-btn" title="Verify File Sizes / Token Usage"><i class="codicon codicon-dashboard"></i></button>
+                                <div style="width: 1px; height: 12px; background: var(--vscode-widget-border);"></div>
+                                <button id="add-file-context-btn" class="icon-btn" title="Add File"><i class="codicon codicon-add"></i></button>
+                                <button id="web-context-btn" class="icon-btn" title="Web Discovery"><i class="codicon codicon-globe"></i></button>
+                                <button id="search-add-context-btn" class="icon-btn" title="Power Search"><i class="codicon codicon-search"></i></button>
+                            </div>
+                        </div>
+                    </summary>
                     <div class="collapsible-content" style="padding-top: 8px;">
                         <h4 style="margin: 0 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
                             <span>Project Files</span>
@@ -3346,7 +3496,12 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                     </div>
                 </details>
                 <details class="info-collapsible" style="margin-bottom: 6px;">
-                    <summary>Active Diagrams (${diagrams?.length || 0})</summary>
+                    <summary>
+                        <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
+                            <span>Active Diagrams (${diagrams?.length || 0})</span>
+                            <button id="add-diagram-context-btn" class="icon-btn" title="Add Diagram"><i class="codicon codicon-add"></i></button>
+                        </div>
+                    </summary>
                     <div class="collapsible-content">
                         ${diagrams && diagrams.length > 0 ? diagrams.map(d => `
                             <div class="context-item" style="flex-direction:column; align-items:stretch;">
@@ -3361,8 +3516,10 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                 </details>
                 <details class="info-collapsible">
                     <summary>
-                        <div style="display: inline-flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
                             <span>Active Skills (${skills.length})</span>
+                            <div style="display: flex; gap: 8px; align-items: center;">
+                                <button id="add-skill-context-btn" class="icon-btn" title="Import Skill"><i class="codicon codicon-add"></i></button>
                             ${skills.length > 0 ? `
                             <button id="bulk-delete-skills-btn" class="section-bulk-btn delete" style="margin-right: 5px;">
                                 <span class="codicon codicon-trash"></span> Bulk Remove
@@ -3871,6 +4028,16 @@ function renderFormFields(params: any): string {
     return html;
 }
 
+function getStatusIcon(status: string) {
+    switch(status) {
+        case 'pending': return '<span class="codicon codicon-circle-large"></span>';
+        case 'in_progress': return '<span class="codicon codicon-sync spin"></span>';
+        case 'completed': return '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span>';
+        case 'failed': return '<span class="codicon codicon-error" style="color:var(--vscode-charts-red)"></span>';
+        default: return '<span class="codicon codicon-circle-slash"></span>';
+    }
+}
+
 function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
     let investigationHtml = '';
     if (plan.investigation && plan.investigation.length > 0) {
@@ -4094,10 +4261,10 @@ function renderPlanAttempt(plan: any, isPrevious: boolean = false) {
             let memoryBarHtml = '';
             if (task.status === 'completed' || task.status === 'failed') {
                 memoryBarHtml = `
-                    <div class="task-memory-bar" title="Task Memory Pattern (Click to inspect)">
-                        <div class="brain-segment segment-scratchpad" style="width: ${hasThoughts ? '25' : '0'}%" data-type="thoughts"></div>
-                        <div class="brain-segment segment-memory" style="width: ${(hasVariables || hasDiscoveries) ? '50' : '0'}%" data-type="memory"></div>
-                        <div class="brain-segment segment-history" style="width: ${hasOutput ? '25' : '0'}%" data-type="history"></div>
+                    <div class="task-memory-bar" title="Click a segment to inspect step data">
+                        <div class="brain-segment segment-scratchpad" style="width: ${hasThoughts ? '25' : '0'}%" data-type="thoughts" title="Reasoning: View internal thoughts for this step"></div>
+                        <div class="brain-segment segment-memory" style="width: ${(hasVariables || hasDiscoveries) ? '50' : '0'}%" data-type="memory" title="Memory: View variables and facts discovered"></div>
+                        <div class="brain-segment segment-history" style="width: ${hasOutput ? '25' : '0'}%" data-type="history" title="Output: View raw tool return data"></div>
                     </div>
                     <div id="task-mem-render-${task.id}" class="task-memory-render-area">
                         <div class="task-memory-header">
@@ -4199,67 +4366,79 @@ let lastTaskCount = 0;
 let lastTaskStates = "";
 
 export function displayPlan(plan: any) {
-    if(!dom.agentPlanZone) return; 
+    // Capture current scroll state before modifying the DOM
+    const oldScroll = dom.agentPlanZone ? dom.agentPlanZone.scrollTop : 0;
+
+    // Redirection: The Plan now renders as a Pinned Dashboard at the TOP of the chat
+    let dashboard = document.getElementById('agent-sovereign-dashboard');
+
+    if (!plan) {
+        if (dashboard) dashboard.remove();
+        return;
+    }
+
+    if (!dashboard) {
+        dashboard = document.createElement('div');
+        dashboard.id = 'agent-sovereign-dashboard';
+        dashboard.className = 'message-wrapper pinned-dashboard';
+        dom.chatMessagesContainer.prepend(dashboard);
+    }
 
     const now = Date.now();
     const isStreaming = plan?.status === 'active' && state.isGenerating;
-    
-    // 1. SURGICAL HUD UPDATE (The "Streaming" Path)
-    // If we are just streaming thoughts, only update the HUD text
-    const thoughtBox = dom.agentPlanZone.querySelector('.live-thought-box');
-    if (thoughtBox && plan.scratchpad && isStreaming && (now - lastPlanRenderTime < RENDER_THROTTLE)) {
-        thoughtBox.textContent = plan.scratchpad;
-        return;
-    }
-
-    // 2. STATE CHANGE DETECTION
-    // Check if tasks actually changed (count or status) before re-rendering the list
-    const currentTaskStates = plan?.tasks?.map((t:any) => t.status).join(',') || "";
-    const taskListChanged = (plan?.tasks?.length !== lastTaskCount) || (currentTaskStates !== lastTaskStates);
-    
-    // If nothing structural changed and we are just streaming, skip the full render
-    if (!taskListChanged && isStreaming && (now - lastPlanRenderTime < RENDER_THROTTLE)) {
-        return;
-    }
-
-    lastPlanRenderTime = now;
-    lastTaskCount = plan?.tasks?.length || 0;
-    lastTaskStates = currentTaskStates;
     (window as any).lastPlan = plan;
 
-    if (!plan) {
-        dom.agentPlanZone.innerHTML = ''; // Full wipe
-        dom.agentPlanZone.classList.remove('visible');
-        dom.planResizer.classList.remove('visible');
-        return;
+    // --- 🛡️ JSON SUPPRESSION LOGIC ---
+    let displayThought = plan.scratchpad || "Standing by...";
+    try {
+        // Attempt to extract JSON from markdown fences or raw string
+        const jsonMatch = displayThought.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+            const parsed = JSON.parse(jsonMatch[0]);
+            // Prioritize human-readable remarks over structural JSON
+            displayThought = parsed.new_remark || parsed.thought || parsed.reasoning || "Analyzing project structure and planning next steps...";
+        }
+    } catch (e) {
+        // Not JSON, or malformed JSON during streaming - keep as is (Markdown)
     }
 
-    const oldScroll = dom.agentPlanZone.scrollTop;
-    dom.agentPlanZone.classList.add('visible');
-    dom.planResizer.classList.add('visible');
-
-    // CRITICAL FIX: Explicitly clear the container before starting a structural render
-    // to prevent the "Double HUD" effect seen in the screenshot.
-    dom.agentPlanZone.innerHTML = '';
-
-    // Build the fragment
-    const fragment = document.createDocumentFragment();
-
-    // 1. LIVE ACTIVITY HUD (Persistent wrapper)
-    const isGenerating = state.isGenerating;
-    if (isGenerating || (plan.scratchpad && plan.status === 'active')) {
-        const hud = document.createElement('div');
-        hud.className = 'agent-activity-hud';
-        const status = document.getElementById('status-text')?.textContent || "Thinking...";
-        hud.innerHTML = `
-            <div class="activity-status-row">
-                <div class="spinner" style="border-color: var(--vscode-charts-orange); border-bottom-color: transparent;"></div>
-                <span>${status}</span>
+    // 1. DASHBOARD HEADER (OBJECTIVE)
+    let html = `
+        <div class="message assistant-message agent-mode-message" style="border-bottom: 2px solid var(--vscode-charts-orange); margin-bottom: 20px;">
+            <div class="message-avatar">
+                <div class="agent-active-indicator">
+                    <div class="genie-orb-portal" style="transform: scale(0.6);">
+                        <div class="orb-ring-outer"></div>
+                        <div class="orb-ring-inner"></div>
+                        <div class="orb-core"></div>
+                    </div>
+                </div>
             </div>
-            <div class="live-thought-box">${sanitizer.sanitize(plan.scratchpad || "")}</div>
-        `;
-        fragment.appendChild(hud);
-    }
+            <div class="message-body">
+                <div class="message-header"><span class="role-name">MISSION CONTROL</span></div>
+                <div class="message-content">
+                    <div style="font-weight:bold; font-size: 14px; margin-bottom: 10px; color: var(--vscode-charts-orange);">🎯 ${sanitizer.sanitize(plan.objective)}</div>
+                    <div class="live-thought-box" style="margin-bottom: 15px; font-style: italic; color: var(--vscode-descriptionForeground); line-height: 1.5;">
+                        ${sanitizer.sanitize(displayThought)}
+                    </div>
+
+                    <div style="display:flex; justify-content: space-between; align-items:center; margin-top:10px; padding-top:10px; border-top: 1px solid var(--vscode-widget-border);">
+                         <div style="display:flex; gap:8px;">
+                            <button class="code-action-btn secondary-btn export-audit-md-btn" title="Export Audit Trail (Markdown)">
+                                <i class="codicon codicon-markdown"></i> MD
+                            </button>
+                            <button class="code-action-btn secondary-btn export-audit-html-btn" title="Export Interactive Report (HTML)">
+                                <i class="codicon codicon-cloud-download"></i> HTML Report
+                            </button>
+                         </div>
+                         <span style="font-size: 10px; opacity: 0.5;">Status: ${plan.status?.toUpperCase()}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    dashboard.innerHTML = html;
 
     // Restore scroll position to prevent the "jump"
     requestAnimationFrame(() => {

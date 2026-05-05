@@ -10,12 +10,22 @@ import { ChatPanel } from '../commands/chatPanel/chatPanel';
 
 export function registerUICommands(context: vscode.ExtensionContext, services: LollmsServices) {
 
-    // Satisfy ToolManager lifecycle requirements
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.refreshTools', () => {
+    // Helper to safely register commands and avoid "already exists" crashes
+    const safeRegister = (id: string, callback: (...args: any[]) => any) => {
+        try {
+            context.subscriptions.push(vscode.commands.registerCommand(id, callback));
+        } catch (e) {
+            Logger.warn(`Command ${id} registration skipped: already exists.`);
+        }
+    };
+
+    // Note: refreshTools is moved to extension.ts or handled by safeRegister here
+    safeRegister('lollms-vs-coder.refreshTools', () => {
         ChatPanel.panels.forEach(p => p.updateGeneratingState());
-    }));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showConfigView', () => 
-        SettingsPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.processManager, services.personalityManager)));
+    });
+
+    safeRegister('lollms-vs-coder.showConfigView', () => 
+        SettingsPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.processManager, services.personalityManager));
     
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showHelp', () => 
         HelpPanel.createOrShow(services.extensionUri)));
@@ -58,60 +68,65 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
     }));
 
     // --- TAB NAVIGATION LOGIC ---
-    const setTab = (tabName: 'chat' | 'librarian' | 'git' | 'graph' | 'lab' | 'mcp' | 'env') => {
+    const setTab = (tabName: string) => {
         vscode.commands.executeCommand('setContext', 'lollms:activeTab', tabName);
         context.globalState.update('lollms.activeTab', tabName);
         // Refresh the header view to update "Active" indicators
-        services.treeProviders.tabs?.refresh();
+        if (services.treeProviders.tabs) {
+            services.treeProviders.tabs.refresh();
+        }
     };
 
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showChatTab', () => setTab('chat')));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showLibrarianTab', () => setTab('librarian')));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showPersonasTab', () => {
+    safeRegister('lollms-vs-coder.showChatTab', () => setTab('chat'));
+    safeRegister('lollms-vs-coder.showLibrarianTab', () => setTab('librarian'));
+    safeRegister('lollms-vs-coder.showPersonasTab', () => {
         setTab('personas');
         vscode.commands.executeCommand('lollms-vs-coder.managePersonalities');
-    }));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showSkillsTab', () => {
+    });
+    safeRegister('lollms-vs-coder.showSkillsTab', () => {
         setTab('skills');
         vscode.commands.executeCommand('lollms-vs-coder.manageSkills');
-    }));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showGitTab', () => {
+    });
+    safeRegister('lollms-vs-coder.showGitTab', () => {
         setTab('git');
         vscode.commands.executeCommand('lollms-vs-coder.showGitDashboard');
-    }));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showGraphTab', () => {
+    });
+    safeRegister('lollms-vs-coder.showGraphTab', () => {
         setTab('graph');
         vscode.commands.executeCommand('lollms-vs-coder.showCodeGraphPanel');
-    }));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showLabTab', () => setTab('lab')));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showDeveloperTab', () => setTab('developer')));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.openCveBuilder', () => {
+    });
+    safeRegister('lollms-vs-coder.showLabTab', () => setTab('lab'));
+    safeRegister('lollms-vs-coder.showDeveloperTab', () => setTab('developer'));
+
+    safeRegister('lollms-vs-coder.showStudioTab', () => {
+        setTab('studio');
+        vscode.commands.executeCommand('lollms-vs-coder.openFlowStudio');
+    });
+
+    safeRegister('lollms-vs-coder.openCveBuilder', () => {
         const { CvePanel } = require('../commands/cvePanel');
         CvePanel.createOrShow(services.extensionUri, services.lollmsAPI, services.contextManager);
-    }));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showMcpTab', () => {
+    });
+    safeRegister('lollms-vs-coder.showMcpTab', () => {
         setTab('mcp');
         const { McpManagerPanel } = require('../commands/mcpManagerPanel');
         McpManagerPanel.createOrShow(services.extensionUri);
-    }));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showEnvTab', () => {
+    });
+    safeRegister('lollms-vs-coder.showEnvTab', () => {
         setTab('env');
         const { EnvManagerPanel } = require('../commands/envManagerPanel');
         const folder = vscode.workspace.workspaceFolders?.[0].uri;
         if (folder) EnvManagerPanel.createOrShow(services.extensionUri, folder);
-    }));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showMemoryTab', () => {
+    });
+    safeRegister('lollms-vs-coder.showMemoryTab', () => {
         setTab('memory');
-        // Automatically open the full management UI when clicking the navigation tab
         vscode.commands.executeCommand('lollms-vs-coder.manageProjectMemory');
-    }));
-    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showFixTab', () => {
+    });
+    safeRegister('lollms-vs-coder.showFixTab', () => {
         setTab('fix');
-        // Focus the process view if it's currently relevant to fixes
         vscode.commands.executeCommand('lollmsProcessesView.focus');
-        // Automatically trigger the error scan when clicking the tab
         vscode.commands.executeCommand('lollms-vs-coder.fixAllErrors');
-    }));
+    });
 
     // Initialize default tab
     const savedTab = context.globalState.get<'chat' | 'librarian' | 'git' | 'graph' | 'lab'>('lollms.activeTab', 'chat');
@@ -349,8 +364,90 @@ export const myCustomTool: ToolDefinition = {
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.exportAgentTimeline', async () => {
-        if (ChatPanel.currentPanel?.agentManager) {
-            await ChatPanel.currentPanel.agentManager.exportTimelineToHtml();
+        const panel = ChatPanel.currentPanel;
+        const agent = panel?.agentManager;
+
+        if (agent) {
+            await agent.exportTimelineToHtml();
+        } else {
+            vscode.window.showWarningMessage("No active agent session found to export.");
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.copyDiscussionMarkdown', async () => {
+        const disc = ChatPanel.currentPanel?.getCurrentDiscussion();
+        if (!disc) return;
+
+        let md = `# Discussion: ${disc.title}\n\n`;
+        disc.messages.forEach(m => {
+            const role = m.role.toUpperCase();
+            md += `### ${role}\n${m.content}\n\n---\n\n`;
+        });
+
+        await vscode.env.clipboard.writeText(md);
+        vscode.window.showInformationMessage("✅ Discussion copied as Markdown.");
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.exportDiscussionHtml', async () => {
+        const disc = ChatPanel.currentPanel?.getCurrentDiscussion();
+        if (!disc) return;
+
+        const html = `<html><body style="font-family: sans-serif; padding: 40px; max-width: 800px; margin: 0 auto; line-height: 1.6;">
+            <h1>${disc.title}</h1>
+            ${disc.messages.map(m => `<div><strong>${m.role.toUpperCase()}</strong><br><div style="white-space: pre-wrap; margin-bottom: 20px;">${m.content}</div></div>`).join('')}
+        </body></html>`;
+
+        const uri = await vscode.window.showSaveDialog({ filters: { 'HTML': ['html'] }, defaultUri: vscode.Uri.file(`discussion_${disc.id}.html`) });
+        if (uri) {
+            await vscode.workspace.fs.writeFile(uri, Buffer.from(html, 'utf8'));
+            vscode.window.showInformationMessage("✅ Discussion exported as HTML.");
+        }
+    }));
+
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.exportAgentAuditMarkdown', async () => {
+        const panel = ChatPanel.currentPanel;
+        const agent = panel?.agentManager;
+
+        if (!agent) {
+            vscode.window.showWarningMessage("No active agent found. Please open the agent discussion first.");
+            return;
+        }
+
+        const history = (agent as any).completedActionsHistory || [];
+
+        // If history is empty but we have a plan, try to reconstruct from tasks
+        if (history.length === 0 && agent['currentPlan']?.tasks.length > 0) {
+            const plan = agent['currentPlan'];
+            plan.tasks.forEach((t: any) => {
+                history.push(`[RECONSTRUCTED STEP ${t.id}]\n- ACTION: ${t.action}\n- INTENT: ${t.description}\n- STATUS: ${t.status}\n- RESULT: ${t.result || 'None'}`);
+            });
+        }
+
+        if (history.length === 0) {
+            vscode.window.showInformationMessage("The audit trail is currently empty. Start a mission first.");
+            return;
+        }
+
+        const objective = agent['currentPlan']?.objective || "Lollms Mission";
+
+        let md = `# 🤖 Lollms Agentic Audit Trail\n\n`;
+        md += `**Objective**: ${objective}\n`;
+        md += `**Date**: ${new Date().toLocaleString()}\n\n`;
+        md += `--- \n\n`;
+
+        history.forEach((entry: string, i: number) => {
+            md += `## Step ${i + 1}\n${entry}\n\n`;
+        });
+
+        const uri = await vscode.window.showSaveDialog({
+            defaultUri: vscode.Uri.file(`mission_audit_${Date.now()}.md`),
+            filters: { 'Markdown': ['md'] },
+            saveLabel: 'Export Audit Trail'
+        });
+
+        if (uri) {
+            await vscode.workspace.fs.writeFile(uri, Buffer.from(md, 'utf8'));
+            vscode.window.showInformationMessage(`✅ Audit trail exported to ${path.basename(uri.fsPath)}`);
         }
     }));
 

@@ -7,9 +7,11 @@ export interface FailedAttempt {
 
 export class FailureMemory {
     private failures: FailedAttempt[] = [];
+    private _lastFailureTime: number = 0;
 
     public recordFailure(toolName: string, params: any, error: string) {
-        this.failures.push({ toolName, parameters: params, errorOutput: error, timestamp: Date.now() });
+        this._lastFailureTime = Date.now();
+        this.failures.push({ toolName, parameters: params, errorOutput: error, timestamp: this._lastFailureTime });
     }
 
     private cleanParams(params: any): any {
@@ -61,7 +63,12 @@ export class FailureMemory {
             `### 🐚 SHELL HYGIENE VIOLATION
             Your last command failed because you tried to run complex logic inside 'execute_command' on a Windows host.
             The error "is not recognized as an internal or external command" proves that your quoting or newlines broke the shell.
-            MANDATORY: You are now FORBIDDEN from using Python one-liners. You MUST use 'generate_code' to create a script file in '.lollms/scripts/' and then run it.`
+            MANDATORY: You are now FORBIDDEN from using Python one-liners. You MUST use 'generate_code' to create a script file in '.lollms/scripts/' and then run it.`,
+
+            `### 🛠️ TOOL IMPLEMENTATION ALERT
+            The error output indicates a crash in the tool's source code (e.g., TypeError, undefined reference).
+            MANDATORY: Do not try to fix the user's project code to solve this. This is a BUG in my own infrastructure.
+            STRATEGY: Pivot immediately. Use \`execute_command\` to achieve the same result manually via CLI if the high-level tool is broken.`
             ];
 
         // Pick a random shaker to keep the small model from anchoring on one error message

@@ -25,6 +25,7 @@ import { scrapeWebsiteTool } from './scrapeWebsite';
 import { searchArxivTool } from './searchArxiv';
 import { grepSearchTool } from './searchFiles';
 import { findFilesByNameTool } from './findFilesByName';
+import { updateFunctionTool } from './updateFunction';
 import { searchWebTool } from './searchWeb';
 import { setLaunchEntrypointTool } from './setLaunchEntrypoint';
 import { setVscodePythonInterpreterTool } from './setVscodePythonInterpreter';
@@ -75,9 +76,11 @@ import { testDesktopPythonUiTool } from './testDesktopPythonUi';
 import { testNativeUiTool } from './testNativeUi';
 import { smartScoutTool } from './smartScout';
 import { interactiveUiTestTool } from './interactiveUiTest';
+import { updateFunctionTool } from './updateFunction';
 
 
 export const allTools: ToolDefinition[] = [
+    updateFunctionTool,
     interactiveUiTestTool,
     smartScoutTool,
     testWebUiTool,
@@ -127,6 +130,7 @@ export const allTools: ToolDefinition[] = [
     runFileTool,
     scrapeWebsiteTool,
     searchArxivTool,
+    updateFunctionTool,
     grepSearchTool,
     findFilesByNameTool,
     searchWebTool,

@@ -219,7 +219,8 @@ export const editCodeTool: ToolDefinition = {
                 const isPython = filePath.endsWith('.py');
                 let smokeTestResult = "";
                 if (isPython) {
-                    const checkResult = await env.agentManager!.runCommand(`python -m py_compile "${filePath}"`, signal);
+                    const projectRoot = env.workspaceRoot?.uri.fsPath;
+                    const checkResult = await env.agentManager!.runCommand(`python -m py_compile "${filePath}"`, signal, { projectRoot });
                     if (!checkResult.success) {
                         smokeTestResult = `\n⚠️ SYNTAX ERROR DETECTED: ${checkResult.output}`;
                     }

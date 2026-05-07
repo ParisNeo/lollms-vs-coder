@@ -1243,8 +1243,9 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 .settings-grid-layout {
     display: grid;
     grid-template-columns: 280px 1fr;
-    gap: 0; /* Remove gap to avoid scrollbar overlapping layout gap */
-    height: 70vh; /* Set a definitive height for the scrolling area */
+    gap: 0;
+    height: 75vh; /* Definitive height for the internal scrolling area */
+    min-height: 400px;
     overflow: hidden;
 }
 
@@ -1255,13 +1256,22 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     display: flex;
     flex-direction: column;
     gap: 20px;
-    overflow-y: auto; /* Allow sidebar to scroll if budget inputs grow */
+    overflow-y: auto; 
+    height: 100%; /* Occupy full grid height */
 }
 
 .settings-main-content {
-    overflow-y: auto; /* CRITICAL: Allow tools and profiles to scroll */
     padding: 15px;
     background: var(--vscode-editorWidget-background);
+    overflow-y: scroll; /* Force scrollbar visibility for clarity */
+    height: 100%; /* Occupy full grid height */
+    contain: content;
+}
+
+/* Ensure the modal body itself doesn't scroll, let the grid handles it */
+#agent-settings-modal .modal-body {
+    padding: 0;
+    overflow: hidden; 
 }
 
 .modal-header {
@@ -1859,6 +1869,49 @@ input:focus + .slider { outline: 1px solid var(--vscode-focusBorder); }
     background: rgba(255,255,255,0.03);
     border-radius: 4px;
     border: 1px solid rgba(255,255,255,0.05);
+    position: relative;
+}
+
+/* ⚙️ HUD OPTIONS FLYOUT */
+.hud-options-parent {
+    overflow: visible !important;
+}
+
+.hud-options-popup {
+    display: none;
+    position: absolute;
+    top: calc(100% + 5px);
+    left: 0;
+    z-index: 5001;
+    background: var(--vscode-editorWidget-background);
+    border: 1px solid var(--vscode-widget-border);
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    padding: 8px;
+    border-radius: 8px;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 220px;
+    white-space: nowrap;
+}
+
+.hud-options-parent:hover .hud-options-popup {
+    display: flex;
+}
+
+/* Hover-Bridge to prevent jitter */
+.hud-options-popup::after {
+    content: '';
+    position: absolute;
+    top: -10px;
+    left: 0;
+    right: 0;
+    height: 10px;
+}
+
+.hud-options-popup .mode-badge {
+    width: 100%;
+    justify-content: flex-start;
+    padding: 6px 12px;
 }
 
 .badge-group-label {
@@ -3946,6 +3999,78 @@ details[open] > summary .folder-handle::before {
 .attachment-content pre {
     margin: 0;
     white-space: pre-wrap;
+}
+
+/* 🚀 REVAMPED STAGING MODAL */
+#staging-revamp-modal .modal-content {
+    width: 95vw;
+    height: 90vh;
+    max-width: 1400px;
+}
+
+.staging-layout {
+    display: flex;
+    height: 100%;
+    overflow: hidden;
+    background: var(--vscode-editor-background);
+}
+
+.staging-sidebar {
+    width: 300px;
+    border-right: 1px solid var(--vscode-widget-border);
+    display: flex;
+    flex-direction: column;
+    background: var(--vscode-sideBar-background);
+}
+
+.staging-file-item {
+    padding: 10px 15px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--vscode-widget-border);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    transition: background 0.2s;
+}
+
+.staging-file-item:hover { background: var(--vscode-list-hoverBackground); }
+.staging-file-item.active { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
+
+.status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+.status-dot.valid { background: var(--vscode-charts-green); box-shadow: 0 0 5px var(--vscode-charts-green); }
+.status-dot.invalid { background: var(--vscode-charts-red); box-shadow: 0 0 5px var(--vscode-charts-red); }
+
+.staging-diff-viewer {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.diff-scroll-container {
+    flex: 1;
+    overflow: auto;
+    font-family: var(--vscode-editor-font-family);
+    font-size: 12px;
+    padding: 0;
+}
+
+.diff-line { display: flex; white-space: pre; min-height: 1.5em; }
+.diff-line-num { width: 45px; text-align: right; padding-right: 10px; opacity: 0.5; user-select: none; border-right: 1px solid var(--vscode-widget-border); margin-right: 10px; }
+.diff-line.added { background: rgba(15, 157, 88, 0.2); color: var(--vscode-charts-green); }
+.diff-line.removed { background: rgba(244, 71, 71, 0.2); color: var(--vscode-charts-red); text-decoration: line-through; }
+
+.staging-footer-actions {
+    padding: 15px;
+    border-top: 1px solid var(--vscode-widget-border);
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    background: var(--vscode-editorWidget-background);
 }
 
 /* Discussion Search Modal Styling */

@@ -65,6 +65,9 @@ export function disposeTerminal() {
  * Executes a command in a visible VS Code terminal via the Task API.
  * Handles PowerShell, CMD, and various Unix shells (Bash, Zsh, Fish).
  */
+import { spawn } from 'child_process';
+
+
 export async function runCommandInTerminal(
     command: string, 
     cwd: string, 
@@ -72,9 +75,35 @@ export async function runCommandInTerminal(
     signal?: AbortSignal,
     options?: { 
         shell?: 'powershell' | 'cmd' | 'bash' | 'zsh' | 'fish',
-        timeoutMs?: number 
+        timeoutMs?: number,
+        stealth?: boolean // NEW: Bypass VS Code Terminal UI
     }
 ): Promise<{ success: boolean, output: string }> {
+    // 1. STEALTH MODE: Use raw child_process for background tasks
+    // This bypasses the VS Code Task system entirely, preventing terminal-related crashes.
+    if (options?.stealth) {
+        return new Promise((resolve) => {
+            const isWin = process.platform === 'win32';
+            const shell = isWin ? 'powershell.exe' : '/bin/bash';
+            const shellArgs = isWin ? ['-NoProfile', '-Command', command] : ['-c', command];
+            
+            const child = spawn(shell, shellArgs, { cwd, env: process.env });
+            let output = "";
+            
+            child.stdout.on('data', (data) => output += data.toString());
+            child.stderr.on('data', (data) => output += data.toString());
+            
+            child.on('close', (code) => {
+                resolve({ success: code === 0, output: output.trim() || "[No output]" });
+            });
+
+            if (signal) {
+                signal.addEventListener('abort', () => child.kill());
+            }
+        });
+    }
+
+    // 2. STANDARD MODE (Original Task-based Logic)
     return new Promise(async (resolve) => {
         const outputDir = path.join(cwd, '.lollms');
         // Ensure the directory is clean and exists before every run
@@ -128,15 +157,15 @@ export async function runCommandInTerminal(
             const absExitCodeFile = path.resolve(exitCodeFile);
             
             const envSetters = Object.entries(envVars).map(([k, v]) => `set "${k}=${v}"`).join('\n');
-            // Ensure the bat file changes to the correct drive and directory immediately
             const drive = cwd.substring(0, 2);
-            const batContent = `@echo off\nchcp 65001 >nul\n${drive}\ncd "${cwd}"\n${envSetters}\n${sanitizedCommand}`;
+            // Added explicit output file creation in the batch script to prevent 'file missing' race conditions
+            const batContent = `@echo off\nchcp 65001 >nul\n${drive}\ncd "${cwd}"\n${envSetters}\ntype nul > "${absOutputFile}"\n${sanitizedCommand}\n`;
             fs.writeFileSync(batFile, batContent);
             batFileToCleanup = batFile;
 
-            const utf8Setup = `[Console]::InputEncoding = [Console]::OutputEncoding =[System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8;`;
-            // Execute using the absolute path to the .bat file, ensuring full quoting for Windows paths
-            const psCommand = `${utf8Setup} cmd /c ""${batFile}"" 2>&1 | Tee-Object -FilePath "${absOutputFile}"; $LASTEXITCODE | Out-File -FilePath "${absExitCodeFile}" -Encoding utf8`;
+            const utf8Setup = `[Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8;`;
+            // Simplified redirection: using standard Out-File after cmd execution to ensure stream closure
+            const psCommand = `${utf8Setup} & { cmd /c ""${batFile}"" } *>&1 | Out-File -FilePath "${absOutputFile}" -Encoding utf8; $LASTEXITCODE | Out-File -FilePath "${absExitCodeFile}" -Encoding utf8`;
             execution = new vscode.ShellExecution("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", psCommand], { cwd });
         } else {
             const targetShell = options?.shell || 'bash';

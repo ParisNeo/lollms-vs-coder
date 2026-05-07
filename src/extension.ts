@@ -240,7 +240,9 @@ export async function activate(context: vscode.ExtensionContext) {
     };
 
     watcher.onDidChange(uri => {
-        if (isIgnored(uri)) return;
+        const p = uri.fsPath;
+        if (p.includes('.lollms') || p.includes('.git') || p.includes('node_modules')) return;
+        
         if (uri.fsPath.includes('skills')) {
             skillsManager.invalidateCache();
             return;
@@ -354,7 +356,7 @@ export async function activate(context: vscode.ExtensionContext) {
             vscode.commands.executeCommand('setContext', 'lollms:hasWorkspace', false);
             return;
         }
-        
+
         // Critical: Set context and sync graph manager root before anything else
         vscode.commands.executeCommand('setContext', 'lollms:hasWorkspace', true);
         codeGraphManager.setWorkspaceRoot(folders[0].uri);
@@ -365,7 +367,12 @@ export async function activate(context: vscode.ExtensionContext) {
         switchActiveWorkspace(initial);
     }
 
-    initializeWorkspace();
+    // DELAYED START: Give other extensions (isort, Pylance) 3 seconds to breathe
+    // before the Librarian and Architect start scanning the project.
+    Logger.info("Lollms: Postponing initialization to stabilize Extension Host...");
+    setTimeout(() => {
+        initializeWorkspace();
+    }, 3000);
     
     // Start the Neural Dream Cycle
     projectMemoryManager.performDreamCycle().then(() => {

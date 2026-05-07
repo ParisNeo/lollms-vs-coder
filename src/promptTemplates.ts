@@ -16,9 +16,8 @@ export class PromptTemplates {
     ): string {
         const partialFormat = capabilities?.generationFormats?.partialFormat ?? 'aider';
         const isAutoApply = capabilities?.autoApply ?? false;
+        const isEconomy = capabilities?.tokenEconomyMode ?? false;
         const isForcedFull = (capabilities?.forceFullCode !== undefined)
-            ? capabilities.forceFullCode
-            : (forceFullCodeSetting || false);
 
         const sections: string[] = [];
 
@@ -69,8 +68,13 @@ export class PromptTemplates {
 \`\`\`
 
 **STRICT RULES FOR PATCHING:**
-1. **LITERAL MATCH**: The \`SEARCH\` block must be a character-for-character match of the existing code, including all indentation, spaces, and blank lines.
-2. **UNIQUE CONTEXT**: Always include 3-4 lines of unchanged code before and after the change in the \`SEARCH\` block to ensure the patcher finds the correct location.
+${isEconomy ? `
+1. **TOKEN ECONOMY**: Use the minimum possible context in the SEARCH block (1-2 lines) to keep output small.
+2. **SURGICAL SELECTION**: If you are replacing more than 50% of a function's code, you MUST use the \`update_function\` tool instead of an Aider block. Use Aider only for small diffs.
+` : `
+1. **LITERAL MATCH**: The SEARCH block must be a character-for-character match of the existing code.
+2. **UNIQUE CONTEXT**: Include 3-4 lines of unchanged code to ensure a unique match.
+`}
 3. **NO FRAGMENTS**: Do not use \`...\` inside the \`SEARCH\` block to skip lines. If lines are in the middle of your match, you must include them.
 4. **ATOMIC BLOCKS**: If you are changing multiple functions or distant parts of a file, use **multiple separate** SEARCH/REPLACE blocks.
 5. **NO EMPTY SEARCH BLOCKS**: You are STRICTLY FORBIDDEN from leaving the \`SEARCH\` block empty. Every patch must have a verifiable anchor. To append code to the end of a file, include the final 2-3 lines of the existing file in your \`SEARCH\` block and add your new code after them in the \`REPLACE\` block.
@@ -98,10 +102,16 @@ Your changes will be applied to the disk automatically. You MUST use the **SEARC
         memory?: string;   // This contains Project DNA
     }): string {
         return `
-# 🛠️ ACTUAL PROJECT STATE (LIVING CONTEXT)
+    # 🛠️ ACTUAL PROJECT STATE (LIVING CONTEXT)
 
-The following blocks represent the project exactly as it is on the user's disk at THIS MOMENT.
-Use this as the reference for any SEARCH/REPLACE operations.
+    The following blocks represent the project exactly as it is on the user's disk at THIS MOMENT.
+    Use this as the reference for any SEARCH/REPLACE operations.
+
+    ### 📈 STATE EVOLUTION PROTOCOL (FOR EXTERNAL UI USE)
+    If you are processing this request in an external browser (ChatGPT, Gemini, Claude, etc.):
+    1. **SEQUENTIAL DELTAS**: Assume that every code block you output is immediately applied to the files below.
+    2. **CUMULATIVE CONTEXT**: If you modified 'file_A' in Turn 1, then in Turn 2, the 'Original Code' for 'file_A' is now your modified version.
+    3. **NO REVERSIONS**: Never generate a patch based on the starting state if you have already evolved that file in a previous turn of this conversation.
 
 ## 🎯 MISSION BRIEFING (Current Task Instructions)
 ${context.briefing || 'No specific task-level briefing provided.'}
@@ -131,7 +141,41 @@ ${context.files || ''}
         const activeProfileId = capabilities?.responseProfileId || 'balanced';
         const activeProfile = SYSTEM_RESPONSE_PROFILES.find(p => p.id === activeProfileId) || SYSTEM_RESPONSE_PROFILES[0];
 
-        const envInfo = ""; // We will handle this dynamically in the build call or pass it in
+        const envInfo = ""; 
+
+        if (capabilities?.workerType === 'builder' && promptType === 'chat') {
+            return `${activeProfile.prefix || ''}# 🎭 ROLE: SOVEREIGN BUILDER
+        You are a high-autonomy implementation specialist. 
+        Your goal is to provide a COMPLETE technical solution in a SINGLE response.
+
+        ### 🏗️ BUILDER PROTOCOL
+        You are a single-turn agent. You must analyze, discover, and implement your solution as a cohesive technical mission.
+
+        1. **INTERNAL SCRATCHPAD**: Keep track of project philosophy and dependencies in your mind.
+        2. **GRAPH AWARENESS**: In your timeline, explain how you used the Code Graph to find links between functions.
+        3. **GROUNDING**: If you modify a class, you MUST assume you have looked at the files that link to it.
+        4. **OUTPUT STRUCTURE**: Your response MUST follow this exact layout:
+
+        <builder_report>
+          <objective>Short technical goal of this turn</objective>
+          <briefing>Summarize project architecture, philosophy, and your specific technical strategy for this fix.</briefing>
+          <timeline>
+            <step>Discovery: Used Code Graph to link [X] to [Y]</step>
+            <step>Analysis: Identified faulty logic in [Function Name]</step>
+            <step>Implementation: Created surgical patch for [File Path]</step>
+            <step>Verification: Logical cross-check against [Dependency File]</step>
+          </timeline>
+        </builder_report>
+
+        [NOW PROVIDE ALL CODE BLOCKS BELOW THE REPORT]
+
+        5. **CODE FORMATTING**: 
+           - Existing files: Use AIDER \`<<<<<<< SEARCH ... ======= ... >>>>>>> REPLACE\`
+           - New files: Use \` \`\`\`language:path/to/file.ext \`
+
+        Do not provide conversational "Steps" outside of the XML report. Start directly with the <builder_report>.
+        `;
+        }
 
         const skillsAuthority = (context?.skills || capabilities?.hasSkills) ? `
 ### 📖 SKILLS AUTHORITY PROTOCOL

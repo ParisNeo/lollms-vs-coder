@@ -76,7 +76,8 @@ export class AgentManager {
      * Explicit tracking of different time horizons for the agent.
      */
     public sessionState: {
-        activeEnv?: string;
+        activeEnv?: string; // Legacy fallback
+        projectEnvironments: Record<string, string>; // Map of project root to env path
         replVariables: Record<string, any>; 
         installedPackages: string[];
         environmentHistory: string[];
@@ -90,6 +91,7 @@ export class AgentManager {
         extensionVersion: string; // Track version to invalidate blacklist on update
         backgroundProcesses: Map<string, { pid: number, logFile: string, startTime: number }>;
         } = {
+        projectEnvironments: {},
         replVariables: {},
         installedPackages: [],
         environmentHistory: [],
@@ -125,23 +127,10 @@ export class AgentManager {
         // --- MITIGATION: ANTI-NESTING PROTOCOL ---
         this.sessionState.workingMemory.push(
             "LESSON: Avoid nesting shells. Do not use 'powershell -Command' or 'bash -c' inside 'execute_command'. " +
-            "Submit the raw command directly. For complex logic involving pipes or variables, always generate a temporary .py or .sh script first."
+            "Submit the raw command directly. For complex logic involving pipes or variables, always generate a temporary script in the target language (py, js, sh) first."
         );
         this.sessionState.workingMemory.push(
-            "DIAGNOSTIC: If you see 'isort server crashed', it is an Extension Host failure, NOT a code bug. MANDATORY: Do not edit user code to fix this. Tell the user to 'Reload Window' or check the Python Interpreter selection."
-        );
-        this.sessionState.workingMemory.push(
-            "LESSON: Avoid nesting shells. Do not use 'powershell -Command' or 'bash -c' inside 'execute_command'. " +
-            "Submit the raw command directly. For complex logic involving pipes or variables, always generate a temporary .py or .sh script first."
-        );
-        this.sessionState.workingMemory.push(
-            "ENVIRONMENT: If 'isort' crashes (5 times in 3 minutes), the Python Environment is likely misconfigured. MANDATORY ACTION: Use 'execute_command' to run 'python --version' and 'pip show isort'."
-        );
-        this.sessionState.workingMemory.push(
-            "FIX: If 'isort' client fails to connect, trigger 'workbench.action.reloadWindow' via 'execute_command'. Ensure the user has selected a Python interpreter in the status bar."
-        );
-        this.sessionState.workingMemory.push(
-            "DIAGNOSTIC: If you see 'OS ERROR: Output capture file missing', this is a Windows File Lock issue. Do NOT refactor your code. Simply 'wait' for 2 seconds and retry the command exactly as it was. It is not a logic error."
+            "DIAGNOSTIC: If you see 'OS ERROR: Output capture file missing', this is a file system lock issue on Windows. Do NOT refactor your code or change the script. Simply use the 'wait' tool for 2 seconds and then retry the exact same command. This allows the OS to release the file handle."
         );
 
         if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
@@ -356,6 +345,10 @@ Keep it strictly technical and extremely concise.`
      * Ensures the Genie never works on a dangerous or unstable environment without consent.
      */
     private async preFlightSafetyCheck(folder: vscode.WorkspaceFolder, signal: AbortSignal): Promise<boolean> {
+        // --- RADICAL SHIFT: SOVEREIGN ISOLATION ---
+        const { hardenWorkspace } = require('./utils');
+        await hardenWorkspace(folder);
+
         // If we already have a plan and history, safety has already been established
         if (this.currentPlan && this.completedActionsHistory.length > 0) {
             this.sessionState.isSafetyCheckPassed = true;
@@ -757,6 +750,17 @@ Please commit or stash your work before starting an iterative debug session to e
         this.ui.updateGeneratingState();
 
         try {
+            // --- PHASE -0.1: WORKER TYPE SYNC ---
+            if (discussion.capabilities?.workerType === 'builder') {
+                // Force the specialized Builder Protocol for fast grounding and unified reporting
+                if (!discussion.capabilities.activeAgentProfileId || discussion.capabilities.activeAgentProfileId === 'software_architect') {
+                    discussion.capabilities.activeAgentProfileId = 'builder_protocol';
+                }
+                // Ensure the manager enters the active ReAct loop state
+                this.isActive = true;
+                this.ui.updateAgentMode(true);
+            }
+
             // --- PHASE 0: HYGIENE & SAFETY CHECK ---
             this.processManager.updateDescription(processId, "🛡️ Sovereign: Verifying workspace safety...");
             const safetyPassed = await this.preFlightSafetyCheck(workspaceFolder, controller.signal);
@@ -878,10 +882,19 @@ Please commit or stash your work before starting an iterative debug session to e
                   attachments.map(name => `- ${name} (Use 'read_discussion_file' to see content)`).join('\n')
                 : "";
 
+            // --- SOVEREIGN ENV INVENTORY ---
+            const envs = Object.entries(this.sessionState.projectEnvironments)
+                .map(([root, env]) => `- ${path.basename(root)}: Uses \`${env}\``)
+                .join('\n') || "No specialized environments active (using system default).";
+
             const historyContext = `
             ### 📦 ACTIVE CONTEXT INVENTORY
             ${inventory}
             ${discussionFilesBlock}
+
+            ### 🔌 LOADED ENVIRONMENTS (ACTIVE)
+            ${envs}
+            **PROTOCOL**: When running code for a project, I will automatically use its associated environment. Use 'set_default_environment' to change these mappings.
             **STRICT RULE**: Do NOT use 'read_file' or 'read_files' for anything listed above. Use the provided content directly.
 
             ### 🕒 MISSION TIMELINE (EXECUTED ACTIONS)
@@ -1057,13 +1070,37 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
                 await this.displayAndSavePlan(this.currentPlan);
                 }
 
-                // 5. Emit In-Stream Activity Card
-                await this.ui.addMessageToDiscussion({
-                id: `agent_task_${task.id}`,
-                role: 'assistant',
-                content: `<agent_task id="${task.id}" />`, // Tag for renderer to build the merged card
-                skipInPrompt: true // Don't feed the UI card back to LLM context
-                });
+                // 5. UI Emission Logic: Card vs. Report
+                const isBuilder = this.currentDiscussion?.capabilities?.workerType === 'builder';
+                const reportId = `builder_report_${this.currentDiscussion?.id}`;
+
+                if (isBuilder) {
+                    // Update a single consolidated Mission Report instead of individual task cards
+                    const briefing = this.contextManager.renderBriefing(this.currentDiscussion);
+                    const timeline = this.completedActionsHistory.map(h => `<step>${h}</step>`).join('\n');
+
+                    const reportTag = `
+                <builder_report>
+                <objective>${this.currentPlan!.objective}</objective>
+                <briefing>${briefing}</briefing>
+                <timeline>${timeline}<step>${task.description} (Executing ${task.action}...)</step></timeline>
+                </builder_report>`.trim();
+
+                    const reportExists = this.currentDiscussion.messages.some(m => m.id === reportId);
+                    if (!reportExists) {
+                        await this.ui.addMessageToDiscussion({ id: reportId, role: 'assistant', content: reportTag, skipInPrompt: true });
+                    } else {
+                        await this.ui.updateMessageContent!(reportId, reportTag);
+                    }
+                } else {
+                    // Standard Agent Mode: Individual cards
+                    await this.ui.addMessageToDiscussion({
+                        id: `agent_task_${task.id}`,
+                        role: 'assistant',
+                        content: `<agent_task id="${task.id}" />`,
+                        skipInPrompt: true 
+                    });
+                }
 
                 // Execute Action
                 this.processManager?.updateDescription(processId, `Genie: Executing ${task.action}...`);
@@ -2463,13 +2500,30 @@ Please provide a clear, concise final response to the user summarizing the outco
         return result;
     }
 
-    public async runCommand(command: string, signal: AbortSignal, options?: { shell?: any, timeoutMs?: number }): Promise<{ success: boolean, output: string }> {
+    public async runCommand(command: string, signal: AbortSignal, options?: { shell?: any, timeoutMs?: number, projectRoot?: string }): Promise<{ success: boolean, output: string }> {
         if (!this.currentWorkspaceFolder) return { success: false, output: "No workspace." };
-        
+
         const config = vscode.workspace.getConfiguration('lollmsVsCoder');
         const activationScript = config.get<string>('agent.envActivationScript');
         let finalCommand = command;
         const isWin = process.platform === 'win32';
+
+        // --- SOVEREIGN ENV RESOLUTION ---
+        // Determine which environment to use: 1. Passed root, 2. Current workspace root, 3. Global default
+        const targetRoot = options?.projectRoot || this.currentWorkspaceFolder.uri.fsPath;
+        let envPath = this.sessionState.projectEnvironments[targetRoot] || this.sessionState.activeEnv;
+
+        // JIT Discovery: If no env in state, check VS Code settings for this specific folder
+        if (!envPath) {
+            const folderUri = vscode.Uri.file(targetRoot);
+            const pythonCfg = vscode.workspace.getConfiguration('python', folderUri);
+            const venvPath = pythonCfg.get<string>('defaultInterpreterPath');
+            if (venvPath && venvPath !== 'python') {
+                // If it's a full path to an executable, get the parent folder
+                envPath = venvPath.includes(path.sep) ? path.dirname(path.dirname(venvPath)) : venvPath;
+                this.sessionState.projectEnvironments[targetRoot] = envPath;
+            }
+        }
 
         // --- MSVC / GLOBAL ENV ACTIVATION ---
         if (activationScript) {
@@ -2481,12 +2535,14 @@ Please provide a clear, concise final response to the user summarizing the outco
         }
 
         // --- VIRTUAL ENV ACTIVATION ---
-        if (this.sessionState.activeEnv && (command.startsWith('python') || command.startsWith('pip'))) {
-            const envPath = this.sessionState.activeEnv;
+        if (envPath && (command.startsWith('python') || command.startsWith('pip'))) {
             if (isWin) {
-                finalCommand = `& "${path.join(envPath, 'Scripts', 'Activate.ps1')}"; ${finalCommand}`;
+                // Check if it's a relative path to the root
+                const fullEnvPath = path.isAbsolute(envPath) ? envPath : path.join(targetRoot, envPath);
+                finalCommand = `& "${path.join(fullEnvPath, 'Scripts', 'Activate.ps1')}"; ${finalCommand}`;
             } else {
-                finalCommand = `. "${path.join(envPath, 'bin', 'activate')}" && ${finalCommand}`;
+                const fullEnvPath = path.isAbsolute(envPath) ? envPath : path.join(targetRoot, envPath);
+                finalCommand = `. "${path.join(fullEnvPath, 'bin', 'activate')}" && ${finalCommand}`;
             }
         }
         

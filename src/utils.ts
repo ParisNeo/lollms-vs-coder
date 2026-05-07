@@ -6,10 +6,42 @@ import { execSync } from 'child_process';
 import { PromptTemplates } from './promptTemplates';
 import * as crypto from 'crypto';
 
+
 /**
- * DETERMINISTIC STORAGE RESOLVER
- * Redirects .lollms data to a centralized workspace folder if in a .code-workspace session.
+ * HARDEN WORKSPACE PROTOCOL
+ * Programmatically forces VS Code tools (isort, pylance, search) to ignore .lollms internal data.
+ * This prevents the 'isort crash' loop during rapid file operations.
  */
+export async function hardenWorkspace(folder: vscode.WorkspaceFolder): Promise<void> {
+    const config = vscode.workspace.getConfiguration(undefined, folder.uri);
+
+    // 1. Files & Search Exclusion
+    const filesToExclude = config.get<Record<string, boolean>>('files.exclude') || {};
+    const searchToExclude = config.get<Record<string, boolean>>('search.exclude') || {};
+
+    filesToExclude['**/.lollms/**'] = true;
+    searchToExclude['**/.lollms/**'] = true;
+
+    // 2. Python Language Server Hardening
+    const pythonExclude = ['**/.lollms/**', '**/venv/**', '**/node_modules/**'];
+
+    try {
+        await Promise.all([
+            config.update('files.exclude', filesToExclude, vscode.ConfigurationTarget.WorkspaceFolder),
+            config.update('search.exclude', searchToExclude, vscode.ConfigurationTarget.WorkspaceFolder),
+            config.update('python.analysis.exclude', pythonExclude, vscode.ConfigurationTarget.WorkspaceFolder),
+            config.update('python.analysis.ignore', pythonExclude, vscode.ConfigurationTarget.WorkspaceFolder),
+            // Explicitly kill isort interference
+            config.update('isort.args', ['--skip', '.lollms'], vscode.ConfigurationTarget.WorkspaceFolder),
+            // Mute linting for internal scripts
+            config.update('python.linting.ignorePatterns', ['**/.lollms/**/*.py'], vscode.ConfigurationTarget.WorkspaceFolder)
+        ]);
+        console.log(`[Sovereign] Workspace ${folder.name} hardened against isort/analysis crashes.`);
+    } catch (e) {
+        console.error("[Sovereign] Failed to apply hardening:", e);
+    }
+}
+
 export function getLollmsStorageUri(context: vscode.ExtensionContext, folder?: vscode.WorkspaceFolder): vscode.Uri {
     const workspaceFile = vscode.workspace.workspaceFile;
 
@@ -158,6 +190,7 @@ export interface DiscussionCapabilities {
     herdCriticEnabled?: boolean;         // Optional critique step
     // ---------------------------
 
+    workerType: 'discussion' | 'builder';
     agentMode: boolean;
     debugMode: boolean;
     verifierMode: boolean;
@@ -171,6 +204,7 @@ export interface DiscussionCapabilities {
     folderSettings?: Record<string, { tree: boolean, content: boolean }>;
     autoSkillMode: boolean;
     contextAggression: 'respect' | 'none' | 'minimal' | 'signatures';
+    tokenEconomyMode: boolean;
     projectMemoryEnabled: boolean;
     temperature: number;
     ttftTimeout: number;
@@ -530,16 +564,17 @@ export async function getEnvironmentAwarenessBlock(): Promise<string> {
     const shells = await getAvailableShells();
 
     return `
-### 💻 ENVIRONMENT AWARENESS
-- **User**: ${userName}
-- **Operating System**: ${os.platform()} (${os.type()} ${os.release()})
-- **Primary Shell**: ${os.platform() === 'win32' ? 'cmd / powershell' : 'bash / zsh'}
-- **Available Shells**: ${shells.join(', ')}
-- **Current Date**: ${new Date().toLocaleDateString()}
-- **Current Time**: ${new Date().toLocaleTimeString()}
-- **Timezone**: ${Intl.DateTimeFormat().resolvedOptions().timeZone}
-- **Workspace Root**: The execution context is the WORKSPACE ROOT. Use relative paths.
-`.trim();
+    ### 💻 ENVIRONMENT AWARENESS
+    - **User**: ${userName}
+    - **Operating System**: ${os.platform()} (${os.type()} ${os.release()})
+    - **Primary Shell**: ${os.platform() === 'win32' ? 'cmd / powershell' : 'bash / zsh'}
+    - **Available Shells**: ${shells.join(', ')}
+    - **Sovereign Rule**: This is a MULTILINGUAL environment. DO NOT assume Python, Node.js, or any compiler is installed. You MUST use 'get_environment_details' or 'execute_command' to verify the availability of tools before proposing scripts.
+    - **Current Date**: ${new Date().toLocaleDateString()}
+    - **Current Time**: ${new Date().toLocaleTimeString()}
+    - **Timezone**: ${Intl.DateTimeFormat().resolvedOptions().timeZone}
+    - **Workspace Root**: The execution context is the WORKSPACE ROOT. Use relative paths.
+    `.trim();
 }
 
 export async function getProcessedSystemPrompt(

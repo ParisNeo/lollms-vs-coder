@@ -103,6 +103,37 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
         vscode.commands.executeCommand('lollms-vs-coder.openFlowStudio');
     });
 
+    safeRegister('lollms-vs-coder.runBuilder', async () => {
+        const objective = await vscode.window.showInputBox({ prompt: "What should the Builder do?" });
+        if (!objective) return;
+        
+        const discussion = services.discussionManager.createNewDiscussion();
+        discussion.title = `Builder: ${objective}`;
+        // Builder is not an agent
+        discussion.capabilities.agentMode = false;
+        discussion.capabilities.workerType = 'builder';
+        
+        await services.discussionManager.saveDiscussion(discussion);
+        
+        const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussion.id, services.gitIntegration, services.skillsManager);
+        await panel.loadDiscussion();
+        
+        // Librarian logic only - no safety protocols, no agent loop
+        await services.contextManager.runContextAgent(
+            objective, 
+            services.lollmsAPI.getModelName(), 
+            new AbortController().signal,
+            (newContent) => { 
+                panel.addMessageToDiscussion({ role: 'assistant', content: newContent });
+            },
+            (status) => { Logger.info(`Builder Status: ${status}`); },
+            [],
+            'collaborative',
+            discussion,
+            []
+        );
+    });
+
     safeRegister('lollms-vs-coder.openCveBuilder', () => {
         const { CvePanel } = require('../commands/cvePanel');
         CvePanel.createOrShow(services.extensionUri, services.lollmsAPI, services.contextManager);
@@ -376,12 +407,21 @@ export const myCustomTool: ToolDefinition = {
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.copyDiscussionMarkdown', async () => {
         const disc = ChatPanel.currentPanel?.getCurrentDiscussion();
-        if (!disc) return;
+        if (!disc) {
+            vscode.window.showWarningMessage("No active discussion found to export.");
+            return;
+        }
 
         let md = `# Discussion: ${disc.title}\n\n`;
         disc.messages.forEach(m => {
             const role = m.role.toUpperCase();
-            md += `### ${role}\n${m.content}\n\n---\n\n`;
+            let text = "";
+            if (Array.isArray(m.content)) {
+                text = m.content.map((p: any) => p.type === 'text' ? p.text : `[Visual Asset: ${p.image_url?.url}]`).join('\n');
+            } else {
+                text = String(m.content);
+            }
+            md += `### ${role}\n${text}\n\n---\n\n`;
         });
 
         await vscode.env.clipboard.writeText(md);
@@ -392,12 +432,23 @@ export const myCustomTool: ToolDefinition = {
         const disc = ChatPanel.currentPanel?.getCurrentDiscussion();
         if (!disc) return;
 
-        const html = `<html><body style="font-family: sans-serif; padding: 40px; max-width: 800px; margin: 0 auto; line-height: 1.6;">
+        const html = `<html><head><style>body{font-family:sans-serif;padding:40px;max-width:900px;margin:0 auto;line-height:1.6;background:#1e1e1e;color:#ddd;}.msg{margin-bottom:30px;padding:15px;border-radius:8px;background:#252526;border:1px solid #333;}.role{font-weight:bold;color:#569cd6;display:block;margin-bottom:10px;text-transform:uppercase;font-size:11px;}</style></head><body>
             <h1>${disc.title}</h1>
-            ${disc.messages.map(m => `<div><strong>${m.role.toUpperCase()}</strong><br><div style="white-space: pre-wrap; margin-bottom: 20px;">${m.content}</div></div>`).join('')}
+            ${disc.messages.map(m => {
+                let text = "";
+                if (Array.isArray(m.content)) {
+                    text = m.content.map((p: any) => p.type === 'text' ? p.text : `<img src="${p.image_url?.url}" style="max-width:100%; border-radius:4px; display:block; margin:10px 0;">`).join('<br>');
+                } else {
+                    text = String(m.content).replace(/\n/g, '<br>');
+                }
+                return `<div class="msg"><span class="role">${m.role}</span>${text}</div>`;
+            }).join('')}
         </body></html>`;
 
-        const uri = await vscode.window.showSaveDialog({ filters: { 'HTML': ['html'] }, defaultUri: vscode.Uri.file(`discussion_${disc.id}.html`) });
+        const uri = await vscode.window.showSaveDialog({ 
+            filters: { 'HTML': ['html'] }, 
+            defaultUri: vscode.Uri.file(`discussion_${disc.id.substring(0,8)}.html`) 
+        });
         if (uri) {
             await vscode.workspace.fs.writeFile(uri, Buffer.from(html, 'utf8'));
             vscode.window.showInformationMessage("✅ Discussion exported as HTML.");

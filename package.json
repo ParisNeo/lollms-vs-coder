@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.8.58",
+  "version": "0.8.60",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",
@@ -664,6 +664,10 @@
       {
         "command": "lollms-vs-coder.showFileSearch",
         "title": "Power Search"
+      },
+      {
+        "command": "lollms-vs-coder.showFileGitHistory",
+        "title": "Lollms: Show File Git History"
       }
     ],
     "keybindings": [
@@ -1168,9 +1172,13 @@
             "**/.vscode/**",
             "**/venv/**",
             "**/.venv/**",
+            "**/env/**",
             "**/build/**",
-            "** /dist/**",
+            "**/dist/**",
             "**/out/**",
+            "**/target/**",
+            "**/bin/**",
+            "**/obj/**",
             "**/*.pyc",
             "**/*.egg-info/**",
             "**/*.o",
@@ -1196,7 +1204,10 @@
             "*.bmp",
             "*.svg",
             "*.ico",
-            "*.lock"
+            "*.lock",
+            "**/poetry.lock",
+            "**/package-lock.json",
+            "**/yarn.lock"
           ],
           "description": "%config.contextFileExceptions.description%"
         },
@@ -1522,6 +1533,11 @@
     },
     "menus": {
       "explorer/context": [
+        {
+          "command": "lollms-vs-coder.showFileGitHistory",
+          "group": "1_modification@0",
+          "when": "resourceScheme == file"
+        },        
         {
           "submenu": "lollms-vs-coder.setContextSubmenu",
           "group": "1_modification@0"

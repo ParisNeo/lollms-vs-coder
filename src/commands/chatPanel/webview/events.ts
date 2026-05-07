@@ -234,6 +234,14 @@ export function initEventHandlers() {
 
     if (dom.stopButton) {
         dom.stopButton.addEventListener('click', () => {
+            // If we are waiting for an input (like the Safety Gate), resolve it with a stop signal
+            if ((window as any).inputResolver) {
+                vscode.postMessage({
+                    command: 'sendMessage',
+                    message: { role: 'user', content: 'STOP_REQUESTED', isSilentSignal: true }
+                });
+            }
+
             // Force reset generating state UI-side if it's hanging
             if (state.isGenerating) {
                 setGeneratingState(false);
@@ -816,6 +824,7 @@ export function initEventHandlers() {
                 },
                 explainCode: dom.capExplainCode?.checked ?? true,
                 projectMemoryEnabled: dom.capProjectMemory?.checked ?? true,
+                tokenEconomyMode: (document.getElementById('cap-tokenEconomyMode') as HTMLInputElement)?.checked ?? false,
                 clipboardInsertRole: dom.capClipboardRole?.value || 'user',
                 autoFix: dom.capAutoFix?.checked ?? true,
                 addPedagogicalInstruction: dom.capAddPedagogicalInstruction?.checked ?? false,

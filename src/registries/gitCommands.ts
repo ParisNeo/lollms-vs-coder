@@ -139,6 +139,31 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
         }
     }));
 
+    // Command: Rebase Branch
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.gitRebase', async () => {
+        const folder = getActiveWorkspace() || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0] : undefined);
+        if (!folder) return;
+
+        const branches = await services.gitIntegration.getBranches(folder);
+        const current = await services.gitIntegration.getCurrentBranch(folder);
+        const others = branches.filter(b => b !== current);
+
+        if (others.length === 0) {
+            vscode.window.showInformationMessage("No other branches to rebase onto.");
+            return;
+        }
+
+        const selected = await vscode.window.showQuickPick(others, { placeHolder: `Rebase ${current} onto...` });
+        if (selected) {
+            try {
+                await services.gitIntegration.rebaseBranch(folder, selected);
+                vscode.window.showInformationMessage(`Successfully rebased onto ${selected}.`);
+            } catch (e: any) {
+                vscode.window.showErrorMessage(e.message);
+            }
+        }
+    }));
+
     // Command: Merge Branch
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.gitMerge', async () => {
         const folder = getActiveWorkspace() || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0] : undefined);
@@ -431,4 +456,26 @@ export function registerGitCommands(context: vscode.ExtensionContext, services: 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showGitDashboard', () => {
         GitDashboardPanel.createOrShow(services.extensionUri, services.gitIntegration);
     }));
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.showFileGitHistory', async (uri: vscode.Uri) => {
+        const fileUri = uri || vscode.window.activeTextEditor?.document.uri;
+        if (!fileUri) return;
+
+        const folder = vscode.workspace.getWorkspaceFolder(fileUri);
+        if (!folder) return;
+
+        const relPath = vscode.workspace.asRelativePath(fileUri);
+        
+        // Ensure Dashboard is open
+        GitDashboardPanel.createOrShow(services.extensionUri, services.gitIntegration);
+        
+        // Tell the dashboard to switch to the history view for this file
+        setTimeout(() => {
+            if (GitDashboardPanel.currentPanel) {
+                (GitDashboardPanel.currentPanel as any)._panel.webview.postMessage({
+                    command: 'requestFileHistory',
+                    path: relPath
+                });
+            }
+        }, 500);
+    }));    
 }

@@ -85,6 +85,7 @@ export class DiscussionManager {
         const defaultProfileId = config.get<string>('defaultResponseProfileId') || 'balanced';
 
         const defaults: DiscussionCapabilities = {
+            workerType: 'discussion',
             responseProfileId: defaultProfileId,
             forceFullCode: false,
             generationFormats: {
@@ -136,6 +137,7 @@ export class DiscussionManager {
             ttftTimeout: 0,
             interTokenTimeout: 0,
             contextAggression: 'respect',
+            tokenEconomyMode: false,
             disableProjectContext: false,
             projectMemoryEnabled: true,
             gitWorkflow: false,

@@ -272,6 +272,40 @@ export class GitIntegration {
       }
   }
 
+  public async rebaseBranch(folder: vscode.WorkspaceFolder, upstream: string): Promise<string> {
+      try {
+          const currentBranch = await this.getCurrentBranch(folder);
+          if (currentBranch === upstream) {
+              throw new Error(`Cannot rebase branch onto itself.`);
+          }
+          // Fetch to ensure upstream is fresh
+          await execAsync(`git fetch origin`, { cwd: folder.uri.fsPath, timeout: 30000 }).catch(() => {});
+          const { stdout } = await execAsync(`git rebase "${upstream}"`, { cwd: folder.uri.fsPath });
+          return stdout;
+      } catch (e: any) {
+          if (e.stdout && (e.stdout.includes("CONFLICT") || e.stdout.includes("error: could not apply"))) {
+              throw new Error(`Rebase Conflict: Rebase is paused. Please resolve conflicts in files and use 'git rebase --continue' or 'git rebase --abort'.`);
+          }
+          throw new Error(`Rebase failed: ${e.message}`);
+      }
+  }
+
+  public async getFileHistory(folder: vscode.WorkspaceFolder, filePath: string, count: number = 50): Promise<GitCommit[]> {
+      try {
+          const { stdout } = await execAsync(
+              `git --no-pager log --pretty=format:"%H|%s|%an|%ar" -n ${count} -- "${filePath}"`,
+              { cwd: folder.uri.fsPath, timeout: 15000 }
+          );
+          return stdout.split('\n').filter(line => line.trim()).map(line => {
+              const [hash, message, author, date] = line.split('|');
+              return { hash, message, author, date };
+          });
+      } catch (error) {
+          console.error(`Failed to fetch history for ${filePath}:`, error);
+          return [];
+      }
+  }
+
   public async renameBranch(folder: vscode.WorkspaceFolder, oldName: string, newName: string): Promise<void> {
       try {
           const safeOld = oldName.trim().replace(/"/g, '\\"');

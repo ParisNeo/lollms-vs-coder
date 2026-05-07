@@ -256,6 +256,29 @@ export class GitDashboardPanel {
                             vscode.window.showInformationMessage(`Merged ${msg.ref}:\n${output}`);
                         }
                         break;
+                    case 'rebaseRef':
+                        const confirmRebase = await vscode.window.showWarningMessage(`Rebase current branch onto ${msg.ref}? This will rewrite history.`, { modal: true }, "Rebase");
+                        if (confirmRebase === "Rebase") {
+                            try {
+                                const output = await this._git.rebaseBranch(folder, msg.ref);
+                                await this.refresh();
+                                vscode.window.showInformationMessage(`Rebase successful:\n${output}`);
+                            } catch (e: any) {
+                                vscode.window.showErrorMessage(e.message);
+                                await this.refresh();
+                            }
+                        }
+                        break;
+                    case 'getFileHistory':
+                        if (msg.path) {
+                            const history = await this._git.getFileHistory(folder, msg.path);
+                            this._panel.webview.postMessage({ 
+                                command: 'fileHistory', 
+                                path: msg.path, 
+                                history 
+                            });
+                        }
+                        break;
                     case 'compareRef':
                         const fullDiff = await this._git.getCompareDiff(folder, 'HEAD', msg.ref);
                         if (!fullDiff || !fullDiff.trim()) {
@@ -732,6 +755,7 @@ export class GitDashboardPanel {
         <div class="center-stage" id="center-stage">
             <div class="tabs-header">
                 <div class="tab active" data-view="HISTORY">History</div>
+                <div class="tab" data-view="FILE_HISTORY">File History</div>
                 <div class="tab" data-view="STAGING">Staging</div>
                 <div class="tab" data-view="DIFF">Diff</div>
             </div>
@@ -742,6 +766,15 @@ export class GitDashboardPanel {
                     <div style="display:flex; justify-content:center; padding:20px;">
                         <button class="btn btn-secondary" onclick="post('loadMore')">Load More Commits</button>
                     </div>
+                </div>
+
+                <!-- FILE HISTORY VIEW -->
+                <div id="view-FILE_HISTORY" class="view" style="display:none; padding:20px;">
+                    <div id="file-history-header" style="margin-bottom: 15px; padding-bottom: 10px; border-bottom: 1px solid var(--vscode-widget-border);">
+                        <h3 style="margin:0; font-size: 14px; color: var(--vscode-textLink-foreground);">No file selected</h3>
+                        <div style="font-size: 11px; opacity: 0.6; margin-top: 4px;">Right-click a file in the explorer or sidebar to see its individual history.</div>
+                    </div>
+                    <div id="file-history-list"></div>
                 </div>
 
                 <!-- STAGING VIEW -->

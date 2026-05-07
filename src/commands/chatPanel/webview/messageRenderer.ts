@@ -774,7 +774,7 @@ function looksLikeDiff(text: string): boolean {
     return (headerLines >= 2) || (chunkMarkers >= 1 && hasDiffMarkers);
 }
 
-function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal: boolean = false) {
+function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSource?: any, isFinal: boolean = false) {
     const pres = container.querySelectorAll('pre');
     if (pres.length === 0) return;
 
@@ -1166,50 +1166,39 @@ function enhanceCodeBlocks(container: HTMLElement, contentSource?: any, isFinal:
             resultsList.style.cssText = 'display:none; margin-top:8px; font-size:11px; padding:8px; background:var(--vscode-editor-inactiveSelectionBackground); border-radius:4px; border:1px solid var(--vscode-widget-border);';
 
             btn.onclick = () => {
-                const changes: any[] = [];
-                // We re-query pres inside the current message container to ensure we get the right ones
-                const pres = container.querySelectorAll('pre');
-                pres.forEach((pre, index) => {
-                    const code = pre.querySelector('code');
-                    if (!code) return;
-                    // match the code block to its info from the earlier extraction
-                    const info = codeBlockInfos[index];
-                    if (info && info.path && ['file', 'diff', 'insert', 'replace', 'delete', 'file_delete'].includes(info.type || '')) {
-                        changes.push({ 
-                            type: info.type === 'file' ? 'file' : (info.type || 'replace'), 
-                            path: info.path, 
-                            content: code.innerText 
-                        });
-                    }
-                });
+                if (btn.classList.contains('applied')) return;
 
-                if (changes.length > 0) {
-                    btn.disabled = true;
-                    btn.innerHTML = '<span class="codicon codicon-sync spin"></span> Processing Sequentially...';
-                    
-                    // Show the results container
-                    resultsList.style.display = 'block';
-                    resultsList.innerHTML = '<div style="opacity:0.7; margin-bottom:4px;">Executing operations...</div>';
+                // 1. Extract ALL actionable items (supporting multi-hunk Aider)
+                const changes = gatherChangesFromBlocks(messageId);
 
-                    // 1. Prepare the validation list with "Pending" states immediately
-                    resultsList.innerHTML = changes.map((c) => {
-                        const isFull = c.type === 'file';
-                        const typeLabel = isFull ? 'FULL' : 'PATCH';
-                        const typeColor = isFull ? 'var(--vscode-charts-blue)' : 'var(--vscode-charts-orange)';
-                        const hunkAttr = c.hunkIndex !== undefined ? `data-hunk-index="${c.hunkIndex}"` : '';
-                        
-                        return `
-                        <div class="apply-row" data-path="${c.path}" data-block-index="${c.blockIndex}" ${hunkAttr} data-target-id="block-${messageId}-${c.blockIndex}" style="display:flex; align-items:center; gap:8px; margin-bottom:6px; padding:4px; border-radius:4px; cursor:pointer;">
-                            <span class="status-icon"><span class="codicon codicon-clock"></span></span>
-                            <span style="font-weight:800; font-size:9px; color:${typeColor}; min-width:45px; border:1px solid ${typeColor}; border-radius:3px; text-align:center; padding:0 2px;">${typeLabel}</span>
-                            <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px;">${c.label}</span>
-                            <div class="row-actions" style="display:none;"></div>
-                        </div>`;
-                    }).join('');
-
-                    // 2. Start the actual sequential process in the extension
-                    vscode.postMessage({ command: 'applyAllChanges', changes, messageId });
+                if (changes.length === 0) {
+                    vscode.postMessage({ command: 'showError', message: 'No un-applied changes found in this message.' });
+                    return;
                 }
+
+                // 2. UI State: Switch to "Processing"
+                btn.disabled = true;
+                btn.classList.add('sequential-applying');
+                btn.innerHTML = '<span class="codicon codicon-sync spin"></span> Applying Batch...';
+
+                resultsList.style.display = 'block';
+                resultsList.innerHTML = changes.map((c) => {
+                    const isFull = c.type === 'file';
+                    const typeLabel = isFull ? 'FULL' : 'PATCH';
+                    const typeColor = isFull ? 'var(--vscode-charts-blue)' : 'var(--vscode-charts-orange)';
+                    const hunkAttr = c.hunkIndex !== undefined ? `data-hunk-index="${c.hunkIndex}"` : '';
+
+                    return `
+                    <div class="apply-row" data-path="${c.path}" data-block-index="${c.blockIndex}" ${hunkAttr} style="display:flex; align-items:center; gap:8px; margin-bottom:4px; padding:4px; border-radius:4px;">
+                        <span class="status-icon"><span class="codicon codicon-clock" style="opacity:0.5"></span></span>
+                        <span style="font-weight:800; font-size:9px; color:${typeColor}; min-width:45px; border:1px solid ${typeColor}; border-radius:3px; text-align:center; padding:0 2px;">${typeLabel}</span>
+                        <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; opacity:0.8;">${c.label}</span>
+                        <div class="row-actions" style="display:none;"></div>
+                    </div>`;
+                }).join('');
+
+                // 3. Delegate Batch to extension
+                vscode.postMessage({ command: 'applyAllChanges', changes, messageId });
             };
 
             wrapper.appendChild(btn);
@@ -1754,6 +1743,64 @@ function renderMilestoneCard(attrs: any): string {
 
 
 
+function renderBuilderReport(xmlContent: string, messageId: string): string {
+    const getTag = (xml: string, tag: string) => {
+        const regex = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, 'i');
+        return xml.match(regex)?.[1] || "";
+    };
+
+    const objective = getTag(xmlContent, "objective");
+    const briefing = getTag(xmlContent, "briefing");
+    const timelineRaw = getTag(xmlContent, "timeline");
+
+    const steps = timelineRaw.split(/<step>/i).filter(s => s.trim()).map(step => {
+        const content = step.replace(/<\/step>/i, "").trim();
+        const icon = content.toLowerCase().includes("fix") || content.toLowerCase().includes("update") ? "zap" : "search";
+        return `
+            <div class="timeline-item success">
+                <div class="timeline-dot"><span class="codicon codicon-${icon}"></span></div>
+                <div class="timeline-content">${sanitizer.sanitize(content)}</div>
+            </div>`;
+    }).join("");
+
+    return `
+    <div class="builder-mission-report">
+        <div class="status-line" style="margin-bottom:10px;">
+            <span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span>
+            <span style="font-weight:bold; letter-spacing:0.5px;">BUILDER MISSION COMPLETE</span>
+        </div>
+
+        <div class="technical-briefing-card" style="border-left-color:var(--vscode-charts-orange); margin-bottom:10px;">
+            <div class="briefing-header" style="color:var(--vscode-charts-orange);">
+                <span class="codicon codicon-target"></span> MISSION OBJECTIVE
+            </div>
+            <div class="briefing-content" style="padding:0 16px 12px 16px; font-weight:600;">
+                ${sanitizer.sanitize(objective)}
+            </div>
+        </div>
+
+        <div class="technical-briefing-card" style="margin-bottom:10px;">
+            <details open>
+                <summary class="briefing-header">
+                    <span class="codicon codicon-note"></span> TEAM TECHNICAL BRIEFING
+                </summary>
+                <div class="briefing-scroll-area">
+                    <div class="briefing-content">${sanitizer.sanitize(briefing)}</div>
+                </div>
+            </details>
+        </div>
+
+        <details class="info-collapsible" style="margin-bottom:10px;">
+            <summary class="briefing-header">
+                <span class="codicon codicon-history"></span> MISSION TIMELINE
+            </summary>
+            <div class="mission-timeline" style="padding: 10px 20px;">
+                ${steps}
+            </div>
+        </details>
+    </div>`;
+}
+
 function renderProcessingBlock(rawContent: string, isClosed: boolean): string {
     const lines = rawContent.trim().split('\n').filter(l => l.trim().length > 0);
     const displayTitle = lines.length > 0 ? lines[lines.length - 1].replace(/^\*\s*/, '') : "Processing...";
@@ -2151,9 +2198,19 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 const isClosed = procMatch[0].toLowerCase().includes('</processing>');
                 const html = renderProcessingBlock(innerContent, isClosed);
                 processingBlocks.push({ html, start: procMatch.index, end: procMatch.index + procMatch[0].length });
-            }
+                }
 
-            // --- AGENT TASK TAG PARSING ---
+                // --- BUILDER REPORT TAG PARSING ---
+                const builderRegex = /<builder_report>([\s\S]*?)<\/builder_report>/gi;
+                let builderMatch;
+                const builderReports: { html: string, start: number, end: number }[] = [];
+                while ((builderMatch = builderRegex.exec(contentWithoutThoughts)) !== null) {
+                if (isInsideCode(builderMatch.index)) continue;
+                const html = renderBuilderReport(builderMatch[1], messageId);
+                builderReports.push({ html, start: builderMatch.index, end: builderMatch.index + builderMatch[0].length });
+                }
+
+                // --- AGENT TASK TAG PARSING ---
             const taskTagRegex = /<agent_task\s+id=["']([^"']+)["']\s*\/>/gi;
             let taskMatch;
             while ((taskMatch = taskTagRegex.exec(contentWithoutThoughts)) !== null) {
@@ -2355,6 +2412,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 ...agentTaskBlocks.map(at => ({ start: at.start, end: at.end, html: at.html, elementType: 'agentTask' as const })),
                 ...gitEventBlocks.map(ge => ({ start: ge.start, end: ge.end, html: ge.html, elementType: 'gitEvent' as const })),
                 ...processingBlocks.map(p => ({ start: p.start, end: p.end, html: p.html, elementType: 'processing' as const })),
+                ...builderReports.map(br => ({ start: br.start, end: br.end, html: br.html, elementType: 'builderReport' as const })),
                 ...toolBugReports.map(tb => ({ start: tb.start, end: tb.end, html: tb.html, elementType: 'toolBug' as const }))
                 ].sort((a, b) => a.start - b.start);
 
@@ -2667,10 +2725,11 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 summary.appendChild(langLabel);
                 summary.appendChild(actions);
                 details.appendChild(summary);
-                // Preserve raw code for the 'Apply All' aggregator
+                // CRITICAL: Preserve raw code for the 'Apply All' aggregator
                 details.dataset.rawCode = codeOnly;
-                
-        const pre = document.createElement('pre');
+                details.dataset.path = block.path;
+
+                const pre = document.createElement('pre');
         pre.className = `language-${language}`;
         pre.style.width = '100%';
         pre.style.maxHeight = '400px';
@@ -2879,106 +2938,8 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
             contentDiv.innerHTML = '';
             contentDiv.appendChild(fragment);
 
-            // Apply All button logic
-            const actionableBlocks = codeBlocks.filter(b => b.path && ['file', 'replace', 'insert', 'diff'].includes(b.type || ''));
-            if (actionableBlocks.length > 0) {
-                const wrapper = document.createElement('div');
-                wrapper.className = 'apply-all-wrapper';
-                wrapper.style.marginTop = '16px';
-
-                const btn = document.createElement('button');
-                btn.className = 'apply-all-btn';
-                
-                const resultsList = document.createElement('div');
-                resultsList.className = 'apply-results-list';
-                resultsList.style.cssText = 'display:none; margin-top:8px; font-size:11px; padding:8px; background:var(--vscode-editor-inactiveSelectionBackground); border-radius:4px; border:1px solid var(--vscode-widget-border);';
-
-                // Restore state if we are re-rendering due to an update (e.g. repair)
-                if (savedResultsHtml && isApplyListVisible) {
-                    resultsList.innerHTML = savedResultsHtml;
-                    resultsList.style.display = 'block';
-                    btn.className = savedBtnClasses;
-                    btn.innerHTML = savedBtnText;
-                    btn.disabled = savedBtnDisabled;
-                } else {
-                    // Default state
-                    btn.innerHTML = `<span class="codicon codicon-check-all"></span> Apply All Modifications (${actionableBlocks.length})`;
-                    btn.disabled = !isFinal;
-                    if (!isFinal) {
-                        btn.style.opacity = '0.5';
-                        btn.style.cursor = 'not-allowed';
-                    }
-                }
-
-                btn.onclick = () => {
-                    if (btn.classList.contains('applied')) return;
-
-                    if (btn.classList.contains('stop-btn-red')) {
-                        vscode.postMessage({ command: 'stopGeneration' });
-                        return;
-                    }
-
-                    const changes = gatherChangesFromBlocks(messageId);
-                    if (changes.length === 0) return;
-
-                    btn.classList.add('sequential-applying');
-                    btn.classList.add('stop-btn-red');
-                    btn.innerHTML = '<span class="codicon codicon-stop"></span> Stop Applying';
-                    resultsList.style.display = 'block';
-
-                    resultsList.innerHTML = changes.map((c) => {
-                        const isFull = c.type === 'file';
-                        const typeLabel = isFull ? 'FULL' : 'PATCH';
-                        const typeColor = isFull ? 'var(--vscode-charts-blue)' : 'var(--vscode-charts-orange)';
-                        const hunkAttr = c.hunkIndex !== undefined ? `data-hunk-index="${c.hunkIndex}"` : '';
-                        
-                        return `
-                        <div class="apply-row" data-path="${c.path}" data-block-index="${c.blockIndex}" ${hunkAttr} data-target-id="block-${messageId}-${c.blockIndex}" style="display:flex; align-items:center; gap:8px; margin-bottom:6px; padding:4px; border-radius:4px; cursor:pointer;">
-                            <span class="status-icon"><span class="codicon codicon-clock"></span></span>
-                            <span style="font-weight:800; font-size:9px; color:${typeColor}; min-width:45px; border:1px solid ${typeColor}; border-radius:3px; text-align:center; padding:0 2px;">${typeLabel}</span>
-                            <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px;">${c.label}</span>
-                            <div class="row-actions" style="display:none;"></div>
-                        </div>`;
-                    }).join('');
-
-                    // Add navigation listener to results list
-                    resultsList.onclick = (e) => {
-                        const targetElement = e.target as HTMLElement;
-                        // DO NOT scroll if the user clicked a button (like Repair)
-                        if (targetElement.closest('button')) return;
-
-                        const row = targetElement.closest('.apply-row') as HTMLElement;
-                        if (row && row.dataset.targetId) {
-                            const target = document.getElementById(row.dataset.targetId);
-                            if (target) {
-                                target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                                // Visual feedback: pulse highlight
-                                target.style.transition = 'outline 0.2s';
-                                target.style.outline = '2px solid var(--vscode-focusBorder)';
-                                setTimeout(() => target.style.outline = 'none', 1000);
-                            }
-                        }
-                    };
-
-                    vscode.postMessage({ command: 'applyAllChanges', changes, messageId });
-                };
-
-                const btnContainer = document.createElement('div');
-                btnContainer.className = 'apply-all-buttons-container';
-                btnContainer.style.display = 'flex';
-                btnContainer.style.width = '100%';
-                btnContainer.style.alignItems = 'center';
-
-                // Only primary button now
-                btnContainer.appendChild(btn);
-
-                wrapper.appendChild(btnContainer);
-                wrapper.appendChild(resultsList);
-                contentDiv.appendChild(wrapper);
-
-                // --- INITIAL SYNC ---
-                checkAndSyncMessageAppliedState(messageId);
-            }
+            // Re-run enhancement for the newly generated fragment
+            enhanceCodeBlocks(contentDiv, messageId, rawContent, isFinal);
     } catch (e) {
         contentDiv.innerText = "Rendering Error: " + e;
     }
@@ -3436,6 +3397,7 @@ export function updateContext(contextText: string, files: string[] = [], skills:
                         <button class="icon-btn" title="Export Discussion as HTML" onclick="vscode.postMessage({command:'executeLollmsCommand', details:{command:'lollms-vs-coder.exportDiscussionHtml'}})"><i class="codicon codicon-cloud-download"></i></button>
                     </div>
 
+                    <button id="refresh-context-btn" class="icon-btn" title="Force refresh context & recalculate bar" style="padding: 2px; color: var(--vscode-charts-blue);"><i class="codicon codicon-sync"></i></button>
                     <button id="save-context-btn" class="icon-btn" title="Save file selection" style="padding: 2px;"><i class="codicon codicon-save"></i></button>
                     <button id="load-context-btn" class="icon-btn" title="Load file selection" style="padding: 2px;"><i class="codicon codicon-folder-opened"></i></button>
                     <button id="reset-context-bubble-btn" class="icon-btn" title="Full Context Reset" style="padding: 2px; color: var(--vscode-errorForeground);"><i class="codicon codicon-clear-all"></i></button>
@@ -3539,7 +3501,7 @@ export function updateContext(contextText: string, files: string[] = [], skills:
 
     const markdownView = dom.contextContainer.querySelector('.markdown-context-view');
     if (markdownView) {
-        enhanceCodeBlocks(markdownView as HTMLElement, contextText, true);
+        enhanceCodeBlocks(markdownView as HTMLElement, messageId, contextText, true);
     }
 
     // Trigger Mermaid rendering for diagrams in the context bubble
@@ -3842,10 +3804,16 @@ export function updateContext(contextText: string, files: string[] = [], skills:
     const refreshCtxBtn = document.getElementById('refresh-context-btn');
     if (refreshCtxBtn) {
         refreshCtxBtn.addEventListener('click', () => {
+            // Visual feedback: spin the icon
+            const icon = refreshCtxBtn.querySelector('.codicon');
+            if (icon) icon.classList.add('spin');
+            
             vscode.postMessage({ command: 'calculateTokens' });
+            
+            setTimeout(() => { if (icon) icon.classList.remove('spin'); }, 1000);
         });
     }
-
+    
     const bulkDeleteSkillsBtn = document.getElementById('bulk-delete-skills-btn');
     if (bulkDeleteSkillsBtn) {
         bulkDeleteSkillsBtn.addEventListener('click', () => {

@@ -559,6 +559,28 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string, s
         dom.messageInput.disabled = isGenerating;
     }
 
+    // --- GLOBAL BUTTON LOCKDOWN ---
+    const actionableButtons = document.querySelectorAll('.apply-btn, .lollms-command-btn, .code-action-btn, .msg-action-btn, .summarize-context-btn, .open-context-btn, .remove-context-btn');
+    actionableButtons.forEach((btn: any) => {
+        if (isGenerating) {
+            if (!btn.dataset.originalHtml) {
+                btn.dataset.originalHtml = btn.innerHTML;
+                btn.innerHTML = '<div class="spinner"></div>';
+            }
+            btn.disabled = true;
+            btn.style.pointerEvents = 'none';
+            btn.style.opacity = '0.5';
+        } else {
+            if (btn.dataset.originalHtml) {
+                btn.innerHTML = btn.dataset.originalHtml;
+                delete btn.dataset.originalHtml;
+            }
+            btn.disabled = false;
+            btn.style.pointerEvents = 'auto';
+            btn.style.opacity = '1';
+        }
+    });
+
     if(dom.agentModeCheckbox) dom.agentModeCheckbox.disabled = isGenerating;
     if(dom.autoContextCheckbox) dom.autoContextCheckbox.disabled = isGenerating;
 
@@ -932,9 +954,11 @@ export function updateBadges() {
     if (dom.capHerdMode) dom.capHerdMode.checked = caps.herdMode || false;
     if (dom.capHerdParallelGeneration) dom.capHerdParallelGeneration.checked = !!caps.herdParallelGeneration;
     if (dom.capHerdRounds) dom.capHerdRounds.value = caps.herdRounds?.toString() || '2';
-                    if (dom.capProjectMemory) dom.capProjectMemory.checked = caps.projectMemoryEnabled !== false;
-                    if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = caps.agentMode;
-                    if (dom.autoContextCheckbox) dom.autoContextCheckbox.checked = caps.autoContextMode;
+    if (dom.capProjectMemory) dom.capProjectMemory.checked = caps.projectMemoryEnabled !== false;
+    const economyCheck = document.getElementById('cap-tokenEconomyMode');
+    if (economyCheck) economyCheck.checked = !!caps.tokenEconomyMode;
+    if (dom.agentModeCheckbox) dom.agentModeCheckbox.checked = caps.agentMode;
+    if (dom.autoContextCheckbox) dom.autoContextCheckbox.checked = caps.autoContextMode;
     if (dom.contextAggressionSelect) dom.contextAggressionSelect.value = caps.contextAggression || 'respect';
     if (dom.capGitWorkflow) dom.capGitWorkflow.checked = !!caps.gitWorkflow;
     if (dom.capEnableTTS) dom.capEnableTTS.checked = !!caps.enableTTS;
@@ -1093,11 +1117,35 @@ export function updateBadges() {
 
     // --- GROUP B: TASK (Workflow & Modes) ---
     if (guiState.agentBadge || (!isAgentMode && (guiState.debugBadge || caps.herdMode || caps.testMode))) {
-        const taskGroup = document.createElement('div');
-        taskGroup.className = 'badge-group';
-        container.appendChild(taskGroup);
+        const workerGroup = document.createElement('div');
+        workerGroup.className = 'badge-group';
+        container.appendChild(workerGroup);
 
-        // --- NEW: AGENT MISSION PROFILE SELECTOR ---
+        const isBuilder = caps.workerType === 'builder';
+        const workerBadge = createToggleBadge(
+            isBuilder ? '🏗️ Builder' : '💬 Discuss',
+            isBuilder ? 'agent' : 'autocontext', 
+            true,
+            true,
+            () => {
+                const nextType = isBuilder ? 'discussion' : 'builder';
+                vscode.postMessage({ 
+                    command: 'updateDiscussionCapabilitiesPartial', 
+                    partial: { 
+                        workerType: nextType,
+                        // Builder is single-turn (no Genie loop)
+                        agentMode: false 
+                    } 
+                });
+            }
+        );
+        if (workerBadge) {
+            workerBadge.title = isBuilder 
+                ? "Builder Mode: Agentic sequential execution. Git-bound." 
+                : "Discussion Mode: Iterative Q&A with manual patches.";
+            workerGroup.appendChild(workerBadge);
+        }
+        // --- NEW: AGENT MISSION PROFILE SELECTOR (Now standalone) ---
         if (isAgentMode && state.agentProfiles && state.agentProfiles.length > 0) {
             const currentProfileId = state.capabilities?.activeAgentProfileId || 'software_architect';
             const currentProfile = state.agentProfiles.find(p => p.id === currentProfileId) || state.agentProfiles[0];
@@ -1153,9 +1201,25 @@ export function updateBadges() {
 
                 wrapper.appendChild(genieBadge);
                 wrapper.appendChild(menu);
-                taskGroup.appendChild(wrapper);
+                container.appendChild(wrapper); // Add directly to main container
             }
         }
+
+        const taskGroup = document.createElement('div');
+        taskGroup.className = 'badge-group hud-options-parent';
+        container.appendChild(taskGroup);
+
+        // 1. CREATE THE SIMPLER TOGGLE BADGE
+        const optionsBadge = document.createElement('span');
+        optionsBadge.className = 'mode-badge active clickable';
+        optionsBadge.style.background = 'var(--vscode-editorWidget-background)';
+        optionsBadge.innerHTML = `<span class="codicon codicon-settings-gear"></span> <span class="badge-label">PROTOCOL</span>`;
+        taskGroup.appendChild(optionsBadge);
+
+        // 2. CREATE THE HIDDEN CONTAINER
+        const optionsPopup = document.createElement('div');
+        optionsPopup.className = 'hud-options-popup';
+        taskGroup.appendChild(optionsPopup);
 
         const agentBadge = createToggleBadge(
             '🤖 Agent',
@@ -1166,7 +1230,7 @@ export function updateBadges() {
                 vscode.postMessage({ command: 'toggleAgentMode' });
             }
         );
-        if (agentBadge) taskGroup.appendChild(agentBadge);
+        if (agentBadge) optionsPopup.appendChild(agentBadge);
 
         const debugBadge = createToggleBadge(
             '🐞 Debug', 
@@ -1189,13 +1253,13 @@ export function updateBadges() {
                 debugBadge.style.backgroundColor = 'var(--vscode-charts-red)';
                 debugBadge.style.color = 'white';
             }
-            taskGroup.appendChild(debugBadge);
+            optionsPopup.appendChild(debugBadge);
         }
 
         const verifierBadge = createToggleBadge(
             '🛡️ Verifier',
             'verifier',
-            true, // Always visible if in Task group
+            true, 
             caps.verifierMode,
             () => {
                 vscode.postMessage({
@@ -1204,7 +1268,7 @@ export function updateBadges() {
                 });
             }
         );
-        if (verifierBadge) taskGroup.appendChild(verifierBadge);
+        if (verifierBadge) optionsPopup.appendChild(verifierBadge);
 
         const testBadge = createToggleBadge(
             '🧪 Test',
@@ -1223,7 +1287,7 @@ export function updateBadges() {
                 testBadge.style.backgroundColor = '#e84393';
                 testBadge.style.color = 'white';
             }
-            taskGroup.appendChild(testBadge);
+            optionsPopup.appendChild(testBadge);
         }
 
         const docsBadge = createToggleBadge(
@@ -1256,30 +1320,40 @@ export function updateBadges() {
                 gitWorkflowBadge.style.backgroundColor = 'var(--vscode-gitDecoration-modifiedResourceForeground)';
                 gitWorkflowBadge.style.color = 'white';
             }
-            taskGroup.appendChild(gitWorkflowBadge);
+            optionsPopup.appendChild(gitWorkflowBadge);
         }
         if (docsBadge) {
             if (caps.documentationMode) {
                 docsBadge.style.backgroundColor = '#00b894';
                 docsBadge.style.color = 'white';
             }
-            taskGroup.appendChild(docsBadge);
+            optionsPopup.appendChild(docsBadge);
         }
 
         const herdBadge = createToggleBadge('🐂 Multi-Agent', 'herd', guiState.herdBadge, caps.herdMode, () => {
             vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { herdMode: !caps.herdMode } });
         });
-        if (herdBadge) taskGroup.appendChild(herdBadge);
+        if (herdBadge) optionsPopup.appendChild(herdBadge);
     }
 
-    // --- THEME: KNOWLEDGE & RESEARCH (Suppress in Agent Mode) ---
-    if (!isAgentMode && (guiState.autoContextBadge || guiState.autoSkillBadge !== false || guiState.webSearchBadge !== false)) {
-        const knowledgeGroup = document.createElement('div');
-        knowledgeGroup.className = 'badge-group';
-        container.appendChild(knowledgeGroup);
+    // --- THEME: DNA & MEMORY ---
+    if (!isAgentMode) {
+        const memoryGroup = document.createElement('div');
+        memoryGroup.className = 'badge-group hud-options-parent';
+        container.appendChild(memoryGroup);
+
+        const memRoot = document.createElement('span');
+        memRoot.className = 'mode-badge active clickable';
+        memRoot.style.background = caps.projectMemoryEnabled ? 'var(--vscode-charts-purple)' : 'var(--vscode-editorWidget-background)';
+        memRoot.innerHTML = `<span class="codicon codicon-chip"></span> <span class="badge-label">DNA</span>`;
+        memoryGroup.appendChild(memRoot);
+
+        const memPopup = document.createElement('div');
+        memPopup.className = 'hud-options-popup';
+        memoryGroup.appendChild(memPopup);
 
         const memBadge = createToggleBadge(
-            '🧠 Memory', 
+            '🧠 Project Memory', 
             'thinking', 
             true, 
             caps.projectMemoryEnabled, 
@@ -1290,12 +1364,27 @@ export function updateBadges() {
                 });
             }
         );
-        if (memBadge) knowledgeGroup.appendChild(memBadge);
+        if (memBadge) memPopup.appendChild(memBadge);
+    }
 
-        // Hide Librarian/Skill/Web toggles in Agent Mode (Agent manages these tools itself)
-        if (!caps.agentMode) {
+    // --- THEME: KNOWLEDGE (Librarian/Skills) ---
+    if (!isAgentMode && (guiState.autoContextBadge || guiState.autoSkillBadge !== false)) {
+        const knowledgeGroup = document.createElement('div');
+        knowledgeGroup.className = 'badge-group hud-options-parent';
+        container.appendChild(knowledgeGroup);
+
+        const knRoot = document.createElement('span');
+        knRoot.className = 'mode-badge active clickable';
+        knRoot.style.background = 'var(--vscode-editorWidget-background)';
+        knRoot.innerHTML = `<span class="codicon codicon-library"></span> <span class="badge-label">KNOWLEDGE</span>`;
+        knowledgeGroup.appendChild(knRoot);
+
+        const knPopup = document.createElement('div');
+        knPopup.className = 'hud-options-popup';
+        knowledgeGroup.appendChild(knPopup);
+
         const ctxBadge = createToggleBadge(
-            '🧠 Librarian',
+            '🧠 Librarian (AutoContext)',
             'autocontext',
             guiState.autoContextBadge,
             caps.autoContextMode,
@@ -1307,37 +1396,10 @@ export function updateBadges() {
                 vscode.postMessage({ command: 'runAutoContext', prompt: prompt });
             }
         );
-        if (ctxBadge) {
-            const label = ctxBadge.querySelector('.badge-label');
-            const toggle = ctxBadge.querySelector('.badge-toggle-btn');
-
-            const folders = (window as any).workspaceFolders || [];
-            const settings = caps.folderSettings || {};
-            let totalActive = 0;
-            folders.forEach(f => {
-                const s = settings[f.uri.toString()];
-                if (!s || s.content !== false || s.tree !== false) totalActive++;
-            });
-
-            const isRestricted = totalActive < folders.length;
-
-            if (totalActive === 0) {
-                ctxBadge.classList.add('active');
-                ctxBadge.style.setProperty('background-color', 'var(--vscode-charts-red)', 'important');
-                if (label) label.textContent = '🧠 Matrix Offline';
-            } else if (isRestricted) {
-                ctxBadge.classList.add('active');
-                ctxBadge.style.setProperty('background-color', 'var(--vscode-charts-orange)', 'important');
-                if (label) label.textContent = `🧠 Selective (${totalActive}/${folders.length})`;
-            } else {
-                if (label) label.textContent = '🧠 Librarian';
-                ctxBadge.style.removeProperty('background-color');
-            }
-            knowledgeGroup.appendChild(ctxBadge);
-        }
+        if (ctxBadge) knPopup.appendChild(ctxBadge);
 
         const skillBadge = createToggleBadge(
-            '💡 AutoSkill',
+            '💡 AutoSkill (Optimization)',
             'autoskill',
             guiState.autoSkillBadge !== false,
             caps.autoSkillMode,
@@ -1349,12 +1411,28 @@ export function updateBadges() {
                 vscode.postMessage({ command: 'runAutoSkill', prompt: prompt });
             }
         );
-        if (skillBadge) knowledgeGroup.appendChild(skillBadge);
+        if (skillBadge) knPopup.appendChild(skillBadge);
+    }
 
-        // Enhanced Web Search Toggle Badge with Activity Log
+    // --- THEME: RESEARCH (Web Search) ---
+    if (!isAgentMode && guiState.webSearchBadge !== false) {
+        const researchGroup = document.createElement('div');
+        researchGroup.className = 'badge-group hud-options-parent';
+        container.appendChild(researchGroup);
+
+        const resRoot = document.createElement('span');
+        resRoot.className = 'mode-badge active clickable';
+        resRoot.style.background = caps.webSearch ? 'var(--vscode-charts-blue)' : 'var(--vscode-editorWidget-background)';
+        resRoot.innerHTML = `<span class="codicon codicon-globe"></span> <span class="badge-label">RESEARCH</span>`;
+        researchGroup.appendChild(resRoot);
+
+        const resPopup = document.createElement('div');
+        resPopup.className = 'hud-options-popup';
+        researchGroup.appendChild(resPopup);
+
         const webBadge = createToggleBadge(
-            '🌍 Web Search', 'web', 
-            guiState.webSearchBadge !== false || caps.agentMode, 
+            '🌍 Web Search Agent', 'web', 
+            true, 
             caps.webSearch, 
             () => {
                 vscode.postMessage({ command: 'updateDiscussionCapabilitiesPartial', partial: { webSearch: !caps.webSearch } });
@@ -1369,18 +1447,7 @@ export function updateBadges() {
         
         if (webBadge) {
             webBadge.classList.add('webSearch-indicator');
-            const logContainer = document.createElement('div');
-            logContainer.id = 'web-search-log';
-            logContainer.className = 'websearch-log';
-            
-            webBadge.addEventListener('contextmenu', (e) => {
-                e.preventDefault();
-                logContainer.classList.toggle('visible');
-            });
-            
-            knowledgeGroup.appendChild(webBadge);
-            knowledgeGroup.appendChild(logContainer);
-        }
+            resPopup.appendChild(webBadge);
         }
     }
 
@@ -1468,9 +1535,8 @@ export function updateBadges() {
             }
         };
         }
-        }
+    }  
 }
-
 // Global exposure for events.ts
 (window as any).closeProfileEditor = () => {
     const editor = document.getElementById('modal-profile-editor');
@@ -2416,6 +2482,93 @@ export function renderWorkspaceMatrix() {
 
         container.appendChild(row);
     });
+}
+
+let currentStagingChanges: any[] = [];
+let currentStagingIdx = 0;
+
+export async function openStagingRevamp(messageId: string, changes: any[]) {
+    currentStagingChanges = changes;
+    currentStagingIdx = 0;
+
+    const modal = document.getElementById('staging-revamp-modal');
+    const list = document.getElementById('staging-files-list');
+    if (!modal || !list) return;
+
+    modal.classList.add('visible');
+    renderStagingList();
+    loadStagingDiff(0);
+}
+
+function renderStagingList() {
+    const list = document.getElementById('staging-files-list')!;
+    list.innerHTML = currentStagingChanges.map((c, i) => `
+        <div class="staging-file-item ${i === currentStagingIdx ? 'active' : ''}" onclick="window.loadStagingDiff(${i})">
+            <div class="status-dot ${c.isValid ? 'valid' : 'invalid'}" title="${c.isValid ? 'Ready to patch' : 'Error: Search block not found'}"></div>
+            <div style="flex:1; min-width:0;">
+                <div style="font-size:12px; font-weight:bold; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${c.path.split('/').pop()}</div>
+                <div style="font-size:9px; opacity:0.6; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${c.path}</div>
+            </div>
+            ${c.isApplied ? '<i class="codicon codicon-check" style="color:var(--vscode-charts-green)"></i>' : ''}
+        </div>
+    `).join('');
+
+    const stats = document.getElementById('staging-stats');
+    const validCount = currentStagingChanges.filter(c => c.isValid).length;
+    if (stats) stats.textContent = `${validCount} / ${currentStagingChanges.length} files valid`;
+}
+
+async function loadStagingDiff(index: number) {
+    currentStagingIdx = index;
+    renderStagingList();
+    const change = currentStagingChanges[index];
+    const container = document.getElementById('staging-diff-content')!;
+    container.innerHTML = '<div style="padding:20px; opacity:0.5;">Calculating diff...</div>';
+
+    // We request the current file content from the extension to show a real diff
+    vscode.postMessage({ 
+        command: 'requestFileContentForDiff', 
+        path: change.path,
+        changeIndex: index 
+    });
+}
+
+(window as any).loadStagingDiff = loadStagingDiff;
+
+// Listen for the content returned by extension
+window.addEventListener('message', event => {
+    const m = event.data;
+    if (m.command === 'provideFileContentForDiff') {
+        renderVisualDiff(m.currentContent, currentStagingChanges[m.changeIndex].content);
+    }
+});
+
+function renderVisualDiff(oldText: string, patch: string) {
+    const container = document.getElementById('staging-diff-content')!;
+    // Simple line-based diff for the review UI
+    const oldLines = oldText.split('\n');
+    let html = '';
+
+    // If it's an Aider block, we extract the SEARCH/REPLACE
+    const aiderMatch = patch.match(/<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/);
+
+    if (aiderMatch) {
+        const searchLines = aiderMatch[1].split('\n');
+        const replaceLines = aiderMatch[2].split('\n');
+
+        // This is a simplified "Review" render. In a real app we'd use a diff library.
+        // But for pedagogical purposes, showing the block we are replacing is better.
+        html += `<div style="padding:10px; background:var(--vscode-editor-inactiveSelectionBackground); font-size:10px; opacity:0.7;">--- SEARCH BLOCK ---</div>`;
+        searchLines.forEach(l => html += `<div class="diff-line removed"><span class="diff-line-num">-</span>${sanitizer.sanitize(l)}</div>`);
+        html += `<div style="padding:10px; background:var(--vscode-editor-inactiveSelectionBackground); font-size:10px; opacity:0.7;">+++ REPLACE BLOCK ---</div>`;
+        replaceLines.forEach(l => html += `<div class="diff-line added"><span class="diff-line-num">+</span>${sanitizer.sanitize(l)}</div>`);
+    } else {
+        // Full file rewrite
+        patch.split('\n').forEach((l, i) => {
+            html += `<div class="diff-line added"><span class="diff-line-num">${i+1}</span>${sanitizer.sanitize(l)}</div>`;
+        });
+    }
+    container.innerHTML = html;
 }
 
 export function updateProgressBar(container: HTMLElement | null, current: number, total: number, segments?: any) {

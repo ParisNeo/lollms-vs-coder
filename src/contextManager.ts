@@ -696,13 +696,16 @@ export class ContextManager {
             }
 
             let fileContent = '';
-            const cached = this._fileContentCache.get(cacheKey);
+            // --- LIVING CONTEXT PROTOCOL ---
+            // 1. Check if the file is currently open in any editor (Dirty or Clean)
             const openDoc = vscode.workspace.textDocuments.find(d => d.uri.toString() === fileUri.toString());
+            const cached = this._fileContentCache.get(cacheKey);
 
-            // If the document is open in VS Code, ALWAYS use the editor content to ensure
-            // the AI sees what the user sees, even before saving.
             if (openDoc) {
+                // If open, the editor content is the absolute Source of Truth
                 fileContent = openDoc.getText();
+                // Update cache so it stays fresh for other components
+                this._fileContentCache.set(cacheKey, { content: fileContent, state: contextState });
             } else if (cached && cached.state === contextState) {
                 fileContent = cached.content;
             } else {
@@ -1270,6 +1273,7 @@ The user is currently asking: "${userPrompt.substring(0, 500)}"
     const MAX_STEPS = 8;
 
     const renderUpdate = (status: string, finished: boolean = false, step: number = 0) => {
+      const headerTitle = isBuilder ? "Builder Mission Report" : "Librarian Mission Report";
       const sortedSkills = allSkills.filter(s => selectedIds.has(s.id));
       const skillsListItems = sortedSkills.map(s => `<li><span class="codicon codicon-lightbulb"></span> ${s.name}</li>`).join('');
       const skillsTree = selectedIds.size > 0
@@ -1571,7 +1575,7 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
     onUpdate: (content: string) => void,
     onStatusUpdate?: (status: string) => void,
     initialKeywords?: string[],
-    mode: 'selection_only' | 'collaborative' = 'collaborative',
+    mode: 'selection_only' | 'collaborative' | 'builder' = 'collaborative',
     discussion: any = null,
     fullHistory: ChatMessage[] = [],
     dashboardMode: boolean = false
@@ -1602,26 +1606,54 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
     const initialCount = selectedFiles.size;
     let rephrasedObjective = "Analyzing mission...";
 
-    const systemPrompt = `You are the **Lead Project Librarian**.
-Your goal is to optimize the project context for the Worker LLM by selecting the right files.
+    const isBuilder = mode === 'builder';
+    const isEconomy = discussion?.capabilities?.tokenEconomyMode === true;
 
-### 📜 LIBRARIAN PROTOCOL (TREE-FIRST MANDATE)
-1. **USE YOUR EYES**: The 'PROJECT WORLD STATE' tree lists every visible file. 
-2. **DIRECT ADDITION**: If the file you need is in the tree, call \`add_files\` immediately with the exact path.
-3. **WHEN TO SEARCH**: Use search tools ONLY if a folder is marked \`(Collapsed)\` or you need to grep for a string.
-4. **NO HALLUCINATION**: If a file is not in the tree and search returns nothing, it doesn't exist.
-5. **STATUS MARKERS**: Files marked \`[C]\` or \`[D]\` are already loaded — do not add them again.
-6. **NO REDUNDANCY**: Do not \`read_file\` a file already marked \`[C]\`.
+    const roleName = isBuilder ? "Sovereign Builder" : "Lead Project Librarian";
+    const primaryGoal = isBuilder 
+        ? "understand the codebase, elaborate an update strategy, and implement code changes (patches or new files)."
+        : "optimize the project context for the User by selecting the right files.";
 
-**TOOLS:**
-1. \`add_briefing_entry(id, info)\`: Record a technical discovery.
-2. \`amend_briefing_entry(id, info)\`: Update a previous discovery.
-3. \`add_files(files=[{"path", "mode"}])\`: Add files (mode: "included" or "signatures").
-4. \`remove_files(paths=[])\`: Prune unnecessary files to save tokens.
-5. \`read_file(path, start_line, end_line)\`: Peek at a file.
-6. \`find_files_by_name(pattern)\`: Search file index (e.g. "*.vue").
-7. \`grep_search(pattern, path)\`: Search text inside files.
-8. \`done()\`: Finish scouting.
+    const pruningMandate = isEconomy ? `
+    ### 🧹 SELECTIVE PRUNING MANDATE (TOKEN ECONOMY)
+    Before adding new files, evaluate the '[Currently Selected]' list provided below.
+    1. **IDENTIFY CRUFT**: Determine which files currently in context are irrelevant to the user's specific request.
+    2. **PRUNE FIRST**: Your very first action should be \`remove_files\` to eject only those irrelevant files. 
+    3. **KEEP ESSENTIALS**: Do NOT remove files that are clearly relevant to the task. This saves tokens and redundant search steps.
+    ` : "";
+
+    const builderAuthority = isBuilder ? `
+    ### 🏗️ BUILDER AUTHORITY (CODE MODIFICATION)
+    Unlike a standard Librarian, you have the authority to CHANGE the project.
+    1. **STRATEGY FIRST**: Before coding, use 'add_briefing_entry' to explain your plan.
+    2. **SURGICAL EDITS**: Use 'edit_code' with AIDER SEARCH/REPLACE blocks for existing files.
+    3. **MANIFESTATION**: Use 'generate_code' for completely new files.
+    4. **VERIFICATION**: After an edit, you SHOULD 'read_file' the result or run a command to verify.
+    ` : "### 🛑 READ-ONLY RESTRICTION: You are a Librarian. You select files and document strategy, but you are FORBIDDEN from using 'edit_code' or 'generate_code'.";
+
+    const systemPrompt = `You are the **${roleName}**.
+    Your goal is to ${primaryGoal}
+    ${pruningMandate}
+    ${builderAuthority}
+
+    ### 📜 DISCOVERY PROTOCOL (TREE-FIRST MANDATE)
+    1. **USE YOUR EYES**: The 'PROJECT WORLD STATE' tree lists every visible file. 
+    2. **DIRECT ADDITION**: If the file you need is in the tree, call \`add_files\` immediately with the exact path.
+    3. **WHEN TO SEARCH**: Use search tools ONLY if a folder is marked \`(Collapsed)\` or you need to grep for a string.
+    4. **NO HALLUCINATION**: If a file is not in the tree and search returns nothing, it doesn't exist.
+    5. **STATUS MARKERS**: Files marked \`[C]\` or \`[D]\` are already loaded — do not add them again.
+    6. **NO REDUNDANCY**: Do not \`read_file\` a file already marked \`[C]\`.
+
+    **TOOLS:**
+    1. \`add_briefing_entry(id, info)\`: Record a technical discovery or strategy step.
+    2. \`amend_briefing_entry(id, info)\`: Update a previous discovery.
+    3. \`add_files(files=[{"path", "mode"}])\`: Add files (mode: "included" or "signatures").
+    4. \`remove_files(paths=[])\`: Prune unnecessary files to save tokens.
+    5. \`read_file(path, start_line, end_line)\`: Peek at a file.
+    6. \`find_files_by_name(pattern)\`: Search file index (e.g. "*.vue").
+    7. \`grep_search(pattern, path)\`: Search text inside files.
+    ${isBuilder ? '8. `edit_code(file_path, instructions)`: Apply surgical changes using SEARCH/REPLACE.\n9. `generate_code(file_path, instructions)`: Create a new file.' : ''}
+    10. \`done()\`: Finish mission.
 
 **OUTPUT**: JSON only.
 \`\`\`json
@@ -1685,7 +1717,7 @@ Your goal is to optimize the project context for the Worker LLM by selecting the
         : `<div class="status-line"><div class="spinner"></div> <span>Step ${step + 1}: ${status}</span></div>`;
 
       if (dashboardMode) onUpdate(`${spinnerHtml}\n\n${objectiveHtml}\n\n${filesTree}\n\n${logSection}`);
-      else onUpdate(`**🧠 Librarian Mission Report**\n${spinnerHtml}\n${objectiveHtml}\n${briefingHtml}\n${filesTree}\n${logSection}`);
+      else onUpdate(`**🧠 ${headerTitle}**\n${spinnerHtml}\n${objectiveHtml}\n${briefingHtml}\n${filesTree}\n${logSection}`);
     };
 
     if (initialCount > 0) actionLog.push(`ℹ️ Librarian started with ${initialCount} files already in context.`);
@@ -1793,6 +1825,26 @@ Your goal is to optimize the project context for the Worker LLM by selecting the
         }
 
         stepsTaken++;
+
+        if (isBuilder && (toolName === 'edit_code' || toolName === 'generate_code')) {
+          actionLog.push(`🛠️ **Implementing**: ${params.file_path}`);
+          renderUpdate(`Modifying ${params.file_path}...`, false, step);
+
+          const tool = this.context.extension.exports.services.toolManager.getTool(toolName);
+          if (tool) {
+            const env = {
+                workspaceRoot: folders[0],
+                lollmsApi: this.lollmsAPI,
+                contextManager: this,
+                agentManager: this.context.extension.exports.services.agentManager,
+                currentPlan: { objective: userPrompt } as any
+            };
+            const result = await tool.execute(params, env, signal);
+            chatHistory.push({ role: 'system', content: `Operation Result: ${result.output}` });
+            actionLog.push(result.success ? `✅ Applied: ${params.file_path}` : `❌ Failed: ${result.output}`);
+            continue;
+          }
+        }
 
         if (toolName === 'search_files' || toolName === 'grep_search') {
           const results = await this.searchWorkspaceContent(params.pattern, { matchCase: false, wholeWord: false, include: params.path });

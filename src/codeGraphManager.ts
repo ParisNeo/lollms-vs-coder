@@ -151,9 +151,9 @@ export class CodeGraphManager {
             for (let i = 0; i < files.length; i++) {
                 if (signal.aborted) return;
 
-                // Yield every 20 files to keep UI responsive
-                if (i % 20 === 0) {
-                    await new Promise(resolve => setTimeout(resolve, 0));
+                // Yield every 5 files on big projects to prevent Extension Host starvation
+                if (i % 5 === 0) {
+                    await new Promise(resolve => setTimeout(resolve, 10));
                 }
 
                 const file = files[i];

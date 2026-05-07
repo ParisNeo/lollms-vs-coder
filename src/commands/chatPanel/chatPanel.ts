@@ -144,27 +144,25 @@ export class ChatPanel {
   public setProcessManager(processManager: ProcessManager) { 
       this.processManager = processManager; 
 
-      // Initialize AgentManager logic
-      if (ChatPanel.activeAgents.has(this.discussionId)) {
-          this.log(`Reconnecting to existing active agent for discussion ${this.discussionId}`);
-          this.agentManager = ChatPanel.activeAgents.get(this.discussionId)!;
-          this.agentManager.setUI(this);
-          this.agentManager.personalityManager = this._personalityManager;
-      } else {
-          // If created here directly (fallback), we construct it.
-          // Usually registry creates it and calls setAgentManager
-          this.agentManager = new AgentManager(
-              this, 
-              this._lollmsAPI, 
-              this._contextManager, 
-              this._gitIntegration,
-              this._discussionManager,
-              this._extensionUri,
-              // @ts-ignore - Assuming dependencies injected shortly after
-              undefined, 
-              this._skillsManager
-          );
-          this.agentManager.personalityManager = this._personalityManager;
+      // Only initialize AgentManager if workerType is agent
+      if (this._discussionCapabilities.workerType === 'agent') {
+          if (ChatPanel.activeAgents.has(this.discussionId)) {
+              this.agentManager = ChatPanel.activeAgents.get(this.discussionId)!;
+              this.agentManager.setUI(this);
+              this.agentManager.personalityManager = this._personalityManager;
+          } else {
+              this.agentManager = new AgentManager(
+                  this, 
+                  this._lollmsAPI, 
+                  this._contextManager, 
+                  this._gitIntegration,
+                  this._discussionManager,
+                  this._extensionUri,
+                  undefined, 
+                  this._skillsManager
+              );
+              this.agentManager.personalityManager = this._personalityManager;
+          }
       }
   }
   
@@ -302,14 +300,13 @@ export class ChatPanel {
         }
 
     public setAgentManager(agent: AgentManager) {
-      if (ChatPanel.activeAgents.has(this.discussionId)) {
-          this.agentManager = ChatPanel.activeAgents.get(this.discussionId)!;
-          this.agentManager.setUI(this);
-      } else {
-          this.agentManager = agent;
-          ChatPanel.activeAgents.set(this.discussionId, agent);
-      }
-  }
+        this.agentManager = agent;
+        ChatPanel.activeAgents.set(this.discussionId, agent);
+        // Only show agent UI if workerType is actually agent
+        if (this._discussionCapabilities.workerType === 'builder') {
+             this.updateAgentMode(false);
+        }
+    }
   
     public updateGeneratingState() {
         if (this._isDisposed || !this.processManager) return;
@@ -329,10 +326,9 @@ export class ChatPanel {
                 desc.toLowerCase().includes("counting");
             
             // Identify if the agent is actively looping
-            const isAgentActive = this.agentManager?.getIsActive();
+            const isAgentActive = this.agentManager?.getIsActive() && this._discussionCapabilities.workerType === 'discussion';
 
             // Raise Hand only makes sense during an active autonomous agent loop 
-            // where the AI is actually performing a sequence of tasks.
             const showRaiseHand = !!(isAgentActive && process && !isBackgroundProcess);
 
             const isGenerating = ((process && !isBackgroundProcess) || !!activeGen) && !this._inputResolver;
@@ -1924,6 +1920,43 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
 
     await this.addMessageToDiscussion(userMessage);
 
+    // --- BUILDER MODE EXECUTION (ONE-SHOT LIBRARIAN STYLE) ---
+    if (this._discussionCapabilities.workerType === 'builder' && message.role === 'user') {
+        const { id: builderProcId, controller: builderCtrl } = this.processManager.register(this.discussionId, 'Builder: Reasoning & Implementing...');
+        this.updateGeneratingState();
+
+        try {
+            const model = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+            const textContent = (typeof message.content === 'string') ? message.content : "Executing builder task...";
+
+            await this._contextManager.runContextAgent(
+                textContent,
+                model,
+                builderCtrl.signal,
+                (newContent) => {
+                    // This updates the structured report card in real-time
+                    this._panel.webview.postMessage({ command: 'updateMessage', messageId: 'builder_turn', newContent });
+                },
+                (status) => {
+                    this.processManager.updateDescription(builderProcId, `Builder: ${status}`);
+                    this.updateGeneratingState();
+                },
+                undefined,
+                'collaborative',
+                this._currentDiscussion,
+                this._currentDiscussion.messages
+            );
+            
+            this.processManager.unregister(builderProcId);
+            this.updateGeneratingState();
+            return; // EXIT: We handled the response completely in the Librarian loop
+        } catch (e: any) {
+            this.processManager.unregister(builderProcId);
+            this.updateGeneratingState();
+            if (e.name !== 'AbortError') throw e;
+        }
+    }
+
     // --- AUTO TITLE GENERATION ---
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
     const isUntitled = !this._currentDiscussion?.title || 
@@ -1964,9 +1997,46 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
             }, 2000); 
         }
     }
+    // --- BUILDER MODE UNIFICATION ---
+    if (this._discussionCapabilities.workerType === 'builder' && message.role === 'user') {
+        const { id: builderProcId, controller: builderCtrl } = this.processManager.register(this.discussionId, 'Builder: Understanding & Implementing...');
+        this.updateGeneratingState();
 
-    // SUMMON THE GENIE: If Agent Mode capability is active, force Agent Logic
-    if (this.agentManager && this._discussionCapabilities.agentMode) {
+        try {
+            const model = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+            const textContent = (typeof message.content === 'string') ? message.content : "Executing builder task...";
+
+            await this._contextManager.runContextAgent(
+                textContent,
+                model,
+                builderCtrl.signal,
+                (newContent) => {
+                    // This updates the unified Librarian/Builder report bubble
+                    this._panel.webview.postMessage({ command: 'updateMessage', messageId: 'builder_turn', newContent });
+                },
+                (status) => {
+                    this.processManager.updateDescription(builderProcId, `Builder: ${status}`);
+                    this.updateGeneratingState();
+                },
+                undefined,
+                'builder', // NEW: Unified Builder Mode
+                this._currentDiscussion,
+                this._currentDiscussion.messages
+            );
+            
+            this.processManager.unregister(builderProcId);
+            this.updateGeneratingState();
+            this.updateContextAndTokens();
+            return; 
+        } catch (e: any) {
+            this.processManager.unregister(builderProcId);
+            this.updateGeneratingState();
+            if (e.name !== 'AbortError') throw e;
+        }
+    }
+
+    // SUMMON THE GENIE: If Agent Mode or Builder Mode is active, route through the autonomous AgentManager loop
+    if (this.agentManager && (this._discussionCapabilities.agentMode || this._discussionCapabilities.workerType === 'builder')) {
         if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
              // Auto-activate the manager if it was in standby
              if (!this.agentManager.getIsActive()) {
@@ -2472,27 +2542,45 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                 }
             });
 
-            // 2. Pre-parse file blocks regardless of size to allow visibility protection
-            const blockRegex = /```(?:[^\n:]+):([^\n]+)\n([\s\S]*?)\n```/g;
+            // 2. Pre-parse file blocks using a more permissive regex to catch all namespaced paths
+            // Supports ```lang:path and ```path formats
+            const blockRegex = /```(?:\w+)?[:]?([^\n]+)[\r\n]([\s\S]*?)[\r\n]```/g;
             let fileMatch;
             while ((fileMatch = blockRegex.exec(context.files)) !== null) {
+                const filePath = fileMatch[1].trim();
+                // Avoid capturing Aider markers as file paths
+                if (filePath.includes('<<<<<<< SEARCH')) continue;
+                
                 fileBlocks.push({
                     fullMatch: fileMatch[0],
-                    path: fileMatch[1].trim(),
+                    path: filePath,
                     content: fileMatch[2],
                     keep: false
                 });
             }
 
-            // 2. Identify keywords from user prompt
+            // 2. Identify keywords from user prompt and historical context
             const userPromptText = typeof message.content === 'string' ? message.content : JSON.stringify(message.content);
-            const keywords = (userPromptText.toLowerCase().match(/\b[a-z]{4,}\b/g) || []);
+            const keywords = new Set(userPromptText.toLowerCase().match(/\b[\w.-]{3,}\b/g) || []);
+            
+            // Add explicit filenames from the last 2 messages to keywords to prevent "Amnesia"
+            this._currentDiscussion?.messages.slice(-2).forEach(m => {
+                const text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+                const matches = text.match(/\b[\w.-]+\.\w+\b/g);
+                if (matches) matches.forEach(match => keywords.add(match.toLowerCase()));
+            });
 
-            // 3. Mark protected files (keywords or explicit names)
+            // 3. Mark protected files (keywords, explicit names, or recently requested files)
             for (const b of fileBlocks) {
                 const contentLower = b.content.toLowerCase();
-                const fileName = b.path.toLowerCase();
-                b.keep = keywords.some(k => contentLower.includes(k) || fileName.includes(k));
+                const fileNameLower = b.path.toLowerCase();
+                const fileNameOnly = fileNameLower.split('/').pop() || "";
+                
+                b.keep = Array.from(keywords).some(k => 
+                    fileNameLower.includes(k) || 
+                    contentLower.includes(k) ||
+                    k.includes(fileNameOnly)
+                );
             }
 
             let estimatedTokens = Math.ceil(textOnlySize / 3.5) + imageTokens;
@@ -2782,6 +2870,8 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
         // --- AUTOMATION PIPELINE ---
         if (this._discussionCapabilities.autoApply && !controller.signal.aborted) {
             await this.executeAutomationPipeline(processedResponse, assistantMessageId, controller.signal, processId);
+            // Refresh context immediately after auto-apply so the next turn sees the new state
+            this.updateContextAndTokens();
         }
 
         // --- PHASE 6: DEBUGGER (THE ITERATIVE LOOP) ---
@@ -3665,49 +3755,42 @@ ${targetContent}
                     });
                 }
                 break;
+            case 'requestFileContentForDiff':
+                {
+                    const res = await services.contextManager.resolveWorkspaceFromPath(message.path);
+                    if (res) {
+                        try {
+                            const doc = await vscode.workspace.openTextDocument(res.uri);
+                            webview.postMessage({ 
+                                command: 'provideFileContentForDiff', 
+                                currentContent: doc.getText(),
+                                changeIndex: message.changeIndex
+                            });
+                        } catch(e) {
+                            webview.postMessage({ command: 'provideFileContentForDiff', currentContent: "(File not found)", changeIndex: message.changeIndex });
+                        }
+                    }
+                }
+                break;
             case 'applyAllChanges':
                 {
                     const changesBatch = message.changes;
                     const messageId = message.messageId;
-                    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-                    if (!workspaceFolder) break;
 
-                    const { id: applyProcId, controller: applyCtrl } = this.processManager.register(this.discussionId, `Applying ${changesBatch.length} changes...`);
-                    
-                    await vscode.window.withProgress({
-                        location: vscode.ProgressLocation.Notification,
-                        title: `Lollms: Bulk Apply (${changesBatch.length} files)`,
-                        cancellable: true
-                    }, async (progress, token) => {
-                        token.onCancellationRequested(() => applyCtrl.abort());
+                    const { id: applyProcId, controller: applyCtrl } = this.processManager.register(this.discussionId, `Applying batch changes...`);
 
-                        let count = 0;
-                        const total = changesBatch.length;
-
-                        for (let i = 0; i < total; i++) {
-                            // High priority check for user Stop button
-                            if (token.isCancellationRequested || applyCtrl.signal.aborted) {
-                                Logger.info("Bulk apply halted by user signal.");
-                                break;
-                            }
+                    // Run batch in a background loop to avoid blocking the Extension Host UI thread
+                    (async () => {
+                        for (let i = 0; i < changesBatch.length; i++) {
+                            if (applyCtrl.signal.aborted) break;
 
                             const change = changesBatch[i];
                             const fileName = path.basename(change.path);
-                            count++;
 
-                            // Update the UI Overlay with granular details
-                            const hunkInfo = change.hunkIndex !== undefined ? ` (Hunk ${change.hunkIndex + 1})` : "";
-                            this.processManager.updateDescription(applyProcId, `Applying [${count}/${total}]: ${fileName}${hunkInfo}`);
+                            this.processManager.updateDescription(applyProcId, `Apply [${i+1}/${changesBatch.length}]: ${fileName}`);
                             this.updateGeneratingState();
 
-                            // Removed memory-based idempotency check. 
-                            // We now always call the command to let it verify the actual DISK state.
-
-                            progress.report({ 
-                                message: `(${count}/${total}) ${fileName}`,
-                                increment: (1 / total) * 100 
-                            });
-
+                            // Signal start to UI for individual row spinner
                             this._panel.webview.postMessage({ 
                                 command: 'applyAllStart', 
                                 messageId: messageId, 
@@ -3717,8 +3800,7 @@ ${targetContent}
 
                             let result: any = { success: false };
                             try {
-                                // MANDATORY: For bulk apply, we MUST use autoSave to ensure 
-                                // the next hunk in the batch sees the updated file content.
+                                // Force autoSave so disk is updated for the next hunk in the batch
                                 const opts = { 
                                     silent: true, 
                                     blockIndex: change.blockIndex, 
@@ -3727,47 +3809,35 @@ ${targetContent}
                                 };
 
                                 if (change.type === 'file') {
-                                    const applyResult: any = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', change.path, change.content, opts);
-                                    result = applyResult || { success: true };
-                                    if (result.success) await this.updateAppliedState(messageId, change.blockIndex);
+                                    result = await vscode.commands.executeCommand('lollms-vs-coder.applyFileContent', change.path, change.content, opts);
                                 } else if (change.type === 'replace') {
-                                    // CRITICAL: We await this fully. 
-                                    // The replaceCode command now re-reads the document from the active editor.
-                                    const res: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', change.path, change.content, this, messageId, opts);
-                                    result = (res && typeof res === 'object') ? res : { success: !!res };
-                                    if (result.success) await this.updateAppliedState(messageId, change.blockIndex, change.hunkIndex);
-                                } else if (change.type === 'insert') {
-                                    const res: any = await vscode.commands.executeCommand('lollms-vs-coder.insertCode', change.path, change.content);
-                                    result = { success: !!res };
-                                    if (result.success) await this.updateAppliedState(messageId, change.blockIndex);
+                                    result = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', change.path, change.content, this, messageId, opts);
                                 } else if (change.type === 'diff') {
                                     await vscode.commands.executeCommand('lollms-vs-coder.applyPatchContent', change.path, change.content, opts);
-                                    result.success = true;
-                                    await this.updateAppliedState(messageId, change.blockIndex);
+                                    result = { success: true };
                                 }
                             } catch (e: any) {
                                 result = { success: false, error: e.message };
                             }
-                        
-                        // Small breather to allow VS Code buffers to sync and OS to handle file lock
-                        await new Promise(r => setTimeout(r, 250));
 
-                        this._panel.webview.postMessage({
-                            command: 'applyAllResult',
-                            messageId: messageId,
-                            filePath: change.path,
-                            blockIndex: change.blockIndex,
-                            hunkIndex: change.hunkIndex,
-                            success: result.success,
-                            error: result.error
-                        });
+                            // Small delay for disk sync
+                            await new Promise(r => setTimeout(r, 300));
 
-                        await new Promise(resolve => setTimeout(resolve, 100));
-                    }
-                });
-                this.processManager.unregister(applyProcId);
-                break;
-            }
+                            this._panel.webview.postMessage({
+                                command: 'applyAllResult',
+                                messageId: messageId,
+                                filePath: change.path,
+                                blockIndex: change.blockIndex,
+                                hunkIndex: change.hunkIndex,
+                                success: result?.success ?? false,
+                                error: result?.error
+                            });
+                        }
+                        this.processManager.unregister(applyProcId);
+                        this.updateGeneratingState();
+                    })();
+                    break;
+                }
             case 'renameFile':
                 vscode.commands.executeCommand('lollms-vs-coder.renameFile', message.originalPath, message.newPath);
                 break;
@@ -4586,7 +4656,9 @@ Task:
                 await this.deleteMessage(message.messageId);
                 break;
             case 'switchDiscussion':
-                vscode.commands.executeCommand('lollms-vs-coder.switchDiscussion', message.discussionId);
+                if (message.discussionId) {
+                    vscode.commands.executeCommand('lollms-vs-coder.switchDiscussion', message.discussionId);
+                }
                 break;
             case 'requestAgentSettings': {
                 const config = vscode.workspace.getConfiguration('lollmsVsCoder');
@@ -6025,6 +6097,10 @@ Task:
                             <label for="cap-projectMemoryEnabled"><strong>🧠 Project Memory:</strong> Discreetly save technical facts.</label>
                         </div>
                         <div class="checkbox-container">
+                            <label class="switch"><input type="checkbox" id="cap-tokenEconomyMode"><span class="slider"></span></label>
+                            <label for="cap-tokenEconomyMode"><strong>💎 Token Economy:</strong> Purge-first & efficient patching.</label>
+                        </div>
+                        <div class="checkbox-container">
                             <label class="switch"><input type="checkbox" id="cap-debugMode"><span class="slider"></span></label>
                             <label for="cap-debugMode"><strong>🐞 Debug Mode:</strong> Autonomous live debugging loop.</label>
                         </div>
@@ -6746,6 +6822,34 @@ Task:
                 </div>
                 <div class="modal-footer">
                     <button id="bulk-delete-skills-run-btn" class="code-action-btn delete-btn" style="width: 100%; justify-content: center;">Remove Selected Skills</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 🚀 REVAMPED STAGING MODAL -->
+        <div id="staging-revamp-modal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 style="display:flex; align-items:center; gap:10px;"><i class="codicon codicon-git-pull-request-go-to-changes"></i> Review Proposed Changes</h2>
+                    <div style="display:flex; gap:10px; align-items:center;">
+                        <span id="staging-stats" style="font-size:11px; opacity:0.7;"></span>
+                        <span class="close-btn" id="staging-revamp-close">&times;</span>
+                    </div>
+                </div>
+                <div class="modal-body" style="padding:0; flex:1;">
+                    <div class="staging-layout">
+                        <div class="staging-sidebar" id="staging-files-list"></div>
+                        <div class="staging-diff-viewer">
+                            <div class="diff-scroll-container" id="staging-diff-content"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="staging-footer-actions">
+                    <button class="code-action-btn secondary-btn" id="staging-cancel-btn">Discard All</button>
+                    <button class="code-action-btn apply-btn" id="staging-apply-current-btn">Apply This File</button>
+                    <button class="code-action-btn apply-btn" id="staging-apply-all-btn" style="background: var(--vscode-charts-green) !important; color: white !important;">
+                        <i class="codicon codicon-check-all"></i> Apply All Valid Files
+                    </button>
                 </div>
             </div>
         </div>

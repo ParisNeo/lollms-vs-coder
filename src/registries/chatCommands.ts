@@ -200,9 +200,16 @@ export async function registerChatCommands(context: vscode.ExtensionContext, ser
     }));
 
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.switchDiscussion', async (discussionId: string) => {
-        if (!discussionId) return;
+        // Clean the ID in case it was passed with extra characters from the UI
+        const cleanId = typeof discussionId === 'string' ? discussionId.replace(/^\//, '') : discussionId;
+
+        if (!cleanId) {
+            Logger.error("switchDiscussion: No clean ID provided.");
+            return;
+        }
+
         // 1. Create or show panel (sets internal discussionId)
-        const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussionId, services.gitIntegration, services.skillsManager);
+        const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, cleanId, services.gitIntegration, services.skillsManager);
         panel._panel.reveal();
         
         // 2. Inject dependencies BEFORE loading

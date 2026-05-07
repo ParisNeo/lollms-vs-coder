@@ -43,6 +43,14 @@ window.addEventListener('message', e => {
         renderCommitDetails(msg.hash, msg.files);
     } else if(msg.command === 'setMessage') {
         document.getElementById('commit-msg-input').value = msg.message;
+    } else if(msg.command === 'requestFileHistory') {
+        switchView('FILE_HISTORY');
+        const header = document.querySelector('#file-history-header h3');
+        if(header) header.textContent = msg.path;
+        document.getElementById('file-history-list').innerHTML = '<div style="opacity:0.5; padding:20px; text-align:center;"><i class="codicon codicon-sync spinner"></i> Fetching file log...</div>';
+        post('getFileHistory', { path: msg.path });
+    } else if(msg.command === 'fileHistory') {
+        renderFileHistory(msg.path, msg.history);
     }
 });
 
@@ -109,6 +117,9 @@ function renderTags(tags) {
                 <button class="icon-btn" onclick="event.stopPropagation(); post('checkoutRef', {ref: '${jsEscape(tag.name)}'})" title="Checkout Tag">
                     <i class="codicon codicon-export"></i>
                 </button>
+                <button class="icon-btn" onclick="event.stopPropagation(); post('rebaseRef', {ref: '${jsEscape(tag.name)}'})" title="Rebase current onto Tag">
+                    <i class="codicon codicon-git-pull-request-go-to-changes"></i>
+                </button>
                 <button class="icon-btn" style="color:var(--vscode-errorForeground)" onclick="event.stopPropagation(); post('deleteTag', {name: '${jsEscape(tag.name)}'})" title="Delete Tag">
                     <i class="codicon codicon-trash"></i>
                 </button>
@@ -171,6 +182,9 @@ function renderBranches(branches, current) {
                 </button>
                 <button class="icon-btn" onclick="event.stopPropagation(); post('mergeRef', {ref: '${escapedName}'})" title="Merge into current">
                     <i class="codicon codicon-git-merge"></i>
+                </button>
+                <button class="icon-btn" onclick="event.stopPropagation(); post('rebaseRef', {ref: '${escapedName}'})" title="Rebase current onto this branch">
+                    <i class="codicon codicon-git-pull-request-go-to-changes"></i>
                 </button>
                 ${!isCurrent ? `
                 <button class="icon-btn" style="color:var(--vscode-errorForeground)" onclick="event.stopPropagation(); post('deleteBranch', {branch: '${escapedName}'})" title="Delete Branch">
@@ -444,6 +458,31 @@ function selectCommit(hash) {
     // Automatically update the Diff tab with the full commit patch
     document.getElementById('diff-content-area').innerHTML = '<div style="opacity:0.5; padding:40px; text-align:center;"><i class="codicon codicon-sync spinner"></i> Loading commit diff...</div>';
     post('getFileDiff', { path: hash, isCommitDiff: true });
+}
+
+function renderFileHistory(path, history) {
+    const list = document.getElementById('file-history-list');
+    if (!list) return;
+
+    if (!history || history.length === 0) {
+        list.innerHTML = '<div style="opacity:0.3; padding:20px; text-align:center;">No history found for this file path.</div>';
+        return;
+    }
+
+    list.innerHTML = history.map(c => `
+        <div class="list-row" onclick="selectFile('${jsEscape(path)}', false, '${c.hash}')" style="border-bottom: 1px solid var(--vscode-widget-border); padding: 10px; display:flex; align-items:center; gap:12px;">
+            <span style="font-family:monospace; opacity:0.6; font-size:11px; width:60px;">${c.hash.substring(0, 7)}</span>
+            <div style="flex:1; min-width:0;">
+                <div style="font-weight:bold; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${escapeHtml(c.message)}">${escapeHtml(c.message)}</div>
+                <div style="font-size:10px; opacity:0.5;">${escapeHtml(c.author)} • ${c.date}</div>
+            </div>
+            <div class="item-actions" style="position:static; opacity:1;">
+                <button class="icon-btn" onclick="event.stopPropagation(); post('inspectCommit',{hash:'${c.hash}'})" title="AI Security Audit">
+                    <i class="codicon codicon-shield"></i>
+                </button>
+            </div>
+        </div>
+    `).join('');
 }
 
 function renderCommitDetails(hash, files) {

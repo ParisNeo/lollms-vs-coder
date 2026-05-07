@@ -650,8 +650,9 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
             if (match) {
                 inBlock = true;
                 // Peek at the block content to avoid rendering empty "plaintext" placeholders
+                // or blocks that contained the builder report we already extracted
                 const nextLine = lines[i+1] ? lines[i+1].trim() : "";
-                const isClosingNext = nextLine.startsWith('```');
+                const isClosingNext = nextLine.startsWith('```') || nextLine === "";
                 if (isClosingNext) {
                     // Skip empty block detection
                     currentOffset += lineWithNewline.length;
@@ -1745,59 +1746,83 @@ function renderMilestoneCard(attrs: any): string {
 
 function renderBuilderReport(xmlContent: string, messageId: string): string {
     const getTag = (xml: string, tag: string) => {
-        const regex = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, 'i');
-        return xml.match(regex)?.[1] || "";
+        const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i');
+        const match = xml.match(regex);
+        return match ? match[1].trim() : "";
     };
 
-    const objective = getTag(xmlContent, "objective");
-    const briefing = getTag(xmlContent, "briefing");
+    const objective = getTag(xmlContent, "objective") || "Executing mission...";
+    const briefing = getTag(xmlContent, "briefing") || "Initializing mission parameters...";
     const timelineRaw = getTag(xmlContent, "timeline");
+    let summary = getTag(xmlContent, "summary");
 
-    const steps = timelineRaw.split(/<step>/i).filter(s => s.trim()).map(step => {
-        const content = step.replace(/<\/step>/i, "").trim();
-        const icon = content.toLowerCase().includes("fix") || content.toLowerCase().includes("update") ? "zap" : "search";
-        return `
-            <div class="timeline-item success">
-                <div class="timeline-dot"><span class="codicon codicon-${icon}"></span></div>
-                <div class="timeline-content">${sanitizer.sanitize(content)}</div>
-            </div>`;
-    }).join("");
+    // Standardize timeline HTML to use Librarian-style items
+    const timelineHtml = sanitizer.sanitize(timelineRaw, {
+        ADD_TAGS: ['div', 'span', 'i'],
+        ADD_ATTR: ['class', 'style']
+    });
 
     return `
-    <div class="builder-mission-report">
-        <div class="status-line" style="margin-bottom:10px;">
-            <span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span>
-            <span style="font-weight:bold; letter-spacing:0.5px;">BUILDER MISSION COMPLETE</span>
-        </div>
+    <div class="message special-zone-message context-message agent-mode-bubble builder-mission-report" style="margin: 0; width: 100%; border-radius: 8px;">
+        <div class="message-body" style="padding: 16px;">
+            <div style="display:flex; align-items:center; gap:10px; margin-bottom: 15px;">
+                <div class="agent-active-indicator" style="width:24px; height:24px;">
+                    <div class="genie-orb-portal" style="transform: scale(0.5);"><div class="orb-ring-outer"></div><div class="orb-ring-inner"></div><div class="orb-core"></div></div>
+                </div>
+                <span style="font-weight: 800; font-size: 11px; letter-spacing: 0.5px; color: var(--vscode-charts-orange); text-transform: uppercase;">Sovereign Builder Mission</span>
+                <div style="flex:1"></div>
+                ${!summary ? '<div class="spinner" style="opacity:0.5;"></div>' : '<i class="codicon codicon-check" style="color:var(--vscode-charts-green)"></i>'}
+            </div>
 
-        <div class="technical-briefing-card" style="border-left-color:var(--vscode-charts-orange); margin-bottom:10px;">
-            <div class="briefing-header" style="color:var(--vscode-charts-orange);">
+        <div class="technical-briefing-card" style="border-left-color:var(--vscode-charts-orange); margin-bottom:12px; background: rgba(0,0,0,0.15);">
+            <div class="briefing-header" style="color:var(--vscode-charts-orange); font-size: 9px; padding: 8px 12px;">
                 <span class="codicon codicon-target"></span> MISSION OBJECTIVE
             </div>
-            <div class="briefing-content" style="padding:0 16px 12px 16px; font-weight:600;">
+            <div class="briefing-content" style="padding:0 12px 10px 12px; font-weight:600; font-size: 12px; opacity: 0.9;">
                 ${sanitizer.sanitize(objective)}
             </div>
         </div>
 
-        <div class="technical-briefing-card" style="margin-bottom:10px;">
+        <div class="technical-briefing-card" style="margin-bottom:12px; border-left-color: var(--vscode-charts-blue); background: rgba(0,0,0,0.15);">
             <details open>
-                <summary class="briefing-header">
+                <summary class="briefing-header" style="padding: 8px 12px; font-size: 9px; color: var(--vscode-charts-blue);">
                     <span class="codicon codicon-note"></span> TEAM TECHNICAL BRIEFING
                 </summary>
-                <div class="briefing-scroll-area">
-                    <div class="briefing-content">${sanitizer.sanitize(briefing)}</div>
+                <div class="briefing-scroll-area" style="max-height: 120px;">
+                    <div class="briefing-content" style="padding: 0 12px 10px 12px; font-size: 11px; line-height: 1.5; opacity: 0.8;">
+                        ${sanitizer.sanitize(briefing)}
+                    </div>
                 </div>
             </details>
         </div>
 
-        <details class="info-collapsible" style="margin-bottom:10px;">
-            <summary class="briefing-header">
+        <details class="info-collapsible" style="margin-bottom:12px;" ${!summary ? 'open' : ''}>
+            <summary class="briefing-header" style="padding: 8px 12px; font-size: 9px; opacity: 0.7;">
                 <span class="codicon codicon-history"></span> MISSION TIMELINE
             </summary>
-            <div class="mission-timeline" style="padding: 10px 20px;">
-                ${steps}
+            <div class="mission-timeline" style="padding: 10px 15px; margin:0; border-left:none;">
+                ${timelineHtml}
             </div>
         </details>
+
+        <details class="info-collapsible" style="margin-bottom:12px; border: 1px solid var(--vscode-widget-border); border-radius: 8px;" ${!summary ? 'open' : ''}>
+            <summary class="briefing-header" style="padding: 8px 12px; font-size: 10px;">
+                <span class="codicon codicon-history"></span> MISSION TIMELINE
+            </summary>
+            <div class="mission-timeline" style="padding: 10px 15px; background: var(--vscode-editor-background);">
+                ${timelineHtml}
+            </div>
+        </details>
+
+        ${summary ? `
+        <div class="technical-briefing-card" style="border-left-color:var(--vscode-charts-green); border-top: 1px solid var(--vscode-widget-border); margin-top: 15px;">
+            <div class="briefing-header" style="color:var(--vscode-charts-green); padding: 8px 12px; font-size: 10px;">
+                <span class="codicon codicon-verified"></span> MISSION SUMMARY
+            </div>
+            <div class="briefing-content markdown-body" style="padding:0 12px 12px 12px; line-height: 1.5; font-size: 12px;">
+                ${sanitizer.sanitize(marked.parse(summary) as string)}
+            </div>
+        </div>` : ''}
     </div>`;
 }
 
@@ -1821,8 +1846,9 @@ function renderProcessingBlock(rawContent: string, isClosed: boolean): string {
                 ${sanitizer.sanitize(rawContent.trim())}
             </div>
         </details>
-    </div>`;
-}
+        </div>
+        </div>`;
+        }
 
 
 function renderImageResultBlock(path: string, messageId: string): string {
@@ -1975,6 +2001,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         const processingBlocks: { html: string, start: number, end: number }[] = [];
         const agentTaskBlocks: { html: string, start: number, end: number }[] = [];
         const gitEventBlocks: { html: string, start: number, end: number }[] = [];
+        const builderReports: { html: string, start: number, end: number }[] = [];
 
         // --- UNIFIED CONTENT PREPARATION ---
         let processedContent = "";
@@ -2016,10 +2043,40 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         // --- EXTRACT THOUGHTS ---
         const { thoughts: thoughtsResult, processedContent: contentWithoutThoughts } = processThinkTags(processedContent);
         thoughts.push(...thoughtsResult);
-        processedContent = contentWithoutThoughts;
+
+        // --- 🛡️ REGEX SOVEREIGNTY: BUILDER REPORT INTERCEPTION ---
+        // High priority interception: Detects the builder report even if wrapped in markdown 
+        // or truncated during streaming.
+        const builderRegex = /(?:```(?:xml|text|plaintext|[\w]*)?[\s\r\n]*)?<builder_report>([\s\S]*?)(?:<\/builder_report>|(?:[\s\r\n]*```)?$)/gi;
+        let builderMatch;
+        let contentForFurtherParsing = contentWithoutThoughts;
+
+        builderRegex.lastIndex = 0;
+
+        while ((builderMatch = builderRegex.exec(contentWithoutThoughts)) !== null) {
+            // Check if this is a streaming (unclosed) tag
+            const isClosed = builderMatch[0].includes('</builder_report>');
+
+            const html = renderBuilderReport(builderMatch[1], messageId);
+            builderReports.push({ 
+                html, 
+                start: builderMatch.index, 
+                end: builderMatch.index + builderMatch[0].length 
+            });
+
+            // "Neutralize" the raw tag by replacing it with invisible whitespace.
+            // This prevents the markdown parser from seeing it or its backticks.
+            const neutralized = " ".repeat(builderMatch[0].length);
+            contentForFurtherParsing = 
+                contentForFurtherParsing.substring(0, builderMatch.index) + 
+                neutralized + 
+                contentForFurtherParsing.substring(builderMatch.index + builderMatch[0].length);
+        }
+
+        processedContent = contentForFurtherParsing;
 
             // Pre-calculate code ranges to ignore tags inside backticks
-            const forbiddenRanges = getCodeRanges(contentWithoutThoughts);
+            const forbiddenRanges = getCodeRanges(contentForFurtherParsing);
             const isInsideCode = (index: number) => forbiddenRanges.some(r => index >= r.start && index < r.end);
             
             // --- SKILL TAG PARSING ---
@@ -2198,17 +2255,9 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 const isClosed = procMatch[0].toLowerCase().includes('</processing>');
                 const html = renderProcessingBlock(innerContent, isClosed);
                 processingBlocks.push({ html, start: procMatch.index, end: procMatch.index + procMatch[0].length });
-                }
+            }
 
-                // --- BUILDER REPORT TAG PARSING ---
-                const builderRegex = /<builder_report>([\s\S]*?)<\/builder_report>/gi;
-                let builderMatch;
-                const builderReports: { html: string, start: number, end: number }[] = [];
-                while ((builderMatch = builderRegex.exec(contentWithoutThoughts)) !== null) {
-                if (isInsideCode(builderMatch.index)) continue;
-                const html = renderBuilderReport(builderMatch[1], messageId);
-                builderReports.push({ html, start: builderMatch.index, end: builderMatch.index + builderMatch[0].length });
-                }
+            // (Removed redundant builderRegex loop already handled above)
 
                 // --- AGENT TASK TAG PARSING ---
             const taskTagRegex = /<agent_task\s+id=["']([^"']+)["']\s*\/>/gi;
@@ -2940,12 +2989,46 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
 
             // Re-run enhancement for the newly generated fragment
             enhanceCodeBlocks(contentDiv, messageId, rawContent, isFinal);
-    } catch (e) {
-        contentDiv.innerText = "Rendering Error: " + e;
-    }
 
-    if (shouldScroll && dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
-}
+            // --- RE-INJECT APPLY ALL AGGREGATOR ---
+            // If the message contains actionable hunks or file blocks, we ensure the bulk action bar is present.
+            const actionButtons = contentDiv.querySelectorAll('.aider-hunk-bubble .apply-btn, .code-actions .apply-btn');
+            if (actionButtons.length > 0 && !contentDiv.querySelector('.apply-all-wrapper')) {
+                const wrapper = document.createElement('div');
+                wrapper.className = 'apply-all-wrapper';
+                wrapper.style.marginTop = '16px';
+
+                const btn = document.createElement('button');
+                btn.className = 'apply-all-btn';
+                btn.innerHTML = '<span class="codicon codicon-check-all"></span> Apply All Changes';
+                // Only enable if the message is finished streaming
+                btn.disabled = !isFinal;
+
+                const resultsList = document.createElement('div');
+                resultsList.className = 'apply-results-list';
+                resultsList.style.display = 'none';
+
+                btn.onclick = () => {
+                    const changes = gatherChangesFromBlocks(messageId);
+                    if (changes.length > 0) {
+                        btn.disabled = true;
+                        btn.innerHTML = '<span class="codicon codicon-sync spin"></span> Applying Batch...';
+                        resultsList.style.display = 'block';
+                        vscode.postMessage({ command: 'applyAllChanges', changes, messageId });
+                    }
+                };
+
+                wrapper.appendChild(btn);
+                wrapper.appendChild(resultsList);
+                contentDiv.appendChild(wrapper);
+            }
+
+            } catch (e) {
+                contentDiv.innerText = "Rendering Error: " + e;
+            }
+
+            if (shouldScroll && dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
+            }
 
 function gatherChangesFromBlocks(messageId: string) {
     const changes: any[] = [];
@@ -3039,7 +3122,8 @@ export function addMessage(message: any, isFinal: boolean = true) {
         '<lollms_form'
     ];
     
-    const isPurelyTechnical = technicalPatterns.some(p => content.trim().includes(p));
+    // Ensure builder_report is recognized as purely technical to remove chat bubble styling
+    const isPurelyTechnical = technicalPatterns.some(p => content.trim().includes(p)) || content.includes('<builder_report>');
 
     if (message.role === 'system' && content.startsWith('Attached file:')) {
         addAttachment(message);
@@ -4601,7 +4685,8 @@ export function checkAndSyncMessageAppliedState(messageId: string) {
         applyAllBtn.classList.add('applied');
         applyAllBtn.innerHTML = '<span class="codicon codicon-check"></span> All Changes Applied';
         applyAllBtn.disabled = true;
-        
+        applyAllBtn.style.backgroundColor = 'var(--vscode-charts-green)';
+
         // Also collapse the details if everything is finished to keep the view tidy
         wrapper.querySelectorAll('details.code-collapsible').forEach(d => (d as HTMLDetailsElement).open = false);
     } else {

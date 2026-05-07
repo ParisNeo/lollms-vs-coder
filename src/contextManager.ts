@@ -1631,6 +1631,8 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
     4. **VERIFICATION**: After an edit, you SHOULD 'read_file' the result or run a command to verify.
     ` : "### 🛑 READ-ONLY RESTRICTION: You are a Librarian. You select files and document strategy, but you are FORBIDDEN from using 'edit_code' or 'generate_code'.";
 
+    const fullContext = await this.getContextContent({ includeTree: true, modelName: model, signal });
+
     const systemPrompt = `You are the **${roleName}**.
     Your goal is to ${primaryGoal}
     ${pruningMandate}
@@ -1660,7 +1662,15 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
 { "scratchpad": "Thinking...", "tool": "tool_name", "params": { ... } }
 \`\`\``;
 
-    let initialUserContent = `**USER OBJECTIVE:** "${userPrompt}"\n\n# SHARED TEAM BRIEFING\n${sharedKnowledge || "No briefing entries yet."}\n\n# PROJECT WORLD STATE\n${fileTree}\n\n**LIBRARIAN MANDATE**: Analyze the Objective and the Tree. If required files are marked \`[C]\`, call \`done\`. Otherwise, scout for missing dependencies.`;
+    const possessedContent = isBuilder ? "" : fullContext.selectedFilesContent;
+
+    let initialUserContent = `**USER OBJECTIVE:** "${userPrompt}"\n\n# SHARED TEAM BRIEFING\n${sharedKnowledge || "No briefing entries yet."}\n\n# PROJECT WORLD STATE\n${fileTree}\n\n`;
+    
+    if (isBuilder) {
+        initialUserContent += `**BUILDER MANDATE**: You are currently BLIND to file contents. You MUST use 'smart_scout' or 'read_code_graph' to identify your targets before you can modify them.\n`;
+    } else {
+        initialUserContent += `**LIBRARIAN MANDATE**: Analyze the Objective and the Tree. If required files are marked \`[C]\`, call \`done\`. Otherwise, scout for missing dependencies.\n`;
+    }
 
     if (initialKeywords && initialKeywords.length > 0) {
       if (onStatusUpdate) onStatusUpdate(`Searching keywords: ${initialKeywords.join(', ')}...`);
@@ -1669,7 +1679,9 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
       initialUserContent += `\n\n**Initial Search Results:**\n${searchResults}`;
     }
 
-    if (selectedFiles.size > 0) initialUserContent += `\n\n**Currently Selected Files:**\n${JSON.stringify(Array.from(selectedFiles))}`;
+    if (!isBuilder && selectedFiles.size > 0) {
+        initialUserContent += `\n\n**Currently Selected Files:**\n${JSON.stringify(Array.from(selectedFiles))}\n\n### 📄 ACCESSIBLE FILE CONTENTS\n${possessedContent}`;
+    }
 
     let chatHistory: ChatMessage[] = [
       { role: 'system', content: systemPrompt },
@@ -1678,7 +1690,10 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
 
     let technicalBriefing = "Librarian is still analyzing the code logic...";
 
+    let finalSummary = "";
+
     const renderUpdate = (status: string, finished: boolean = false, step: number = 0) => {
+      const headerTitle = isBuilder ? "Builder Mission Report" : "Librarian Mission Report";
       const sortedFiles = Array.from(selectedFiles).sort();
       const filesListItems = sortedFiles.map(f => `<li><span class="codicon codicon-file"></span> ${f}</li>`).join('');
       const filesTree = selectedFiles.size > 0
@@ -1688,12 +1703,26 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
       const timelineHtml = actionLog.map((l, i) => {
         const isLast = i === actionLog.length - 1 && !finished;
         const isToolFailure = l.includes('❌') || l.includes('Tool execution failed');
+        const isAction = l.includes('🛠️') || l.includes('✅') || l.includes('applied');
+
         let stateClass = 'success';
-        let icon = '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span>';
-        if (isLast) { stateClass = 'active'; icon = '<div class="spinner"></div>'; }
-        else if (isToolFailure) { stateClass = 'failed'; icon = '<span class="codicon codicon-close" style="color:var(--vscode-charts-red)"></span>'; }
+        let icon = `<span class="codicon codicon-${isAction ? 'zap' : 'check'}" style="color:var(--vscode-charts-green)"></span>`;
+
+        if (isLast) { 
+            stateClass = 'active'; 
+            icon = '<div class="spinner"></div>'; 
+        } else if (isToolFailure) { 
+            stateClass = 'failed'; 
+            icon = '<span class="codicon codicon-close" style="color:var(--vscode-charts-red)"></span>'; 
+        }
+
         if (l.startsWith('[GIT]')) icon = '<span class="codicon codicon-git-commit"></span>';
-        return `<div class="timeline-item ${stateClass}" style="display:flex;align-items:flex-start;gap:10px;margin-bottom:2px;"><div class="timeline-dot" style="flex-shrink:0;margin-top:2px;">${icon}</div><div class="timeline-content" style="flex:1;font-size:11px;">${l}</div></div>`;
+
+        return `
+            <div class="timeline-item ${stateClass}" style="display:flex;align-items:flex-start;gap:10px;margin-bottom:4px;">
+                <div class="timeline-dot" style="flex-shrink:0;margin-top:2px;">${icon}</div>
+                <div class="step" style="flex:1;font-size:11px;opacity:0.9;">${l}</div>
+            </div>`;
       }).join('');
 
       const logSection = actionLog.length > 0
@@ -1712,11 +1741,27 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
 
       const objectiveHtml = `<div class="technical-briefing-card" style="border-left-color:var(--vscode-charts-orange);margin-bottom:10px;"><div class="briefing-header" style="color:var(--vscode-charts-orange);"><span class="codicon codicon-target"></span> MISSION OBJECTIVE</div><div class="briefing-content" style="padding:0 16px 12px 16px;font-weight:600;">${rephrasedObjective}</div></div>`;
       const briefingHtml = `<div class="technical-briefing-card"><details open><summary class="briefing-header"><div style="display:flex;align-items:center;gap:8px;flex:1;"><span class="codicon codicon-note"></span> Team Technical Briefing</div><div style="display:flex;gap:4px;"><button class="msg-action-btn" onclick="const text=this.closest('.technical-briefing-card').querySelector('.briefing-content').innerText;vscode.postMessage({command:'copyToClipboard',text:text})" style="opacity:0.6;padding:0;margin:0;height:16px;" title="Copy"><i class="codicon codicon-copy"></i></button><button class="msg-action-btn" onclick="vscode.postMessage({command:'updateDiscussionCapabilitiesPartial',partial:{clearBriefing:true}})" style="opacity:0.6;padding:0;margin:0;height:16px;" title="Clear"><i class="codicon codicon-trash"></i></button></div></summary><div class="briefing-scroll-area"><div class="briefing-content">${renderDataBriefing()}</div></div></details></div>`;
+      const summaryHtml = finalSummary ? `<summary>${finalSummary}</summary>` : "";
+
+      // Ensure the timeline always has at least one step during bootstrapping
+      const finalTimeline = timelineHtml.length > 0 
+        ? timelineHtml.replace(/class="timeline-content"/g, 'class="step"')
+        : `<div class="timeline-item active"><div class="timeline-dot"><div class="spinner"></div></div><div class="step">${status}</div></div>`;
+
+      const builderTag = `
+      <builder_report>
+      <objective>${rephrasedObjective}</objective>
+      <briefing>${renderDataBriefing()}</briefing>
+      <timeline>${finalTimeline}</timeline>
+      ${summaryHtml}
+      </builder_report>`.trim();
+
       const spinnerHtml = finished
         ? `<div class="status-line"><span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span> <span style="font-weight:bold;">Context Synchronized</span></div>`
         : `<div class="status-line"><div class="spinner"></div> <span>Step ${step + 1}: ${status}</span></div>`;
 
-      if (dashboardMode) onUpdate(`${spinnerHtml}\n\n${objectiveHtml}\n\n${filesTree}\n\n${logSection}`);
+      if (isBuilder) onUpdate(builderTag);
+      else if (dashboardMode) onUpdate(`${spinnerHtml}\n\n${objectiveHtml}\n\n${filesTree}\n\n${logSection}`);
       else onUpdate(`**🧠 ${headerTitle}**\n${spinnerHtml}\n${objectiveHtml}\n${briefingHtml}\n${filesTree}\n${logSection}`);
     };
 
@@ -1805,7 +1850,21 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
         executedActions.add(actionFingerprint);
         retryCount = 0;
 
-        if (toolName === 'done') { actionLog.push(`✅ Optimization complete.`); renderUpdate("Context Ready", true, step); break; }
+        if (toolName === 'done') { 
+            const modifiedCount = Array.from(executedActions).filter(a => a.includes('edit_code') || a.includes('generate_code')).length;
+            if (isBuilder && modifiedCount === 0) {
+                chatHistory.push({ 
+                    role: 'system', 
+                    content: "🛑 REALITY CHECK: You called 'done' and provided a summary, but you have NOT modified any files. Your summary is a hallucination. You MUST use 'read_file' to actually inspect the code and 'edit_code' to apply the fix before you can finish." 
+                });
+                actionLog.push(`⚠️ Hallucination Blocked: Agent attempted to finish without implementation.`);
+                renderUpdate("Hallucination detected - Restarting...");
+                continue;
+            }
+            actionLog.push(`✅ Optimization complete.`); 
+            renderUpdate("Context Ready", true, step); 
+            break; 
+        }
 
         if (toolName === 'summon_specialist') {
           actionLog.push(`📣 **Summoning ${params.agent}**: ${params.reason}`);
@@ -1826,22 +1885,47 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
 
         stepsTaken++;
 
-        if (isBuilder && (toolName === 'edit_code' || toolName === 'generate_code')) {
-          actionLog.push(`🛠️ **Implementing**: ${params.file_path}`);
-          renderUpdate(`Modifying ${params.file_path}...`, false, step);
+        if (isBuilder && (toolName === 'edit_code' || toolName === 'generate_code' || toolName === 'execute_command')) {
+          const emoji = toolName === 'execute_command' ? '🐚' : '🛠️';
+          const actionVerb = toolName === 'edit_code' ? "Patching" : (toolName === 'generate_code' ? "Creating" : "Executing");
+          const target = params.file_path || params.command;
 
-          const tool = this.context.extension.exports.services.toolManager.getTool(toolName);
+          actionLog.push(`${emoji} **${actionVerb}**: \`${target}\``);
+          renderUpdate(`${actionVerb} ${target}...`, false, step);
+
+          const services = (this.context.extension as any).exports.services;
+          const tool = services.toolManager.getTool(toolName);
+
           if (tool) {
             const env = {
                 workspaceRoot: folders[0],
                 lollmsApi: this.lollmsAPI,
                 contextManager: this,
-                agentManager: this.context.extension.exports.services.agentManager,
+                agentManager: services.agentManager,
                 currentPlan: { objective: userPrompt } as any
             };
-            const result = await tool.execute(params, env, signal);
-            chatHistory.push({ role: 'system', content: `Operation Result: ${result.output}` });
-            actionLog.push(result.success ? `✅ Applied: ${params.file_path}` : `❌ Failed: ${result.output}`);
+
+            try {
+                const result = await tool.execute(params, env, signal);
+
+                // 🛡️ REINFORCED FEEDBACK LOOP: Plumb output directly back to next reasoning step
+                chatHistory.push({ 
+                    role: 'system', 
+                    content: `### 🛡️ GUARDIAN FEEDBACK: ${toolName}\nSTATUS: ${result.success ? 'SUCCESS' : 'FAILED'}\nOUTPUT:\n${result.output}\n\nINSTRUCTION: Analyze this output. If successful, continue. If errors exist, fix them immediately.` 
+                });
+
+                if (result.success) {
+                    actionLog.push(`✅ **Success**: ${target}`);
+                    if (toolName !== 'execute_command') {
+                        this.refreshFileInCache(vscode.Uri.joinPath(folders[0].uri, target));
+                    }
+                } else {
+                    actionLog.push(`❌ **Failed**: ${result.output.substring(0, 100)}...`);
+                }
+            } catch (err: any) {
+                actionLog.push(`❌ **Tool Runtime Error**: ${err.message}`);
+            }
+            renderUpdate("Synthesizing next step...");
             continue;
           }
         }
@@ -1940,7 +2024,31 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
       }
     }
 
+    // Ensure the UI shows the "Check" icon and final state
+    // Ensure the UI shows the "Check" icon and final state
     renderUpdate("Context Ready", true, stepsTaken);
+
+    // If we are in Builder mode, perform a final synthesis pass for the summary zone
+    if (isBuilder && !signal.aborted) {
+        try {
+            const finalPrompt = `Your implementation tasks are complete. Review the 'Mission Timeline' above and provide a 2-3 sentence technical summary of exactly what you manifested and verified.`;
+            const summaryRes = await this.lollmsAPI.sendChat([
+                { role: 'system', content: "You are the Sovereign Builder. Provide a concise technical summary." },
+                ...chatHistory.slice(-3),
+                { role: 'user', content: finalPrompt }
+            ], null, signal, model);
+
+            finalSummary = stripThinkingTags(summaryRes).trim();
+            renderUpdate("Mission Accomplished", true, stepsTaken);
+        } catch (e) {
+            Logger.warn("Builder summary failed.");
+        }
+    }
+
+    // Explicitly update the discussion object if provided to persist the briefing
+    if (discussion) {
+        this.updateBriefingData(discussion, 'add', 'analysis', cumulativeBrain);
+    }
 
     let finalContext = "";
     if (selectedFiles.size > 0) finalContext = await this.readSpecificFiles(Array.from(selectedFiles));

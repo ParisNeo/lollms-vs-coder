@@ -1920,40 +1920,67 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
 
     await this.addMessageToDiscussion(userMessage);
 
-    // --- BUILDER MODE EXECUTION (ONE-SHOT LIBRARIAN STYLE) ---
+    // --- 🏗️ BUILDER FUSION: THE SOVEREIGN LIBRARIAN ---
     if (this._discussionCapabilities.workerType === 'builder' && message.role === 'user') {
-        const { id: builderProcId, controller: builderCtrl } = this.processManager.register(this.discussionId, 'Builder: Reasoning & Implementing...');
+        const { id: builderProcId, controller: builderCtrl } = this.processManager.register(this.discussionId, 'Builder: Initializing Sovereign Mind...');
         this.updateGeneratingState();
 
         try {
             const model = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
-            const textContent = (typeof message.content === 'string') ? message.content : "Executing builder task...";
+            const textContent = (typeof message.content === 'string') ? message.content : "Executing builder mission...";
+            const builderReportId = 'builder_report_' + Date.now();
 
-            await this._contextManager.runContextAgent(
+            // 1. BOOTSTRAP SOVEREIGN BUBBLE (System Role)
+            // We use 'role: system' to ensure the high-density Librarian UI is applied.
+            await this.addMessageToDiscussion({
+                id: builderReportId,
+                role: 'system', 
+                content: `<builder_report><objective>${textContent}</objective><briefing>Booting Sovereign Librarian with Write authorization...</briefing><timeline><div class="timeline-item active"><div class="timeline-dot"><div class="spinner"></div></div><div class="step">Initializing sensor array and mounting filesystem...</div></div></timeline></builder_report>`,
+                skipInPrompt: true 
+            });
+
+            // 2. FUSED LIBRARIAN LOOP (Discovery + Manifestation)
+            // This loop replaces the entire worker generation phase.
+            const result = await this._contextManager.runContextAgent(
                 textContent,
                 model,
                 builderCtrl.signal,
-                (newContent) => {
-                    // This updates the structured report card in real-time
-                    this._panel.webview.postMessage({ command: 'updateMessage', messageId: 'builder_turn', newContent });
-                },
+                (newContent) => this.updateMessageContent(builderReportId, newContent),
                 (status) => {
                     this.processManager.updateDescription(builderProcId, `Builder: ${status}`);
                     this.updateGeneratingState();
                 },
                 undefined,
-                'collaborative',
+                'builder', // Disables file auto-injection, forces discovery
                 this._currentDiscussion,
                 this._currentDiscussion.messages
             );
-            
+
+            // 3. FINAL SYNTHESIS (Only emitted inside the bubble)
+            this.processManager.updateDescription(builderProcId, "Builder: Finalizing report...");
+            const finalPrompt = `The mission is complete. Review your timeline and applied patches. Write a 2-3 sentence technical summary of what you accomplished.`;
+
+            const summary = await this._lollmsAPI.sendChat([
+                { role: 'system', content: "You are the Sovereign Builder. Summarize your technical manifestation." },
+                ...this._currentDiscussion.messages.slice(-3),
+                { role: 'user', content: finalPrompt }
+            ], null, builderCtrl.signal, model);
+
+            const finalReport = result.analysis + `\n<summary>${summary}</summary>`;
+            await this.updateMessageContent(builderReportId, finalReport);
+
             this.processManager.unregister(builderProcId);
             this.updateGeneratingState();
-            return; // EXIT: We handled the response completely in the Librarian loop
+            await this.updateContextAndTokens();
+            return; // DONE: Standard worker generation is ignored.
         } catch (e: any) {
             this.processManager.unregister(builderProcId);
             this.updateGeneratingState();
-            if (e.name !== 'AbortError') throw e;
+            if (e.name !== 'AbortError') {
+                Logger.error("Builder mission failed", e);
+                await this.addMessageToDiscussion({ role: 'system', content: `❌ **Sovereign Failure**: ${e.message}` });
+            }
+            return;
         }
     }
 
@@ -2035,33 +2062,57 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
         }
     }
 
-    // SUMMON THE GENIE: If Agent Mode or Builder Mode is active, route through the autonomous AgentManager loop
-    if (this.agentManager && (this._discussionCapabilities.agentMode || this._discussionCapabilities.workerType === 'builder')) {
-        if (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
-             // Auto-activate the manager if it was in standby
-             if (!this.agentManager.getIsActive()) {
-                 this.agentManager.toggleAgentMode(); 
-             }
-             
-             let textContent = "User Input";
-             if (typeof message.content === 'string') {
-                 textContent = message.content;
-             } else if (Array.isArray(message.content)) {
-                 const textPart = message.content.find((p: any) => p.type === 'text');
-                 if (textPart && textPart.text) {
-                     textContent = textPart.text;
-                 }
-             }
+    // --- BUILDER FUSION: LIBRARIAN WITH WRITE POWER ---
+    if (this._discussionCapabilities.workerType === 'builder' && message.role === 'user') {
+        const { id: builderProcId, controller: builderCtrl } = this.processManager.register(this.discussionId, 'Builder: Initializing Focused Mind...');
+        this.updateGeneratingState();
 
-             await this.agentManager.handleUserMessage(
-                 textContent, 
-                 this._currentDiscussion!, 
-                 vscode.workspace.workspaceFolders[0]
-             );
-        } else {
-             this.addMessageToDiscussion({ role: 'system', content: "Genie requires an active workspace folder to execute actions." });
+        try {
+            const model = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+            const textContent = (typeof message.content === 'string') ? message.content : "Executing builder mission...";
+
+            // We use a System message role with raw XML to trigger the rich dashboard immediately
+            const builderReportId = 'builder_report_' + Date.now();
+            await this.addMessageToDiscussion({
+                id: builderReportId,
+                role: 'system', 
+                content: `<builder_report><objective>${textContent}</objective><briefing>Initializing Focused Mind...</briefing><timeline><div class="timeline-item active"><div class="timeline-dot"><div class="spinner"></div></div><div class="step">Booting implementation engine...</div></div></timeline></builder_report>`,
+                skipInPrompt: true
+            });
+
+            // Re-use the LIBRARIAN code with 'builder' mode enabled
+            await this._contextManager.runContextAgent(
+                textContent,
+                model,
+                builderCtrl.signal,
+                (newContent) => {
+                    this.updateMessageContent(builderReportId, newContent);
+                },
+                (status) => {
+                    this.processManager.updateDescription(builderProcId, `Builder: ${status}`);
+                    this.updateGeneratingState();
+                },
+                undefined,
+                'builder', // This flag enables implementation tools in the loop
+                this._currentDiscussion,
+                this._currentDiscussion.messages
+            );
+
+            this.processManager.unregister(builderProcId);
+            this.updateGeneratingState();
+            await this.updateContextAndTokens();
+            return; // DONE: Standard chat loop is never reached
+        } catch (e: any) {
+            this.processManager.unregister(builderProcId);
+            this.updateGeneratingState();
+            if (e.name !== 'AbortError') throw e;
+            return;
         }
-        return;
+    }
+
+    // Standard Agent Mode (Leader Architect)
+    if (this.agentManager && this._discussionCapabilities.agentMode) {
+        // ... (rest of standard agent logic)
     }
 
     const { id: processId, controller } = this.processManager.register(this.discussionId, 'Preparing request...');
@@ -2135,8 +2186,11 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
     // --- SYNERGY: THE LIBRARIAN MUST FINISH FIRST ---
     let librarianAnalysis = "";
     const hasWorkspace = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0;
-    
-    if (isAutoContext && !this._discussionCapabilities.disableProjectContext && hasWorkspace) {
+
+    // FUSION: If Builder is active, deactivate the standalone Librarian pass
+    const isBuilder = this._discussionCapabilities.workerType === 'builder';
+
+    if (isAutoContext && !this._discussionCapabilities.disableProjectContext && hasWorkspace && !isBuilder) {
         this.processManager.updateDescription(processId, "Librarian is searching...");
         this.updateGeneratingState();
 
@@ -2182,18 +2236,9 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
             
             librarianAnalysis = result.analysis;
             
-            // NOTE: We no longer append result.analysis as a string here.
-            // The Technical Briefing is now managed as structured JSON inside discussion_data_zone
-            // by the add_briefing_entry tool called during runContextAgent.
-            
-            if (!this._isDisposed) {
-                // The renderUpdate inside ContextManager already generated a rich report.
-                // We don't need to overwrite it with "Analysis complete". 
-                // We trigger a final Token update to ensure the message is saved in its finished state.
-                const finalMsg = this._currentDiscussion?.messages.find(m => m.id === contextAgentMsgId);
-                if (finalMsg) {
-                    await this.updateMessageContent(contextAgentMsgId, String(finalMsg.content));
-                }
+            // COMMIT TO DISK: Ensure selected files are saved to the discussion state immediately
+            if (this._currentDiscussion && !this._currentDiscussion.id.startsWith('temp-')) {
+                await this._discussionManager.saveDiscussion(this._currentDiscussion);
             }
         } catch (e: any) { 
             this.log(`Librarian failed: ${e.message}`, 'ERROR');
@@ -2435,7 +2480,7 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
         );
 
         // 2. Prepare the Bundled Project Context Message (User role)
-        // Extract technical briefing from Librarian findings
+        // Extract technical briefing from Librarian findings (includes Global + Local data zones)
         const briefing = this._contextManager.renderBriefing(this._currentDiscussion);
         
         const projectStateText = `
@@ -2443,7 +2488,7 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
 I am providing you with the current, ground-truth state of my project files and the Librarian's technical briefing. 
 Use this information as your current "vision" of the workspace.
 
-${briefing && briefing !== "Librarian is analyzing project state..." ? `#### 📋 TEAM TECHNICAL BRIEFING\n${briefing}\n` : ""}
+${briefing && !briefing.includes("Librarian is analyzing") ? `#### 📋 TEAM TECHNICAL BRIEFING\n${briefing}\n` : ""}
 ${context.tree ? `#### 🌳 PROJECT STRUCTURE\n${context.tree}\n` : ""}
 ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files currently selected)*"}
 --------------------------------------------------

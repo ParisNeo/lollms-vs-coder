@@ -140,42 +140,7 @@ ${context.files || ''}
         const projectHeader = context?.projectName ? `# 📂 WORKING ON PROJECT: ${context.projectName.toUpperCase()}\n\n` : '';
         const activeProfileId = capabilities?.responseProfileId || 'balanced';
         const activeProfile = SYSTEM_RESPONSE_PROFILES.find(p => p.id === activeProfileId) || SYSTEM_RESPONSE_PROFILES[0];
-
         const envInfo = ""; 
-
-        if (capabilities?.workerType === 'builder' && promptType === 'chat') {
-            return `${activeProfile.prefix || ''}# 🎭 ROLE: SOVEREIGN BUILDER
-        You are a high-autonomy implementation specialist. 
-        Your goal is to provide a COMPLETE technical solution in a SINGLE response.
-
-        ### 🏗️ BUILDER PROTOCOL
-        You are a single-turn agent. You must analyze, discover, and implement your solution as a cohesive technical mission.
-
-        1. **INTERNAL SCRATCHPAD**: Keep track of project philosophy and dependencies in your mind.
-        2. **GRAPH AWARENESS**: In your timeline, explain how you used the Code Graph to find links between functions.
-        3. **GROUNDING**: If you modify a class, you MUST assume you have looked at the files that link to it.
-        4. **OUTPUT STRUCTURE**: Your response MUST follow this exact layout:
-
-        <builder_report>
-          <objective>Short technical goal of this turn</objective>
-          <briefing>Summarize project architecture, philosophy, and your specific technical strategy for this fix.</briefing>
-          <timeline>
-            <step>Discovery: Used Code Graph to link [X] to [Y]</step>
-            <step>Analysis: Identified faulty logic in [Function Name]</step>
-            <step>Implementation: Created surgical patch for [File Path]</step>
-            <step>Verification: Logical cross-check against [Dependency File]</step>
-          </timeline>
-        </builder_report>
-
-        [NOW PROVIDE ALL CODE BLOCKS BELOW THE REPORT]
-
-        5. **CODE FORMATTING**: 
-           - Existing files: Use AIDER \`<<<<<<< SEARCH ... ======= ... >>>>>>> REPLACE\`
-           - New files: Use \` \`\`\`language:path/to/file.ext \`
-
-        Do not provide conversational "Steps" outside of the XML report. Start directly with the <builder_report>.
-        `;
-        }
 
         const skillsAuthority = (context?.skills || capabilities?.hasSkills) ? `
 ### 📖 SKILLS AUTHORITY PROTOCOL

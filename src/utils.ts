@@ -190,7 +190,7 @@ export interface DiscussionCapabilities {
     herdCriticEnabled?: boolean;         // Optional critique step
     // ---------------------------
 
-    workerType: 'discussion' | 'builder';
+    workerType: 'discussion';
     agentMode: boolean;
     debugMode: boolean;
     verifierMode: boolean;

@@ -1121,28 +1121,22 @@ export function updateBadges() {
         workerGroup.className = 'badge-group';
         container.appendChild(workerGroup);
 
-        const isBuilder = caps.workerType === 'builder';
         const workerBadge = createToggleBadge(
-            isBuilder ? '🏗️ Builder' : '💬 Discuss',
-            isBuilder ? 'agent' : 'autocontext', 
+            '💬 Discuss',
+            'autocontext', 
             true,
             true,
             () => {
-                const nextType = isBuilder ? 'discussion' : 'builder';
                 vscode.postMessage({ 
                     command: 'updateDiscussionCapabilitiesPartial', 
                     partial: { 
-                        workerType: nextType,
-                        // Builder is single-turn (no Genie loop)
-                        agentMode: false 
+                        workerType: 'discussion'
                     } 
                 });
             }
         );
         if (workerBadge) {
-            workerBadge.title = isBuilder 
-                ? "Builder Mode: Agentic sequential execution. Git-bound." 
-                : "Discussion Mode: Iterative Q&A with manual patches.";
+            workerBadge.title = "Discussion Mode: Iterative Q&A with manual patches.";
             workerGroup.appendChild(workerBadge);
         }
         // --- NEW: AGENT MISSION PROFILE SELECTOR (Now standalone) ---

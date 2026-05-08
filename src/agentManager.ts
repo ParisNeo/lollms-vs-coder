@@ -750,17 +750,6 @@ Please commit or stash your work before starting an iterative debug session to e
         this.ui.updateGeneratingState();
 
         try {
-            // --- PHASE -0.1: WORKER TYPE SYNC ---
-            if (discussion.capabilities?.workerType === 'builder') {
-                // Force the specialized Builder Protocol for fast grounding and unified reporting
-                if (!discussion.capabilities.activeAgentProfileId || discussion.capabilities.activeAgentProfileId === 'software_architect') {
-                    discussion.capabilities.activeAgentProfileId = 'builder_protocol';
-                }
-                // Ensure the manager enters the active ReAct loop state
-                this.isActive = true;
-                this.ui.updateAgentMode(true);
-            }
-
             // --- PHASE 0: HYGIENE & SAFETY CHECK ---
             this.processManager.updateDescription(processId, "🛡️ Sovereign: Verifying workspace safety...");
             const safetyPassed = await this.preFlightSafetyCheck(workspaceFolder, controller.signal);
@@ -1070,37 +1059,13 @@ ${contextData.selectedFilesContent || "(No files read into context yet)"}
                 await this.displayAndSavePlan(this.currentPlan);
                 }
 
-                // 5. UI Emission Logic: Card vs. Report
-                const isBuilder = this.currentDiscussion?.capabilities?.workerType === 'builder';
-                const reportId = `builder_report_${this.currentDiscussion?.id}`;
-
-                if (isBuilder) {
-                    // Update a single consolidated Mission Report instead of individual task cards
-                    const briefing = this.contextManager.renderBriefing(this.currentDiscussion);
-                    const timeline = this.completedActionsHistory.map(h => `<step>${h}</step>`).join('\n');
-
-                    const reportTag = `
-                <builder_report>
-                <objective>${this.currentPlan!.objective}</objective>
-                <briefing>${briefing}</briefing>
-                <timeline>${timeline}<step>${task.description} (Executing ${task.action}...)</step></timeline>
-                </builder_report>`.trim();
-
-                    const reportExists = this.currentDiscussion.messages.some(m => m.id === reportId);
-                    if (!reportExists) {
-                        await this.ui.addMessageToDiscussion({ id: reportId, role: 'assistant', content: reportTag, skipInPrompt: true });
-                    } else {
-                        await this.ui.updateMessageContent!(reportId, reportTag);
-                    }
-                } else {
-                    // Standard Agent Mode: Individual cards
-                    await this.ui.addMessageToDiscussion({
-                        id: `agent_task_${task.id}`,
-                        role: 'assistant',
-                        content: `<agent_task id="${task.id}" />`,
-                        skipInPrompt: true 
-                    });
-                }
+                // 5. UI Emission: Standard Agent Mode (Individual cards)
+                await this.ui.addMessageToDiscussion({
+                    id: `agent_task_${task.id}`,
+                    role: 'assistant',
+                    content: `<agent_task id="${task.id}" />`,
+                    skipInPrompt: true 
+                });
 
                 // Execute Action
                 this.processManager?.updateDescription(processId, `Genie: Executing ${task.action}...`);

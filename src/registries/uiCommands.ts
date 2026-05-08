@@ -102,38 +102,6 @@ export function registerUICommands(context: vscode.ExtensionContext, services: L
         setTab('studio');
         vscode.commands.executeCommand('lollms-vs-coder.openFlowStudio');
     });
-
-    safeRegister('lollms-vs-coder.runBuilder', async () => {
-        const objective = await vscode.window.showInputBox({ prompt: "What should the Builder do?" });
-        if (!objective) return;
-        
-        const discussion = services.discussionManager.createNewDiscussion();
-        discussion.title = `Builder: ${objective}`;
-        // Builder is not an agent
-        discussion.capabilities.agentMode = false;
-        discussion.capabilities.workerType = 'builder';
-        
-        await services.discussionManager.saveDiscussion(discussion);
-        
-        const panel = ChatPanel.createOrShow(services.extensionUri, services.lollmsAPI, services.discussionManager, discussion.id, services.gitIntegration, services.skillsManager);
-        await panel.loadDiscussion();
-        
-        // Librarian logic only - no safety protocols, no agent loop
-        await services.contextManager.runContextAgent(
-            objective, 
-            services.lollmsAPI.getModelName(), 
-            new AbortController().signal,
-            (newContent) => { 
-                panel.addMessageToDiscussion({ role: 'assistant', content: newContent });
-            },
-            (status) => { Logger.info(`Builder Status: ${status}`); },
-            [],
-            'collaborative',
-            discussion,
-            []
-        );
-    });
-
     safeRegister('lollms-vs-coder.openCveBuilder', () => {
         const { CvePanel } = require('../commands/cvePanel');
         CvePanel.createOrShow(services.extensionUri, services.lollmsAPI, services.contextManager);

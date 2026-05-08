@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-05-08 13:22]
+
+- chore(release): bump version to 0.8.61 and clean up codebase
+
 ## [2026-05-07 12:57]
 
 - feat(chat): enhance agent mode with memory block rendering and verification rules

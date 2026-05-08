@@ -217,11 +217,8 @@ export class ChatPanel {
             }
         }
 
-        // 🛡️ GUARDIAN PROTOCOL: Automated Audit after Bulk Apply
-        if (this._discussionCapabilities.verifierMode && modifiedFiles.size > 0) {
-            this.processManager.updateDescription(processId, "Guardian: Auditing all modified files...");
-            await this.runGuardianAudit(Array.from(modifiedFiles), signal, messageId);
-        } else if (this._discussionCapabilities.autoFix && modifiedFiles.size > 0) {
+        // 🛡️ GUARDIAN PROTOCOL: Automated Repair Loop
+        if (this._discussionCapabilities.autoFix && modifiedFiles.size > 0) {
             // Fallback to standard diagnostic-based repair if verifier is off
             const urisToFix = Array.from(modifiedFiles).map(fp => vscode.Uri.joinPath(workspaceFolder.uri, fp));
             await this.repairFilesIteratively(urisToFix, signal, processId, messageId);
@@ -1884,11 +1881,10 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
 
   public async sendMessage(message: ChatMessage, autoContextMode: boolean = false) {
     if (this._isDisposed) return;
-    
+
     await this.waitForWebviewReady();
-    
+
     // --- 1. PRESERVE USER CONTENT IMMEDIATELY ---
-    // Create a fresh copy to prevent any mutation issues
     const userMessage: ChatMessage = { 
         ...message, 
         id: message.id || 'user_' + Date.now() + Math.random().toString(36).substring(2),
@@ -1919,70 +1915,6 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
     }
 
     await this.addMessageToDiscussion(userMessage);
-
-    // --- 🏗️ BUILDER FUSION: THE SOVEREIGN LIBRARIAN ---
-    if (this._discussionCapabilities.workerType === 'builder' && message.role === 'user') {
-        const { id: builderProcId, controller: builderCtrl } = this.processManager.register(this.discussionId, 'Builder: Initializing Sovereign Mind...');
-        this.updateGeneratingState();
-
-        try {
-            const model = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
-            const textContent = (typeof message.content === 'string') ? message.content : "Executing builder mission...";
-            const builderReportId = 'builder_report_' + Date.now();
-
-            // 1. BOOTSTRAP SOVEREIGN BUBBLE (System Role)
-            // We use 'role: system' to ensure the high-density Librarian UI is applied.
-            await this.addMessageToDiscussion({
-                id: builderReportId,
-                role: 'system', 
-                content: `<builder_report><objective>${textContent}</objective><briefing>Booting Sovereign Librarian with Write authorization...</briefing><timeline><div class="timeline-item active"><div class="timeline-dot"><div class="spinner"></div></div><div class="step">Initializing sensor array and mounting filesystem...</div></div></timeline></builder_report>`,
-                skipInPrompt: true 
-            });
-
-            // 2. FUSED LIBRARIAN LOOP (Discovery + Manifestation)
-            // This loop replaces the entire worker generation phase.
-            const result = await this._contextManager.runContextAgent(
-                textContent,
-                model,
-                builderCtrl.signal,
-                (newContent) => this.updateMessageContent(builderReportId, newContent),
-                (status) => {
-                    this.processManager.updateDescription(builderProcId, `Builder: ${status}`);
-                    this.updateGeneratingState();
-                },
-                undefined,
-                'builder', // Disables file auto-injection, forces discovery
-                this._currentDiscussion,
-                this._currentDiscussion.messages
-            );
-
-            // 3. FINAL SYNTHESIS (Only emitted inside the bubble)
-            this.processManager.updateDescription(builderProcId, "Builder: Finalizing report...");
-            const finalPrompt = `The mission is complete. Review your timeline and applied patches. Write a 2-3 sentence technical summary of what you accomplished.`;
-
-            const summary = await this._lollmsAPI.sendChat([
-                { role: 'system', content: "You are the Sovereign Builder. Summarize your technical manifestation." },
-                ...this._currentDiscussion.messages.slice(-3),
-                { role: 'user', content: finalPrompt }
-            ], null, builderCtrl.signal, model);
-
-            const finalReport = result.analysis + `\n<summary>${summary}</summary>`;
-            await this.updateMessageContent(builderReportId, finalReport);
-
-            this.processManager.unregister(builderProcId);
-            this.updateGeneratingState();
-            await this.updateContextAndTokens();
-            return; // DONE: Standard worker generation is ignored.
-        } catch (e: any) {
-            this.processManager.unregister(builderProcId);
-            this.updateGeneratingState();
-            if (e.name !== 'AbortError') {
-                Logger.error("Builder mission failed", e);
-                await this.addMessageToDiscussion({ role: 'system', content: `❌ **Sovereign Failure**: ${e.message}` });
-            }
-            return;
-        }
-    }
 
     // --- AUTO TITLE GENERATION ---
     const config = vscode.workspace.getConfiguration('lollmsVsCoder');
@@ -2183,14 +2115,12 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
         }
     }
 
-    // --- SYNERGY: THE LIBRARIAN MUST FINISH FIRST ---
+    // --- SYNERGY: LIBRARIAN & BUILDER LOOP ---
     let librarianAnalysis = "";
     const hasWorkspace = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0;
 
-    // FUSION: If Builder is active, deactivate the standalone Librarian pass
-    const isBuilder = this._discussionCapabilities.workerType === 'builder';
 
-    if (isAutoContext && !this._discussionCapabilities.disableProjectContext && hasWorkspace && !isBuilder) {
+    if (isAutoContext && !this._discussionCapabilities.disableProjectContext && hasWorkspace) {
         this.processManager.updateDescription(processId, "Librarian is searching...");
         this.updateGeneratingState();
 
@@ -2202,48 +2132,45 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
             const textPart = message.content.find((p: any) => p.type === 'text');
             if (textPart && textPart.text) userPromptText = textPart.text;
         }
-        const contextAgentMsgId = 'ctx_agent_' + Date.now();
-        
+        const logId = 'ctx_agent_' + Date.now();
+
         await this.addMessageToDiscussion({
-            id: contextAgentMsgId, 
+            id: logId,
             role: 'system', 
             content: `**🧠 Auto-Context Agent**\n*Searching for relevant files...*\n\n`, 
-            skipInPrompt: false // Worker LLM should see that a scout has run
+            skipInPrompt: false 
         });
 
         try {
             const history = [...this._currentDiscussion.messages];
 
-            // CRITICAL: We block here. The main AI won't start until this returns.
+            // TRIGGER LIBRARIAN
             const result = await this._contextManager.runContextAgent(
-                userPromptText, 
-                model, 
-                controller.signal, 
-                (newContent) => {
-                    this.updateMessageContent(contextAgentMsgId, newContent);
-                },
+                userPromptText,
+                model,
+                controller.signal,
+                (newContent) => this.updateMessageContent(logId, newContent),
                 (status) => {
                     if (!this._isDisposed && this.processManager) {
-                        this.processManager.updateDescription(processId, status);
+                        this.processManager.updateDescription(processId, `Librarian: ${status}`);
                         this.updateGeneratingState();
                     }
                 },
-                undefined,           // initialKeywords
-                'collaborative',      // mode
-                this._currentDiscussion, // discussion (8th arg)
-                history              // fullHistory (9th arg)
+                undefined,
+                'collaborative',
+                this._currentDiscussion,
+                history
             );
-            
+
             librarianAnalysis = result.analysis;
-            
-            // COMMIT TO DISK: Ensure selected files are saved to the discussion state immediately
+
             if (this._currentDiscussion && !this._currentDiscussion.id.startsWith('temp-')) {
                 await this._discussionManager.saveDiscussion(this._currentDiscussion);
             }
-        } catch (e: any) { 
-            this.log(`Librarian failed: ${e.message}`, 'ERROR');
+        } catch (e: any) {
+            this.log(`Sovereign Loop failed: ${e.message}`, 'ERROR');
         }
-    }
+        }
 
     // --- WEB RESEARCH AGENT ---
     if (this._discussionCapabilities.webSearch) {

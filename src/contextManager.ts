@@ -1575,7 +1575,7 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
     onUpdate: (content: string) => void,
     onStatusUpdate?: (status: string) => void,
     initialKeywords?: string[],
-    mode: 'selection_only' | 'collaborative' | 'builder' = 'collaborative',
+    mode: 'selection_only' | 'collaborative' = 'collaborative',
     discussion: any = null,
     fullHistory: ChatMessage[] = [],
     dashboardMode: boolean = false
@@ -1606,13 +1606,10 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
     const initialCount = selectedFiles.size;
     let rephrasedObjective = "Analyzing mission...";
 
-    const isBuilder = mode === 'builder';
     const isEconomy = discussion?.capabilities?.tokenEconomyMode === true;
 
-    const roleName = isBuilder ? "Sovereign Builder" : "Lead Project Librarian";
-    const primaryGoal = isBuilder 
-        ? "understand the codebase, elaborate an update strategy, and implement code changes (patches or new files)."
-        : "optimize the project context for the User by selecting the right files.";
+    const roleName = "Lead Project Librarian";
+    const primaryGoal = "optimize the project context for the User by selecting the right files.";
 
     const pruningMandate = isEconomy ? `
     ### 🧹 SELECTIVE PRUNING MANDATE (TOKEN ECONOMY)
@@ -1622,21 +1619,12 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
     3. **KEEP ESSENTIALS**: Do NOT remove files that are clearly relevant to the task. This saves tokens and redundant search steps.
     ` : "";
 
-    const builderAuthority = isBuilder ? `
-    ### 🏗️ BUILDER AUTHORITY (CODE MODIFICATION)
-    Unlike a standard Librarian, you have the authority to CHANGE the project.
-    1. **STRATEGY FIRST**: Before coding, use 'add_briefing_entry' to explain your plan.
-    2. **SURGICAL EDITS**: Use 'edit_code' with AIDER SEARCH/REPLACE blocks for existing files.
-    3. **MANIFESTATION**: Use 'generate_code' for completely new files.
-    4. **VERIFICATION**: After an edit, you SHOULD 'read_file' the result or run a command to verify.
-    ` : "### 🛑 READ-ONLY RESTRICTION: You are a Librarian. You select files and document strategy, but you are FORBIDDEN from using 'edit_code' or 'generate_code'.";
-
     const fullContext = await this.getContextContent({ includeTree: true, modelName: model, signal });
 
     const systemPrompt = `You are the **${roleName}**.
     Your goal is to ${primaryGoal}
     ${pruningMandate}
-    ${builderAuthority}
+    ### 🛑 READ-ONLY RESTRICTION: You are a Librarian. You select files and document strategy, but you are FORBIDDEN from using 'edit_code' or 'generate_code'.
 
     ### 📜 DISCOVERY PROTOCOL (TREE-FIRST MANDATE)
     1. **USE YOUR EYES**: The 'PROJECT WORLD STATE' tree lists every visible file. 
@@ -1654,7 +1642,6 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
     5. \`read_file(path, start_line, end_line)\`: Peek at a file.
     6. \`find_files_by_name(pattern)\`: Search file index (e.g. "*.vue").
     7. \`grep_search(pattern, path)\`: Search text inside files.
-    ${isBuilder ? '8. `edit_code(file_path, instructions)`: Apply surgical changes using SEARCH/REPLACE.\n9. `generate_code(file_path, instructions)`: Create a new file.' : ''}
     10. \`done()\`: Finish mission.
 
 **OUTPUT**: JSON only.
@@ -1662,15 +1649,12 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
 { "scratchpad": "Thinking...", "tool": "tool_name", "params": { ... } }
 \`\`\``;
 
-    const possessedContent = isBuilder ? "" : fullContext.selectedFilesContent;
+    // --- 🧠 LIBRARIAN BOOT-UP ---
+    const possessedContent = fullContext.selectedFilesContent;
 
-    let initialUserContent = `**USER OBJECTIVE:** "${userPrompt}"\n\n# SHARED TEAM BRIEFING\n${sharedKnowledge || "No briefing entries yet."}\n\n# PROJECT WORLD STATE\n${fileTree}\n\n`;
+    let initialUserContent = `**USER OBJECTIVE:** "${userPrompt}"\n\n# SHARED TEAM BRIEFING\n${sharedKnowledge || "No briefing entries yet."}\n\n# PROJECT WORLD STATE (PATHS ONLY)\n${fileTree}\n\n`;
     
-    if (isBuilder) {
-        initialUserContent += `**BUILDER MANDATE**: You are currently BLIND to file contents. You MUST use 'smart_scout' or 'read_code_graph' to identify your targets before you can modify them.\n`;
-    } else {
-        initialUserContent += `**LIBRARIAN MANDATE**: Analyze the Objective and the Tree. If required files are marked \`[C]\`, call \`done\`. Otherwise, scout for missing dependencies.\n`;
-    }
+    initialUserContent += `**LIBRARIAN MANDATE**: Analyze the Objective and the Tree. If required files are marked \`[C]\`, call \`done\`. Otherwise, scout for missing dependencies.\n`;
 
     if (initialKeywords && initialKeywords.length > 0) {
       if (onStatusUpdate) onStatusUpdate(`Searching keywords: ${initialKeywords.join(', ')}...`);
@@ -1679,7 +1663,7 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
       initialUserContent += `\n\n**Initial Search Results:**\n${searchResults}`;
     }
 
-    if (!isBuilder && selectedFiles.size > 0) {
+    if (selectedFiles.size > 0) {
         initialUserContent += `\n\n**Currently Selected Files:**\n${JSON.stringify(Array.from(selectedFiles))}\n\n### 📄 ACCESSIBLE FILE CONTENTS\n${possessedContent}`;
     }
 
@@ -1693,7 +1677,7 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
     let finalSummary = "";
 
     const renderUpdate = (status: string, finished: boolean = false, step: number = 0) => {
-      const headerTitle = isBuilder ? "Builder Mission Report" : "Librarian Mission Report";
+      const headerTitle = "Librarian Mission Report";
       const sortedFiles = Array.from(selectedFiles).sort();
       const filesListItems = sortedFiles.map(f => `<li><span class="codicon codicon-file"></span> ${f}</li>`).join('');
       const filesTree = selectedFiles.size > 0
@@ -1760,8 +1744,7 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
         ? `<div class="status-line"><span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span> <span style="font-weight:bold;">Context Synchronized</span></div>`
         : `<div class="status-line"><div class="spinner"></div> <span>Step ${step + 1}: ${status}</span></div>`;
 
-      if (isBuilder) onUpdate(builderTag);
-      else if (dashboardMode) onUpdate(`${spinnerHtml}\n\n${objectiveHtml}\n\n${filesTree}\n\n${logSection}`);
+      if (dashboardMode) onUpdate(`${spinnerHtml}\n\n${objectiveHtml}\n\n${filesTree}\n\n${logSection}`);
       else onUpdate(`**🧠 ${headerTitle}**\n${spinnerHtml}\n${objectiveHtml}\n${briefingHtml}\n${filesTree}\n${logSection}`);
     };
 
@@ -1851,16 +1834,6 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
         retryCount = 0;
 
         if (toolName === 'done') { 
-            const modifiedCount = Array.from(executedActions).filter(a => a.includes('edit_code') || a.includes('generate_code')).length;
-            if (isBuilder && modifiedCount === 0) {
-                chatHistory.push({ 
-                    role: 'system', 
-                    content: "🛑 REALITY CHECK: You called 'done' and provided a summary, but you have NOT modified any files. Your summary is a hallucination. You MUST use 'read_file' to actually inspect the code and 'edit_code' to apply the fix before you can finish." 
-                });
-                actionLog.push(`⚠️ Hallucination Blocked: Agent attempted to finish without implementation.`);
-                renderUpdate("Hallucination detected - Restarting...");
-                continue;
-            }
             actionLog.push(`✅ Optimization complete.`); 
             renderUpdate("Context Ready", true, step); 
             break; 
@@ -1884,51 +1857,6 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
         }
 
         stepsTaken++;
-
-        if (isBuilder && (toolName === 'edit_code' || toolName === 'generate_code' || toolName === 'execute_command')) {
-          const emoji = toolName === 'execute_command' ? '🐚' : '🛠️';
-          const actionVerb = toolName === 'edit_code' ? "Patching" : (toolName === 'generate_code' ? "Creating" : "Executing");
-          const target = params.file_path || params.command;
-
-          actionLog.push(`${emoji} **${actionVerb}**: \`${target}\``);
-          renderUpdate(`${actionVerb} ${target}...`, false, step);
-
-          const services = (this.context.extension as any).exports.services;
-          const tool = services.toolManager.getTool(toolName);
-
-          if (tool) {
-            const env = {
-                workspaceRoot: folders[0],
-                lollmsApi: this.lollmsAPI,
-                contextManager: this,
-                agentManager: services.agentManager,
-                currentPlan: { objective: userPrompt } as any
-            };
-
-            try {
-                const result = await tool.execute(params, env, signal);
-
-                // 🛡️ REINFORCED FEEDBACK LOOP: Plumb output directly back to next reasoning step
-                chatHistory.push({ 
-                    role: 'system', 
-                    content: `### 🛡️ GUARDIAN FEEDBACK: ${toolName}\nSTATUS: ${result.success ? 'SUCCESS' : 'FAILED'}\nOUTPUT:\n${result.output}\n\nINSTRUCTION: Analyze this output. If successful, continue. If errors exist, fix them immediately.` 
-                });
-
-                if (result.success) {
-                    actionLog.push(`✅ **Success**: ${target}`);
-                    if (toolName !== 'execute_command') {
-                        this.refreshFileInCache(vscode.Uri.joinPath(folders[0].uri, target));
-                    }
-                } else {
-                    actionLog.push(`❌ **Failed**: ${result.output.substring(0, 100)}...`);
-                }
-            } catch (err: any) {
-                actionLog.push(`❌ **Tool Runtime Error**: ${err.message}`);
-            }
-            renderUpdate("Synthesizing next step...");
-            continue;
-          }
-        }
 
         if (toolName === 'search_files' || toolName === 'grep_search') {
           const results = await this.searchWorkspaceContent(params.pattern, { matchCase: false, wholeWord: false, include: params.path });

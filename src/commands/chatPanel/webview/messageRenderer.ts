@@ -1742,90 +1742,6 @@ function renderMilestoneCard(attrs: any): string {
     </div>`;
 }
 
-
-
-function renderBuilderReport(xmlContent: string, messageId: string): string {
-    const getTag = (xml: string, tag: string) => {
-        const regex = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i');
-        const match = xml.match(regex);
-        return match ? match[1].trim() : "";
-    };
-
-    const objective = getTag(xmlContent, "objective") || "Executing mission...";
-    const briefing = getTag(xmlContent, "briefing") || "Initializing mission parameters...";
-    const timelineRaw = getTag(xmlContent, "timeline");
-    let summary = getTag(xmlContent, "summary");
-
-    // Standardize timeline HTML to use Librarian-style items
-    const timelineHtml = sanitizer.sanitize(timelineRaw, {
-        ADD_TAGS: ['div', 'span', 'i'],
-        ADD_ATTR: ['class', 'style']
-    });
-
-    return `
-    <div class="message special-zone-message context-message agent-mode-bubble builder-mission-report" style="margin: 0; width: 100%; border-radius: 8px;">
-        <div class="message-body" style="padding: 16px;">
-            <div style="display:flex; align-items:center; gap:10px; margin-bottom: 15px;">
-                <div class="agent-active-indicator" style="width:24px; height:24px;">
-                    <div class="genie-orb-portal" style="transform: scale(0.5);"><div class="orb-ring-outer"></div><div class="orb-ring-inner"></div><div class="orb-core"></div></div>
-                </div>
-                <span style="font-weight: 800; font-size: 11px; letter-spacing: 0.5px; color: var(--vscode-charts-orange); text-transform: uppercase;">Sovereign Builder Mission</span>
-                <div style="flex:1"></div>
-                ${!summary ? '<div class="spinner" style="opacity:0.5;"></div>' : '<i class="codicon codicon-check" style="color:var(--vscode-charts-green)"></i>'}
-            </div>
-
-        <div class="technical-briefing-card" style="border-left-color:var(--vscode-charts-orange); margin-bottom:12px; background: rgba(0,0,0,0.15);">
-            <div class="briefing-header" style="color:var(--vscode-charts-orange); font-size: 9px; padding: 8px 12px;">
-                <span class="codicon codicon-target"></span> MISSION OBJECTIVE
-            </div>
-            <div class="briefing-content" style="padding:0 12px 10px 12px; font-weight:600; font-size: 12px; opacity: 0.9;">
-                ${sanitizer.sanitize(objective)}
-            </div>
-        </div>
-
-        <div class="technical-briefing-card" style="margin-bottom:12px; border-left-color: var(--vscode-charts-blue); background: rgba(0,0,0,0.15);">
-            <details open>
-                <summary class="briefing-header" style="padding: 8px 12px; font-size: 9px; color: var(--vscode-charts-blue);">
-                    <span class="codicon codicon-note"></span> TEAM TECHNICAL BRIEFING
-                </summary>
-                <div class="briefing-scroll-area" style="max-height: 120px;">
-                    <div class="briefing-content" style="padding: 0 12px 10px 12px; font-size: 11px; line-height: 1.5; opacity: 0.8;">
-                        ${sanitizer.sanitize(briefing)}
-                    </div>
-                </div>
-            </details>
-        </div>
-
-        <details class="info-collapsible" style="margin-bottom:12px;" ${!summary ? 'open' : ''}>
-            <summary class="briefing-header" style="padding: 8px 12px; font-size: 9px; opacity: 0.7;">
-                <span class="codicon codicon-history"></span> MISSION TIMELINE
-            </summary>
-            <div class="mission-timeline" style="padding: 10px 15px; margin:0; border-left:none;">
-                ${timelineHtml}
-            </div>
-        </details>
-
-        <details class="info-collapsible" style="margin-bottom:12px; border: 1px solid var(--vscode-widget-border); border-radius: 8px;" ${!summary ? 'open' : ''}>
-            <summary class="briefing-header" style="padding: 8px 12px; font-size: 10px;">
-                <span class="codicon codicon-history"></span> MISSION TIMELINE
-            </summary>
-            <div class="mission-timeline" style="padding: 10px 15px; background: var(--vscode-editor-background);">
-                ${timelineHtml}
-            </div>
-        </details>
-
-        ${summary ? `
-        <div class="technical-briefing-card" style="border-left-color:var(--vscode-charts-green); border-top: 1px solid var(--vscode-widget-border); margin-top: 15px;">
-            <div class="briefing-header" style="color:var(--vscode-charts-green); padding: 8px 12px; font-size: 10px;">
-                <span class="codicon codicon-verified"></span> MISSION SUMMARY
-            </div>
-            <div class="briefing-content markdown-body" style="padding:0 12px 12px 12px; line-height: 1.5; font-size: 12px;">
-                ${sanitizer.sanitize(marked.parse(summary) as string)}
-            </div>
-        </div>` : ''}
-    </div>`;
-}
-
 function renderProcessingBlock(rawContent: string, isClosed: boolean): string {
     const lines = rawContent.trim().split('\n').filter(l => l.trim().length > 0);
     const displayTitle = lines.length > 0 ? lines[lines.length - 1].replace(/^\*\s*/, '') : "Processing...";
@@ -2044,36 +1960,7 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         const { thoughts: thoughtsResult, processedContent: contentWithoutThoughts } = processThinkTags(processedContent);
         thoughts.push(...thoughtsResult);
 
-        // --- 🛡️ REGEX SOVEREIGNTY: BUILDER REPORT INTERCEPTION ---
-        // High priority interception: Detects the builder report even if wrapped in markdown 
-        // or truncated during streaming.
-        const builderRegex = /(?:```(?:xml|text|plaintext|[\w]*)?[\s\r\n]*)?<builder_report>([\s\S]*?)(?:<\/builder_report>|(?:[\s\r\n]*```)?$)/gi;
-        let builderMatch;
-        let contentForFurtherParsing = contentWithoutThoughts;
-
-        builderRegex.lastIndex = 0;
-
-        while ((builderMatch = builderRegex.exec(contentWithoutThoughts)) !== null) {
-            // Check if this is a streaming (unclosed) tag
-            const isClosed = builderMatch[0].includes('</builder_report>');
-
-            const html = renderBuilderReport(builderMatch[1], messageId);
-            builderReports.push({ 
-                html, 
-                start: builderMatch.index, 
-                end: builderMatch.index + builderMatch[0].length 
-            });
-
-            // "Neutralize" the raw tag by replacing it with invisible whitespace.
-            // This prevents the markdown parser from seeing it or its backticks.
-            const neutralized = " ".repeat(builderMatch[0].length);
-            contentForFurtherParsing = 
-                contentForFurtherParsing.substring(0, builderMatch.index) + 
-                neutralized + 
-                contentForFurtherParsing.substring(builderMatch.index + builderMatch[0].length);
-        }
-
-        processedContent = contentForFurtherParsing;
+        processedContent = contentWithoutThoughts;
 
             // Pre-calculate code ranges to ignore tags inside backticks
             const forbiddenRanges = getCodeRanges(contentForFurtherParsing);

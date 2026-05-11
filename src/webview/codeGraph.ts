@@ -457,7 +457,10 @@ function enablePanZoom(container: HTMLElement) {
     };
 
     container.addEventListener('wheel', (e) => {
-        e.preventDefault();
+        // Only block scroll if performing a graph zoom action
+        if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+        }
         const intensity = currentConfig.zoomSensitivity * 0.2;
         const delta = e.deltaY > 0 ? -intensity : intensity;
         const factor = Math.exp(delta);

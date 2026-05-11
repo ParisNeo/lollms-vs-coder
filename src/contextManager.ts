@@ -61,7 +61,14 @@ export class ContextManager {
 
   private _lastContext: ContextResult | null = null;
   private static PROJECT_SKILLS_KEY = 'lollms_project_active_skills';
-  private static TOKEN_CACHE_KEY = 'lollms_token_cache';
+
+  // --- SOVEREIGN TOKEN CACHE ---
+  private _tokenCache: {
+    tree: number,
+    system: number,
+    history: number,
+    files: Record<string, { hash: string, tokens: number }>
+  } = { tree: 0, system: 0, history: 0, files: {} };
 
   // --- GLOBAL CACHE STATE ---
   private _cachedTreeString: string | null = null;
@@ -719,18 +726,21 @@ export class ContextManager {
 
               if (this.imageExtensions.has(ext)) {
                 if (!enableVision) {
-                  projectContentBuffer += `### \`${headerPath}\` (Image Muted — Vision Disabled)\n\n`;
+                  projectContentBuffer += `### 🖼️ \`${headerPath}\` [IMAGE MUTED]\n> Vision is disabled in settings.\n\n`;
                   continue;
                 }
                 const base64Data = fileBuffer.toString('base64');
                 let mime = ext.substring(1).replace('jpg', 'jpeg');
                 if (ext === '.svg') mime = 'svg+xml';
 
-                // Ensure data URI format is standard
                 const dataUri = `data:image/${mime};base64,${base64Data}`;
-
+                const imgIndex = result.images.length;
                 result.images.push({ filePath: headerPath, data: dataUri });
-                projectContentBuffer += `### \`${headerPath}\` (Image Attached)\n\n`;
+
+                // SOVEREIGN MULTIMODAL TAGGING
+                projectContentBuffer += `### 🖼️ \`${headerPath}\` [C]\n`;
+                projectContentBuffer += `> [VISUAL CONTEXT INDEX: ${imgIndex}]\n`;
+                projectContentBuffer += `> Use this index to refer to the visual representation in the multipart message.\n\n`;
                 continue;
               }
 
@@ -1575,7 +1585,7 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
     onUpdate: (content: string) => void,
     onStatusUpdate?: (status: string) => void,
     initialKeywords?: string[],
-    mode: 'selection_only' | 'collaborative' = 'collaborative',
+    mode: 'selection_only' | 'collaborative' | 'builder' = 'collaborative',
     discussion: any = null,
     fullHistory: ChatMessage[] = [],
     dashboardMode: boolean = false
@@ -1607,9 +1617,12 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
     let rephrasedObjective = "Analyzing mission...";
 
     const isEconomy = discussion?.capabilities?.tokenEconomyMode === true;
+    const isBuilder = mode === 'builder';
 
-    const roleName = "Lead Project Librarian";
-    const primaryGoal = "optimize the project context for the User by selecting the right files.";
+    const roleName = isBuilder ? "Sovereign Project Builder" : "Lead Project Librarian";
+    const primaryGoal = isBuilder 
+        ? "autonomously implement the user's request by discovering the codebase, applying surgical patches, and verifying the result."
+        : "optimize the project context for the User by selecting the right files.";
 
     const pruningMandate = isEconomy ? `
     ### 🧹 SELECTIVE PRUNING MANDATE (TOKEN ECONOMY)
@@ -1642,6 +1655,8 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
     5. \`read_file(path, start_line, end_line)\`: Peek at a file.
     6. \`find_files_by_name(pattern)\`: Search file index (e.g. "*.vue").
     7. \`grep_search(pattern, path)\`: Search text inside files.
+    ${isBuilder ? `8. edit_code(file_path, instructions): Apply Aider-style surgical patches.
+    9. execute_command(command): Run tests or verify syntax.` : ''}
     10. \`done()\`: Finish mission.
 
 **OUTPUT**: JSON only.
@@ -1677,7 +1692,8 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
     let finalSummary = "";
 
     const renderUpdate = (status: string, finished: boolean = false, step: number = 0) => {
-      const headerTitle = "Librarian Mission Report";
+      const headerTitle = isBuilder ? "Builder Mission Report" : "Librarian Mission Report";
+      const headerIcon = isBuilder ? "hammer" : "library";
       const sortedFiles = Array.from(selectedFiles).sort();
       const filesListItems = sortedFiles.map(f => `<li><span class="codicon codicon-file"></span> ${f}</li>`).join('');
       const filesTree = selectedFiles.size > 0
@@ -1741,12 +1757,14 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
       </builder_report>`.trim();
 
       const spinnerHtml = finished
-        ? `<div class="status-line"><span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span> <span style="font-weight:bold;">Context Synchronized</span></div>`
+        ? `<div class="status-line"><span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span> <span style="font-weight:bold;">${isBuilder ? 'Implementation Complete' : 'Context Synchronized'}</span></div>`
         : `<div class="status-line"><div class="spinner"></div> <span>Step ${step + 1}: ${status}</span></div>`;
 
+      const emoji = isBuilder ? "👷" : "🧠";
+
       if (dashboardMode) onUpdate(`${spinnerHtml}\n\n${objectiveHtml}\n\n${filesTree}\n\n${logSection}`);
-      else onUpdate(`**🧠 ${headerTitle}**\n${spinnerHtml}\n${objectiveHtml}\n${briefingHtml}\n${filesTree}\n${logSection}`);
-    };
+      else onUpdate(`**${emoji} ${headerTitle}**\n${spinnerHtml}\n${objectiveHtml}\n${briefingHtml}\n${filesTree}\n${logSection}`);
+      };
 
     if (initialCount > 0) actionLog.push(`ℹ️ Librarian started with ${initialCount} files already in context.`);
     if (onStatusUpdate) onStatusUpdate("Librarian is formulating mission objective...");
@@ -2031,16 +2049,45 @@ Example:
   // SKILLS / TOKEN CACHE
   // ─────────────────────────────────────────────────────────────
 
+  /**
+   * Loads the token cache from the .lollms directory.
+   */
+  private async loadPersistentTokenCache() {
+    const { getLollmsStorageUri } = require('./utils');
+    const storage = getLollmsStorageUri(this.context);
+    const cachePath = vscode.Uri.joinPath(storage, 'token_cache.json');
+    try {
+      const bytes = await vscode.workspace.fs.readFile(cachePath);
+      this._tokenCache = JSON.parse(Buffer.from(bytes).toString('utf8'));
+    } catch {
+      this._tokenCache = { tree: 0, system: 0, history: 0, files: {} };
+    }
+  }
+
+  /**
+   * Saves the current token buffer to disk.
+   */
+  private async savePersistentTokenCache() {
+    const { getLollmsStorageUri } = require('./utils');
+    const storage = getLollmsStorageUri(this.context);
+    const cachePath = vscode.Uri.joinPath(storage, 'token_cache.json');
+    const content = Buffer.from(JSON.stringify(this._tokenCache, null, 2), 'utf8');
+    await vscode.workspace.fs.writeFile(cachePath, content);
+  }
+
   public async getCachedTokens(filePath: string, currentHash: string): Promise<number | null> {
-    const cache = this.context.workspaceState.get<Record<string, { hash: string, tokens: number }>>(ContextManager.TOKEN_CACHE_KEY, {});
-    const entry = cache[filePath];
+    const entry = this._tokenCache.files[filePath];
     return (entry && entry.hash === currentHash) ? entry.tokens : null;
   }
 
   public async setCachedTokens(filePath: string, hash: string, tokens: number) {
-    const cache = this.context.workspaceState.get<Record<string, { hash: string, tokens: number }>>(ContextManager.TOKEN_CACHE_KEY, {});
-    cache[filePath] = { hash, tokens };
-    await this.context.workspaceState.update(ContextManager.TOKEN_CACHE_KEY, cache);
+    this._tokenCache.files[filePath] = { hash, tokens };
+    await this.savePersistentTokenCache();
+  }
+
+  public async updateSegmentTokens(segment: 'tree' | 'system' | 'history', count: number) {
+    this._tokenCache[segment] = count;
+    await this.savePersistentTokenCache();
   }
 
   public async getActiveProjectSkills(): Promise<string[]> {

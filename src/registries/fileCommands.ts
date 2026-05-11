@@ -381,6 +381,35 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         }
     }));
 
+    context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.saveDraftAsset', async (params: { dataUri: string, suggestedPath: string }) => {
+        const activeWorkspace = getActiveWorkspace();
+        if (!activeWorkspace) return;
+
+        const defaultUri = vscode.Uri.joinPath(activeWorkspace.uri, params.suggestedPath);
+        const ext = path.extname(params.suggestedPath).substring(1) || 'png';
+
+        const targetUri = await vscode.window.showSaveDialog({
+            defaultUri: defaultUri,
+            filters: { 'Images': [ext], 'All Files': ['*'] },
+            saveLabel: 'Commit Asset to Workspace'
+        });
+
+        if (targetUri) {
+            try {
+                const base64Data = params.dataUri.split(',')[1];
+                await vscode.workspace.fs.writeFile(targetUri, Buffer.from(base64Data, 'base64'));
+                
+                // Add to context so LLM knows it exists now
+                const relPath = vscode.workspace.asRelativePath(targetUri);
+                await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', [relPath]);
+                
+                vscode.window.showInformationMessage(`Asset saved and synced: ${relPath}`);
+            } catch (e: any) {
+                vscode.window.showErrorMessage(`Save failed: ${e.message}`);
+            }
+        }
+    }));
+
     context.subscriptions.push(vscode.commands.registerCommand('lollms-vs-coder.saveAssetAs', async (params: { path: string }) => {
         const activeWorkspace = getActiveWorkspace();
         if (!activeWorkspace || !params.path) return;

@@ -20,6 +20,7 @@ export class SettingsPanel {
     backendType: 'lollms',
     useLollmsExtensions: true,
     modelName: '',
+    ttiModelName: '',
     architectModelName: '',
     titlingModelName: '',
     gitCommitModelName: '',
@@ -153,6 +154,7 @@ export class SettingsPanel {
     this._pendingConfig.backendType = config.get<string>('backendType') || 'lollms';
     this._pendingConfig.useLollmsExtensions = config.get<boolean>('useLollmsExtensions') ?? true;
     this._pendingConfig.modelName = config.get<string>('modelName') || '';
+    this._pendingConfig.ttiModelName = config.get<string>('ttiModelName') || '';
     this._pendingConfig.architectModelName = config.get<string>('architectModelName') || '';
     this._pendingConfig.titlingModelName = config.get<string>('titlingModelName') || '';
     this._pendingConfig.gitCommitModelName = config.get<string>('gitCommitModelName') || '';
@@ -546,6 +548,7 @@ export class SettingsPanel {
                   ['backendType', this._pendingConfig.backendType],
                   ['useLollmsExtensions', this._pendingConfig.useLollmsExtensions],
                   ['modelName', this._pendingConfig.modelName],
+                  ['ttiModelName', this._pendingConfig.ttiModelName],
                   ['architectModelName', this._pendingConfig.architectModelName],
                   ['titlingModelName', this._pendingConfig.titlingModelName],
                   ['gitCommitModelName', this._pendingConfig.gitCommitModelName],
@@ -1008,6 +1011,15 @@ personalities: this._personalityManager.getPersonalities()
                         <i class="codicon codicon-refresh"></i>
                     </button>
                 </div>
+
+                <label for="ttiModelSelect">Image Generation (TTI) Model</label>
+                <div class="input-group">
+                    <select id="ttiModelSelect" class="model-dropdown" style="flex:1;">
+                        <option value="">Loading Models...</option>
+                    </select>
+                </div>
+                <span class="help-text">Leave as "Automatic" to let Lollms select the best active TTI binding.</span>
+
                 <label for="architectModelSelect">Architect/Planner Model (Agent Mode)</label>
                 <div class="input-group">
                     <select id="architectModelSelect" class="model-dropdown">
@@ -1519,8 +1531,11 @@ personalities: this._personalityManager.getPersonalities()
             function initializeForm() {
                 safeSet('apiKey', config.apiKey);
                 safeSet('apiUrl', config.apiUrl);
+                safeSet('apiKey', config.apiKey);
                 safeSet('backendType', config.backendType);
                 safeSet('useLollmsExtensions', config.useLollmsExtensions, true);
+                safeSet('modelSelect', config.modelName);
+                safeSet('ttiModelSelect', config.ttiModelName);
                 safeSet('requestTimeout', config.requestTimeout);
                 safeSet('agentMaxRetries', config.agentMaxRetries);
                 safeSet('verifyAndCorrectCodeBlocks', config.verifyAndCorrectCodeBlocks, true);
@@ -1607,6 +1622,11 @@ personalities: this._personalityManager.getPersonalities()
                 const previousValue = selectedValue || selectElement.value;
                 
                 selectElement.innerHTML = '';
+
+                // TTI specific option
+                if (selectElement.id === 'ttiModelSelect') {
+                    selectElement.appendChild(new Option("✨ Automatic (Let Server Decide)", ""));
+                }
 
                 // Add Manual Entry Option
                 const manualOpt = new Option("✍️ Enter model name manually...", "__manual__");
@@ -1782,6 +1802,7 @@ personalities: this._personalityManager.getPersonalities()
                 safeSet('apiKey', p.apiKey);
                 safeSet('backendType', p.backendType);
                 safeSet('modelSelect', p.modelName);
+                safeSet('ttiModelSelect', p.ttiModelName || '');
                 safeSet('architectModelSelect', p.architectModelName || '');
                 safeSet('titlingModelSelect', p.titlingModelName || '');
                 safeSet('gitCommitModelSelect', p.gitCommitModelName || '');
@@ -1856,15 +1877,16 @@ personalities: this._personalityManager.getPersonalities()
                     const currentArchModel = document.getElementById('architectModelSelect').value || config.architectModelName;
                     const currentInspModel = document.getElementById('inspectorModelName').value || config.inspectorModelName;
 
-                    // Update all 3 relevant dropdowns
+                    // Update all relevant dropdowns
                     const targets = [
-                        'modelSelect', 'architectModelSelect', 'inspectorModelName', 
+                        'modelSelect', 'ttiModelSelect', 'architectModelSelect', 'inspectorModelName', 
                         'titlingModelSelect', 'gitCommitModelSelect', 'surgicalModelSelect', 'summarizationModelSelect'
                     ];
                     targets.forEach(id => {
                         const el = document.getElementById(id);
                         if (el) {
                             let valToRestore = currentChatModel;
+                            if (id === 'ttiModelSelect') valToRestore = config.ttiModelName;
                             if (id === 'architectModelSelect') valToRestore = currentArchModel;
                             if (id === 'inspectorModelName') valToRestore = currentInspModel;
                             if (id === 'titlingModelSelect') valToRestore = config.titlingModelName;

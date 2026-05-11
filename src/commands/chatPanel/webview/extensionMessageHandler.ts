@@ -191,6 +191,12 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'updateContext':
                 updateContext(message.context, message.files, message.skills, message.diagrams, message.briefing);
+                // Force immediate and delayed sync to catch late-rendering Markdown segments
+                import('./ui.js').then(ui => {
+                    ui.syncExpansionBlocks();
+                    setTimeout(() => ui.syncExpansionBlocks(), 500);
+                    ui.updateBadges();
+                });
                 break;
             case 'updateDiscussionSkillsMetadata':
                 if (state.lastContextData) {
@@ -208,6 +214,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
             case 'displayPlan':
                 displayPlan(message.plan);
                 break;
+
             case 'loadDiscussion':
                 {
                     if (message.workspaceFolders) {
@@ -266,9 +273,20 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     setTimeout(() => updateBadges(), 50);
 
                     setGeneratingState(false);
+
+                    // PERSISTENCE FIX: After loading history, try to sync. 
+                    // If files are still empty, the next 'updateTokenProgress' will catch it.
+                    setTimeout(async () => {
+                        const { syncExpansionBlocks } = await import('./ui.js');
+                        syncExpansionBlocks();
+                    }, 100);
+
+                    // Request a fresh context sync immediately to fill the gap
+                    vscode.postMessage({ command: 'calculateTokens' });
+
                     if(dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
-                }
-                break;
+                    }
+                    break;
 
             case 'updateDiscussionCapabilities':
                 const caps = message.capabilities;
@@ -551,7 +569,13 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'updateTokenProgress':
                 if (dom.tokenCountLabel) {
-                    const { totalTokens, contextSize, error, isApproximate, folderStats } = message;
+                    const { totalTokens, contextSize, error, isApproximate, folderStats, files } = message;
+
+                    // LATE HYDRATION: Update global file list and sync existing UI blocks
+                    if (files && state.lastContextData) {
+                        state.lastContextData.files = files;
+                        import('./ui.js').then(ui => ui.syncExpansionBlocks());
+                    }
 
                     if (folderStats) {
                         state.matrixStats = folderStats;
@@ -616,24 +640,92 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'imageGenerationResult':
                 const genBtn = document.getElementById(message.buttonId) as HTMLButtonElement;
-                if (genBtn) {
-                    if (message.success) {
-                        genBtn.innerHTML = `<span class="codicon codicon-check"></span> Generated`;
-                        genBtn.classList.replace('apply-btn', 'applied');
-                        genBtn.disabled = true;
+                // Find block by looking up from button if it exists, or searching by derived ID
+                const block = genBtn ? genBtn.closest('.generation-block') as HTMLElement : null;
+                const gallery = block?.querySelector('.image-results-gallery') as HTMLElement;
 
-                        // Target the specific preview zone via dataset
-                        const previewId = genBtn.dataset.previewId;
-                        const previewZone = document.getElementById(previewId || '');
-                        if (previewZone) {
-                            previewZone.innerHTML = `<img src="${message.webviewUri}" style="max-width: 100%; border-radius: 4px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); cursor: pointer;" onclick="window.open('${message.uri || message.webviewUri}')" />`;
-                        }
-                    } else {
-                        btn.innerHTML = `<span class="codicon codicon-error"></span> Failed`;
-                        btn.disabled = false;
-                    }
+                if (genBtn) {
+                    genBtn.disabled = false;
+                    genBtn.innerHTML = '<span class="codicon codicon-sparkle"></span> Generate Version';
+                    genBtn.classList.remove('processing');
                 }
-                break;
+
+                const blockId = genBtn?.dataset.blockId;
+
+                if (genBtn && gallery) {
+                    // Reset button state for re-generation
+                    genBtn.disabled = false;
+                    genBtn.innerHTML = genBtn.dataset.paths !== undefined ? `<span class="codicon codicon-sparkle"></span> Generate New Version` : `<span class="codicon codicon-sparkle"></span> Generate`;
+
+
+                    if (message.success) {
+                        const block = genBtn ? genBtn.closest('.generation-block') as HTMLElement : document.getElementById(blockId);
+                        const folder = (block?.querySelector('.asset-folder-input') as HTMLInputElement)?.value || "";
+                        const name = (block?.querySelector('.asset-name-input') as HTMLInputElement)?.value || "";
+                        const suggestedPath = (folder === '.' || !folder) ? name : `${folder}/${name}`;
+
+                        const card = document.createElement('div');
+                        card.className = 'staged-image-card version-card';
+                        card.style.cssText = "width: 100%; height: 200px; position: relative; border: 2px solid var(--vscode-widget-border); border-radius: 8px; overflow: hidden; background: #000; transition: transform 0.2s;";
+
+                        card.innerHTML = `
+                            <div style="position: absolute; top: 5px; left: 5px; z-index: 10; background: rgba(0,0,0,0.6); color: white; padding: 2px 6px; border-radius: 4px; font-size: 9px; font-weight: bold;">
+                                v${gallery.children.length + 1}
+                            </div>
+                            <img src="${message.webviewUri}" style="width: 100%; height: 100%; object-fit: contain; cursor: pointer;" title="Click to view full screen">
+                            <div style="position: absolute; bottom: 0; left: 0; right: 0; background: linear-gradient(transparent, rgba(0,0,0,0.9)); padding: 8px 5px 5px 5px; display: flex; gap: 4px; transform: translateY(100%); transition: transform 0.2s;" class="card-controls">
+                                <button class="code-action-btn apply-btn save-draft-btn" style="flex: 1; font-size: 10px; height: 22px;">
+                                    <i class="codicon codicon-save"></i> Save
+                                </button>
+                                <button class="code-action-btn secondary-btn view-full-btn" style="width: 22px; height: 22px; padding: 0;">
+                                    <i class="codicon codicon-screen-full"></i>
+                                </button>
+                                <button class="code-action-btn delete-btn discard-draft-btn" style="width: 22px; height: 22px; padding: 0; color: #ff4444;">
+                                    <i class="codicon codicon-trash"></i>
+                                </button>
+                            </div>
+                        `;
+
+                        // Hover logic to show/hide controls
+                        card.onmouseenter = () => card.querySelector('.card-controls')!.style.transform = 'translateY(0)';
+                        card.onmouseleave = () => card.querySelector('.card-controls')!.style.transform = 'translateY(100%)';
+
+                        // Full Screen View (Sovereign Zoom)
+                        const viewFn = async () => {
+                            const { openSovereignZoom } = await import('./ui.js');
+                            openSovereignZoom(message.webviewUri);
+                        };
+                        card.querySelector('img')!.onclick = viewFn;
+                        (card.querySelector('.view-full-btn') as HTMLElement).onclick = viewFn;
+
+                        // Discard
+                        (card.querySelector('.discard-draft-btn') as HTMLElement).onclick = () => card.remove();
+
+                        // Save with LATEST UI PATHS
+                        (card.querySelector('.save-draft-btn') as HTMLElement).onclick = () => {
+                            const currentPath = (block?.querySelector('.asset-name-input') as HTMLInputElement)?.value;
+                            const currentFolder = (block?.querySelector('.asset-folder-input') as HTMLInputElement)?.value;
+                            const finalPath = (currentFolder === '.' || !currentFolder) ? currentPath : `${currentFolder}/${currentPath}`;
+                            
+                            vscode.postMessage({
+                                command: 'saveDraftAsset',
+                                params: { dataUri: message.webviewUri, suggestedPath: finalPath }
+                            });
+                        };
+
+                        gallery.prepend(card);
+
+                        card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                    } else {
+                        // Error/Retry State
+                        genBtn.innerHTML = `<span class="codicon codicon-refresh"></span> Retry Edit`;
+                        genBtn.classList.add('delete-btn'); // Turn red
+                        genBtn.classList.remove('apply-btn');
+                        genBtn.disabled = false;
+                        genBtn.title = `Error: ${message.error || 'Unknown server error'}`;
+                        }
+                        }
+                        break;
             case 'showAgentSettings':
                 {
                     const policies = state.capabilities?.toolPolicies || {};
@@ -699,16 +791,15 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 // 1. Trigger token refresh immediately
                 vscode.postMessage({ command: 'calculateTokens' });
 
-                // 2. RESILIENT BUTTON FINDER: 
-                // Try ID first, then fallback to finding ANY active spinner button in the whole document.
-                let buttons = [
-                    document.getElementById(`btn-${blockId}`),
-                    document.getElementById(`btn-reprompt-${blockId}`)
-                ].filter(b => b !== null) as HTMLButtonElement[];
+                // 2. RESILIENT BUTTON FINDER (Plugin Aware)
+                let buttons: HTMLButtonElement[] = [];
+                const specificBlock = document.getElementById(blockId);
 
-                if (buttons.length === 0) {
-                    // Fallback: Find any button that says "Adding..." or has a spinner
-                    buttons = Array.from(document.querySelectorAll('.add-files-to-context-btn, .add-and-reprompt-btn'))
+                if (specificBlock) {
+                    buttons = Array.from(specificBlock.querySelectorAll('.add-btn, .add-files-to-context-btn'));
+                } else {
+                    // Fallback for streaming race conditions
+                    buttons = Array.from(document.querySelectorAll('.add-btn, .add-files-to-context-btn'))
                         .filter(b => b.innerHTML.includes('spinner') || b.textContent?.includes('Adding')) as HTMLButtonElement[];
                 }
 
@@ -940,8 +1031,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 const row = wrapper?.querySelector(`.apply-row[data-block-index='${message.blockIndex}']${hunkAttr}`);
                 if (row) {
                     const iconEl = row.querySelector('.status-icon');
-                    if (iconEl) iconEl.innerHTML = '<div class="spinner"></div>';
+                    // Change to a static clock icon instead of a moving spinner
+                    if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-history"></span>';
                     row.style.background = 'rgba(255, 255, 255, 0.05)';
+                    row.style.opacity = '0.7';
                 }
                 break;
             }
@@ -955,10 +1048,10 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const targetBlockId = `block-${message.messageId}-${message.blockIndex}`;
                     const blockEl = document.getElementById(targetBlockId) as HTMLDetailsElement;
 
+
                     if (blockEl && message.success) {
                         const isUndo = message.options?.undo === true;
 
-                        // 1. Sync Local Memory State
                         if (!state.appliedState[message.messageId]) state.appliedState[message.messageId] = {};
                         if (!state.appliedState[message.messageId][message.blockIndex]) state.appliedState[message.messageId][message.blockIndex] = [];
 
@@ -973,45 +1066,87 @@ export async function handleExtensionMessage(event: MessageEvent) {
                         }
 
                         const restoreBtn = (btn: HTMLButtonElement) => {
+                            if (!btn) return;
                             const bubble = btn.closest('.aider-hunk-bubble, .code-collapsible');
-                            const undoBtn = bubble?.querySelector('.delete-btn') as HTMLButtonElement;
+                            const undoBtn = bubble?.querySelector('.undo-hunk-btn') as HTMLElement;
 
                             if (isUndo) {
                                 btn.disabled = false;
                                 btn.classList.remove('applied');
-                                // Restore original icon based on block type
-                                const isSurgical = btn.closest('.aider-hunk-bubble') || btn.innerHTML.includes('arrow');
-                                btn.innerHTML = btn.dataset.originalHtml || (isSurgical ? '<span class="codicon codicon-arrow-swap"></span>' : '<span class="codicon codicon-tools"></span>');
+                                // Determine icon based on if it's a hunk or a main block
+                                const icon = btn.classList.contains('apply-all-btn') ? 'codicon-tools' : 'codicon-arrow-swap';
+                                btn.innerHTML = `<i class="codicon ${icon}"></i>`;
                                 if (undoBtn) undoBtn.style.display = 'none';
                             } else {
-                                // Keep enabled to allow re-application
                                 btn.disabled = false; 
                                 btn.classList.add('applied');
-                                btn.innerHTML = '<span class="codicon codicon-check"></span>';
-                                if (undoBtn) undoBtn.style.display = 'flex';
+                                btn.innerHTML = '<i class="codicon codicon-check"></i>';
+                                if (undoBtn) {
+                                    undoBtn.style.display = 'flex';
+                                    undoBtn.innerHTML = '<i class="codicon codicon-discard"></i>';
+                                }
                             }
                         };
 
+                        // Update specific Apply button for this block
+                        const mainBtn = document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`) as HTMLButtonElement;
+                        if (mainBtn) restoreBtn(mainBtn);
+
                         if (message.hunkIndex !== undefined) {
+                            // TAB SYNC: Find the specific tab and pane
+                            const tab = blockEl.querySelector(`.hunk-tab-${message.hunkIndex}`) as HTMLElement;
+                            const pane = blockEl.querySelector(`.hunk-pane-${message.hunkIndex}`) as HTMLElement;
                             const hunkBubbles = blockEl.querySelectorAll('.aider-hunk-bubble');
-                            const targetHunk = hunkBubbles[message.hunkIndex];
-                            if (targetHunk) {
-                                const hunkBtn = targetHunk.querySelector('.apply-btn');
+
+                            if (tab) {
+                                tab.classList.add('status-completed');
+                                tab.querySelector('.hunk-status-icon i')!.className = 'codicon codicon-check';
+                            }
+                            
+                            if (pane) {
+                                const hunkBtn = pane.querySelector('.apply-btn') as HTMLButtonElement;
                                 if (hunkBtn) restoreBtn(hunkBtn);
-                                targetHunk.classList.add('collapsed');
+                            }
+
+                            // If this was the last pending hunk, collapse the main container
+                            const remainingHunks = Array.from(hunkBubbles).filter(h => !h.classList.contains('collapsed'));
+                            if (remainingHunks.length === 0) {
+                                blockEl.open = false;
                             }
                         } else {
                             const mainApplyBtn = document.getElementById(`apply-btn-${message.messageId}-${message.blockIndex}`);
                             if (mainApplyBtn) restoreBtn(mainApplyBtn);
-                            
+
                             blockEl.querySelectorAll('.aider-hunk-actions .apply-btn').forEach(restoreBtn);
                             blockEl.querySelectorAll('.aider-hunk-bubble').forEach(h => h.classList.add('collapsed'));
+
+                            // COLLAPSE MANDATE: Close the code block container on successful full apply
+                            blockEl.open = false;
                         }
 
                         // RE-SYNC main button state for the entire message
                         checkAndSyncMessageAppliedState(message.messageId);
 
+
                     } else if (blockEl && !message.success) {
+                        // TAB SYNC: Highlight the failing tab
+                        if (message.hunkIndex !== undefined) {
+                            const tab = blockEl.querySelector(`.hunk-tab-${message.hunkIndex}`) as HTMLElement;
+                            if (tab) {
+                                tab.classList.add('status-failed');
+                                tab.classList.add('active');
+                                tab.querySelector('.hunk-status-icon i')!.className = 'codicon codicon-error';
+                                
+                                // Auto-switch to the failing pane
+                                blockEl.querySelectorAll('.hunk-tab, .hunk-tab-content').forEach(el => {
+                                    if (el !== tab && !el.classList.contains(`hunk-pane-${message.hunkIndex}`)) {
+                                        el.classList.remove('active');
+                                    }
+                                });
+                                blockEl.querySelector(`.hunk-pane-${message.hunkIndex}`)?.classList.add('active');
+                            }
+                        }
+
                         // VISUAL RED ALERT: Set state to error
                         blockEl.classList.add('malformed');
                         blockEl.style.borderColor = 'var(--vscode-errorForeground)';
@@ -1022,47 +1157,32 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             mainApplyBtn.disabled = false;
                             mainApplyBtn.innerHTML = mainApplyBtn.dataset.originalHtml;
                         }
-                        
-                        // Also restore any individual hunk buttons
-                        if (message.hunkIndex !== undefined) {
-                            const hunkBubbles = blockEl.querySelectorAll('.aider-hunk-bubble');
-                            const targetHunk = hunkBubbles[message.hunkIndex];
-                            const hunkBtn = targetHunk?.querySelector('.apply-btn');
-                            if (hunkBtn && hunkBtn.dataset.originalHtml) {
-                                hunkBtn.disabled = false;
-                                hunkBtn.innerHTML = hunkBtn.dataset.originalHtml;
-                            }
-                        }
 
-                        // AUTOMATIC REDIRECTION to Raw Code Modal for manual fix
+                        // AUTOMATIC REDIRECTION to the NEW Tabbed Raw Code Modal
                         if (!message.repaired && !message.alreadyApplied) {
                             const codeText = blockEl.dataset.rawCode || "";
-                            const aiderRegex = /<<<<<<< SEARCH\\r?\\n([\\s\\S]*?)\\r?\\n=======\\r?\\n([\\s\\S]*?)\\r?\\n>>>>>>> REPLACE/g;
-                            const matches =[...codeText.matchAll(aiderRegex)];
-                            const hunkContent = (message.hunkIndex !== undefined && matches[message.hunkIndex]) 
-                                ? matches[message.hunkIndex][0] 
-                                : codeText;
-                            
-                            if (dom.rawCodeDisplay) {
-                                dom.rawCodeFilename.textContent = message.filePath;
-                                const hunkIdEl = document.getElementById('raw-hunk-id');
-                                if (hunkIdEl) hunkIdEl.textContent = message.hunkIndex !== undefined ? `HUNK ${message.hunkIndex + 1}` : 'FULL';
-                                dom.rawCodeDisplay.textContent = hunkContent;
-                                dom.rawCodeDisplay.dataset.messageId = message.messageId;
-                                dom.rawCodeDisplay.dataset.blockIndex = String(message.blockIndex);
-                                dom.rawCodeDisplay.dataset.hunkIndex = message.hunkIndex !== undefined ? String(message.hunkIndex) : "";
-                                dom.rawCodeModal.classList.add('visible');
-                            }
+                            import('./ui.js').then(ui => {
+                                ui.openRawCodeModal(
+                                    message.messageId, 
+                                    message.blockIndex, 
+                                    message.filePath, 
+                                    codeText, 
+                                    message.hunkIndex || 0
+                                );
+                            });
                         }
                     }
 
                     // 2. Update the "Apply All" list row if it exists
                     const hunkAttr = message.hunkIndex !== undefined ? `[data-hunk-index='${message.hunkIndex}']` : ':not([data-hunk-index])';
                     const row = wrapper.querySelector(`.apply-row[data-block-index='${message.blockIndex}']${hunkAttr}`) as HTMLElement;
-                    
+
                     if (row && message.success) {
                         const iconEl = row.querySelector('.status-icon');
                         const actionsEl = row.querySelector('.row-actions') as HTMLElement;
+
+                        // ADDED: Force checkmark in list row
+                        if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span>';
 
                         if (message.alreadyApplied) {
                             row.style.background = 'rgba(15, 157, 88, 0.05)'; 
@@ -1220,6 +1340,21 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     vscode.commands.executeCommand('lollms-vs-coder.replaceCode', filePath, content, this, message.id, options ?? {});
                 }
                 break;
+            case 'provideFileContentForDiff':
+                {
+                    const { currentContent, changeIndex } = message;
+                    const changes = (window as any).currentStagingChanges || [];
+                    const change = changes[changeIndex];
+                    if (change && typeof (window as any).renderSplitDiff === 'function') {
+                        (window as any).renderSplitDiff(currentContent || '', change.content || '');
+                    } else {
+                        const viewer = document.getElementById('staging-diff-content');
+                        if (viewer) {
+                            viewer.innerHTML = '<div style="padding:20px; color:var(--vscode-errorForeground);">Failed to load diff.</div>';
+                        }
+                    }
+                }
+                break;
             case 'showContextDetails':
                 {
                     const { title, content } = message;
@@ -1240,7 +1375,7 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
                 }
                 break;                
-        }
+            }
     } catch(e: any) {
         console.error("Lollms Webview Error: Failed to process message from extension.", e);
         vscode.postMessage({ command: 'showError', message: 'Webview error: ' + e.message });

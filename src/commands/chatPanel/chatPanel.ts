@@ -304,46 +304,31 @@ export class ChatPanel {
              this.updateAgentMode(false);
         }
     }
+    
   
     public updateGeneratingState() {
-        if (this._isDisposed || !this.processManager) return;
+        if (this._isDisposed || !this.processManager || !this._panel.webview) return;
 
-        if (this._panel.webview) {
-            const process = this.processManager.getForDiscussion(this.discussionId);
-            const activeGen = ChatPanel.activeGenerations.get(this.discussionId);
+        const process = this.processManager.getForDiscussion(this.discussionId);
+        const activeGen = ChatPanel.activeGenerations.get(this.discussionId);
 
-            // Identify processes that should not trigger the UI-blocking overlay
-            // We removed "scanning", "analyz", and "optimiz" because the Librarian
-            // uses these and we WANT to see the Stop button while it works.
-            const desc = process?.description || "";
-            // title and counting are fine to hide, but we MUST show 
-            // the overlay for everything else (searching, importing, writing)
-            const isBackgroundProcess = 
-                desc.toLowerCase().includes("title") || 
-                desc.toLowerCase().includes("counting");
-            
-            // Identify if the agent is actively looping
-            const isAgentActive = this.agentManager?.getIsActive() && this._discussionCapabilities.workerType === 'discussion';
+        const desc = process?.description || "";
+        const isBackgroundProcess = desc.toLowerCase().includes("title") || desc.toLowerCase().includes("counting");
+        const isAgentActive = this.agentManager?.getIsActive() && this._discussionCapabilities.workerType === 'discussion';
+        const showRaiseHand = !!(isAgentActive && process && !isBackgroundProcess);
 
-            // Raise Hand only makes sense during an active autonomous agent loop 
-            const showRaiseHand = !!(isAgentActive && process && !isBackgroundProcess);
+        const isGenerating = ((process && !isBackgroundProcess) || !!activeGen) && !this._inputResolver;
 
-            const isGenerating = ((process && !isBackgroundProcess) || !!activeGen) && !this._inputResolver;
+        let statusText = vscode.l10n.t("Lollms is thinking...");
+        if (process) statusText = process.description;
+        else if (activeGen) statusText = vscode.l10n.t("Generating response...");
 
-            let statusText = vscode.l10n.t("Lollms is thinking...");
-            if (process) {
-                statusText = process.description;
-            } else if (activeGen) {
-                statusText = vscode.l10n.t("Generating response...");
-            }
-
-            this._panel.webview.postMessage({ 
-                command: 'setGeneratingState', 
-                isGenerating,
-                statusText,
-                showRaiseHand 
-            });
-        }
+        this._panel.webview.postMessage({ 
+            command: 'setGeneratingState', 
+            isGenerating,
+            statusText,
+            showRaiseHand 
+        });
     }
   
   public updateAgentMode(isActive: boolean) {
@@ -440,6 +425,35 @@ export class ChatPanel {
       }
       if (this._panel.webview && !this._isDisposed) {
           this._panel.webview.postMessage({ command: 'updateMessage', messageId, newContent });
+      }
+  }
+  public async updateAppliedState(messageId: string, blockIdx: number, hunkIdx?: number, isUndo: boolean = false) {
+      if (!this._currentDiscussion || !messageId) return;
+
+      if (!this._currentDiscussion.appliedState) this._currentDiscussion.appliedState = {};
+      if (!this._currentDiscussion.appliedState[messageId]) this._currentDiscussion.appliedState[messageId] = {};
+
+      const msgState = this._currentDiscussion.appliedState[messageId];
+
+      if (!msgState[blockIdx]) msgState[blockIdx] = [];
+
+      if (isUndo) {
+          const valToRemove = hunkIdx !== undefined ? hunkIdx : -1;
+          msgState[blockIdx] = msgState[blockIdx].filter(v => v !== valToRemove);
+          // If the block is now empty and was previously marked full (-1), check if we need to remove -1
+          if (hunkIdx !== undefined && msgState[blockIdx].includes(-1)) {
+               msgState[blockIdx] = msgState[blockIdx].filter(v => v !== -1);
+          }
+      } else {
+          if (hunkIdx !== undefined) {
+              if (!msgState[blockIdx].includes(hunkIdx)) msgState[blockIdx].push(hunkIdx);
+          } else {
+              msgState[blockIdx] = [-1]; 
+          }
+      }
+
+      if (!this._currentDiscussion.id.startsWith('temp-')) {
+          await this._discussionManager.saveDiscussion(this._currentDiscussion);
       }
   }
 
@@ -762,6 +776,8 @@ export class ChatPanel {
             return;
         }
 
+        const modelForTokenization = (this._currentDiscussion?.model || this._lollmsAPI.getModelName() || "default").trim();
+
         if (!this._isDisposed) {
             const isRebuildNeeded = this._contextManager.isTreeDirty();
             const statusText = isRebuildNeeded ? 'Building file tree...' : 'Counting tokens...';
@@ -844,10 +860,16 @@ export class ChatPanel {
             const visionEnabled = this._discussionCapabilities.enableImages !== false;
 
             if (visionEnabled) {
-                context.images.forEach(img => imageTokens += estimateImageTokens(modelForTokenization));
+                // Calculate from Context (Included Files)
+                context.images.forEach(img => {
+                    imageTokens += estimateImageTokens(modelForTokenization);
+                });
+                // Calculate from Discussion History
                 this._currentDiscussion.messages.forEach(m => {
                     if (Array.isArray(m.content)) {
-                        m.content.forEach((p: any) => { if (p.type === 'image_url') imageTokens += estimateImageTokens(modelForTokenization); });
+                        m.content.forEach((p: any) => { 
+                            if (p.type === 'image_url') imageTokens += estimateImageTokens(modelForTokenization); 
+                        });
                     }
                 });
             }
@@ -917,12 +939,11 @@ export class ChatPanel {
             // --- SYNC WITH MATRIX ---
             const filteredFilesText = await this._getFilteredFilesContent(context, folderSettings);
 
-            // Calculate Tree and Content independently for granular HUD
-            const [systemRes, historyRes, treeRes, contentFilesRes, skillsRes, memoryRes, contextSizeRes] = await Promise.all([
+
+            const [systemRes, historyRes, treeRes, skillsRes, memoryRes, contextSizeRes] = await Promise.all([
                 getTokenCount(systemText),
                 getTokenCount(historyText),
                 getTokenCount(context.projectTree),
-                getTokenCount(filteredFilesText),
                 getTokenCount(context.skillsContent || ""),
                 getTokenCount(projectMemory || ""),
                 this._lollmsAPI.getContextSize(modelForTokenization).catch(e => {
@@ -959,8 +980,8 @@ export class ChatPanel {
                 }
             }
 
-            // Segment 'files' represents actual code, while 'skills' will be added to the count
-            const contentTokens = contentFilesRes.count;
+            // Segment 'files' represents actual code
+            const contentTokens = Math.ceil(filteredFilesText.length / 3.5);
             const skillTokens = skillsRes.count;
 
             // CRITICAL: Calculate the REAL total based on filtered content
@@ -969,6 +990,7 @@ export class ChatPanel {
                                 treeRes.count + 
                                 contentTokens + 
                                 skillTokens + 
+                                memoryRes.count +
                                 imageTokens;
             const ctxSize = finalCtxSize;
             const isActuallyApproximate = isLimitApproximate;
@@ -995,6 +1017,7 @@ export class ChatPanel {
                     contextSize: ctxSize,
                     isApproximate: isActuallyApproximate, 
                     folderStats: folderStats,
+                    files: includedFiles, // INJECT: Pass the actual list of paths
                     segments: {
                         system: systemRes.count || 0,
                         tree: treeRes.count || 0,
@@ -1080,7 +1103,12 @@ export class ChatPanel {
                 const treeTokens = Math.ceil((context.projectTree?.length || 0) / 3.5);
                 const filesTokens = Math.ceil((context.selectedFilesContent?.length || 0) / 3.5);
                 const skillsTokens = Math.ceil((context.skillsContent?.length || 0) / 3.5);
-                const memoryTokens = Math.ceil((projectMemory?.length || 0) / 3.5);
+
+                // Fix: Fetch or default projectMemory for the fallback
+                const projectMemory = (this._discussionCapabilities.projectMemoryEnabled !== false && this.agentManager?.projectMemoryManager)
+                    ? await this.agentManager.projectMemoryManager.getFormattedMemoryBlock()
+                    : "";
+                const memoryTokens = Math.ceil((projectMemory.length || 0) / 3.5);
 
                 this._panel.webview.postMessage({
                     command: 'updateTokenProgress',
@@ -1958,31 +1986,40 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
     }
     // --- BUILDER MODE UNIFICATION ---
     if (this._discussionCapabilities.workerType === 'builder' && message.role === 'user') {
-        const { id: builderProcId, controller: builderCtrl } = this.processManager.register(this.discussionId, 'Builder: Understanding & Implementing...');
+        const { id: builderProcId, controller: builderCtrl } = this.processManager.register(this.discussionId, 'Builder: Initializing Focused Mind...');
         this.updateGeneratingState();
 
         try {
             const model = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
-            const textContent = (typeof message.content === 'string') ? message.content : "Executing builder task...";
+            const textContent = (typeof message.content === 'string') ? message.content : "Executing builder mission...";
+
+            // 🟢 EMMIT SYSTEM BUBBLE IMMEDIATELY
+            const builderReportId = 'builder_report_' + Date.now();
+            await this.addMessageToDiscussion({
+                id: builderReportId,
+                role: 'system', 
+                content: `<builder_report><objective>${textContent}</objective><briefing>Initializing Focused Mind...</briefing><timeline><div class="timeline-item active"><div class="timeline-dot"><div class="spinner"></div></div><div class="step">Booting implementation engine...</div></div></timeline></builder_report>`,
+                skipInPrompt: true
+            });
 
             await this._contextManager.runContextAgent(
                 textContent,
                 model,
                 builderCtrl.signal,
                 (newContent) => {
-                    // This updates the unified Librarian/Builder report bubble
-                    this._panel.webview.postMessage({ command: 'updateMessage', messageId: 'builder_turn', newContent });
+                    // Update the specific bubble created above
+                    this.updateMessageContent(builderReportId, newContent);
                 },
                 (status) => {
                     this.processManager.updateDescription(builderProcId, `Builder: ${status}`);
                     this.updateGeneratingState();
                 },
                 undefined,
-                'builder', // NEW: Unified Builder Mode
+                'builder', 
                 this._currentDiscussion,
                 this._currentDiscussion.messages
             );
-            
+
             this.processManager.unregister(builderProcId);
             this.updateGeneratingState();
             this.updateContextAndTokens();
@@ -1991,6 +2028,7 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
             this.processManager.unregister(builderProcId);
             this.updateGeneratingState();
             if (e.name !== 'AbortError') throw e;
+            return;
         }
     }
 
@@ -2054,6 +2092,54 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
     // CRITICAL: Skip automated agents if the message is a 'system' role.
     // This prevents "Auto-Resume" nudges from triggering a second Librarian run (recursion loop).
     const isAutoContext = (!!this._discussionCapabilities.autoContextMode || autoContextMode) && message.role !== 'system';
+
+    // --- BUILDER FUSION: LIBRARIAN WITH WRITE POWER ---
+    if (this._discussionCapabilities.workerType === 'builder' && message.role === 'user') {
+        const { id: builderProcId, controller: builderCtrl } = this.processManager.register(this.discussionId, 'Builder: Initializing Focused Mind...');
+        this.updateGeneratingState();
+
+        try {
+            const model = this._currentDiscussion?.model || this._lollmsAPI.getModelName();
+            const textContent = (typeof message.content === 'string') ? message.content : "Executing builder mission...";
+
+            // We use a System message role with raw XML to trigger the rich dashboard immediately
+            const builderReportId = 'builder_report_' + Date.now();
+            await this.addMessageToDiscussion({
+                id: builderReportId,
+                role: 'system', 
+                content: `<builder_report><objective>${textContent}</objective><briefing>Initializing Focused Mind...</briefing><timeline><div class="timeline-item active"><div class="timeline-dot"><div class="spinner"></div></div><div class="step">Booting implementation engine...</div></div></timeline></builder_report>`,
+                skipInPrompt: true
+            });
+
+            // Re-use the LIBRARIAN code with 'builder' mode enabled
+            await this._contextManager.runContextAgent(
+                textContent,
+                model,
+                builderCtrl.signal,
+                (newContent) => {
+                    this.updateMessageContent(builderReportId, newContent);
+                },
+                (status) => {
+                    this.processManager.updateDescription(builderProcId, `Builder: ${status}`);
+                    this.updateGeneratingState();
+                },
+                undefined,
+                'builder', // This flag enables implementation tools in the loop
+                this._currentDiscussion,
+                this._currentDiscussion.messages
+            );
+
+            this.processManager.unregister(builderProcId);
+            this.updateGeneratingState();
+            await this.updateContextAndTokens();
+            return; // DONE: Standard chat loop is never reached
+        } catch (e: any) {
+            this.processManager.unregister(builderProcId);
+            this.updateGeneratingState();
+            if (e.name !== 'AbortError') throw e;
+            return;
+        }
+    }
 
     // --- AUTO SKILL SELECTION ---
     if (this._discussionCapabilities.autoSkillMode && !this._discussionCapabilities.disableProjectContext && message.role !== 'system') {
@@ -2162,12 +2248,24 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
                 history
             );
 
+            // 🛑 STOP CHECK: If the user clicked Stop during discovery, exit the entire workflow
+            if (controller.signal.aborted) {
+                this.processManager.unregister(processId);
+                this.updateGeneratingState();
+                return;
+            }
+
             librarianAnalysis = result.analysis;
 
             if (this._currentDiscussion && !this._currentDiscussion.id.startsWith('temp-')) {
                 await this._discussionManager.saveDiscussion(this._currentDiscussion);
             }
         } catch (e: any) {
+            if (e.name === 'AbortError' || controller.signal.aborted) {
+                this.processManager.unregister(processId);
+                this.updateGeneratingState();
+                return; // 🛑 EXIT WORKFLOW
+            }
             this.log(`Sovereign Loop failed: ${e.message}`, 'ERROR');
         }
         }
@@ -2210,11 +2308,23 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
                     }
                 }
             );
-            
+
+            // 🛑 STOP CHECK: If research was cancelled
+            if (controller.signal.aborted) {
+                this.processManager.unregister(processId);
+                this.updateGeneratingState();
+                return;
+            }
+
             // Refresh tokens/context after files might have been added
             this.updateContextAndTokens();
-            
+
         } catch (e: any) { 
+            if (e.name === 'AbortError' || controller.signal.aborted) {
+                this.processManager.unregister(processId);
+                this.updateGeneratingState();
+                return; // 🛑 EXIT WORKFLOW
+            }
             this.log(`Web Research failed: ${e.message}`, 'ERROR');
         }
     }
@@ -2386,6 +2496,13 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
 
     let assistantMessageId = '';
     try {
+        // 🛑 FINAL WORKFLOW GATE: Prevent main generation if a sub-agent was stopped
+        if (controller.signal.aborted) {
+            this.processManager.unregister(processId);
+            this.updateGeneratingState();
+            return;
+        }
+
         this.processManager.updateDescription(processId, "Waiting for model...");
         this.updateGeneratingState();
 
@@ -2421,9 +2538,25 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
 --------------------------------------------------
 `.trim();
 
+        // --- MULTIMODAL INJECTION ---
+        // If vision is enabled, we bundle the images from the context directly 
+        // into the project context message as a multipart content array.
+        let projectContextContent: any = projectStateText;
+        if (this._discussionCapabilities.enableImages !== false && contextData.images.length > 0) {
+            projectContextContent = [
+                { type: 'text', text: projectStateText }
+            ];
+            contextData.images.forEach(img => {
+                projectContextContent.push({
+                    type: 'image_url',
+                    image_url: { url: img.data } // img.data is already a base64 Data URI
+                });
+            });
+        }
+
         const projectContextUserMessage: ChatMessage = {
             role: 'user',
-            content: projectStateText
+            content: projectContextContent
         };
 
         // 3. Prepare Chronological History
@@ -2873,6 +3006,15 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
             timestamp: Date.now()
         };
         await this.addMessageToDiscussion(assistantMessage, false);
+
+
+        // Update history segment in the cache
+        const modelForTokenization = (this._currentDiscussion?.model || this._lollmsAPI.getModelName() || "default").trim();
+        const historyText = this._currentDiscussion!.messages.map(m => typeof m.content === 'string' ? m.content : '').join('\n');
+        const historyTokens = await this._lollmsAPI.tokenize(historyText, modelForTokenization);
+        await this._contextManager.updateSegmentTokens('history', historyTokens.count);
+
+        await this._contextManager.updateSegmentTokens('history', historyTokens.count);
         if (!this._isDisposed) {
             this._panel.webview.postMessage({ 
                 command: 'finalizeMessage', 
@@ -3591,35 +3733,6 @@ ${targetContent}
       }
   }
   
-  public async updateAppliedState(messageId: string, blockIdx: number, hunkIdx?: number, isUndo: boolean = false) {
-      if (!this._currentDiscussion || !messageId) return;
-
-      if (!this._currentDiscussion.appliedState) this._currentDiscussion.appliedState = {};
-      if (!this._currentDiscussion.appliedState[messageId]) this._currentDiscussion.appliedState[messageId] = {};
-
-      const msgState = this._currentDiscussion.appliedState[messageId];
-
-      if (!msgState[blockIdx]) msgState[blockIdx] = [];
-
-      if (isUndo) {
-          const valToRemove = hunkIdx !== undefined ? hunkIdx : -1;
-          msgState[blockIdx] = msgState[blockIdx].filter(v => v !== valToRemove);
-          // If the block is now empty and was previously marked full (-1), check if we need to remove -1
-          if (hunkIdx !== undefined && msgState[blockIdx].includes(-1)) {
-               msgState[blockIdx] = msgState[blockIdx].filter(v => v !== -1);
-          }
-      } else {
-          if (hunkIdx !== undefined) {
-              if (!msgState[blockIdx].includes(hunkIdx)) msgState[blockIdx].push(hunkIdx);
-          } else {
-              msgState[blockIdx] = [-1]; 
-          }
-      }
-
-      if (!this._currentDiscussion.id.startsWith('temp-')) {
-          await this._discussionManager.saveDiscussion(this._currentDiscussion);
-      }
-  }
 
   public async addMessageToDiscussion(message: ChatMessage, updateWebview: boolean = true) {
       if (this._currentDiscussion) {
@@ -3729,7 +3842,7 @@ ${targetContent}
                 break;
             case 'requestFileContentForDiff':
                 {
-                    const res = await services.contextManager.resolveWorkspaceFromPath(message.path);
+                    const res = await this._contextManager.resolveWorkspaceFromPath(message.path);
                     if (res) {
                         try {
                             const doc = await vscode.workspace.openTextDocument(res.uri);
@@ -3927,14 +4040,16 @@ ${targetContent}
 
                         if (validFiles.length > 0) {
                             await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', validFiles);
-                            this.updateContextAndTokens();
 
                             if (reprompt) {
-                                const names = validFiles.map(f => path.basename(f)).join(', ');
+                                // Close the loop by automatically notifying the AI
                                 await this.sendMessage({
                                     role: 'user',
-                                    content: `I have successfully added these files to my context: ${names}. Please continue with the implementation.`
-                                } as any);
+                                    content: `OK, I did add the files: ${validFiles.map(f => path.basename(f)).join(', ')}. Please proceed.`
+                                });
+                            } else {
+                                // Just update tokens if we aren't reprompting (sendMessage handles this internally)
+                                this.updateContextAndTokens();
                             }
                         }
                     } catch (err: any) {
@@ -4720,6 +4835,34 @@ Task:
             case 'saveCodeToFile':
                 vscode.commands.executeCommand('lollms-vs-coder.saveCodeToFile', message.content, message.language);
                 break;
+            case 'saveDraftAsset':
+                {
+                    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+                    if (!workspaceFolder) return;
+
+                    const defaultUri = vscode.Uri.joinPath(workspaceFolder.uri, message.params.suggestedPath);
+                    const ext = path.extname(message.params.suggestedPath).substring(1) || 'png';
+
+                    const targetUri = await vscode.window.showSaveDialog({
+                        defaultUri: defaultUri,
+                        filters: { 'Images': [ext], 'All Files': ['*'] },
+                        saveLabel: 'Save Asset to Workspace'
+                    });
+
+                    if (targetUri) {
+                        try {
+                            const base64Data = message.params.dataUri.split(',')[1];
+                            await vscode.workspace.fs.writeFile(targetUri, Buffer.from(base64Data, 'base64'));
+
+                            const relPath = vscode.workspace.asRelativePath(targetUri);
+                            await vscode.commands.executeCommand('lollms-vs-coder.addFilesToContext', [relPath]);
+                            vscode.window.showInformationMessage(`Asset saved and synced: ${relPath}`);
+                        } catch (e: any) {
+                            vscode.window.showErrorMessage(`Save failed: ${e.message}`);
+                        }
+                    }
+                }
+                break;
             case 'generateImage':
                 vscode.window.withProgress({
                     location: vscode.ProgressLocation.Notification,
@@ -4733,32 +4876,46 @@ Task:
                             webview.postMessage({ command: 'imageGenerationResult', buttonId: message.buttonId, success: false });
                             return;
                         }
-                        
-                        let saveUri: vscode.Uri | undefined;
-                        
-                        if (message.filePath && vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) {
-                            saveUri = vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, message.filePath);
-                        } else {
-                            saveUri = await vscode.window.showSaveDialog({
-                                title: 'Save Generated Image',
-                                filters: { 'Images': ['png'] },
-                                defaultUri: (vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0) ? vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, 'generated_image.png') : undefined
+
+                        // 🛡️ BUFFER-ONLY PROTOCOL: 
+                        // If buttonId is present, we NEVER save to disk automatically.
+                        // We send the raw data back to the UI to be handled as a draft.
+                        if (message.buttonId) {
+                            const dataUri = `data:image/png;base64,${b64_json}`;
+                            webview.postMessage({ 
+                                command: 'imageGenerationResult', 
+                                buttonId: message.buttonId, 
+                                success: true, 
+                                webviewUri: dataUri 
                             });
+                            return;
                         }
+
+                        // Fallback for direct tool calls (not from UI button)
+                        const targetPath = message.filePath || 'generated_image.png';
+                        const saveUri = vscode.workspace.workspaceFolders 
+                            ? vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, targetPath)
+                            : undefined;
 
                         if (saveUri) {
                             await vscode.workspace.fs.writeFile(saveUri, Buffer.from(b64_json, 'base64'));
-                            const webviewUri = webview.asWebviewUri(saveUri);
-                            webview.postMessage({ command: 'imageGenerationResult', buttonId: message.buttonId, success: true, webviewUri: webviewUri.toString() });
-                        } else {
-                             webview.postMessage({ command: 'imageGenerationResult', buttonId: message.buttonId, success: false }); 
+                            webview.postMessage({ command: 'imageGenerationResult', buttonId: message.buttonId, success: true, webviewUri: webview.asWebviewUri(saveUri).toString() });
                         }
                     } catch (error: any) {
-                        webview.postMessage({ command: 'imageGenerationResult', buttonId: message.buttonId, success: false });
+                        // 1. Reset the specific button
+                        webview.postMessage({ 
+                            command: 'imageGenerationResult', 
+                            buttonId: message.buttonId, 
+                            success: false,
+                            error: error.message 
+                        });
+
+                        // 2. Clear global UI overlay
+                        webview.postMessage({ command: 'setGeneratingState', isGenerating: false });
+
                         this.addMessageToDiscussion({ role: 'system', content: `❌ Image generation failed: ${error.message}` });
                     }
                 });
-                this.processManager.unregister(applyProcId);
                 break;
             case 'saveSkill':
                 await this.handleSaveSkill(message.content);
@@ -4931,6 +5088,8 @@ Task:
             case 'runTool':
                 const toolName = message.tool;
                 const toolParams = message.params;
+                const buttonId = message.buttonId; // Captured from step 1
+
                 if (this.agentManager) {
                     const toolDef = this.agentManager.getTools().find(t => t.name === toolName);
                     if (toolDef) {
@@ -4945,12 +5104,41 @@ Task:
                                 currentPlan: null
                             };
                             const result = await toolDef.execute(toolParams, env as any, controller.signal);
+
+                            // --- CALLBACK TO TRIGGERING BUTTON ---
+                            // If we have a buttonId, this was a UI-triggered iteration.
+                            // We return the visual result directly to that block instead of a new bubble.
+                            if (buttonId && (toolName === 'edit_image_asset' || result.output.includes('<image_result'))) {
+                                const outputPath = toolParams.output_path || toolParams.target_path;
+                                if (outputPath) {
+                                    const res = await this._contextManager.resolveWorkspaceFromPath(outputPath);
+                                    if (res) {
+                                        const webviewUri = webview.asWebviewUri(res.uri).toString();
+
+                                        // 1. Update the original tag UI
+                                        webview.postMessage({ 
+                                            command: 'imageGenerationResult', 
+                                            buttonId: buttonId, 
+                                            success: true, 
+                                            webviewUri 
+                                        });
+                                    }
+
+                                    // 2. Silently update the discussion history so the LLM "sees" the result
+                                    // We don't add a message, we just update the internal state
+                                    return; // STOP: Don't execute standard bubble logic
+                                }
+                            }
+
                             const resultMessage: ChatMessage = {
                                 role: 'system',
                                 content: `**Tool Output (${toolName}):**\n\n${result.output}`
                             };
-                            this.addMessageToDiscussion(resultMessage);
+                            await this.addMessageToDiscussion(resultMessage);
                         } catch (e: any) {
+                            if (buttonId) {
+                                webview.postMessage({ command: 'imageGenerationResult', buttonId: buttonId, success: false, error: e.message });
+                            }
                             this.addMessageToDiscussion({ role: 'system', content: `❌ Tool execution failed: ${e.message}` });
                         } finally {
                             this.processManager.unregister(processId);
@@ -5250,21 +5438,22 @@ Task:
                 break;
             case 'resolveImageUri':
                 {
-                    const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-                    if (workspaceFolder) {
-                        const fileUri = vscode.Uri.joinPath(workspaceFolder.uri, message.path);
-                        try {
+                    try {
+                        const resolution = await this._contextManager.resolveWorkspaceFromPath(message.path);
+                        if (resolution) {
                             // Ensure file exists before resolving
-                            await vscode.workspace.fs.stat(fileUri);
-                            const webviewUri = webview.asWebviewUri(fileUri);
+                            await vscode.workspace.fs.stat(resolution.uri);
+                            const webviewUri = webview.asWebviewUri(resolution.uri);
                             webview.postMessage({ 
                                 command: 'imageUriResolved', 
                                 targetId: message.targetId, 
                                 uri: webviewUri.toString() 
                             });
-                        } catch (e) {
+                        } else {
                             Logger.warn(`Could not resolve image result path: ${message.path}`);
                         }
+                    } catch (e) {
+                        Logger.warn(`Error resolving image path: ${message.path}`);
                     }
                 }
                 break;
@@ -5611,6 +5800,9 @@ Task:
 
             <!-- 💬 Main Chat ON THE RIGHT -->
             <div class="chat-main-column">
+                <!-- 🚀 PERSISTENT SURGICAL HUD -->
+                <div id="context-container" class="persistent-hud"></div>
+
                 <div class="messages" id="messages">
                     <div class="search-bar" id="search-bar" style="display: none;">
                         <input type="text" id="searchInput" placeholder="Search discussion...">
@@ -5619,8 +5811,6 @@ Task:
                         <button id="search-next" title="Next match"><i class="codicon codicon-arrow-down"></i></button>
                         <button id="search-close" title="Close search"><i class="codicon codicon-close"></i></button>
                     </div>
-
-                    <div id="context-container"></div>
 
                     <div class="message special-zone-message" style="display: none;">
                         <div class="message-avatar">
@@ -5633,17 +5823,6 @@ Task:
                             </div>
                         </div>
                     </div>
-
-                    <div id="welcome-message" style="display: none;">
-                        <h3 id="welcome-title"></h3>
-                        <ul>
-                            <li id="welcome-item-1"></li>
-                            <li id="welcome-item-2"></li>
-                            <li id="welcome-item-3"></li>
-                            <li id="welcome-item-4"></li>
-                        </ul>
-                    </div>
-
                     <div id="chat-messages-container">
                         <div id="message-insertion-controls">
                             <button id="add-user-message-btn"><i class="codicon codicon-add"></i> Add User Message</button>
@@ -5806,8 +5985,7 @@ Task:
 
             <div id="plan-resizer"></div>
             <div id="agent-plan-zone"></div>
-            <!-- Move button here to be a sibling of plan-zone for CSS logic -->
-            <button id="scrollToBottomBtn" title="Scroll to bottom" style="display: none;">
+            <button id="scrollToBottomBtn" title="Scroll to bottom">
                 <i class="codicon codicon-arrow-down"></i>
             </button>
             </div>
@@ -6693,6 +6871,13 @@ Task:
                     <button id="matrix-done-btn" class="code-action-btn apply-btn" style="width: 80px;">Done</button>
                 </div>
             </div>
+        </div>
+        <div id="image-zoom-overlay" class="modal" style="background: rgba(0,0,0,0.95); cursor: zoom-out;">
+            <div style="position: absolute; top: 20px; right: 20px; z-index: 10001; display: flex; gap: 10px;">
+                <button class="code-action-btn secondary-btn" id="zoom-copy-btn"><i class="codicon codicon-copy"></i> Copy Image</button>
+                <span class="close-btn" style="color: white;">&times;</span>
+            </div>
+            <img id="zoomed-image-display" style="max-width: 95%; max-height: 95%; object-fit: contain; box-shadow: 0 0 30px rgba(0,0,0,0.5);">
         </div>
 
         <div id="raw-code-modal" class="modal">

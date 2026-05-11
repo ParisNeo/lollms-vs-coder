@@ -439,12 +439,47 @@ body.agent-mode-active .chat-container {
 }
 
 /* 🤖 AGENT MODE RED UI THEME (ACTIVE AGENCY) */
+.persistent-hud {
+    position: sticky;
+    top: 0;
+    z-index: 5000;
+    width: 100%;
+    pointer-events: none; /* Let clicks pass through empty areas */
+}
+
 .context-message.agent-mode-bubble,
 .context-message.standard-mode-bubble {
-    margin: 10px 12px !important;
+    pointer-events: auto; /* Enable clicks on the actual bubble */
+    margin: 8px 12px !important;
     border-radius: 8px !important;
-    background-color: var(--vscode-editor-inactiveSelectionBackground) !important;
-    box-shadow: 0 4px 15px rgba(0,0,0,0.2) !important;
+    background-color: var(--vscode-editor-background) !important;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid var(--vscode-widget-border) !important;
+    box-shadow: 0 8px 20px rgba(0,0,0,0.4) !important;
+    overflow: hidden;
+}
+
+.messages {
+    padding-top: 10px; /* Base padding */
+}
+
+.fused-context-details > summary {
+    list-style: none;
+    outline: none;
+    cursor: pointer;
+}
+
+.fused-context-details > summary::-webkit-details-marker {
+    display: none;
+}
+
+.fused-context-details .hud-toggle-icon {
+    transition: transform 0.2s ease;
+}
+
+.fused-context-details[open] .hud-toggle-icon {
+    transform: rotate(180deg);
 }
 
 .context-message.agent-mode-bubble {
@@ -598,6 +633,7 @@ body.agent-mode-active .chat-container {
 .role-name { font-weight: 600; color: var(--vscode-editor-foreground); }
 .generation-stats { font-size: 11px; color: var(--vscode-descriptionForeground); margin-left: 8px; background-color: var(--vscode-badge-background); color: var(--vscode-badge-foreground); padding: 2px 6px; border-radius: 10px; opacity: 0.8; }
 .message-content { line-height: 1.6; font-size: var(--vscode-editor-font-size); overflow-wrap: break-word; color: var(--vscode-editor-foreground); width: 100%; }
+.custom-tag-block-container { display: block; width: 100%; clear: both; margin: 10px 0; }
 .message-content p { margin-top: 0; margin-bottom: 0.8em; }
 .message-content p:last-child { margin-bottom: 0; }
 .message-content pre { max-height: 500px; overflow-y: auto; }
@@ -870,15 +906,31 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     display: none;
 }
 
+.aider-diff-line {
+    display: flex;
+    width: 100%;
+    font-family: var(--vscode-editor-font-family);
+    font-size: var(--vscode-editor-font-size);
+    line-height: 1.5;
+    white-space: pre; /* CRITICAL: Preserve indentation */
+}
+
 .aider-diff-removed {
-    background-color: rgba(244, 71, 71, 0.1);
+    background-color: rgba(244, 71, 71, 0.15);
     color: var(--vscode-charts-red);
-    opacity: 0.9;
 }
 
 .aider-diff-added {
-    background-color: rgba(15, 157, 88, 0.1);
+    background-color: rgba(15, 157, 88, 0.15);
     color: var(--vscode-charts-green);
+}
+
+.aider-diff-unchanged {
+    opacity: 0.6;
+}
+
+.aider-diff-code {
+    padding: 0 12px;
 }
 
 .aider-diff-unchanged {
@@ -898,25 +950,66 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 }
 
 /* Enhanced Multi-Hunk Aider Styling */
-.aider-hunk-group {
+/* --- HUNK TAB SYSTEM --- */
+.hunk-tabs-container {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    padding: 12px;
     background-color: var(--vscode-editor-inactiveSelectionBackground);
-    border-radius: 0 0 6px 6px;
     border-top: 1px solid var(--vscode-widget-border);
 }
 
+.hunk-tabs-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+    padding: 4px 8px 0 8px;
+    background: var(--vscode-sideBar-background);
+    border-bottom: 1px solid var(--vscode-widget-border);
+}
+
+.hunk-tab {
+    padding: 4px 10px;
+    font-size: 10px;
+    font-weight: 800;
+    cursor: pointer;
+    border-radius: 4px 4px 0 0;
+    border: 1px solid transparent;
+    border-bottom: none;
+    opacity: 0.6;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.1s ease;
+}
+
+.hunk-tab:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground); }
+.hunk-tab.active { 
+    opacity: 1; 
+    background: var(--vscode-editor-background); 
+    border-color: var(--vscode-widget-border);
+    margin-bottom: -1px;
+    z-index: 2;
+}
+
+.hunk-tab.status-completed { color: var(--vscode-charts-green); }
+.hunk-tab.status-failed { color: var(--vscode-charts-red); border-top: 2px solid var(--vscode-charts-red); }
+
+.hunk-tab-content {
+    display: none;
+    padding: 0;
+    background: var(--vscode-editor-background);
+}
+
+.hunk-tab-content.active {
+    display: flex;
+    flex-direction: column;
+}
+
 .aider-hunk-bubble {
-    border: 1px solid var(--vscode-widget-border);
-    border-radius: 8px;
-    background-color: var(--vscode-editor-background);
-    overflow: hidden;
-    box-shadow: 0 2px 6px rgba(0,0,0,0.15);
-    transition: transform 0.1s;
     width: 100%;
     box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
 }
 
 .aider-diff-container {
@@ -943,6 +1036,66 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 
 .aider-hunk-header:hover {
     background-color: var(--vscode-list-hoverBackground);
+}
+#raw-code-modal {
+    display: none;
+    position: fixed !important; /* Force out of flex flow */
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background-color: rgba(0, 0, 0, 0.85); /* Darker backdrop */
+    z-index: 200000; /* Ensure it stays above HUD and popups */
+    justify-content: center;
+    align-items: center;
+    backdrop-filter: blur(8px);
+}
+
+#raw-code-modal.visible {
+    display: flex !important;
+}
+
+#raw-code-modal .modal-content {
+    background-color: var(--vscode-editorWidget-background);
+    border: 1px solid var(--vscode-widget-border);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.8);
+    border-radius: 12px;
+    width: 90vw; /* Increased width to accommodate internal panel */
+    height: 85vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+}
+
+/* Ensure no flex parent is pushing modal items to the right */
+.chat-main-column {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    position: relative;
+    overflow: hidden; /* Prevents ghost elements from bleeding out */
+}
+
+/* 🛡️ MODAL OVERLAY FIX: Ensure the modal dimming covers EVERYTHING */
+#raw-code-modal {
+    display: none;
+    position: fixed !important;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background-color: rgba(0, 0, 0, 0.8);
+    z-index: 200000;
+    justify-content: center;
+    align-items: center;
+    backdrop-filter: blur(8px);
+}
+
+/* Force hide any buttons that might have been accidentally rendered in the chat stream */
+.message-content > #raw-fix-ai-btn, 
+.message-content > #mark-applied-btn {
+    display: none !important;
 }
 
 .hunk-toggle-icon {
@@ -980,22 +1133,28 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
 #scrollToBottomBtn { 
     display: none; 
     position: absolute; 
-    bottom: 120px; 
-    /* Offset by sidebar width to stay in main chat */
-    right: 30px; 
-    width: 36px; 
-    height: 36px; 
+    /* Positioned relative to the chat-main-column, floating above the input area */
+    bottom: 110px; 
+    right: 25px; 
+    width: 32px;
+    height: 32px; 
     border-radius: 50%; 
     background-color: var(--vscode-button-background); 
     color: var(--vscode-button-foreground); 
-    border: 1px solid var(--vscode-widget-border); 
-    box-shadow: 0 4px 15px rgba(0,0,0,0.4); 
+    border: none; 
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5); 
     cursor: pointer; 
-    /* Ensure it is above the chat but below the sidebar resizer */
-    z-index: 100; 
+    /* High z-index to stay above message actions but below the HUD */
+    z-index: 4000; 
     align-items: center; 
     justify-content: center; 
-    transition: transform 0.1s, opacity 0.2s; 
+    transition: transform 0.1s, opacity 0.2s;
+    opacity: 0.8;
+}
+
+#scrollToBottomBtn:hover {
+    opacity: 1;
+    transform: scale(1.1);
 }
 
 /* Adjust button position when Agent Plan is visible */
@@ -4013,9 +4172,9 @@ details[open] > summary .folder-handle::before {
 
 /* 🚀 REVAMPED STAGING MODAL */
 #staging-revamp-modal .modal-content {
-    width: 95vw;
-    height: 90vh;
-    max-width: 1400px;
+    width: 98vw;
+    height: 95vh;
+    max-width: 1800px;
 }
 
 .staging-layout {
@@ -4026,39 +4185,55 @@ details[open] > summary .folder-handle::before {
 }
 
 .staging-sidebar {
-    width: 300px;
+    width: 320px;
     border-right: 1px solid var(--vscode-widget-border);
     display: flex;
     flex-direction: column;
     background: var(--vscode-sideBar-background);
+    overflow-y: auto;
 }
 
 .staging-file-item {
-    padding: 10px 15px;
+    padding: 12px 16px;
     cursor: pointer;
     border-bottom: 1px solid var(--vscode-widget-border);
     display: flex;
     align-items: center;
-    gap: 10px;
-    transition: background 0.2s;
+    gap: 12px;
+    transition: all 0.1s ease;
 }
 
 .staging-file-item:hover { background: var(--vscode-list-hoverBackground); }
-.staging-file-item.active { background: var(--vscode-list-activeSelectionBackground); color: var(--vscode-list-activeSelectionForeground); }
-
-.status-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
+.staging-file-item.active { 
+    background: var(--vscode-list-activeSelectionBackground); 
+    color: var(--vscode-list-activeSelectionForeground); 
+    border-left: 4px solid var(--vscode-focusBorder);
 }
-.status-dot.valid { background: var(--vscode-charts-green); box-shadow: 0 0 5px var(--vscode-charts-green); }
-.status-dot.invalid { background: var(--vscode-charts-red); box-shadow: 0 0 5px var(--vscode-charts-red); }
 
 .staging-diff-viewer {
     flex: 1;
     display: flex;
-    flex-direction: column;
+    flex-direction: row; /* SIDE BY SIDE */
     overflow: hidden;
+    background: var(--vscode-editor-background);
+}
+
+.diff-pane {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    border-right: 1px solid var(--vscode-widget-border);
+}
+
+.diff-pane-header {
+    padding: 6px 12px;
+    background: var(--vscode-editorWidget-background);
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+    opacity: 0.7;
+    border-bottom: 1px solid var(--vscode-widget-border);
 }
 
 .diff-scroll-container {
@@ -4067,12 +4242,42 @@ details[open] > summary .folder-handle::before {
     font-family: var(--vscode-editor-font-family);
     font-size: 12px;
     padding: 0;
+    white-space: pre;
 }
 
-.diff-line { display: flex; white-space: pre; min-height: 1.5em; }
-.diff-line-num { width: 45px; text-align: right; padding-right: 10px; opacity: 0.5; user-select: none; border-right: 1px solid var(--vscode-widget-border); margin-right: 10px; }
-.diff-line.added { background: rgba(15, 157, 88, 0.2); color: var(--vscode-charts-green); }
-.diff-line.removed { background: rgba(244, 71, 71, 0.2); color: var(--vscode-charts-red); text-decoration: line-through; }
+.diff-line { 
+    display: flex; 
+    width: 100%;
+    min-height: 1.6em;
+}
+
+.diff-line-num { 
+    width: 40px; 
+    text-align: right; 
+    padding-right: 10px; 
+    opacity: 0.4; 
+    user-select: none; 
+    background: var(--vscode-editorGutter-background);
+    margin-right: 10px;
+}
+
+.diff-line-content {
+    flex: 1;
+    padding-left: 4px;
+}
+
+.diff-line.added { background: rgba(15, 157, 88, 0.15); }
+.diff-line.removed { background: rgba(244, 71, 71, 0.15); }
+.diff-line.empty-placeholder { opacity: 0.1; background: repeating-linear-gradient(45deg, transparent, transparent 10px, var(--vscode-widget-border) 10px, var(--vscode-widget-border) 11px); }
+
+.staging-footer-actions {
+    padding: 16px 20px;
+    border-top: 1px solid var(--vscode-widget-border);
+    display: flex;
+    justify-content: flex-end;
+    gap: 15px;
+    background: var(--vscode-editorWidget-background);
+}
 
 .staging-footer-actions {
     padding: 15px;

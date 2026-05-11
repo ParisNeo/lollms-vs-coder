@@ -101,50 +101,39 @@ const recognition = 'SpeechRecognition' in window || 'webkitSpeechRecognition' i
     : null;
 
 if (recognition) {
-    // Set to continuous so it stays active until manually stopped
     recognition.continuous = true;
     recognition.interimResults = true;
 
     recognition.onresult = (event: any) => {
-        // Update language based on current capabilities before starting
         const preferredLang = state.capabilities?.language;
         recognition.lang = (preferredLang && preferredLang !== 'auto') ? preferredLang : 'en-US';
         let finalTranscript = '';
         for (let i = event.resultIndex; i < event.results.length; ++i) {
-            if (event.results[i].isFinal) {
-                finalTranscript += event.results[i][0].transcript;
-            }
+            if (event.results[i].isFinal) finalTranscript += event.results[i][0].transcript;
         }
 
-        const input = document.getElementById('messageInput') as HTMLTextAreaElement;
+        const input = dom.messageInput;
         if (input && finalTranscript) {
-            // Append the new text to whatever is already there
             const separator = input.value.length > 0 ? ' ' : '';
             input.value += separator + finalTranscript;
             input.dispatchEvent(new Event('input'));
         }
     };
 
-    recognition.onerror = (event: any) => {
-        console.error("STT Error:", event.error);
+    recognition.onerror = () => {
         isListening = false;
         document.getElementById('sttButton')?.classList.remove('active');
     };
 
     recognition.onend = () => {
-        // If it ended but we didn't manually stop it (e.g. timeout), restart it if isListening is still true
         if (isListening) {
-            try { recognition.start(); } catch(e) {}
+            try { recognition.start(); } catch {}
         } else {
             document.getElementById('sttButton')?.classList.remove('active');
         }
     };
 }
 
-// Remove the global TTS button reference as it's being deleted from UI
-document.getElementById('ttsButton')?.remove();
-
-// Track the button currently showing a spinner
 let activeSpeakButton: HTMLElement | null = null;
 let originalSpeakButtonHtml: string = '';
 
@@ -156,7 +145,6 @@ function resetActiveSpeakButton() {
     }
 }
 
-// Expose speak and reset to the extension message handler and events
 (window as any).halSpeak = speakText;
 (window as any).resetActiveSpeakButton = resetActiveSpeakButton;
 
@@ -348,29 +336,12 @@ document.getElementById('ttsButton')?.addEventListener('click', () => {
             
             const strings = (window as any).l10n || {};
             
-            if (dom.welcomeMessage) {
-                const title = dom.welcomeMessage.querySelector('#welcome-title');
-                if(title) title.innerHTML = strings.welcomeTitle || "Welcome to Lollms VS Coder";
-                
-                const item1 = dom.welcomeMessage.querySelector('#welcome-item-1');
-                if(item1) item1.innerHTML = strings.welcomeItem1 || "Add files to context by right-clicking them in the explorer.";
-                
-                const item2 = dom.welcomeMessage.querySelector('#welcome-item-2');
-                if(item2) item2.innerHTML = strings.welcomeItem2 || "Use 🤖 Agent Mode for complex multi-step tasks.";
-                
-                const item3 = dom.welcomeMessage.querySelector('#welcome-item-3');
-                if(item3) item3.innerHTML = strings.welcomeItem3 || "Toggle 🧠 Auto-Context to let the AI find relevant code for you.";
-                
-                const item4 = dom.welcomeMessage.querySelector('#welcome-item-4');
-                if(item4) item4.innerHTML = strings.welcomeItem4 || "Check the 🔌 API status in the context header.";
-                
-                if(dom.contextLoadingSpinner) {
-                     const textSpan = dom.contextLoadingSpinner.querySelector('#loading-files-text');
-                     if(textSpan) textSpan.textContent = l10n.progressLoadingFiles || "Loading...";
-                }
-                
-                if(dom.refreshContextBtn) dom.refreshContextBtn.title = l10n.tooltipRefreshContext || "Refresh";
+            if(dom.contextLoadingSpinner) {
+                    const textSpan = dom.contextLoadingSpinner.querySelector('#loading-files-text');
+                    if(textSpan) textSpan.textContent = l10n.progressLoadingFiles || "Loading...";
             }
+
+            if(dom.refreshContextBtn) dom.refreshContextBtn.title = l10n.tooltipRefreshContext || "Refresh";
 
             try {
                 marked.setOptions({ breaks: true, gfm: true });

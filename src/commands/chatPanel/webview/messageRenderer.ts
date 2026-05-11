@@ -14,6 +14,44 @@ import { searchKeymap, openSearchPanel, search } from "@codemirror/search";
 import { markdown } from "@codemirror/lang-markdown";
 import { oneDark } from "@codemirror/theme-one-dark";
 
+
+import { pluginRegistry, PluginContext } from './pluginSystem.js';
+import { contextExpansionPlugin } from './plugins/contextExpansionPlugin.js';
+
+// 🛠️ PLUGINS REGISTRY
+import { registerPlugin, pluginRegistry } from './pluginSystem.js';
+import { contextExpansionPlugin } from './plugins/contextExpansionPlugin.js';
+import { projectMemoryPlugin } from './plugins/projectMemoryPlugin.js';
+import { milestonePlugin } from './plugins/milestonePlugin.js';
+import { processingPlugin } from './plugins/processingPlugin.js';
+import { formPlugin } from './plugins/formPlugin.js';
+import { fileOpPlugin } from './plugins/fileOpPlugin.js';
+import { milestonePlugin } from './plugins/milestonePlugin.js';
+import { breakpointPlugin } from './plugins/breakpointPlugin.js';
+import { imageAssetPlugin } from './plugins/imageAssetPlugin.js';
+import { imageGenPlugin } from './plugins/imageGenPlugin.js';
+import { imageResultPlugin } from './plugins/imageResultPlugin.js';
+import { planStatusPlugin } from './plugins/planStatusPlugin.js';
+import { processingPlugin } from './plugins/processingPlugin.js';
+
+function initPlugins() {
+    pluginRegistry.length = 0; 
+    registerPlugin(contextExpansionPlugin);
+    registerPlugin(projectMemoryPlugin);
+    registerPlugin(milestonePlugin);
+    registerPlugin(processingPlugin);
+    registerPlugin(formPlugin);
+    registerPlugin(fileOpPlugin);
+    registerPlugin(breakpointPlugin);
+    registerPlugin(imageAssetPlugin);
+    registerPlugin(imageGenPlugin);
+    registerPlugin(imageResultPlugin);
+    registerPlugin(planStatusPlugin);
+}
+
+initPlugins();
+
+
 const RENDER_THROTTLE_MS = 200;
 
 const langMap: { [key: string]: string } = {
@@ -59,8 +97,23 @@ try {
 
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
 const SANITIZE_CONFIG = {
-    ADD_TAGS: ['iframe', 'script', 'style'],
-    ADD_ATTR: ['target', 'allow', 'allowfullscreen', 'frameborder', 'scrolling', 'onclick', 'data-value', 'data-type', 'data-message-id', 'data-pid']
+    ADD_TAGS: ['iframe', 'script', 'style', 'button', 'i', 'span', 'details', 'summary'],
+    ADD_ATTR: [
+        'target', 'allow', 'allowfullscreen', 'frameborder', 'scrolling', 
+        'onclick', 'data-value', 'data-type', 'data-message-id', 'data-pid',
+        'data-files', 'data-block-id', 'data-action', 'data-id', 'data-title', 
+        'data-content', 'data-importance', 'data-mem-id'
+    ],
+    // IMPORTANT: Allow all classes for our custom UI blocks
+    ADD_CLASSES: { 
+        '*': [
+            'expansion-request-block', 'context-expansion-block', 'expansion-header', 'expansion-body', 
+            'expansion-file-list', 'expansion-file-item', 'code-action-btn', 'apply-btn', 
+            'add-files-to-context-btn', 'add-and-reprompt-btn', 'copy-files-to-clipboard-btn',
+            'learning-card', 'learning-card-header', 'learning-body', 'learning-title', 
+            'learning-content', 'learning-meta', 'project-memory-block', 'memory-summary'
+        ] 
+    }
 };
 
 function unescapeXml(safe: string): string {
@@ -75,6 +128,18 @@ function unescapeXml(safe: string): string {
         };
         return map[entity] || match;
     });
+}
+
+/**
+ * Renders lines of code with a specific diff type (added, removed, or unchanged).
+ */
+function renderLines(lines: string[], type: 'added' | 'removed' | 'unchanged'): string {
+    return lines.map(line => {
+        // Escape special characters to ensure code symbols are rendered correctly.
+        const escaped = line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+        const safeLine = escaped.length === 0 ? ' ' : escaped;
+        return `<div class="aider-diff-line aider-diff-${type}"><span class="aider-diff-code">${safeLine}</span></div>`;
+    }).join('');
 }
 
 function createButton(text: string, icon: string, onClick: () => void, className = 'code-action-btn', tooltip?: string): HTMLButtonElement {
@@ -631,11 +696,26 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
 
     for (let i = 0; i < lines.length; i++) {
         const lineWithNewline = lines[i] + (i < lines.length - 1 ? '\n' : '');
-        const lineText = lines[i]; // Use original line text for start-of-line checks
+        const lineText = lines[i]; 
         const line = lineText.trim();
         const match = line.match(/^(\s{0,3})(`{3,})/);
 
         if (!inBlock) {
+            // --- NAKED AIDER DETECTION ---
+            // If we see a SEARCH marker outside a code fence, treat it as the start of a block
+            if (lineText.startsWith('<<<<<<< SEARCH')) {
+                inBlock = true;
+                // Heuristic: Find the nearest file path mentioned in the 5 lines above
+                let inferredPath = "";
+                for (let k = i - 1; k >= Math.max(0, i - 5); k--) {
+                    const pathMatch = lines[k].match(/[`"']?([a-zA-Z0-9._\-\/]+\.[a-z0-9]+)[`"']?/);
+                    if (pathMatch) { inferredPath = pathMatch[1]; break; }
+                }
+                infos.push({ type: 'replace', path: inferredPath, stripFirstLine: false, start: currentOffset, isClosed: false });
+                currentOffset += lineWithNewline.length;
+                continue;
+            }
+
             // Check for XML operations outside blocks
             const xmlRename = line.match(/<rename\s+old=["']([^"']+)["']\s+new=["']([^"']+)["']\s*\/>/i);
             const xmlDelete = line.match(/<delete\s+path=["']([^"']+)["']\s*\/>/i);
@@ -648,13 +728,8 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
             }
 
             if (match) {
-                inBlock = true;
-                // Peek at the block content to avoid rendering empty "plaintext" placeholders
-                // or blocks that contained the builder report we already extracted
                 const nextLine = lines[i+1] ? lines[i+1].trim() : "";
-                const isClosingNext = nextLine.startsWith('```') || nextLine === "";
-                if (isClosingNext) {
-                    // Skip empty block detection
+                if (nextLine.startsWith('```') || nextLine === "") {
                     currentOffset += lineWithNewline.length;
                     continue;
                 }
@@ -673,7 +748,6 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
                     const parts = headerText.split(':');
                     let prefix = parts[0].toLowerCase();
                     
-                    // Handle "language:typescript:path" case
                     if ((prefix === 'language' || prefix === 'lang') && parts.length > 2) {
                         prefix = parts[1].toLowerCase();
                         pathStr = parts.slice(2).join(':').trim();
@@ -686,13 +760,11 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
                     else if (prefix === 'delete_code') type = 'delete';
                     else type = 'file';
 
-                    // Cleanup path: remove trailing metadata like (2 hunks) added by some LLMs
                     pathStr = pathStr.replace(/\s*\(\d+\s+hunks?\)$/i, '').trim();
                 } else if (headerText.toLowerCase() === 'diff') {
                     type = 'diff';
                 }
 
-                // Logic for finding path in content (for diffs)
                 if (type === 'diff' && !pathStr) {
                     for (let k = i + 1; k < Math.min(i + 10, lines.length); k++) {
                         const contentLine = lines[k].trim();
@@ -704,7 +776,6 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
                     }
                 }
 
-                // Logic for finding path in previous lines
                 if (!pathStr) {
                     let j = i - 1;
                     while (j >= 0 && lines[j].trim() === '') j--;
@@ -721,8 +792,6 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
                 infos.push({ type, path: pathStr, stripFirstLine, start: blockStartOffset, isClosed: false });
             }
         } else {
-            // We are inside a block, check for Aider markers to auto-detect 'replace' type
-            // REQUIRE marker to be at the start of the line
             if (lineText.startsWith('<<<<<<< SEARCH')) {
                 infos[infos.length - 1].type = 'replace';
             }
@@ -742,7 +811,6 @@ function extractFilePaths(content: string): ({ type: 'file' | 'diff' | 'insert' 
         currentOffset += lineWithNewline.length;
     }
 
-    // Fix: Ensure open blocks (streaming) have a valid 'end' so they don't cause duplication
     if (inBlock && infos.length > 0) {
         infos[infos.length - 1].end = currentOffset;
     }
@@ -780,7 +848,6 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
     if (pres.length === 0) return;
 
     let originalContentText = '';
-    
     if (contentSource !== undefined) {
         if (Array.isArray(contentSource)) {
             originalContentText = contentSource.map(p => p.type === 'text' ? p.text : '').join('\n');
@@ -792,421 +859,256 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
         if (messageDiv && messageDiv.dataset.originalContent) {
             try {
                 const raw = JSON.parse(messageDiv.dataset.originalContent);
-                if (Array.isArray(raw)) {
-                    originalContentText = raw.map(p => p.type === 'text' ? p.text : '').join('\n');
-                } else {
-                    originalContentText = raw;
-                }
+                originalContentText = Array.isArray(raw) ? raw.map(p => p.type === 'text' ? p.text : '').join('\n') : raw;
             } catch(e) {}
         }
     }
 
     const codeBlockInfos = extractFilePaths(originalContentText);
     let actionableBlockCount = 0;
-    
+
     pres.forEach((pre, index) => {
         const code = pre.querySelector('code');
-        if (!code) return;
-        // Ignore code blocks that are already wrapped or are part of a skill preview
-        if (pre.parentElement?.classList.contains('code-collapsible') || 
-            pre.parentElement?.classList.contains('file-operation-block') ||
-            pre.closest('.skill-preview')) {
-            return;
-        }
+        if (!code || pre.parentElement?.classList.contains('code-collapsible') || pre.closest('.skill-preview')) return;
 
         const langMatch = code.className.match(/language-(\S+)/);
         let language = langMatch ? langMatch[1] : 'plaintext';
-        
-        let isFileBlock = false;
-        let isDiff = false;
-        let diffFilePath = '';
-        let isInsert = false;
-        let isReplace = false;
-        let isDeleteCode = false;
-        let isFileDelete = false; 
-        let filePath = '';
-
-        if (language.includes(':')) {
-            const parts = language.split(':');
-            language = parts[0];
-            filePath = parts.slice(1).join(':').trim();
-            if (language.toLowerCase() === 'diff') {
-                isDiff = true;
-                diffFilePath = filePath;
-            } else {
-                isFileBlock = true;
-            }
-            code.className = `language-${language}`;
-            pre.className = `language-${language}`;
-        }
-
-        if (langMap[language.toLowerCase()]) {
-            language = langMap[language.toLowerCase()];
-            code.className = `language-${language}`;
-            pre.className = `language-${language}`;
-        }
-
-        let codeText = code.innerText;
-        const blockId = `code-block-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-        code.id = blockId;
+        let filePath = '', isDiff = false, diffFilePath = '';
 
         const info = codeBlockInfos[index];
-
         if (info) {
-            isFileBlock = false; isDiff = false; isInsert = false; isReplace = false; isDeleteCode = false; isFileDelete = false;
-
-            if (info.type === 'file') {
-                filePath = info.path;
-                isFileBlock = true;
-            } else if (info.type === 'diff') {
-                diffFilePath = info.path;
-                isDiff = true;
-            } else if (info.type === 'insert') {
-                filePath = info.path;
-                isInsert = true;
-            } else if (info.type === 'replace') {
-                filePath = info.path;
-                isReplace = true;
-            } else if (info.type === 'delete') {
-                filePath = info.path;
-                isDeleteCode = true;
-            } else if (info.type === 'file_delete') {
-                isFileDelete = true;
-            }
-
-            if (info.stripFirstLine) {
-                const lines = codeText.split('\n');
-                if (lines.length > 0) {
-                    lines.shift();
-                    codeText = lines.join('\n');
-                    code.textContent = codeText; 
-                }
-            }
-        } 
-        
-        // --- SPECIALIZED UI FOR RENAME/DELETE ---
-        if (info && info.type === 'rename') {
-            const parts = info.path.split(' -> ');
-            const oldPath = parts[0];
-            const newPath = parts[1] || '';
-
-            const opBlock = document.createElement('div');
-            opBlock.className = 'file-operation-block';
-            opBlock.innerHTML = `
-                <div class="file-operation-header">
-                    <span class="codicon codicon-edit"></span> 
-                    <span>Proposed File Rename</span>
-                </div>
-                <div class="file-operation-details">
-                    <span class="path-old" title="${oldPath}">${oldPath}</span>
-                    <span class="codicon codicon-arrow-right file-operation-arrow"></span>
-                    <span class="path-new" title="${newPath}">${newPath}</span>
-                </div>
-                <div class="file-operation-actions">
-                     <button class="code-action-btn apply-btn" id="apply-rename-${blockId}">Apply Rename</button>
-                </div>
-            `;
-            
-            pre.replaceWith(opBlock);
-            const applyBtn = opBlock.querySelector(`#apply-rename-${blockId}`) as HTMLButtonElement;
-            applyBtn.onclick = () => {
-                vscode.postMessage({ command: 'renameFile', originalPath: oldPath, newPath: newPath });
-                applyBtn.disabled = true;
-                applyBtn.innerHTML = '<span class="codicon codicon-check"></span> Applied';
-            };
-            return;
+            if (info.type === 'file' || info.type === 'insert' || info.type === 'replace' || info.type === 'delete') filePath = info.path;
+            else if (info.type === 'diff') { diffFilePath = info.path; isDiff = true; }
         }
 
-        if (info && (info.type === 'file_delete' || language === 'delete')) {
-            const pathToDelete = info.path || codeText.trim();
-            const opBlock = document.createElement('div');
-            opBlock.className = 'file-operation-block';
-            opBlock.innerHTML = `
-                <div class="file-operation-header">
-                    <span class="codicon codicon-trash" style="color:var(--vscode-errorForeground)"></span> 
-                    <span>Proposed File Deletion</span>
-                </div>
-                <div class="file-operation-details">
-                    <span class="path-target" title="${pathToDelete}">${pathToDelete}</span>
-                </div>
-                <div class="file-operation-actions">
-                     <button class="code-action-btn delete-btn" id="apply-delete-${blockId}">Delete File</button>
-                </div>
-            `;
-            
-            pre.replaceWith(opBlock);
-            const delBtn = opBlock.querySelector(`#apply-delete-${blockId}`) as HTMLButtonElement;
-            delBtn.onclick = () => {
-                vscode.postMessage({ command: 'deleteFile', filePaths: pathToDelete });
-                delBtn.disabled = true;
-                delBtn.innerHTML = '<span class="codicon codicon-check"></span> Deleted';
-            };
-            return;
-        }
+        if (langMap[language.toLowerCase()]) language = langMap[language.toLowerCase()];
+        code.className = `language-${language}`;
 
+        let codeText = code.innerText;
         if (!isDiff && (language === 'diff' || looksLikeDiff(codeText))) {
             isDiff = true;
-            // Improved regex to skip /dev/null and handle a/ b/ prefixes
             const headerMatch = codeText.match(/^(?:---|\+\+\+)\s+(?:[ab]\/)?([^\s\n\r]+)/m);
-            if (headerMatch && headerMatch[1] && headerMatch[1] !== '/dev/null') {
-                diffFilePath = headerMatch[1].trim();
-            }
+            if (headerMatch && headerMatch[1] && headerMatch[1] !== '/dev/null') diffFilePath = headerMatch[1].trim();
         }
 
+        // Improved Regex: More permissive with line endings and prevents eating into the 
+        // replacement code if it starts with leading newlines.
+        const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
+        const aiderMatches = [...codeText.matchAll(aiderRegex)];
+        const isAider = aiderMatches.length > 0;
         const isDiagram = language === 'mermaid' || language === 'svg';
+        const pathVal = isDiff ? diffFilePath : filePath;
+
         const details = document.createElement('details');
         details.className = 'code-collapsible';
-        details.open = !isDiagram; // Diagrams default to collapsed source view
+        details.open = true;
+        details.dataset.rawCode = codeText;
+        details.id = `block-${messageId}-${index}`;
 
         const summary = document.createElement('summary');
         summary.className = 'code-summary';
-        const langLabel = document.createElement('span');
-        langLabel.className = 'summary-lang-label';
-        
-        langLabel.textContent = language;
+        summary.innerHTML = `<div class="summary-lang-label"><span>${language}</span>${pathVal ? ` : <input type="text" class="path-editor-input" value="${pathVal}">` : ''}</div>`;
 
         const actions = document.createElement('div');
         actions.className = 'code-actions';
-        summary.appendChild(langLabel);
         summary.appendChild(actions);
 
         const isDisabled = !isFinal && (info ? !info.isClosed : false);
+        actions.appendChild(createButton('Copy', 'codicon-copy', () => {
+            vscode.postMessage({ command: 'copyToClipboard', text: codeText });
+        }));
 
-        const copyBtn = createButton('Copy', 'codicon-copy', () => {
-            // Ensure we use the message passing interface
-            window.vscode.postMessage({ 
-                command: 'copyToClipboard', 
-                text: codeText 
-            });
-            
-            // Visual feedback
-            const iconEl = copyBtn.querySelector('.codicon');
-            if(iconEl) {
-                iconEl.classList.remove('codicon-copy');
-                iconEl.classList.add('codicon-check');
-                setTimeout(() => {
-                    if (iconEl) {
-                        iconEl.classList.remove('codicon-check');
-                        iconEl.classList.add('codicon-copy');
-                    }
-                }, 2000);
-            }
-        });
-        copyBtn.disabled = isDisabled;
-        actions.appendChild(copyBtn);
+        // ADDED: Raw Aider Button
+        if (isAider) {
+            actions.appendChild(createButton('Raw', 'codicon-source-control', () => {
+                if (dom.rawCodeDisplay) {
+                    dom.rawCodeFilename.textContent = pathVal || "Unspecified File";
+                    dom.rawCodeDisplay.textContent = codeText;
+                    dom.rawCodeDisplay.dataset.messageId = messageId;
+                    dom.rawCodeDisplay.dataset.blockIndex = String(index);
+                    dom.rawCodeModal.classList.add('visible');
+                }
+            }, 'code-action-btn', 'Open manual stitching view'));
+        }
 
-        const saveBtn = createButton('Save As...', 'codicon-save', () => {
+        // ADDED: Save Button for all blocks
+        actions.appendChild(createButton('Save', 'codicon-save', () => {
             vscode.postMessage({ command: 'saveCodeToFile', content: codeText, language: language });
-        });
-        saveBtn.disabled = isDisabled;
-        actions.appendChild(saveBtn);
+        }, 'code-action-btn', 'Save code to file...'));
 
-        if (state.isInspectorEnabled && language !== 'skill') {
-            const inspectBtn = createButton('Inspect', 'codicon-search', () => {
-                vscode.postMessage({ command: 'inspectCode', code: codeText, language: language });
-            });
-            inspectBtn.disabled = isDisabled;
-            actions.appendChild(inspectBtn);
+        // ADDED: Inspect Code Block Button
+        if (pathVal) {
+            actions.appendChild(createButton('Inspect', 'codicon-eye', () => {
+                const isApplied = state.appliedState?.[messageId]?.[index]?.includes(-1) || false;
+                vscode.postMessage({ 
+                    command: 'inspectPatch', 
+                    filePath: pathVal, 
+                    content: codeText, 
+                    messageId: messageId,
+                    blockIndex: index,
+                    type: isAider ? 'replace' : (isDiff ? 'diff' : 'file'),
+                    isApplied: isApplied
+                });
+            }, 'code-action-btn', 'Inspect this code for potential errors'));
         }
 
-        if (isDiagram) {
-            // Add a "Source" button to the header to make it clear how to view code
-            const showCodeBtn = createButton('Source', 'codicon-code', () => {
-                details.open = !details.open;
-            }, 'code-action-btn', 'View diagram source');
-            actions.appendChild(showCodeBtn);
-        }
-
-        if (isReplace && filePath) {
-            // Aider style Search/Replace block
-            const aiderRegex = /<<<<<<< SEARCH([\s\S]*?)=======([\s\S]*?)>>>>>>> REPLACE/;
-            const match = codeText.match(aiderRegex);
-            if (match) {
-                const searchPart = match[1].trim();
-                const replacePart = match[2].trim();
-
-                const copySearchBtn = createButton('Copy Search', 'codicon-copy', () => {
-                    vscode.postMessage({ command: 'copyToClipboard', text: searchPart });
-                    copySearchBtn.innerHTML = '<span class="codicon codicon-check"></span>';
-                    setTimeout(() => { copySearchBtn.innerHTML = '<span class="codicon codicon-copy"></span>'; }, 2000);
-                }, 'code-action-btn', 'Copy text to search for');
-                copySearchBtn.disabled = isDisabled;
-                actions.appendChild(copySearchBtn);
-
-                const copyReplaceBtn = createButton('Copy Replace', 'codicon-copy', () => {
-                    vscode.postMessage({ command: 'copyToClipboard', text: replacePart });
-                    copyReplaceBtn.innerHTML = '<span class="codicon codicon-check"></span>';
-                    setTimeout(() => { copyReplaceBtn.innerHTML = '<span class="codicon codicon-copy"></span>'; }, 2000);
-                }, 'code-action-btn', 'Copy text to replace with');
-                copyReplaceBtn.disabled = isDisabled;
-                actions.appendChild(copyReplaceBtn);
-            }
-        }
-
-        if (isFileBlock && filePath) {
+        if (pathVal && ['file', 'replace', 'insert', 'diff'].includes(info?.type || (isAider ? 'replace' : ''))) {
             actionableBlockCount++;
-            langLabel.textContent = `${language} : ${filePath}`;
-
-            const gotoBtn = createButton('', 'codicon-go-to-file', () => {
-                vscode.postMessage({ command: 'openFile', path: filePath });
-            }, 'code-action-btn', 'Go to File');
-            gotoBtn.disabled = isDisabled;
-            actions.appendChild(gotoBtn);
-
-            const applyBtn = createButton('Apply to File', 'codicon-tools', () => {
-                vscode.postMessage({ command: 'applyFileContent', filePath: filePath, content: codeText });
+            const currentMsgId = messageId;
+            const blockIdx = index;
+            const applyBtnId = `apply-btn-${currentMsgId}-${blockIdx}`;
+            
+            const applyBtn = createButton('Apply', isAider ? 'codicon-arrow-swap' : 'codicon-tools', () => {
+                const finalPath = (details.querySelector('.path-editor-input') as HTMLInputElement)?.value || pathVal;
+                const cmd = isDiff ? 'applyPatchContent' : (isAider ? 'replaceCode' : 'applyFileContent');
+                applyBtn.disabled = true;
+                applyBtn.style.opacity = '0.5';
+                vscode.postMessage({ 
+                    command: cmd, 
+                    filePath: finalPath, 
+                    content: codeText, 
+                    messageId: currentMsgId, 
+                    blockIndex: blockIdx 
+                });
             }, 'code-action-btn apply-btn');
+            applyBtn.id = applyBtnId;
             applyBtn.disabled = isDisabled;
-            if (actions.firstChild) actions.insertBefore(applyBtn, actions.firstChild);
-            else actions.appendChild(applyBtn);
-        } else if (isDiff) {
-            actionableBlockCount++;
-            const path = diffFilePath || filePath || 'patch';
-            langLabel.textContent = `${language} : Diff: ${path}`;
-
-            if (path !== 'patch') {
-                const gotoBtn = createButton('', 'codicon-go-to-file', () => {
-                    vscode.postMessage({ command: 'openFile', path: path });
-                }, 'code-action-btn', 'Go to File');
-                gotoBtn.disabled = isDisabled;
-                actions.appendChild(gotoBtn);
-            }
-
-            const applyPatchBtn = createButton('Apply Patch', 'codicon-tools', () => {
-                vscode.postMessage({ command: 'applyPatchContent', filePath: path, content: codeText });
-            }, 'code-action-btn apply-btn');
-            applyPatchBtn.disabled = isDisabled;
-            if (actions.firstChild) actions.insertBefore(applyPatchBtn, actions.firstChild);
-            else actions.appendChild(applyPatchBtn);
-        } else if (isInsert) {
-            actionableBlockCount++;
-            langLabel.textContent = `Insert into ${filePath}`;
-
-            const gotoBtn = createButton('', 'codicon-go-to-file', () => {
-                vscode.postMessage({ command: 'openFile', path: filePath });
-            }, 'code-action-btn', 'Go to File');
-            gotoBtn.disabled = isDisabled;
-            actions.appendChild(gotoBtn);
-
-            const insertBtn = createButton('Insert Code', 'codicon-arrow-right', () => {
-                vscode.postMessage({ command: 'insertCode', filePath: filePath, content: codeText });
-            }, 'code-action-btn apply-btn');
-            insertBtn.disabled = isDisabled;
-            if (actions.firstChild) actions.insertBefore(insertBtn, actions.firstChild);
-            else actions.appendChild(insertBtn);
-        } else if (isReplace) {
-            actionableBlockCount++;
-            langLabel.textContent = `Replace in ${filePath}`;
-
-            const gotoBtn = createButton('', 'codicon-go-to-file', () => {
-                vscode.postMessage({ command: 'openFile', path: filePath });
-            }, 'code-action-btn', 'Go to File');
-            gotoBtn.disabled = isDisabled;
-            actions.appendChild(gotoBtn);
-
-            const replaceBtn = createButton('Replace Code', 'codicon-arrow-swap', () => {
-                vscode.postMessage({ command: 'replaceCode', filePath: filePath, content: codeText });
-            }, 'code-action-btn apply-btn');
-            replaceBtn.disabled = isDisabled;
-            if (actions.firstChild) actions.insertBefore(replaceBtn, actions.firstChild);
-            else actions.appendChild(replaceBtn);
+            actions.appendChild(applyBtn);
         } else {
-             const runnableLanguages = ['python', 'py', 'javascript', 'js', 'typescript', 'ts', 'bash', 'sh', 'shell', 'powershell', 'pwsh', 'batch', 'cmd', 'bat'];
-             if (runnableLanguages.includes(language.toLowerCase())) {
-                 const executeBtn = createButton('Execute', 'codicon-play', () => {
-                     vscode.postMessage({ command: 'runScript', code: codeText, language: language });
-                 }, 'code-action-btn apply-btn');
-                 executeBtn.disabled = isDisabled;
-                 if (actions.firstChild) actions.insertBefore(executeBtn, actions.firstChild);
-                 else actions.appendChild(executeBtn);
-             }
+            // ADDED: Play button for code without path
+            const runnableLangs = ['python', 'py', 'javascript', 'js', 'typescript', 'ts', 'bash', 'sh', 'powershell', 'pwsh'];
+            if (runnableLangs.includes(language.toLowerCase())) {
+                const runBtn = createButton('Run', 'codicon-play', () => {
+                    runBtn.disabled = true;
+                    runBtn.innerHTML = '<div class="spinner"></div>';
+                    vscode.postMessage({ command: 'runScript', code: codeText, language: language });
+                    setTimeout(() => { 
+                        runBtn.disabled = false; 
+                        runBtn.innerHTML = '<span class="codicon codicon-play"></span>'; 
+                    }, 3000);
+                }, 'code-action-btn apply-btn');
+                runBtn.disabled = isDisabled;
+                actions.appendChild(runBtn);
+            }
         }
 
         const parent = pre.parentNode;
-        if (parent) {
-            // If it's a diagram, create the render zone ABOVE the collapsible block
-            if (isDiagram) {
-                const renderZone = document.createElement('div');
-                renderZone.className = 'diagram-render-zone';
-                parent.insertBefore(renderZone, pre); 
-                renderDiagram(code, language, renderZone);
-            }
+        if (!parent) return;
 
-            // Add gutter to standard Prism blocks too
-            if (!pre.querySelector('.code-line-gutter')) {
-                const gutter = document.createElement('div');
-                gutter.className = 'code-line-gutter';
-                const lineCount = code.textContent?.split('\n').length || 1;
-                gutter.innerHTML = Array.from({ length: lineCount }, (_, i) => i + 1).join('<br>');
-                pre.insertBefore(gutter, pre.firstChild);
-            }
-
-            details.appendChild(summary);
-            parent.insertBefore(details, pre); 
-            details.appendChild(pre); 
+        // 1. Handle Diagrams
+        if (isDiagram && !isDisabled) {
+            const rz = document.createElement('div');
+            rz.className = 'diagram-render-zone';
+            parent.insertBefore(rz, pre);
+            renderDiagram(code, language, rz);
         }
 
-        // Apply highlighting (always do it now so source view looks good)
-        Prism.highlightElement(code);
-    });
+        // 2. Assemble Header (Summary)
+        details.appendChild(summary);
 
-    if (actionableBlockCount > 0) {
-        const contentDiv = container.querySelector('.message-content');
-        if (contentDiv && !contentDiv.querySelector('.apply-all-wrapper')) {
-            const wrapper = document.createElement('div');
-            wrapper.className = 'apply-all-wrapper';
-            wrapper.style.marginTop = '16px';
+        if (isAider) {
+            // --- AIDER MODE: TABBED HUNK NAVIGATION ---
+            const tabContainer = document.createElement('div');
+            tabContainer.className = 'hunk-tabs-container';
 
-            const btn = document.createElement('button');
-            btn.className = 'apply-all-btn';
-            btn.innerHTML = '<span class="codicon codicon-check-all"></span> Apply All Changes';
-            btn.disabled = !isFinal;
+            const nav = document.createElement('div');
+            nav.className = 'hunk-tabs-nav';
+            tabContainer.appendChild(nav);
+
+            const contentWrapper = document.createElement('div');
+            contentWrapper.className = 'hunk-contents-wrapper';
+            tabContainer.appendChild(contentWrapper);
+
+            const currentMsgId = messageId;
+            const blockIdx = index;
+
+            aiderMatches.forEach((m, hIdx) => {
+                const appliedHunks = state.appliedState?.[currentMsgId]?.[blockIdx] || [];
+                const isHunkApplied = appliedHunks.includes(hIdx) || appliedHunks.includes(-1);
+
+                // 1. Create Tab
+                const tab = document.createElement('div');
+                tab.className = `hunk-tab hunk-tab-${hIdx} ${isHunkApplied ? 'status-completed' : ''}`;
+                tab.innerHTML = `<span class="hunk-status-icon"><i class="codicon ${isHunkApplied ? 'codicon-check' : 'codicon-primitive-dot'}"></i></span> HUNK ${hIdx + 1}`;
+                nav.appendChild(tab);
+
+                // 2. Create Content Pane
+                const pane = document.createElement('div');
+                pane.className = `hunk-tab-content hunk-pane-${hIdx}`;
+                pane.id = `pane-${currentMsgId}-${blockIdx}-${hIdx}`;
+
+                const sLines = m[1].replace(/\r\n/g, '\n').split('\n');
+                const rLines = m[2].replace(/\r\n/g, '\n').split('\n');
+                let pref = 0;
+                while (pref < sLines.length && pref < rLines.length && sLines[pref] === rLines[pref]) pref++;
+                let suff = 0;
+                while (suff < (sLines.length - pref) && suff < (rLines.length - pref) && sLines[sLines.length - 1 - suff] === rLines[rLines.length - 1 - suff]) suff++;
+
+                pane.innerHTML = `
+                    <div class="aider-hunk-bubble">
+                        <div class="aider-hunk-content">
+                            <pre style="margin:0; padding:12px; background:var(--vscode-editor-background); border:none; overflow:auto; max-height: 400px;">${renderLines(sLines.slice(0, pref), 'unchanged')}${renderLines(sLines.slice(pref, sLines.length - suff), 'removed')}${renderLines(rLines.slice(pref, rLines.length - suff), 'added')}${renderLines(sLines.slice(sLines.length - suff), 'unchanged')}</pre>
+                        </div>
+                        <div class="aider-hunk-header" style="border-top: 1px solid var(--vscode-widget-border); border-bottom: none;">
+                            <div style="font-size: 10px; opacity:0.7;">Actions for Hunk ${hIdx + 1}</div>
+                            <div class="aider-hunk-actions">
+                                <button class="code-action-btn delete-btn undo-hunk-btn" style="display: ${isHunkApplied ? 'flex' : 'none'}" title="Undo this hunk"><i class="codicon codicon-discard"></i> UNDO</button>
+                                <button class="code-action-btn apply-btn ${isHunkApplied ? 'applied' : ''}" title="Apply this hunk"><i class="codicon ${isHunkApplied ? 'codicon-check' : 'codicon-arrow-swap'}"></i> APPLY</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                // 3. Tab Interaction
+                tab.onclick = () => {
+                    nav.querySelectorAll('.hunk-tab').forEach(t => t.classList.remove('active'));
+                    contentWrapper.querySelectorAll('.hunk-tab-content').forEach(p => p.classList.remove('active'));
+                    tab.classList.add('active');
+                    pane.classList.add('active');
+                };
+
+                // 4. Action Logic
+                const hunkApply = pane.querySelector('.apply-btn') as HTMLElement;
+                const hunkUndo = pane.querySelector('.undo-hunk-btn') as HTMLElement;
+
+                hunkApply.onclick = () => {
+                    const finalPath = (details.querySelector('.path-editor-input') as HTMLInputElement)?.value || pathVal;
+                    hunkApply.disabled = true;
+                    vscode.postMessage({ command: 'replaceCode', filePath: finalPath, content: m[0], messageId: currentMsgId, blockIndex: blockIdx, hunkIndex: hIdx });
+                };
+
+                hunkUndo.onclick = () => {
+                    const finalPath = (details.querySelector('.path-editor-input') as HTMLInputElement)?.value || pathVal;
+                    hunkUndo.disabled = true;
+                    vscode.postMessage({ command: 'replaceCode', filePath: finalPath, content: m[0], messageId: currentMsgId, blockIndex: blockIdx, hunkIndex: hIdx, options: { undo: true } });
+                };
+
+                if (hIdx === 0) { tab.classList.add('active'); pane.classList.add('active'); }
+                contentWrapper.appendChild(pane);
+            });
+
+            details.appendChild(tabContainer);
+            pre.replaceWith(details);
+        } else {
+            // --- STANDARD MODE: GUTTER + SYNTAX HIGHLIGHTING ---
+            pre.style.display = 'flex';
+            pre.style.flexDirection = 'row';
+            pre.style.overflow = 'auto';
+
+            const gutter = document.createElement('div');
+            gutter.className = 'code-line-gutter';
+            const lineCount = codeText.split('\n').length;
+            gutter.innerHTML = Array.from({ length: lineCount }, (_, i) => i + 1).join('<br>');
+
+            pre.insertBefore(gutter, pre.firstChild);
             
-            const resultsList = document.createElement('div');
-            resultsList.className = 'apply-results-list';
-            resultsList.style.cssText = 'display:none; margin-top:8px; font-size:11px; padding:8px; background:var(--vscode-editor-inactiveSelectionBackground); border-radius:4px; border:1px solid var(--vscode-widget-border);';
+            // Move the original pre inside the details
+            parent.replaceChild(details, pre);
+            details.appendChild(pre);
 
-            btn.onclick = () => {
-                if (btn.classList.contains('applied')) return;
-
-                // 1. Extract ALL actionable items (supporting multi-hunk Aider)
-                const changes = gatherChangesFromBlocks(messageId);
-
-                if (changes.length === 0) {
-                    vscode.postMessage({ command: 'showError', message: 'No un-applied changes found in this message.' });
-                    return;
-                }
-
-                // 2. UI State: Switch to "Processing"
-                btn.disabled = true;
-                btn.classList.add('sequential-applying');
-                btn.innerHTML = '<span class="codicon codicon-sync spin"></span> Applying Batch...';
-
-                resultsList.style.display = 'block';
-                resultsList.innerHTML = changes.map((c) => {
-                    const isFull = c.type === 'file';
-                    const typeLabel = isFull ? 'FULL' : 'PATCH';
-                    const typeColor = isFull ? 'var(--vscode-charts-blue)' : 'var(--vscode-charts-orange)';
-                    const hunkAttr = c.hunkIndex !== undefined ? `data-hunk-index="${c.hunkIndex}"` : '';
-
-                    return `
-                    <div class="apply-row" data-path="${c.path}" data-block-index="${c.blockIndex}" ${hunkAttr} style="display:flex; align-items:center; gap:8px; margin-bottom:4px; padding:4px; border-radius:4px;">
-                        <span class="status-icon"><span class="codicon codicon-clock" style="opacity:0.5"></span></span>
-                        <span style="font-weight:800; font-size:9px; color:${typeColor}; min-width:45px; border:1px solid ${typeColor}; border-radius:3px; text-align:center; padding:0 2px;">${typeLabel}</span>
-                        <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; opacity:0.8;">${c.label}</span>
-                        <div class="row-actions" style="display:none;"></div>
-                    </div>`;
-                }).join('');
-
-                // 3. Delegate Batch to extension
-                vscode.postMessage({ command: 'applyAllChanges', changes, messageId });
-            };
-
-            wrapper.appendChild(btn);
-            wrapper.appendChild(resultsList);
-            contentDiv.appendChild(wrapper);
+            Prism.highlightElement(code);
         }
-    }
+    });
 }
 
 
@@ -1362,124 +1264,70 @@ function renderMissionControl(dataStr: string): string {
     }
 }
 
-function renderAddFilesBlock(params: any, messageId: string): string {
-    const files: string[] = Array.isArray(params.paths) ? params.paths : (params.files || []);
+/**
+ * Renders the high-fidelity Aider hunk-by-hunk visualizer
+ */
+function renderAiderDiff(pre: HTMLElement, rawCode: string, filePath: string, messageId: string, blockIdx: number, isFinal: boolean) {
+    const details = document.createElement('details');
+    details.className = 'code-collapsible aider-diff-container';
+    details.open = true;
+    details.id = `block-${messageId}-${blockIdx}`;
+    details.setAttribute('data-raw-code', rawCode);
 
-    if (files.length === 0) return "";
-
-    const currentFiles = state.lastContextData?.files || [];
-    let allIncluded = true;
-
-    const fileItems = files.map(f => {
-        const isIncluded = currentFiles.includes(f);
-        if (!isIncluded) allIncluded = false;
-
-        const itemStyle = isIncluded 
-            ? 'border-color: var(--vscode-charts-green); background: rgba(15, 157, 88, 0.1);' 
-            : '';
-        const iconClass = isIncluded ? 'codicon-check' : 'codicon-file-add';
-        const iconStyle = isIncluded ? 'color: var(--vscode-charts-green);' : '';
-
-        return `
-        <div class="expansion-file-item" style="display:flex; justify-content:space-between; align-items:center; ${itemStyle}">
-            <div style="display:flex; align-items:center; gap:8px;">
-                <span class="codicon ${iconClass}" style="${iconStyle}"></span>
-                <span>${sanitizer.sanitize(f)}</span>
-            </div>
-        </div>`;
-    }).join('');
-
-    // Use a more specific block ID that includes the current timestamp to avoid collisions
-    const blockId = `add-files-${messageId}-${Date.now()}`;
-    const fileListJson = JSON.stringify(files).replace(/"/g, '&quot;');
-
-    const btnText = allIncluded ? 'Added to Context' : 'Add all to Context';
-    const btnClass = allIncluded ? 'applied' : 'apply-btn';
-    const btnDisabled = allIncluded ? 'disabled' : '';
-    const btnIcon = allIncluded ? 'codicon-check' : 'codicon-add';
-
-    // We use a data-files attribute to allow the updateContext function to re-verify this block later
-    return `
-    <div class="context-expansion-block expansion-request-block" id="${blockId}" data-files="${fileListJson}">
-        <div class="expansion-header">
-            <span class="codicon codicon-library"></span>
-            <span>Context Expansion Requested</span>
+    const summary = document.createElement('summary');
+    summary.className = 'code-summary';
+    summary.innerHTML = `
+        <div class="summary-lang-label">
+            <span class="codicon codicon-diff-modified"></span>
+            <input type="text" class="path-editor-input" value="${filePath}" 
+                   onchange="this.closest('.code-collapsible').dataset.path = this.value"
+                   title="Edit target path if incorrect">
         </div>
-        <div class="expansion-body">
-            <p style="margin-bottom:12px; font-size: 11px; opacity: 0.8;">The AI identified that it needs the following files to complete the task without making assumptions:</p>
-            <div class="expansion-file-list" id="list-${blockId}" style="margin-bottom:12px;">
-                ${fileItems}
-            </div>
-            <div style="display:flex; gap: 8px; flex-wrap: wrap;">
-                <button class="code-action-btn ${btnClass} add-files-to-context-btn" 
-                    id="btn-${blockId}" 
-                    ${btnDisabled}
-                    data-files="${fileListJson}" 
-                    data-block-id="${blockId}">
-                    <span class="codicon ${btnIcon}"></span> ${btnText}
-                </button>
-                <button class="code-action-btn ${btnClass} add-and-reprompt-btn" 
-                    id="btn-reprompt-${blockId}" 
-                    ${btnDisabled}
-                    data-files="${fileListJson}" 
-                    data-block-id="${blockId}">
-                    <span class="codicon ${allIncluded ? 'codicon-check' : 'codicon-sync'}"></span> ${allIncluded ? 'Added' : 'Add & Reprompt'}
-                </button>
-                <button class="code-action-btn apply-btn copy-files-to-clipboard-btn" 
-                    id="btn-copy-${blockId}" 
-                    data-files="${fileListJson}">
-                    <span class="codicon codicon-clippy"></span> Copy Contents
-                </button>
-            </div>
-            </div>
-            </div>`;
-            }
-
-function renderImageEditBlock(params: any, messageId: string): string {
-    const blockId = `img-edit-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
-    const paths = Array.isArray(params.paths) ? params.paths : [];
-    const prompt = params.prompt || params.instructions || "";
-    const outPath = params.output_path || (paths.length > 0 ? paths[0] : "edited_asset.png");
-
-    const folder = outPath.includes('/') ? outPath.substring(0, outPath.lastIndexOf('/')) : '.';
-    const filename = outPath.includes('/') ? outPath.substring(outPath.lastIndexOf('/') + 1) : outPath;
-
-    const sourcesHtml = paths.map(p => `<div class="expansion-file-item"><span class="codicon codicon-file-media"></span> <span>${sanitizer.sanitize(p)}</span></div>`).join('');
-
-    return `
-    <div class="generation-block" id="${blockId}">
-        <div class="generation-header">
-            <span class="summary-lang-label"><span class="codicon codicon-wand"></span> Propose Image Edit</span>
-            <div class="code-actions">
-                <button class="code-action-btn apply-btn generate-image-btn" 
-                    data-prompt="${encodeURIComponent(prompt)}" 
-                    data-path="${encodeURIComponent(outPath)}" 
-                    data-preview-id="prev-${blockId}"
-                    title="Run Image Edit">
-                    <span class="codicon codicon-sparkle"></span> Apply Edit
-                </button>
-            </div>
+        <div class="code-actions">
+            <button class="code-action-btn apply-btn apply-all-btn" id="apply-btn-${messageId}-${blockIdx}">
+                <span class="codicon codicon-tools"></span> Apply All
+            </button>
         </div>
-        <div style="display:flex; gap:10px; padding: 8px 12px; background: var(--vscode-editor-inactiveSelectionBackground); border-bottom: 1px solid var(--vscode-widget-border);">
-            <div style="flex:1;">
-                <label style="font-size:9px; font-weight:bold; opacity:0.7; display:block;">TARGET FOLDER</label>
-                <input type="text" class="asset-folder-input" value="${sanitizer.sanitize(folder)}" style="width:100%; background:transparent; border:none; color:var(--vscode-foreground); font-size:11px;">
+    `;
+
+    const hunkGroup = document.createElement('div');
+    hunkGroup.className = 'aider-hunk-group';
+
+    // IMPROVED REGEX: More permissive with line endings to ensure no hunks are missed
+    const aiderRegex = /<<<<<<< SEARCH\s*[\r\n]+([\s\S]*?)[\r\n]+=======[\r\n]+([\s\S]*?)[\r\n]+>>>>>>> REPLACE/g;
+    const matches = [...rawCode.matchAll(aiderRegex)];
+
+    matches.forEach((match, hIdx) => {
+        const searchPart = match[1];
+        const replacePart = match[2];
+
+        const hunkBubble = document.createElement('div');
+        hunkBubble.className = 'aider-hunk-bubble';
+        hunkBubble.innerHTML = `
+            <div class="aider-hunk-header" onclick="this.parentElement.classList.toggle('collapsed')">
+                <div style="display:flex; align-items:center; gap:8px;">
+                    <i class="codicon codicon-chevron-down hunk-toggle-icon"></i>
+                    <span>HUNK ${hIdx + 1} of ${matches.length}</span>
+                </div>
+                <div class="aider-hunk-actions">
+                    <button class="code-action-btn apply-btn" data-block-index="${blockIdx}" data-hunk-index="${hIdx}">
+                        <span class="codicon codicon-arrow-swap"></span> Apply Hunk
+                    </button>
+                </div>
             </div>
-            <div style="flex:2;">
-                <label style="font-size:9px; font-weight:bold; opacity:0.7; display:block;">OUTPUT FILENAME</label>
-                <input type="text" class="asset-name-input" value="${sanitizer.sanitize(filename)}" style="width:100%; background:transparent; border:none; color:var(--vscode-foreground); font-size:11px; font-weight:bold;">
+            <div class="aider-hunk-content">
+                ${searchPart.split('\n').map(l => `<div class="aider-diff-line aider-diff-removed">${l}</div>`).join('')}
+                ${replacePart.split('\n').map(l => `<div class="aider-diff-line aider-diff-added">${l}</div>`).join('')}
             </div>
-        </div>
-        <div class="generation-body">
-            <p style="font-size:11px; opacity:0.8; margin-bottom:8px;"><strong>Instruction:</strong> ${sanitizer.sanitize(prompt)}</p>
-            <div style="font-size:9px; font-weight:bold; opacity:0.5; margin-bottom:4px; text-transform:uppercase;">Source Assets</div>
-            <div class="expansion-file-list" style="margin-bottom:12px;">
-                ${sourcesHtml}
-            </div>
-            <div id="prev-${blockId}" class="image-preview-zone" style="margin-top: 10px; display: flex; justify-content: center; min-height: 20px;"></div>
-        </div>
-    </div>`;
+        `;
+        hunkGroup.appendChild(hunkBubble);
+    });
+
+    details.appendChild(summary);
+    details.appendChild(hunkGroup);
+    pre.replaceWith(details);
 }
+
 
 export function renderFileOpBlock(type: 'delete' | 'move' | 'copy' | 'prune', params: any, messageId: string): string {
     const blockId = `file-op-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
@@ -1649,75 +1497,6 @@ function renderFormBlock(xmlContent: string, messageId: string): string {
     </div>`;
 }
 
-function renderBreakpointBlock(attrs: any): string {
-    const path = attrs.path || "unknown_file";
-    const line = attrs.line || "0";
-    const msg = attrs.message || "Investigate state here.";
-    const blockId = `bp-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
-
-    return `
-    <div class="file-operation-block" style="border-left-color: var(--vscode-charts-red);" id="${blockId}">
-        <div class="file-operation-header">
-            <span class="codicon codicon-debug-breakpoint-log" style="color:var(--vscode-charts-red)"></span> 
-            <span>Proposed Debug Point</span>
-        </div>
-        <div class="expansion-body">
-            <div style="font-family: var(--vscode-editor-font-family); font-size: 12px; margin-bottom: 8px;">
-                <strong style="color: var(--vscode-textLink-foreground);">${sanitizer.sanitize(path)}</strong> : Line ${sanitizer.sanitize(line)}
-            </div>
-            <div style="font-size: 11px; opacity: 0.8; font-style: italic; margin-bottom: 12px; padding: 6px; background: rgba(0,0,0,0.2); border-radius: 4px;">
-                "${sanitizer.sanitize(msg)}"
-            </div>
-            <div class="file-operation-actions">
-                <button class="code-action-btn apply-btn set-breakpoint-btn" 
-                    data-path="${sanitizer.sanitize(path)}" 
-                    data-line="${sanitizer.sanitize(line)}"
-                    data-block-id="${blockId}">
-                    <span class="codicon codicon-debug-stop"></span> Set Breakpoint
-                </button>
-            </div>
-        </div>
-    </div>`;
-}
-
-function renderPlanStatusCard(attrs: any): string {
-    let tasks: any[] = [];
-    try {
-        tasks = JSON.parse(attrs.tasks || '[]');
-    } catch (e) {}
-
-    const checklist = tasks.map(t => {
-        const isDone = t.status === 'completed';
-        const icon = isDone ? 'pass-filled' : (t.status === 'in_progress' ? 'sync~spin' : 'circle-outline');
-        return `
-            <div class="checklist-item ${isDone ? 'done' : ''}">
-                <i class="codicon codicon-${icon}" style="color:${isDone ? 'var(--vscode-charts-green)' : 'inherit'}"></i>
-                <span>${sanitizer.sanitize(t.desc)}</span>
-            </div>`;
-    }).join('');
-
-    return `
-    <div class="plan-status-card">
-        <div class="plan-status-header">
-            <span><i class="codicon codicon-checklist"></i> MISSION PROGRESS</span>
-            <span>${attrs.percent}%</span>
-        </div>
-        <div class="plan-status-body">
-            <div style="font-size: 11px; opacity: 0.7; font-weight: bold; text-transform: uppercase;">Current Sub-Goal</div>
-            <div class="plan-subgoal-box">${sanitizer.sanitize(attrs.sub_goal)}</div>
-
-            <div class="plan-progress-bar-container">
-                <div class="plan-progress-bar-fill" style="width: ${attrs.percent}%"></div>
-            </div>
-
-            <div style="font-size: 10px; opacity: 0.5; margin-top: 15px; font-weight: bold; text-transform: uppercase;">Task Roadmap (${attrs.completed}/${attrs.total})</div>
-            <div class="plan-mini-checklist">
-                ${checklist}
-            </div>
-        </div>
-    </div>`;
-}
-
 function renderMilestoneCard(attrs: any): string {
     return `
     <div class="milestone-card">
@@ -1742,1209 +1521,203 @@ function renderMilestoneCard(attrs: any): string {
     </div>`;
 }
 
-function renderProcessingBlock(rawContent: string, isClosed: boolean): string {
-    const lines = rawContent.trim().split('\n').filter(l => l.trim().length > 0);
-    const displayTitle = lines.length > 0 ? lines[lines.length - 1].replace(/^\*\s*/, '') : "Processing...";
-    
-    const icon = isClosed 
-        ? '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span>' 
-        : '<div class="spinner"></div>';
-
-    return `
-    <div class="processing-block">
-        <details ${!isClosed ? 'open' : ''}>
-            <summary class="processing-header">
-                <span class="folder-handle codicon codicon-chevron-right"></span>
-                ${icon}
-                <span class="processing-title">${sanitizer.sanitize(displayTitle)}</span>
-            </summary>
-            <div class="processing-body">
-                ${sanitizer.sanitize(rawContent.trim())}
-            </div>
-        </details>
-        </div>
-        </div>`;
-        }
 
 
-function renderImageResultBlock(path: string, messageId: string): string {
-    const id = `img-res-${messageId}-${Math.random().toString(36).substr(2, 5)}`;
-    const safePath = sanitizer.sanitize(path);
-
-    // Trigger the path resolution as soon as the HTML is parsed
-    setTimeout(() => {
-        vscode.postMessage({
-            command: 'resolveImageUri',
-            path: path,
-            targetId: id
-        });
-    }, 0);
-
-    return `
-    <div class="generation-block">
-        <div class="generation-header">
-            <span class="summary-lang-label"><span class="codicon codicon-file-media"></span> Image: ${safePath}</span>
-            <div class="code-actions">
-                <button class="code-action-btn copy-asset-path-btn" data-path="${safePath}" title="Copy Path"><i class="codicon codicon-copy"></i></button>
-                <button class="code-action-btn save-asset-as-btn" data-path="${safePath}" title="Save As..."><i class="codicon codicon-save"></i></button>
-                <button class="code-action-btn edit-asset-btn" data-target-id="${id}" title="Edit Visual"><i class="codicon codicon-edit"></i></button>
-            </div>
-        </div>
-        <div class="generation-body" style="display:flex; justify-content:center; background: #000; padding: 10px; border-radius: 0 0 6px 6px;">
-            <div id="${id}" class="image-result-container">
-                <div class="spinner"></div> <span style="font-size:10px; opacity:0.7;">Loading local asset...</span>
-            </div>
-        </div>
-    </div>`;
-}
-
-function renderImageGenBlock(prompt: string, path: string, width?: string, height?: string): string {
-    const safePrompt = encodeURIComponent(prompt);
-    const safePath = encodeURIComponent(path);
-    const uniqueId = `gen-${Math.random().toString(36).substr(2, 9)}`;
-    const buttonId = `btn-${uniqueId}`;
-    const previewId = `prev-${uniqueId}`;
-
-    // Trigger immediate resolution to see if the file already exists on disk
-    setTimeout(() => {
-        vscode.postMessage({
-            command: 'resolveImageUri',
-            path: path,
-            targetId: previewId
-        });
-    }, 50);
-
-    const folder = path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '.';
-    const filename = path.includes('/') ? path.substring(path.lastIndexOf('/') + 1) : path;
-
-    return `
-    <div class="generation-block" id="block-${uniqueId}">
-        <div class="generation-header">
-            <span class="summary-lang-label"><span class="codicon codicon-device-camera"></span> Propose Image Asset</span>
-            <div class="code-actions">
-                <button id="${buttonId}" class="code-action-btn apply-btn generate-image-btn" 
-                    data-prompt="${safePrompt}" 
-                    data-path="${safePath}" 
-                    data-width="${width || ''}" 
-                    data-height="${height || ''}"
-                    data-preview-id="${previewId}"
-                    title="Generate Image with AI">
-                    <span class="codicon codicon-sparkle"></span> Generate
-                </button>
-            </div>
-        </div>
-        <div style="display:flex; gap:10px; padding: 8px 12px; background: var(--vscode-editor-inactiveSelectionBackground); border-bottom: 1px solid var(--vscode-widget-border);">
-            <div style="flex:1;">
-                <label style="font-size:9px; font-weight:bold; opacity:0.7; display:block;">FOLDER</label>
-                <input type="text" class="asset-folder-input" value="${sanitizer.sanitize(folder)}" style="width:100%; background:transparent; border:none; color:var(--vscode-foreground); font-size:11px;">
-            </div>
-            <div style="flex:2;">
-                <label style="font-size:9px; font-weight:bold; opacity:0.7; display:block;">FILENAME</label>
-                <input type="text" class="asset-name-input" value="${sanitizer.sanitize(filename)}" style="width:100%; background:transparent; border:none; color:var(--vscode-foreground); font-size:11px; font-weight:bold;">
-            </div>
-        </div>
-        <div class="generation-body">
-            <p><strong>Prompt:</strong> ${sanitizer.sanitize(prompt)}</p>
-            ${width || height ? `<p style="font-size: 0.85em; opacity: 0.8;"><span class="codicon codicon-screen-full" style="font-size: 10px;"></span> Requested Size: ${width || 'auto'} x ${height || 'auto'}</p>` : ''}
-            <div id="${previewId}" class="image-preview-zone" style="margin-top: 10px; display: flex; justify-content: center; min-height: 20px;">
-                <!-- Image will be injected here if file exists or after generation -->
-            </div>
-        </div>
-    </div>`;
-}
-
-/**
- * Detects ranges of text that are formatted as code (blocks or inline) 
- * to prevent custom XML tag parsing inside them.
- */
-function getCodeRanges(text: string): { start: number, end: number }[] {
-    const ranges: { start: number, end: number }[] = [];
-    // 1. Triple backtick blocks (supporting unclosed blocks for streaming)
-    const blockRegex = /```[\s\S]*?(?:```|$)/g;
-    let m;
-    while ((m = blockRegex.exec(text)) !== null) {
-        ranges.push({ start: m.index, end: m.index + m[0].length });
-    }
-    // 2. Inline code spans (only if not overlapping with blocks)
-    const inlineRegex = /`[^`\n]+`/g;
-    while ((m = inlineRegex.exec(text)) !== null) {
-        if (!ranges.some(r => m!.index >= r.start && m!.index < r.end)) {
-            ranges.push({ start: m.index, end: m.index + m[0].length });
-        }
-    }
-    return ranges;
+interface MessageSegment {
+    type: 'markdown' | 'plugin';
+    content: string;
+    start: number;
+    end: number;
+    plugin?: any;
+    match?: RegExpExecArray;
 }
 
 export function renderMessageContent(messageId: string, rawContent: any, isFinal: boolean = false) {
     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
     if (!wrapper) return;
     const contentDiv = wrapper.querySelector('.message-content') as HTMLElement;
-    const messageDiv = wrapper.querySelector('.message') as HTMLElement;
-    if (!contentDiv || !messageDiv) return;
+    if (!contentDiv) return;
 
-    // PRESERVE STATE of Apply All List to prevent blinking/resetting during repair
-    const existingResultsList = contentDiv.querySelector('.apply-results-list');
-    const existingApplyBtn = contentDiv.querySelector('.apply-all-btn');
-    let savedResultsHtml = '';
-    let savedBtnClasses = '';
-    let savedBtnText = '';
-    let savedBtnDisabled = false;
-    let isApplyListVisible = false;
-
-    if (existingResultsList) {
-        savedResultsHtml = existingResultsList.innerHTML;
-        isApplyListVisible = (existingResultsList as HTMLElement).style.display !== 'none';
-    }
-    if (existingApplyBtn) {
-        savedBtnClasses = existingApplyBtn.className;
-        savedBtnText = existingApplyBtn.innerHTML;
-        savedBtnDisabled = (existingApplyBtn as HTMLButtonElement).disabled;
+    let sourceText = "";
+    if (Array.isArray(rawContent)) {
+        sourceText = rawContent.filter(p => p.type === 'text').map(p => p.text).join('\n');
+    } else {
+        sourceText = String(rawContent || "");
     }
 
-    const shouldScroll = isScrolledToBottom(dom.messagesDiv);
+    const forbidden: {start: number, end: number}[] = [];
+    const fenceRegex = /```[\s\S]*?(?:```|$)|`[^`]+`/g;
+    let fMatch;
+    while ((fMatch = fenceRegex.exec(sourceText)) !== null) {
+        forbidden.push({ start: fMatch.index, end: fMatch.index + fMatch[0].length });
+    }
 
-    try {
-        const isUser = messageDiv.classList.contains('user-message');
-        const thoughts: { tag: string, content: string }[] = [];
-        const skills: { html: string, start: number, end: number }[] = [];
-        const images: { html: string, start: number, end: number }[] = [];
-        const fileOps: { html: string, start: number, end: number }[] = [];
-        const memTags: { html: string, start: number, end: number }[] = [];
-        const forms: { html: string, start: number, end: number }[] = [];
-        const milestones: { html: string, start: number, end: number }[] = [];
-        const breakpoints: { html: string, start: number, end: number }[] = [];
-        const debugReports: { html: string, start: number, end: number }[] = [];
-        const processingBlocks: { html: string, start: number, end: number }[] = [];
-        const agentTaskBlocks: { html: string, start: number, end: number }[] = [];
-        const gitEventBlocks: { html: string, start: number, end: number }[] = [];
-        const builderReports: { html: string, start: number, end: number }[] = [];
+    const segments: MessageSegment[] = [];
+    const ctx: PluginContext = { messageId, isFinal, capabilities: state.capabilities, vscode };
 
-        // --- UNIFIED CONTENT PREPARATION ---
-        let processedContent = "";
-        let visualImagesHtml = "";
+    pluginRegistry.forEach(plugin => {
+        plugin.tagPattern.lastIndex = 0;
+        let pMatch;
+        while ((pMatch = plugin.tagPattern.exec(sourceText)) !== null) {
+            const matchIndex = pMatch.index;
+            const fullMatch = pMatch[0];
+            const isInside = forbidden.some(r => matchIndex >= r.start && matchIndex < r.end);
+            if (isInside) continue;
 
-        if (Array.isArray(rawContent)) {
-            rawContent.forEach(p => {
-                if (p.type === 'text') {
-                    processedContent += (p.text || "") + "\n";
-                } else if (p.type === 'image_url') {
-                    const isMuted = state.capabilities?.enableImages === false;
-                    if (isMuted) {
-                        visualImagesHtml += `
-                        <div class="muted-image-container">
-                            <img src="${p.image_url.url}" style="max-width:100%; border-radius:4px; opacity: 0.5; filter: grayscale(1);">
-                            <div class="muted-image-warning">
-                                <span class="codicon codicon-warning"></span>
-                                Vision Disabled: The LLM will NOT see this image.
-                            </div>
-                        </div>`;
-                    } else {
-                        visualImagesHtml += `<img src="${p.image_url.url}" style="max-width:100%; border-radius:4px; margin-top:8px; display:block;">`;
-                    }
-                }
+            const textBefore = sourceText.substring(0, matchIndex);
+            const lastNewline = textBefore.lastIndexOf('\n');
+            const linePrefix = lastNewline === -1 ? textBefore : textBefore.substring(lastNewline + 1);
+            if (linePrefix.trim().length > 0) continue;
+
+            const html = plugin.render(pMatch, ctx);
+            if (html) {
+                segments.push({
+                    type: 'plugin',
+                    content: html,
+                    start: matchIndex,
+                    end: matchIndex + fullMatch.length,
+                    plugin
+                });
+            }
+        }
+    });
+
+    const allSegments: MessageSegment[] = [...segments];
+    allSegments.sort((a, b) => a.start - b.start);
+
+    const finalSegments: MessageSegment[] = [];
+    let cursor = 0;
+
+    allSegments.forEach(seg => {
+        if (seg.start > cursor) {
+            finalSegments.push({
+                type: 'markdown',
+                content: sourceText.substring(cursor, seg.start),
+                start: cursor,
+                end: seg.start
             });
+        }
+        finalSegments.push(seg);
+        cursor = seg.end;
+    });
+
+    if (cursor < sourceText.length) {
+        finalSegments.push({
+            type: 'markdown',
+            content: sourceText.substring(cursor),
+            start: cursor,
+            end: sourceText.length
+        });
+    }
+
+    let finalHtml = "";
+    finalSegments.forEach(seg => {
+        if (seg.type === 'plugin') {
+            finalHtml += seg.content;
         } else {
-            processedContent = String(rawContent || "");
+            finalHtml += `<div class="markdown-body">${marked.parse(seg.content)}</div>`;
+        }
+    });
+
+    // --- APPLY ALL AGGREGATOR (RE-INTEGRATED) ---
+    const globalBlockInfos = extractFilePaths(sourceText);
+    const actionableBlockCount = globalBlockInfos.filter(info => info.type !== null && info.path).length;
+
+    if (actionableBlockCount > 1 && isFinal) {
+        finalHtml += `
+            <div class="apply-all-wrapper" style="margin-top: 16px; padding: 0 12px;">
+                <button class="apply-all-btn" id="apply-all-${messageId}">
+                    <span class="codicon codicon-check-all"></span> Apply All Changes (${actionableBlockCount} files)
+                </button>
+                <div class="apply-results-list" id="results-${messageId}" style="display:none; margin-top:8px;"></div>
+            </div>`;
+    }
+
+
+    contentDiv.innerHTML = DOMPurify.sanitize(finalHtml, SANITIZE_CONFIG);
+    enhanceCodeBlocks(contentDiv, messageId, rawContent, isFinal);
+
+        // Attach listener for the new Apply All button
+        const applyAllBtn = contentDiv.querySelector(`#apply-all-${messageId}`) as HTMLButtonElement;
+        if (applyAllBtn) {
+            applyAllBtn.onclick = () => {
+                const changes = gatherChangesFromBlocks(messageId);
+                if (changes.length > 0) {
+                    // REDIRECTION: Open the Staging Modal instead of immediate apply
+                    import('./ui.js').then(ui => {
+                        ui.openStagingRevamp(messageId, changes);
+                    });
+                }
+            };
         }
 
-        const isEmpty = processedContent.trim() === "" && visualImagesHtml === "";
+    // --- APPLY ALL AGGREGATOR ---
+    // If multiple blocks exist and it's the final render, add the batch button
+    const actionBlocks = contentDiv.querySelectorAll('.apply-btn:not(.undo-hunk-btn)');
+    if (actionBlocks.length > 1 && isFinal && !contentDiv.querySelector('.apply-all-wrapper')) {
+        const wrapper = document.createElement('div');
+        wrapper.className = 'apply-all-wrapper';
+        wrapper.style.padding = '0 12px';
+        wrapper.innerHTML = `
+            <button class="apply-all-btn" id="apply-all-${messageId}">
+                <span class="codicon codicon-check-all"></span> Apply All Changes
+            </button>
+            <div class="apply-results-list" id="results-${messageId}" style="display:none; margin-top:8px;"></div>
+        `;
+        contentDiv.appendChild(wrapper);
 
-        if (isUser && isEmpty) {
-            contentDiv.innerHTML = `<div style="opacity: 0.7; font-style: italic; margin-bottom: 8px;">Empty message</div>
-            <button class="code-action-btn apply-btn infer-prompt-btn" data-message-id="${messageId}"><span class="codicon codicon-wand"></span> Infer Prompt</button>`;
-            if (shouldScroll && dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
-            return;
+        const btn = wrapper.querySelector('.apply-all-btn') as HTMLButtonElement;
+        btn.onclick = () => {
+            const changes = gatherChangesFromBlocks(messageId);
+            if (changes.length > 0) {
+                btn.disabled = true;
+                btn.innerHTML = '<span class="codicon codicon-sync spin"></span> Applying Batch...';
+                const resList = document.getElementById(`results-${messageId}`);
+                if (resList) {
+                    resList.style.display = 'block';
+                    resList.innerHTML = changes.map(c => `<div class="apply-row" data-block-index="${c.blockIndex}"><span class="status-icon"><div class="spinner"></div></span><span>${c.path}</span></div>`).join('');
+                }
+                vscode.postMessage({ command: 'applyAllChanges', changes, messageId });
+            }
+        };
+    }
+
+    finalSegments.forEach(seg => {
+            if (seg.type === 'plugin' && seg.plugin?.initialize) {
+            seg.plugin.initialize(contentDiv, ctx);
         }
+    });
+}
 
-        // --- EXTRACT THOUGHTS ---
-        const { thoughts: thoughtsResult, processedContent: contentWithoutThoughts } = processThinkTags(processedContent);
-        thoughts.push(...thoughtsResult);
 
-        processedContent = contentWithoutThoughts;
 
-            // Pre-calculate code ranges to ignore tags inside backticks
-            const forbiddenRanges = getCodeRanges(contentForFurtherParsing);
-            const isInsideCode = (index: number) => forbiddenRanges.some(r => index >= r.start && index < r.end);
-            
-            // --- SKILL TAG PARSING ---
-            const skillRegex = /<skill\s+([^>]*?)>([\s\S]*?)<\/skill>/gi; 
-            let skillMatch;
-            while ((skillMatch = skillRegex.exec(contentWithoutThoughts)) !== null) {
-                if (isInsideCode(skillMatch.index)) continue;
-                const attrStr = skillMatch[1];
-                const innerContent = skillMatch[2];
-                const attrs: any = {};
-                const attrRegex = /(\w+)=["']([^"']*)["']/g;
-                let m;
-                while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
 
-                const skillHtml = renderSkillBlock(innerContent, attrs, messageId);
-                skills.push({ html: skillHtml, start: skillMatch.index, end: skillMatch.index + skillMatch[0].length });
-            }
 
-            // --- IMAGE GENERATION TAG PARSING ---
-            // --- NEW: Image Result Parser (Already Exists on Disk) ---
-            const resRegex = /<image_result\s+path=["']([^"']*)["']\s*\/>/gi;
-            let resMatch;
-            while ((resMatch = resRegex.exec(contentWithoutThoughts)) !== null) {
-                if (isInsideCode(resMatch.index)) continue;
-                const imgHtml = renderImageResultBlock(resMatch[1], messageId);
-                images.push({ html: imgHtml, start: resMatch.index, end: resMatch.index + resMatch[0].length });
-            }
 
-            const imgRegex = /<generate_image\s+([^>]*?)>([\s\S]*?)<\/generate_image>/gi;
-            let imgMatch;
-            while ((imgMatch = imgRegex.exec(contentWithoutThoughts)) !== null) {
-                if (isInsideCode(imgMatch.index)) continue;
-                const attrStr = imgMatch[1];
-                const prompt = imgMatch[2].trim();
-                const attrs: any = {};
-                const attrRegex = /(\w+)=["']([^"']*)["']/g;
-                let m;
-                while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
 
-                const imgHtml = renderImageGenBlock(prompt, attrs.path || "", attrs.width, attrs.height);
-                images.push({ html: imgHtml, start: imgMatch.index, end: imgMatch.index + imgMatch[0].length });
-            }
 
-            // --- DEBUG REPORT TAG PARSING ---
-            const debugRegex = /<debug_report\s+data=['"]([\s\S]*?)['"]\s*\/>/gi;
-            let dMatch;
-            while ((dMatch = debugRegex.exec(contentWithoutThoughts)) !== null) {
-                if (isInsideCode(dMatch.index)) continue;
-                const dHtml = renderDebugReport(dMatch[1]);
-                debugReports.push({ html: dHtml, start: dMatch.index, end: dMatch.index + dMatch[0].length });
-            }
-
-            // --- PROJECT MEMORY TAG PARSING ---
-            // --- REINFORCE TAG PARSING ---
-            const reinfRegex = /<memory_reinforce\s+id=["']([^"']*)["']\s*\/>/gi;
-            let reinfMatch;
-            while ((reinfMatch = reinfRegex.exec(contentWithoutThoughts)) !== null) {
-                if (isInsideCode(reinfMatch.index)) continue;
-                const html = renderReinforceTag(reinfMatch[1]);
-                memTags.push({ html, start: reinfMatch.index, end: reinfMatch.index + reinfMatch[0].length });
-            }
-
-            const pMemRegex = /<project_memory\s+([^>]*?)>([\s\S]*?)<\/project_memory>/gi;
-            let pMemMatch;
-            while ((pMemMatch = pMemRegex.exec(contentWithoutThoughts)) !== null) {
-                if (isInsideCode(pMemMatch.index)) continue;
-                const attrStr = pMemMatch[1];
-                const memContent = pMemMatch[2].trim();
-                const attrs: any = {};
-                const attrRegex = /(\w+)=["']([^"']*)["']/g;
-                let m;
-                while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
-                
-                const html = renderMemoryTag(attrs.action || 'add', attrs.id, attrs.title || attrs.id, memContent);
-                memTags.push({ html, start: pMemMatch.index, end: pMemMatch.index + pMemMatch[0].length });
-            }
-
-            // --- FILE OPERATIONS & CONTEXT TAG PARSING ---
-            // --- PROCESSING TAG PARSING ---
-            // --- FORM TAG PARSING ---
-            const formRegex = /<lollms_form\b[^>]*>([\s\S]*?)<\/lollms_form>/gi;
-            let formMatch;
-            while ((formMatch = formRegex.exec(contentWithoutThoughts)) !== null) {
-                if (isInsideCode(formMatch.index)) continue;
-                const html = renderFormBlock(formMatch[0], messageId);
-                forms.push({ html, start: formMatch.index, end: formMatch.index + formMatch[0].length });
-            }
-
-            // --- TOOL BUG REPORT TAG PARSING ---
-            const toolBugRegex = /<lollms_tool_bug_report\s+([^>]*?)\s*\/>/gi;
-            let tbMatch;
-            const toolBugReports: { html: string, start: number, end: number }[] = [];
-            while ((tbMatch = toolBugRegex.exec(contentWithoutThoughts)) !== null) {
-                if (isInsideCode(tbMatch.index)) continue;
-                const attrStr = tbMatch[1];
-                const attrs: any = {};
-                const attrRegex = /(\w+)=["']([^"']*)["']/g;
-                let m;
-                while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
-
-                const html = `
-                <div class="security-warning" style="color: var(--vscode-foreground); border-color: var(--vscode-charts-orange); background: rgba(214, 122, 13, 0.1); margin-top: 10px;">
-                    <div style="display:flex; align-items:center; gap:10px; margin-bottom:10px;">
-                        <i class="codicon codicon-warning" style="color: var(--vscode-charts-orange);"></i>
-                        <strong>Infrastructure Bug Detected in Tool: ${sanitizer.sanitize(attrs.action)}</strong>
-                    </div>
-                    <p style="font-size: 11px; margin-bottom: 12px; opacity: 0.9;">
-                        LoLLMs has detected a crash in its own internal tool code. To help the community fix this, you can manually report it. 
-                        <strong>No data will be sent without your review.</strong>
-                    </p>
-                    <div style="display:flex; gap:8px;">
-                        <button class="code-action-btn apply-btn report-tool-bug-btn" 
-                            data-action="${attrs.action}" 
-                            data-error="${attrs.error}" 
-                            data-stack="${attrs.stack}"
-                            style="background-color: var(--vscode-charts-orange) !important; color: white !important; flex: 1;">
-                            <i class="codicon codicon-github"></i> Review & Report Bug
-                        </button>
-                    </div>
-                </div>`;
-                toolBugReports.push({ html, start: tbMatch.index, end: tbMatch.index + tbMatch[0].length });
-            }
-
-            const milestoneRegex = /<milestone\s+([^>]*?)\s*\/>/gi;
-            let mileMatch;
-            while ((mileMatch = milestoneRegex.exec(contentWithoutThoughts)) !== null) {
-                if (isInsideCode(mileMatch.index)) continue;
-                const attrStr = mileMatch[1];
-                const attrs: any = {};
-                const attrRegex = /(\w+)=["']([^"']*)["']/g;
-                let m;
-                while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
-                milestones.push({ html: renderMilestoneCard(attrs), start: mileMatch.index, end: mileMatch.index + mileMatch[0].length });
-            }
-
-            const bpRegex = /<set_breakpoint\s+([^>]*?)\s*\/>/gi;
-            let bpMatch;
-            while ((bpMatch = bpRegex.exec(contentWithoutThoughts)) !== null) {
-                if (isInsideCode(bpMatch.index)) continue;
-                const attrStr = bpMatch[1];
-                const attrs: any = {};
-                const attrRegex = /(\w+)=["']([^"']*)["']/g;
-                let m;
-                while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
-                breakpoints.push({ html: renderBreakpointBlock(attrs), start: bpMatch.index, end: bpMatch.index + bpMatch[0].length });
-            }
-
-            while ((mileMatch = milestoneRegex.exec(contentWithoutThoughts)) !== null) {
-                if (isInsideCode(mileMatch.index)) continue;
-                const attrStr = mileMatch[1];
-                const attrs: any = {};
-                const attrRegex = /(\w+)=["']([^"']*)["']/g;
-                let m;
-                while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
-                milestones.push({ html: renderMilestoneCard(attrs), start: mileMatch.index, end: mileMatch.index + mileMatch[0].length });
-            }
-
-            const planStatusRegex = /<plan_status\s+([^>]*?)\s*\/>/gi;
-            let psMatch;
-            const planStatuses: { html: string, start: number, end: number }[] = [];
-            while ((psMatch = planStatusRegex.exec(contentWithoutThoughts)) !== null) {
-                if (isInsideCode(psMatch.index)) continue;
-                const attrStr = psMatch[1];
-                const attrs: any = {};
-                const attrRegex = /(\w+)=["']([^"']*)["']/g;
-                let m;
-                while ((m = attrRegex.exec(attrStr)) !== null) attrs[m[1]] = m[2];
-                planStatuses.push({ html: renderPlanStatusCard(attrs), start: psMatch.index, end: psMatch.index + psMatch[0].length });
-            }
-
-            const procRegex = /<processing\b[^>]*>([\s\S]*?)(?:<\/processing>|$)/gi;
-            let procMatch;
-            while ((procMatch = procRegex.exec(contentWithoutThoughts)) !== null) {
-                if (isInsideCode(procMatch.index)) continue;
-                const innerContent = procMatch[1];
-                const isClosed = procMatch[0].toLowerCase().includes('</processing>');
-                const html = renderProcessingBlock(innerContent, isClosed);
-                processingBlocks.push({ html, start: procMatch.index, end: procMatch.index + procMatch[0].length });
-            }
-
-            // (Removed redundant builderRegex loop already handled above)
-
-                // --- AGENT TASK TAG PARSING ---
-            const taskTagRegex = /<agent_task\s+id=["']([^"']+)["']\s*\/>/gi;
-            let taskMatch;
-            while ((taskMatch = taskTagRegex.exec(contentWithoutThoughts)) !== null) {
-                if (isInsideCode(taskMatch.index)) continue;
-                const taskId = parseInt(taskMatch[1], 10);
-                const plan = (window as any).lastPlan;
-                const task = plan?.tasks.find((t: any) => t.id === taskId);
-                
-                if (task) {
-                    const icon = getStatusIcon(task.status);
-                    
-                    // Restore full rich task card logic (variables, discovers, artifacts)
-                    const hasThoughts = !!task.memory_delta?.thought;
-                    const hasVariables = Object.keys(task.memory_delta?.variables || {}).length > 0;
-                    const hasDiscoveries = (task.memory_delta?.discoveries || []).length > 0;
-                    const hasOutput = !!task.result;
-
-                    // RENDERER FOR IN-STREAM INTERACTIVE AGENT CARD
-                    const isPending = task.status === 'pending';
-                    const isFailed = task.status === 'failed';
-                    const isSafety = task.action === 'safety_check';
-
-                    const isRunning = task.status === 'in_progress' || task.status === 'pending';
-                    const controls = `
-                        <div class="task-controls" style="display:flex; gap:8px; margin-top:12px;">
-                            ${isPending ? `<button class="code-action-btn apply-btn" onclick="vscode.postMessage({command:'runAgent', taskId:'${task.id}', objective:'CONTINUE_AFTER_APPROVAL'})"><i class="codicon codicon-play"></i> Run & Continue</button>` : ''}
-                            <button class="code-action-btn secondary-btn edit-params-btn" data-task-id="${task.id}"><i class="codicon codicon-edit"></i> Edit Params</button>
-                            ${isFailed ? `<button class="code-action-btn" onclick="vscode.postMessage({command:'retryAgentTask', taskId:'${task.id}'})"><i class="codicon codicon-refresh"></i> Retry</button>` : ''}
-                            ${isRunning ? `<button class="code-action-btn delete-btn" onclick="vscode.postMessage({command:'stopGeneration'})"><i class="codicon codicon-primitive-square"></i> Stop</button>` : ''}
-                        </div>
-                    `;
-
-                    const paramEditor = `
-                        <div class="task-param-editor" style="display:none; flex-direction:column; gap:8px; margin-top:10px; padding:10px; background:rgba(0,0,0,0.3); border-radius:4px; border:1px solid var(--vscode-widget-border);">
-                            <label style="font-size:10px; font-weight:800; opacity:0.6;">MANUAL PARAMETER OVERRIDE (JSON)</label>
-                            <textarea class="param-json-input" style="width:100%; height:100px; font-family:monospace; font-size:11px; background:var(--vscode-input-background); color:var(--vscode-input-foreground); border:1px solid var(--vscode-input-border);">${JSON.stringify(task.parameters, null, 2)}</textarea>
-                            <button class="code-action-btn apply-btn" onclick="const p=JSON.parse(this.previousElementSibling.value); vscode.postMessage({command:'editAndRetryAgentTask', taskId:'${task.id}', params:p})">Execute Manually</button>
-                        </div>
-                    `;
-
-                    const taskHtml = `
-                        <div class="agent-thought-step status-${task.status}" style="margin: 20px 0 10px 0;">
-                            <span class="thought-label">Agent Step ${task.id}</span>
-                            ${sanitizer.sanitize(task.description)}
-                        </div>
-                        <div class="agent-card status-${task.status}" style="margin: 0 0 20px 0;">
-                            <div class="agent-card-header">
-                                <div style="display:flex; align-items:center; gap:8px;">
-                                    <div class="status-${task.status}">${icon}</div>
-                                    <span style="font-weight:bold;">Sovereign Operation</span>
-                                </div>
-                                <span class="tool-badge"><span class="codicon codicon-tools"></span> ${task.action}</span>
-                            </div>
-                            <div class="agent-card-body">
-                                <div class="task-memory-bar">
-                                    <div class="brain-segment segment-scratchpad" style="width: ${hasThoughts ? '25' : '0'}%" data-type="scratchpad"></div>
-                                    <div class="brain-segment segment-memory" style="width: ${(hasVariables || hasDiscoveries) ? '50' : '0'}%" data-type="memory"></div>
-                                    <div class="brain-segment segment-history" style="width: ${hasOutput ? '25' : '0'}%" data-type="history"></div>
-                                </div>
-
-                                <!-- 📂 COLLAPSIBLE PARAMETER PREVIEW -->
-                                <details class="task-params-collapsible" style="margin-top: 10px; border-left: 2px solid var(--vscode-widget-border); border-radius: 4px; background: rgba(0,0,0,0.15);">
-                                    <summary style="font-size: 9px; font-weight: 800; opacity: 0.5; padding: 8px 10px; text-transform: uppercase; cursor: pointer; list-style: none; outline: none; display: flex; align-items: center; gap: 6px;">
-                                        <i class="codicon codicon-chevron-right param-chevron" style="font-size: 10px; transition: transform 0.2s;"></i>
-                                        <span>Execution Parameters</span>
-                                    </summary>
-                                    <div style="padding: 0 10px 10px 10px;">
-                                        ${renderFormFields(task.parameters)}
-                                    </div>
-                                </details>
-                                
-                                ${task.result ? `
-                                <details style="margin-top: 10px;" open>
-                                    <summary class="task-result-summary">View Operation Output</summary>
-                                    <div class="task-result-box status-${task.status}">${sanitizer.sanitize(task.result)}</div>
-                                </details>` : (task.status === 'in_progress' && !isSafety ? '<div class="waiting-animation" style="margin-top:10px;"><div class="spinner"></div> <span>Executing technical logic...</span></div>' : '')}
-
-                                ${task.status === 'in_progress' || task.status === 'pending' ? controls : ''}
-                                ${paramEditor}
-                            </div>
-                        </div>`;
-                    agentTaskBlocks.push({ html: taskHtml, start: taskMatch.index, end: taskMatch.index + taskMatch[0].length });
-                }
-            }
-
-            // --- GIT EVENT TAG PARSING ---
-            const gitRegex = /<git_event\s+([^>]*?)\s*\/>/gi;
-            let gitMatch;
-            while ((gitMatch = gitRegex.exec(contentWithoutThoughts)) !== null) {
-                if (isInsideCode(gitMatch.index)) continue;
-                const attrStr = gitMatch[1];
-                const attrs: any = {};
-                attrStr.replace(/(\w+)=["']([^"']*)["']/g, (m:any, k:any, v:any) => attrs[k] = v);
-
-                let gitHtml = "";
-                if (attrs.type === 'branch') {
-                    gitHtml = `
-                    <div class="technical-briefing-card" style="border-left-color: var(--vscode-charts-blue); margin: 15px 0;">
-                        <div class="briefing-header" style="color: var(--vscode-charts-blue);">
-                            <span class="codicon codicon-git-branch"></span> GIT WORKFLOW: ISOLATION
-                        </div>
-                        <div class="briefing-content" style="padding: 10px 16px;">
-                            Switched workspace from <code>${attrs.from}</code> to fresh AI branch <code>${attrs.to}</code>.
-                        </div>
-                    </div>`;
-                }
-                gitEventBlocks.push({ html: gitHtml, start: gitMatch.index, end: gitMatch.index + gitMatch[0].length });
-            }
-
-            // 1. Parse New Multi-line Blocks
-            const blockOpRegex = /<(add_files_to_context|remove_files_from_context|delete_files|move_files|copy_files)>([\s\S]*?)<\/\1>/gi;
-            let blockOpMatch;
-            while ((blockOpMatch = blockOpRegex.exec(contentWithoutThoughts)) !== null) {
-                if (isInsideCode(blockOpMatch.index)) continue;
-                const tagName = blockOpMatch[1].toLowerCase();
-                const innerText = blockOpMatch[2].trim();
-                const lines = innerText.split('\n').map((l: string) => l.trim()).filter((l: string) => l.length > 0);
-                
-                let opType: 'delete' | 'move' | 'copy' | 'prune' | 'add_ctx' = 'delete';
-                let params: any = {};
-
-                if (tagName === 'add_files_to_context') {
-                    opType = 'add_ctx';
-                    params = { paths: lines };
-                } else if (tagName === 'remove_files_from_context') {
-                    opType = 'prune';
-                    params = { paths: lines };
-                } else if (tagName === 'delete_files') {
-                    opType = 'delete';
-                    params = { paths: lines };
-                } else if (tagName === 'move_files' || tagName === 'copy_files') {
-                    opType = tagName === 'move_files' ? 'move' : 'copy';
-                    const operations = lines.map((l: string) => {
-                        const parts = l.split('->');
-                        return { src: parts[0]?.trim(), dest: parts[1]?.trim() };
-                    }).filter((op: any) => op.src && op.dest);
-                    params = { operations };
-                }
-
-                const opHtml = opType === 'add_ctx' ? renderAddFilesBlock(params, messageId) : 
-                               renderFileOpBlock(opType as any, params, messageId);
-                fileOps.push({ html: opHtml, start: blockOpMatch.index, end: blockOpMatch.index + blockOpMatch[0].length });
-            }
-
-            // 2. Parse Legacy / Single-line tags (edit_image_asset)
-            const legacyOpRegex = /<(edit_image_asset)\s+([^>]*?)>(.*?)<\/\1>/gi;
-            let legacyOpMatch;
-            while ((legacyOpMatch = legacyOpRegex.exec(contentWithoutThoughts)) !== null) {
-                if (isInsideCode(legacyOpMatch.index)) continue;
-                const tagName = legacyOpMatch[1].toLowerCase();
-                const attrStr = legacyOpMatch[2];
-                const attrs: any = {};
-                const attrRegex = /(\w+)=(['"])([\s\S]*?)\2/g;
-                let m;
-                while ((m = attrRegex.exec(attrStr)) !== null) {
-                    attrs[m[1]] = unescapeXml(m[3]);
-                }
-                
-                if (attrs.paths && (attrs.paths.trim().startsWith('[') || attrs.paths.trim().startsWith('{'))) {
-                    try { 
-                        const cleanJson = attrs.paths.replace(/&quot;/g, '"').replace(/&apos;/g, "'");
-                        attrs.paths = JSON.parse(cleanJson); 
-                    } catch(e) {
-                        console.error("Failed to parse paths attribute as JSON", e);
-                    }
-                }
-
-                const opHtml = renderImageEditBlock(attrs, messageId);
-                fileOps.push({ html: opHtml, start: legacyOpMatch.index, end: legacyOpMatch.index + legacyOpMatch[0].length });
-            }
-
-            messageDiv.querySelectorAll('.plan-scratchpad, .skill-creation-block, .generation-block, .context-expansion-block, .file-operation-block').forEach(el => el.remove());
-
-            // Render Thoughts
-            thoughts.forEach(thought => {
-                const thinkDiv = document.createElement('div');
-                thinkDiv.className = 'plan-scratchpad';
-                // Force open during generation (not final) for transparency
-                const isOpen = isFinal ? '' : 'open';
-                thinkDiv.innerHTML = `<details ${isOpen}><summary class="scratchpad-header">AI Reasoning</summary><div class="scratchpad-content">${sanitizer.sanitize(marked.parse(thought.content) as string)}</div></details>`;
-                if (contentDiv.parentNode) contentDiv.parentNode.insertBefore(thinkDiv, contentDiv);
-            });
-
-            // SURGICAL RENDERING LOGIC
-            // 1. Identify all potential UI elements
-            const codeBlocks = extractFilePaths(processedContent);
-            // --- ALL CANDIDATES SORTING ---
-            const allCandidates =[
-                ...codeBlocks.map(b => ({ ...b, elementType: 'code' as const })),
-                ...skills.map(s => ({ start: s.start, end: s.end, html: s.html, elementType: 'skill' as const })),
-                ...images.map(i => ({ start: i.start, end: i.end, html: i.html, elementType: 'image' as const })),
-                ...fileOps.map(o => ({ start: o.start, end: o.end, html: o.html, elementType: 'fileOp' as const })),
-                ...memTags.map(m => ({ start: m.start, end: m.end, html: m.html, elementType: 'projectMemory' as const })),
-                ...forms.map(f => ({ start: f.start, end: f.end, html: f.html, elementType: 'form' as const })),
-                ...milestones.map(m => ({ start: m.start, end: m.end, html: m.html, elementType: 'milestone' as const })),
-                ...breakpoints.map(b => ({ start: b.start, end: b.end, html: b.html, elementType: 'breakpoint' as const })),
-                ...debugReports.map(d => ({ start: d.start, end: d.end, html: d.html, elementType: 'debugReport' as const })),
-                ...planStatuses.map(ps => ({ start: ps.start, end: ps.end, html: ps.html, elementType: 'planStatus' as const })),
-                ...agentTaskBlocks.map(at => ({ start: at.start, end: at.end, html: at.html, elementType: 'agentTask' as const })),
-                ...gitEventBlocks.map(ge => ({ start: ge.start, end: ge.end, html: ge.html, elementType: 'gitEvent' as const })),
-                ...processingBlocks.map(p => ({ start: p.start, end: p.end, html: p.html, elementType: 'processing' as const })),
-                ...builderReports.map(br => ({ start: br.start, end: br.end, html: br.html, elementType: 'builderReport' as const })),
-                ...toolBugReports.map(tb => ({ start: tb.start, end: tb.end, html: tb.html, elementType: 'toolBug' as const }))
-                ].sort((a, b) => a.start - b.start);
-
-            // 2. Filter to keep only TOP-LEVEL elements
-            const elements = allCandidates.filter((el, idx) => {
-                return !allCandidates.some((other, oIdx) => {
-                    if (idx === oIdx) return false;
-                    
-                    // If 'el' is a standard code block and 'other' is a custom UI tag inside it, 
-                    // we want to discard the code block and keep the UI tag.
-                    if (el.elementType === 'code' && other.elementType !== 'code') {
-                        if (other.start >= el.start && other.end <= el.end) return false;
-                    }
-
-                    // Standard containment check
-                    return el.start >= other.start && el.end <= other.end;
-                });
-            });
-
-            let lastIndex = 0;
-            const fragment = document.createDocumentFragment();
-
-            // 3. Partitioned Rendering
-            elements.forEach((el, idx) => {
-                const textBefore = processedContent.substring(lastIndex, el.start);
-                if (textBefore.length > 0) { 
-                    const textDiv = document.createElement('div');
-                    textDiv.innerHTML = sanitizer.sanitize(marked.parse(textBefore) as string, SANITIZE_CONFIG);
-                    fragment.appendChild(textDiv);
-                }
-
-                // B. Render the UI element (Code Block or Skill or Image or AddFiles or FileOp or DebugReport or ProjectMemory or Processing or Form)
-                const uiTypes = ['skill', 'image', 'addFiles', 'fileOp', 'projectMemory', 'debugReport', 'processing', 'form', 'milestone', 'breakpoint', 'planStatus', 'agentTask', 'gitEvent'];
-                if (uiTypes.includes(el.elementType)) {
-                    const uiDiv = document.createElement('div');
-                    uiDiv.innerHTML = (el as any).html;
-                    fragment.appendChild(uiDiv);
-                    lastIndex = el.end;
-                    return;
-                }
-
-                // 2b. Render code block
-                const block = el as any;
-                const blockIdx = idx; // Use current iteration index as block identifier
-                // Trim the block content to remove trailing newlines that cause slice errors
-                const blockContent = processedContent.substring(block.start, block.end).trim();
-                let lines = blockContent.split('\n');
-
-                const firstLine = lines[0];
-                const langMatch = firstLine.match(/```(\w+)/);
-                const language = langMatch ? langMatch[1] : 'plaintext';
-                const codeOnly = lines.length >= 2 ? lines.slice(1, -1).join('\n') : "";
-
-                // Permit zero or one newline after SEARCH and before REPLACE markers
-                // Using ^ and m flag ensures markers must be at the start of a line
-                const aiderRegex = /^<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======[\r\n]*([\s\S]*?)\r?\n>>>>>>> REPLACE/gm;
-                const aiderMatches =[...codeOnly.matchAll(aiderRegex)];
-                const isAider = aiderMatches.length > 0;
-
-                // MALFORMED DETECTION: Check if block contains bits of Aider but isn't valid
-                // We only check for markers starting at the beginning of lines
-                const hasAiderStart = /^<<<<<<< SEARCH/m.test(codeOnly);
-                const hasAiderMid = /^=======/m.test(codeOnly);
-                const hasAiderEnd = /^>>>>>>> REPLACE/m.test(codeOnly);
-
-                // CRITICAL: A block is only "Malformed Aider" if it definitely tried to be one (has start marker)
-                // but failed the full structural regex. 
-                const isMalformed = hasAiderStart && (hasAiderMid || hasAiderEnd) && !isAider;
-
-                const details = document.createElement('details');
-                details.className = 'code-collapsible';
-                if (isMalformed) details.classList.add('malformed');
-                details.open = true;
-
-                const summary = document.createElement('summary');
-                summary.className = 'code-summary';
-
-                const langLabel = document.createElement('span');
-                langLabel.className = 'summary-lang-label';
-
-                const langPart = document.createElement('span');
-                langPart.textContent = language;
-                langLabel.appendChild(langPart);
-
-                if (block.path) {
-                    const sep = document.createTextNode(' : ');
-                    langLabel.appendChild(sep);
-
-                    const pathInput = document.createElement('input');
-                    pathInput.className = 'path-editor-input';
-                    pathInput.value = block.path;
-                    pathInput.title = "Click to edit hallucinated file path";
-
-                    // Update internal data model and extension on change
-                    pathInput.onchange = () => {
-                        const newPath = pathInput.value.trim();
-                        block.path = newPath; // Update local extractor info
-
-                        // Sync with extension to persist the correction
-                        const originalFullContent = JSON.parse(messageDiv.dataset.originalContent || '""');
-                        if (typeof originalFullContent === 'string') {
-                            const oldHeader = `\`\`\`${language}:${block.path}`;
-                            const newHeader = `\`\`\`${language}:${newPath}`;
-                            // This is a simplified replacement logic for the persistence
-                            vscode.postMessage({
-                                command: 'updateMessage',
-                                messageId: messageId,
-                                newContent: originalFullContent.replace(block.path, newPath)
-                            });
-                        }
-                    };
-                    langLabel.appendChild(pathInput);
-                }
-                
-                if (isMalformed) {
-                    const badge = document.createElement('span');
-                    badge.className = 'malformed-badge';
-                    badge.textContent = 'Malformed Block';
-                    langLabel.appendChild(badge);
-                }
-
-                const actions = document.createElement('div');
-                actions.className = 'code-actions';
-
-                if (isMalformed) {
-                    const fixBtn = createButton('Manual Fix', 'codicon-edit', () => {
-                        const msgWrapper = details.closest('.message-wrapper') as HTMLElement;
-                        const msgId = msgWrapper?.dataset.messageId;
-                        const msgDiv = msgWrapper?.querySelector('.message') as HTMLElement;
-                        if (msgDiv && msgId) {
-                            // Trigger the global edit function defined in messageRenderer
-                            startEdit(msgDiv, msgId, 'assistant');
-                        }
-                    }, 'code-action-btn apply-btn', 'The AI generated broken syntax. Click to edit and fix the markers manually.');
-                    actions.appendChild(fixBtn);
-                }
-
-                // Copy All button
-                const copyBtn = createButton('Copy All', 'codicon-copy', () => {
-                    vscode.postMessage({ command: 'copyToClipboard', text: codeOnly });
-                    const iconEl = copyBtn.querySelector('.codicon');
-                    if (iconEl) {
-                        iconEl.classList.replace('codicon-copy', 'codicon-check');
-                        setTimeout(() => iconEl.classList.replace('codicon-check', 'codicon-copy'), 2000);
-                    }
-                }, 'code-action-btn', 'Copy entire block content');
-                actions.appendChild(copyBtn);
-
-                // NEW: View Raw Button for Aider
-                if (isAider) {
-                    const rawBtn = createButton('Raw', 'codicon-source-control', () => {
-                        if (dom.rawCodeDisplay) {
-                            dom.rawCodeFilename.textContent = block.path || "Unspecified File";
-                            const hunkIdEl = document.getElementById('raw-hunk-id');
-                            if (hunkIdEl) hunkIdEl.textContent = `ALL HUNKS`;
-                            dom.rawCodeDisplay.textContent = codeOnly;
-                            dom.rawCodeDisplay.dataset.messageId = messageId;
-                            dom.rawCodeDisplay.dataset.blockIndex = String(blockIdx);
-                            dom.rawCodeDisplay.dataset.hunkIndex = ""; // Empty means full block
-                            dom.rawCodeModal.classList.add('visible');
-                        }
-                    }, 'code-action-btn', 'View raw SEARCH/REPLACE format');
-                    actions.appendChild(rawBtn);
-                }
-
-                // Aider specific badge for multi-hunk blocks
-                if (isAider && aiderMatches.length > 1) {
-                    const countBadge = document.createElement('span');
-                    countBadge.className = 'summary-lang-label';
-                    countBadge.style.opacity = '0.7';
-                    countBadge.style.marginLeft = '8px';
-                    countBadge.textContent = `(${aiderMatches.length} hunks)`;
-                    langLabel.appendChild(countBadge);
-                }
-
-                const isBlockGenerating = !isFinal && !block.isClosed;
-                const isDiagram = language === 'mermaid' || language === 'svg';
-                
-                // Assign a unique ID to the block for navigation from the summary list
-                const blockIdentifier = `block-${messageId}-${idx}`;
-                details.id = blockIdentifier;
-                
-                // --- DIAGRAM RENDER ZONE (SURGICAL PATH) ---
-                // If it's a finished diagram block, render the visual ABOVE the code details
-                if (isDiagram && !isBlockGenerating) {
-                    const renderZone = document.createElement('div');
-                    renderZone.className = 'diagram-render-zone';
-                    fragment.appendChild(renderZone);
-                    
-                    // Pass the raw code block content directly
-                    const tempCode = document.createElement('code');
-                    tempCode.textContent = codeOnly;
-                    
-                    // Do not block UI with await, let it render in background
-                    renderDiagram(tempCode, language, renderZone);
-                }
-
-                // Go to File button
-                if (block.path) {
-                    const gotoBtn = createButton('Go to File', 'codicon-go-to-file', () => {
-                        vscode.postMessage({ command: 'openFile', path: block.path });
-                    }, 'code-action-btn', 'Open this file in editor');
-                    actions.appendChild(gotoBtn);
-                }
-
-                // Determine icon for the apply buttons
-                const isSurgical = isAider || ['replace', 'insert', 'diff'].includes(block.type);
-                const applyIcon = isSurgical ? 'codicon-arrow-swap' : 'codicon-tools';
-
-                // Apply button
-                if (block.path && ['file', 'replace', 'insert', 'diff'].includes(block.type)) {
-                    const effectiveType = isAider ? 'replace' : block.type;
-                    
-                    // Use unique ID based on message + index for reliable lookup
-                    const applyBtnId = `apply-btn-${messageId}-${blockIdx}`;
-
-                    const applyBtn = createButton('Apply', applyIcon, () => {
-                        const cmd = effectiveType === 'diff' ? 'applyPatchContent' :
-                            (effectiveType === 'replace' ? 'replaceCode' : 'applyFileContent');
-
-                        const btn = document.getElementById(applyBtnId) as HTMLButtonElement;
-                        if (!btn) return;
-
-                        // Force read the current path from the input field
-                        const pathInp = details.querySelector('.path-editor-input') as HTMLInputElement;
-                        const finalPath = pathInp ? pathInp.value.trim() : block.path;
-
-                        btn.disabled = true;
-                        btn.dataset.originalHtml = btn.innerHTML;
-                        btn.innerHTML = '<div class="spinner"></div>';
-
-                        vscode.postMessage({ 
-                            command: cmd, 
-                            filePath: finalPath, 
-                            content: codeOnly, 
-                            messageId,
-                            blockIndex: blockIdx 
-                        });
-                    }, 'code-action-btn apply-btn');
-                    
-                    applyBtn.id = applyBtnId;
-                    applyBtn.title = isSurgical ? 'Apply surgical update to file' : 'Overwrite entire file with this content';
-
-                    // Restore state from persistence
-                    const isFullyApplied = state.appliedState?.[messageId]?.[blockIdx]?.includes(-1);
-                    if (isFullyApplied) {
-                        applyBtn.classList.add('applied');
-                        applyBtn.innerHTML = '<span class="codicon codicon-check"></span>';
-                        // Button remains enabled to allow re-application
-                    }
-
-                    if (isBlockGenerating) {
-                        applyBtn.disabled = true;
-                        applyBtn.title = "Generating code... please wait for block to close.";
-                    }
-                    actions.appendChild(applyBtn);
-                }
-
-                // Execute button for runnable languages
-                const runnableLanguages = ['python', 'py', 'javascript', 'js', 'typescript', 'ts', 'bash', 'sh', 'shell', 'powershell', 'pwsh', 'batch', 'cmd', 'bat'];
-                if (runnableLanguages.includes(language.toLowerCase())) {
-                    const execBtn = createButton('Execute', 'codicon-play', () => {
-                        execBtn.disabled = true;
-                        const oldHtml = execBtn.innerHTML;
-                        execBtn.innerHTML = '<div class="spinner"></div>';
-                        vscode.postMessage({ command: 'runScript', code: codeOnly, language });
-                        // Re-enable after 3 seconds for scripts (since we don't always get a "done" signal)
-                        setTimeout(() => { 
-                            if (execBtn.innerHTML.includes('spinner')) {
-                                execBtn.innerHTML = oldHtml;
-                                execBtn.disabled = false;
-                            }
-                        }, 3000);
-                    }, 'code-action-btn apply-btn', 'Run this code in terminal');
-                    if (isBlockGenerating) execBtn.disabled = true;
-                    actions.appendChild(execBtn);
-                }
-
-                // Save button
-                const saveBtn = createButton('Save', 'codicon-save', () => {
-                    vscode.postMessage({ command: 'saveCodeToFile', content: codeOnly, language });
-                });
-                if (isBlockGenerating) saveBtn.disabled = true;
-                actions.appendChild(saveBtn);
-
-                // Inspect File button
-                const inspectFileBtn = createButton('Inspect File', 'codicon-eye', () => {
-                    const isApplied = state.appliedState?.[messageId]?.[blockIdx]?.includes(-1) || false;
-                    vscode.postMessage({ 
-                        command: 'inspectPatch', 
-                        filePath: block.path, 
-                        content: codeOnly, 
-                        messageId: messageId,
-                        blockIndex: blockIdx,
-                        type: block.type,
-                        isApplied: isApplied
-                    });
-                }, 'code-action-btn', 'Inspect this code block for errors using AI');
-                if (isBlockGenerating) inspectFileBtn.disabled = true;
-                actions.appendChild(inspectFileBtn);
-
-                // Inspect button
-                if (state.isInspectorEnabled) {
-                    const inspectBtn = createButton('Inspect', 'codicon-search', () => {
-                        vscode.postMessage({ command: 'inspectCode', code: codeOnly, language });
-                    });
-                    actions.appendChild(inspectBtn);
-                }
-
-                summary.appendChild(langLabel);
-                summary.appendChild(actions);
-                details.appendChild(summary);
-                // CRITICAL: Preserve raw code for the 'Apply All' aggregator
-                details.dataset.rawCode = codeOnly;
-                details.dataset.path = block.path;
-
-                const pre = document.createElement('pre');
-        pre.className = `language-${language}`;
-        pre.style.width = '100%';
-        pre.style.maxHeight = '400px';
-
-                if (isAider) {
-                    // Clear pre to prevent raw text or old gutters from leaking into the Aider UI
-                    pre.innerHTML = '';
-                    pre.style.display = 'block'; 
-
-                    const hunkGroup = document.createElement('div');
-                    hunkGroup.className = 'aider-hunk-group';
-                    
-                    aiderMatches.forEach((match, hIdx) => {
-                        const hunkBubble = document.createElement('div');
-                        hunkBubble.className = 'aider-hunk-bubble';
-                        
-                        const hunkHeader = document.createElement('div');
-                        hunkHeader.className = 'aider-hunk-header';
-                        
-                        // Add toggle chevron and title
-                        hunkHeader.innerHTML = `
-                            <div style="display:flex; align-items:center;">
-                                <span class="codicon codicon-chevron-down hunk-toggle-icon"></span>
-                                <span>HUNK ${hIdx + 1} OF ${aiderMatches.length}</span>
-                            </div>
-                        `;
-
-                        // Collapse toggle logic
-                        hunkHeader.onclick = (e) => {
-                            // Don't toggle if a button inside the header was clicked
-                            if ((e.target as HTMLElement).closest('.code-action-btn')) return;
-                            hunkBubble.classList.toggle('collapsed');
-                        };
-                        
-                        const hunkActions = document.createElement('div');
-                        hunkActions.className = 'aider-hunk-actions';
-
-                        const searchPart = match[1].trim();
-                        const replacePart = match[2] ? match[2].trim() : "";
-
-                        // Copy Search Button for this hunk
-                        const copySearchBtn = createButton('Copy Search', 'codicon-copy', () => {
-                            vscode.postMessage({ command: 'copyToClipboard', text: searchPart });
-                            const iconEl = copySearchBtn.querySelector('.codicon');
-                            if (iconEl) iconEl.className = 'codicon codicon-check';
-                            setTimeout(() => { if (iconEl) iconEl.className = 'codicon codicon-copy'; }, 2000);
-                        }, 'code-action-btn', 'Copy the SEARCH block for this hunk');
-
-                        // Copy Replace Button for this hunk
-                        const copyReplaceBtn = createButton('Copy Replace', 'codicon-copy', () => {
-                            vscode.postMessage({ command: 'copyToClipboard', text: replacePart });
-                            const iconEl = copyReplaceBtn.querySelector('.codicon');
-                            if (iconEl) iconEl.className = 'codicon codicon-check';
-                            setTimeout(() => { if (iconEl) iconEl.className = 'codicon codicon-copy'; }, 2000);
-                        }, 'code-action-btn', 'Copy the REPLACE block for this hunk');
-
-                        // NEW: View Raw button for this specific hunk
-                        const rawHunkBtn = createButton('Raw', 'codicon-code', () => {
-                            if (dom.rawCodeDisplay) {
-                                dom.rawCodeFilename.textContent = block.path || "Unspecified File";
-                                const hunkIdEl = document.getElementById('raw-hunk-id');
-                                if (hunkIdEl) hunkIdEl.textContent = `HUNK ${hIdx + 1}`;
-                                dom.rawCodeDisplay.textContent = match[0]; // match[0] is the full block string
-                                dom.rawCodeDisplay.dataset.messageId = messageId;
-                                dom.rawCodeDisplay.dataset.blockIndex = String(blockIdx);
-                                dom.rawCodeDisplay.dataset.hunkIndex = String(hIdx);
-                                dom.rawCodeModal.classList.add('visible');
-                            }
-                        }, 'code-action-btn', 'View raw SEARCH/REPLACE for this hunk');
-                        
-                        // Apply Hunk Button
-                        const applyHunkBtn = createButton('Apply Hunk', applyIcon, () => {
-                            vscode.postMessage({ 
-                                command: 'replaceCode', 
-                                filePath: block.path, 
-                                content: match[0], 
-                                messageId,
-                                blockIndex: blockIdx,
-                                hunkIndex: hIdx
-                            });
-                        }, 'code-action-btn apply-btn', 'Apply only this modification');
-
-                        // Undo Hunk Button
-                        const undoHunkBtn = createButton('Undo Hunk', 'codicon-discard', () => {
-                            vscode.postMessage({ 
-                                command: 'replaceCode', 
-                                filePath: block.path, 
-                                content: match[0], 
-                                messageId,
-                                blockIndex: blockIdx,
-                                hunkIndex: hIdx,
-                                options: { undo: true }
-                            });
-                        }, 'code-action-btn delete-btn', 'Revert this modification (swap Search/Replace)');
-
-                        // Restore hunk state from persistence
-                        const appliedHunks = state.appliedState?.[messageId]?.[blockIdx] || [];
-                        const isHunkApplied = appliedHunks.includes(hIdx) || appliedHunks.includes(-1);
-
-                        if (isHunkApplied) {
-                            applyHunkBtn.classList.add('applied');
-                            applyHunkBtn.innerHTML = '<span class="codicon codicon-check"></span>';
-                            hunkBubble.classList.add('collapsed');
-                            undoHunkBtn.style.display = 'flex';
-                        } else {
-                            applyHunkBtn.classList.remove('applied');
-                            undoHunkBtn.style.display = 'none';
-                        }
-
-                        if (isBlockGenerating) {
-                            applyHunkBtn.disabled = true;
-                            copySearchBtn.disabled = true;
-                            copyReplaceBtn.disabled = true;
-                            undoHunkBtn.disabled = true;
-                        }
-                        
-                        hunkActions.appendChild(copySearchBtn);
-                        hunkActions.appendChild(copyReplaceBtn);
-                        hunkActions.appendChild(rawHunkBtn);
-                        hunkActions.appendChild(undoHunkBtn);
-                        hunkActions.appendChild(applyHunkBtn);
-                        hunkHeader.appendChild(hunkActions);
-                        hunkBubble.appendChild(hunkHeader);
-                        
-                        const hunkContent = document.createElement('div');
-                        hunkContent.className = 'aider-hunk-content';
-                        
-                        const diffContainer = document.createElement('div');
-                        diffContainer.className = 'aider-diff-container';
-
-                        const sLines = (match[1] || "").split('\n');
-                        const rRaw = (match[2] || "").trim();
-                        const rLines = rRaw === "" ? [] : rRaw.split('\n');
-
-                        let prefix = 0;
-                        while (prefix < sLines.length && prefix < rLines.length && sLines[prefix] === rLines[prefix]) prefix++;
-                        let suffix = 0;
-                        while (suffix < (sLines.length - prefix) && suffix < (rLines.length - prefix) && sLines[sLines.length - 1 - suffix] === rLines[rLines.length - 1 - suffix]) suffix++;
-
-                        const renderLine = (line: string, type: 'added' | 'removed' | 'unchanged') => {
-                            const lDiv = document.createElement('div');
-                            lDiv.className = `aider-diff-line aider-diff-${type}`;
-
-                            const codeSpan = document.createElement('span');
-                            codeSpan.className = 'aider-diff-code';
-                            codeSpan.textContent = line; 
-
-                            lDiv.appendChild(codeSpan);
-                            diffContainer.appendChild(lDiv);
-                        };
-
-                        for (let i = 0; i < prefix; i++) renderLine(sLines[i], 'unchanged');
-                        for (let i = prefix; i < sLines.length - suffix; i++) renderLine(sLines[i], 'removed');
-                        for (let i = prefix; i < rLines.length - suffix; i++) renderLine(rLines[i], 'added');
-                        for (let i = sLines.length - suffix; i < sLines.length; i++) renderLine(sLines[i], 'unchanged');
-
-                        hunkContent.appendChild(diffContainer);
-                        hunkBubble.appendChild(hunkContent);
-                        hunkGroup.appendChild(hunkBubble);
-                    });
-                    
-                    pre.appendChild(hunkGroup);
-                    // Hide the raw code text as we now have visual bubbles
-                    pre.style.background = 'transparent';
-                    pre.style.border = 'none';
-                } else {
-                    pre.innerHTML = ''; 
-                    pre.style.display = 'flex';
-                    pre.style.overflow = 'auto';
-
-                    const gutter = document.createElement('div');
-                    gutter.className = 'code-line-gutter';
-                    const lineCount = codeOnly.split('\n').length;
-                    gutter.innerHTML = Array.from({ length: lineCount }, (_, i) => i + 1).join('<br>');
-
-                    const codeElement = document.createElement('code');
-                    codeElement.className = `language-${language}`;
-                    codeElement.textContent = codeOnly;
-
-                    pre.appendChild(gutter);
-                    pre.appendChild(codeElement);
-                    Prism.highlightElement(codeElement);
-                }
-
-                details.appendChild(pre);
-                fragment.appendChild(details);
-                lastIndex = block.end;
-            });
-
-            // Render remaining text
-            const remaining = processedContent.substring(lastIndex);
-            if (remaining.trim()) {
-                const lastTextDiv = document.createElement('div');
-                lastTextDiv.innerHTML = sanitizer.sanitize(marked.parse(remaining) as string, SANITIZE_CONFIG);
-                fragment.appendChild(lastTextDiv);
-            }
-
-            if (visualImagesHtml) {
-                const imgDiv = document.createElement('div');
-                imgDiv.className = 'message-visuals';
-                imgDiv.style.marginTop = '8px';
-                imgDiv.innerHTML = visualImagesHtml;
-                fragment.appendChild(imgDiv);
-            }
-
-            contentDiv.innerHTML = '';
-            contentDiv.appendChild(fragment);
-
-            // Re-run enhancement for the newly generated fragment
-            enhanceCodeBlocks(contentDiv, messageId, rawContent, isFinal);
-
-            // --- RE-INJECT APPLY ALL AGGREGATOR ---
-            // If the message contains actionable hunks or file blocks, we ensure the bulk action bar is present.
-            const actionButtons = contentDiv.querySelectorAll('.aider-hunk-bubble .apply-btn, .code-actions .apply-btn');
-            if (actionButtons.length > 0 && !contentDiv.querySelector('.apply-all-wrapper')) {
-                const wrapper = document.createElement('div');
-                wrapper.className = 'apply-all-wrapper';
-                wrapper.style.marginTop = '16px';
-
-                const btn = document.createElement('button');
-                btn.className = 'apply-all-btn';
-                btn.innerHTML = '<span class="codicon codicon-check-all"></span> Apply All Changes';
-                // Only enable if the message is finished streaming
-                btn.disabled = !isFinal;
-
-                const resultsList = document.createElement('div');
-                resultsList.className = 'apply-results-list';
-                resultsList.style.display = 'none';
-
-                btn.onclick = () => {
-                    const changes = gatherChangesFromBlocks(messageId);
-                    if (changes.length > 0) {
-                        btn.disabled = true;
-                        btn.innerHTML = '<span class="codicon codicon-sync spin"></span> Applying Batch...';
-                        resultsList.style.display = 'block';
-                        vscode.postMessage({ command: 'applyAllChanges', changes, messageId });
-                    }
-                };
-
-                wrapper.appendChild(btn);
-                wrapper.appendChild(resultsList);
-                contentDiv.appendChild(wrapper);
-            }
-
-            } catch (e) {
-                contentDiv.innerText = "Rendering Error: " + e;
-            }
-
-            if (shouldScroll && dom.messagesDiv) dom.messagesDiv.scrollTop = dom.messagesDiv.scrollHeight;
-            }
 
 function gatherChangesFromBlocks(messageId: string) {
     const changes: any[] = [];
     const wrapper = document.querySelector(`.message-wrapper[data-message-id='${messageId}']`);
     if (!wrapper) return changes;
 
-    // Select all potential containers (Aider blocks and standard file blocks)
     const blocks = wrapper.querySelectorAll('details.code-collapsible');
-
     blocks.forEach((block: any) => {
-        // Extract indices from the ID (format: block-{messageId}-{idx})
         const idParts = block.id.split('-');
         const blockIndex = parseInt(idParts[idParts.length - 1], 10);
-
         const codeText = block.dataset.rawCode || "";
-        const summaryText = block.querySelector('.summary-lang-label')?.textContent || "";
 
-        // Clean path extraction (Project/path.ext)
-        const parts = summaryText.split(' : ');
-        const path = parts.length > 1 ? parts[1].replace('Diff: ', '').trim() : "";
+        // RE-INTEGRATED: User-edited path recovery
+        const pathInp = block.querySelector('.path-editor-input') as HTMLInputElement;
+        const path = pathInp ? pathInp.value.trim() : "";
         if (!path) return;
 
-        // 1. Check for Aider Multi-Hunk Bubbles
         const hunkBubbles = block.querySelectorAll('.aider-hunk-bubble');
         if (hunkBubbles.length > 0) {
             hunkBubbles.forEach((hunk: any, hIdx: number) => {
-                const hunkBtn = hunk.querySelector('.apply-btn');
-                // Include if not already applied
-                if (hunkBtn && !hunkBtn.classList.contains('applied')) {
+                const btn = hunk.querySelector('.apply-btn');
+                if (btn && !btn.classList.contains('applied')) {
                     changes.push({
                         type: 'replace',
                         path: path,
@@ -2956,15 +1729,10 @@ function gatherChangesFromBlocks(messageId: string) {
                 }
             });
         } else {
-            // 2. Standard Single-Action Blocks (Full File, Insert, Replace)
-            const applyBtn = block.querySelector('.code-actions .apply-btn') as HTMLButtonElement;
+            const applyBtn = block.querySelector('.code-actions .apply-btn');
             if (applyBtn && !applyBtn.classList.contains('applied')) {
-                let type: any = 'file';
-                const lowerSummary = summaryText.toLowerCase();
-                if (lowerSummary.includes('diff')) type = 'diff';
-                else if (lowerSummary.includes('insert')) type = 'insert';
-                else if (lowerSummary.includes('replace')) type = 'replace';
-
+                const labelText = block.querySelector('.summary-lang-label span')?.textContent || "";
+                const type = labelText.toLowerCase().includes('diff') ? 'diff' : 'file';
                 changes.push({
                     type: type,
                     path: path,
@@ -3254,22 +2022,21 @@ const renderDataBriefing = (briefing: string) => {
 export function updateContext(contextText: string, files: string[] = [], skills: any[] = [], diagrams: any[] = [], briefing: string = "") {
     if(!dom.contextContainer) return;
 
-    // Cache the data so we can re-render if capabilities (like Mute) change
-    state.lastContextData = { context: contextText, files, skills, diagrams, briefing };
+    // MERGE PERSISTENCE: If files are empty in this message, preserve the ones we already know about
+    const existingFiles = state.lastContextData?.files || [];
+    const finalFiles = (files && files.length > 0) ? files : existingFiles;
 
-    // If no context text but we have files/skills, show "Loading content..." in the preview
-    const displayContent = contextText || (files.length > 0 ? "_Loading project content..._" : "");
-    const renderedMarkdown = displayContent ? sanitizer.sanitize(marked.parse(displayContent) as string, SANITIZE_CONFIG) : "";
+    state.lastContextData = { context: contextText, files: finalFiles, skills, diagrams, briefing };
 
-    // Categorize as external if it's in the cache or a web URL.
-    // Absolute paths are now pre-scrubbed by the extension host to look relative.
+    // Detection for Welcome Message integration
+    const isNewDiscussion = !document.querySelector('.message-wrapper:not(.context-message)');
+
     const isProjectFile = (f: string) => {
         const isInternal = f.includes('.lollms/') || f.startsWith('http') || f.startsWith('external/');
         return !isInternal;
     };
 
     const projectFiles = files.filter(isProjectFile);
-    // Everything else (Cache, Absolute paths, Web) is External/Research
     const externalFiles = files.filter(f => !isProjectFile(f));
 
     const renderFileList = (list: string[], emptyMsg: string, allowSummarize: boolean = false) => {
@@ -3318,153 +2085,159 @@ export function updateContext(contextText: string, files: string[] = [], skills:
     // Standard = Blue (Librarian/Architect mode)
     const themeClass = isAgentActive ? 'agent-mode-bubble' : 'standard-mode-bubble';
 
+    const welcomeHtml = isNewDiscussion ? `
+        <div id="welcome-message" style="padding: 15px; margin-bottom: 10px; background: rgba(0,0,0,0.1); border-radius: 6px; font-size: 12px; line-height: 1.5; border: 1px dashed var(--vscode-widget-border);">
+            <h3 style="margin-top:0; font-size:14px; color: var(--vscode-textLink-foreground);"><i class="codicon codicon-rocket"></i> Welcome to Lollms VS Coder</h3>
+            <ul style="padding-left: 20px; margin-bottom: 0;">
+                <li>Add files to context by right-clicking them in the explorer.</li>
+                <li>Use 🤖 <strong>Agent Mode</strong> for complex multi-step tasks.</li>
+                <li>Toggle 🧠 <strong>Auto-Context</strong> to let the AI find relevant code for you.</li>
+                <li>Check the 🔌 <strong>API status</strong> in the header above.</li>
+            </ul>
+        </div>` : "";
+
     const innerHTML = `
-    <div class="message special-zone-message context-message ${themeClass}" id="fused-context-dashboard">
-        <div class="message-avatar">
-            ${isAgentActive 
-                ? `<div class="agent-active-indicator">
-                    <div class="genie-orb-portal" style="transform: scale(0.7);">
-                        <div class="orb-ring-outer"></div>
-                        <div class="orb-ring-inner"></div>
-                        <div class="orb-core"></div>
-                    </div>
-                   </div>` 
-                : '<span class="codicon codicon-library"></span>'}
-        </div>
-        <div class="message-body">
-            <!-- 🚀 FUSED TOP HUD (Inside Context Bubble) -->
-            <div class="fused-hud-header" style="display: flex; flex-direction: column; gap: 10px; margin-bottom: 16px; padding: 12px; background: rgba(0,0,0,0.2); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <div id="badge-dashboard-panel">
-                        <div class="active-badges" id="active-badges"></div>
-                    </div>
-                    <div style="display: flex; align-items: center; gap: 12px;">
-                        <button id="hud-matrix-btn" class="icon-btn" title="Workspace Access Matrix" style="color: var(--vscode-textLink-foreground); padding: 2px;">
-                            <i class="codicon codicon-layers" style="font-size: 14px;"></i>
-                        </button>
-                        <span id="status-text" style="font-size: 10px; font-weight: 900; opacity: 0.4; letter-spacing: 0.5px;">READY</span>
-                    </div>
-                </div>
-
-                <div class="token-fused-bar">
-                    <div class="token-progress-container" id="token-progress-container" style="height: 6px; border-radius: 3px; background: rgba(255,255,255,0.03);">
-                        <div class="token-progress-bar" id="token-progress-bar"></div>
-                    </div>
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px;">
-                        <span id="token-count-label" style="font-size: 10px; opacity: 0.4; font-family: var(--vscode-editor-font-family);">Calculating...</span>
-                        <div id="token-bar-legend" class="token-legend" style="display: none; gap: 10px;"></div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="message-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 12px;">
-                <div style="display:flex; align-items:center; gap:8px;">
-                    <span class="role-name">Intelligence Context</span>
-                </div>
-                <div style="display: flex; gap: 8px; align-items: center;">
-                    <!-- 📥 EXPORT TOOLS -->
-                    <div style="display:flex; gap:4px; margin-right:8px; padding-right:8px; border-right:1px solid var(--vscode-widget-border);">
-                        <button class="icon-btn" title="Copy Discussion as Markdown" onclick="vscode.postMessage({command:'executeLollmsCommand', details:{command:'lollms-vs-coder.copyDiscussionMarkdown'}})"><i class="codicon codicon-markdown"></i></button>
-                        <button class="icon-btn" title="Export Discussion as HTML" onclick="vscode.postMessage({command:'executeLollmsCommand', details:{command:'lollms-vs-coder.exportDiscussionHtml'}})"><i class="codicon codicon-cloud-download"></i></button>
-                    </div>
-
-                    <button id="refresh-context-btn" class="icon-btn" title="Force refresh context & recalculate bar" style="padding: 2px; color: var(--vscode-charts-blue);"><i class="codicon codicon-sync"></i></button>
-                    <button id="save-context-btn" class="icon-btn" title="Save file selection" style="padding: 2px;"><i class="codicon codicon-save"></i></button>
-                    <button id="load-context-btn" class="icon-btn" title="Load file selection" style="padding: 2px;"><i class="codicon codicon-folder-opened"></i></button>
-                    <button id="reset-context-bubble-btn" class="icon-btn" title="Full Context Reset" style="padding: 2px; color: var(--vscode-errorForeground);"><i class="codicon codicon-clear-all"></i></button>
-                </div>
-            </div>
-            <div class="message-content">
-                <!-- 🎯 MISSION BRIEFING (TEAM GROUND TRUTH) -->
-                <details class="info-collapsible" style="margin-bottom: 6px; border-left: 4px solid var(--vscode-charts-purple);" ${briefing ? 'open' : ''}>
-                    <summary>
-                        <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
-                            <span>Mission Briefing & Constraints</span>
-                            <button id="edit-briefing-btn" class="icon-btn" title="Edit Briefing" style="color: var(--vscode-charts-purple);"><i class="codicon codicon-shield"></i></button>
+    <div class="context-message ${themeClass}" id="fused-context-dashboard">
+        <details class="fused-context-details">
+            <summary>
+                <div class="fused-hud-header" style="display: flex; flex-direction: column; gap: 10px; padding: 12px; background: rgba(0,0,0,0.2); border-bottom: 1px solid rgba(255,255,255,0.05);">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div id="badge-dashboard-panel" style="display: flex; align-items: center; gap: 10px;">
+                            ${isAgentActive 
+                                ? `<div class="agent-active-indicator">
+                                    <div class="genie-orb-portal" style="transform: scale(0.55);">
+                                        <div class="orb-ring-outer"></div>
+                                        <div class="orb-ring-inner"></div>
+                                        <div class="orb-core"></div>
+                                    </div>
+                                   </div>` 
+                                : '<span class="codicon codicon-library" style="opacity:0.6;"></span>'}
+                            <div class="active-badges" id="active-badges"></div>
                         </div>
-                    </summary>
-                    <div class="collapsible-content">
-                        <div class="briefing-content" style="padding: 10px; font-size: 12px; line-height: 1.5; opacity: 0.9;">
-                            ${briefing ? renderDataBriefing(briefing) : '<div style="font-style:italic; opacity:0.5;">No specific task constraints defined. Click the shield to add instructions.</div>'}
+                        <div style="display: flex; align-items: center; gap: 12px;">
+                            <button id="hud-matrix-btn" class="icon-btn" title="Workspace Access Matrix" style="color: var(--vscode-textLink-foreground); padding: 2px;">
+                                <i class="codicon codicon-layers" style="font-size: 14px;"></i>
+                            </button>
+                            <span id="status-text" style="font-size: 10px; font-weight: 900; opacity: 0.4; letter-spacing: 0.5px;">READY</span>
+                            <i class="codicon codicon-chevron-down hud-toggle-icon" style="opacity:0.5; font-size: 12px;"></i>
                         </div>
                     </div>
-                </details>
 
-                <details class="info-collapsible" style="margin-bottom: 6px;">
-                    <summary>
-                        <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
-                            <span>Selected Files (${files.length})</span>
-                            <div style="display: flex; gap: 8px; align-items: center;">
-                                <button id="view-usage-context-btn" class="icon-btn" title="Verify File Sizes / Token Usage"><i class="codicon codicon-dashboard"></i></button>
-                                <div style="width: 1px; height: 12px; background: var(--vscode-widget-border);"></div>
-                                <button id="add-file-context-btn" class="icon-btn" title="Add File"><i class="codicon codicon-add"></i></button>
-                                <button id="web-context-btn" class="icon-btn" title="Web Discovery"><i class="codicon codicon-globe"></i></button>
-                                <button id="search-add-context-btn" class="icon-btn" title="Power Search"><i class="codicon codicon-search"></i></button>
+                    <div class="token-fused-bar" style="display: flex; flex-direction: column; gap: 4px;">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <button id="hud-quick-refresh-btn" class="icon-btn" title="Refresh Token Count" style="padding: 0; color: var(--vscode-descriptionForeground); opacity: 0.6;">
+                                <i class="codicon codicon-refresh" style="font-size: 10px;"></i>
+                            </button>
+                            <div class="token-progress-container" id="token-progress-container" style="flex: 1; height: 4px; border-radius: 2px; background: rgba(255,255,255,0.03);">
+                                <div class="token-progress-bar" id="token-progress-bar"></div>
                             </div>
                         </div>
-                    </summary>
-                    <div class="collapsible-content" style="padding-top: 8px;">
-                        <h4 style="margin: 0 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
-                            <span>Project Files</span>
-                            ${projectFiles.length > 0 ? `
-                            <button id="bulk-remove-project-btn" class="section-bulk-btn" title="Open Bulk Removal Tool">
-                                <span class="codicon codicon-checklist"></span> Bulk Remove
-                            </button>` : ''}
-                        </h4>
-                        ${renderFileList(projectFiles, "No project files selected.", false)}
-                        
-                        <h4 style="margin: 12px 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
-                            <span>External & Research</span>
-                            ${externalFiles.length > 0 ? `
-                            <div style="display: flex; gap: 4px;">
-                                <button id="bulk-process-external-btn" class="section-bulk-btn">
-                                    <span class="codicon codicon-wand"></span> Process
-                                </button>
-                                <button id="bulk-delete-external-btn" class="section-bulk-btn delete">
-                                    <span class="codicon codicon-trash"></span> Delete
-                                </button>
-                            </div>` : ''}
-                        </h4>
-                        ${renderFileList(externalFiles, "No search results or external data in context.", true)}
-                    </div>
-                </details>
-                <details class="info-collapsible" style="margin-bottom: 6px;">
-                    <summary>
-                        <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
-                            <span>Active Diagrams (${diagrams?.length || 0})</span>
-                            <button id="add-diagram-context-btn" class="icon-btn" title="Add Diagram"><i class="codicon codicon-add"></i></button>
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <span id="token-count-label" style="font-size: 9px; opacity: 0.4; font-family: var(--vscode-editor-font-family);">Calculating...</span>
+                            <div id="token-bar-legend" class="token-legend" style="display: none; gap: 10px;"></div>
                         </div>
-                    </summary>
-                    <div class="collapsible-content">
-                        ${diagrams && diagrams.length > 0 ? diagrams.map(d => `
-                            <div class="context-item" style="flex-direction:column; align-items:stretch;">
-                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
-                                    <span style="font-weight:bold; font-size:11px;">${d.type.replace('_', ' ').toUpperCase()}</span>
-                                    <button class="remove-context-btn" data-type="diagram" data-value="${d.type}"><span class="codicon codicon-close"></span></button>
+                    </div>
+                </div>
+            </summary>
+
+            <div class="message-body" style="padding: 16px;">
+                <div id="welcome-message" style="display: ${isNewDiscussion ? 'block' : 'none'}; padding: 12px; margin-bottom: 20px; background: rgba(0,0,0,0.15); border-radius: 6px; border: 1px dashed var(--vscode-widget-border);">
+                    <h3 style="margin:0 0 8px 0; font-size:13px; color: var(--vscode-textLink-foreground); display:flex; align-items:center; gap:8px;">
+                        <i class="codicon codicon-rocket"></i> Welcome to Lollms VS Coder
+                    </h3>
+                    <ul style="padding-left: 20px; margin: 0; font-size: 11px; opacity: 0.85; display: flex; flex-direction: column; gap: 4px;">
+                        <li>Right-click files in the explorer to <b>Include in AI Context</b>.</li>
+                        <li>Toggle 🤖 <b>Agent Mode</b> for complex autonomous missions.</li>
+                        <li>Toggle 🧠 <b>Auto-Context</b> to let the AI scout relevant files for you.</li>
+                        <li>Select your preferred 🔌 <b>Model and Persona</b> in the header above.</li>
+                    </ul>
+                </div>
+
+                <div class="message-header" style="display: flex; justify-content: space-between; align-items: center; width: 100%; margin-bottom: 12px;">
+                    <div style="display:flex; align-items:center; gap:8px;">
+                        <span class="role-name">Intelligence Context</span>
+                    </div>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <div style="display:flex; gap:4px; margin-right:8px; padding-right:8px; border-right:1px solid var(--vscode-widget-border);">
+                            <button class="icon-btn" title="Copy Discussion as Markdown" onclick="vscode.postMessage({command:'executeLollmsCommand', details:{command:'lollms-vs-coder.copyDiscussionMarkdown'}})"><i class="codicon codicon-markdown"></i></button>
+                            <button class="icon-btn" title="Export Discussion as HTML" onclick="vscode.postMessage({command:'executeLollmsCommand', details:{command:'lollms-vs-coder.exportDiscussionHtml'}})"><i class="codicon codicon-cloud-download"></i></button>
+                        </div>
+                        <button id="refresh-context-btn" class="icon-btn" title="Force refresh context & recalculate bar" style="padding: 2px; color: var(--vscode-charts-blue);"><i class="codicon codicon-sync"></i></button>
+                        <button id="save-context-btn" class="icon-btn" title="Save file selection" style="padding: 2px;"><i class="codicon codicon-save"></i></button>
+                        <button id="load-context-btn" class="icon-btn" title="Load file selection" style="padding: 2px;"><i class="codicon codicon-folder-opened"></i></button>
+                        <button id="reset-context-bubble-btn" class="icon-btn" title="Full Context Reset" style="padding: 2px; color: var(--vscode-errorForeground);"><i class="codicon codicon-clear-all"></i></button>
+                    </div>
+                </div>
+
+                <div class="message-content">
+                    <details class="info-collapsible" style="margin-bottom: 6px; border-left: 4px solid var(--vscode-charts-purple);" ${briefing ? 'open' : ''}>
+                        <summary>
+                            <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
+                                <span>Mission Briefing & Constraints</span>
+                                <button id="edit-briefing-btn" class="icon-btn" title="Edit Briefing" style="color: var(--vscode-charts-purple);"><i class="codicon codicon-shield"></i></button>
+                            </div>
+                        </summary>
+                        <div class="collapsible-content">
+                            <div class="briefing-content" style="padding: 10px; font-size: 12px; line-height: 1.5; opacity: 0.9;">
+                                ${briefing ? renderDataBriefing(briefing) : '<div style="font-style:italic; opacity:0.5;">No specific task constraints defined. Click the shield to add instructions.</div>'}
+                            </div>
+                        </div>
+                    </details>
+
+                    <details class="info-collapsible" style="margin-bottom: 6px;">
+                        <summary>
+                            <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
+                                <span>Selected Files (${files.length})</span>
+                                <div style="display: flex; gap: 8px; align-items: center;">
+                                    <button id="view-usage-context-btn" class="icon-btn" title="Verify File Sizes / Token Usage"><i class="codicon codicon-dashboard"></i></button>
+                                    <div style="width: 1px; height: 12px; background: var(--vscode-widget-border);"></div>
+                                    <button id="add-file-context-btn" class="icon-btn" title="Add File"><i class="codicon codicon-add"></i></button>
+                                    <button id="web-context-btn" class="icon-btn" title="Web Discovery"><i class="codicon codicon-globe"></i></button>
+                                    <button id="search-add-context-btn" class="icon-btn" title="Power Search"><i class="codicon codicon-search"></i></button>
                                 </div>
-                                <pre class="mermaid" style="background:var(--vscode-editor-background); border-radius:4px; padding:5px;">${d.mermaid}</pre>
                             </div>
-                        `).join('') : '<div class="empty-context-msg">No diagrams included.</div>'}
-                    </div>
-                </details>
-                <details class="info-collapsible">
-                    <summary>
-                        <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
-                            <span>Active Skills (${skills.length})</span>
-                            <div style="display: flex; gap: 8px; align-items: center;">
-                                <button id="add-skill-context-btn" class="icon-btn" title="Import Skill"><i class="codicon codicon-add"></i></button>
-                            ${skills.length > 0 ? `
-                            <button id="bulk-delete-skills-btn" class="section-bulk-btn delete" style="margin-right: 5px;">
-                                <span class="codicon codicon-trash"></span> Bulk Remove
-                            </button>` : ''}
+                        </summary>
+                        <div class="collapsible-content" style="padding-top: 8px;">
+                            <h4 style="margin: 0 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
+                                <span>Project Files</span>
+                                ${projectFiles.length > 0 ? `<button id="bulk-remove-project-btn" class="section-bulk-btn"><span class="codicon codicon-checklist"></span> Bulk Remove</button>` : ''}
+                            </h4>
+                            ${renderFileList(projectFiles, "No project files selected.", false)}
+                            <h4 style="margin: 12px 0 8px 4px; font-size: 11px; opacity: 0.7; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center;">
+                                <span>External & Research</span>
+                                ${externalFiles.length > 0 ? `<div style="display: flex; gap: 4px;"><button id="bulk-process-external-btn" class="section-bulk-btn"><span class="codicon codicon-wand"></span> Process</button><button id="bulk-delete-external-btn" class="section-bulk-btn delete"><span class="codicon codicon-trash"></span> Delete</button></div>` : ''}
+                            </h4>
+                            ${renderFileList(externalFiles, "No search results or external data in context.", true)}
                         </div>
-                    </summary>
-                    <div class="collapsible-content">
-                        ${skillsList}
-                    </div>
-                </details>
+                    </details>
+                    <details class="info-collapsible" style="margin-bottom: 6px;">
+                        <summary>
+                            <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
+                                <span>Active Diagrams (${diagrams?.length || 0})</span>
+                                <button id="add-diagram-context-btn" class="icon-btn" title="Add Diagram"><i class="codicon codicon-add"></i></button>
+                            </div>
+                        </summary>
+                        <div class="collapsible-content">
+                            ${diagrams && diagrams.length > 0 ? diagrams.map(d => `<div class="context-item" style="flex-direction:column; align-items:stretch;"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;"><span style="font-weight:bold; font-size:11px;">${d.type.replace('_', ' ').toUpperCase()}</span><button class="remove-context-btn" data-type="diagram" data-value="${d.type}"><span class="codicon codicon-close"></span></button></div><pre class="mermaid" style="background:var(--vscode-editor-background); border-radius:4px; padding:5px;">${d.mermaid}</pre></div>`).join('') : '<div class="empty-context-msg">No diagrams included.</div>'}
+                        </div>
+                    </details>
+                    <details class="info-collapsible">
+                        <summary>
+                            <div style="display: flex; justify-content: space-between; align-items: center; width: calc(100% - 20px);">
+                                <span>Active Skills (${skills.length})</span>
+                                <div style="display: flex; gap: 8px; align-items: center;">
+                                    <button id="add-skill-context-btn" class="icon-btn" title="Import Skill"><i class="codicon codicon-add"></i></button>
+                                    ${skills.length > 0 ? `<button id="bulk-delete-skills-btn" class="section-bulk-btn delete" style="margin-right: 5px;"><span class="codicon codicon-trash"></span> Bulk Remove</button>` : ''}
+                                </div>
+                            </div>
+                        </summary>
+                        <div class="collapsible-content">
+                            ${skillsList}
+                        </div>
+                    </details>
+                </div>
             </div>
-        </div>
+        </details>
     </div>`;
     
     const hasMetadata = files.length > 0 || skills.length > 0 || (diagrams && diagrams.length > 0);
@@ -3772,18 +2545,19 @@ export function updateContext(contextText: string, files: string[] = [], skills:
         }
     });
 
-    const refreshCtxBtn = document.getElementById('refresh-context-btn');
-    if (refreshCtxBtn) {
-        refreshCtxBtn.addEventListener('click', () => {
-            // Visual feedback: spin the icon
-            const icon = refreshCtxBtn.querySelector('.codicon');
+    const handleRefresh = (btn: HTMLElement | null) => {
+        if (!btn) return;
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const icon = btn.querySelector('.codicon');
             if (icon) icon.classList.add('spin');
-            
             vscode.postMessage({ command: 'calculateTokens' });
-            
             setTimeout(() => { if (icon) icon.classList.remove('spin'); }, 1000);
         });
-    }
+    };
+
+    handleRefresh(document.getElementById('refresh-context-btn'));
+    handleRefresh(document.getElementById('hud-quick-refresh-btn'));
     
     const bulkDeleteSkillsBtn = document.getElementById('bulk-delete-skills-btn');
     if (bulkDeleteSkillsBtn) {

@@ -678,7 +678,29 @@ export function initEventHandlers() {
         const val = (e.target as HTMLSelectElement).value;
         vscode.postMessage({ command: 'updateDiscussionPersonality', personalityId: val });
     });
+    // Ensure the scroll to bottom button actually functions
+    if (dom.scrollToBottomBtn) {
+        dom.scrollToBottomBtn.onclick = (e) => {
+            e.stopPropagation();
+            if (dom.messagesDiv) {
+                dom.messagesDiv.scrollTo({
+                    top: dom.messagesDiv.scrollHeight,
+                    behavior: 'smooth'
+                });
+            }
+        };
+    }
 
+    // Scroll spy logic for visibility
+    if (dom.messagesDiv) {
+        dom.messagesDiv.addEventListener('scroll', () => {
+            if (isScrolledToBottom(dom.messagesDiv)) {
+                dom.scrollToBottomBtn.style.display = 'none';
+            } else {
+                dom.scrollToBottomBtn.style.display = 'flex';
+            }
+        });
+    }
     if (dom.closeToolsModal) dom.closeToolsModal.addEventListener('click', () => dom.toolsModal.classList.remove('visible'));
     if (dom.saveToolsBtn) dom.saveToolsBtn.addEventListener('click', () => {
         const policies: Record<string, string> = {};
@@ -1523,27 +1545,47 @@ export function initEventHandlers() {
         if (genImgBtn) {
             e.stopPropagation();
 
-            const block = genImgBtn.closest('.generation-block');
+            const block = genImgBtn.closest('.generation-block, .file-operation-block');
             const folderInp = block?.querySelector('.asset-folder-input') as HTMLInputElement;
             const nameInp = block?.querySelector('.asset-name-input') as HTMLInputElement;
 
             let finalPath = decodeURIComponent(genImgBtn.dataset.path || '');
+
+            // 🚀 PATH RE-ASSEMBLY Logic:
+            // This allows the user to manually change the "source_v2.png" to anything else in the UI
             if (folderInp && nameInp) {
                 const folder = folderInp.value.trim().replace(/\/+$/, '');
-                finalPath = folder + '/' + nameInp.value.trim();
+                const name = nameInp.value.trim();
+                finalPath = (folder === '.' || folder === '') ? name : `${folder}/${name}`;
             }
 
             genImgBtn.disabled = true;
-            genImgBtn.innerHTML = '<div class="spinner"></div> Generating...';
+            genImgBtn.innerHTML = '<div class="spinner"></div> Processing...';
 
-            vscode.postMessage({
-                command: 'generateImage',
-                prompt: decodeURIComponent(genImgBtn.dataset.prompt || ''),
-                filePath: finalPath,
-                width: genImgBtn.dataset.width || '',
-                height: genImgBtn.dataset.height || '',
-                buttonId: genImgBtn.id
-            });
+            const pathsRaw = genImgBtn.dataset.paths;
+            if (pathsRaw) {
+                // This is an EDIT request
+                vscode.postMessage({
+                    command: 'runTool',
+                    tool: 'edit_image_asset',
+                    buttonId: genImgBtn.id, // Pass the ID for callback
+                    params: {
+                        paths: JSON.parse(pathsRaw),
+                        prompt: decodeURIComponent(genImgBtn.dataset.prompt || ''),
+                        output_path: finalPath
+                    }
+                });
+            } else {
+                // This is a NEW GENERATION request
+                vscode.postMessage({
+                    command: 'generateImage',
+                    prompt: decodeURIComponent(genImgBtn.dataset.prompt || ''),
+                    filePath: finalPath,
+                    width: genImgBtn.dataset.width || '',
+                    height: genImgBtn.dataset.height || '',
+                    buttonId: genImgBtn.id
+                });
+            }
             return;
         }
 

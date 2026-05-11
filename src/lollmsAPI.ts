@@ -9,6 +9,7 @@ export interface LollmsConfig {
   apiUrl: string;
   apiKey: string;
   modelName: string;
+  ttiModelName?: string;
   disableSslVerification: boolean;
   sslCertPath?: string;
   backendType: 'lollms' | 'openai' | 'ollama' | 'anthropic' | 'google' | 'groq' | 'grok' | 'novitai' | 'openwebui' | 'openrouter' | 'perplexity' | 'together';
@@ -58,6 +59,8 @@ export interface ImageGenerationResponse {
     created: number;
     data: ImageObject[];
 }
+
+const FormData = require('form-data');
 
 export class LollmsAPI {
   private config: LollmsConfig;
@@ -325,6 +328,9 @@ export class LollmsAPI {
             headers['Authorization'] = `Bearer ${this.config.apiKey}`;
         }
 
+        // 🛡️ LOW LATENCY ENFORCEMENT: If server doesn't respond in 2s, move to local
+        const fastTimeout = setTimeout(() => controller.abort(), 2000);
+
         const response = await fetch(tokenizeUrl, {
             method: 'POST',
             headers: headers,
@@ -337,24 +343,65 @@ export class LollmsAPI {
             agent: isHttps && tokenizeUrl.startsWith(this.baseUrl) ? this.httpsAgent : undefined
         });
 
+        clearTimeout(fastTimeout);
+
         if (response.ok) {
             const data = await response.json() as TokenizeResponse;
-            // If the server provided a real list of tokens or a non-zero count, it's NOT an estimation.
             return { ...data, isEstimation: false };
-        } else {
-            const errBody = await response.text();
-            Logger.warn(`Tokenize API failed (${response.status}): ${errBody}`);
         }
-    } catch (e) { 
-        Logger.error("Tokenize request exception", e);
-    } finally { 
+        } catch (e: any) { 
+        if (e.name === 'AbortError') {
+            Logger.warn(`Tokenize API timed out. Falling back to Local Tokenizer.`);
+        } else {
+            Logger.warn(`Tokenize API unreachable (${e.message}). Falling back to Local Tokenizer.`);
+        }
+        } finally { 
         clearTimeout(timeout); 
+        }
+
+    // --- 🛡️ SOVEREIGN LOCAL FAILSAFE TOKENIZER ---
+    return this.tokenizeLocal(safeText);
     }
 
-    // Fallback to heuristic ONLY on true network/server failure
-    const hasCode = safeText.includes('{') || safeText.includes('def ') || safeText.includes('function ') || safeText.includes('import ');
-    return { count: Math.ceil(safeText.length * (hasCode ? 0.35 : 0.28)), tokens: [], isEstimation: true };
-  }
+    /**
+    * High-speed code-aware heuristic tokenizer.
+    * Runs locally with zero latency when the server is unreachable.
+    */
+    private tokenizeLocal(text: string): TokenizeResponse {
+    if (!text) return { count: 0, tokens: [], isEstimation: true };
+
+    // 1. Split by whitespace and common code symbols
+    // This captures tokens more accurately than raw character division
+    const words = text.split(/(\s+|[{}()\[\].,;+\-*/%&|^!<>?:=@#$])/);
+
+    let tokenCount = 0;
+    for (const word of words) {
+        if (!word) continue;
+
+        // Whitespace: usually 1 token per block of 4 spaces or single newline
+        if (/^\s+$/.test(word)) {
+            tokenCount += Math.max(1, Math.ceil(word.length / 4));
+            continue;
+        }
+
+        // Long words (likely base64 or long variable names): approx 4 chars per token
+        if (word.length > 4) {
+            tokenCount += Math.ceil(word.length / 4);
+        } else {
+            // Symbols and short words: usually 1 token
+            tokenCount += 1;
+        }
+    }
+
+    // Safety margin for BPE overhead
+    const count = Math.ceil(tokenCount * 1.1);
+
+    return { 
+        count, 
+        tokens: [], 
+        isEstimation: true 
+    };
+    }
 
   public async getContextSize(model?: string): Promise<ContextSizeResponse> {
     const modelName = (model || this.config.modelName || "").trim();
@@ -512,114 +559,35 @@ export class LollmsAPI {
     return data.text || '';
   }
 
-public async editImage(prompt: string, imageBase64: string, maskBase64?: string, model?: string, token?: vscode.CancellationToken): Promise<string> {
+
+  /**
+   * Generates a new image based on a prompt.
+   * Matches the ImageGenerationRequest (JSON) backend model.
+   */
+  public async generateImage(prompt: string, options?: { size?: string, quality?: 'standard' | 'hd' }, token?: vscode.CancellationToken): Promise<string> {
     if (!this.baseUrl) throw new Error("Lollms API URL is not configured correctly.");
 
-    const url = `${this.baseUrl}/v1/images/edits`;
-    const isHttps = url.startsWith('https');
-
-    // Manual conversion from Data URI to Buffer (Node.js compatible)
-    const dataUriToBuffer = (dataUri: string) => {
-        const base64Data = dataUri.split(',')[1];
-        return Buffer.from(base64Data, 'base64');
-    };
-
-    const FormData = require('form-data');
-    const formData = new FormData();
-    formData.append('prompt', prompt);
-
-    // Convert main image to Buffer. 
-    // Explicitly using form-data's append for Node.js compatibility.
-    const imageBuffer = dataUriToBuffer(imageBase64);
-    formData.append('image', imageBuffer, {
-        filename: 'source.png',
-        contentType: 'image/png',
-        knownLength: imageBuffer.length
-    });
-
-    if (maskBase64) {
-        const maskBuffer = dataUriToBuffer(maskBase64);
-        formData.append('mask', maskBuffer, {
-            filename: 'mask.png',
-            contentType: 'image/png',
-            knownLength: maskBuffer.length
-        });
-    }
-
-    if (model) {
-        formData.append('model', model);
-    }
-
-    // Default response format to match your server's default
-    formData.append('response_format', 'b64_json');
-
-    const controller = new AbortController();
-    if (token) token.onCancellationRequested(() => controller.abort());
-
-    try {
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${this.config.apiKey}`,
-                ...formData.getHeaders() // CRITICAL: Standard node fetch needs the boundary from form-data
-            },
-            body: formData,
-            signal: controller.signal,
-            agent: isHttps && url.startsWith(this.baseUrl) ? this.httpsAgent : undefined
-        });
-
-        if (!response.ok) {
-            const err = await response.text();
-            throw new Error(`Image Edit Error: ${response.status} - ${err}`);
-        }
-
-        const data = await response.json() as ImageGenerationResponse;
-        
-        // Handle OpenAI format response: { data: [ { b64_json: "..." } ] }
-        if (data.data && data.data[0]) {
-            const result = data.data[0];
-            if (result.b64_json) return result.b64_json;
-            if (result.url) return result.url; // Fallback if server returned URL
-        }
-        
-        throw new Error('API did not return recognizable image data.');
-    } catch (error: any) {
-        if (error.name === 'AbortError') throw new Error("Image edit timed out or was cancelled.");
-        throw error;
-    }
-}
-
-public async generateImage(prompt: string, options?: { size?: string, quality?: 'standard' | 'hd' }, token?: vscode.CancellationToken): Promise<string> {
-  if (!this.baseUrl) {
-    throw new Error("Lollms API URL is not configured correctly.");
-  }
-
-  const imageUrl = `${this.baseUrl}/v1/images/generations`;
+    const imageUrl = `${this.baseUrl}/v1/images/generations`;
     const isHttps = imageUrl.startsWith('https');
 
     const requestBody: ImageGenerationRequest = {
         prompt: prompt,
         n: 1,
         response_format: 'b64_json',
-        size: options?.size,
-        quality: options?.quality
+        size: options?.size || "1024x1024",
+        quality: options?.quality || "standard"
     };
 
-    const controller = new AbortController();
-    const timeoutDuration = vscode.workspace.getConfiguration('lollmsVsCoder').get<number>('requestTimeout') || 600000;
-    
-    let timedOut = false;
-    const timeout = setTimeout(() => {
-        timedOut = true;
-        controller.abort();
-    }, timeoutDuration);
-
-    if (token) {
-        token.onCancellationRequested(() => controller.abort());
+    // Only send model if explicitly set, otherwise let the backend (Lollms) autoselect
+    if (this.config.ttiModelName) {
+        requestBody.model = this.config.ttiModelName;
     }
 
+    const controller = new AbortController();
+    if (token) token.onCancellationRequested(() => controller.abort());
+
     try {
-        const options: RequestInit = {
+        const response = await fetch(imageUrl, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -627,44 +595,112 @@ public async generateImage(prompt: string, options?: { size?: string, quality?: 
             },
             body: JSON.stringify(requestBody),
             signal: controller.signal,
-          };
-    
-        if (isHttps) {
-            options.agent = this.httpsAgent;
-        }
-
-        const response = await fetch(imageUrl, {
-            ...options,
             agent: isHttps && imageUrl.startsWith(this.baseUrl) ? this.httpsAgent : undefined
         });
 
         if (!response.ok) {
             const errorBody = await response.text();
-            Logger.error('Lollms Image Generation API Error:', errorBody);
-            throw new Error(`Lollms Image API error: ${response.status} - ${errorBody}`);
+            throw new Error(`Image Generation Error: ${response.status} - ${errorBody}`);
         }
 
         const data: ImageGenerationResponse = await response.json();
 
-        if (data.data && data.data[0] && data.data[0].b64_json) {
-            return data.data[0].b64_json;
-        } else {
-            throw new Error('API response did not contain valid b64_json image data.');
+        if (data.data && data.data[0]) {
+            const img = data.data[0];
+            return img.b64_json || img.url || "";
         }
+        throw new Error('API response did not contain valid image data.');
 
     } catch (error: any) {
-        if (error.name === 'AbortError') {
-            if (timedOut) {
-              throw new Error(`Image generation request timed out.`);
-            }
-            throw error; 
-        }
+        if (error.name === 'AbortError') throw new Error("Image generation cancelled.");
         throw error;
-    } finally {
-        clearTimeout(timeout);
     }
   }
 
+  /**
+   * Edits or Blends images.
+   * Matches create_image_edit (Multipart/Form-Data) backend endpoint.
+   */
+  public async editImage(prompt: string, imagesBase64: string[], maskBase64?: string, model?: string, token?: vscode.CancellationToken): Promise<string> {
+    if (!this.baseUrl) throw new Error("Lollms API URL is not configured correctly.");
+
+    const url = `${this.baseUrl}/v1/images/edits`;
+    const isHttps = url.startsWith('https');
+
+    const dataUriToBuffer = (uri: string) => {
+        const base64Data = uri.includes(',') ? uri.split(',')[1] : uri;
+        return Buffer.from(base64Data, 'base64');
+    };
+
+    const formData = new FormData();
+    
+    // 1. Mandatory Form Fields (sent as part of multipart body)
+    formData.append('prompt', prompt);
+    formData.append('response_format', 'b64_json');
+    formData.append('n', '1');
+    
+    const finalModel = model || this.config.ttiModelName;
+    if (finalModel) {
+        formData.append('model', finalModel);
+    }
+
+    // 2. Append multiple 'image' files to support blending/multi-source
+    imagesBase64.forEach((uri, idx) => {
+        const buffer = dataUriToBuffer(uri);
+        formData.append('image', buffer, {
+            filename: `input_image_${idx}.png`,
+            contentType: 'image/png'
+        });
+    });
+
+    if (maskBase64) {
+        const maskBuffer = dataUriToBuffer(maskBase64);
+        formData.append('mask', maskBuffer, {
+            filename: 'mask.png',
+            contentType: 'image/png'
+        });
+    }
+
+    const controller = new AbortController();
+    if (token) token.onCancellationRequested(() => controller.abort());
+
+    try {
+        // Resolve form data into a buffer to correctly set Content-Length
+        const body = formData.getBuffer();
+        
+        const headers = {
+            ...formData.getHeaders(),
+            'Authorization': `Bearer ${this.config.apiKey}`,
+            'Content-Length': body.length.toString()
+        };
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: headers,
+            body: body,
+            signal: controller.signal,
+            agent: isHttps && url.startsWith(this.baseUrl) ? this.httpsAgent : undefined
+        });
+
+        if (!response.ok) {
+            const errBody = await response.text();
+            throw new Error(`Image Edit Error ${response.status}: ${errBody}`);
+        }
+
+        const data = await response.json() as ImageGenerationResponse;
+
+        if (data.data && data.data[0]) {
+            const result = data.data[0];
+            return result.b64_json || result.url || "";
+        }
+            
+        throw new Error('API did not return recognizable image data.');
+    } catch (error: any) {
+        if (error.name === 'AbortError') throw new Error("Image edit timed out or was cancelled.");
+        throw error;
+    }
+  }
+  
   async sendChat(
     messages: ChatMessage[],
     onChunk?: ((chunk: string) => void) | null,

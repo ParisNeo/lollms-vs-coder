@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-05-11 01:27]
+
+- feat(chat): add Text-to-Image (TTI) support with model configuration
+
 ## [2026-05-08 13:22]
 
 - chore(release): bump version to 0.8.61 and clean up codebase

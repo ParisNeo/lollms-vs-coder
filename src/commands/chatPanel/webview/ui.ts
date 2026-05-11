@@ -1,5 +1,5 @@
 import { dom, state, vscode } from "./dom.js";
-import { isScrolledToBottom } from "./utils.js";
+import { isScrolledToBottom, applySearchReplace } from "./utils.js";
 import DOMPurify from 'dompurify';
 
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
@@ -284,7 +284,10 @@ function initCanvasEvents() {
 
     // --- ZOOM LOGIC (Wheel) ---
     canvas.addEventListener('wheel', (e: WheelEvent) => {
-        e.preventDefault();
+        // Only prevent default if we are holding a modifier key (Intentional Zoom)
+        if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+        }
         const zoomSpeed = 0.0015;
         const delta = -e.deltaY;
         const factor = Math.pow(1.1, delta / 100);
@@ -563,18 +566,11 @@ export function setGeneratingState(isGenerating: boolean, statusText?: string, s
     const actionableButtons = document.querySelectorAll('.apply-btn, .lollms-command-btn, .code-action-btn, .msg-action-btn, .summarize-context-btn, .open-context-btn, .remove-context-btn');
     actionableButtons.forEach((btn: any) => {
         if (isGenerating) {
-            if (!btn.dataset.originalHtml) {
-                btn.dataset.originalHtml = btn.innerHTML;
-                btn.innerHTML = '<div class="spinner"></div>';
-            }
+            // Discrete lockdown: disable and fade, but DO NOT replace content with spinners
             btn.disabled = true;
             btn.style.pointerEvents = 'none';
-            btn.style.opacity = '0.5';
+            btn.style.opacity = '0.4'; 
         } else {
-            if (btn.dataset.originalHtml) {
-                btn.innerHTML = btn.dataset.originalHtml;
-                delete btn.dataset.originalHtml;
-            }
             btn.disabled = false;
             btn.style.pointerEvents = 'auto';
             btn.style.opacity = '1';
@@ -846,6 +842,89 @@ function openProfileEditor(idx: number = -1) {
 
     editor.style.display = 'block';
     container.style.display = 'none';
+}
+
+/**
+ * Reactively updates all Context Expansion blocks in the chat history
+ * based on the latest global state. Fixes the "Always Blue" bug.
+ */
+export function syncExpansionBlocks() {
+    const globalState = (window as any).state;
+    const globalFiles = globalState?.lastContextData?.files || [];
+
+    // Normalize global list: remove slashes and force lowercase
+    const normalizedGlobal = globalFiles.map((f: string) => f.replace(/\\/g, '/').toLowerCase());
+
+    const items = document.querySelectorAll('.expansion-file-item');
+    console.log(`[UI:Sync] Syncing ${items.length} UI items against ${normalizedGlobal.length} context files.`);
+
+    items.forEach((item: any) => {
+        const pathAttr = item.getAttribute('data-path');
+        if (!pathAttr) return;
+
+        // Clean and normalize the UI path
+        const cleanPath = pathAttr.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase().trim();
+
+        // GREEDY MATCH: Check for structural equality
+        const isIncluded = normalizedGlobal.some(gf => {
+            const cleanGf = gf.replace(/^\.\//, '').trim();
+            return cleanGf === cleanPath || 
+                   cleanGf.endsWith('/' + cleanPath) || 
+                   cleanPath.endsWith('/' + cleanGf);
+        });
+
+        if (isIncluded) {
+            const icon = item.querySelector('.codicon');
+            item.style.borderColor = 'var(--vscode-charts-green)';
+            item.style.background = 'rgba(15, 157, 88, 0.1)';
+            item.style.borderLeft = '4px solid var(--vscode-charts-green)';
+            if (icon) {
+                icon.className = 'codicon codicon-check';
+                icon.style.color = 'var(--vscode-charts-green)';
+            }
+        }
+    });
+
+    // Also update buttons
+    document.querySelectorAll('.context-expansion-block').forEach((block: any) => {
+        const files = JSON.parse(block.dataset.files || '[]');
+        const allIncluded = files.every((f: string) => 
+            globalFiles.some((cf: string) => cf.replace(/\\/g, '/') === f.replace(/\\/g, '/'))
+        );
+
+        const addBtn = block.querySelector('.add-btn') as HTMLButtonElement;
+        if (addBtn && allIncluded) {
+            addBtn.innerHTML = '<span class="codicon codicon-check"></span> Added to Context';
+            addBtn.className = 'code-action-btn applied';
+            addBtn.disabled = true;
+        }
+    });
+}
+
+/**
+ * Global internal image viewer to bypass browser popup blockers.
+ */
+export function openSovereignZoom(dataUri: string) {
+    const overlay = document.getElementById('image-zoom-overlay');
+    const display = document.getElementById('zoomed-image-display') as HTMLImageElement;
+    if (!overlay || !display) return;
+
+    display.src = dataUri;
+    overlay.classList.add('visible');
+
+    const close = () => overlay.classList.remove('visible');
+    overlay.onclick = close;
+    overlay.querySelector('.close-btn')!.onclick = close;
+
+    const copyBtn = document.getElementById('zoom-copy-btn');
+    if (copyBtn) {
+        copyBtn.onclick = (e) => {
+            e.stopPropagation();
+            vscode.postMessage({ command: 'copyToClipboard', text: dataUri });
+            copyBtn.innerHTML = '<i class="codicon codicon-check"></i> Copied Data';
+            setTimeout(() => { copyBtn.innerHTML = '<i class="codicon codicon-copy"></i> Copy Image'; }, 2000);
+        };
+    }
 }
 
 export function updateBadges() {
@@ -1121,8 +1200,9 @@ export function updateBadges() {
         workerGroup.className = 'badge-group';
         container.appendChild(workerGroup);
 
+        const isBuilder = caps.workerType === 'builder';
         const workerBadge = createToggleBadge(
-            '💬 Discuss',
+            isBuilder ? '👷 Builder' : '💬 Discuss',
             'autocontext', 
             true,
             true,
@@ -1130,7 +1210,7 @@ export function updateBadges() {
                 vscode.postMessage({ 
                     command: 'updateDiscussionCapabilitiesPartial', 
                     partial: { 
-                        workerType: 'discussion'
+                        workerType: isBuilder ? 'discussion' : 'builder'
                     } 
                 });
             }
@@ -1362,7 +1442,8 @@ export function updateBadges() {
     }
 
     // --- THEME: KNOWLEDGE (Librarian/Skills) ---
-    if (!isAgentMode && (guiState.autoContextBadge || guiState.autoSkillBadge !== false)) {
+    const isBuilderMode = caps.workerType === 'builder';
+    if (!isAgentMode && !isBuilderMode && (guiState.autoContextBadge || guiState.autoSkillBadge !== false)) {
         const knowledgeGroup = document.createElement('div');
         knowledgeGroup.className = 'badge-group hud-options-parent';
         container.appendChild(knowledgeGroup);
@@ -2480,46 +2561,182 @@ export function renderWorkspaceMatrix() {
 
 let currentStagingChanges: any[] = [];
 let currentStagingIdx = 0;
+(window as any).currentStagingChanges = currentStagingChanges;
+(window as any).currentStagingIdx = currentStagingIdx;
+
+/**
+ * Opens the Raw Aider Block modal with tabs for each hunk.
+ */
+/**
+ * Opens the Raw Aider Block modal with tabs for each hunk.
+ */
+export function openRawCodeModal(messageId: string, blockIndex: number, filePath: string, rawCode: string, initialHunkIdx: number = 0) {
+    // 🧹 CLEANUP GHOST ELEMENTS: Remove any orphaned action buttons from previous failed renders
+    document.querySelectorAll('.modal-footer > button, .raw-block-actions').forEach(el => {
+        if (!el.closest('#raw-code-modal')) el.remove();
+    });
+
+    const modal = dom.rawCodeModal;
+    const tabBar = document.getElementById('modal-hunk-tabs');
+    const display = dom.rawCodeDisplay;
+    const filenameEl = dom.rawCodeFilename;
+
+    if (!modal || !tabBar || !display) return;
+
+    // Force visible state via class
+    modal.classList.add('visible');
+
+    filenameEl.textContent = filePath;
+    display.dataset.messageId = messageId;
+    display.dataset.blockIndex = String(blockIndex);
+
+    // Extract all hunks
+    const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
+    const matches = [...rawCode.matchAll(aiderRegex)];
+
+    tabBar.innerHTML = '';
+
+    const switchHunk = (idx: number) => {
+        const match = matches[idx];
+        display.textContent = match[0];
+        display.dataset.hunkIndex = String(idx);
+
+        // Update active tab visual
+        tabBar.querySelectorAll('.hunk-tab').forEach((t: any, i) => {
+            t.classList.toggle('active', i === idx);
+        });
+
+        // Sync "Applied" state of the button inside modal
+        const appliedHunks = state.appliedState?.[messageId]?.[blockIndex] || [];
+        const isApplied = appliedHunks.includes(idx) || appliedHunks.includes(-1);
+        dom.markAppliedBtn.classList.toggle('applied', isApplied);
+        dom.markAppliedBtn.innerHTML = isApplied 
+            ? '<span class="codicon codicon-check"></span> Applied Manually'
+            : '<span class="codicon codicon-check"></span> Mark as Applied Manually';
+    };
+
+    matches.forEach((_, i) => {
+        const tab = document.createElement('div');
+        tab.className = 'hunk-tab';
+        // Add a dot if the hunk is already applied
+        const appliedHunks = state.appliedState?.[messageId]?.[blockIndex] || [];
+        const isApplied = appliedHunks.includes(i) || appliedHunks.includes(-1);
+        
+        tab.innerHTML = `<i class="codicon ${isApplied ? 'codicon-check' : 'codicon-primitive-dot'}"></i> HUNK ${i + 1}`;
+        tab.onclick = () => switchHunk(i);
+        tabBar.appendChild(tab);
+    });
+
+    switchHunk(initialHunkIdx);
+
+    // Explicitly force layout to absolute center
+    modal.style.display = 'flex';
+    modal.classList.add('visible');
+    }
 
 export async function openStagingRevamp(messageId: string, changes: any[]) {
     currentStagingChanges = changes;
+    (window as any).currentStagingChanges = changes;
     currentStagingIdx = 0;
+    (window as any).currentStagingIdx = 0;
 
     const modal = document.getElementById('staging-revamp-modal');
-    const list = document.getElementById('staging-files-list');
-    if (!modal || !list) return;
+    const closeBtn = document.getElementById('staging-revamp-close');
+    const applyAllBtn = document.getElementById('staging-apply-all-btn') as HTMLButtonElement;
+    const applyOneBtn = document.getElementById('staging-apply-current-btn') as HTMLButtonElement;
+
+    if (!modal) return;
 
     modal.classList.add('visible');
     renderStagingList();
     loadStagingDiff(0);
+
+    // Modal Close
+    const close = () => {
+        modal.classList.remove('visible');
+        currentStagingChanges = [];
+    };
+    closeBtn!.onclick = close;
+
+    // Apply CURRENT File Only
+    applyOneBtn.onclick = () => {
+        const change = currentStagingChanges[currentStagingIdx];
+        if (change.isApplied) return;
+
+        applyOneBtn.disabled = true;
+        applyOneBtn.innerHTML = '<div class="spinner"></div> Applying...';
+
+        vscode.postMessage({
+            command: 'applyFileContent',
+            filePath: change.path,
+            content: change.content,
+            messageId: messageId,
+            blockIndex: change.blockIndex,
+            hunkIndex: change.hunkIndex,
+            options: { silent: true, autoSave: true }
+        });
+    };
+
+    // Apply ALL VALID Files
+    applyAllBtn.onclick = () => {
+        const pending = currentStagingChanges.filter(c => !c.isApplied);
+        if (pending.length === 0) return;
+
+        applyAllBtn.disabled = true;
+        applyAllBtn.innerHTML = '<div class="spinner"></div> Processing Batch...';
+
+        vscode.postMessage({
+            command: 'applyAllChanges',
+            messageId: messageId,
+            changes: pending
+        });
+    };
 }
 
 function renderStagingList() {
-    const list = document.getElementById('staging-files-list')!;
+    const list = document.getElementById('staging-files-list');
+    if (!list) return;
+
     list.innerHTML = currentStagingChanges.map((c, i) => `
-        <div class="staging-file-item ${i === currentStagingIdx ? 'active' : ''}" onclick="window.loadStagingDiff(${i})">
-            <div class="status-dot ${c.isValid ? 'valid' : 'invalid'}" title="${c.isValid ? 'Ready to patch' : 'Error: Search block not found'}"></div>
-            <div style="flex:1; min-width:0;">
+        <div class="staging-file-item ${i === currentStagingIdx ? 'active' : ''} ${c.isApplied ? 'applied' : ''}" 
+             data-index="${i}">
+            <div style="display:flex; flex-direction:column; flex:1; min-width:0;">
                 <div style="font-size:12px; font-weight:bold; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${c.path.split('/').pop()}</div>
                 <div style="font-size:9px; opacity:0.6; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${c.path}</div>
             </div>
-            ${c.isApplied ? '<i class="codicon codicon-check" style="color:var(--vscode-charts-green)"></i>' : ''}
+            <div class="item-status">
+                ${c.isApplied 
+                    ? '<i class="codicon codicon-check" style="color:var(--vscode-charts-green)"></i>' 
+                    : (c.error ? '<i class="codicon codicon-error" style="color:var(--vscode-charts-red)"></i>' : '')}
+            </div>
         </div>
     `).join('');
 
+    // CSP-compliant event attachment (no inline onclick handlers)
+    list.querySelectorAll('.staging-file-item').forEach((item) => {
+        item.addEventListener('click', () => {
+            const idx = parseInt((item as HTMLElement).dataset.index || '0', 10);
+            loadStagingDiff(idx);
+        });
+    });
+
     const stats = document.getElementById('staging-stats');
-    const validCount = currentStagingChanges.filter(c => c.isValid).length;
-    if (stats) stats.textContent = `${validCount} / ${currentStagingChanges.length} files valid`;
+    const applied = currentStagingChanges.filter(c => c.isApplied).length;
+    if (stats) stats.textContent = `${applied} / ${currentStagingChanges.length} applied`;
 }
 
 async function loadStagingDiff(index: number) {
     currentStagingIdx = index;
+    (window as any).currentStagingIdx = index;
     renderStagingList();
-    const change = currentStagingChanges[index];
-    const container = document.getElementById('staging-diff-content')!;
-    container.innerHTML = '<div style="padding:20px; opacity:0.5;">Calculating diff...</div>';
 
-    // We request the current file content from the extension to show a real diff
+    const change = currentStagingChanges[index];
+    const viewer = document.getElementById('staging-diff-content');
+    if (!viewer) return;
+
+    viewer.innerHTML = '<div style="padding:40px; text-align:center; opacity:0.5;"><div class="spinner"></div> Reading disk state...</div>';
+
+    // Fetch original content from extension to perform real-time diff comparison
     vscode.postMessage({ 
         command: 'requestFileContentForDiff', 
         path: change.path,
@@ -2529,48 +2746,85 @@ async function loadStagingDiff(index: number) {
 
 (window as any).loadStagingDiff = loadStagingDiff;
 
-// Listen for the content returned by extension
-window.addEventListener('message', event => {
-    const m = event.data;
-    if (m.command === 'provideFileContentForDiff') {
-        renderVisualDiff(m.currentContent, currentStagingChanges[m.changeIndex].content);
-    }
-});
+/**
+ * Split-View Diff Renderer (Before vs After)
+ */
+function renderSplitDiff(oldText: string, patch: string) {
+    const container = document.getElementById('staging-diff-content');
+    if (!container) return;
 
-function renderVisualDiff(oldText: string, patch: string) {
-    const container = document.getElementById('staging-diff-content')!;
-    // Simple line-based diff for the review UI
-    const oldLines = oldText.split('\n');
-    let html = '';
+    
 
-    // If it's an Aider block, we extract the SEARCH/REPLACE
-    const aiderMatch = patch.match(/<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/);
+    // 1. Calculate the final state as intended by the patch
+    let newText = oldText;
+    const aiderRegex = /<<<<<<< SEARCH\r?\n([\s\S]*?)\r?\n=======\r?\n([\s\S]*?)\r?\n>>>>>>> REPLACE/g;
+    const matches = [...patch.matchAll(aiderRegex)];
 
-    if (aiderMatch) {
-        const searchLines = aiderMatch[1].split('\n');
-        const replaceLines = aiderMatch[2].split('\n');
-
-        // This is a simplified "Review" render. In a real app we'd use a diff library.
-        // But for pedagogical purposes, showing the block we are replacing is better.
-        html += `<div style="padding:10px; background:var(--vscode-editor-inactiveSelectionBackground); font-size:10px; opacity:0.7;">--- SEARCH BLOCK ---</div>`;
-        searchLines.forEach(l => html += `<div class="diff-line removed"><span class="diff-line-num">-</span>${sanitizer.sanitize(l)}</div>`);
-        html += `<div style="padding:10px; background:var(--vscode-editor-inactiveSelectionBackground); font-size:10px; opacity:0.7;">+++ REPLACE BLOCK ---</div>`;
-        replaceLines.forEach(l => html += `<div class="diff-line added"><span class="diff-line-num">+</span>${sanitizer.sanitize(l)}</div>`);
+    if (matches.length > 0) {
+        for (const match of matches) {
+            const res = applySearchReplace(newText, match[1], match[2]);
+            if (res.success) newText = res.result;
+        }
     } else {
-        // Full file rewrite
-        patch.split('\n').forEach((l, i) => {
-            html += `<div class="diff-line added"><span class="diff-line-num">${i+1}</span>${sanitizer.sanitize(l)}</div>`;
-        });
+        newText = patch; // Full rewrite case
     }
-    container.innerHTML = html;
+
+    const oldLines = oldText.split('\n');
+    const newLines = newText.split('\n');
+
+    const leftPane = document.createElement('div');
+    leftPane.className = 'diff-pane';
+    leftPane.innerHTML = '<div class="diff-pane-header">BEFORE (DISK)</div><div class="diff-scroll-container" id="left-diff"></div>';
+
+    const rightPane = document.createElement('div');
+    rightPane.className = 'diff-pane';
+    rightPane.innerHTML = '<div class="diff-pane-header">AFTER (PROPOSED)</div><div class="diff-scroll-container" id="right-diff"></div>';
+
+    container.innerHTML = '';
+    container.appendChild(leftPane);
+    container.appendChild(rightPane);
+
+    const leftScroll = leftPane.querySelector('#left-diff')!;
+    const rightScroll = rightPane.querySelector('#right-diff')!;
+
+    // Simple side-by-side reconstruction
+    // We iterate through both and highlight the changes
+    const max = Math.max(oldLines.length, newLines.length);
+    let leftHtml = '', rightHtml = '';
+
+    for (let i = 0; i < max; i++) {
+        const o = oldLines[i];
+        const n = newLines[i];
+
+        if (o === n) {
+            leftHtml += `<div class="diff-line"><span class="diff-line-num">${i+1}</span><span class="diff-line-content">${sanitizer.sanitize(o || '')}</span></div>`;
+            rightHtml += `<div class="diff-line"><span class="diff-line-num">${i+1}</span><span class="diff-line-content">${sanitizer.sanitize(n || '')}</span></div>`;
+        } else {
+            // Find if this is a block replacement
+            if (o !== undefined) leftHtml += `<div class="diff-line removed"><span class="diff-line-num">${i+1}</span><span class="diff-line-content">${sanitizer.sanitize(o)}</span></div>`;
+            else leftHtml += `<div class="diff-line empty-placeholder"><span class="diff-line-num">&nbsp;</span></div>`;
+
+            if (n !== undefined) rightHtml += `<div class="diff-line added"><span class="diff-line-num">${i+1}</span><span class="diff-line-content">${sanitizer.sanitize(n)}</span></div>`;
+            else rightHtml += `<div class="diff-line empty-placeholder"><span class="diff-line-num">&nbsp;</span></div>`;
+        }
+    }
+
+    leftScroll.innerHTML = leftHtml;
+    rightScroll.innerHTML = rightHtml;
+
+    // SYNC SCROLLING
+    leftScroll.onscroll = () => rightScroll.scrollTop = leftScroll.scrollTop;
+    rightScroll.onscroll = () => leftScroll.scrollTop = rightScroll.scrollTop;
 }
+
+// Global exposure for event handler
+(window as any).renderSplitDiff = renderSplitDiff;
 
 export function updateProgressBar(container: HTMLElement | null, current: number, total: number, segments?: any) {
     if (!container) return;
 
     if (segments && total > 0) {
         container.innerHTML = '';
-        // Add 'memory' to the visual segments list
         const types = ['system', 'tree', 'skills', 'memory', 'files', 'history', 'images'];
 
         types.forEach(type => {
@@ -2578,62 +2832,56 @@ export function updateProgressBar(container: HTMLElement | null, current: number
             if (count > 0) {
                 const segDiv = document.createElement('div');
                 segDiv.className = `token-bar-segment segment-${type}`;
-                // CRITICAL: Ensure dataset and attribute are synced for the event listener
                 segDiv.dataset.type = type;
-                segDiv.setAttribute('data-type', type);
                 const pct = (count / total) * 100;
                 segDiv.style.width = `${pct}%`;
-                segDiv.title = `${type.toUpperCase()}: ${count.toLocaleString()} tokens`;
+                segDiv.title = `${type.toUpperCase()}: ${count.toLocaleString()} tokens (Click to view)`;
+
+                // Segment is also clickable
+                segDiv.onclick = (e) => {
+                    e.stopPropagation();
+                    vscode.postMessage({
+                        command: 'executeLollmsCommand',
+                        details: { command: 'lollms-vs-coder.viewFullContext', params: type }
+                    });
+                };
                 container.appendChild(segDiv);
             }
         });
 
-        // FIX: The legend is now in the main top-controls area.
-        // We prevent duplication by selecting from the static DOM instead of parent.
-        let legend = document.getElementById('token-bar-legend');
-        if (legend) {
-            legend.style.display = 'flex';
-        } else if (!container.parentElement?.querySelector('.token-legend')) {
-            legend = document.createElement('div');
-            legend.className = 'token-legend';
-            legend.innerHTML = `
-                <div class="legend-item" data-type="system" title="View Processed System Prompt">
-                    <div class="legend-dot segment-system"></div>System
-                </div>
-                <div class="legend-item" data-type="tree" title="View Project Tree Structure">
-                    <div class="legend-dot segment-tree"></div>Trees
-                </div>
-                <div class="legend-item" data-type="skills" title="View Active Skills">
-                    <div class="legend-dot segment-skills"></div>Skills
-                </div>
-                <div class="legend-item" data-type="memory" title="View Project Memory">
-                    <div class="legend-dot segment-memory"></div>Memory
-                </div>
-                <div class="legend-item" data-type="files" title="View Detailed File Usage">
-                    <div class="legend-dot segment-files"></div>Files
-                </div>
-                <div class="legend-item" data-type="chat" title="View History Context">
-                    <div class="legend-dot segment-history"></div>Chat
-                </div>
-                <div class="legend-item" data-type="images"><div class="legend-dot segment-images"></div>Images</div>
-            `;
-
-            // Use robust event listeners instead of raw onclick attributes
-            legend.querySelectorAll('.legend-item').forEach(item => {
-                (item as HTMLElement).onclick = () => {
-                    const type = (item as HTMLElement).dataset.type;
-                    if (type && type !== 'images') {
-                        vscode.postMessage({
-                            command: 'executeLollmsCommand', 
-                            details: { command: 'lollms-vs-coder.viewFullContext', params: type }
-                        });
-                    }
-                };
-            });
-            container.parentElement?.appendChild(legend);
+        // 🧬 RENDER CLICKABLE LEGEND
+        let legendContainer = document.getElementById('token-bar-legend');
+        if (!legendContainer) {
+            legendContainer = document.createElement('div');
+            legendContainer.id = 'token-bar-legend';
+            legendContainer.className = 'token-legend';
+            container.parentElement?.after(legendContainer);
         }
+
+        legendContainer.innerHTML = types.map(type => {
+            const count = segments[type] || 0;
+            if (count === 0) return '';
+            const label = type.charAt(0).toUpperCase() + type.slice(1);
+            return `
+                <div class="legend-item" data-type="${type}" title="View ${label} details">
+                    <div class="legend-dot segment-${type}"></div>
+                    <span>${label}</span>
+                    <span style="opacity:0.5; margin-left:2px;">${Math.round(count/1024)}k</span>
+                </div>`;
+        }).join('');
+
+        // Attach listeners to legend items
+        legendContainer.querySelectorAll('.legend-item').forEach(item => {
+            (item as HTMLElement).onclick = (e) => {
+                e.stopPropagation();
+                const type = (item as HTMLElement).dataset.type;
+                vscode.postMessage({
+                    command: 'executeLollmsCommand',
+                    details: { command: 'lollms-vs-coder.viewFullContext', params: type }
+                });
+            };
+        });
     } else {
-        // Fallback for single bar use (e.g. usage modal)
         container.innerHTML = `<div class="token-bar-segment segment-files" style="width: ${Math.min((current/total)*100, 100)}%"></div>`;
     }
 

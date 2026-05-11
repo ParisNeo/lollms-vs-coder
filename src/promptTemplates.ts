@@ -224,14 +224,21 @@ You are provided with a "Surgical Target" including the selection and surroundin
 >>>>>>> REPLACE
 Markers MUST start at the absolute beginning of the line.
 
-### 🛠️ TOOLS AT YOUR DISPOSAL
-You have access to all Agent tools including:
-- \`read_file\`, \`read_code_graph\`, \`grep_search\`, \`execute_command\`.
+### 🛡️ OPERATIONAL PROTOCOL: SURGICAL
+1. **CONTENT ACCESS**: The target code is in your prompt. Do not claim you cannot see it.
+2. **AIDER FORMATTING**: Use SEARCH/REPLACE blocks.
 
-**ESCALATION PROTOCOL**: 
-If you identify a keyword (e.g., a custom error code or unique variable) that appears to be global but isn't in your context, you MUST output a JSON block calling \`grep_search\`. The system will then perform a second run with the matching files.
-
-**MANDATORY**: After you apply a fix, use \`execute_command\` or \`run_file\` to verify that the code still compiles or passes tests before calling \`submit_response\`.
+### 🎨 INTEGRATED UI COMPONENTS
+You are a vision-capable engineer. You can generate, look at, and edit images.
+- <edit_image_asset>
+        <input_file>path/to/main/file</input_file>
+        <input_file>path/to/second/file</input_file>
+        <prompt>Detailed instructions on what to change</prompt>
+        <output_file>proposed/output/path.png</output_file>
+    </edit_image_asset>
+- <generate_image path="..." width="..." height="...">prompt</generate_image>
+- <create_svg_asset path="..." svg_code="..." />
+>>>>>>> REPLACE
 `;
         }
 
@@ -282,16 +289,24 @@ ${activeProfile.systemPrompt}
 
 
 ### 🎨 INTEGRATED UI COMPONENTS
-You are a vision-capable engineer. You can generate, look at, and edit images.
+You are a vision-capable engineer. You can use XML tags to manifest visual changes:
+- <edit_image_asset>
+     <input_file>path/to/main/file</input_file>
+     <input_file>path/to/second/file</input_file>
+     <prompt>Detailed instructions on what to change</prompt>
+     <output_file>proposed/output/path.png</output_file>
+  </edit_image_asset>
+- <generate_image path="..." width="..." height="...">prompt</generate_image>
 
-### 🔍 KNOWLEDGE ACQUISITION PROTOCOL (ARCHITECT ONLY)
-If you see a file in the tree structure but its content is missing from the 'LOADED FILE CONTENTS' section, you MUST ask for it.
-**Tag**: 
+### 🔍 KNOWLEDGE ACQUISITION PROTOCOL (MANUAL REQUESTS)
+If you see a file or image in the tree structure but its content/visual is missing from your context, you MUST ask the user to add it.
+
+**MANDATORY TAG FORMAT**: 
 <add_files_to_context>
-path/to/file.py
+path/to/file.ext
 </add_files_to_context>
 
-**STRICT**: Do NOT use tool calls like \`<read_file>\` or JSON snippets. Those are for autonomous workers, not for you.
+**STRICT RULE**: In this mode, you have NO vision or file-reading power. You are effectively 'blind' to any file not listed in 'LOADED FILE CONTENTS'. Do not attempt to call tools like 'analyze_image'.
 
 **DEBUGGING PROTOCOL**:
 - If you identify a line where state should be inspected, propose a breakpoint.

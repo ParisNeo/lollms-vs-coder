@@ -31,9 +31,10 @@ export async function hardenWorkspace(folder: vscode.WorkspaceFolder): Promise<v
             config.update('search.exclude', searchToExclude, vscode.ConfigurationTarget.WorkspaceFolder),
             config.update('python.analysis.exclude', pythonExclude, vscode.ConfigurationTarget.WorkspaceFolder),
             config.update('python.analysis.ignore', pythonExclude, vscode.ConfigurationTarget.WorkspaceFolder),
-            // Explicitly kill isort interference
-            config.update('isort.args', ['--skip', '.lollms'], vscode.ConfigurationTarget.WorkspaceFolder),
-            // Mute linting for internal scripts
+            // Explicitly kill isort interference and disable its checks for the .lollms directory
+            config.update('isort.args', ['--skip', '.lollms', '--skip-glob', '*/.lollms/*'], vscode.ConfigurationTarget.WorkspaceFolder),
+            config.update('isort.check', false, vscode.ConfigurationTarget.WorkspaceFolder),
+            // Mute linting and indexing for internal scripts to prevent host overhead
             config.update('python.linting.ignorePatterns', ['**/.lollms/**/*.py'], vscode.ConfigurationTarget.WorkspaceFolder)
         ]);
         console.log(`[Sovereign] Workspace ${folder.name} hardened against isort/analysis crashes.`);
@@ -119,7 +120,7 @@ export const SYSTEM_RESPONSE_PROFILES: ResponseProfile[] = [
         id: "structured",
         name: "Structured (Analytical)",
         description: "Formal Observe/Think/Act breakdown.",
-        systemPrompt: "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this three-part structure for every response:\n  1. **Observe**: Identify what is being asked or what issue was found in the context.\n  2. **Think**: Describe the technical path chosen to resolve it and why.\n  3. **Act**: Provide the actual implementation, code, or tool call.\n\n- **STRICT FORMATTING**: Use standard Markdown (bolding, lists) for these sections. Do NOT wrap these text sections in triple backticks.\n- **AUTONOMOUS ACTIONS**: If you need to use a tool or save a memory, do so at the END of your 'Act' section. Tags like <project_memory> are mandatory for persistence.",
+        systemPrompt: "### RESPONSE STYLE: STRUCTURED\n- **MANDATORY LAYOUT**: You MUST follow this three-part structure for every response:\n  1. **Observe**: Identify what is being asked or what issue was found in the context.\n  2. **Think**: Describe the technical path chosen to resolve it and why.\n  3. **Act**: Provide the actual implementation, code, or tool call.\n\n- **STRICT FORMATTING**: Use standard Markdown (bolding, lists) for these sections. Do NOT wrap these text sections in triple backticks.\n- **ACT SECTION**: The Act section MUST contain the functional XML tags (like <edit_image_asset>) or JSON tool calls. Do NOT just output text description of the action in the Act section.\n- **AUTONOMOUS ACTIONS**: If you need to use a tool or save a memory, do so at the END of your 'Act' section. Tags like <project_memory> are mandatory for persistence.",
         prefix: ""
     },
     {
@@ -190,7 +191,7 @@ export interface DiscussionCapabilities {
     herdCriticEnabled?: boolean;         // Optional critique step
     // ---------------------------
 
-    workerType: 'discussion';
+    workerType: 'discussion' | 'builder';
     agentMode: boolean;
     debugMode: boolean;
     verifierMode: boolean;
@@ -619,13 +620,34 @@ export async function getProcessedSystemPrompt(
         context
     );
 
-    // 🛡️ PROTOCOL GATE: Ensure Agentic Tools never leak to the Architect
-    // Standard Architects only use <add_files_to_context>.
-    // Autonomous Agents (Genie) use JSON tool calls.
+    // 🛡️ PROTOCOL GATE: Mode-Specific Operational Constraints
     const isAutonomous = capabilities?.agentMode === true || promptType === 'agent';
-    const toolInstructions = isAutonomous ? "" : "\n### 🛑 ARCHITECT RESTRICTION\nYou are NOT an autonomous agent. You are FORBIDDEN from using tool calls like <read_file> or JSON snippets. If you need to see a file that is not in your context, you MUST use the <add_files_to_context> tag.\n";
+    const isBuilder = capabilities?.workerType === 'builder';
 
-    return basePrompt + toolInstructions + "\n" + envAwareness;
+    let operationalMandate = "";
+
+    if (isAutonomous || isBuilder) {
+        // Builders and Agents have full tool access
+        operationalMandate = "\n### 🦾 OPERATIONAL AUTHORITY: ACTIVE\nYou have permission to use JSON tool calls to interact with the filesystem, terminal, and vision systems directly.\n";
+    } else {
+        // Discussion mode is strictly Tag-Based
+        operationalMandate = `
+    ### 🛡️ DISCUSSION MODE: TAG-ONLY PROTOCOL
+    You are currently in 'Discussion Mode'. 
+    1. **TOOLS HIDDEN**: Background terminal and file-system tools are DISABLED. 
+    2. **AUTHORIZED TAGS**: You are only authorized to use the following XML tags for interaction:
+    - \`<add_files_to_context>\`: To request file content you cannot see.
+    - \`<edit_image_asset>\`: To request modifications to visual assets.
+    - \`<generate_image>\`: To manifest new images.
+    - \`<project_memory>\`: To save technical discoveries.
+
+    **STRICT RULE**: You are FORBIDDEN from outputting JSON tool calls. Use natural language and the authorized tags above.
+    `;
+    }
+
+    // SANITIZATION: If NOT autonomous, we do not append the tool descriptions usually 
+    // added by the AgentManager.
+    return basePrompt + operationalMandate + "\n" + envAwareness;
     }
 
 export function stripAnsiCodes(text: string): string {
@@ -750,7 +772,28 @@ export function estimateImageTokens(modelName: string, width?: number, height?: 
     }
 
 export function stripThinkingTags(responseText: string): string {
-    return responseText.replace(/<(think|thinking|analysis)>[\s\S]*?<\/\1>/gi, '').trim();
+    // Fence-aware thinking tag stripper:
+    // Only strip tags if they are NOT inside a backtick code fence.
+    const fenceRegex = /(`{1,3})[\s\S]*?\1/g;
+    const matches: {start: number, end: number}[] = [];
+    let m;
+    while ((m = fenceRegex.exec(responseText)) !== null) {
+        matches.push({ start: m.index, end: m.index + m[0].length });
+    }
+
+    const thinkRegex = /<(think|thinking|analysis|reasoning)>([\s\S]*?)(?:<\/\1>|$)/gi;
+    return responseText.replace(thinkRegex, (match, tag, inner, offset) => {
+        // If the match is inside a code block, preserve it as literal text
+        const isProtected = matches.some(range => offset >= range.start && offset < range.end);
+        return isProtected ? match : "";
+    }).trim();
+}
+
+/**
+ * Detects if a specific index in a string falls within any of the provided ranges.
+ */
+export function isIndexInRange(index: number, ranges: { start: number, end: number }[]): boolean {
+    return ranges.some(r => index >= r.start && index < r.end);
 }
 
 export function extractAndStripMemory(responseText: string): { content: string, memory: string | null } {

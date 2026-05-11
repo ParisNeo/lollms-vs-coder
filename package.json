@@ -1087,6 +1087,11 @@
           "default": "ollama/mistral",
           "description": "%config.modelName.description%"
         },
+        "lollmsVsCoder.ttiModelName": {
+          "type": "string",
+          "default": "",
+          "description": "The model used for Text-to-Image (TTI) generation. Leave empty to let the server autoselect."
+        },
         "lollmsVsCoder.architectModelName": {
           "type": "string",
           "default": "",
@@ -1441,7 +1446,7 @@
           "default": false,
           "description": "Enable internal debugger UI to test tools and export diagnostic logs."
         }
-        }
+      }
     },
     "viewsContainers": {
       "activitybar": [
@@ -1510,14 +1515,14 @@
           "when": "lollms:activeTab == lab && workspaceFolderCount > 0"
         },
         {
-            "id": "lollmsRLMView",
-            "name": "RLM Database",
-            "when": "lollms:activeTab == lab"
+          "id": "lollmsRLMView",
+          "name": "RLM Database",
+          "when": "lollms:activeTab == lab"
         },
         {
-            "id": "lollmsDevToolsView",
-            "name": "Developer: Tool Tester",
-            "when": "lollms:activeTab == developer"
+          "id": "lollmsDevToolsView",
+          "name": "Developer: Tool Tester",
+          "when": "lollms:activeTab == developer"
         },
         {
           "id": "lollmsGenieToolsView",
@@ -1537,7 +1542,7 @@
           "command": "lollms-vs-coder.showFileGitHistory",
           "group": "1_modification@0",
           "when": "resourceScheme == file"
-        },        
+        },
         {
           "submenu": "lollms-vs-coder.setContextSubmenu",
           "group": "1_modification@0"
@@ -2019,19 +2024,20 @@
     "dagre": "^0.8.5",
     "dompurify": "^3.2.4",
     "exceljs": "^4.4.0",
+    "form-data": "^4.0.0",
     "js-yaml": "^4.1.0",
     "layout-base": "^1.0.2",
     "mammoth": "^1.7.2",
     "marked": "16.2.1",
     "mermaid": "^10.9.1",
     "minimatch": "^9.0.5",
-    "node-fetch": "2.7.0",    
+    "node-fetch": "2.7.0",
     "pdf-parse": "^1.1.1",
     "prismjs": "^1.29.0",
     "youtube-transcript": "^1.3.0"
   },
   "overrides": {
-"tough-cookie": "^4.1.3",
+    "tough-cookie": "^4.1.3",
     "jpeg-js": "^0.4.4",
     "minimist": "^1.2.8",
     "form-data": "^4.0.0",
@@ -2042,4 +2048,4 @@
       "ansi-styles": ">=6.0.0"
     }
   }
-  }
+}

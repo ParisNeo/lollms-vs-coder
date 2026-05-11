@@ -73,6 +73,7 @@ export async function activate(context: vscode.ExtensionContext) {
         apiUrl: config.get<string>('apiUrl') || 'http://localhost:9642',
         apiKey: config.get<string>('apiKey')?.trim() || '',
         modelName: config.get<string>('modelName') || 'ollama/mistral',
+        ttiModelName: config.get<string>('ttiModelName') || '',
         disableSslVerification: config.get<boolean>('disableSslVerification') || false,
         sslCertPath: config.get<string>('sslCertPath') || '',
         backendType: config.get<any>('backendType') || 'lollms',
@@ -239,17 +240,33 @@ export async function activate(context: vscode.ExtensionContext) {
         return p.includes('.lollms') || p.includes('.git') || p.includes('node_modules') || p.includes('venv');
     };
 
-    watcher.onDidChange(uri => {
+    watcher.onDidChange(async (uri) => {
         const p = uri.fsPath;
         if (p.includes('.lollms') || p.includes('.git') || p.includes('node_modules')) return;
-        
+
         if (uri.fsPath.includes('skills')) {
             skillsManager.invalidateCache();
             return;
         }
+
         contextManager.refreshFileInCache(uri);
         contextManager.updateTreeStructure(uri, 'change');
         codeGraphManager.reset();
+
+        // 🚀 INCREMENTAL TOKEN UPDATE
+        const provider = contextManager.getContextStateProvider();
+        if (provider) {
+            const state = provider.getStateForUri(uri);
+            if (state === 'included' || state === 'definitions-only') {
+                Logger.info(`Incremental token update for: ${path.basename(p)}`);
+                // Delay slightly to let the file finish writing to disk
+                setTimeout(() => {
+                    if (ChatPanel.currentPanel) {
+                        ChatPanel.currentPanel.updateContextAndTokens();
+                    }
+                }, 500);
+            }
+        }
     });
     
     watcher.onDidCreate(uri => {
@@ -290,6 +307,7 @@ export async function activate(context: vscode.ExtensionContext) {
                 apiUrl: newConfig.get<string>('apiUrl') || 'http://localhost:9642',
                 apiKey: newConfig.get<string>('apiKey')?.trim() || '',
                 modelName: newConfig.get<string>('modelName') || 'ollama/mistral',
+                ttiModelName: newConfig.get<string>('ttiModelName') || '',
                 disableSslVerification: newConfig.get<boolean>('disableSslVerification') || false,
                 sslCertPath: newConfig.get<string>('sslCertPath') || '',
                 backendType: newConfig.get<'lollms' | 'openai' | 'ollama'>('backendType') || 'lollms',

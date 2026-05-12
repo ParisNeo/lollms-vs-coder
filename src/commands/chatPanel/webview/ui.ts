@@ -15,6 +15,38 @@ function getStatusEmoji(text: string): string {
     return '✍️';
 }
 
+/**
+ * Opens a full-screen high-fidelity zoom of the clicked image.
+ */
+export function openImageZoom(src: string) {
+    const overlay = document.getElementById('image-zoom-overlay');
+    const displayImg = document.getElementById('zoomed-image-display') as HTMLImageElement;
+    
+    if (overlay && displayImg) {
+        displayImg.src = src;
+        overlay.classList.add('active');
+        
+        // Add one-time listener for ESC key
+        const escListener = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') {
+                closeImageZoom();
+                document.removeEventListener('keydown', escListener);
+            }
+        };
+        document.addEventListener('keydown', escListener);
+    }
+}
+
+/**
+ * Closes the zoom overlay.
+ */
+export function closeImageZoom() {
+    const overlay = document.getElementById('image-zoom-overlay');
+    if (overlay) {
+        overlay.classList.remove('active');
+    }
+}
+
 export function renderPendingImages() {
     if (!dom.attachmentPreviewArea) return;
     dom.attachmentPreviewArea.innerHTML = '';
@@ -521,7 +553,74 @@ function showTextInput(x: number, y: number, w: number, h: number, screenPos: an
     };
 }
 
+export function showProjectLoader(projectName: string) {
+    // Hide standard generating overlay if it's up
+    if (dom.generatingOverlay) dom.generatingOverlay.style.display = 'none';
+
+    let loader = document.getElementById('project-loader');
+    if (!loader) {
+        loader = document.createElement('div');
+        loader.id = 'project-loader';
+        loader.className = 'project-loader-overlay';
+        loader.innerHTML = `
+            <div class="loader-blueprint">
+                <div class="loader-grid"></div>
+                <div class="loader-scan-line"></div>
+            </div>
+            <div class="loader-content">
+                <div class="loader-title">Indexing <strong>${projectName}</strong></div>
+                <div class="loader-status" id="loader-status-text">INITIALIZING QUANTUM HUB...</div>
+                <div class="loader-stats">
+                    <div class="stat-box">
+                        <span class="stat-label">FILES DISCOVERED</span>
+                        <span class="stat-value" id="loader-stat-files">---</span>
+                    </div>
+                    <div class="stat-box">
+                        <span class="stat-label">CONTEXT LOAD</span>
+                        <span class="stat-value" id="loader-stat-tokens">---</span>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(loader);
+    }
+}
+
+export function hideProjectLoader() {
+    const loader = document.getElementById('project-loader');
+    if (loader) {
+        loader.style.opacity = '0';
+        setTimeout(() => loader.remove(), 300);
+    }
+}
+
+export function updateLoaderStatus(status: string, stats?: { files?: number, tokens?: number }) {
+    const statusEl = document.getElementById('loader-status-text');
+    if (statusEl) statusEl.textContent = status;
+    
+    if (stats) {
+        if (stats.files !== undefined) {
+            const el = document.getElementById('loader-stat-files');
+            if (el) el.textContent = stats.files.toString();
+        }
+        if (stats.tokens !== undefined) {
+            const el = document.getElementById('loader-stat-tokens');
+            if (el) el.textContent = `${(stats.tokens / 1000).toFixed(1)}k`;
+        }
+    }
+}
+export function setCalculatingTokens(isCalculating: boolean) {
+    const spinner = dom.tokenCountingOverlay;
+    if (spinner) spinner.style.display = isCalculating ? 'flex' : 'none';
+}
+
+
 export function setGeneratingState(isGenerating: boolean, statusText?: string, showRaiseHand: boolean = false) {
+    // Ensure project loader is cleared if we are starting a real generation
+    if (isGenerating) hideProjectLoader();
+
+    const overlay = dom.generatingOverlay;
+    if (!overlay) return;
     // Update internal state
     state.isGenerating = isGenerating;
 

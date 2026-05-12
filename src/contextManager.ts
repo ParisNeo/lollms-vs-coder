@@ -1637,7 +1637,13 @@ Your goal is to acquire external knowledge (documentation, library APIs, recent 
     const systemPrompt = `You are the **${roleName}**.
     Your goal is to ${primaryGoal}
     ${pruningMandate}
-    ### 🛑 READ-ONLY RESTRICTION: You are a Librarian. You select files and document strategy, but you are FORBIDDEN from using 'edit_code' or 'generate_code'.
+    ${isBuilder ? `
+    ### 🦾 WRITE AUTHORITY: ACTIVE
+    You are a Builder. You are authorized and EXPECTED to use implementation tools like 'edit_code' and 'generate_code' to fulfill the objective directly.
+    ` : `
+    ### 🛑 READ-ONLY RESTRICTION
+    You are a Librarian. You select files and document strategy, but you are FORBIDDEN from using 'edit_code' or 'generate_code'.
+    `}
 
     ### 📜 DISCOVERY PROTOCOL (TREE-FIRST MANDATE)
     1. **USE YOUR EYES**: The 'PROJECT WORLD STATE' tree lists every visible file. 

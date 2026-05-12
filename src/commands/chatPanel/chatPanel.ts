@@ -304,7 +304,7 @@ export class ChatPanel {
              this.updateAgentMode(false);
         }
     }
-    
+
   
     public updateGeneratingState() {
         if (this._isDisposed || !this.processManager || !this._panel.webview) return;
@@ -460,8 +460,11 @@ export class ChatPanel {
   public async loadDiscussion(): Promise<void> {
     if (this._isDisposed) return;
 
-    // SHOW SPINNER IMMEDIATELY
-    this._panel.webview.postMessage({ command: 'setGeneratingState', isGenerating: true, statusText: 'Loading conversation...' });
+    // 🚀 START SOVEREIGN PROJECT LOADER
+    this._panel.webview.postMessage({ 
+        command: 'showProjectLoader', 
+        projectName: vscode.workspace.workspaceFolders?.[0]?.name || "Project"
+    });
 
     if (!this._currentDiscussion || this._currentDiscussion.id !== this.discussionId) {
           let discussion: Discussion | null;
@@ -795,9 +798,11 @@ export class ChatPanel {
             const importedIds = this._currentDiscussion?.importedSkills || [];
             const activeDiagrams = this._currentDiscussion?.activeDiagrams || [];
 
+            this._panel.webview.postMessage({ command: 'updateLoaderStatus', status: 'Assembling Codebase Map...' });
+
             const context = await this._contextManager.getContextContent({ 
                 signal, 
-                capabilities: this._discussionCapabilities, // Pass capabilities for matrix filtering
+                capabilities: this._discussionCapabilities,
                 importedSkillIds: importedIds,
                 activeDiagramIds: activeDiagrams,
                 modelName: modelForTokenization,
@@ -1011,6 +1016,13 @@ export class ChatPanel {
             }
 
             if (this._panel && this._panel.webview) {
+                // Update the specialized loader with the final results
+                this._panel.webview.postMessage({
+                    command: 'updateLoaderStatus',
+                    status: 'Context Grounding Complete',
+                    stats: { files: includedFiles.length, tokens: totalTokens }
+                });
+
                 this._panel.webview.postMessage({
                     command: 'updateTokenProgress',
                     totalTokens: totalTokens,
@@ -2516,7 +2528,7 @@ ${memoryBlock ? `## 🧠 PROJECT MEMORY\n${memoryBlock}\n` : ''}
         // 1. Get Base System Instructions (VS Code Interface Tools, Skills, Rules)
         const baseInstructions = await getProcessedSystemPrompt(
             'chat', 
-            this._discussionCapabilities, // Ensure pedagogical/structured rules are applied here
+            this._discussionCapabilities, 
             personaContent, 
             undefined, 
             forceFullCode, 
@@ -2598,20 +2610,27 @@ ${context.files ? `#### 📄 FILE CONTENTS\n${context.files}` : "*(No files curr
                 const caps = this._discussionCapabilities;
                 let technicalFormatNote = "";
 
+                technicalFormatNote = `
+                ### 🛠️ CODE MODIFICATION PROTOCOL
+                1. **THE 50% THRESHOLD**: 
+                - If your change affects LESS than 50% of the file: You MUST use the **SEARCH/REPLACE (AIDER)** format.
+                - If your change affects MORE than 50% of the file: Provide the **FULL FILE** content.
+                2. **THE ZERO-PLACEHOLDER MANDATE (CRITICAL)**: 
+                - It is **STRICTLY FORBIDDEN** to use comments like \`// ... rest of code\`, \`# ... existing logic\`, or any form of ellipses to skip lines.
+                - Every line in a FULL file or within a REPLACE block must be written explicitly. 
+                - Partial code fragments inside a block will result in a system rejection.
+                `.trim();
+
                 if (caps.forceFullCode) {
-                    technicalFormatNote = "STRICT: Provide the 100% COMPLETE file content from line 1 to end for every modification. You are FORBIDDEN from using snippets or '...' placeholders.";
-                } else if (caps.autoApply || caps.generationFormats?.partialFormat === 'aider') {
-                    technicalFormatNote = "STRICT: Use the SEARCH/REPLACE (AIDER) format. Your REPLACE block MUST be complete. Never skip imports or logic using '// ...' comments.";
-                } else if (caps.generationFormats?.partialFormat === 'diff') {
-                    technicalFormatNote = "STRICT: Use the Unified Diff (.patch) format for all existing file modifications.";
+                    technicalFormatNote += "\n3. **OVERRIDE**: The user has requested FULL FILES for all changes regardless of size.";
                 }
 
                 if (technicalFormatNote) {
-                    currentPromptMessage.content += `\n\n(Format Enforcement: ${technicalFormatNote})`;
+                    currentPromptMessage.content += `\n\n${technicalFormatNote}`;
                 }
 
-                // 3. AGGRESSIVE PLACEHOLDER PREVENTION
-                currentPromptMessage.content += `\n\n### 🛑 FINAL WARNING: ZERO PLACEHOLDERS\nIf you use '// ...' or '# ...' to skip code, the mission will be aborted. Write every line explicitly.`;
+                // 3. AGGRESSIVE PLACEHOLDER PREVENTION (Final Red-Line)
+                currentPromptMessage.content += `\n\n### 🛑 RED-LINE WARNING\nDO NOT USE PLACEHOLDERS (\`// ...\`). If you cannot provide the full logic for a block, do not provide the block. Every character matters for local execution integrity.`;
             }
             messagesToSend.push(currentPromptMessage);
         }
@@ -3863,34 +3882,41 @@ ${targetContent}
                     const messageId = message.messageId;
 
                     const { id: applyProcId, controller: applyCtrl } = this.processManager.register(this.discussionId, `Applying batch changes...`);
+                    this.updateGeneratingState();
 
-                    // Run batch in a background loop to avoid blocking the Extension Host UI thread
-                    (async () => {
+                    // SERIALIZED EXECUTION PROTOCOL
+                    const runBatch = async () => {
                         for (let i = 0; i < changesBatch.length; i++) {
-                            if (applyCtrl.signal.aborted) break;
+                            if (applyCtrl.signal.aborted) {
+                                this.log("Batch apply aborted by user.");
+                                break;
+                            }
 
                             const change = changesBatch[i];
                             const fileName = path.basename(change.path);
 
-                            this.processManager.updateDescription(applyProcId, `Apply [${i+1}/${changesBatch.length}]: ${fileName}`);
+                            this.processManager.updateDescription(applyProcId, `Applying [${i+1}/${changesBatch.length}]: ${fileName}`);
                             this.updateGeneratingState();
 
-                            // Signal start to UI for individual row spinner
+                            // 1. Notify UI: Item processing started
                             this._panel.webview.postMessage({ 
                                 command: 'applyAllStart', 
                                 messageId: messageId, 
                                 blockIndex: change.blockIndex,
-                                hunkIndex: change.hunkIndex
+                                hunkIndex: change.hunkIndex,
+                                currentIndex: i,
+                                totalCount: changesBatch.length
                             });
 
                             let result: any = { success: false };
                             try {
-                                // Force autoSave so disk is updated for the next hunk in the batch
+                                // Force synchronous write behaviors
                                 const opts = { 
                                     silent: true, 
                                     blockIndex: change.blockIndex, 
                                     hunkIndex: change.hunkIndex,
-                                    autoSave: true 
+                                    autoSave: true,
+                                    isBatch: true 
                                 };
 
                                 if (change.type === 'file') {
@@ -3898,16 +3924,19 @@ ${targetContent}
                                 } else if (change.type === 'replace') {
                                     result = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', change.path, change.content, this, messageId, opts);
                                 } else if (change.type === 'diff') {
-                                    await vscode.commands.executeCommand('lollms-vs-coder.applyPatchContent', change.path, change.content, opts);
-                                    result = { success: true };
+                                    result = await vscode.commands.executeCommand('lollms-vs-coder.applyPatchContent', change.path, change.content, opts);
+                                }
+
+                                // 2. Critical: Update internal discussion state immediately
+                                if (result?.success) {
+                                    await this.updateAppliedState(messageId, change.blockIndex, change.hunkIndex);
                                 }
                             } catch (e: any) {
                                 result = { success: false, error: e.message };
+                                this.log(`Batch failure on ${change.path}: ${e.message}`, 'ERROR');
                             }
 
-                            // Small delay for disk sync
-                            await new Promise(r => setTimeout(r, 300));
-
+                            // 3. Notify UI: Item result
                             this._panel.webview.postMessage({
                                 command: 'applyAllResult',
                                 messageId: messageId,
@@ -3915,12 +3944,22 @@ ${targetContent}
                                 blockIndex: change.blockIndex,
                                 hunkIndex: change.hunkIndex,
                                 success: result?.success ?? false,
-                                error: result?.error
+                                error: result?.error,
+                                currentIndex: i,
+                                totalCount: changesBatch.length
                             });
+
+                            // Physical delay to allow FS and Language Server to catch up
+                            await new Promise(r => setTimeout(r, 250));
                         }
+
                         this.processManager.unregister(applyProcId);
                         this.updateGeneratingState();
-                    })();
+                        // Final context refresh to show new state in HUD
+                        this.updateContextAndTokens();
+                    };
+
+                    runBatch();
                     break;
                 }
             case 'renameFile':
@@ -3936,7 +3975,13 @@ ${targetContent}
                 break;
             case 'replaceCode':
                 try {
-                    const res: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', message.filePath, message.content, this, message.messageId, message.options);
+                    // Logic to normalize markers before sending to command
+                    const normalizedContent = message.content
+                        .replace(/^\s*<<<<<<< SEARCH/gm, '<<<<<<< SEARCH')
+                        .replace(/^\s*=======/gm, '=======')
+                        .replace(/^\s*>>>>>>> REPLACE/gm, '>>>>>>> REPLACE');
+
+                    const res: any = await vscode.commands.executeCommand('lollms-vs-coder.replaceCode', message.filePath, normalizedContent, this, message.messageId, message.options);
                     webview.postMessage({
                         command: 'applyAllResult',
                         messageId: message.messageId,
@@ -6872,12 +6917,17 @@ Task:
                 </div>
             </div>
         </div>
-        <div id="image-zoom-overlay" class="modal" style="background: rgba(0,0,0,0.95); cursor: zoom-out;">
-            <div style="position: absolute; top: 20px; right: 20px; z-index: 10001; display: flex; gap: 10px;">
-                <button class="code-action-btn secondary-btn" id="zoom-copy-btn"><i class="codicon codicon-copy"></i> Copy Image</button>
-                <span class="close-btn" style="color: white;">&times;</span>
+        <!-- 🖼️ SOVEREIGN IMAGE ZOOM OVERLAY -->
+        <div id="image-zoom-overlay">
+            <div class="zoom-controls">
+                <button class="code-action-btn secondary-btn" id="zoom-copy-btn" title="Copy to clipboard">
+                    <i class="codicon codicon-copy"></i>
+                </button>
+                <button class="code-action-btn secondary-btn" id="zoom-close-btn" title="Close">
+                    <i class="codicon codicon-close"></i>
+                </button>
             </div>
-            <img id="zoomed-image-display" style="max-width: 95%; max-height: 95%; object-fit: contain; box-shadow: 0 0 30px rgba(0,0,0,0.5);">
+            <img id="zoomed-image-display" alt="Zoomed View">
         </div>
 
         <div id="raw-code-modal" class="modal">
@@ -7102,9 +7152,10 @@ ${doc.getText()}
 
 **STRICT INSTRUCTIONS:**
 1. Fix the specific lines reported above.
-2. If an import is missing, find the correct library name from the Project DNA or search the web.
-3. Use **AIDER SEARCH/REPLACE** format.
-4. Output ONLY the code blocks. No chatter.`;
+2. **INDENTATION SENSITIVITY**: This is Python code. Ensure your SEARCH and REPLACE blocks respect the exact nesting levels.
+3. **NO TRAILING COMMENTS**: Do not add comments like "# ... existing code" inside blocks.
+4. Use **AIDER SEARCH/REPLACE** format.
+5. Output ONLY the code blocks. No chatter.`;
 
                 const systemPrompt = "You are a surgical code repair expert. Output only Aider SEARCH/REPLACE blocks to fix the requested errors.";
                 

@@ -1,14 +1,16 @@
 import { dom, vscode, state } from './dom.js';
 import DOMPurify from 'dompurify';
 import { addMessage, renderMessageContent, updateContext, displayPlan, scheduleRender, checkAndSyncMessageAppliedState } from './messageRenderer.js';
-
+import { setCalculatingTokens,
+    showProjectLoader,
+    hideProjectLoader,
+    updateLoaderStatus}from './ui.js';
 const sanitizer = typeof DOMPurify === 'function' ? (DOMPurify as any)(window) : DOMPurify;
 import { 
     setGeneratingState, 
     updateBadges, 
     renderProfilesInModal, 
     renderSkillsTree, 
-    renderFileSearchTree, 
     renderDiscussionSearchResults, 
     renderFileSearchResults,
     renderWebSearchResults,
@@ -558,14 +560,15 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
                 }
                 break;
-
             case 'tokenCalculationFinished':
-                if (dom.refreshContextBtn) dom.refreshContextBtn.style.display = 'inline-block';
-                if (dom.cancelTokensBtn) dom.cancelTokensBtn.style.display = 'none';
-                if (dom.contextLoadingSpinner) {
-                    dom.contextLoadingSpinner.style.display = 'none';
-                }
-                if (dom.tokenCountLabel) dom.tokenCountLabel.style.opacity = '1';
+                setCalculatingTokens(false);
+                hideProjectLoader(); // Remove the big overlay when context is ready
+                break;
+            case 'showProjectLoader':
+                showProjectLoader(message.projectName);
+                break;
+            case 'updateLoaderStatus':
+                updateLoaderStatus(message.status, message.stats);
                 break;
             case 'updateTokenProgress':
                 if (dom.tokenCountLabel) {
@@ -1024,17 +1027,25 @@ export async function handleExtensionMessage(event: MessageEvent) {
                 break;
             case 'closeSkillsModal':
                 if (dom.skillsModal) dom.skillsModal.classList.remove('visible');
-                break;                
+                break;     
             case 'applyAllStart': {
                 const wrapper = document.querySelector(`.message-wrapper[data-message-id='${message.messageId}']`);
                 const hunkAttr = message.hunkIndex !== undefined ? `[data-hunk-index='${message.hunkIndex}']` : ':not([data-hunk-index])';
                 const row = wrapper?.querySelector(`.apply-row[data-block-index='${message.blockIndex}']${hunkAttr}`);
                 if (row) {
                     const iconEl = row.querySelector('.status-icon');
-                    // Change to a static clock icon instead of a moving spinner
-                    if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-history"></span>';
+                    if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-loading spin"></span>';
                     row.style.background = 'rgba(255, 255, 255, 0.05)';
                     row.style.opacity = '0.7';
+                }
+
+                // Update Progress Bar
+                if (message.totalCount > 0) {
+                    const bar = document.getElementById(`progress-bar-${message.messageId}`);
+                    if (bar) {
+                        const pct = Math.round((message.currentIndex / message.totalCount) * 100);
+                        bar.style.width = `${pct}%`;
+                    }
                 }
                 break;
             }
@@ -1070,17 +1081,18 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             const bubble = btn.closest('.aider-hunk-bubble, .code-collapsible');
                             const undoBtn = bubble?.querySelector('.undo-hunk-btn') as HTMLElement;
 
+                            btn.disabled = false; // ALWAYS keep enabled for re-apply
+
                             if (isUndo) {
-                                btn.disabled = false;
                                 btn.classList.remove('applied');
-                                // Determine icon based on if it's a hunk or a main block
-                                const icon = btn.classList.contains('apply-all-btn') ? 'codicon-tools' : 'codicon-arrow-swap';
+                                const isAider = bubble?.classList.contains('aider-diff-container') || bubble?.querySelector('.aider-hunk-group');
+                                const icon = btn.classList.contains('apply-all-btn') ? 'codicon-tools' : (isAider ? 'codicon-arrow-swap' : 'codicon-tools');
                                 btn.innerHTML = `<i class="codicon ${icon}"></i>`;
                                 if (undoBtn) undoBtn.style.display = 'none';
                             } else {
-                                btn.disabled = false; 
                                 btn.classList.add('applied');
                                 btn.innerHTML = '<i class="codicon codicon-check"></i>';
+                                btn.title = "Successfully applied. Click to apply again.";
                                 if (undoBtn) {
                                     undoBtn.style.display = 'flex';
                                     undoBtn.innerHTML = '<i class="codicon codicon-discard"></i>';
@@ -1178,18 +1190,14 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     const row = wrapper.querySelector(`.apply-row[data-block-index='${message.blockIndex}']${hunkAttr}`) as HTMLElement;
 
                     if (row && message.success) {
+                        row.classList.add('status-success');
                         const iconEl = row.querySelector('.status-icon');
                         const actionsEl = row.querySelector('.row-actions') as HTMLElement;
 
-                        // ADDED: Force checkmark in list row
-                        if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)"></span>';
-
                         if (message.alreadyApplied) {
-                            row.style.background = 'rgba(15, 157, 88, 0.05)'; 
                             row.style.opacity = '0.7';
                             if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-check-all" style="color:var(--vscode-charts-green)" title="Already applied to disk"></span>';
                         } else {
-                            row.style.background = 'rgba(15, 157, 88, 0.15)'; 
                             row.style.opacity = '1';
                             if (iconEl) iconEl.innerHTML = '<span class="codicon codicon-check" style="color:var(--vscode-charts-green)" title="Applied successfully"></span>';
                         }
@@ -1221,12 +1229,12 @@ export async function handleExtensionMessage(event: MessageEvent) {
                             };
                         }
                     } else if (row) {
-                        row.style.background = 'rgba(244, 71, 71, 0.1)'; 
+                        row.classList.add('status-failed');
                         const iconEl = row.querySelector('.status-icon');
                         const actionsEl = row.querySelector('.row-actions') as HTMLElement;
 
                         if (iconEl) {
-                            iconEl.innerHTML = '<span class="codicon codicon-error" style="color:var(--vscode-charts-red)" title="' + (message.error || 'Failed') + '"></span>';
+                            iconEl.innerHTML = '<span class="codicon codicon-close" style="color:var(--vscode-charts-red)" title="' + (message.error || 'Failed') + '"></span>';
                         }
 
                         if (actionsEl) {
@@ -1299,17 +1307,26 @@ export async function handleExtensionMessage(event: MessageEvent) {
                     }
 
 
+                    // Update Progress Bar on complete
+                    if (message.totalCount > 0) {
+                        const bar = document.getElementById(`progress-bar-${message.messageId}`);
+                        if (bar) {
+                            const pct = Math.round(((message.currentIndex + 1) / message.totalCount) * 100);
+                            bar.style.width = `${pct}%`;
+                            if (pct === 100) {
+                                bar.style.background = 'var(--vscode-charts-green)';
+                            }
+                        }
+                    }
+
                     // Update main "Apply All" button state if everything is finished
                     const resultsList = row?.closest('.apply-results-list');
                     if (resultsList) {
-                        const stillPending = resultsList.querySelectorAll('.spinner').length;
-                        const autoRepairing = resultsList.querySelectorAll('.retry-row-btn:disabled').length;
-                        
-                        // Only finalize the header if no background tasks are running for this block
-                        if (stillPending === 0 && autoRepairing === 0) {
-                            const btnContainer = resultsList.previousElementSibling;
-                            const mainBtn = btnContainer?.querySelector('.apply-all-btn:not(.secondary-btn)') as HTMLButtonElement;
-                            
+                        const stillPending = resultsList.querySelectorAll('.spinner, .codicon-loading').length;
+
+                        if (stillPending === 0) {
+                            const mainBtn = document.getElementById(`apply-all-${message.messageId}`) as HTMLButtonElement;
+
                             if (mainBtn) {
                                 mainBtn.classList.remove('stop-btn-red');
                                 mainBtn.classList.remove('sequential-applying');

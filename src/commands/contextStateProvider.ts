@@ -557,25 +557,56 @@ export class ContextStateProvider implements vscode.TreeDataProvider<ContextItem
     }
 
     public async addFilesToContext(files: string[]): Promise<void> {
-        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        if (!workspaceFolder) return;
-        
+        const folders = vscode.workspace.workspaceFolders;
+        if (!folders || folders.length === 0) return;
+
         const workspaceState = this.context.workspaceState.get<{ [key: string]: ContextState }>(this.stateKey, {});
         const urisToFire: vscode.Uri[] = [];
 
-        files.forEach(file => {
-            let relPath = file;
-            if (path.isAbsolute(file)) {
-                const uri = vscode.Uri.file(file);
-                const wsFolder = vscode.workspace.getWorkspaceFolder(uri);
-                if (wsFolder) {
-                    relPath = vscode.workspace.asRelativePath(uri, false);
+        for (const file of files) {
+            let targetUri: vscode.Uri | undefined;
+            const normalizedPath = this.normalize(file).trim();
+            const segments = normalizedPath.split('/');
+
+            // 1. SOVEREIGN NAMESPACE CHECK: Does the first segment match a project name?
+            const projectFolder = folders.find(f => f.name === segments[0]);
+            if (projectFolder && segments.length > 1) {
+                const subPath = segments.slice(1).join('/');
+                targetUri = vscode.Uri.joinPath(projectFolder.uri, subPath);
+            } else {
+                // 2. SEARCH RESOLUTION: Check across all roots for existence
+                for (const folder of folders) {
+                    const testUri = vscode.Uri.joinPath(folder.uri, normalizedPath);
+                    try {
+                        await vscode.workspace.fs.stat(testUri);
+                        targetUri = testUri;
+                        break;
+                    } catch {
+                        // If it's a namespaced path where the root name matches the folder name 
+                        // but wasn't caught by segments[0] check, try one more fallback
+                        if (normalizedPath.startsWith(folder.name + '/')) {
+                            const stripped = normalizedPath.substring(folder.name.length + 1);
+                            const testStripped = vscode.Uri.joinPath(folder.uri, stripped);
+                            try {
+                                await vscode.workspace.fs.stat(testStripped);
+                                targetUri = testStripped;
+                                break;
+                            } catch {}
+                        }
+                    }
                 }
             }
-            const normalizedFile = this.normalize(relPath);
-            workspaceState[normalizedFile] = 'included';
-            urisToFire.push(vscode.Uri.joinPath(workspaceFolder.uri, relPath));
-        });
+
+            // If we found a valid URI, record the state using the VS Code namespaced relative path as the key
+            if (targetUri) {
+                const key = this.normalize(vscode.workspace.asRelativePath(targetUri, false));
+                workspaceState[key] = 'included';
+                urisToFire.push(targetUri);
+                Logger.info(`[Librarian] Added to context: ${key}`);
+            } else {
+                Logger.warn(`[Librarian] Failed to resolve path for context addition: ${file}`);
+            }
+        }
 
         await this.context.workspaceState.update(this.stateKey, workspaceState);
         this.refresh();

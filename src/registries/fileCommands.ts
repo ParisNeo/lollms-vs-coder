@@ -164,23 +164,29 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
         }
 
         // --- MULTI-ROOT NAMESPACE ENFORCEMENT ---
-        // If the path starts with "ProjectName/", we prioritize that folder
+        // Priority 1: Exact Namespace Match (ProjectName/path)
         const projectFolder = folders.find(f => f.name === segments[0]);
         if (projectFolder && segments.length > 1) {
             const relativeToRoot = segments.slice(1).join('/');
             const uri = vscode.Uri.joinPath(projectFolder.uri, relativeToRoot);
-            return { folder: projectFolder, relativePath: relativeToRoot, uri };
+            // Verify existence for namespaced path
+            try {
+                await vscode.workspace.fs.stat(uri);
+                return { folder: projectFolder, relativePath: relativeToRoot, uri };
+            } catch {
+                // If it doesn't exist at the namespaced path, it might be a new file 
+                // we are intending to create. Return the resolved info.
+                return { folder: projectFolder, relativePath: relativeToRoot, uri };
+            }
         }
 
-        // Fallback for relative paths: check existence across all roots
-        if (folders.length > 1) {
-            for (const folder of folders) {
-                const testUri = vscode.Uri.joinPath(folder.uri, normalized);
-                try {
-                    await vscode.workspace.fs.stat(testUri);
-                    return { folder, relativePath: normalized, uri: testUri };
-                } catch {}
-            }
+        // Priority 2: Relative path existence check across all roots
+        for (const folder of folders) {
+            const testUri = vscode.Uri.joinPath(folder.uri, normalized);
+            try {
+                await vscode.workspace.fs.stat(testUri);
+                return { folder, relativePath: normalized, uri: testUri };
+            } catch {}
         }
 
         // --- SINGLE ROOT FLEXIBLE RESOLUTION ---
@@ -643,9 +649,9 @@ export function registerFileCommands(context: vscode.ExtensionContext, services:
                 if (result.success) {
                     currentContent = result.result;
                     applyCount++;
+                    Logger.info(`[AiderMatch] Strategy '${result.strategy}' matched block ${i} in ${sanitizedFilePath}`);
                 } else {
-                    // --- ENHANCED DEBUGGING FOR FAILED MATCHES ---
-                    Logger.error(`[AiderMatch] Failed to match block ${i} in ${sanitizedFilePath}. Error: ${result.error}`);
+                    Logger.error(`[AiderMatch] Failed all strategies for block ${i} in ${sanitizedFilePath}. Error: ${result.error}`);
                     errors.push(result.error || "Unknown match error");
 
                     // IF REPAIR IS REQUESTED (from the manual modal button)

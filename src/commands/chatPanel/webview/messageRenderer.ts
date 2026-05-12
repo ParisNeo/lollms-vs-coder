@@ -957,22 +957,33 @@ function enhanceCodeBlocks(container: HTMLElement, messageId: string, contentSou
             const currentMsgId = messageId;
             const blockIdx = index;
             const applyBtnId = `apply-btn-${currentMsgId}-${blockIdx}`;
-            
-            const applyBtn = createButton('Apply', isAider ? 'codicon-arrow-swap' : 'codicon-tools', () => {
-                const finalPath = (details.querySelector('.path-editor-input') as HTMLInputElement)?.value || pathVal;
-                const cmd = isDiff ? 'applyPatchContent' : (isAider ? 'replaceCode' : 'applyFileContent');
-                applyBtn.disabled = true;
-                applyBtn.style.opacity = '0.5';
-                vscode.postMessage({ 
-                    command: cmd, 
-                    filePath: finalPath, 
-                    content: codeText, 
-                    messageId: currentMsgId, 
-                    blockIndex: blockIdx 
-                });
-            }, 'code-action-btn apply-btn');
+
+            // Re-apply logic: Check if it's already applied to set initial visual state
+            const appliedHunks = state.appliedState?.[currentMsgId]?.[blockIdx] || [];
+            const isFullyApplied = appliedHunks.includes(-1);
+
+            const applyBtn = createButton(
+                isFullyApplied ? 'Re-apply' : 'Apply', 
+                isFullyApplied ? 'codicon-check' : (isAider ? 'codicon-arrow-swap' : 'codicon-tools'), 
+                () => {
+                    const finalPath = (details.querySelector('.path-editor-input') as HTMLInputElement)?.value || pathVal;
+                    const cmd = isDiff ? 'applyPatchContent' : (isAider ? 'replaceCode' : 'applyFileContent');
+
+                    // Show spinner on the specific button
+                    applyBtn.innerHTML = '<div class="spinner"></div>';
+
+                    vscode.postMessage({ 
+                        command: cmd, 
+                        filePath: finalPath, 
+                        content: codeText, 
+                        messageId: currentMsgId, 
+                        blockIndex: blockIdx 
+                    });
+                }, 
+                `code-action-btn apply-btn ${isFullyApplied ? 'applied' : ''}`
+            );
             applyBtn.id = applyBtnId;
-            applyBtn.disabled = isDisabled;
+            applyBtn.disabled = isDisabled; // Only disabled if block is still streaming/unclosed
             actions.appendChild(applyBtn);
         } else {
             // ADDED: Play button for code without path
@@ -1629,6 +1640,9 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
                 <button class="apply-all-btn" id="apply-all-${messageId}">
                     <span class="codicon codicon-check-all"></span> Apply All Changes (${actionableBlockCount} files)
                 </button>
+                <div class="apply-progress-container" id="progress-container-${messageId}" style="display:none; height:4px; background:var(--vscode-widget-border); border-radius:2px; margin-top:8px; overflow:hidden;">
+                    <div class="apply-progress-bar" id="progress-bar-${messageId}" style="width:0%; height:100%; background:var(--vscode-charts-blue); transition: width 0.3s ease;"></div>
+                </div>
                 <div class="apply-results-list" id="results-${messageId}" style="display:none; margin-top:8px;"></div>
             </div>`;
     }
@@ -1652,31 +1666,35 @@ export function renderMessageContent(messageId: string, rawContent: any, isFinal
         }
 
     // --- APPLY ALL AGGREGATOR ---
-    // If multiple blocks exist and it's the final render, add the batch button
-    const actionBlocks = contentDiv.querySelectorAll('.apply-btn:not(.undo-hunk-btn)');
-    if (actionBlocks.length > 1 && isFinal && !contentDiv.querySelector('.apply-all-wrapper')) {
-        const wrapper = document.createElement('div');
-        wrapper.className = 'apply-all-wrapper';
-        wrapper.style.padding = '0 12px';
-        wrapper.innerHTML = `
-            <button class="apply-all-btn" id="apply-all-${messageId}">
-                <span class="codicon codicon-check-all"></span> Apply All Changes
-            </button>
-            <div class="apply-results-list" id="results-${messageId}" style="display:none; margin-top:8px;"></div>
-        `;
-        contentDiv.appendChild(wrapper);
-
-        const btn = wrapper.querySelector('.apply-all-btn') as HTMLButtonElement;
+    // Note: The main Apply All button logic is handled via gatherChangesFromBlocks 
+    // triggered by either the static button in finalHtml or a dynamically injected one.
+    const btn = contentDiv.querySelector(`.apply-all-btn`) as HTMLButtonElement;
+    if (btn) {
         btn.onclick = () => {
             const changes = gatherChangesFromBlocks(messageId);
             if (changes.length > 0) {
                 btn.disabled = true;
                 btn.innerHTML = '<span class="codicon codicon-sync spin"></span> Applying Batch...';
+
                 const resList = document.getElementById(`results-${messageId}`);
+                const progressContainer = document.getElementById(`progress-container-${messageId}`);
+
                 if (resList) {
                     resList.style.display = 'block';
-                    resList.innerHTML = changes.map(c => `<div class="apply-row" data-block-index="${c.blockIndex}"><span class="status-icon"><div class="spinner"></div></span><span>${c.path}</span></div>`).join('');
+                    resList.innerHTML = changes.map(c => `
+                        <div class="apply-row" data-block-index="${c.blockIndex}" ${c.hunkIndex !== undefined ? `data-hunk-index="${c.hunkIndex}"` : ''}>
+                            <span class="status-icon"><div class="spinner"></div></span>
+                            <span class="row-path">${c.path} ${c.hunkIndex !== undefined ? `(Hunk ${c.hunkIndex+1})` : ''}</span>
+                            <div class="row-actions" style="display:none"></div>
+                        </div>`).join('');
                 }
+
+                if (progressContainer) {
+                    progressContainer.style.display = 'block';
+                    const bar = progressContainer.querySelector('.apply-progress-bar') as HTMLElement;
+                    if (bar) bar.style.width = '0%';
+                }
+
                 vscode.postMessage({ command: 'applyAllChanges', changes, messageId });
             }
         };

@@ -2,7 +2,7 @@
   "name": "lollms-vs-coder",
   "displayName": "%displayName%",
   "description": "%description%",
-  "version": "0.8.61",
+  "version": "0.8.62",
   "publisher": "parisneo",
   "license": "MIT",
   "icon": "media/icon.png",

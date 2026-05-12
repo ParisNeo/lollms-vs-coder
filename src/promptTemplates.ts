@@ -16,68 +16,59 @@ export class PromptTemplates {
     ): string {
         const partialFormat = capabilities?.generationFormats?.partialFormat ?? 'aider';
         const isAutoApply = capabilities?.autoApply ?? false;
-        const isEconomy = capabilities?.tokenEconomyMode ?? false;
-        const isForcedFull = (capabilities?.forceFullCode !== undefined)
+        const isForcedFull = capabilities?.forceFullCode === true || forceFullCodeSetting === true;
 
         const sections: string[] = [];
 
-        // ── ZERO-PLACEHOLDER MANDATE (HIGH PRIORITY) ────────────────────────
+        // ── ZERO-PLACEHOLDER MANDATE (CRITICAL RED-LINE) ────────────────────────
         sections.push(`
-### 🛑 THE ZERO-PLACEHOLDER MANDATE
-**Strict Prohibition**: You are FORBIDDEN from using placeholders, ellipses, or comments to skip code (e.g., \`# ... rest of code\`, \`// existing logic\`, \`/* ... */\`). 
-- If providing a Full File, it MUST be 100% complete from the first line to the last.
-- If providing a Search/Replace block, the content inside \`REPLACE\` must be complete and functional.
-- **Consequence**: Partial code or placeholders will corrupt the user's project and are considered a failure.
+### 🛑 THE ZERO-PLACEHOLDER MANDATE (CRITICAL)
+You are **STRICTLY FORBIDDEN** from using any form of placeholders, ellipses, or comments to skip code (e.g., \`// ... rest of code\`, \`# existing imports here\`, \`/* same as above */\`, or \`...\`).
+- **NO EXCEPTIONS**: Every single character that belongs in the file or the replacement block MUST be written explicitly.
+- **CONSEQUENCE**: If you use a placeholder, the user's file will be corrupted, and the mission will fail.
 `);
 
-        // ── CODE OUTPUT SELECTION LOGIC ──────────────────────────────────────
+        // ── CODE OUTPUT SELECTION LOGIC (SURGICAL DECISION TREE) ───────────────
         sections.push(`
-    ### 🚦 CODE GENERATION DECISION LOGIC (STRICT)
-    1. **CREATE NEW FILE (Tool: generate_code)**: ONLY use this for files that DO NOT EXIST in the tree. You MUST provide 100% complete content.
-    2. **MODIFY EXISTING FILE (Tool: edit_code)**: This is MANDATORY for all files already present in the codebase. You are FORBIDDEN from using 'generate_code' to update an existing file.
-    3. **SURGICAL PRECISION**: Do not replace 200 lines to change 5. Use multiple small SEARCH/REPLACE blocks.
-    4. **ECONOMY OF TOKENS**: Rewriting a full file via 'generate_code' is considered a failure of architectural skill.
+### 🚦 CODE OUTPUT DECISION TREE
+You must choose your output format based on these strict criteria:
 
-    **CRITICAL**: If you provide SEARCH/REPLACE markers for a file that does not exist in the "PROJECT STRUCTURE", the operation will fail.
-    `);
+1. **NEW FILES**: Use **FORMAT 1 (FULL FILE)**. Provide 100% of the content.
+2. **EXISTING FILES (< 50% change)**: Use **FORMAT 2 (SEARCH/REPLACE)**. This is the preferred method for surgical fixes.
+3. **EXISTING FILES (> 50% change)**: Use **FORMAT 1 (FULL FILE)**. If the changes are so extensive that a patch would be messy, provide the entire file.
+4. **FORCED FULL MODE**: ${isForcedFull ? "The user has enabled 'Force Full Code'. You MUST use FORMAT 1 for all files regardless of change size." : "Respect the 50% threshold rule above."}
+`);
 
         // ── FORMAT 1: FULL FILE (OVERWRITE) ──────────────────────────────────
         sections.push(`
-**ADDRESSING PROTOCOL**:
-- If MULTIPLE projects are open (see tree): Use \`ProjectName/path/to/file.ext\`.
-- If ONLY ONE project is open: Use the relative path directly (e.g., \`src/utils.ts\`). You may optionally include the root folder name as a prefix for consistency.
-**STRICT HEADER RULE**: Replace \`[language]\` with the actual language name. The header MUST contain ONLY the language and the path.
-**Usage**: Replaces the **entire** file on disk.
-- **Requirement**: The block MUST contain the complete, 1:1 content of the file.
-- **Warning**: Do NOT use this header for snippets or partial code. If you use this header, you MUST provide the whole file.
+### 📄 FORMAT 1: FULL FILE
+**Header**: \`\`\`[language]:path/to/file.ext
+- Use this for NEW files or major rewrites (>50%).
+- Replace \`[language]\` with the language ID (e.g., \`python\`, \`typescript\`).
+- The path must be relative to the workspace root.
+- The block **MUST** contain the complete file content from the first line to the very last line.
 `);
 
-        // ── FORMAT 2: SEARCH/REPLACE (SURGICAL PATCH) ───────────────────────
+        // ── FORMAT 2: SEARCH/REPLACE (AIDER) ───────────────────────
         if (partialFormat === 'aider') {
             sections.push(`
-### ⚡ FORMAT 2: SEARCH/REPLACE (Surgical Patch)
+### ⚡ FORMAT 2: SEARCH/REPLACE (AIDER)
 **Header**: \`\`\`[language]:path/to/file.ext
-**STRICT HEADER RULE**: Replace \`[language]\` with the actual language name. The header MUST contain ONLY the language and the relative path. You are FORBIDDEN from using the literal word "language" in the header.
-**FULL Structure**:
+- Use this for surgical modifications to existing files (<50%).
+- Structure:
 \`\`\`[language]:path/to/file.ext
 <<<<<<< SEARCH
-[EXACT current lines from the file]
+[Exact lines currently in the file]
 =======
-[NEW lines to replace them with]
+[New lines to replace them with]
 >>>>>>> REPLACE
 \`\`\`
 
-**STRICT RULES FOR PATCHING:**
-${isEconomy ? `
-1. **TOKEN ECONOMY**: Use the minimum possible context in the SEARCH block (1-2 lines) to keep output small.
-2. **SURGICAL SELECTION**: If you are replacing more than 50% of a function's code, you MUST use the \`update_function\` tool instead of an Aider block. Use Aider only for small diffs.
-` : `
-1. **LITERAL MATCH**: The SEARCH block must be a character-for-character match of the existing code.
-2. **UNIQUE CONTEXT**: Include 3-4 lines of unchanged code to ensure a unique match.
-`}
-3. **NO FRAGMENTS**: Do not use \`...\` inside the \`SEARCH\` block to skip lines. If lines are in the middle of your match, you must include them.
-4. **ATOMIC BLOCKS**: If you are changing multiple functions or distant parts of a file, use **multiple separate** SEARCH/REPLACE blocks.
-5. **NO EMPTY SEARCH BLOCKS**: You are STRICTLY FORBIDDEN from leaving the \`SEARCH\` block empty. Every patch must have a verifiable anchor. To append code to the end of a file, include the final 2-3 lines of the existing file in your \`SEARCH\` block and add your new code after them in the \`REPLACE\` block.
+**STRICT RULES FOR SEARCH/REPLACE:**
+1. **LITERAL MATCH**: The SEARCH block must be a character-for-character, whitespace-perfect match of the code currently on the user's disk.
+2. **NO SKIPPING**: Do not use \`...\` inside a SEARCH block. Include every line in the middle of your match.
+3. **ANCHORING**: Include 3-4 lines of unchanged context code to ensure a unique match.
+4. **ATOMICITY**: For multiple changes in one file, use multiple separate SEARCH/REPLACE blocks.
 `);
         }
 

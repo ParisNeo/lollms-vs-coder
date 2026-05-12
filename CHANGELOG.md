@@ -29,6 +29,10 @@ All notable changes to the "Lollms VS Coder" extension will be documented in thi
 
 - chore(release): bump version to 0.5.56 and update changelog
 
+## [2026-05-12 00:00]
+
+- fix(chat): resolve agent mode state reset and polish UI for v0.8.62
+
 ## [2026-05-11 01:27]
 
 - feat(chat): add Text-to-Image (TTI) support with model configuration

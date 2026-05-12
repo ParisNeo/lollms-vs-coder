@@ -1353,7 +1353,22 @@ export function initEventHandlers() {
     if (dom.cancelTokensBtn) dom.cancelTokensBtn.addEventListener('click', () => {
         vscode.postMessage({ command: 'stopTokenCalculation' });
     });
+    // --- 🖼️ SOVEREIGN IMAGE ZOOM DELEGATION ---
+    dom.messagesContainer?.addEventListener('click', (e) => {
+        const target = e.target as HTMLElement;
+        if (target.tagName === 'IMG' && !target.closest('.no-zoom')) {
+            const img = target as HTMLImageElement;
+            // Prevent zooming on tiny icons or avatars
+            if (img.naturalWidth > 50 || img.naturalHeight > 50) {
+                import('./ui.js').then(ui => ui.openImageZoom(img.src));
+            }
+        }
+    });
 
+    // Close zoom on overlay click
+    document.getElementById('image-zoom-overlay')?.addEventListener('click', () => {
+        import('./ui.js').then(ui => ui.closeImageZoom());
+    });
     window.addEventListener('keydown', (e) => {
         if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
             if (dom.searchBar) {

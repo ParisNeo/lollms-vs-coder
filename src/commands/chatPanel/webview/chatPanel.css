@@ -783,13 +783,18 @@ details:not([open]) > .code-summary::before { transform: rotate(-90deg); }
     text-transform: uppercase;
 }
 
-.code-collapsible.applied, .apply-all-btn.applied { 
+.code-collapsible.applied, .apply-all-btn.applied, .code-action-btn.applied { 
     background-color: #28a745 !important; /* Vivid Success Green */
     color: #ffffff !important; 
-    border-color: transparent !important; 
+    border-color: rgba(255,255,255,0.2) !important; 
     transition: all 0.2s ease;
     opacity: 1 !important;
-    cursor: default;
+    cursor: pointer; /* Changed from default to pointer */
+}
+
+.code-action-btn.applied:hover {
+    filter: brightness(1.2);
+    box-shadow: 0 0 8px rgba(40, 167, 69, 0.5);
 }
 
 .code-action-btn.applied:hover, .apply-all-btn.applied:hover {
@@ -2988,6 +2993,104 @@ mark.current-match {
     100% { box-shadow: 0 0 0 0 rgba(244, 71, 71, 0); }
 }
 
+.project-loader-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: var(--vscode-editor-background);
+    z-index: 2000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 20px;
+    font-family: var(--vscode-font-family);
+    animation: fadeIn 0.3s ease-out;
+}
+
+.loader-blueprint {
+    width: 300px;
+    height: 200px;
+    border: 1px solid var(--vscode-textLink-foreground);
+    border-radius: 8px;
+    position: relative;
+    overflow: hidden;
+    background: rgba(0, 120, 212, 0.05);
+}
+
+.loader-grid {
+    position: absolute;
+    inset: 0;
+    background-image: linear-gradient(var(--vscode-textLink-foreground) 1px, transparent 1px),
+                      linear-gradient(90deg, var(--vscode-textLink-foreground) 1px, transparent 1px);
+    background-size: 20px 20px;
+    opacity: 0.1;
+}
+
+.loader-scan-line {
+    position: absolute;
+    width: 100%;
+    height: 2px;
+    background: var(--vscode-textLink-foreground);
+    box-shadow: 0 0 10px var(--vscode-textLink-foreground);
+    top: 0;
+    animation: scanVertical 2s linear infinite;
+}
+
+@keyframes scanVertical {
+    0% { top: 0; }
+    100% { top: 100%; }
+}
+
+.loader-content {
+    text-align: center;
+    max-width: 400px;
+}
+
+.loader-title {
+    font-size: 1.4em;
+    font-weight: 300;
+    margin-bottom: 8px;
+    color: var(--vscode-foreground);
+}
+
+.loader-status {
+    font-family: var(--vscode-editor-font-family);
+    font-size: 11px;
+    color: var(--vscode-textLink-foreground);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.loader-stats {
+    margin-top: 15px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    width: 100%;
+}
+
+.stat-box {
+    background: var(--vscode-editor-inactiveSelectionBackground);
+    padding: 10px;
+    border-radius: 4px;
+    text-align: left;
+}
+
+.stat-label {
+    font-size: 9px;
+    opacity: 0.7;
+    display: block;
+}
+
+.stat-value {
+    font-size: 14px;
+    font-weight: bold;
+    font-family: var(--vscode-editor-font-family);
+}
+
 .token-counting-overlay {
     position: absolute; bottom: 0; left: 0; right: 0; height: 100px;
     background-color: var(--vscode-sideBar-background); border-top: 1px solid var(--vscode-panel-border);
@@ -4992,4 +5095,92 @@ details[open] > summary .folder-handle::before {
 
 #dev-tools-view {
     border-top: 2px solid var(--vscode-charts-purple);
+}
+
+.staging-file-row {
+    padding: 8px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--vscode-widget-border);
+    font-size: 11px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: background-color 0.2s ease, border-left 0.2s ease;
+}
+
+.apply-row.status-success {
+    background: rgba(15, 157, 88, 0.15) !important;
+    border-left: 3px solid var(--vscode-charts-green);
+}
+
+.apply-row.status-failed {
+    background: rgba(244, 71, 71, 0.1) !important;
+    border-left: 3px solid var(--vscode-charts-red);
+}
+
+.staging-file-row.status-applying {
+    background: var(--vscode-editor-findMatchHighlightBackground);
+    border-left: 3px solid var(--vscode-charts-orange);
+}
+
+.staging-file-row.status-success {
+    background: rgba(56, 142, 60, 0.15) !important;
+    border-left: 3px solid var(--vscode-charts-green) !important;
+}
+
+.staging-file-row.status-failed {
+    background: rgba(211, 47, 47, 0.15) !important;
+    border-left: 3px solid var(--vscode-charts-red) !important;
+}
+
+.staging-file-row .status-icon {
+    margin-right: 8px;
+    font-size: 14px;
+}
+
+.status-success .status-icon { color: var(--vscode-charts-green); }
+.status-failed .status-icon { color: var(--vscode-charts-red); }
+.status-applying .status-icon { animation: spin 1s linear infinite; }
+
+#image-zoom-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(0, 0, 0, 0.9);
+    z-index: 10000;
+    display: none; /* Controlled by JS */
+    align-items: center;
+    justify-content: center;
+    cursor: zoom-out;
+    backdrop-filter: blur(5px);
+    transition: opacity 0.2s ease-out;
+}
+
+#zoomed-image-display {
+    max-width: 95%;
+    max-height: 95%;
+    object-fit: contain;
+    box-shadow: 0 0 40px rgba(0, 0, 0, 0.8);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    transform: scale(0.9);
+    transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+#image-zoom-overlay.active {
+    display: flex;
+    opacity: 1;
+}
+
+#image-zoom-overlay.active #zoomed-image-display {
+    transform: scale(1);
+}
+
+.zoom-controls {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    display: flex;
+    gap: 12px;
 }
